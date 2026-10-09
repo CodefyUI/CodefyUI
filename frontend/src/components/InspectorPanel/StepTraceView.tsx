@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   fetchStepIndex,
   RunDataExpiredError,
@@ -9,10 +9,12 @@ import { TensorGridView } from './TensorGridView';
 import { MathText } from '../shared/MathText';
 import {
   canvasNodeHasOutputs,
+  canvasNodeIsContainer,
   canvasNodeStatus,
   capturePhaseNoteKey,
   fetchPortWithSliceFallback,
   followRecordingSetting,
+  innerNodeLabel,
   isRunStillGoingNote,
   missingFromRunNote,
   onRunEnd,
@@ -35,10 +37,18 @@ interface TensorState {
   data: OutputData | null;
 }
 
-type TensorMap = Record<string, TensorState>; // key: `${stepIdx}::${tensorName}`
+type TensorMap = Record<string, TensorState>; // key: `${stepKey}::${tensorName}`
 
-function tkey(stepIdx: number, tensorName: string): string {
-  return `${stepIdx}::${tensorName}`;
+/**
+ * One step among all a view shows: a card's steps come from several nodes
+ * inside it (#559), each numbering its own from 0.
+ */
+function stepKey(step: StepIndexEntry): string {
+  return `${step.node_id ?? ''}#${step.index}`;
+}
+
+function tkey(step: StepIndexEntry, tensorName: string): string {
+  return `${stepKey(step)}::${tensorName}`;
 }
 
 /**
@@ -51,7 +61,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
   const [steps, setSteps] = useState<StepIndexEntry[] | null>(null);
   const [indexError, setIndexError] = useState<string | null>(null);
   const [tensors, setTensors] = useState<TensorMap>({});
-  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // Set when the finished run recorded nothing for this node: it was not in
   // that run, or failed in it, and "turn on Verbose" would be the wrong hint.
   const [missingKey, setMissingKey] = useState<TranslationKey | null>(null);
@@ -79,13 +89,17 @@ export function StepTraceView({ runId, nodeId }: Props) {
     let stopWaiting: (() => void) | null = null;
     // A settled node in a run still going is read as before: the run's
     // index is only whole once the run is over. Inside an open block the
-    // card has no run status to go by.
+    // card has no run status to go by. A block or preset card records its
+    // steps under the nodes inside it (#559), so the run's list holds none
+    // under its own id: read as a node with no outputs, it is never "not in
+    // the run".
+    const container = canvasNodeIsContainer(nodeId);
     const missing = runInProgressNow()
       ? Promise.resolve(null)
       : missingFromRunNote(runId, {
           runNodeId,
           status: runNodeId === nodeId ? canvasNodeStatus(nodeId) : undefined,
-          hasOutputs: canvasNodeHasOutputs(nodeId),
+          hasOutputs: !container && canvasNodeHasOutputs(nodeId),
         });
     missing
       .then((note) => {
@@ -98,14 +112,14 @@ export function StepTraceView({ runId, nodeId }: Props) {
           }
           return;
         }
-        return fetchStepIndex(runId, runNodeId).then((entries) => {
+        return fetchStepIndex(runId, runNodeId, container).then((entries) => {
           if (cancelled) return;
           setSteps(entries);
           // Seed loading placeholders for every tensor the next effect fetches.
           const initial: TensorMap = {};
           for (const step of entries) {
             for (const name of step.tensor_keys) {
-              initial[tkey(step.index, name)] = {
+              initial[tkey(step, name)] = {
                 loading: true,
                 error: null,
                 data: null,
@@ -141,11 +155,12 @@ export function StepTraceView({ runId, nodeId }: Props) {
         tasks.push(
           (async () => {
             try {
-              const data = await fetchPortWithSliceFallback(runId, runNodeId, port);
+              const data = await fetchPortWithSliceFallback(
+                runId, step.node_id ?? runNodeId, port);
               if (cancelled) return;
               setTensors((prev) => ({
                 ...prev,
-                [tkey(step.index, name)]: {
+                [tkey(step, name)]: {
                   loading: false,
                   error: null,
                   data,
@@ -155,7 +170,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
               if (cancelled) return;
               setTensors((prev) => ({
                 ...prev,
-                [tkey(step.index, name)]: {
+                [tkey(step, name)]: {
                   loading: false,
                   error:
                     e instanceof RunDataExpiredError
@@ -209,71 +224,82 @@ export function StepTraceView({ runId, nodeId }: Props) {
 
   return (
     <div className={styles.stepList}>
-      {steps.map((step) => {
-        const isCollapsed = collapsed[step.index] ?? false;
+      {steps.map((step, i) => {
+        const key = stepKey(step);
+        const isCollapsed = collapsed[key] ?? false;
+        // A card's steps, grouped by the node inside it that recorded them.
+        const from =
+          step.node_id !== undefined && step.node_id !== steps[i - 1]?.node_id
+            ? innerNodeLabel(runNodeId, step.node_id)
+            : null;
         return (
-          <div key={step.index} className={styles.stepCard}>
-            <button
-              type="button"
-              className={styles.stepHeader}
-              onClick={() =>
-                setCollapsed((prev) => ({
-                  ...prev,
-                  [step.index]: !isCollapsed,
-                }))
-              }
-            >
-              <span className={styles.stepIndex}>{step.index + 1}.</span>
-              <span className={styles.stepName}>{step.name}</span>
-              <span className={styles.stepCaret}>{isCollapsed ? '▸' : '▾'}</span>
-            </button>
-            {!isCollapsed && (
-              <div className={styles.stepBody}>
-                {step.description && (
-                  <MathText
-                    as="div"
-                    className={styles.stepDescription}
-                    text={step.description}
-                  />
-                )}
-                {Object.keys(step.scalars).length > 0 && (
-                  <div className={styles.stepScalars}>
-                    {Object.entries(step.scalars).map(([k, v]) => (
-                      <span key={k} className={styles.stepScalarChip}>
-                        {k} = {formatScalar(v)}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {step.tensor_keys.length === 0 && (
-                  <div className={styles.diffMissing}>{t('inspector.noTensors')}</div>
-                )}
-                {step.tensor_keys.map((name) => {
-                  const state = tensors[tkey(step.index, name)];
-                  return (
-                    <div key={name} className={styles.stepTensor}>
-                      <div className={styles.stepTensorLabel}>{name}</div>
-                      {state?.error && (
-                        <div className={styles.portError}>{state.error}</div>
-                      )}
-                      {state?.loading && (
-                        <div className={styles.diffMissing}>…</div>
-                      )}
-                      {state?.data && state.data.type === 'tensor' && (
-                        <TensorGridView tensor={state.data as TensorOutput} />
-                      )}
-                      {state?.data && state.data.type !== 'tensor' && (
-                        <div className={styles.tensorScalar}>
-                          {state.data.type === 'scalar' &&
-                            String((state.data as { value?: unknown }).value)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+          <Fragment key={key}>
+            {from !== null && (
+              <div className={styles.portGroupTitle}>{t('inspector.steps.from', { node: from })}</div>
             )}
-          </div>
+            <div className={styles.stepCard}>
+              <button
+                type="button"
+                className={styles.stepHeader}
+                onClick={() =>
+                  setCollapsed((prev) => ({
+                    ...prev,
+                    [key]: !isCollapsed,
+                  }))
+                }
+              >
+                <span className={styles.stepIndex}>{step.index + 1}.</span>
+                <span className={styles.stepName}>{step.name}</span>
+                <span className={styles.stepCaret}>{isCollapsed ? '▸' : '▾'}</span>
+              </button>
+              {!isCollapsed && (
+                <div className={styles.stepBody}>
+                  {step.description && (
+                    <MathText
+                      as="div"
+                      className={styles.stepDescription}
+                      text={step.description}
+                    />
+                  )}
+                  {Object.keys(step.scalars).length > 0 && (
+                    <div className={styles.stepScalars}>
+                      {Object.entries(step.scalars).map(([k, v]) => (
+                        <span key={k} className={styles.stepScalarChip}>
+                          {k} = {formatScalar(v)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {step.tensor_keys.length === 0 && (
+                    <div className={styles.diffMissing}>{t('inspector.noTensors')}</div>
+                  )}
+                  {step.tensor_keys.map((name) => {
+                    const state = tensors[tkey(step, name)];
+                    return (
+                      <div key={name} className={styles.stepTensor}>
+                        <div className={styles.stepTensorLabel}>{name}</div>
+                        {state?.error && (
+                          <div className={styles.portError}>{state.error}</div>
+                        )}
+                        {state?.loading && (
+                          <div className={styles.diffMissing}>…</div>
+                        )}
+                        {state?.data && state.data.type === 'tensor' && (
+                          <TensorGridView tensor={state.data as TensorOutput} />
+                        )}
+                        {state?.data && state.data.type !== 'tensor' && (
+                          <div className={styles.tensorScalar}>
+                            {state.data.type === 'scalar' &&
+                              String((state.data as { value?: unknown }).value)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </Fragment>
         );
       })}
     </div>

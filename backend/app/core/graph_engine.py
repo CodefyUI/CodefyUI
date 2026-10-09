@@ -1122,6 +1122,24 @@ def outermost_container(node_id: str, mapping: dict[str, str]) -> str | None:
     return container
 
 
+def containers_between(node_id: str, mapping: dict[str, str]) -> list[str]:
+    """The containers nested between a node and its outermost one (#559).
+
+    Innermost first, the outermost itself left out: ``blk/nest/mul`` under
+    ``{'blk/nest/mul': 'blk/nest', 'blk/nest': 'blk'}`` gives
+    ``['blk/nest']``. Walks the chain as :func:`outermost_container` does,
+    stopping at the first id seen twice.
+    """
+    chain: list[str] = []
+    seen = {node_id}
+    container = mapping.get(node_id)
+    while container is not None and container not in seen:
+        seen.add(container)
+        chain.append(container)
+        container = mapping.get(container)
+    return chain[:-1]
+
+
 # ── Bypass / mute (core#128) ─────────────────────────────────────────────
 #
 # A node the user has bypassed on the canvas carries ``data.bypassed = True``.
@@ -2154,6 +2172,7 @@ def prepare_executable_graph(
     subgraphs: Any = None,
     output_aliases: dict[tuple[str, str], tuple[str, str]] | None = None,
     fill_defaults: bool = False,
+    bypassed_ids: list[str] | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand subgraphs and presets, resolve bypass, prune drafts, validate.
 
@@ -2183,6 +2202,11 @@ def prepare_executable_graph(
     run's cache keys and the validation here read the params the node gets.
     The exporter leaves it off: its script lists exactly the params the graph
     carries, and ``invoke_node`` fills in the rest when the script runs.
+
+    ``bypassed_ids``, when given, receives the id of every node bypass
+    resolution removed, flattened as the run names it (``blk/n`` for a node
+    inside a block). None of them will ever run, so a run reports them as
+    ``bypassed`` up front rather than leaving them to look queued (#559).
     """
 
     # Dropped first, exactly where :func:`validate_graph` drops them: an edge
@@ -2247,6 +2271,11 @@ def prepare_executable_graph(
     bypass = resolve_bypass(expanded_nodes, expanded_edges)
     if bypass.errors:
         raise GraphValidationError("; ".join(bypass.errors))
+    if bypassed_ids is not None and bypass.nodes is not expanded_nodes:
+        kept = {node["id"] for node in bypass.nodes}
+        bypassed_ids.extend(
+            node["id"] for node in expanded_nodes if node["id"] not in kept
+        )
     expanded_nodes, expanded_edges = bypass.nodes, bypass.edges
     # A trigger edge naming a node the graph does not have (#561). Checked on
     # the whole graph: an edge to a missing node is pruned below, so the
@@ -2472,6 +2501,9 @@ async def execute_graph(
     preset_fallback: dict | None = None,
     on_signal: Callable[[Any], Any] | None = None,
     subgraphs: Any = None,
+    on_inner_status: (
+        Callable[[str, str, str, dict[str, Any] | None], Any] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Execute the graph with parallel levels, cancellation, error recovery, and caching.
 
@@ -2502,6 +2534,18 @@ async def execute_graph(
             at a time, in the order the nodes produced them. Omitting it
             simply discards those signals; only ``RunService`` has somewhere
             durable to put them.
+        on_inner_status: Callback(node_id, container_id, status, data) for
+            the nodes a container's roll-up hides (#559): every node inside a
+            block or preset card, under the id the run gives it
+            (``blk/nest/mul``), and every container nested inside another
+            (``blk/nest``), rolled up the way the outermost card is.
+            ``container_id`` is the outermost card, which ``on_progress``
+            still reports exactly as before. When given, a progress frame
+            from inside a container goes HERE instead of to ``on_progress``,
+            with the inner node's id, so one frame can paint both cards;
+            the caller files it under ``container_id``. A node the run
+            bypassed is reported once, up front, as ``bypassed`` -- to
+            ``on_progress`` at the top level, here inside a container.
 
     Progress and metric delivery (#122)
     -----------------------------------
@@ -2525,6 +2569,7 @@ async def execute_graph(
 
     begin_run()
     output_aliases: dict[tuple[str, str], tuple[str, str]] = {}
+    bypassed_ids: list[str] = []
     expanded_nodes, expanded_edges, internal_to_preset = prepare_executable_graph(
         nodes,
         edges,
@@ -2534,6 +2579,7 @@ async def execute_graph(
         # Every param a node leaves out, at its declared default
         # (fill_missing_params): the cache keys below read what it runs with.
         fill_defaults=True,
+        bypassed_ids=bypassed_ids,
     )
     # Captured port -> the drawn ports that stand for it (#553). Only a
     # recorded run writes captures, so only a recorded run needs it.
@@ -2582,19 +2628,31 @@ async def execute_graph(
     #    of nodes that can ever report, and the `>=` gate below would never
     #    fire -- no "completed" for the container, ever.
     container_of: dict[str, str] = {}
+    # The containers between a node and its outermost card, innermost first
+    # (#559): `blk/nest/mul` -> [`blk/nest`]. Each rolls up like the outermost
+    # one does, and reports to `on_inner_status`, so an open block shows a
+    # nested block's card with the status of what ran inside it.
+    inner_containers_of: dict[str, list[str]] = {}
     for _node in expanded_nodes:
         _container = outermost_container(_node["id"], internal_to_preset)
         if _container is not None:
             container_of[_node["id"]] = _container
+            inner_containers_of[_node["id"]] = containers_between(
+                _node["id"], internal_to_preset)
     # container_total[cid] = internal nodes belonging to that container
     # container_done[cid] = internal nodes that have completed/cached/skipped
     # container_started[cid] = True once "running" has been emitted for it
     # container_outcome[cid] = the strongest terminal status seen so far,
     #   as a rank (see _CONTAINER_STATUS_RANK) -- this is what the container
     #   itself reports once every internal node has finished (#260).
+    # Keyed by every container a node sits in, nested ones included: the ids
+    # are distinct, so one set of counters serves every level.
     container_total: dict[str, int] = defaultdict(int)
-    for _container in container_of.values():
+    for _node_id, _container in container_of.items():
         container_total[_container] += 1
+        if on_inner_status is not None:
+            for _inner in inner_containers_of[_node_id]:
+                container_total[_inner] += 1
     container_done: dict[str, int] = defaultdict(int)
     container_started: set[str] = set()
     container_outcome: dict[str, int] = {}
@@ -2633,29 +2691,45 @@ async def execute_graph(
           ``inner_log``) goes out at once on a container 'running' frame
           (#601), unless an internal already settled the box
         Nodes that are inside no container pass through unchanged.
+
+        Inside a container, ``on_inner_status`` (when given) hears the node
+        itself first, then each container nested between it and the card,
+        innermost first, and ``on_progress`` hears the card last (#559).
         """
-        if on_progress is None:
-            return
         container_id = container_of.get(node_id)
         if container_id is None:
             # Regular node — pass through
-            await _maybe_await(on_progress(node_id, status, data))
+            if on_progress is not None:
+                await _maybe_await(on_progress(node_id, status, data))
             return
 
         # Node inside a container — aggregate
         if status == "progress":
-            # Progress events (e.g. training epochs) should be visible live
-            await _maybe_await(on_progress(container_id, "progress", data))
+            # Progress events (e.g. training epochs) should be visible live.
+            # One frame, so a caller listening for both paints both cards
+            # from it: see `on_inner_status`.
+            if on_inner_status is not None:
+                await _maybe_await(
+                    on_inner_status(node_id, container_id, "progress", data))
+            elif on_progress is not None:
+                await _maybe_await(on_progress(container_id, "progress", data))
             return
 
         # _roll_up's inner_log relay awaits mid-roll-up: see container_lock.
         async with container_lock:
-            await _roll_up(container_id, status, data)
+            if on_inner_status is not None:
+                await _maybe_await(
+                    on_inner_status(node_id, container_id, status, data))
+                for inner in inner_containers_of[node_id]:
+                    await _roll_up(inner, status, data, outermost=container_id)
+            if on_progress is not None:
+                await _roll_up(container_id, status, data)
 
     async def _roll_up(
         container_id: str,
         status: str,
         data: dict[str, Any] | None,
+        outermost: str | None = None,
     ) -> None:
         """The container half of ``_emit_preset_aware``, under ``container_lock``.
 
@@ -2663,17 +2737,28 @@ async def execute_graph(
         that is what keeps a box's inner_log relays and its one terminal frame
         in order. So no lock taken inside ``on_progress`` may ever wait on
         ``container_lock``, or the run deadlocks.
+
+        ``outermost`` names the card when ``container_id`` is a container
+        nested inside it (#559): that one reports to ``on_inner_status``, and
+        relays no ``__log__`` -- the card relays every line already.
         """
+        async def emit(status: str, data: dict[str, Any] | None) -> None:
+            if outermost is None:
+                await _maybe_await(on_progress(container_id, status, data))
+            else:
+                await _maybe_await(
+                    on_inner_status(container_id, outermost, status, data))
+
         if status in ("error", "interrupted"):
             # Any internal failure or early stop settles the whole container
             container_settled.add(container_id)  # no inner_log relay after this
-            await _maybe_await(on_progress(container_id, status, data))
+            await emit(status, data)
             return
 
         if status == "running":
             if container_id not in container_started:
                 container_started.add(container_id)
-                await _maybe_await(on_progress(container_id, "running", None))
+                await emit("running", None)
             return
 
         if status in _CONTAINER_STATUS_RANK:
@@ -2691,7 +2776,7 @@ async def execute_graph(
             # 'idle' while its internals work.
             if container_id not in container_started:
                 container_started.add(container_id)
-                await _maybe_await(on_progress(container_id, "running", None))
+                await emit("running", None)
             # What the node wrote (a Print's line, a TrainingLoop note) goes
             # out now, on the box the canvas draws (#601): in order among the
             # other nodes' lines, and safe from a later failure in the box --
@@ -2699,12 +2784,12 @@ async def execute_graph(
             # finished. The text is the node's own, as the exported script
             # prints it.
             inner_log = data.get("__log__") if isinstance(data, dict) else None
-            if inner_log and container_id not in container_settled:
-                await _maybe_await(on_progress(
-                    container_id, "running", {"__log__": inner_log}))
+            if (inner_log and outermost is None
+                    and container_id not in container_settled):
+                await emit("running", {"__log__": inner_log})
             if container_done[container_id] >= container_total[container_id]:
                 terminal = _CONTAINER_RANK_STATUS[container_outcome[container_id]]
-                await _maybe_await(on_progress(container_id, terminal, None))
+                await emit(terminal, None)
 
     # A SEEDED run is a SERIAL run (#134). Per-node seeding below sets the
     # PROCESS-GLOBAL RNGs, and two nodes running concurrently would reseed
@@ -3157,6 +3242,18 @@ async def execute_graph(
         raise
 
     try:
+        # A bypassed node never runs and so never reports (#559): said once,
+        # before anything runs, so no view waits on it as if it were queued.
+        for bypassed_id in bypassed_ids:
+            container_id = outermost_container(bypassed_id, internal_to_preset)
+            if container_id is None:
+                if on_progress is not None:
+                    await _maybe_await(
+                        on_progress(bypassed_id, "bypassed", None))
+            elif on_inner_status is not None:
+                await _maybe_await(on_inner_status(
+                    bypassed_id, container_id, "bypassed", None))
+
         # Before the forward pass: zero any accumulated gradients on persisted
         # modules so backward_mode doesn't keep summing across runs.
         if context is not None and getattr(context, "backward_mode", False):

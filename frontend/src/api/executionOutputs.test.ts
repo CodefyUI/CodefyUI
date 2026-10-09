@@ -362,3 +362,16 @@ describe('an id the path cannot carry', () => {
     );
   });
 });
+
+// #559: a block or preset card's Steps and Backward read the nodes inside it.
+describe('reading a card through its inner nodes', () => {
+  it('asks the index routes for the inner nodes, in either form', async () => {
+    const fetchMock = mockFetch(200, []);
+    await fetchStepIndex('r', 'card', true);
+    await fetchGradIndex('r', 'blk/nest', true);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/execution/outputs/r/card/__steps_index?inner=true',
+      '/api/execution/outputs/r/grads?node_id=blk%2Fnest&inner=true',
+    ]);
+  });
+});

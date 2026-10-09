@@ -119,6 +119,7 @@ const en = {
   'status.skipped': 'Skipped',
   'status.cached': 'Cached',
   'status.interrupted': 'Interrupted',
+  'status.bypassed': 'Bypassed',
   // Why a tab left Running without anyone pressing Stop (#552). Each one is a
   // toast and the same line in the Execution Log.
   'status.runInterrupted': 'The server stopped or restarted, so this run was interrupted.',
@@ -710,8 +711,10 @@ const en = {
   // until then there is nothing to read rather than nothing recorded.
   'inspector.nodeRunning': 'Node is running…',
   'inspector.nodePending': 'Waiting for this node to run…',
+  'inspector.nodeBypassed': 'Bypassed: this node does not run. What passes through it can be read when the run ends.',
   'inspector.noValue': 'No value this run',
   'inspector.capture.notInRun': 'Not in the last run',
+  'inspector.capture.bypassedInRun': 'Bypassed in the last run, and nothing passed through it',
   'inspector.capture.failedInRun': 'Failed in the last run',
   'inspector.capture.runHint': 'Run the graph to capture its values',
   'inspector.capture.fromBlock': "From the block's input: {ports}",
@@ -740,6 +743,7 @@ const en = {
   'inspector.tabs.steps': 'Steps',
   'inspector.tabs.backward': 'Backward',
   'inspector.steps.empty': 'No steps recorded',
+  'inspector.steps.from': 'From {node}',
   'inspector.steps.requireVerbose': 'Turn on Verbose internals in Settings and re-run',
 
   // A2 — Per-node weight persistence
@@ -1036,6 +1040,7 @@ const en = {
   'runs.nodeStatus.cached': 'cached',
   'runs.nodeStatus.skipped': 'skipped',
   'runs.nodeStatus.error': 'failed',
+  'runs.nodeStatus.bypassed': 'bypassed',
   'runs.detail.step': 'step',
   'runs.log.started': 'Run started',
   'runs.log.node': 'Node {node} {status}',

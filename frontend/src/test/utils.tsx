@@ -1,6 +1,6 @@
 import type { ReactElement, ReactNode } from 'react';
 import { ReactFlowProvider, type Node, type NodeProps } from '@xyflow/react';
-import { render, type RenderOptions } from '@testing-library/react';
+import { act, render, type RenderOptions } from '@testing-library/react';
 
 /**
  * Wrap UI under a {@link ReactFlowProvider} so components that mount React Flow
@@ -15,6 +15,24 @@ export function FlowWrapper({ children }: { children: ReactNode }) {
 /** `render` that mounts the tree inside a {@link ReactFlowProvider}. */
 export function renderWithFlow(ui: ReactElement, options?: RenderOptions) {
   return render(ui, { wrapper: FlowWrapper, ...options });
+}
+
+/**
+ * Let the promises a component started as it mounted (a fetch on mount, a
+ * module-cached read) settle inside act(). One macrotask runs every queued
+ * microtask, so a mocked fetch and the state update chained on it both land
+ * here. Without it, a test that renders and asserts at once ends before they
+ * land, and React reports their updates as outside act() (#505).
+ */
+export async function settle(): Promise<void> {
+  await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+}
+
+/** `render`, then {@link settle}: for a component that fetches as it mounts. */
+export async function renderSettled(ui: ReactElement, options?: RenderOptions) {
+  const result = render(ui, options);
+  await settle();
+  return result;
 }
 
 /**

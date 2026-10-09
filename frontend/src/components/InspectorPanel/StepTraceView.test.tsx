@@ -384,7 +384,7 @@ describe('StepTraceView — while the node is still running', () => {
     await waitFor(() => expect(screen.getByText('Softmax')).toBeInTheDocument());
     expect(screen.queryByText('Node is running…')).toBeNull();
     expect(mockStepIndex).toHaveBeenCalledTimes(1);
-    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1', false);
   });
 });
 
@@ -434,7 +434,7 @@ describe('StepTraceView — a node the last run has nothing for', () => {
     mockStepIndex.mockResolvedValue([]);
     render(<StepTraceView runId="r1" nodeId="start" />);
     await waitFor(() => expect(screen.getByText('No steps recorded')).toBeInTheDocument());
-    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'start');
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'start', false);
     expect(screen.queryByText('Not in the last run')).toBeNull();
   });
 
@@ -458,7 +458,7 @@ describe('StepTraceView — a node the last run has nothing for', () => {
       { node_id: 'n1', port: 'out', type: 'tensor', full_shape: [2] },
     ]);
     await waitFor(() => expect(screen.getByText('Softmax')).toBeInTheDocument());
-    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1', false);
     expect(screen.queryByText('Waiting for this node to run…')).toBeNull();
   });
 
@@ -508,14 +508,64 @@ describe('StepTraceView — inside an open block', () => {
 
     const top = render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1');
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1', false);
     expect(mockOutput).toHaveBeenCalledWith('r1', 'n1', '__step__0__t');
     top.unmount();
 
     enterBlocks('blk', 'nest');
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
-    expect(mockStepIndex).toHaveBeenLastCalledWith('r1', 'blk/nest/n1');
+    expect(mockStepIndex).toHaveBeenLastCalledWith('r1', 'blk/nest/n1', false);
     expect(mockOutput).toHaveBeenLastCalledWith('r1', 'blk/nest/n1', '__step__0__t');
+  });
+});
+
+// #559: a block or preset card never runs; its steps are the nodes' inside it.
+describe('StepTraceView — a block or preset card', () => {
+  function seedCard(type: string) {
+    seedRun('completed', 'completed');
+    const tab = useTabStore.getState().tabs[0];
+    useTabStore.setState({
+      tabs: [{ ...tab, nodes: tab.nodes.map((n) => ({ ...n, data: { ...n.data, type } })) }],
+    });
+  }
+
+  it("reads the steps of every node inside a block, under each node's name", async () => {
+    seedCard('subgraph:blk-def');
+    // The run's list has nothing under the card's own id.
+    mockGetRun.mockResolvedValue({ id: 'r1', status: 'succeeded', options: {} } as RunInfo);
+    mockList.mockResolvedValue([
+      { node_id: 'n1/att', port: 'out', type: 'tensor', full_shape: [2] },
+    ]);
+    mockStepIndex.mockResolvedValue([
+      step({ index: 0, name: 'first', tensor_keys: ['t'], node_id: 'n1/att' }),
+      step({ index: 1, name: 'second', node_id: 'n1/att' }),
+      step({ index: 0, name: 'deep', node_id: 'n1/nest/att' }),
+    ]);
+    mockOutput.mockResolvedValue(tensor([[1, 1], [1, 1]], { min: 1, max: 1 }));
+
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+
+    await waitFor(() => expect(screen.getByText('From att')).toBeInTheDocument());
+    expect(screen.getByText('From nest/att')).toBeInTheDocument();
+    expect(screen.getAllByText(/^From /)).toHaveLength(2);
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1', true);
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+    expect(mockOutput).toHaveBeenCalledWith('r1', 'n1/att', '__step__0__t');
+
+    // Two nodes' step 0 collapse on their own.
+    fireEvent.click(screen.getByText('deep'));
+    expect(screen.getByText('first').closest('button')?.textContent).toContain('▾');
+    expect(screen.getByText('deep').closest('button')?.textContent).toContain('▸');
+  });
+
+  it('reads a preset card the same way', async () => {
+    seedCard('preset:Pipeline');
+    mockStepIndex.mockResolvedValue([step({ index: 0, name: 'inside', node_id: 'n1__att' })]);
+
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+
+    await waitFor(() => expect(screen.getByText('From att')).toBeInTheDocument());
+    expect(mockStepIndex).toHaveBeenCalledWith('r1', 'n1', true);
   });
 });

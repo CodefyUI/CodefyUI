@@ -324,14 +324,35 @@ async def delete_run_outputs(run_id: str, request: Request):
     return {"run_id": run_id, "deleted": True}
 
 
+def _producer_of(nid: str, node_id: str, inner: bool) -> bool:
+    """Whether ``nid``'s captures answer a read of ``node_id`` (#559).
+
+    Its own, always. With ``inner``, also every node a block or preset card
+    ``node_id`` holds: a run names those ``<card>/<node>`` (a block, nested
+    ones deeper) and ``<card>__<node>`` (a preset card). A card never runs,
+    so what it did is what those nodes did.
+    """
+    if nid == node_id:
+        return True
+    return inner and (
+        nid.startswith(node_id + "/") or nid.startswith(node_id + "__"))
+
+
 @router.get("/{run_id}/{node_id}/__steps_index")
-async def get_steps_index(run_id: str, node_id: str, request: Request):
+async def get_steps_index(
+    run_id: str, node_id: str, request: Request, inner: bool = False,
+):
     """List all algorithmic steps recorded for a node in a run.
 
     Returns a list of ``{index, name, description, scalars, tensor_keys}``
     entries ordered by step index. The frontend uses this to render the
     Steps tab without making N round-trips for individual ``__step__N__meta``
     entries.
+
+    ``inner=true`` reads a block or preset card (#559): the steps of every
+    node inside it, each entry naming the node that recorded it in
+    ``node_id`` (read its tensors from there), grouped by node in the order
+    the run captured them.
     """
     store = _get_store(request)
     if not await store.has_run(run_id):
@@ -339,9 +360,9 @@ async def get_steps_index(run_id: str, node_id: str, request: Request):
     ports = await store.list_ports(run_id)
     if ports is None:
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    metas: dict[int, dict[str, Any]] = {}
+    metas: dict[str, dict[int, dict[str, Any]]] = {}
     for nid, port in ports:
-        if nid != node_id or not port.startswith("__step__"):
+        if not _producer_of(nid, node_id, inner) or not port.startswith("__step__"):
             continue
         if not port.endswith("__meta"):
             continue
@@ -350,17 +371,20 @@ async def get_steps_index(run_id: str, node_id: str, request: Request):
             idx = int(port[len("__step__"):-len("__meta")])
         except ValueError:
             continue
-        meta = await store.get(run_id, node_id, port)
+        meta = await store.get(run_id, nid, port)
         if isinstance(meta, dict):
-            metas[idx] = meta
+            metas.setdefault(nid, {})[idx] = meta
     return [
-        {"index": idx, **metas[idx]}
-        for idx in sorted(metas.keys())
+        {"index": idx, **by_index[idx], **({"node_id": nid} if inner else {})}
+        for nid, by_index in metas.items()
+        for idx in sorted(by_index)
     ]
 
 
 @router.get("/{run_id}/{node_id}/__grad_index")
-async def get_grad_index(run_id: str, node_id: str, request: Request):
+async def get_grad_index(
+    run_id: str, node_id: str, request: Request, inner: bool = False,
+):
     """List captured gradients for a node in a run.
 
     Returns ``[{port, kind, has_grad, health}]`` where:
@@ -370,6 +394,10 @@ async def get_grad_index(run_id: str, node_id: str, request: Request):
         for kind=weight is the parameter name (e.g. ``"weight"``, ``"bias"``).
       - ``health`` is the dict produced by ``backward_pass.grad_health``
         (status/norm/mean/max), or ``None`` if not available.
+
+    ``inner=true`` reads a block or preset card (#559) as
+    :func:`get_steps_index` does: every node inside it, each entry naming
+    its node in ``node_id``.
     """
     store = _get_store(request)
     if not await store.has_run(run_id):
@@ -381,28 +409,31 @@ async def get_grad_index(run_id: str, node_id: str, request: Request):
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
     for nid, port in ports:
-        if nid != node_id:
+        if not _producer_of(nid, node_id, inner):
             continue
         if port.endswith("__grad__meta") or port.startswith("__weight_grad__") and port.endswith("__meta"):
             continue
+        producer = {"node_id": nid} if inner else {}
         if port.endswith("__grad"):
             forward_port = port[:-len("__grad")]
-            health = await store.get(run_id, node_id, port + "__meta")
+            health = await store.get(run_id, nid, port + "__meta")
             entries.append({
                 "port": forward_port,
                 "kind": "port",
                 "has_grad": True,
                 "health": health if isinstance(health, dict) else None,
+                **producer,
             })
             seen.add(port)
         elif port.startswith("__weight_grad__"):
             param_name = port[len("__weight_grad__"):]
-            health = await store.get(run_id, node_id, port + "__meta")
+            health = await store.get(run_id, nid, port + "__meta")
             entries.append({
                 "port": param_name,
                 "kind": "weight",
                 "has_grad": True,
                 "health": health if isinstance(health, dict) else None,
+                **producer,
             })
             seen.add(port)
     return entries
@@ -548,12 +579,14 @@ async def get_output_stats_query(
 @router.get("/{run_id}/steps")
 async def get_steps_index_query(
     run_id: str, request: Request, node_id: str = Query(...),
+    inner: bool = False,
 ):
-    return await get_steps_index(run_id, node_id, request)
+    return await get_steps_index(run_id, node_id, request, inner)
 
 
 @router.get("/{run_id}/grads")
 async def get_grad_index_query(
     run_id: str, request: Request, node_id: str = Query(...),
+    inner: bool = False,
 ):
-    return await get_grad_index(run_id, node_id, request)
+    return await get_grad_index(run_id, node_id, request, inner)

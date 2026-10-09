@@ -129,13 +129,25 @@ export interface StepIndexEntry {
   description: string;
   scalars: Record<string, number>;
   tensor_keys: string[];
+  /** The node inside a card that recorded the step, on an `inner` read (#559). */
+  node_id?: string;
 }
 
+/** The query that reads a block or preset card's inner nodes (#559). */
+function innerParams(inner: boolean): URLSearchParams {
+  return new URLSearchParams(inner ? { inner: 'true' } : {});
+}
+
+/**
+ * The steps `nodeId` recorded. With `inner`, a block or preset card's: every
+ * node inside it, each entry naming its node (#559).
+ */
 export async function fetchStepIndex(
   runId: string,
   nodeId: string,
+  inner = false,
 ): Promise<StepIndexEntry[]> {
-  const url = captureUrl(runId, 'steps', nodeId, null);
+  const url = captureUrl(runId, 'steps', nodeId, null, innerParams(inner));
   const res = await fetch(url);
   if (res.status === 404) {
     // No steps recorded for this node — treat as empty list rather than error.
@@ -156,13 +168,17 @@ export interface GradIndexEntry {
     mean: number;
     max: number;
   } | null;
+  /** The node inside a card the gradient belongs to, on an `inner` read (#559). */
+  node_id?: string;
 }
 
+/** The gradients captured for `nodeId`; `inner` as for {@link fetchStepIndex}. */
 export async function fetchGradIndex(
   runId: string,
   nodeId: string,
+  inner = false,
 ): Promise<GradIndexEntry[]> {
-  const url = captureUrl(runId, 'grads', nodeId, null);
+  const url = captureUrl(runId, 'grads', nodeId, null, innerParams(inner));
   const res = await fetch(url);
   // A node without gradients in a run the server holds is a 200 with [];
   // 404 is the run itself gone, which the Backward tab reports as expired.
