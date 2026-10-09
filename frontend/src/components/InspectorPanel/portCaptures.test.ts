@@ -341,6 +341,11 @@ describe('capturePhase', () => {
   it('is bypassed, never pending, for a node the run will not run (#559)', () => {
     expect(capturePhase('bypassed', true)).toBe('bypassed');
   });
+
+  it('is unselected, never pending, for a node a Switch left out (#656)', () => {
+    expect(capturePhase('unselected', true)).toBe('unselected');
+    expect(capturePhase('unselected', false)).toBe('settled');
+  });
 });
 
 // #559: a block or preset card records its steps and gradients under the
@@ -373,6 +378,7 @@ describe('capturePhaseNoteKey', () => {
     expect(capturePhaseNoteKey('running')).toBe('inspector.nodeRunning');
     expect(capturePhaseNoteKey('pending')).toBe('inspector.nodePending');
     expect(capturePhaseNoteKey('bypassed')).toBe('inspector.nodeBypassed');
+    expect(capturePhaseNoteKey('unselected')).toBe('inspector.nodeUnselected');
     expect(capturePhaseNoteKey('settled')).toBeNull();
   });
 });
@@ -482,6 +488,17 @@ describe('usePortFetches — a node the last run has nothing for', () => {
     await waitFor(() =>
       expect(result.current[keyOf('added', 'out')]?.noteKey).toBe(
         'inspector.capture.failedInRun',
+      ),
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('says a node a Switch left out did not run (#656)', async () => {
+    patchActiveTab({ nodes: [nodeAt('added', 'unselected')] });
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe(
+        'inspector.capture.unselectedInRun',
       ),
     );
     expect(mockOutput).not.toHaveBeenCalled();

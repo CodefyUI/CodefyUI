@@ -327,9 +327,10 @@ export async function missingFromRunNote(
   if (!absentFromRecordedList(c, subject)) return null;
   // A bypassed node never runs; it is in the list only for a port something
   // passed through (#559). Nothing did, which is not the same as expiry.
-  return subject.status === 'bypassed'
-    ? 'inspector.capture.bypassedInRun'
-    : 'inspector.capture.notInRun';
+  if (subject.status === 'bypassed') return 'inspector.capture.bypassedInRun';
+  // A node a Switch's param did not pick never ran (#656).
+  if (subject.status === 'unselected') return 'inspector.capture.unselectedInRun';
+  return 'inspector.capture.notInRun';
 }
 
 /**
@@ -665,7 +666,7 @@ export function useInputsEmptyText(nodeId: string): string {
  * the upstream source, whose value the row shows, not the node on screen.
  */
 
-export type CapturePhase = 'pending' | 'running' | 'bypassed' | 'settled';
+export type CapturePhase = 'pending' | 'running' | 'bypassed' | 'unselected' | 'settled';
 
 /**
  * Whether the owner of a port has written its captures.
@@ -684,6 +685,9 @@ export function capturePhase(
   if (!runInProgress) return 'settled';
   if (status === 'running') return 'running';
   if (status === 'bypassed') return 'bypassed';
+  // #656: left out because a Switch's param did not pick its branch. It will
+  // never run, and nothing passes through it.
+  if (status === 'unselected') return 'unselected';
   if (status === undefined || status === 'idle') return 'pending';
   return 'settled';
 }
@@ -696,6 +700,7 @@ export function capturePhaseNoteKey(phase: CapturePhase): TranslationKey | null 
   if (phase === 'running') return 'inspector.nodeRunning';
   if (phase === 'pending') return 'inspector.nodePending';
   if (phase === 'bypassed') return 'inspector.nodeBypassed';
+  if (phase === 'unselected') return 'inspector.nodeUnselected';
   return null;
 }
 
@@ -742,12 +747,14 @@ const PHASE_CHAR: Record<CapturePhase, string> = {
   pending: 'p',
   running: 'r',
   bypassed: 'b',
+  unselected: 'u',
   settled: 's',
 };
 const CHAR_PHASE: Record<string, CapturePhase> = {
   p: 'pending',
   r: 'running',
   b: 'bypassed',
+  u: 'unselected',
   s: 'settled',
 };
 

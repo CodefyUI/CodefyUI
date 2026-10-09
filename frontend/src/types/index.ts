@@ -236,6 +236,9 @@ export interface NodeData {
 //
 // 'bypassed' (#559): the node is muted, so the run resolved it away before
 // anything ran. Reported once at the start of a run, so nothing waits on it.
+//
+// 'unselected' (#656): a Switch's selector param does not pick the branch
+// this node feeds, so the run left it out. Reported up front, like bypassed.
 export type ExecutionStatus =
   | 'idle'
   | 'running'
@@ -244,7 +247,8 @@ export type ExecutionStatus =
   | 'skipped'
   | 'cached'
   | 'interrupted'
-  | 'bypassed';
+  | 'bypassed'
+  | 'unselected';
 
 // @xyflow/react v12 expects the generic to be a full Node type (not the data
 // payload). Use this alias wherever a component types its props or a store

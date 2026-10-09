@@ -370,6 +370,9 @@ export const STATUS_COLORS: Record<string, string> = {
   error: '#ff6b63',
   cached: '#2397f3',
   skipped: '#9e9e9e',
+  // #656: left out because a Switch's param did not pick the branch. It did
+  // not run, as a skipped node did not, so it reads the same.
+  unselected: '#9e9e9e',
   // Was #444, which measured 1.86:1 against the panel it sits on — an
   // indicator you could not actually see. Neutral enough to still read as
   // "nothing is happening", light enough to be visible.

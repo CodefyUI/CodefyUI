@@ -92,6 +92,7 @@ const zhTW: Record<TranslationKey, string> = {
   'status.cached': '已快取',
   'status.interrupted': '已中斷',
   'status.bypassed': '已略過',
+  'status.unselected': '未選取',
   // Why a tab left Running without anyone pressing Stop (#552). Each one is a
   // toast and the same line in the Execution Log.
   'status.runInterrupted': '伺服器停止或重新啟動，這次執行因此中斷。',
@@ -236,6 +237,7 @@ const zhTW: Record<TranslationKey, string> = {
   'node.completed': '已完成',
   'node.cached': '已快取',
   'node.skipped': '已跳過',
+  'node.unselected': '未選取',
   'node.error': '錯誤：{error}',
   'node.bypassed': '略過',
   'node.bypassed.title': '已略過 — 輸入直接傳給下游',
@@ -626,9 +628,11 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.nodeRunning': '節點執行中…',
   'inspector.nodePending': '等待此節點執行…',
   'inspector.nodeBypassed': '已略過：此節點不會執行。經過它的值在執行結束後即可讀取。',
+  'inspector.nodeUnselected': '未選取：這個節點接到的 Switch 沒有選它所在的分支，所以不會執行。',
   'inspector.noValue': '這次執行沒有值',
   'inspector.capture.notInRun': '不在上次執行中',
   'inspector.capture.bypassedInRun': '上次執行中已略過，且沒有值經過它',
+  'inspector.capture.unselectedInRun': '上次執行中沒有被 Switch 選到，所以沒有執行',
   'inspector.capture.failedInRun': '上次執行時出錯',
   'inspector.capture.runHint': '執行圖表即可擷取數值',
   'inspector.capture.fromBlock': '從區塊的輸入傳入：{ports}',
@@ -919,6 +923,7 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.nodeStatus.skipped': '已跳過',
   'runs.nodeStatus.error': '失敗',
   'runs.nodeStatus.bypassed': '已略過',
+  'runs.nodeStatus.unselected': '未選取',
   'runs.detail.step': '步',
   // The Execution Log's words for the same event (runLog.started).
   'runs.log.started': '開始執行',

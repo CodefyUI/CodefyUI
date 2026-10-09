@@ -294,9 +294,14 @@ export function useGraphExecution() {
         queueTabNodeStatus(tabId, data.node_id, data.status, data.error);
 
         // Suppress running/cached chatter — only surface terminal transitions.
-        // A bypassed node says so on its card from the moment a run starts;
-        // a log line for every muted node would only be noise.
-        if (data.status !== 'running' && data.status !== 'cached' && data.status !== 'bypassed') {
+        // A bypassed or unselected node says so on its card from the moment
+        // a run starts; a log line for every one would only be noise.
+        if (
+          data.status !== 'running' &&
+          data.status !== 'cached' &&
+          data.status !== 'bypassed' &&
+          data.status !== 'unselected'
+        ) {
           // This event's OWN tab (captured above), not whichever tab is on
           // screen -- a background tab's run must label its log from its
           // own nodes, never the active tab's (#163).

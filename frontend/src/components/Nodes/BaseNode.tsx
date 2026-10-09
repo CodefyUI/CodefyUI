@@ -288,7 +288,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                 // it did not run, which is not the same as never having
                 // been asked to. A preset can settle here too, so the two
                 // cards must agree about what 'skipped' looks like.
-                data.executionStatus === 'skipped'
+                data.executionStatus === 'skipped' ||
+                  // #656: a Switch's param did not pick this branch.
+                  data.executionStatus === 'unselected'
                 ? STATUS_COLORS.skipped
                 : 'transparent';
 
@@ -678,6 +680,13 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {data.executionStatus === 'skipped' && (
         <div className={`${styles.statusFooter} ${styles.statusSkipped}`}>
           {t('node.skipped')}
+        </div>
+      )}
+
+      {/* Status footer — not selected by a Switch (#656) */}
+      {data.executionStatus === 'unselected' && (
+        <div className={`${styles.statusFooter} ${styles.statusSkipped}`}>
+          {t('node.unselected')}
         </div>
       )}
     </div>
