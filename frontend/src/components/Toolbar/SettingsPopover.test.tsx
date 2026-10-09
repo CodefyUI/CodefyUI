@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRef, act } from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SettingsPopover } from './SettingsPopover';
 import { ToolbarGlobalActions } from './ToolbarGlobalActions';
 import { PackCenterModal } from '../PackCenter/PackCenterModal';
@@ -28,6 +28,7 @@ import {
   type PluginCatalogEntry,
 } from '../../api/rest';
 import { pluginEntry } from '../../test/pluginEntry';
+import { renderSettled } from '../../test/utils';
 import {
   _resetPackStoreForTesting,
   emptyPackJob,
@@ -280,15 +281,15 @@ describe('SettingsPopover', () => {
     document.body.innerHTML = '';
   });
 
-  it('renders nothing when closed', () => {
-    const { container } = render(
+  it('renders nothing when closed', async () => {
+    const { container } = await renderSettled(
       <SettingsPopover open={false} onClose={vi.fn()} triggerRef={makeTriggerRef()} />,
     );
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('renders all sections when open', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('renders all sections when open', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(screen.getByText('Execution')).toBeInTheDocument();
     expect(screen.getByText('Recording & Inspection')).toBeInTheDocument();
     expect(screen.getByText('Training Behavior')).toBeInTheDocument();
@@ -300,13 +301,13 @@ describe('SettingsPopover', () => {
   it('the server section reads /api/health when the popover opens, not before', async () => {
     // "Fetch on open" needs no plumbing: the popover renders nothing while
     // closed, so the section does not exist to fetch (#193 item 2).
-    const { unmount } = render(
+    const { unmount } = await renderSettled(
       <SettingsPopover open={false} onClose={vi.fn()} triggerRef={makeTriggerRef()} />,
     );
     expect(vi.mocked(fetchHealth)).not.toHaveBeenCalled();
     unmount();
 
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     await waitFor(() => expect(vi.mocked(fetchHealth)).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('137')).toBeInTheDocument();
   });
@@ -314,7 +315,7 @@ describe('SettingsPopover', () => {
 
   it('renders Codex auth controls and starts login in a new tab', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('LLM Providers')).toBeInTheDocument();
     expect(screen.getByText('ChatGPT Codex account')).toBeInTheDocument();
@@ -337,7 +338,7 @@ describe('SettingsPopover', () => {
       status: 'logged_in',
       email: 'me@example.com',
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     await screen.findByText(/me@example.com/);
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
@@ -348,8 +349,8 @@ describe('SettingsPopover', () => {
 
   // ── Optional Packs & Plugins ──────────────────────────────────────
 
-  it('puts both centers in one section under one heading', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('puts both centers in one section under one heading', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     const packSection = rowFor('Package Center').parentElement!;
     const pluginSection = rowFor('Plugin Center').parentElement!;
@@ -362,13 +363,13 @@ describe('SettingsPopover', () => {
     expect(within(packSection).queryByText('Plugins')).toBeNull();
   });
 
-  it('summarises installed packs and opens the Package Center, closing the popover', () => {
+  it('summarises installed packs and opens the Package Center, closing the popover', async () => {
     seedPacks([
       packSummary({ id: 'word-vectors', status: 'installed' }),
       packSummary({ id: 'rag', status: 'not_installed' }),
     ]);
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
 
     // One heading for both centers.
     expect(screen.getByText('Optional Packs & Plugins')).toBeInTheDocument();
@@ -387,9 +388,9 @@ describe('SettingsPopover', () => {
     expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
   });
 
-  it('says unsupported on an older server', () => {
+  it('says unsupported on an older server', async () => {
     seedPacks([], { unsupported: true });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('Not available on this server')).toBeInTheDocument();
     expect(screen.queryByText('0 of 0 packs installed')).toBeNull();
@@ -402,7 +403,7 @@ describe('SettingsPopover', () => {
     // would be stuck on "no catalog yet" forever.
     _resetPackStoreForTesting();
     mockedListPacks.mockRejectedValueOnce(new PackApiError(404, 'Not Found'));
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(await screen.findByText('Not available on this server')).toBeInTheDocument();
     expect(usePackStore.getState().unsupported).toBe(true);
@@ -411,40 +412,40 @@ describe('SettingsPopover', () => {
     expect(usePackStore.getState().error).toBeNull();
   });
 
-  it('shows the installing summary while a job runs', () => {
+  it('shows the installing summary while a job runs', async () => {
     seedPacks([packSummary({ id: 'word-vectors', status: 'installing' })], {
       job: emptyPackJob('job-1', 'word-vectors'),
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     // Named from THIS build's catalog copy ("Word vectors (GloVe)"), not from
     // the server's own title ("Word vectors").
     expect(screen.getByText('Installing Word vectors (GloVe)...')).toBeInTheDocument();
   });
 
-  it('names an installing pack the server ships and this build has no copy for', () => {
+  it('names an installing pack the server ships and this build has no copy for', async () => {
     seedPacks([packSummary({ id: 'from-the-future', title: 'Newer pack' })], {
       job: emptyPackJob('job-2', 'from-the-future'),
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('Installing Newer pack...')).toBeInTheDocument();
   });
 
-  it('falls back to the pack id when neither this build nor the catalog names it', () => {
+  it('falls back to the pack id when neither this build nor the catalog names it', async () => {
     // A job adopted from another tab can name a pack the catalog in hand does
     // not list yet; the id is still a usable sentence.
     seedPacks([], { job: emptyPackJob('job-3', 'mystery-pack') });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('Installing mystery-pack...')).toBeInTheDocument();
   });
 
-  it('ignores a job that is no longer running', () => {
+  it('ignores a job that is no longer running', async () => {
     seedPacks([packSummary({ id: 'word-vectors', status: 'installed' })], {
       job: { ...emptyPackJob('job-4', 'word-vectors'), status: 'done' },
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('1 of 1 packs installed')).toBeInTheDocument();
   });
@@ -452,7 +453,7 @@ describe('SettingsPopover', () => {
   it('reads the catalog when the popover opens, and not while it is closed', async () => {
     _resetPackStoreForTesting();
     const triggerRef = makeTriggerRef();
-    const { rerender } = render(
+    const { rerender } = await renderSettled(
       <SettingsPopover open={false} onClose={vi.fn()} triggerRef={triggerRef} />,
     );
     expect(mockedListPacks).not.toHaveBeenCalled();
@@ -468,16 +469,16 @@ describe('SettingsPopover', () => {
     expect(await screen.findByText('0 of 0 packs installed')).toBeInTheDocument();
   });
 
-  it('does not start a second catalog read while one is in flight', () => {
+  it('does not start a second catalog read while one is in flight', async () => {
     _resetPackStoreForTesting();
     usePackStore.setState({ loading: true });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(mockedListPacks).not.toHaveBeenCalled();
   });
 
   // ── The Plugin Center entry point, in that same section ───────────
 
-  it('counts what is installed and what is installable, and opens the Plugin Center', () => {
+  it('counts what is installed and what is installable, and opens the Plugin Center', async () => {
     seedPlugins([
       pluginEntry({ id: 'edu', status: 'installed', enabled: true }),
       pluginEntry({ id: 'c1', status: 'disabled' }),
@@ -489,7 +490,7 @@ describe('SettingsPopover', () => {
       pluginEntry({ id: 'broken', status: 'missing_files' }),
     ]);
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('Plugin Center')).toBeInTheDocument();
     expect(screen.getByText('2 installed, 2 available')).toBeInTheDocument();
@@ -509,17 +510,17 @@ describe('SettingsPopover', () => {
     expect(useUIStore.getState().pluginCenterFocusPluginId).toBeNull();
   });
 
-  it('leaves the Package Center button findable by its own visible word', () => {
+  it('leaves the Package Center button findable by its own visible word', async () => {
     // Two rows, two buttons, one visible label between them. The pack button
     // keeps the plain accessible name it has always had.
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(screen.getByRole('button', { name: 'Open' })).toBeInTheDocument();
     expect(screen.getAllByText('Open')).toHaveLength(2);
   });
 
-  it('says unsupported on a server with no Plugin Center', () => {
+  it('says unsupported on a server with no Plugin Center', async () => {
     seedPlugins([], { unsupported: true });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     // Scoped to the row: the packs row says the same sentence about its own
     // server, and the two verdicts are independent.
@@ -528,29 +529,29 @@ describe('SettingsPopover', () => {
     expect(screen.queryByText('0 installed, 0 available')).toBeNull();
   });
 
-  it('shows the installing summary while a job runs, naming the row', () => {
+  it('shows the installing summary while a job runs, naming the row', async () => {
     seedPlugins([pluginEntry({ id: 'edu', name: 'EDU teaching nodes', status: 'installing' })], {
       job: emptyPluginJob('job-1', 'edu'),
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('Installing EDU teaching nodes...')).toBeInTheDocument();
   });
 
-  it('falls back to the plugin id when the catalog in hand does not list it', () => {
+  it('falls back to the plugin id when the catalog in hand does not list it', async () => {
     // A job adopted from another tab can name a plugin this catalog read
     // missed; the id is still a usable sentence.
     seedPlugins([], { job: emptyPluginJob('job-2', 'mystery-plugin') });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('Installing mystery-plugin...')).toBeInTheDocument();
   });
 
-  it('ignores a plugin job that is no longer running', () => {
+  it('ignores a plugin job that is no longer running', async () => {
     seedPlugins([pluginEntry({ id: 'edu', status: 'installed', enabled: true })], {
       job: { ...emptyPluginJob('job-3', 'edu'), status: 'done' },
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.getByText('1 installed, 0 available')).toBeInTheDocument();
   });
@@ -558,7 +559,7 @@ describe('SettingsPopover', () => {
   it('reads the plugin catalog when the popover opens, and not while it is closed', async () => {
     _resetPluginStoreForTesting();
     const triggerRef = makeTriggerRef();
-    const { rerender } = render(
+    const { rerender } = await renderSettled(
       <SettingsPopover open={false} onClose={vi.fn()} triggerRef={triggerRef} />,
     );
     expect(mockedListPluginCatalog).not.toHaveBeenCalled();
@@ -578,7 +579,7 @@ describe('SettingsPopover', () => {
 
   it('populates the device selector from the backend and reflects the store value', async () => {
     useUIStore.setState({ globalDevice: 'mps' });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const select = screen.getByRole('combobox', { name: 'Compute device' }) as HTMLSelectElement;
     // Options arrive asynchronously from fetchDevices.
     await waitFor(() =>
@@ -589,7 +590,7 @@ describe('SettingsPopover', () => {
   });
 
   it('changing the device select updates the UI store', async () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const select = screen.getByRole('combobox', { name: 'Compute device' });
     await waitFor(() =>
       expect(within(select).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
@@ -600,7 +601,7 @@ describe('SettingsPopover', () => {
 
   it('falls back to a CPU-only option when the devices fetch fails', async () => {
     vi.mocked(fetchDevices).mockRejectedValueOnce(new Error('offline'));
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const select = screen.getByRole('combobox', { name: 'Compute device' });
     // The rejection settles on a microtask; flush it.
     await waitFor(() => expect(fetchDevices).toHaveBeenCalled());
@@ -610,7 +611,7 @@ describe('SettingsPopover', () => {
   });
 
   it('keeps what the setting is for on the row, not in a tooltip', async () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const row = rowFor('Compute device');
     // One line, not two. "Used by graphs with no device of their own" was the
     // definition of a global default, under a labelled selector that already
@@ -627,7 +628,7 @@ describe('SettingsPopover', () => {
   });
 
   it("shows the server's best device as a hint, without adopting it", async () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(await screen.findByText(/Best available device: Apple MPS/)).toBeInTheDocument();
     // The hint is information only; the stored choice stays where it was.
     expect(useUIStore.getState().globalDevice).toBe('cpu');
@@ -635,7 +636,7 @@ describe('SettingsPopover', () => {
 
   it('hints CPU when the devices fetch fails', async () => {
     vi.mocked(fetchDevices).mockRejectedValueOnce(new Error('offline'));
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     await waitFor(() => expect(fetchDevices).toHaveBeenCalled());
     expect(screen.getByText(/Best available device: CPU/)).toBeInTheDocument();
   });
@@ -645,7 +646,7 @@ describe('SettingsPopover', () => {
       default: 'cuda',
       devices: [{ value: 'cpu', label: 'CPU', detail: '', available: true }],
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(await screen.findByText(/Best available device: cuda/)).toBeInTheDocument();
   });
 
@@ -671,7 +672,7 @@ describe('SettingsPopover', () => {
   it('shows a stored device this server does not serve, instead of reading as CPU', async () => {
     useUIStore.setState({ globalDevice: 'cuda' });
     cpuOnlyServer();
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const select = screen.getByRole('combobox', { name: 'Compute device' }) as HTMLSelectElement;
 
     const stale = await within(select).findByRole('option', { name: 'cuda (not on this server)' });
@@ -686,7 +687,7 @@ describe('SettingsPopover', () => {
   it('lets the user out of that state by picking a device the server has', async () => {
     useUIStore.setState({ globalDevice: 'cuda' });
     cpuOnlyServer();
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const select = screen.getByRole('combobox', { name: 'Compute device' }) as HTMLSelectElement;
     await within(select).findByRole('option', { name: 'cuda (not on this server)' });
 
@@ -702,7 +703,7 @@ describe('SettingsPopover', () => {
   it('says what a run does instead, in place of the best-available hint', async () => {
     useUIStore.setState({ globalDevice: 'cuda' });
     cpuOnlyServer();
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const row = rowFor('Compute device');
 
     expect(
@@ -712,9 +713,9 @@ describe('SettingsPopover', () => {
     expect(within(row).queryByText(/Best available device/)).toBeNull();
   });
 
-  it('names a GPU this server is not using, and the command that installs it', () => {
+  it('names a GPU this server is not using, and the command that installs it', async () => {
     seedPacks([], { gpu: IDLE_GPU });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const row = rowFor('Compute device');
 
     expect(row).toHaveTextContent('NVIDIA GeForce RTX 4080 (driver 610.74)');
@@ -732,16 +733,16 @@ describe('SettingsPopover', () => {
     ['no GPU was detected', { detected_label: null }],
   ];
 
-  it.each(SILENT_GPU)('says nothing about the GPU when %s', (_case, over) => {
+  it.each(SILENT_GPU)('says nothing about the GPU when %s', async (_case, over) => {
     seedPacks([], { gpu: { ...IDLE_GPU, ...over } });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(rowFor('Compute device')).not.toHaveTextContent('RTX 4080');
   });
 
-  it('opens the Package Center instead of restating its GPU card', () => {
+  it('opens the Package Center instead of restating its GPU card', async () => {
     seedPacks([], { gpu: IDLE_GPU });
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
 
     fireEvent.click(
       within(rowFor('Compute device')).getByRole('button', { name: 'Package Center' }),
@@ -753,47 +754,47 @@ describe('SettingsPopover', () => {
 
   // ── outside-click / esc behaviour ─────────────────────────────────
 
-  it('closes on outside mousedown', () => {
+  it('closes on outside mousedown', async () => {
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
     fireEvent.mouseDown(document.body);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('closes on a mousedown on the canvas, which stops it from bubbling', () => {
+  it('closes on a mousedown on the canvas, which stops it from bubbling', async () => {
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
     fireEvent.mouseDown(canvasPane());
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT close when mousedown is inside the panel', () => {
+  it('does NOT close when mousedown is inside the panel', async () => {
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
     fireEvent.mouseDown(screen.getByRole('dialog'));
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('does NOT close when mousedown is on the trigger', () => {
+  it('does NOT close when mousedown is on the trigger', async () => {
     const onClose = vi.fn();
     const triggerRef = makeTriggerRef();
-    render(<SettingsPopover open onClose={onClose} triggerRef={triggerRef} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={triggerRef} />);
     fireEvent.mouseDown(triggerRef.current!);
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('closes on Escape, ignores other keys', () => {
+  it('closes on Escape, ignores other keys', async () => {
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
     fireEvent.keyDown(document, { key: 'a' });
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('removes listeners on unmount', () => {
+  it('removes listeners on unmount', async () => {
     const onClose = vi.fn();
-    const { unmount } = render(
+    const { unmount } = await renderSettled(
       <SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />,
     );
     unmount();
@@ -804,31 +805,31 @@ describe('SettingsPopover', () => {
 
   // ── Recording toggles ─────────────────────────────────────────────
 
-  it('toggles record via the control button (stopPropagation path)', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles record via the control button (stopPropagation path)', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const toggle = screen.getByRole('button', { name: 'Record node outputs' });
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(toggle);
     expect(useTabStore.getState().tabs[0].recordOutputs).toBe(false);
   });
 
-  it('toggles record via the row click (interactive Row onClick path)', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles record via the row click (interactive Row onClick path)', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     // Click the row (the parent of the toggle), not the toggle itself.
     fireEvent.click(rowFor('Record node outputs'));
     expect(useTabStore.getState().tabs[0].recordOutputs).toBe(false);
   });
 
-  it('toggles verbose via control', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles verbose via control', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Verbose internals' }));
     expect(useTabStore.getState().tabs[0].verboseMode).toBe(true);
   });
 
   // ── One control per setting ───────────────────────────────────────
 
-  it('names the toggle and not the row, so the setting has one control', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('names the toggle and not the row, so the setting has one control', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     // The row is a click target, not a second button: while it carried
     // `role="button"` this matched the row AND its toggle, two controls with
     // one name and only one of them carrying the state.
@@ -845,13 +846,13 @@ describe('SettingsPopover', () => {
 
   // ── Compare segment ───────────────────────────────────────────────
 
-  it('compare button is disabled with fewer than two selected nodes', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('compare button is disabled with fewer than two selected nodes', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const btn = screen.getByRole('button', { name: 'Select two nodes' });
     expect(btn).toBeDisabled();
   });
 
-  it('creating a segment with two selected nodes (left/right by x) adds + activates it', () => {
+  it('creating a segment with two selected nodes (left/right by x) adds + activates it', async () => {
     setupTab({
       nodes: [
         { id: 'n2', selected: true, position: { x: 200, y: 0 } },
@@ -860,7 +861,7 @@ describe('SettingsPopover', () => {
       edges: [],
     });
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
 
     // The copy describes THIS rule. n1 is selected second and still becomes
     // the head, so a description phrased around selection order would be
@@ -884,14 +885,14 @@ describe('SettingsPopover', () => {
     expect(tab.undoStack).toHaveLength(1);
   });
 
-  it('creating a segment uses the other branch when the first node is already leftmost', () => {
+  it('creating a segment uses the other branch when the first node is already leftmost', async () => {
     setupTab({
       nodes: [
         { id: 'n1', selected: true, position: { x: 10, y: 0 } },
         { id: 'n2', selected: true, position: { x: 99, y: 0 } },
       ],
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Create segment' }));
     expect(mockedComputeSegment).toHaveBeenCalledWith('n1', 'n2', expect.any(Array), expect.any(Array));
     expect(useTabStore.getState().tabs[0].segmentGroups[0]).toMatchObject({
@@ -900,7 +901,7 @@ describe('SettingsPopover', () => {
     });
   });
 
-  it('shows an error toast when the segment has no path (empty set)', () => {
+  it('shows an error toast when the segment has no path (empty set)', async () => {
     mockedComputeSegment.mockReturnValueOnce(new Set());
     setupTab({
       nodes: [
@@ -909,7 +910,7 @@ describe('SettingsPopover', () => {
       ],
     });
     const onClose = vi.fn();
-    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Create segment' }));
 
     const toasts = useToastStore.getState().toasts;
@@ -918,14 +919,14 @@ describe('SettingsPopover', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('clears the active segment when one exists and not creating', () => {
+  it('clears the active segment when one exists and not creating', async () => {
     const seg = { id: 'seg-1', headNodeId: 'n1', tailNodeId: 'n2' };
     setupTab({
       nodes: [], // not exactly 2 selected -> canCreateSegment false
       activeSegment: seg,
       segmentGroups: [seg],
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     const btn = screen.getByRole('button', { name: 'Clear active' });
     expect(btn).not.toBeDisabled();
@@ -940,65 +941,65 @@ describe('SettingsPopover', () => {
     expect(tab.undoStack[0].activeSegment).toEqual(seg);
   });
 
-  it('compare button is disabled (and its handler unreachable) with exactly one selected node', () => {
+  it('compare button is disabled (and its handler unreachable) with exactly one selected node', async () => {
     // canCreateSegment (needs 2) false; canClearSegment (needs activeSegment) false
     // -> compareDisabled true -> the warning branch (line 115) cannot be reached
     // because its only trigger is this disabled button.
     setupTab({ nodes: [{ id: 'n1', selected: true, position: { x: 0, y: 0 } }] });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(screen.getByRole('button', { name: 'Select two nodes' })).toBeDisabled();
   });
 
   // ── Training: persist / gradients / auto-loss ─────────────────────
 
-  it('toggles persist weights', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles persist weights', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Persist weights between runs' }));
     expect(useTabStore.getState().tabs[0].weightsPersistent).toBe(true);
   });
 
-  it('toggles capture gradients and the row click path', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles capture gradients and the row click path', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Capture gradients' }));
     expect(useTabStore.getState().tabs[0].backwardMode).toBe(true);
   });
 
   // ── Training: reproducibility (core#134) ──────────────────────────
 
-  it('starts with an empty seed field, meaning unseeded', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('starts with an empty seed field, meaning unseeded', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     // A tab persisted before core#134 carries no `seed` key at all, so the
     // field must render empty for undefined as well as for null.
     expect(screen.getByLabelText('Random seed')).toHaveValue(null);
   });
 
-  it('writes a typed seed to the tab', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('writes a typed seed to the tab', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.change(screen.getByLabelText('Random seed'), { target: { value: '1234' } });
     expect(useTabStore.getState().tabs[0].seed).toBe(1234);
   });
 
-  it('clearing the seed field goes back to unseeded', () => {
+  it('clearing the seed field goes back to unseeded', async () => {
     setupTab({ seed: 42 });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.change(screen.getByLabelText('Random seed'), { target: { value: '' } });
     expect(useTabStore.getState().tabs[0].seed).toBe(null);
   });
 
-  it('keeps seed 0 rather than reading it as "unset"', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('keeps seed 0 rather than reading it as "unset"', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.change(screen.getByLabelText('Random seed'), { target: { value: '0' } });
     expect(useTabStore.getState().tabs[0].seed).toBe(0);
   });
 
-  it('toggles deterministic algorithms', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles deterministic algorithms', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Deterministic algorithms' }));
     expect(useTabStore.getState().tabs[0].deterministic).toBe(true);
   });
 
-  it('auto-loss toggle is disabled while backward is off and enabled when on', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('auto-loss toggle is disabled while backward is off and enabled when on', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const autoBtn = screen.getByRole('button', { name: 'Auto-synthesize loss' });
     expect(autoBtn).toBeDisabled();
     // Clicking the disabled control does nothing; clicking the (non-interactive
@@ -1007,9 +1008,9 @@ describe('SettingsPopover', () => {
     expect(useTabStore.getState().tabs[0].autoBackward).toBe(false);
   });
 
-  it('auto-loss row is interactive and togglable when backward is on', () => {
+  it('auto-loss row is interactive and togglable when backward is on', async () => {
     setupTab({ backwardMode: true });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const autoBtn = screen.getByRole('button', { name: 'Auto-synthesize loss' });
     expect(autoBtn).not.toBeDisabled();
     fireEvent.click(autoBtn);
@@ -1021,9 +1022,9 @@ describe('SettingsPopover', () => {
 
   // ── Reset weights ─────────────────────────────────────────────────
 
-  it('explains Reset on the row, which is the only place a disabled button can', () => {
+  it('explains Reset on the row, which is the only place a disabled button can', async () => {
     setupTab({ graphId: '' });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const row = rowFor('Reset all weights now');
     const btn = within(row).getByRole('button', { name: 'Reset' });
     // A disabled button fires no pointer events, so a `title` on it never
@@ -1038,7 +1039,7 @@ describe('SettingsPopover', () => {
 
   it('reset weights is disabled when there is no graphId and returns early', async () => {
     setupTab({ graphId: '' });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const btn = screen.getByRole('button', { name: 'Reset' });
     expect(btn).toBeDisabled();
     fireEvent.click(btn);
@@ -1046,7 +1047,7 @@ describe('SettingsPopover', () => {
   });
 
   it('reset weights: user cancels the confirm -> no API call', async () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     // The confirm dialog is now pending in the dialog store.
     await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
@@ -1058,7 +1059,7 @@ describe('SettingsPopover', () => {
 
   it('reset weights: confirmed -> calls API and shows success toast', async () => {
     mockedResetWeights.mockResolvedValueOnce({ graph_id: 'graph-xyz', scope: 'graph', evicted: 7 });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
     await act(async () => {
@@ -1073,7 +1074,7 @@ describe('SettingsPopover', () => {
 
   it('reset weights: API rejects -> shows error toast', async () => {
     mockedResetWeights.mockRejectedValueOnce(new Error('boom'));
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
     await act(async () => {
@@ -1087,16 +1088,16 @@ describe('SettingsPopover', () => {
 
   // ── Editor section ────────────────────────────────────────────────
 
-  it('toggles grid snap and tooltips', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('toggles grid snap and tooltips', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Grid snap' }));
     expect(useUIStore.getState().gridSnapEnabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Show node tooltips' }));
     expect(useUIStore.getState().tooltipsEnabled).toBe(false);
   });
 
-  it('node-mode segmented control switches between Basic and All', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('node-mode segmented control switches between Basic and All', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const group = screen.getByRole('group', { name: 'Node category mode' });
     const basicBtn = within(group).getByText('Basic');
     const allBtn = within(group).getByText('All');
@@ -1118,9 +1119,9 @@ describe('SettingsPopover', () => {
     expect(useUIStore.getState().beginnerMode).toBe(false);
   });
 
-  it('node-mode starting from beginner=true exercises the inverse guards', () => {
+  it('node-mode starting from beginner=true exercises the inverse guards', async () => {
     useUIStore.setState({ beginnerMode: true });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const group = screen.getByRole('group', { name: 'Node category mode' });
     // All click toggles off
     fireEvent.click(within(group).getByText('All'));
@@ -1130,8 +1131,8 @@ describe('SettingsPopover', () => {
     expect(useUIStore.getState().beginnerMode).toBe(true);
   });
 
-  it('connection-style segmented control switches between Circuit and Curve', () => {
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+  it('connection-style segmented control switches between Circuit and Curve', async () => {
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const group = screen.getByRole('group', { name: 'Connection style' });
     const circuitBtn = within(group).getByText('Circuit');
     const curveBtn = within(group).getByText('Curve');
@@ -1151,7 +1152,7 @@ describe('SettingsPopover', () => {
 
   // ── default-value fallbacks (?? operators) ────────────────────────
 
-  it('falls back to defaults when tab flags are undefined', () => {
+  it('falls back to defaults when tab flags are undefined', async () => {
     setupTab({
       recordOutputs: undefined as never,
       verboseMode: undefined as never,
@@ -1160,7 +1161,7 @@ describe('SettingsPopover', () => {
       autoBackward: undefined as never,
       graphId: undefined as never,
     });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     // recording defaults true
     expect(screen.getByRole('button', { name: 'Record node outputs' })).toHaveAttribute(
       'aria-pressed',
@@ -1183,7 +1184,7 @@ describe('SettingsPopover', () => {
     // than shown against a tab that does not exist -- and, more to the point,
     // the popover must not crash reading fields off one.
     useTabStore.setState({ tabs: [], activeTabId: '' });
-    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
 
     expect(screen.queryByText('Recording & Inspection')).toBeNull();
     expect(screen.queryByText('Training Behavior')).toBeNull();
@@ -1210,7 +1211,7 @@ describe('SettingsPopover', () => {
      * test rather than after it has ended, outside act().
      */
     async function openSettings(): Promise<HTMLElement> {
-      render(
+      await renderSettled(
         <>
           <ToolbarGlobalActions plugins={false} />
           <PackCenterModal />
@@ -1311,7 +1312,7 @@ describe('SettingsPopover', () => {
       // Reset asks first. One press closes one window: without this, it
       // closed the popover too, and focus fell to the page body with it.
       mockedResetWeights.mockClear();
-      render(
+      await renderSettled(
         <>
           <ToolbarGlobalActions plugins={false} />
           <DialogContainer />
