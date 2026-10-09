@@ -15,6 +15,7 @@ import {
   type LogImagePayload,
   type LogVideoPayload,
 } from '../../store/tabStore';
+import { runNodePrefix } from '../../utils/subgraph';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { keyOf, type FetchMap, type PortTarget } from './PortGroup';
 
@@ -323,7 +324,12 @@ export async function missingFromRunNote(
   }
   if (subject.status === 'error') return 'inspector.capture.failedInRun';
   if (c.state === 'finished' && c.nodes?.has(subject.runNodeId)) return null;
-  return absentFromRecordedList(c, subject) ? 'inspector.capture.notInRun' : null;
+  if (!absentFromRecordedList(c, subject)) return null;
+  // A bypassed node never runs; it is in the list only for a port something
+  // passed through (#559). Nothing did, which is not the same as expiry.
+  return subject.status === 'bypassed'
+    ? 'inspector.capture.bypassedInRun'
+    : 'inspector.capture.notInRun';
 }
 
 /**
@@ -428,17 +434,9 @@ export function withRecordingSetting<T extends { noteKey?: TranslationKey | null
  * id alone.
  */
 
-/**
- * What goes in front of a canvas id on the level `stack` has open: `''` at the
- * top level, else the entered instance ids, outermost first, each followed by
- * the engine's separator.
- */
-export function runNodePrefix(
-  stack: readonly { instanceId: string }[] | undefined,
-): string {
-  if (!stack?.length) return '';
-  return stack.map((frame) => `${frame.instanceId}/`).join('');
-}
+// What goes in front of a canvas id on the open level. Kept beside the block
+// helpers, where the store paints a run's inner statuses with it too (#559).
+export { runNodePrefix };
 
 /**
  * {@link runNodePrefix} for the active tab. The selector returns the string,
@@ -642,7 +640,7 @@ export function useInputsEmptyText(nodeId: string): string {
  * the upstream source, whose value the row shows, not the node on screen.
  */
 
-export type CapturePhase = 'pending' | 'running' | 'settled';
+export type CapturePhase = 'pending' | 'running' | 'bypassed' | 'settled';
 
 /**
  * Whether the owner of a port has written its captures.
@@ -650,7 +648,9 @@ export type CapturePhase = 'pending' | 'running' | 'settled';
  * `settled` means readable: the node reported a terminal status, or no run is
  * in progress at all and whatever is on the server is all there will be. A
  * node the run has not reached is `pending` rather than `running` — it is
- * queued, and saying it is running would be a claim we cannot make.
+ * queued, and saying it is running would be a claim we cannot make. A node
+ * the run bypassed is neither (#559): it will never run, and what passes
+ * through it is the upstream node's value, readable once the run is over.
  */
 export function capturePhase(
   status: ExecutionStatus | undefined,
@@ -658,6 +658,7 @@ export function capturePhase(
 ): CapturePhase {
   if (!runInProgress) return 'settled';
   if (status === 'running') return 'running';
+  if (status === 'bypassed') return 'bypassed';
   if (status === undefined || status === 'idle') return 'pending';
   return 'settled';
 }
@@ -669,6 +670,7 @@ export function capturePhase(
 export function capturePhaseNoteKey(phase: CapturePhase): TranslationKey | null {
   if (phase === 'running') return 'inspector.nodeRunning';
   if (phase === 'pending') return 'inspector.nodePending';
+  if (phase === 'bypassed') return 'inspector.nodeBypassed';
   return null;
 }
 
@@ -714,11 +716,13 @@ export function takeDuePorts(
 const PHASE_CHAR: Record<CapturePhase, string> = {
   pending: 'p',
   running: 'r',
+  bypassed: 'b',
   settled: 's',
 };
 const CHAR_PHASE: Record<string, CapturePhase> = {
   p: 'pending',
   r: 'running',
+  b: 'bypassed',
   s: 'settled',
 };
 

@@ -158,6 +158,8 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     const types = ws.on.mock.calls.map((c) => c[0]);
     expect(types).toEqual([
       'node_status',
+      // #559: a node inside a block, under the id the run gave it.
+      'inner_node_status',
       'execution_complete',
       'execution_error',
       'execution_start',
@@ -182,7 +184,7 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     unmount();
     const offTypes = ws.off.mock.calls.map((c) => c[0]);
     expect(offTypes).toContain('node_status');
-    expect(ws.off).toHaveBeenCalledTimes(11);
+    expect(ws.off).toHaveBeenCalledTimes(12);
   });
 
   it('does not re-attach to a tab that is already attached', () => {
@@ -205,7 +207,7 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     act(() => {
       useTabStore.setState((s) => ({ tabs: [...s.tabs, t2] }));
     });
-    expect((t2.ws as FakeWs).on).toHaveBeenCalledTimes(11);
+    expect((t2.ws as FakeWs).on).toHaveBeenCalledTimes(12);
 
     // Remove t1 → its handlers must be released (detachTab path).
     const ws1 = tabById('t1') ? (tabById('t1').ws as FakeWs) : null;
@@ -213,7 +215,7 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     act(() => {
       useTabStore.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== 't1'), activeTabId: 't2' }));
     });
-    expect(removedWs.off).toHaveBeenCalledTimes(11);
+    expect(removedWs.off).toHaveBeenCalledTimes(12);
   });
 });
 

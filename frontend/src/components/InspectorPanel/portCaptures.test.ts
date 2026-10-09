@@ -332,8 +332,12 @@ describe('capturePhase', () => {
   });
 
   it('is settled for every status when no run is in progress', () => {
-    const all: (ExecutionStatus | undefined)[] = [undefined, 'idle', 'running', ...TERMINAL];
+    const all: (ExecutionStatus | undefined)[] = [undefined, 'idle', 'running', 'bypassed', ...TERMINAL];
     for (const status of all) expect(capturePhase(status, false)).toBe('settled');
+  });
+
+  it('is bypassed, never pending, for a node the run will not run (#559)', () => {
+    expect(capturePhase('bypassed', true)).toBe('bypassed');
   });
 });
 
@@ -341,6 +345,7 @@ describe('capturePhaseNoteKey', () => {
   it('names a line for the two phases that have nothing to read yet, and none once settled', () => {
     expect(capturePhaseNoteKey('running')).toBe('inspector.nodeRunning');
     expect(capturePhaseNoteKey('pending')).toBe('inspector.nodePending');
+    expect(capturePhaseNoteKey('bypassed')).toBe('inspector.nodeBypassed');
     expect(capturePhaseNoteKey('settled')).toBeNull();
   });
 });
@@ -452,6 +457,30 @@ describe('usePortFetches — a node the last run has nothing for', () => {
         'inspector.capture.failedInRun',
       ),
     );
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('says a bypassed node had nothing pass through it, not that it was not in the run', async () => {
+    patchActiveTab({ nodes: [nodeAt('added', 'bypassed')] });
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe(
+        'inspector.capture.bypassedInRun',
+      ),
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('reads what passed through a bypassed node once the run is over', async () => {
+    patchActiveTab({ nodes: [nodeAt('a', 'bypassed')] });
+    const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+    await waitFor(() => expect(result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+  });
+
+  it('waits on a bypassed node while the run goes, with a line that says why', async () => {
+    patchActiveTab({ status: 'running', nodes: [nodeAt('a', 'bypassed')] });
+    const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+    expect(result.current[keyOf('a', 'out')]?.noteKey).toBe('inspector.nodeBypassed');
     expect(mockOutput).not.toHaveBeenCalled();
   });
 

@@ -39,6 +39,7 @@ import {
   subgraphIdOf,
   SUBGRAPH_TYPE_PREFIX,
   triggerStarts, // for the block boundary helpers below
+  runNodePrefix,
   type CollapseResult,
 } from '../utils/subgraph';
 import { ExecutionWebSocket } from '../api/ws';
@@ -269,6 +270,18 @@ export type PendingNodeUpdates = Map<
   Map<string, import('./nodeUpdateQueue').PendingNodePatch>
 >;
 
+/**
+ * The last run's status and progress for a node inside a block or preset
+ * card, keyed by the id the run gives it (`blk/nest/mul`, #559). Painted onto
+ * the node whenever its block is open, so two copies of one block, which hold
+ * the same canvas ids, never show each other's state.
+ */
+export interface InnerRunState {
+  executionStatus?: ExecutionStatus;
+  error?: string;
+  progress?: NodeProgress;
+}
+
 export interface TabState {
   id: string;
   name: string;
@@ -444,6 +457,12 @@ export interface TabState {
   ws: ExecutionWebSocket;
   // output summaries per node (for edge inspection)
   outputSummaries: Record<string, Record<string, OutputSummary>>;
+  /**
+   * Run state of the nodes inside blocks, by run id (#559). Not part of the
+   * document: never saved, and cleared with the cards' statuses when a run
+   * starts. Absent until a run reports a node inside a block.
+   */
+  innerRunStates?: Record<string, InnerRunState>;
   // Teaching Inspector state
   recordOutputs: boolean;
   lastRunId: string | null;
@@ -1135,6 +1154,7 @@ function clearedDocumentResidue(tab: TabState): Partial<TabState> {
     vizModalNodeId: null,
     dirtyNodeIds: new Set<string>(),
     outputSummaries: {},
+    innerRunStates: {},
     // A FINISHED run named the graph being replaced, and the Inspector, the
     // detail modal and the edge tooltip's "View stats" all read this field:
     // left behind, they fetch the previous graph's run for the new graph's
@@ -2908,6 +2928,81 @@ export function _setCommitOriginForTesting(
 }
 
 /**
+ * `nodes` with the run state in `states` painted on, for the level whose
+ * canvas ids take `prefix` in a run (#559). Only the nodes `only` names, when
+ * given; nodes with nothing to paint keep their identity, and so does the
+ * array when none has.
+ */
+function paintInnerRunStates(
+  nodes: Node<NodeData>[],
+  prefix: string,
+  states: Record<string, InnerRunState>,
+  only?: ReadonlySet<string>,
+): Node<NodeData>[] {
+  let changed = false;
+  const painted = nodes.map((n) => {
+    const runId = prefix + n.id;
+    if (only && !only.has(runId)) return n;
+    const state = states[runId];
+    if (!state) return n;
+    changed = true;
+    const data = { ...n.data };
+    if (state.executionStatus !== undefined) {
+      data.executionStatus = state.executionStatus;
+      data.error = state.error;
+    }
+    if (state.progress !== undefined) data.progress = state.progress;
+    return { ...n, data };
+  });
+  return changed ? painted : nodes;
+}
+
+/**
+ * The inner half of `applyTabNodeUpdates` (#559): keep each patched node's
+ * run state under its run id, and paint it on every open level that shows the
+ * node -- the canvas on screen and the levels stashed between it and the top.
+ * The top level is the outer half's: its ids are not run ids of inner nodes.
+ * Null when the batch names no node inside a block.
+ */
+function applyInnerPatches(
+  tab: TabState,
+  patches: ReadonlyMap<string, import('./nodeUpdateQueue').PendingNodePatch>,
+): Pick<TabState, 'innerRunStates' | 'nodes' | 'subgraphStack'> | null {
+  let states: Record<string, InnerRunState> | null = null;
+  for (const [runId, patch] of patches) {
+    if (!patch.inner) continue;
+    states ??= { ...tab.innerRunStates };
+    const state = { ...states[runId] };
+    if (patch.status) {
+      state.executionStatus = patch.status.executionStatus;
+      state.error = patch.status.error;
+    }
+    if (patch.progress) state.progress = patch.progress;
+    states[runId] = state;
+  }
+  if (!states) return null;
+  const only = new Set(
+    [...patches].filter(([, patch]) => patch.inner).map(([runId]) => runId),
+  );
+  const stack = tab.subgraphStack ?? [];
+  // Level i (i >= 1) is stashed in frame i, inside the blocks frames 0..i-1
+  // entered; the canvas on screen is inside every one of them.
+  const subgraphStack = stack.map((frame, level) =>
+    level === 0
+      ? frame
+      : (() => {
+          const nodes = paintInnerRunStates(
+            frame.nodes, runNodePrefix(stack.slice(0, level)), states, only);
+          return nodes === frame.nodes ? frame : { ...frame, nodes };
+        })(),
+  );
+  const nodes = stack.length
+    ? paintInnerRunStates(tab.nodes, runNodePrefix(stack), states, only)
+    : tab.nodes;
+  return { innerRunStates: states, nodes, subgraphStack };
+}
+
+/**
  * Node `data` keys that describe a RUN, not the document (#341, spec rule 3).
  *
  * `getSerializedGraph` writes each node's `data` field by field -- `params`,
@@ -3959,13 +4054,18 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
             progress: undefined,
           },
         }));
-        // The top-level canvas too, stashed while a block is open: the run
-        // reports there (`applyTabNodeUpdates`), and its last run's statuses
-        // would otherwise greet the user on the way out.
-        const [top, ...deeper] = tab.subgraphStack ?? [];
+        // Every level stashed while a block is open too: the run reports to
+        // the top level and to the blocks open below it
+        // (`applyTabNodeUpdates`), and its last run's statuses would otherwise
+        // greet the user on the way out. The inner nodes' states go with
+        // them (#559), so a block opened later starts clean as well.
+        const stack = tab.subgraphStack ?? [];
         return {
           nodes: cleared(tab.nodes),
-          ...(top ? { subgraphStack: [{ ...top, nodes: cleared(top.nodes) }, ...deeper] } : {}),
+          innerRunStates: {},
+          ...(stack.length
+            ? { subgraphStack: stack.map((frame) => ({ ...frame, nodes: cleared(frame.nodes) })) }
+            : {}),
         };
       }),
     }),
@@ -4652,7 +4752,13 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       // A step, not an edit: a saved tab stays saved while a block is open.
       tabs: updateTabKeepingFileMatch(get().tabs, get().activeTabId, (t) => ({
         subgraphStack: [...t.subgraphStack, frame],
-        nodes: inner,
+        // What the last run reported for these nodes, in THIS copy of the
+        // block (#559): a run's ids carry the entered instances.
+        nodes: paintInnerRunStates(
+          inner,
+          runNodePrefix([...t.subgraphStack, frame]),
+          t.innerRunStates ?? {},
+        ),
         edges: innerEdges,
         // A fresh history per level: an undo inside a block must never reach
         // past its own boundary and start rewriting the graph that contains
@@ -5377,7 +5483,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         const top = tab.subgraphStack?.[0];
         const nodes = (top ? top.nodes : tab.nodes).map((n) => {
           const patch = patches.get(n.id);
-          if (!patch) return n;
+          if (!patch || patch.inner) return n;
           changed = true;
           const data = { ...n.data };
           if (patch.status) {
@@ -5387,12 +5493,16 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           if (patch.progress) data.progress = patch.progress;
           return { ...n, data };
         });
-        if (!changed) return tab;
+        const inner = applyInnerPatches(tab, patches);
+        if (!changed && !inner) return tab;
         anyTabChanged = true;
+        const stack = inner?.subgraphStack ?? tab.subgraphStack ?? [];
+        const next = inner ? { ...tab, ...inner } : tab;
+        if (!changed) return next;
         // The top-level canvas patched above, stashed while a block is open.
         return top
-          ? { ...tab, subgraphStack: [{ ...top, nodes }, ...tab.subgraphStack.slice(1)] }
-          : { ...tab, nodes };
+          ? { ...next, subgraphStack: [{ ...stack[0], nodes }, ...stack.slice(1)] }
+          : { ...next, nodes };
       });
       // A batch naming only stale tabs/nodes (a run whose graph was edited
       // mid-flight) leaves `tabs` out of the patch entirely, so the array

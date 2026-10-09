@@ -91,6 +91,12 @@ While the run is in flight the instance node shows one aggregate status —
 running when the first node inside starts, completed when the last one
 finishes, error or interrupted the moment anything inside fails or stops early.
 
+Open a block while a run is in flight, or start the run from inside it, and
+each node inside shows its own status: running, completed, cached, skipped,
+error, interrupted or bypassed. A block nested inside the open one shows the
+aggregate of what is inside it. Two copies of one block keep their statuses
+apart, and opening a block after the run shows what its nodes did in that run.
+
 Inner nodes get **namespaced ids** while they run, `<instance>/<node>`, which is
 what you see in the Teaching Inspector and in validation messages.
 
