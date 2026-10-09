@@ -5,11 +5,11 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  /* Above the modals (10000-10003) and the toast stack (10004): nothing under
+  /* Above the modals (10000-10004) and the toast stack (10005): nothing under
      it may be pressed, a toast's own buttons included. The restart overlay
      sits at the same level and App mounts it after this one, so a server
      restart still shows on top. */
-  z-index: 10005;
+  z-index: 10006;
   background: var(--surface-scrim);
   display: flex;
   align-items: center;

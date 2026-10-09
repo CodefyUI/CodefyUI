@@ -7,6 +7,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { PackCenterModal } from '../PackCenter/PackCenterModal';
 import { GitDiffModal } from '../SourceControl/GitDiffModal';
+import { ShortcutsModal } from '../shared/ShortcutsModal';
 import { PluginCenterModal } from './PluginCenterModal';
 
 // The diff window reads a patch as it opens. Stubbed at the module: these
@@ -239,4 +240,75 @@ describe('the diff window, which is the rung above both of them', () => {
     expect(useUIStore.getState().gitDiff).toBeNull();
     expect(useUIStore.getState().pluginCenterOpen).toBe(true);
   });
+});
+
+describe('the shortcuts sheet, which is above every panel (#490)', () => {
+  /*
+   * `?` may open the sheet over any panel, and while it is open it owns
+   * Escape: one press closes the sheet and nothing under it, and focus goes
+   * back into the panel. A real key event targets the focused element, so
+   * these presses are dispatched there rather than on `window` -- the sheet
+   * listens in the document's capture phase, which a press dispatched on the
+   * window itself never passes through.
+   */
+  const escapeAtFocus = () => act(() => {
+    (document.activeElement ?? document.body).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+  });
+
+  function renderWithSheet() {
+    return render(
+      <>
+        <PackCenterModal />
+        <PluginCenterModal />
+        <GitDiffModal />
+        <ShortcutsModal />
+      </>,
+    );
+  }
+
+  const PANELS: Array<[string, () => void, () => boolean]> = [
+    [
+      'the Package Center',
+      () => useUIStore.getState().openPackCenter(),
+      () => useUIStore.getState().packCenterOpen,
+    ],
+    [
+      'the Plugin Center',
+      () => useUIStore.getState().openPluginCenter(),
+      () => useUIStore.getState().pluginCenterOpen,
+    ],
+    [
+      'the diff window',
+      () => useUIStore.getState().openGitDiff({ path: 'src/model.py', scope: 'worktree' }),
+      () => useUIStore.getState().gitDiff !== null,
+    ],
+  ];
+
+  it.each(PANELS)(
+    'Escape over %s closes only the sheet and gives focus back to the panel',
+    async (_name, open, isOpen) => {
+      renderWithSheet();
+      await act(async () => {
+        open();
+      });
+      const panelFocus = document.activeElement;
+      expect(panelFocus).not.toBe(document.body);
+
+      act(() => {
+        useUIStore.setState({ shortcutsModalOpen: true });
+      });
+      expect(document.activeElement).not.toBe(panelFocus);
+
+      escapeAtFocus();
+      expect(useUIStore.getState().shortcutsModalOpen).toBe(false);
+      expect(isOpen()).toBe(true);
+      expect(document.activeElement).toBe(panelFocus);
+
+      // The next press is the panel's again.
+      escapeAtFocus();
+      expect(isOpen()).toBe(false);
+    },
+  );
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   useUIStore,
-  SIDEBAR_DEFAULT_WIDTH,
+  sidebarDefaultWidthPx,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from './uiStore';
@@ -44,7 +44,7 @@ describe('useUIStore', () => {
       edgeStyle: 'circuit',
       sidebarTab: 'nodes',
       sidebarCollapsed: false,
-      sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
+      sidebarWidth: null,
     });
   });
 
@@ -541,6 +541,27 @@ describe('useUIStore', () => {
     });
   });
 
+  // #502: the default is a rem summary box plus px chrome, so its px size
+  // follows the root font size (window width × Small/Default/Large).
+  describe('sidebarDefaultWidthPx', () => {
+    afterEach(() => {
+      document.documentElement.style.fontSize = '';
+    });
+
+    it('is 13.5rem plus 57px at the current root size', () => {
+      document.documentElement.style.fontSize = '16px';
+      expect(sidebarDefaultWidthPx()).toBe(273);
+      // 2560px window on Large: 19px × 1.15.
+      document.documentElement.style.fontSize = '21.85px';
+      expect(sidebarDefaultWidthPx()).toBe(352);
+    });
+
+    it('assumes a 16px root when the root size cannot be read', () => {
+      document.documentElement.style.fontSize = '';
+      expect(sidebarDefaultWidthPx()).toBe(273);
+    });
+  });
+
   // ── module-load loaders (loadLayoutMode / loadFontSize) ──────────────────────
   // These run once at import time. To exercise every branch we reset the module
   // registry with localStorage pre-seeded and re-import, observing the initial
@@ -633,7 +654,7 @@ describe('useUIStore', () => {
     // The whole point of these is that such an install boots into a sane,
     // fully-usable sidebar rather than a blank rail or a 0px panel.
 
-    it('migrates pre-#126 UI state (no sidebar keys) to the Nodes tab, expanded, at the old width', async () => {
+    it('migrates pre-#126 UI state (no sidebar keys) to the Nodes tab, expanded, at the default width', async () => {
       vi.resetModules();
       // A realistic pre-#126 storage snapshot: other UI keys present, no
       // sidebar ones.
@@ -642,7 +663,7 @@ describe('useUIStore', () => {
       const mod = await import('./uiStore');
       expect(mod.useUIStore.getState().sidebarTab).toBe('nodes');
       expect(mod.useUIStore.getState().sidebarCollapsed).toBe(false);
-      expect(mod.useUIStore.getState().sidebarWidth).toBe(mod.SIDEBAR_DEFAULT_WIDTH);
+      expect(mod.useUIStore.getState().sidebarWidth).toBeNull();
       // The untouched pre-existing keys still load as before.
       expect(mod.useUIStore.getState().tooltipsEnabled).toBe(false);
       expect(mod.useUIStore.getState().fontSize).toBe('large');
@@ -703,12 +724,12 @@ describe('useUIStore', () => {
       vi.resetModules();
       localStorage.setItem(KEYS.SIDEBAR_WIDTH, 'wide');
       let mod = await import('./uiStore');
-      expect(mod.useUIStore.getState().sidebarWidth).toBe(mod.SIDEBAR_DEFAULT_WIDTH);
+      expect(mod.useUIStore.getState().sidebarWidth).toBeNull();
 
       vi.resetModules();
       localStorage.setItem(KEYS.SIDEBAR_WIDTH, '0');
       mod = await import('./uiStore');
-      expect(mod.useUIStore.getState().sidebarWidth).toBe(mod.SIDEBAR_DEFAULT_WIDTH);
+      expect(mod.useUIStore.getState().sidebarWidth).toBeNull();
     });
   });
 });

@@ -233,6 +233,16 @@
   gap: var(--sp-3);
 }
 
+/* The part of a tensor the grid shows, when it is not all of it (#640). */
+.tensorSliceNote {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
 .tensorShape {
   color: var(--text-secondary);
 }

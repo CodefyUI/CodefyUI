@@ -244,7 +244,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const gridSnapEnabled = useUIStore((s) => s.gridSnapEnabled);
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
-  const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
+  // Only the request of the tab on screen; another tab's waits for its visit (#522).
+  const layoutFitRequest = useUIStore((s) => s.layoutFitRequests[activeTabId]);
   const { screenToFlowPosition, getViewport, setViewport } = useReactFlow();
   const storeApi = useStoreApi();
 
@@ -335,7 +336,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // and over a fit already asked for (a starter opened from the welcome
   // screen) it replaced that overview with a close-up.
   const [fitViewOnMount] = useState(
-    () => activeTab.nodes.length > 0 && !useUIStore.getState().layoutFitRequest,
+    () => activeTab.nodes.length > 0 && !useUIStore.getState().layoutFitRequests[activeTabId],
   );
 
   // ── Per-tab viewport handover (#125) ───────────────────────────────────────
@@ -343,7 +344,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // viewport by hand: stash where the outgoing tab was looking, put the
   // incoming tab back where IT was. A tab being opened for the first time has
   // nothing stored, so it gets the same overview fit it used to get from its
-  // own freshly-mounted provider.
+  // own freshly-mounted provider. A tab with a fit waiting for it (#522) gets
+  // that fit instead of either: the box was asked for after the view it had
+  // was stored, so that view looks at where the nodes used to be.
   //
   // That first-visit fit is computed from the STORE's node positions rather
   // than asked of React Flow. `fitView()` needs measured nodes, and React Flow
@@ -379,6 +382,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     refitRef.current = null;
 
     rememberViewport(previous, getViewport());
+    const pending = useUIStore.getState().layoutFitRequests[activeTabId];
+    if (pending) {
+      fitToBounds(pending);
+      useUIStore.getState().clearLayoutFit(activeTabId);
+      return;
+    }
     const restored = recallViewport(activeTabId);
     if (restored) {
       setViewport(restored);
@@ -387,7 +396,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     const incoming = useTabStore.getState().tabs.find((t) => t.id === activeTabId);
     // An empty tab starts at the default view (#622, `frameLevel`).
     frameLevel((incoming?.nodes ?? []) as Node[]);
-  }, [activeTabId, getViewport, setViewport, frameLevel]);
+  }, [activeTabId, getViewport, setViewport, fitToBounds, frameLevel]);
 
   // ── Entering and leaving a block (#622) ────────────────────────────────────
   // A block opens on this same canvas, at the pan and zoom of the graph around
@@ -450,18 +459,25 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // from React Flow's internal position sync — getViewportForBounds gives the
   // viewport, set at once. (The queued fitView() from useReactFlow only
   // flushes on the next node change, and reading positions back via
-  // getNodesBounds races the sync — both failure modes seen in e2e.) Since
-  // #125 only the active tab's canvas is mounted, so the `tabId` check below
-  // is belt-and-braces (a harness can still mount several); the one-shot
-  // request is cleared either way so a remount can't replay it.
+  // getNodesBounds races the sync — both failure modes seen in e2e.) Each
+  // request names its tab, and this takes only the request of the tab on
+  // screen: a request for a tab in the background stays pending until the
+  // handover above brings that tab forward (#522). Since #125 only the active
+  // tab's canvas is mounted, so the `tabId` check below is belt-and-braces (a
+  // harness can still mount several); the one-shot request is cleared once
+  // fitted so a remount can't replay it.
+  // Read again from the store: the handover may have fitted and cleared the
+  // request this render subscribed to.
   useEffect(() => {
     if (!layoutFitRequest) return;
     const el = containerRef.current;
     if (!el || el.offsetWidth === 0) return;
-    if (tabId !== undefined && tabId !== useTabStore.getState().activeTabId) return;
-    fitToBounds(layoutFitRequest.bounds);
-    useUIStore.getState().clearLayoutFit();
-  }, [layoutFitRequest, fitToBounds, tabId]);
+    if (tabId !== undefined && tabId !== activeTabId) return;
+    const pending = useUIStore.getState().layoutFitRequests[activeTabId];
+    if (!pending) return;
+    fitToBounds(pending);
+    useUIStore.getState().clearLayoutFit(activeTabId);
+  }, [layoutFitRequest, fitToBounds, tabId, activeTabId]);
 
   // ── Framing again once React Flow has measured (#622) ──────────────────────
   // A graph that was just installed has no sizes in the store: React Flow

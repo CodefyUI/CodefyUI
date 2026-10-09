@@ -1713,7 +1713,8 @@ async def test_the_events_route_answers_at_once_when_nothing_is_waiting(
                              params={"cursor": 0, "wait": 0})
     assert first.status_code == 200, first.text
     page = first.json()
-    assert set(page) == {"job_id", "status", "events", "cursor"}
+    assert set(page) == {"job_id", "status", "events", "cursor", "gap"}
+    assert page["gap"] is None
     assert page["job_id"] == job_id
     assert page["status"] == "running"
     assert types_of(page["events"]) == ["job_started"]
@@ -1727,6 +1728,40 @@ async def test_the_events_route_answers_at_once_when_nothing_is_waiting(
 
     flow.finish()
     await drain(client, job_id)
+
+
+async def test_the_events_route_reports_the_gap_the_packs_route_does(
+        client, flow, fake_github):
+    """Same contract as ``/api/packs``: a reader behind the bounded buffer
+    gets ``{"first_cursor", "dropped"}`` once, a reader that kept up gets
+    ``null``."""
+    small = PluginService(run_flow=flow, reload=lambda: {}, max_events=3)
+    previous, app.state.plugin_service = app.state.plugin_service, small
+    try:
+        fake_github.answers(a_manifest("extras"))
+        job_id = await start_install(client)
+        await wait_started(flow)
+        for n in range(5):
+            flow.send({"type": "log", "line": str(n)})
+        flow.finish()
+        while not small.get_job(job_id).terminal:
+            await small.wait_for_events(job_id, after_cursor=10**6, wait=1.0)
+
+        late = (await client.get(f"/api/plugins/jobs/{job_id}/events",
+                                 params={"cursor": 0, "wait": 5})).json()
+        first = late["events"][0]["cursor"]
+        assert first > 1
+        assert late["gap"] == {"first_cursor": first, "dropped": first - 1}
+        assert late["status"] == "done"
+        assert late["events"][-1]["type"] == "job_done"
+
+        resumed = (await client.get(f"/api/plugins/jobs/{job_id}/events",
+                                    params={"cursor": late["cursor"],
+                                            "wait": 5})).json()
+        assert (resumed["events"], resumed["gap"]) == ([], None)
+    finally:
+        app.state.plugin_service = previous
+        await small.shutdown()
 
 
 @pytest.mark.parametrize("params", [

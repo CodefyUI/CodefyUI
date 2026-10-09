@@ -220,6 +220,10 @@ const zhTW: Record<TranslationKey, string> = {
   // shape / dtype / min / max 這排原始讀數下面，也是學生在 PyTorch 裡
   // 會親手寫的字（dim=0）。
   'tensorGrid.dim': 'dim {dim}',
+  // 只顯示一部分的張量，位在完整 shape 讀數下方（#640）。slice 是伺服器取的
+  // 索引，例如 0, 0:218；同一行的 min / max / mean 描述的是顯示出來的數值。
+  'tensorGrid.preview': '預覽：切片 [{slice}] · 形狀 [{shape}] · 共 {total} 個值，顯示 {shown} 個',
+  'tensorGrid.slice': '切片 [{slice}] · 形狀 [{shape}] · 共 {total} 個值，顯示 {shown} 個',
 
   // Node
   'node.opt': '可選',
@@ -558,6 +562,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Keyboard Shortcuts
   'shortcuts.title': '鍵盤快捷鍵',
+  'shortcuts.close': '關閉鍵盤快捷鍵',
   'shortcuts.undo': '復原',
   'shortcuts.redo': '重做',
   'shortcuts.redoAlt': '重做（替代）',
@@ -1212,6 +1217,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.progressAria': '安裝進度',
   'packs.activity.log': '安裝紀錄',
   'packs.activity.logEmpty': '等待第一則訊息...',
+  'packs.activity.logGap': '較早的 {count} 筆紀錄已無法取得，以下為保留的部分。',
   'packs.activity.done': '已安裝 {pack}。',
   'packs.activity.failed': '安裝失敗：{message}',
   'packs.activity.cancelled': '已取消安裝。',

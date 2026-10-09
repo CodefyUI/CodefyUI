@@ -77,11 +77,17 @@ function ViewportProbe() {
   return null;
 }
 
-function mount(strict = false) {
+/** The canvas as `App` mounts it: its `tabId` follows the tab on screen. */
+function FollowingCanvas() {
+  const activeTabId = useTabStore((s) => s.activeTabId);
+  return <FlowCanvas tabId={activeTabId} />;
+}
+
+function mount(strict = false, following = false) {
   const tree = (
     <ReactFlowProvider>
       <ViewportProbe />
-      <FlowCanvas tabId="tab-a" />
+      {following ? <FollowingCanvas /> : <FlowCanvas tabId="tab-a" />}
     </ReactFlowProvider>
   );
   return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
@@ -137,10 +143,24 @@ function expectViewportCloseTo(expected: Viewport) {
   expect(actual.zoom).toBeCloseTo(expected.zoom, 3);
 }
 
+/** How FlowCanvas frames a box on the 900x600 canvas: inflated to 85% of it, then fitted. */
+function framed(box: { x: number; y: number; width: number; height: number }): Viewport {
+  let { x, y, width, height } = box;
+  if (width < 765) {
+    x -= (765 - width) / 2;
+    width = 765;
+  }
+  if (height < 510) {
+    y -= (510 - height) / 2;
+    height = 510;
+  }
+  return getViewportForBounds({ x, y, width, height }, 900, 600, 0.1, 2, 0.2);
+}
+
 beforeEach(() => {
   _resetViewportMemory();
   seedTabs();
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   flow = null;
   flowStore = null;
 });
@@ -148,7 +168,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   _resetViewportMemory();
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   useTabStore.setState({ tabs: ORIGINAL_TABS, activeTabId: ORIGINAL_ACTIVE });
 });
 
@@ -281,13 +301,109 @@ describe('FlowCanvas per-tab viewport', () => {
       try {
         expect(flowStore!.getState().width).toBe(600);
         act(() => {
-          useUIStore.getState().requestLayoutFit({ x: 0, y: 0, width: 200, height: 80 });
+          useUIStore.getState().requestLayoutFit('tab-a', { x: 0, y: 0, width: 200, height: 80 });
         });
         expectViewportCloseTo(framedOn900x600());
-        expect(useUIStore.getState().layoutFitRequest).toBeNull();
+        expect(useUIStore.getState().layoutFitRequests).toEqual({});
       } finally {
         restore();
       }
+    });
+  });
+
+  // #522. A fit request names its tab and waits until that tab is on screen.
+  // A plugin handler that lays out one tab and switches tabs in the same turn
+  // renders the canvas once with both changes, and the request used to be
+  // spent on whichever tab was on screen by then.
+  describe('a fit asked for in the same turn as a tab switch (#522)', () => {
+    // Looking at tab A's graph before the layout moves it to the origin.
+    const LOOKING = { x: -4900, y: -4900, zoom: 1 };
+    const LAID_OUT = [
+      { ...node('a1'), position: { x: 0, y: 0 } },
+      { ...node('a2'), position: { x: 280, y: 0 } },
+    ];
+    const BOX = { x: 0, y: 0, width: 480, height: 80 };
+    // Tab B's first visit frames its one node, a 200x80 fallback box.
+    const TAB_B = framed({ x: 20000, y: 20000, width: 200, height: 80 });
+
+    let restoreSize: () => void;
+    beforeEach(() => {
+      restoreSize = withCanvasSize();
+      useTabStore.setState((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === 'tab-a'
+            ? {
+                ...tab,
+                nodes: [
+                  { ...node('a1'), position: { x: 5000, y: 5000 } },
+                  { ...node('a2'), position: { x: 9000, y: 9000 } },
+                ],
+              }
+            : tab.id === 'tab-b'
+              ? { ...tab, nodes: [{ ...node('b1'), position: { x: 20000, y: 20000 } }] }
+              : tab,
+        ),
+      }));
+      mount(false, true);
+      setViewport(LOOKING);
+    });
+    afterEach(() => {
+      restoreSize();
+    });
+
+    /** Lay out tab A and ask for its fit, as `auto_layout` does for that tab. */
+    function layOutTabA() {
+      useTabStore.setState((state) => ({
+        tabs: state.tabs.map((tab) => (tab.id === 'tab-a' ? { ...tab, nodes: LAID_OUT } : tab)),
+      }));
+      useUIStore.getState().requestLayoutFit('tab-a', nodesBoundingBox(LAID_OUT as Node[])!);
+    }
+
+    it('frames the tab switched to by its own graph, and the laid-out tab on its next visit', () => {
+      act(() => {
+        layOutTabA();
+        useTabStore.getState().setActiveTab('tab-b');
+      });
+      expectViewportCloseTo(TAB_B);
+      expect(useUIStore.getState().layoutFitRequests).toEqual({ 'tab-a': BOX });
+
+      switchTo('tab-a');
+      expectViewportCloseTo(framed(BOX));
+      expect(useUIStore.getState().layoutFitRequests).toEqual({});
+    });
+
+    it('frames a tab laid out after it went to the background on its next visit, not by the view it had', () => {
+      act(() => {
+        useTabStore.getState().setActiveTab('tab-b');
+        layOutTabA();
+      });
+      expectViewportCloseTo(TAB_B);
+      expect(recallViewport('tab-a')).toEqual(LOOKING);
+
+      switchTo('tab-a');
+      expectViewportCloseTo(framed(BOX));
+      expect(useUIStore.getState().layoutFitRequests).toEqual({});
+    });
+
+    it('fits the latest request for a tab', () => {
+      act(() => {
+        useTabStore.getState().setActiveTab('tab-b');
+        useUIStore.getState().requestLayoutFit('tab-a', { x: 9000, y: 9000, width: 200, height: 80 });
+        layOutTabA();
+      });
+      switchTo('tab-a');
+      expectViewportCloseTo(framed(BOX));
+    });
+
+    it('drops the request of a tab that closes before its visit', () => {
+      act(() => {
+        useTabStore.getState().setActiveTab('tab-b');
+        layOutTabA();
+      });
+      act(() => {
+        useTabStore.getState().removeTab('tab-a');
+      });
+      expect(useUIStore.getState().layoutFitRequests).toEqual({});
     });
   });
 
@@ -301,20 +417,6 @@ describe('FlowCanvas per-tab viewport', () => {
     const CARD = { width: 200, height: 80 };
     // The note "Call a graph over HTTP" opens with.
     const TALL_NOTE = { width: 300, height: 873 };
-
-    /** How FlowCanvas frames a box on the 900x600 canvas: inflated to 85% of it, then fitted. */
-    function framed(box: { x: number; y: number; width: number; height: number }): Viewport {
-      let { x, y, width, height } = box;
-      if (width < 765) {
-        x -= (765 - width) / 2;
-        width = 765;
-      }
-      if (height < 510) {
-        y -= (510 - height) / 2;
-        height = 510;
-      }
-      return getViewportForBounds({ x, y, width, height }, 900, 600, 0.1, 2, 0.2);
-    }
 
     function at(id: string, x: number, y: number): Node<NodeData> {
       return { ...node(id), position: { x, y } };
@@ -356,7 +458,9 @@ describe('FlowCanvas per-tab viewport', () => {
     function install(nodes: Node<NodeData>[], fitOver: Node<NodeData>[] = nodes) {
       act(() => {
         useTabStore.getState().setNodes(nodes);
-        useUIStore.getState().requestLayoutFit(nodesBoundingBox(fitOver as Node[])!);
+        useUIStore
+          .getState()
+          .requestLayoutFit(useTabStore.getState().activeTabId, nodesBoundingBox(fitOver as Node[])!);
       });
     }
 
@@ -434,7 +538,7 @@ describe('FlowCanvas per-tab viewport', () => {
       await mountOnScreen();
       act(() => {
         const { nodes } = useTabStore.getState().getActiveTab();
-        useUIStore.getState().requestLayoutFit(nodesBoundingBox(nodes as Node[])!);
+        useUIStore.getState().requestLayoutFit('tab-a', nodesBoundingBox(nodes as Node[])!);
       });
       const fitted = framed({ x: 0, y: 0, width: 200, height: 80 });
       expectViewportCloseTo(fitted);
@@ -473,7 +577,7 @@ describe('FlowCanvas per-tab viewport', () => {
       // first sizes and replaced the overview with a close-up at zoom 2.
       const starter = [at('s1', 0, 0), at('s2', 260, 0)];
       useTabStore.getState().setNodes(starter);
-      useUIStore.getState().requestLayoutFit(nodesBoundingBox(starter as Node[])!);
+      useUIStore.getState().requestLayoutFit('tab-a', nodesBoundingBox(starter as Node[])!);
       mount();
       expectViewportCloseTo(framed({ x: 0, y: 0, width: 460, height: 80 }));
 

@@ -9,7 +9,9 @@
 }
 
 /* Content panel. Width is an inline style driven by the persisted store value,
-   so it neither grows nor shrinks with the surrounding layout. */
+   so it neither grows nor shrinks with the surrounding layout. Until the user
+   resizes it, that value is a rem-based default which grows with the type
+   (SIDEBAR_DEFAULT_WIDTH_CSS in uiStore.ts, #502). */
 .panel {
   position: relative;
   height: 100%;

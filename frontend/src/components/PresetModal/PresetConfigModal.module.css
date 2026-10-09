@@ -9,14 +9,25 @@
   justify-content: center;
   background: var(--surface-scrim);
   backdrop-filter: blur(4px);
+  /* Keeps the modal off the window edge in a narrow window or at high zoom. */
+  padding: var(--sp-4);
 }
 
 .modal {
   background: var(--surface-raised);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xl);
+  /* 520 px where the window has it, the window's width where it has not
+     (#490). `min-width: 0` lets a long preset name or a wide parameter row
+     wrap or scroll inside the modal instead of holding it wider than the
+     window, and `overflow-y` is the fallback when the header and footer
+     alone outgrow a short window: the parameters scroll first, then the
+     whole modal. */
   width: 520px;
+  max-width: 100%;
+  min-width: 0;
   max-height: 80vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
@@ -34,16 +45,19 @@
 
 .headerContent {
   flex: 1;
+  min-width: 0;
 }
 
 .headerTitleRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-3);
   margin-bottom: var(--sp-2);
 }
 
 .headerTitle {
+  overflow-wrap: anywhere;
   font-size: var(--fs-xl);
   font-weight: var(--fw-bold);
   color: var(--text-primary);
@@ -61,6 +75,7 @@
 }
 
 .headerDescription {
+  overflow-wrap: anywhere;
   font-size: var(--fs-sm);
   color: var(--text-muted);
   line-height: var(--lh-normal);

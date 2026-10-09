@@ -681,15 +681,74 @@ def test_the_zh_tw_catalog_has_no_entries_for_nodes_that_do_not_exist():
 # summary is capped, and everything else belongs in DETAILS, which only the
 # config panel and the Docs tab render.
 
-#: Both caps are the row's geometry, measured in Chrome rather than guessed:
-#: at the default sidebar width the description box is 188px across at 13px
-#: type and clamps to two lines. That is 28 Latin characters per line and 14
-#: CJK -- so 56 and 28 are the points past which a summary is cut off with an
-#: ellipsis. They are caps, not targets: the catalog sits at 48 and 20 on
-#: average, and a summary that needs every character of its cap usually has a
-#: word in it that is not earning its place.
+#: Both caps come from the row's geometry. The summary is 0.8125rem type
+#: (--fs-sm), clamped to two lines, in a box whose default width is also in
+#: rem (#502): the node list's default width is
+#: calc(SIDEBAR_DEFAULT_SUMMARY_REM + 57px), the 57px being the panel border,
+#: jump index and row margin, padding and border around the box. The root
+#: size follows the window width (16px up to about 1430px, 19px from 2290px)
+#: times the font setting (Small 0.92, Default 1, Large 1.15), and box and
+#: type scale together, so the box is the same 16.6em of summary type at every
+#: window width and font setting. For example, measured in Chrome:
+#:
+#:   1366px window, Default: 16px root, 13px summary, 273px panel, 216px box
+#:   1920px window, Default: 17.72px root, 14.4px summary, 296px panel
+#:   2560px window, Large: 21.85px root, 17.75px summary, 352px panel
+#:
+#: #452 measured 28 Latin characters per line in 188px of 13px type (14.5em)
+#: and 14 CJK; at 16.6em that is about 32 and 16 a line, 64 and 32 over two
+#: lines. The caps stay below that by the margin the test below asks for,
+#: because word wrap rarely fills a line to its last character. A width the
+#: user dragged is saved in px and is theirs to choose; the guarantee is for
+#: the default. The caps are caps, not targets: the catalog sits at 48 and 20
+#: on average, and a summary that needs every character of its cap usually has
+#: a word in it that is not earning its place.
 MAX_DESCRIPTION_CHARS = 56
 MAX_ZH_DESCRIPTION_CHARS = 28
+
+#: Characters per em of summary type, from #452's measurement above.
+_LATIN_CHARS_PER_EM = 28 / (188 / 13)
+_CJK_CHARS_PER_EM = 1.0
+#: The share of two full lines a cap may use.
+_SUMMARY_FILL_LIMIT = 0.9
+
+
+def test_summary_caps_fit_the_default_node_list_with_margin():
+    """The caps leave slack on two lines of the node list's default width.
+
+    Reads the default width and the summary type size from the frontend, so
+    narrowing the default node list or enlarging the summary type fails here
+    rather than as ellipses on somebody's wide monitor (#502).
+    """
+    import math
+    import re
+    from pathlib import Path
+
+    frontend = Path(__file__).resolve().parents[2] / "frontend" / "src"
+    store = (frontend / "store" / "uiStore.ts").read_text(encoding="utf-8")
+    tokens = (frontend / "styles" / "tokens.css").read_text(encoding="utf-8")
+    box = re.search(r"SIDEBAR_DEFAULT_SUMMARY_REM = ([\d.]+);", store)
+    # The default must be rem-based for this to hold at every window width
+    # and font setting; a px default is what #502 was.
+    assert box and (
+        "SIDEBAR_DEFAULT_WIDTH_CSS = `calc(${SIDEBAR_DEFAULT_SUMMARY_REM}rem"
+        in store), (
+        "the node list's default width is no longer a rem summary box in "
+        "frontend/src/store/uiStore.ts (SIDEBAR_DEFAULT_SUMMARY_REM)")
+    box_rem = float(box.group(1))
+    type_rem = float(re.search(r"--fs-sm: ([\d.]+)rem;", tokens).group(1))
+
+    box_em = box_rem / type_rem
+    for cap, per_em, label in (
+            (MAX_DESCRIPTION_CHARS, _LATIN_CHARS_PER_EM, "English"),
+            (MAX_ZH_DESCRIPTION_CHARS, _CJK_CHARS_PER_EM, "zh-TW")):
+        two_lines = 2 * math.floor(box_em * per_em)
+        assert cap <= two_lines * _SUMMARY_FILL_LIMIT, (
+            f"the {label} summary cap is {cap} characters, but the default "
+            f"node list fits {two_lines} on two lines ({box_em:.1f}em of "
+            f"summary type); keep the cap within {_SUMMARY_FILL_LIMIT:.0%} "
+            "of that, or widen SIDEBAR_DEFAULT_SUMMARY_REM in "
+            "frontend/src/store/uiStore.ts")
 
 
 def _assert_palette_summaries(descriptions: dict[str, str]) -> None:

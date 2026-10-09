@@ -82,7 +82,7 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useNodeDefStore.setState({ definitions: [], presets: [] });
   useToastStore.setState({ toasts: [] });
-  useUIStore.setState({ layoutFitRequest: null });
+  useUIStore.setState({ layoutFitRequests: {} });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('Tab 1');
 });
@@ -503,9 +503,9 @@ describe('where an imported graph goes', () => {
     it('leaves a new tab to the first-visit fit, asking for none of its own', async () => {
       holdWork();
       await importFile(jsonFile(starter()));
-      expect(useUIStore.getState().layoutFitRequest).toBeNull();
+      expect(useUIStore.getState().layoutFitRequests).toEqual({});
       await twoFrames();
-      expect(useUIStore.getState().layoutFitRequest).toBeNull();
+      expect(useUIStore.getState().layoutFitRequests).toEqual({});
     });
 
     // A filled tab is already on screen, at the size it had, and keeps the
@@ -514,15 +514,15 @@ describe('where an imported graph goes', () => {
     it('is fitted to the graph a filled tab now holds', async () => {
       const far = { ...raw('far'), position: { x: 2400, y: 1800 } };
       await importFile(jsonFile(JSON.stringify({ nodes: [far], edges: [] })));
-      expect(useUIStore.getState().layoutFitRequest).toEqual({
-        bounds: nodesBoundingBox(tabs()[0].nodes),
+      expect(useUIStore.getState().layoutFitRequests).toEqual({
+        [tabs()[0].id]: nodesBoundingBox(tabs()[0].nodes),
       });
-      expect(useUIStore.getState().layoutFitRequest?.bounds).toMatchObject({ x: 2400, y: 1800 });
+      expect(useUIStore.getState().layoutFitRequests[tabs()[0].id]).toMatchObject({ x: 2400, y: 1800 });
     });
 
     it('is left alone when the graph that filled the tab has no nodes', async () => {
       await importFile(jsonFile(JSON.stringify({ nodes: [], edges: [] })));
-      expect(useUIStore.getState().layoutFitRequest).toBeNull();
+      expect(useUIStore.getState().layoutFitRequests).toEqual({});
     });
   });
 

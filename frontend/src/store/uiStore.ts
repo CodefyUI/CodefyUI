@@ -13,9 +13,39 @@ export const SIDEBAR_TABS = ['nodes', 'graphs', 'templates', 'custom', 'git'] as
 /** Content-panel width bounds. The rail's own ~44px sits outside these. */
 export const SIDEBAR_MIN_WIDTH = 180;
 export const SIDEBAR_MAX_WIDTH = 520;
-/** Matches the pre-#126 fixed palette width, so an existing install's sidebar
- * is exactly where it was before the rail landed. */
-export const SIDEBAR_DEFAULT_WIDTH = 250;
+/**
+ * The panel's default width, until the user resizes it (#502).
+ *
+ * The node list's summaries are rem type, and the root size follows both the
+ * window (App.css) and the Small/Default/Large setting (App.tsx). A px default
+ * held the box still while the type grew, so a wide window or Large put fewer
+ * characters on a line and English summaries ended in an ellipsis. The default
+ * is therefore two parts: the summary box in rem, which grows with its type,
+ * plus the px the panel spends around that box (panel border, jump index, the
+ * row's margin, padding and border), which does not. The same characters then
+ * fit on a line at every window width and font setting.
+ *
+ * 13.5rem is 16.6em of the 0.8125rem summary type: about 32 Latin or 16 CJK
+ * characters a line, so the 56 / 28 summary caps keep a few characters of
+ * slack over two lines (backend/tests/test_api_nodes.py reads this value and
+ * checks that). At a 1366px window on Default it is a 273px panel.
+ *
+ * Only the default scales. A width the user resized to is the size they
+ * chose, so it is saved and restored in px and stays put when the window or
+ * the font setting changes.
+ */
+export const SIDEBAR_DEFAULT_SUMMARY_REM = 13.5;
+/** Panel width minus summary box width, measured in Chrome (250 → 193). */
+export const SIDEBAR_SUMMARY_CHROME_PX = 57;
+export const SIDEBAR_DEFAULT_WIDTH_CSS = `calc(${SIDEBAR_DEFAULT_SUMMARY_REM}rem + ${SIDEBAR_SUMMARY_CHROME_PX}px)`;
+
+/** The default width in px at the current root font size: where a drag or a
+ * key press starts from, and what the splitter reports, while the panel is
+ * still at its default. */
+export const sidebarDefaultWidthPx = (): number => {
+  const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  return Math.round(SIDEBAR_DEFAULT_SUMMARY_REM * rootPx + SIDEBAR_SUMMARY_CHROME_PX);
+};
 
 /**
  * Which change the diff modal is showing.
@@ -37,6 +67,14 @@ export interface GitDiffTarget {
   scope: GitDiffScope;
   sha?: string;
   conflicted?: boolean;
+}
+
+/** A flow-space box the canvas frames for a tab (`requestLayoutFit`). */
+export interface LayoutFitBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /**
@@ -150,13 +188,16 @@ interface UIState {
   toggleBeginnerMode: () => void;
   lastLayoutMode: 'experiments' | 'all' | 'selected';
   setLastLayoutMode: (mode: 'experiments' | 'all' | 'selected') => void;
-  /** Set after auto-layout so the visible canvas re-fits the viewport to the
-   * laid-out nodes' bounding box; the consumer clears it once handled
-   * (one-shot). Carrying the bounds (not node ids) lets the canvas fit from
-   * store data without racing React Flow's internal position sync. */
-  layoutFitRequest: { bounds: { x: number; y: number; width: number; height: number } } | null;
-  requestLayoutFit: (bounds: { x: number; y: number; width: number; height: number }) => void;
-  clearLayoutFit: () => void;
+  /** Flow-space boxes to frame, by tab: set after auto-layout, an insert or a
+   * fill so the canvas fits the view to what just arrived. A request waits
+   * until its tab is on screen, the canvas clears it once handled (one-shot),
+   * a later request for the same tab replaces the earlier one, and closing
+   * the tab drops it (#522). Carrying the bounds (not node ids) lets the
+   * canvas fit from store data without racing React Flow's internal position
+   * sync. */
+  layoutFitRequests: Readonly<Record<string, LayoutFitBounds>>;
+  requestLayoutFit: (tabId: string, bounds: LayoutFitBounds) => void;
+  clearLayoutFit: (tabId: string) => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
   /** The device a run uses when the graph has no `settings.device` of its
@@ -183,7 +224,9 @@ interface UIState {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapsed: () => void;
-  sidebarWidth: number;
+  /** The px width the user resized the panel to, or null while it is at its
+   * default (SIDEBAR_DEFAULT_WIDTH_CSS, which scales with the type). */
+  sidebarWidth: number | null;
   setSidebarWidth: (width: number) => void;
   /**
    * Apply the preferences a workspace import carries. Absent keys are left
@@ -234,12 +277,12 @@ const loadSidebarTab = (): SidebarTab => {
 const clampSidebarWidth = (width: number): number =>
   Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
 
-/** A missing, non-numeric or out-of-range persisted width falls back to (or is
- * clamped into) the usable range — a 0px or 4000px panel is unrecoverable
- * without clearing storage. */
-const loadSidebarWidth = (): number => {
+/** A missing, non-numeric or zero persisted width means the default (null);
+ * an out-of-range one is clamped into the usable range — a 0px or 4000px
+ * panel is unrecoverable without clearing storage. */
+const loadSidebarWidth = (): number | null => {
   const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-  return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : SIDEBAR_DEFAULT_WIDTH;
+  return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : null;
 };
 
 const loadFontSize = (): FontSize => {
@@ -306,9 +349,16 @@ export const useUIStore = create<UIState>((set) => ({
     localStorage.setItem(LAYOUT_MODE_KEY, mode);
     set({ lastLayoutMode: mode });
   },
-  layoutFitRequest: null,
-  requestLayoutFit: (bounds) => set({ layoutFitRequest: { bounds } }),
-  clearLayoutFit: () => set({ layoutFitRequest: null }),
+  layoutFitRequests: {},
+  requestLayoutFit: (tabId, bounds) =>
+    set((state) => ({ layoutFitRequests: { ...state.layoutFitRequests, [tabId]: bounds } })),
+  clearLayoutFit: (tabId) =>
+    set((state) => {
+      if (!(tabId in state.layoutFitRequests)) return state;
+      const rest = { ...state.layoutFitRequests };
+      delete rest[tabId];
+      return { layoutFitRequests: rest };
+    }),
   fontSize: loadFontSize(),
   setFontSize: (size) => {
     localStorage.setItem(FONT_SIZE_KEY, size);
