@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ReactElement } from 'react';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { SidebarRail } from './SidebarRail';
-import { useUIStore, SIDEBAR_DEFAULT_WIDTH } from '../../store/uiStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { FolderIcon, SaveIcon } from '../shared/Icons';
 
@@ -18,7 +18,7 @@ beforeEach(() => {
   useUIStore.setState({
     sidebarTab: 'nodes',
     sidebarCollapsed: false,
-    sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
+    sidebarWidth: null,
   });
 });
 

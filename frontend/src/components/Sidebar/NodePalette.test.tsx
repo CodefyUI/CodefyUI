@@ -4,13 +4,17 @@ import { NodePalette } from './NodePalette';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import {
   useUIStore,
-  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH_CSS,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import type { NodeDefinition, PresetDefinition } from '../../types';
+
+// The default panel width in px at jsdom's root font size (none, so 16px):
+// 13.5rem × 16px + 57px.
+const DEFAULT_PX = 273;
 
 /*
  * The sidebar SHELL (#126): icon rail plus the panel for the open tab. The
@@ -98,7 +102,7 @@ beforeEach(() => {
     beginnerMode: false,
     sidebarTab: 'nodes',
     sidebarCollapsed: false,
-    sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
+    sidebarWidth: null,
   });
   // Installed through setState rather than vi.spyOn: zustand's set() clones the
   // state object, so a spy would survive into a NEW object that
@@ -130,6 +134,7 @@ afterEach(() => {
   localStorage.clear();
   document.body.style.cursor = '';
   document.body.style.userSelect = '';
+  document.documentElement.style.fontSize = '';
 });
 
 describe('NodePalette (sidebar shell)', () => {
@@ -292,6 +297,34 @@ describe('NodePalette (sidebar shell)', () => {
     expect(panel()?.style.width).toBe('310px');
   });
 
+  // #502: a px default held the summary box still while its rem type grew
+  // with the window and the font setting, so English summaries were cut off
+  // on a wide window. The default is rem-based; a width the user chose is not.
+  it('sizes a panel nobody resized by its type, and keeps a resized one in px', () => {
+    const { container, rerender } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
+    expect(SIDEBAR_DEFAULT_WIDTH_CSS).toBe('calc(13.5rem + 57px)');
+    // (jsdom reorders the calc terms when it serializes them.)
+    expect(panel()?.style.width).toBe('calc(57px + 13.5rem)');
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(DEFAULT_PX));
+
+    // A bigger root (a wide window, or Large): the splitter reports the
+    // default at that size, and a drag starts from there.
+    document.documentElement.style.fontSize = '20px';
+    fireEvent.mouseDown(handle, { clientX: 0 });
+    fireEvent.mouseMove(document, { clientX: 10 });
+    fireEvent.mouseUp(document);
+    expect(useUIStore.getState().sidebarWidth).toBe(13.5 * 20 + 57 + 10);
+    expect(panel()?.style.width).toBe('337px');
+    expect(localStorage.getItem('codefyui-sidebar-width')).toBe('337');
+
+    // Once resized, the width no longer follows the type.
+    document.documentElement.style.fontSize = '';
+    rerender(<NodePalette />);
+    expect(panel()?.style.width).toBe('337px');
+    expect(handle.getAttribute('aria-valuenow')).toBe('337');
+  });
+
   // ── Resize ────────────────────────────────────────────────────────────────
 
   it('drags the resize handle to a new width and persists it', () => {
@@ -303,18 +336,18 @@ describe('NodePalette (sidebar shell)', () => {
     expect(document.body.style.cursor).toBe('col-resize');
 
     fireEvent.mouseMove(document, { clientX: 310 });
-    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 60);
-    expect(panel()?.style.width).toBe(`${SIDEBAR_DEFAULT_WIDTH + 60}px`);
+    expect(useUIStore.getState().sidebarWidth).toBe(DEFAULT_PX + 60);
+    expect(panel()?.style.width).toBe(`${DEFAULT_PX + 60}px`);
 
     fireEvent.mouseUp(document);
     expect(document.body.style.cursor).toBe('');
     expect(localStorage.getItem('codefyui-sidebar-width')).toBe(
-      String(SIDEBAR_DEFAULT_WIDTH + 60),
+      String(DEFAULT_PX + 60),
     );
 
     // The listeners are gone: a stray move after the drag changes nothing.
     fireEvent.mouseMove(document, { clientX: 900 });
-    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 60);
+    expect(useUIStore.getState().sidebarWidth).toBe(DEFAULT_PX + 60);
   });
 
   it('clamps a drag that would push the panel out of its usable range', () => {
@@ -348,7 +381,7 @@ describe('NodePalette (sidebar shell)', () => {
     expect(document.body.style.cursor).toBe('');
     expect(document.body.style.userSelect).toBe('');
     fireEvent.mouseMove(document, { clientX: 900 });
-    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH);
+    expect(useUIStore.getState().sidebarWidth).toBeNull();
   });
 
   // A focusable role="separator" has to be operable from the keyboard, per the
@@ -357,16 +390,16 @@ describe('NodePalette (sidebar shell)', () => {
     const { container } = render(<NodePalette />);
     const handle = container.querySelector('[role="separator"]') as HTMLElement;
     expect(handle.getAttribute('tabindex')).toBe('0');
-    expect(handle.getAttribute('aria-valuenow')).toBe(String(SIDEBAR_DEFAULT_WIDTH));
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(DEFAULT_PX));
     expect(handle.getAttribute('aria-valuemin')).toBe(String(SIDEBAR_MIN_WIDTH));
     expect(handle.getAttribute('aria-valuemax')).toBe(String(SIDEBAR_MAX_WIDTH));
 
     fireEvent.keyDown(handle, { key: 'ArrowRight' });
-    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 16);
-    expect(handle.getAttribute('aria-valuenow')).toBe(String(SIDEBAR_DEFAULT_WIDTH + 16));
+    expect(useUIStore.getState().sidebarWidth).toBe(DEFAULT_PX + 16);
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(DEFAULT_PX + 16));
 
     fireEvent.keyDown(handle, { key: 'ArrowLeft' });
-    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH);
+    expect(useUIStore.getState().sidebarWidth).toBe(DEFAULT_PX);
 
     fireEvent.keyDown(handle, { key: 'Home' });
     expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MIN_WIDTH);
