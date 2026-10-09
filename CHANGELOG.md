@@ -22,6 +22,15 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A heatmap row with all its weight on one cell is drawn at the peak**
+  ([#666]). With row-normalised colours, as attention weights use, a row with
+  one non-zero cell and zeros elsewhere was drawn in the mid-ramp colour that
+  means "uniform, no peak". Row 0 of every causal attention map is such a row,
+  so the sharpest row in the map read as the flattest. It is now drawn at the
+  top of the ramp; a row of several equal weights keeps the neutral colour.
+
 ### Changed
 
 - **Switch picks its input from a param, grows as it is wired, and stops
@@ -5430,3 +5439,4 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#666]: https://github.com/CodefyUI/CodefyUI/issues/666
