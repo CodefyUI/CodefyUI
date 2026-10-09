@@ -350,16 +350,17 @@ describe('dragging a wire on the real canvas', () => {
       expect(edges()).toEqual([wire]);
     });
 
-    it('still connects another output to an input that already has a wire', () => {
-      // Fan-in, not a duplicate: branches merge this way, and the engine and
-      // the exported script both take the last source that produced a value.
+    it('replaces the wire on an input when another output is connected to it', () => {
+      // A data input takes one source (#562): the new wire takes the input
+      // over, and one Ctrl+Z brings the old one back.
       setGraph([lin, flat, flat2], [wire]);
       renderWithFlow(<FlowCanvas />);
       drag(handleOf('flat2', 'output'), centreOf(flat2, 'output'), centreOf(flat, 'tensor'));
       expect(edges()).toMatchObject([
-        wire,
         { source: 'flat2', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' },
       ]);
+      act(() => useTabStore.getState().undo());
+      expect(edges()).toEqual([wire]);
     });
 
     // A rule that compared cards and not ports would refuse these two.
@@ -375,13 +376,12 @@ describe('dragging a wire on the real canvas', () => {
       ]);
     });
 
-    it("still connects a card's other output to an input that card already feeds", () => {
+    it("moves an input over to a card's other output when that one is connected", () => {
       const first: Edge = { id: 'e1', source: 'pair', sourceHandle: 'first', target: 'flat', targetHandle: 'tensor' };
       setGraph([pair, flat], [first]);
       renderWithFlow(<FlowCanvas />);
       drag(handleOf('pair', 'second'), centreOf(pair, 'second'), centreOf(flat, 'tensor'));
       expect(edges()).toMatchObject([
-        first,
         { source: 'pair', sourceHandle: 'second', target: 'flat', targetHandle: 'tensor' },
       ]);
     });
@@ -411,6 +411,16 @@ describe('dragging a wire on the real canvas', () => {
       clickConnect();
       expect(edges()).toEqual([wire]);
     });
+
+    it('replaces the wire another output had on the input', () => {
+      const other: Edge = { id: 'e9', source: 'flat2', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' };
+      setGraph([lin, flat, flat2], [other]);
+      renderWithFlow(<FlowCanvas />);
+      clickConnect();
+      expect(edges()).toMatchObject([
+        { source: 'lin', sourceHandle: 'output', target: 'flat', targetHandle: 'tensor' },
+      ]);
+    });
   });
 
   describe('a wire moved to another card', () => {
@@ -433,6 +443,18 @@ describe('dragging a wire on the real canvas', () => {
       expect(edges()).toMatchObject([
         { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat2', targetHandle: 'tensor' },
       ]);
+    });
+
+    it('replaces the wire on the input it is moved onto (#562)', () => {
+      const occupant: Edge = { id: 'e7', source: 'pair', sourceHandle: 'first', target: 'flat2', targetHandle: 'tensor' };
+      setGraph([lin, flat, flat2, pair], [wire, occupant]);
+      renderWithFlow(<FlowCanvas />);
+      drag(handleOf('flat', 'tensor'), centreOf(flat, 'tensor'), centreOf(flat2, 'tensor'));
+      expect(edges()).toMatchObject([
+        { id: 'e1', source: 'lin', sourceHandle: 'output', target: 'flat2', targetHandle: 'tensor' },
+      ]);
+      act(() => useTabStore.getState().undo());
+      expect(edges()).toEqual([wire, occupant]);
     });
 
     it('is removed, not doubled, on an input its output already feeds', () => {

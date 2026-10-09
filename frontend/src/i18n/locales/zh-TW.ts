@@ -347,6 +347,8 @@ const zhTW: Record<TranslationKey, string> = {
     '起始節點不能放進子圖，它標示的是整張圖從哪裡開始',
   'subgraph.collapse.contains-note': '註記只是說明，不屬於子圖，請先取消選取',
   'subgraph.collapse.read-only': '這張圖目前是唯讀開啟的',
+  'subgraph.collapse.shared-input':
+    '選取的節點中有輸入接了不只一條線，而且至少一條來自選取範圍外。一個輸入只能有一個來源：請刪掉多餘的線，或改接到 Switch，再重新收合。',
   'subgraph.collapse.namePrompt': '幫這個子圖取個名字',
   'subgraph.collapse.notConvex':
     '這些節點夾在你選取的節點之間，收合後這個方塊會繞回自己：{nodes}。請一併選取它們。',

@@ -206,7 +206,7 @@ All thirteen operation types share the property `op` (the discriminant string). 
 | `op` | Fields | Description |
 |------|--------|-------------|
 | `"add_node"` | `node_type: string`, `ref?: string`, `params?: Record<string, unknown>`, `position?: { x: number; y: number }` | Add a node of the given type. `ref` is a caller-chosen alias that later ops in the same batch can use in place of the generated node id. `position` defaults to a staggered layout. |
-| `"connect"` | `source: string`, `source_handle: string`, `target: string`, `target_handle: string` | Connect an output handle to an input handle. `source`/`target` accept a node id or a `ref` from an earlier `add_node`. Use `source_handle: "trigger"` for a trigger edge. |
+| `"connect"` | `source: string`, `source_handle: string`, `target: string`, `target_handle: string` | Connect an output handle to an input handle. `source`/`target` accept a node id or a `ref` from an earlier `add_node`. Use `source_handle: "trigger"` for a trigger edge. An input takes one source: when `target_handle` already has an edge, it is replaced and `replaced_edge_ids` names it. Connecting the same two handles twice fails. |
 | `"set_params"` | `node_id: string`, `params: Record<string, unknown>` | Merge parameter values into a node. |
 | `"remove_node"` | `node_id: string` | Remove a node and all edges connected to it. |
 | `"remove_edge"` | `source: string`, `target: string`, `source_handle?: string`, `target_handle?: string` | Disconnect matching edge(s) between two nodes. |
@@ -228,6 +228,7 @@ interface OpResult {
   error?: string;     // failure reason when ok is false
   node_id?: string;   // resolved node id, from ops that create or edit one; not remove_node
   segment_id?: string; // apiVersion 5: the id set_segment created or replaced
+  replaced_edge_ids?: string[]; // the edges connect replaced on an input that already had one
 }
 
 interface ApplyResult {

@@ -513,6 +513,29 @@ describe('subgraph context menu entries', () => {
   });
 });
 
+describe('collapse of an input with more than one wire (#562)', () => {
+  it('is refused with a toast that says an input takes one source', () => {
+    const store = useTabStore.getState();
+    store.setNodes([
+      makePlainNode('p'),
+      makePlainNode('q'),
+      { ...makePlainNode('m'), selected: true },
+      { ...makePlainNode('n'), selected: true },
+    ]);
+    store.setEdges([
+      { id: 'e1', source: 'p', target: 'm', sourceHandle: 'out', targetHandle: 'in' },
+      { id: 'e2', source: 'q', target: 'm', sourceHandle: 'out', targetHandle: 'in' },
+      { id: 'e3', source: 'm', target: 'n', sourceHandle: 'out', targetHandle: 'in' },
+    ]);
+    collapseItem('m').action();
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('An input takes one source');
+    expect(useTabStore.getState().getActiveTab().subgraphs).toEqual([]);
+  });
+});
+
 // ── Review MAJOR 8 / NIT 21: the collapse entry ──────────────────────────
 
 /** A node whose id is a UUID and whose human name lives in `data.label`. */

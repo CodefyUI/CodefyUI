@@ -22,6 +22,19 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A wire dropped on an input that already has one replaces it** ([#657],
+  part of [#562]). The input kept both wires before, and the run then read
+  whichever wire came last in the saved file, which the canvas does not show.
+  Dragging, click-to-connect and moving a wire now take the input over in one
+  undo step; one output still feeds any number of inputs, and Start triggers
+  are unchanged. A plugin's `connect` operation does the same and lists the
+  wire it replaced in `replaced_edge_ids`. Collapsing a selection whose input
+  is fed by more than one wire, one of them from outside the selection, is
+  refused with a message saying which to fix, since only a graph saved before
+  this change can still have one.
+
 ## [2.8.9] — 2026-10-05
 
 This release makes the canvas show the numbers the exported Python script
@@ -5355,6 +5368,8 @@ Release candidates before 1.0.0 are on the
 [#609]: https://github.com/CodefyUI/CodefyUI/issues/609
 [#617]: https://github.com/CodefyUI/CodefyUI/issues/617
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
+[#562]: https://github.com/CodefyUI/CodefyUI/issues/562
+[#657]: https://github.com/CodefyUI/CodefyUI/issues/657
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...main
 [2.8.9]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...2.8.9
 [2.8.8]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...2.8.8

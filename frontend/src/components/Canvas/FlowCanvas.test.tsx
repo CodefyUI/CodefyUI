@@ -300,6 +300,25 @@ describe('handleConnect', () => {
     expect((activeTab().edges.find((e) => e.id === 'other')!.style as any).stroke).toBe('#123');
   });
 
+  // #562: a drag or a click-to-connect both arrive here.
+  it('replaces the wire on an occupied input and colours the new one; undo brings the old one back', () => {
+    const occupant: Edge = { id: 'old', source: 'c', target: 'b', sourceHandle: 'out', targetHandle: 'in' };
+    setTab({ nodes: [node('a'), node('b'), node('c')], edges: [occupant] });
+    renderCanvas();
+    expect(captured.rf.isValidConnection({ source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' }))
+      .toBe(true);
+    act(() => {
+      captured.rf.onConnect({ source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' });
+    });
+    const edges = activeTab().edges;
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({ source: 'a', target: 'b', targetHandle: 'in' });
+    expect((edges[0].style as any).stroke).toBe('#4CAF50');
+
+    act(() => useTabStore.getState().undo());
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['old']);
+  });
+
   it('colors a data edge via the definitions registry when the node has no inline definition', () => {
     useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'Linear' })], presets: [] });
     setTab({
@@ -537,6 +556,33 @@ describe('reconnect handlers', () => {
       captured.rf.onReconnect(oldEdge, { source: 'a', target: 'c', sourceHandle: 'out', targetHandle: 'in' }),
     );
     expect(useUIStore.getState().reconnectingHandle).toBeNull();
+  });
+
+  // #562: a data input takes one source.
+  it('replaces the wire already on the input it lands on, in one undo step', () => {
+    const occupant: Edge = { id: 'e2', source: 'd', target: 'c', sourceHandle: 'out', targetHandle: 'in' };
+    setTab({ nodes: [node('a'), node('b'), node('c'), node('d')], edges: [oldEdge, occupant] });
+    renderCanvas();
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'source'));
+    act(() =>
+      captured.rf.onReconnect(oldEdge, { source: 'a', target: 'c', sourceHandle: 'out', targetHandle: 'in' }),
+    );
+    act(() => captured.rf.onReconnectEnd(null, oldEdge));
+    expect(activeTab().edges).toMatchObject([{ id: 'e1', source: 'a', target: 'c', targetHandle: 'in' }]);
+
+    act(() => useTabStore.getState().undo());
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['e1', 'e2']);
+    expect(activeTab().edges[0].target).toBe('b');
+  });
+
+  it('keeps the moved wire when only its source end changes', () => {
+    setTab({ nodes: [node('a'), node('b'), node('d')], edges: [oldEdge] });
+    renderCanvas();
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'target'));
+    act(() =>
+      captured.rf.onReconnect(oldEdge, { source: 'd', target: 'b', sourceHandle: 'out', targetHandle: 'in' }),
+    );
+    expect(activeTab().edges).toMatchObject([{ id: 'e1', source: 'd', target: 'b' }]);
   });
 
   it('reconnect with null handles falls back to undefined handles', () => {

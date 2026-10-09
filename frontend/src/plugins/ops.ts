@@ -14,6 +14,7 @@ import {
 } from '../utils';
 import { autoLayout } from '../utils/autoLayout';
 import { computeSegmentNodes } from '../utils/segmentPath';
+import { occupantsOf } from '../utils/occupiedInput';
 
 export type GraphOp =
   | { op: 'add_node'; node_type: string; ref?: string;
@@ -57,6 +58,11 @@ export interface OpResult {
   node_id?: string;
   /** Set by `set_segment`, which may have generated the id itself. */
   segment_id?: string;
+  /**
+   * Set by `connect` when the input it wired already had a source: the ids of
+   * the wires it replaced (#562). Absent when nothing was replaced.
+   */
+  replaced_edge_ids?: string[];
 }
 
 export interface ApplyOutcome {
@@ -359,10 +365,22 @@ export function applyGraphOps(
           : { id: generateId(), source: sourceId, target: targetId,
               sourceHandle: op.source_handle, targetHandle,
               animated: false, style: { stroke: '#555', strokeWidth: 2 } };
+        // A data input takes one source (#562), as on the canvas: the wire
+        // already feeding this input is replaced, and the result names it so
+        // an agent can tell a replacement from a plain add.
+        const replaced = occupantsOf(edges, edge).map((e) => e.id);
+        if (replaced.length > 0) {
+          const gone = new Set(replaced);
+          edges = edges.filter((e) => !gone.has(e.id));
+        }
         edges = [...edges, edge];
         dirty.add(targetId);
         mutated = true;
-        results.push({ index, ok: true });
+        results.push(
+          replaced.length > 0
+            ? { index, ok: true, replaced_edge_ids: replaced }
+            : { index, ok: true },
+        );
         return;
       }
 

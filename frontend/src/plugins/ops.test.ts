@@ -128,6 +128,59 @@ describe('applyGraphOps — connect', () => {
     expect(badPort.results[2].error).toContain('ghost');
   });
 
+  // #562: a data input takes one source, as on the canvas.
+  describe('onto an input that already has a wire', () => {
+    const three: GraphOp[] = [
+      { op: 'add_node', node_type: 'Source', ref: 'a' },
+      { op: 'add_node', node_type: 'Source', ref: 'c' },
+      { op: 'add_node', node_type: 'Sink', ref: 'b' },
+      { op: 'connect', source: 'a', source_handle: 'out', target: 'b', target_handle: 'x' },
+    ];
+
+    it('replaces the wire and names it in the result', () => {
+      const r = run([
+        ...three,
+        { op: 'connect', source: 'c', source_handle: 'out', target: 'b', target_handle: 'x' },
+      ]);
+      const first = r.edges.find((e) => e.source === r.refs.c);
+      expect(r.results[3]).toEqual({ index: 3, ok: true });
+      expect(r.results[4].ok).toBe(true);
+      expect(r.edges).toHaveLength(1);
+      expect(first).toMatchObject({ target: r.refs.b, targetHandle: 'x' });
+      expect(r.results[4].replaced_edge_ids).toHaveLength(1);
+      expect(r.results[4].replaced_edge_ids![0]).not.toBe(first!.id);
+      expect(r.dirtyIds).toContain(r.refs.b);
+    });
+
+    it('replaces every wire a graph saved before the rule left there', () => {
+      const a = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+      const c = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+      const b = buildFlowNode(DEFS[1], { x: 0, y: 0 });
+      const wire = (id: string, source: string): Edge => ({
+        id, source, target: b.id, sourceHandle: 'out', targetHandle: 'x',
+      });
+      const r = run(
+        [{ op: 'connect', source: c.id, source_handle: 'out', target: b.id, target_handle: 'x' }],
+        [a, c, b],
+        [wire('old-1', a.id), wire('old-2', a.id)],
+      );
+      expect(r.results[0].replaced_edge_ids).toEqual(['old-1', 'old-2']);
+      expect(r.edges.map((e) => e.source)).toEqual([c.id]);
+    });
+
+    it('leaves one output feeding two inputs alone', () => {
+      const r = run([
+        { op: 'add_node', node_type: 'Source', ref: 'a' },
+        { op: 'add_node', node_type: 'Sink', ref: 'b' },
+        { op: 'add_node', node_type: 'Sink', ref: 'd' },
+        { op: 'connect', source: 'a', source_handle: 'out', target: 'b', target_handle: 'x' },
+        { op: 'connect', source: 'a', source_handle: 'out', target: 'd', target_handle: 'x' },
+      ]);
+      expect(r.edges).toHaveLength(2);
+      expect(r.results[4]).toEqual({ index: 4, ok: true });
+    });
+  });
+
   // #551: `__trigger` is the hidden handle every card carries for the Start
   // node's trigger. A data wire there saves, then fails validation and
   // export, and the port checks skip a card that has no definition.
@@ -166,6 +219,23 @@ describe('applyGraphOps — connect', () => {
       expect(r.edges).toMatchObject([
         { source: start.id, sourceHandle: 'trigger', target: sink.id, targetHandle: '__trigger', type: 'triggerEdge' },
       ]);
+    });
+
+    it('keeps the trigger of every Start node that runs the card (#562 covers data wires only)', () => {
+      const startDef = def('Start', {
+        outputs: [{ name: 'trigger', data_type: 'TRIGGER', description: '', optional: false }],
+      });
+      const one = buildFlowNode(startDef, { x: 0, y: 0 });
+      const two = buildFlowNode(startDef, { x: 0, y: 50 });
+      const r = run(
+        [
+          { op: 'connect', source: one.id, source_handle: 'trigger', target: sink.id, target_handle: '__trigger' },
+          { op: 'connect', source: two.id, source_handle: 'trigger', target: sink.id, target_handle: '__trigger' },
+        ],
+        [one, two, sink],
+      );
+      expect(r.results.map((x) => x.replaced_edge_ids)).toEqual([undefined, undefined]);
+      expect(r.edges.map((e) => e.source)).toEqual([one.id, two.id]);
     });
   });
 });

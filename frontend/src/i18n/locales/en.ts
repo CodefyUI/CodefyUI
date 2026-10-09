@@ -421,6 +421,8 @@ const en = {
   'subgraph.collapse.contains-note':
     'Notes are annotations, not part of a subgraph - deselect them first',
   'subgraph.collapse.read-only': 'This graph is open read-only',
+  'subgraph.collapse.shared-input':
+    'An input of a selected node has more than one wire, at least one from outside the selection. An input takes one source: delete the extra wires, or route them through a Switch, then collapse again.',
   'subgraph.collapse.namePrompt': 'Name this subgraph',
   'subgraph.collapse.notConvex':
     'These nodes sit between the ones you selected, so the block would feed back into itself: {nodes}. Add them to the selection.',

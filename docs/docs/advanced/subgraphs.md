@@ -40,6 +40,7 @@ Collapse says no rather than producing a graph that reads wrong:
 | A **Start** node is selected | Start marks where the whole graph begins. Inside a reusable block it would mean every instance adds its own entry point. |
 | A note is selected | Notes are annotations, not computation. |
 | A node between two selected nodes is left out | The block would feed that node *and* be fed by it — a loop on the canvas that the flattened graph does not actually have. The message names the nodes to add to your selection. |
+| An input of a selected node has more than one wire, at least one from outside the selection | An input takes one source. Only a graph saved before that rule can still hold such an input, and a block would hide which wire it reads. Delete the extra wires, or route them through a `Switch`, then collapse again. |
 | The graph is open read-only | A read-only tab (for example a graph saved by a newer CodefyUI) cannot be changed. The message is "This graph is open read-only". |
 
 ## Editing a block
