@@ -63,7 +63,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
 | `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。 |
-| `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`active` 與 `final_metrics`；response 也包含未分頁的 `total`。 |
+| `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`active`、`final_metrics` 與 `metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）；response 也包含未分頁的 `total`。 |
 | `/api/runs/{run_id}` | GET | open | 回傳單一 run 與 `last_cursor`，client 會從這個位置開始輪詢事件。 |
 | `/api/runs/{run_id}` | DELETE | token | 刪除已完成的 run 及其事件、metrics、artifact 列與擷取的輸出；還在佇列或執行中則回傳 409。artifact 檔案會留在磁碟上。 |
 | `/api/runs/{run_id}/cancel` | POST | token | 協作式停止——`{run_id, status, cancelled}`；若 run 早已結束，`cancelled: false`（仍為 200）。 |
@@ -76,7 +76,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 
 **Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，以及引擎錯誤政策 `error_mode`、`max_retries`。run 的裝置在有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
 
-**Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`，以及 `direction` 為 `minimize` 或 `maximize`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
+**Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`、`direction` 為 `minimize` 或 `maximize`，以及可省略、用來指定以哪個節點的 series 排名的 `node_id`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
 
 ## 執行輸出與狀態 {/* #execution-outputs-and-state */}
 
@@ -84,11 +84,11 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 |----------|--------|------|-------------|
 | `/api/execution/outputs/{run_id}` | GET | open | 列出某次 run 擷取的連接埠。 |
 | `/api/execution/outputs/{run_id}` | DELETE | token | 清除某次擷取的 run。 |
-| `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | open | 取得一個已擷取的張量（支援 `?slice=0,:,:` 與 `?max_elements=`，預設 4096、上限 1,000,000）；切片仍然過大時回傳 413。節點已執行但這個 port 沒有產生值（`None`）時回傳 204；run 或 port 沒有任何紀錄時回傳 404。 |
+| `/api/execution/outputs/{run_id}/{node_id}/{port}` | GET | open | 取得一個已擷取的張量（支援 `?slice=0,:,:` 與 `?max_elements=`，預設 4096、上限 1,000,000）；切片仍然過大時回傳 413。`?preview=true`（不可與 `slice` 同時使用）會讓超過 `max_elements` 的張量回傳伺服器依 shape 選出的前段切片，回應中帶有 `slice`、`sliced_shape` 與 `truncated: true`；未超過上限的張量完整回傳。節點已執行但這個 port 沒有產生值（`None`）時回傳 204；run 或 port 沒有任何紀錄時回傳 404。 |
 | `/api/execution/outputs/{run_id}/{node_id}/{port}/stats` | GET | open | 回傳單一已擷取 port 的伺服器端摘要統計：固定的一組純量與 64-bin histogram；label tensor 則回傳值計數。無論 tensor 大小，response 通常只有一到兩 KB。超過 `CODEFYUI_STATS_SAMPLE_THRESHOLD`（4,000,000 個元素）的 tensor 會進行取樣。節點已執行但這個 port 沒有產生值（`None`）時回傳 204；run 或 port 沒有任何紀錄時回傳 404。 |
 | `/api/execution/outputs/{run_id}/{node_id}/__steps_index` | GET | open | 某節點的步驟追蹤 metadata（檢視器 → 步驟分頁）。 |
 | `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | open | 已擷取的梯度 metadata（檢視器 → 反向分頁）。 |
-| `/api/execution/outputs/{run_id}/value?node_id=&port=` | GET | open | 與 `{node_id}/{port}` 路徑形式相同，用於路徑放不下的節點 id：子圖內的節點（`<instance>/<node>`）。同樣接受 `slice` 與 `max_elements`。 |
+| `/api/execution/outputs/{run_id}/value?node_id=&port=` | GET | open | 與 `{node_id}/{port}` 路徑形式相同，用於路徑放不下的節點 id：子圖內的節點（`<instance>/<node>`）。同樣接受 `slice`、`max_elements` 與 `preview`。 |
 | `/api/execution/outputs/{run_id}/stats?node_id=&port=` | GET | open | 與 `/stats` 路徑形式相同，用於這類 id。 |
 | `/api/execution/outputs/{run_id}/steps?node_id=` | GET | open | 與 `__steps_index` 相同，用於這類 id。 |
 | `/api/execution/outputs/{run_id}/grads?node_id=` | GET | open | 與 `__grad_index` 相同，用於這類 id。 |

@@ -3,6 +3,8 @@ import {
   useUIStore,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH_CSS,
+  sidebarDefaultWidthPx,
   type SidebarTab,
 } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -79,12 +81,14 @@ export function NodePalette() {
   // Width is committed to the store (and localStorage) on every move rather
   // than on mouseup: the panel has to follow the pointer anyway, and the store
   // setter is what clamps the value, so a drag can never park the panel outside
-  // its usable range.
+  // its usable range. A panel still at its default (null, a rem-based width)
+  // starts from that default's px size at the current root font size, and the
+  // first move saves a px width from then on (#502).
   const handleResizeStart = useCallback(
     (event: React.MouseEvent) => {
       event.preventDefault();
       const startX = event.clientX;
-      const startWidth = width;
+      const startWidth = width ?? sidebarDefaultWidthPx();
 
       const onMouseMove = (moveEvent: MouseEvent) => {
         setSidebarWidth(startWidth + (moveEvent.clientX - startX));
@@ -111,8 +115,9 @@ export function NodePalette() {
   // per the window-splitter pattern: arrows nudge, Home/End go to the bounds.
   const handleResizeKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
-      if (event.key === 'ArrowLeft') setSidebarWidth(width - RESIZE_STEP);
-      else if (event.key === 'ArrowRight') setSidebarWidth(width + RESIZE_STEP);
+      const current = width ?? sidebarDefaultWidthPx();
+      if (event.key === 'ArrowLeft') setSidebarWidth(current - RESIZE_STEP);
+      else if (event.key === 'ArrowRight') setSidebarWidth(current + RESIZE_STEP);
       else if (event.key === 'Home') setSidebarWidth(SIDEBAR_MIN_WIDTH);
       else if (event.key === 'End') setSidebarWidth(SIDEBAR_MAX_WIDTH);
       else return;
@@ -144,7 +149,7 @@ export function NodePalette() {
         <>
           <div
             className={styles.panel}
-            style={{ width }}
+            style={{ width: width ?? SIDEBAR_DEFAULT_WIDTH_CSS }}
             role="tabpanel"
             id={`sidebar-panel-${sidebarTab}`}
             aria-labelledby={`sidebar-tab-${sidebarTab}`}
@@ -168,7 +173,7 @@ export function NodePalette() {
             tabIndex={0}
             aria-orientation="vertical"
             aria-label={t('sidebar.resize')}
-            aria-valuenow={width}
+            aria-valuenow={width ?? sidebarDefaultWidthPx()}
             aria-valuemin={SIDEBAR_MIN_WIDTH}
             aria-valuemax={SIDEBAR_MAX_WIDTH}
           />

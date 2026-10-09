@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  fetchOutput,
   fetchStepIndex,
-  PayloadTooLargeError,
   RunDataExpiredError,
   type StepIndexEntry,
 } from '../../api/executionOutputs';
@@ -13,6 +11,7 @@ import {
   canvasNodeHasOutputs,
   canvasNodeStatus,
   capturePhaseNoteKey,
+  fetchPortWithSliceFallback,
   followRecordingSetting,
   isRunStillGoingNote,
   missingFromRunNote,
@@ -40,24 +39,6 @@ type TensorMap = Record<string, TensorState>; // key: `${stepIdx}::${tensorName}
 
 function tkey(stepIdx: number, tensorName: string): string {
   return `${stepIdx}::${tensorName}`;
-}
-
-async function fetchTensorWithFallback(
-  runId: string,
-  nodeId: string,
-  port: string,
-): Promise<OutputData> {
-  try {
-    return await fetchOutput(runId, nodeId, port);
-  } catch (e) {
-    if (e instanceof PayloadTooLargeError) {
-      return await fetchOutput(runId, nodeId, port, {
-        slice: '0,:,:',
-        maxElements: 65536,
-      });
-    }
-    throw e;
-  }
 }
 
 /**
@@ -160,7 +141,7 @@ export function StepTraceView({ runId, nodeId }: Props) {
         tasks.push(
           (async () => {
             try {
-              const data = await fetchTensorWithFallback(runId, runNodeId, port);
+              const data = await fetchPortWithSliceFallback(runId, runNodeId, port);
               if (cancelled) return;
               setTensors((prev) => ({
                 ...prev,

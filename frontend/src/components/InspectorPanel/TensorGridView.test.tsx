@@ -197,4 +197,24 @@ describe('TensorGridView', () => {
     // is1D = Array.isArray(grid) && !is2D → true; renders empty <tr> with no <td>
     expect(container.querySelectorAll('td')).toHaveLength(0);
   });
+
+  it('names a slice a caller asked for when it holds fewer values than the tensor', () => {
+    const part = makeTensor({
+      full_shape: [2, 3],
+      sliced_shape: [3],
+      slice: '0,:',
+      values: [1, 2, 3],
+      min: 1,
+    });
+    const { container } = render(<TensorGridView tensor={part} />);
+    expect(screen.getByText('shape [2, 3]')).toBeInTheDocument();
+    expect(screen.getByText('Slice [0, :] · shape [3] · 3 of 6 values')).toBeInTheDocument();
+    expect(container.querySelector('[class*="tensorMeta"]')!.textContent).not.toContain('min');
+  });
+
+  it('adds no slice line when the slice holds every value', () => {
+    const whole = makeTensor({ full_shape: [1, 3], sliced_shape: [3], slice: '0', values: [1, 2, 3] });
+    render(<TensorGridView tensor={whole} />);
+    expect(screen.queryByText(/Slice \[/)).toBeNull();
+  });
 });

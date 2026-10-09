@@ -6,10 +6,10 @@
   position: fixed;
   inset: 0;
   /* Above the modals (10000), the Plugin Center (10001), the diff window
-     (10002), the confirm dialog (10003) and the toast stack (10004): while
-     the server is going away, nothing on the page is still true, so nothing
-     may sit on top of this. */
-  z-index: 10005;
+     (10002), the shortcuts sheet (10003), the confirm dialog (10004) and the
+     toast stack (10005): while the server is going away, nothing on the page
+     is still true, so nothing may sit on top of this. */
+  z-index: 10006;
   background: var(--surface-scrim);
   backdrop-filter: blur(2px);
   display: flex;

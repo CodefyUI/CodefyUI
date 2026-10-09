@@ -279,6 +279,11 @@ const en = {
   // selector that sits right under the raw `shape` / `dtype` / `min` / `max`
   // read-out, and it is the word the student types in PyTorch (dim=0).
   'tensorGrid.dim': 'dim {dim}',
+  // A captured tensor shown in part, under the full `shape` read-out (#640).
+  // `slice` is the index the server took, e.g. `0, 0:218`; min / max / mean on
+  // the same line describe the values shown.
+  'tensorGrid.preview': 'Preview: slice [{slice}] · shape [{shape}] · {shown} of {total} values',
+  'tensorGrid.slice': 'Slice [{slice}] · shape [{shape}] · {shown} of {total} values',
 
   // Node
   'node.opt': 'opt',
@@ -644,6 +649,7 @@ const en = {
 
   // Keyboard Shortcuts
   'shortcuts.title': 'Keyboard Shortcuts',
+  'shortcuts.close': 'Close keyboard shortcuts',
   'shortcuts.undo': 'Undo',
   'shortcuts.redo': 'Redo',
   'shortcuts.redoAlt': 'Redo (alt)',
@@ -1053,6 +1059,9 @@ const en = {
   'sweeps.new.method': 'Method',
   'sweeps.new.objective': 'Objective metric',
   'sweeps.new.objectiveRequired': 'Enter an objective metric',
+  'sweeps.new.objectiveNode': 'Objective node',
+  'sweeps.new.objectiveAnyNode': 'Any node (only one may log it)',
+  'sweeps.new.objectiveAmbiguous': '{count} nodes logged "{metric}" in the listed runs. Choose one; a variant in which several nodes log it is not ranked.',
   'sweeps.new.direction': 'Direction',
   'sweeps.new.parameter': 'Parameter',
   'sweeps.new.parameterN': 'Parameter {index}',
@@ -1092,6 +1101,10 @@ const en = {
   'sweeps.detail.downloadCsv': 'Download CSV',
   'sweeps.detail.stop': 'Stop sweep',
   'sweeps.detail.objective': '{metric} · {direction}',
+  'sweeps.detail.objectiveNode': '{metric} from {node} · {direction}',
+  'sweeps.detail.ambiguousObjective': '"{metric}" was logged by more than one node ({nodes}), so those variants are not ranked. Start a new sweep with an objective node chosen.',
+  'sweeps.detail.ambiguous': 'Ambiguous',
+  'sweeps.detail.runLevel': 'run level',
   'sweeps.detail.activeQueued': '{count} active or queued',
   'sweeps.detail.completed': '{count} succeeded',
   'sweeps.detail.failed': '{count} failed',
@@ -1106,6 +1119,7 @@ const en = {
   'sweeps.detail.notFound': 'This sweep no longer exists on the server.',
   'sweeps.detail.noObjective': 'No variant recorded a metric named "{metric}".',
   'sweeps.detail.noObjectiveSeries': 'No variant recorded a metric named "{metric}"; the runs recorded {names}.',
+  'sweeps.detail.noObjectiveNode': 'No variant recorded "{metric}" from {node}.',
   'sweeps.detail.curves': 'Objective curves',
   'sweeps.detail.noCurves': 'No objective curves yet.',
   'sweeps.detail.variantName': 'Variant {index}',

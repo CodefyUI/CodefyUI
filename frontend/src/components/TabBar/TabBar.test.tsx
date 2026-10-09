@@ -696,8 +696,8 @@ describe('TabBar', () => {
     });
 
     it('answers nothing while a modal is open', () => {
-      // `?` opens the shortcuts sheet without taking focus, so a tab can still
-      // hold it; its keys must not close or switch tabs behind the sheet.
+      // The gate reads the store, not focus: whatever still reaches a tab
+      // while the sheet is open must not close or switch tabs behind it.
       const ids = openThreeTabs();
       useUIStore.setState({ shortcutsModalOpen: true });
       try {

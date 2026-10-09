@@ -355,15 +355,9 @@ describe('TemplateGalleryModal', () => {
     render(<TemplateGalleryModal />);
     await screen.findByText('No examples available');
 
-    // The shortcuts modal (`?`) renders over whatever is showing and has no
-    // Escape handler of its own — closing the gallery underneath it would
-    // dismiss the surface the user is NOT looking at.
-    useUIStore.setState({ shortcutsModalOpen: true });
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(useUIStore.getState().templateGalleryOpen).toBe(true);
-    useUIStore.setState({ shortcutsModalOpen: false });
-
-    // Same for a confirm/prompt dialog.
+    // A confirm/prompt dialog: closing the gallery underneath it would
+    // dismiss the surface the user is NOT looking at. (The shortcuts sheet
+    // stops its own Escape; `ShortcutsModal.test.tsx` covers that.)
     useDialogStore.setState({ active: { kind: 'confirm', title: 'x' } as never });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().templateGalleryOpen).toBe(true);

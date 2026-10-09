@@ -346,7 +346,7 @@ describe('InspectorPanel — single node mode', () => {
     expect(mockOutput).toHaveBeenCalledTimes(callsBefore);
   });
 
-  it('falls back to a sliced fetch on PayloadTooLargeError', async () => {
+  it('falls back to a bounded preview on PayloadTooLargeError', async () => {
     const n = node('a', 'NodeA', { outputs: ['out'] });
     seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
     mockOutput.mockImplementation(async (_r, _n, _port, opts) => {
@@ -358,7 +358,7 @@ describe('InspectorPanel — single node mode', () => {
       expect(screen.getByText('shape [2, 2]')).toBeInTheDocument(),
     );
     expect(mockOutput).toHaveBeenCalledWith('run1', 'a', 'out', {
-      slice: '0,:,:',
+      preview: true,
       maxElements: 65536,
     });
   });
