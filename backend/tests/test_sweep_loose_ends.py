@@ -10,9 +10,10 @@ B. ``cancelling`` is an acknowledgement, not a promise: cancellation is
    is now written down at its definition point, and the half a machine can
    read -- "cancelling is not settled" -- is a set this module asserts on.
 C. "The last point of the named series" had TWO implementations. They now
-   share one, and the agreement is asserted over the three shapes that
-   could have pulled them apart: many series, a NULL last point, and a run
-   ``latest_metrics`` does not return at all.
+   share one -- since #641 ``sweep_store.read_objective``, which reads one
+   producer's series -- and the agreement is asserted over the shapes that
+   could have pulled them apart: many series and producers, a NULL last
+   point, and a run ``latest_metrics`` does not return at all.
 
 Fixtures and helpers are local copies rather than imports from
 test_sweeps.py, following the house rule that module states in its own
@@ -36,7 +37,6 @@ from app.core.run_store import (
     MetricPoint,
     RunProvenance,
     RunStore,
-    last_metric_values,
 )
 from app.core.sweep_store import (
     SWEEP_SETTLED_STATES,
@@ -45,11 +45,10 @@ from app.core.sweep_store import (
     SWEEP_STATE_FINISHED,
     SWEEP_STATE_RUNNING,
     SWEEP_STATES,
-    HarvestEntry,
     SweepStore,
     SweepVariant,
-    _last_metric_value,
     _record_harvest_failure,
+    read_objective,
     variant_is_terminal,
 )
 
@@ -133,28 +132,22 @@ async def _seam_a(runs: RunStore, sweeps: SweepStore, sweep_id: str):
 
     Copied deliberately rather than reached through the app: seam A is a
     STORE-level rule (harvest what is terminal, settle when everything is)
-    and these tests are about that rule, not about FastAPI. The expression
-    that reads the objective --
-    ``metrics.get(run_id, {}).get(metric) if metric else None`` -- is the
-    route's own, verbatim, because that is the exact level at which the two
-    seams have to agree.
+    and these tests are about that rule, not about FastAPI. The objective
+    is read the route's own way, through ``SweepStore.read_harvest``,
+    because that is the exact level at which the two seams have to agree.
     """
     sweep = await sweeps.get_sweep(sweep_id)
     children = {record.id: record
                 for record in await runs.list_runs_by_sweep(sweep_id)}
-    metrics = await runs.latest_metrics(list(children))
-    metric = sweep.objective.get("metric")
-    entries: dict[int, HarvestEntry] = {}
+    terminal: dict[int, tuple[str, str]] = {}
     for variant in sweep.variants:
         if variant.harvested_at is not None or variant.run_id is None:
             continue
         child = children.get(variant.run_id)
         if child is None or child.status not in TERMINAL_STATUSES:
             continue
-        entries[variant.index] = HarvestEntry(
-            objective=(metrics.get(variant.run_id, {}).get(metric)
-                       if metric else None),
-            status=child.status)
+        terminal[variant.index] = (variant.run_id, child.status)
+    entries = await sweeps.read_harvest(terminal, sweep.objective)
     finished = all(
         variant.index in entries
         or variant_is_terminal(
@@ -166,11 +159,19 @@ async def _seam_a(runs: RunStore, sweeps: SweepStore, sweep_id: str):
     return await sweeps.harvest(sweep_id, entries=entries, finished=finished)
 
 
-async def _seam_a_objective(runs: RunStore, run_id: str,
+async def _seam_a_entry(sweeps: SweepStore, run_id: str,
+                        metric: str | None):
+    """Seam A's harvest entry for ONE run, name-only objective."""
+    entries = await sweeps.read_harvest(
+        {0: (run_id, "succeeded")},
+        {"metric": metric, "direction": "minimize"})
+    return entries[0]
+
+
+async def _seam_a_objective(sweeps: SweepStore, run_id: str,
                             metric: str | None) -> float | None:
     """Seam A's answer for ONE run, at the objective level."""
-    metrics = await runs.latest_metrics([run_id])
-    return metrics.get(run_id, {}).get(metric) if metric else None
+    return (await _seam_a_entry(sweeps, run_id, metric)).objective
 
 
 async def _corrupt_variants(db: Database, sweep_id: str) -> None:
@@ -444,31 +445,46 @@ async def test_a_settled_sweep_is_never_re_stamped(db, sweeps, runs):
 # ── C: one implementation of "the last point of the named series" ─────────
 
 
-def test_both_seams_share_one_implementation_of_the_last_point_rule():
+async def test_both_seams_share_one_implementation_of_the_last_point_rule(
+        db, sweeps, runs, monkeypatch):
     """Not "two implementations that agree" -- ONE.
 
     Agreement asserted over sample inputs is only ever a statement about
     the samples. The seams cannot diverge on a shape nobody thought of if
     there is nothing to diverge FROM, which is what #404 means by "sharing
-    is preferred".
+    is preferred". Asserted by spying on the shared function and running
+    each seam: both must call it, for the run they harvest.
     """
-    import app.core.run_store as run_store_module
     import app.core.sweep_store as sweep_store_module
 
-    assert (sweep_store_module.last_metric_values
-            is run_store_module.last_metric_values)
+    calls: list[str] = []
+    original = sweep_store_module.read_objective
+
+    def _spy(conn, run_id, objective):
+        calls.append(run_id)
+        return original(conn, run_id, objective)
+
+    monkeypatch.setattr(sweep_store_module, "read_objective", _spy)
+    sweep = await _new_sweep(sweeps, count=2)
+    first = await _attach(sweeps, runs, sweep.id, 0,
+                          points=[MetricPoint("val_loss", 0.4, 0, "n")])
+    await _seam_a(runs, sweeps, sweep.id)          # seam A harvests run 0
+    assert calls == [first]
+    second = await _attach(sweeps, runs, sweep.id, 1,
+                           points=[MetricPoint("val_loss", 0.2, 0, "n")])
+    assert await runs.prune(keep_last=0) == 2      # seam B harvests run 1
+    assert calls[0] == first and second in calls[1:]
 
 
 async def test_the_two_seams_agree_over_many_series(db, sweeps, runs):
-    """Divergence case 1: more than one series in the run.
+    """Divergence case 1: more than one series, and more than one producer.
 
-    The existing agreement test feeds ONE series, which is the shape on
-    which a leapfrog over every series and a single-name seek cannot
-    disagree. With several series, a per-name seek that leaked the wrong
-    name -- or a leapfrog whose per-series subquery drifted -- shows up
-    here and nowhere else. The series are built so the answer is not at
-    either end of the write order and not the best value either: steps
-    arrive out of order, and the last step is a tie broken by write order.
+    The series are built so a leak between names would show up as a wrong
+    number: steps arrive out of order, and the last step is a tie two
+    nodes logged. ``val_loss`` has THREE producers (the run level,
+    node-a and node-b), so a name-only objective is ambiguous (#641):
+    both seams must leave it unranked and name the same producers, where
+    the Runs summary still collapses it to the last write.
     """
     sweep = await _new_sweep(sweeps, count=1)
     run_id = await _attach(sweeps, runs, sweep.id, 0, points=[
@@ -483,15 +499,18 @@ async def test_the_two_seams_agree_over_many_series(db, sweeps, runs):
         MetricPoint("train_loss", 1.1, 2),
     ])
 
-    seam_a = await _seam_a_objective(runs, run_id, "val_loss")
-    # Every OTHER series is answered by the same rule, so a leak between
-    # them would show up as a wrong number here rather than a missing one.
+    seam_a = await _seam_a_entry(sweeps, run_id, "val_loss")
+    assert (await _seam_a_objective(sweeps, run_id, "train_loss")) == 9.9
+    assert (await _seam_a_objective(sweeps, run_id, "accuracy")) == 0.10
+    # The compact summary is unchanged: it still collapses producers.
     assert await runs.latest_metrics([run_id]) == {run_id: {
         "accuracy": 0.10, "train_loss": 9.9, "val_loss": 0.5}}
 
     assert await runs.prune(keep_last=0) == 1     # seam B, no prior harvest
-    seam_b = (await sweeps.get_sweep(sweep.id)).variants[0].objective
-    assert seam_b == seam_a == 0.5
+    seam_b = (await sweeps.get_sweep(sweep.id)).variants[0]
+    assert seam_b.objective is seam_a.objective is None
+    assert (seam_b.ambiguous_producers == seam_a.ambiguous_producers
+            == [None, "node-a", "node-b"])
 
 
 async def test_the_two_seams_agree_when_the_last_point_is_null(db, sweeps,
@@ -513,7 +532,7 @@ async def test_the_two_seams_agree_when_the_last_point_is_null(db, sweeps,
         MetricPoint("accuracy", 0.5, 1),
     ])
 
-    seam_a = await _seam_a_objective(runs, run_id, "val_loss")
+    seam_a = await _seam_a_objective(sweeps, run_id, "val_loss")
     assert seam_a is None
     # The run itself is still answered -- only the diverged series is gone.
     assert await runs.latest_metrics([run_id]) == {run_id: {"accuracy": 0.5}}
@@ -543,7 +562,7 @@ async def test_the_two_seams_agree_on_a_run_seam_a_never_returns(db, sweeps,
     silent = await _attach(sweeps, runs, sweep.id, 1)   # no metrics at all
 
     assert await runs.latest_metrics([diverged, silent]) == {}
-    seam_a = [await _seam_a_objective(runs, run_id, "val_loss")
+    seam_a = [await _seam_a_objective(sweeps, run_id, "val_loss")
               for run_id in (diverged, silent)]
     assert seam_a == [None, None]
 
@@ -555,12 +574,11 @@ async def test_the_two_seams_agree_on_a_run_seam_a_never_returns(db, sweeps,
 
 async def test_seam_b_reads_exactly_what_the_shared_rule_returns(db, sweeps,
                                                                  runs):
-    """The seam-B half of the sharing, on one connection, case by case.
+    """The shared rule on one connection, case by case.
 
-    ``_last_metric_value`` adds exactly one thing to the shared rule: an
-    empty or absent metric name answers None rather than looking anything
-    up. Everything else must be the shared map's own answer, including for
-    a series that does not exist and for a run that does not exist.
+    A single-producer series reads as the summary does; an empty or absent
+    metric name, a series that does not exist and a run that does not
+    exist all read as nothing, with no producer.
     """
     sweep = await _new_sweep(sweeps, count=1)
     run_id = await _attach(sweeps, runs, sweep.id, 0, points=[
@@ -569,27 +587,32 @@ async def test_seam_b_reads_exactly_what_the_shared_rule_returns(db, sweeps,
         MetricPoint("accuracy", float("nan"), 1),
     ])
 
-    def _compare(conn: sqlite3.Connection) -> list[tuple[Any, Any]]:
-        shared = last_metric_values(conn, run_id)
-        return [(shared.get(name), _last_metric_value(conn, run_id, name))
+    def _read(conn: sqlite3.Connection, run: str, metric: Any) -> Any:
+        return read_objective(conn, run,
+                              {"metric": metric, "direction": "minimize"})
+
+    def _compare(conn: sqlite3.Connection) -> list[Any]:
+        return [_read(conn, run_id, name)
                 for name in ("val_loss", "accuracy", "never_logged")]
 
-    assert await db.run(_compare) == [(0.2, 0.2), (None, None), (None, None)]
+    # The run-level series (no node) is the one producer of both names.
+    assert await db.run(_compare) == [
+        (0.2, None, None), (None, None, None), (None, None, None)]
 
     def _edges(conn: sqlite3.Connection) -> list[Any]:
-        return [_last_metric_value(conn, "no-such-run", "val_loss"),
-                _last_metric_value(conn, run_id, None),
-                _last_metric_value(conn, run_id, "")]
+        return [_read(conn, "no-such-run", "val_loss"),
+                _read(conn, run_id, None),
+                _read(conn, run_id, "")]
 
-    assert await db.run(_edges) == [None, None, None]
+    assert await db.run(_edges) == [(None, None, None)] * 3
 
 
 async def test_the_read_path_answers_none_for_an_empty_metric_name(
         db, sweeps, runs):
     """Seam A, through the real route helper, on the one name seam B guards.
 
-    #483: ``_last_metric_value`` answers None for an empty name, and the read
-    path looked ``""`` up like any other key. A node can log a series named
+    #483: seam B answers None for an empty name, and the read path looked
+    ``""`` up like any other key. A node can log a series named
     ``""`` (``log_metric`` stores ``str(name)`` unchecked), and a sweeps row
     carrying ``"metric": ""`` outlives the route validation that would have
     refused it. Both seams write the objective onto that row, so both have to

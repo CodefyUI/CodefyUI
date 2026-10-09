@@ -171,6 +171,53 @@ describe('SweepDetail', () => {
     expect(screen.queryByText(/recorded a metric named/i)).toBeNull();
   });
 
+  it('names the objective node and explains an ambiguous name in each language (#641)', () => {
+    const detail = sweep('finished');
+    detail.counts = { queued: 0, running: 0, succeeded: 2, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [
+      { ...variant(0, 'succeeded', 0.4, 1), objective_node_id: 'train' },
+      { ...variant(1, 'succeeded', null, null), ambiguous_producers: [null, 'train', 'block/inner'] },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    const english = view();
+    expect(screen.getByText('"val_loss" was logged by more than one node (run level, block/inner, Trainer (train)), so those variants are not ranked. Start a new sweep with an objective node chosen.')).toBeInTheDocument();
+    const cell = within(screen.getByTestId('sweep-variant-1')).getByText('Ambiguous');
+    expect(cell).toHaveAttribute('title', 'run level, Trainer (train), block/inner');
+    // The ambiguity is the explanation; the "never recorded" warning is not.
+    expect(screen.queryByText(/recorded a metric named/i)).toBeNull();
+    english.unmount();
+
+    useI18n.setState({ locale: 'zh-TW' });
+    detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'train' };
+    view();
+    expect(screen.getByText(/val_loss（來自 Trainer \(train\)）/)).toBeInTheDocument();
+    expect(screen.getByText(/由多個節點記錄（執行層級, block\/inner, Trainer \(train\)）/)).toBeInTheDocument();
+  });
+
+  it('warns by node when the chosen node never logged the objective', () => {
+    // The summary says another node logged val_loss; only a harvested value
+    // would show that the chosen node did.
+    const detail = sweep('finished');
+    detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'block/inner' };
+    detail.counts = { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [{ ...variant(0, 'succeeded', null, null), final_metrics: { val_loss: 0.3 } }];
+    detail.best = null;
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.getByText(/val_loss from block\/inner · Minimize/)).toBeInTheDocument();
+    expect(screen.getByText('No variant recorded "val_loss" from block/inner.')).toBeInTheDocument();
+  });
+
+  it('does not warn by node once the chosen node recorded the objective', () => {
+    const detail = sweep('running');
+    detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'train' };
+    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [{ ...variant(0, 'succeeded', 0.2, null), objective_node_id: 'train' }];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.queryByText(/No variant recorded/)).toBeNull();
+  });
+
   it('leaves out a status no variant has', () => {
     const detail = sweep('finished');
     detail.counts = { queued: 0, running: 0, succeeded: 2, failed: 0, cancelled: 1, interrupted: 0, missing: 0 };

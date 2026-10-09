@@ -84,7 +84,6 @@ from ..core.sweep_compiler import (
 from ..core.sweep_store import (
     SWEEP_SETTLED_STATES,
     SWEEP_STATE_CANCELLING,
-    HarvestEntry,
     SweepRecord,
     SweepStore,
     SweepVariant,
@@ -176,6 +175,13 @@ class SweepObjectiveModel(BaseModel):
 
     metric: str = Field(min_length=1, max_length=128)
     direction: Literal["minimize", "maximize"]
+    #: The node whose ``metric`` series ranks the sweep (#641), a flattened
+    #: inner id (``block/inner``) included. Optional: without it the metric
+    #: name alone selects, which works while exactly one node logs it and
+    #: leaves a variant unranked, with the producers named, when several
+    #: do (``sweep_store.read_objective``). Like ``metric``, not checked
+    #: against the graph: a node may log under any id it passes.
+    node_id: str | None = Field(default=None, min_length=1, max_length=512)
 
     @field_validator("metric")
     @classmethod
@@ -190,6 +196,16 @@ class SweepObjectiveModel(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise ValueError("objective.metric must not be blank")
+        return stripped
+
+    @field_validator("node_id")
+    @classmethod
+    def _strip_node_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("objective.node_id must not be blank")
         return stripped
 
 
@@ -270,6 +286,17 @@ def _compiled_spec(spec: dict[str, Any],
                     "param_type": param.param_type}
                    for raw, param in zip(spec["params"], compiled.params)],
     }
+
+
+def _objective_payload(sweep: SweepRecord) -> dict[str, Any]:
+    """The stored objective with ``node_id`` always present (#641).
+
+    A sweep created before #641 stored no ``node_id``; it reads as None,
+    the name-only selection it has always been (``objective_selector``).
+    """
+    return {"metric": sweep.objective.get("metric"),
+            "direction": sweep.objective.get("direction"),
+            "node_id": sweep.objective.get("node_id")}
 
 
 def _spec_param_payload(sweep: SweepRecord) -> list[dict[str, Any]]:
@@ -558,7 +585,7 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
     return {
         "sweep_id": sweep.id, "state": sweep.state, "method": sweep.method,
         "seed": sweep.seed, "seed_variants": sweep.seed_variants,
-        "objective": sweep.objective,
+        "objective": _objective_payload(sweep),
         "total_combinations": compiled.total_combinations,
         "params": _spec_param_payload(sweep),
         "variants": submitted,
@@ -575,8 +602,12 @@ async def _harvested_sweep(
 
     Exactly three database round trips regardless of variant count — the
     sweep row, its children in one indexed range, and ONE grouped
-    ``latest_metrics`` call — plus a fourth only when the harvest has
-    something to write.
+    ``latest_metrics`` call — plus a read and a write only when a child
+    has newly ended. The objective is read by the rule seam B uses
+    (``SweepStore.read_harvest`` / ``sweep_store.read_objective``);
+    ``latest_metrics`` is the compact summary shown as ``final_metrics``
+    and never chooses the objective, because it collapses a name several
+    nodes log into one number (#641).
 
     A variant is harvested when it has not been harvested before, its child
     row still exists, and that row is terminal. Writing rather than merely
@@ -591,20 +622,16 @@ async def _harvested_sweep(
                 for record in await service.store.list_runs_by_sweep(sweep_id)}
     metrics = await service.store.latest_metrics(list(children))
 
-    metric = sweep.objective.get("metric")
-    entries: dict[int, HarvestEntry] = {}
+    terminal: dict[int, tuple[str, str]] = {}
     for variant in sweep.variants:
         if variant.harvested_at is not None or variant.run_id is None:
             continue
         child = children.get(variant.run_id)
         if child is None or child.status not in TERMINAL_STATUSES:
             continue
-        # `if metric`: seam B (`_last_metric_value`) answers None for an
-        # empty name without looking it up, and both seams write this row.
-        entries[variant.index] = HarvestEntry(
-            objective=(metrics.get(variant.run_id, {}).get(metric)
-                       if metric else None),
-            status=child.status)
+        terminal[variant.index] = (variant.run_id, child.status)
+
+    entries = await store.read_harvest(terminal, sweep.objective)
 
     # `variant.index in entries` stands in for the patched variant's
     # harvested status, so the terminal check sees the post-harvest world
@@ -658,6 +685,11 @@ def _variant_payload(variant: SweepVariant, rank: int | None,
         "params": variant.params,
         "seed": variant.seed,
         "objective": variant.objective,
+        # The objective's identity (#641): the node its value was read
+        # from, and -- for a name-only objective several nodes logged --
+        # those nodes, which is why this variant has no value and no rank.
+        "objective_node_id": variant.objective_node_id,
+        "ambiguous_producers": variant.ambiguous_producers,
         "rank": rank,
         # RULING 4: the run id stays as a link that MAY BE DEAD, and this is
         # how a client knows not to follow it.
@@ -680,23 +712,50 @@ def _counts(payloads: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _producer_label(node_id: str | None) -> str:
+    """A producer as messages and the CSV name it; None is the run-level
+    series, which no node logged."""
+    return "(run)" if node_id is None else node_id
+
+
+def _ambiguous_producers(payloads: list[dict[str, Any]]) -> list[str | None]:
+    """Every producer any ambiguous variant named, sorted, None first."""
+    found = {node for payload in payloads
+             for node in payload.get("ambiguous_producers") or []}
+    return sorted(found, key=lambda node: (node is not None, node or ""))
+
+
 def _objective_warning(sweep: SweepRecord,
                        payloads: list[dict[str, Any]]) -> str | None:
-    """Absent when at least one variant ranked.
+    """Why some or all of the table is unranked, or None.
 
-    Otherwise it turns the single most likely user error — asking for
-    ``val_loss`` from a graph with no validation loader — into a message
-    that names the fix, instead of a table of empty cells. The series list
-    is the union of ``final_metrics`` keys across the children that still
-    exist, sorted so the message is the same twice, and omitted when none
-    of them do.
+    An AMBIGUOUS name-only objective comes first and is reported even when
+    other variants ranked (#641): those variants are unranked on purpose,
+    and the fix -- naming ``objective.node_id`` -- is the message.
+
+    Otherwise absent when at least one variant ranked, and it turns the
+    single most likely user error — asking for ``val_loss`` from a graph
+    with no validation loader — into a message that names the fix, instead
+    of a table of empty cells. The series list is the union of
+    ``final_metrics`` keys across the children that still exist, sorted so
+    the message is the same twice, and omitted when none of them do.
     """
+    metric = sweep.objective.get("metric")
+    ambiguous = _ambiguous_producers(payloads)
+    if ambiguous:
+        return (f"the objective metric '{metric}' was recorded by more than "
+                "one node ("
+                + ", ".join(_producer_label(node) for node in ambiguous)
+                + "), so those variants are not ranked; create the sweep "
+                "with objective.node_id naming the node to rank by")
     if any(payload["rank"] is not None for payload in payloads):
         return None
     names = sorted({name for payload in payloads
                     for name in payload.get("final_metrics", {})})
-    warning = ("no variant recorded a metric named "
-               f"'{sweep.objective.get('metric')}'")
+    node_id = sweep.objective.get("node_id")
+    warning = f"no variant recorded a metric named '{metric}'"
+    if node_id:
+        warning += f" from node '{node_id}'"
     if names:
         warning += ("; the series recorded across this sweep were: "
                     + ", ".join(names))
@@ -704,7 +763,8 @@ def _objective_warning(sweep: SweepRecord,
 
 
 _CSV_COLUMNS = ("rank", "variant_index", "domain_index", "run_id", "status",
-                "objective")
+                "objective", "objective_metric", "objective_node_id",
+                "ambiguous_producers")
 
 
 def _comparison_csv(sweep: SweepRecord,
@@ -724,9 +784,16 @@ def _comparison_csv(sweep: SweepRecord,
     An absent ``objective`` or ``rank`` is an EMPTY cell, which is what
     every spreadsheet reads as a gap; ``"None"`` would read as text and
     poison the column's type. An unranked variant still gets its row.
+
+    ``objective_metric``, ``objective_node_id`` and ``ambiguous_producers``
+    are the JSON's own identity fields (#641), so a spreadsheet says which
+    measured quantity each number is: the metric, the node it was read
+    from, and -- for an unranked ambiguous variant -- the nodes that logged
+    it, ``;``-separated. All three are text cells.
     """
     addresses = [(entry["node_id"], entry["param"])
                  for entry in _spec_param_payload(sweep)]
+    metric = sweep.objective.get("metric") or ""
     buffer = io.StringIO(newline="")
     # Explicit lineterminator: csv defaults to \r\n, and newline="" means
     # that would survive verbatim into the body.
@@ -744,6 +811,11 @@ def _comparison_csv(sweep: SweepRecord,
             _csv_text_cell(payload["run_id"] or ""),
             _csv_text_cell(payload["status"]),
             "" if payload["objective"] is None else payload["objective"],
+            _csv_text_cell(metric),
+            _csv_text_cell(payload["objective_node_id"] or ""),
+            _csv_text_cell(";".join(
+                _producer_label(node)
+                for node in payload["ambiguous_producers"] or [])),
             *(_csv_text_cell(values.get(address, ""))
               for address in addresses),
         ])
@@ -799,7 +871,8 @@ async def get_sweep(
     body: dict[str, Any] = {
         "sweep_id": sweep.id, "name": sweep.name, "state": sweep.state,
         "method": sweep.method, "seed": sweep.seed,
-        "seed_variants": sweep.seed_variants, "objective": sweep.objective,
+        "seed_variants": sweep.seed_variants,
+        "objective": _objective_payload(sweep),
         "created_at": sweep.created_at, "finished_at": sweep.finished_at,
         "error": sweep.error, "counts": _counts(payloads),
         "params": _spec_param_payload(sweep), "variants": payloads,

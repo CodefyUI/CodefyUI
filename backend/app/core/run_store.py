@@ -122,8 +122,9 @@ _ARTIFACT_COLUMNS = "id, run_id, kind, path, meta, created_at"
 #: ``idx_exec_run_metrics_series (run_id, name, step)``.
 #:
 #: ``ORDER BY step DESC, id DESC LIMIT 1`` in the value subquery is the
-#: whole definition of "the last point of a series", and the ONLY copy of
-#: it — see :func:`last_metric_values`.
+#: whole definition of "the last point of a series". ``_PRODUCER_LAST_SQL``
+#: applies the same rule within one producer, which is what a sweep
+#: objective reads (#641).
 _LATEST_METRICS_SQL = """
 WITH RECURSIVE series(name) AS (
     SELECT (SELECT MIN(name) FROM exec_run_metrics WHERE run_id = ?1)
@@ -143,25 +144,20 @@ SELECT series.name AS name,
 def last_metric_values(
     conn: sqlite3.Connection, run_id: str,
 ) -> dict[str, float]:
-    """``{series name: last value}`` for ONE run — THE rule, defined once.
+    """``{series name: last value}`` for ONE run — the Runs-table summary.
 
-    The single implementation of "the last point of the named series"
-    (#404). It used to exist twice: here, inside ``latest_metrics``, and
-    again as a one-series seek in ``sweep_store._last_metric_value``. Two
-    spellings of one rule is how the read path and the prune path come to
-    disagree about a sweep's objective — and by the time they do, seam B
-    has already written its answer onto a durable ``sweeps`` row and
-    deleted the children that could have settled the argument (RULING 4).
-    Asserting that two implementations agree only ever covers the shapes
-    someone thought to test; having one leaves nothing to diverge from.
+    Collapses a name several nodes log into one number (see
+    ``RunStore.latest_metrics``), which is right for a one-number-per-row
+    summary and wrong for choosing a sweep's objective. A sweep reads its
+    objective per PRODUCER instead, through :func:`metric_producers` and
+    :func:`producer_last_value` (#641).
 
-    A **plain function taking a CONNECTION**, not a ``RunStore`` method,
-    for the reason ``sweep_store._select_sweep`` is one: it is called both
-    from a ``Database.run`` closure (``latest_metrics``) and from inside
+    A **plain function taking a CONNECTION**, not a ``RunStore`` method:
+    operating on an already-open connection is the shape that can be
+    called both from a ``Database.run`` closure and from inside
     ``RunStore.prune``'s open transaction, where opening a second
     ``Database.run`` would deadlock on the non-reentrant lock (see the
-    module docstring). Operating on an already-open connection does not
-    violate that rule; it is the only shape that can be shared across it.
+    module docstring).
 
     A series whose last point is a non-finite NULL is OMITTED rather than
     reported as 0.0 — a diverged loss must not render as a suspiciously
@@ -172,6 +168,70 @@ def last_metric_values(
     return {row["name"]: row["value"]
             for row in conn.execute(_LATEST_METRICS_SQL, (run_id,))
             if row["value"] is not None}
+
+
+#: The last point of ONE producer's series: ``(run_id, name, node_id)``.
+#: ``ORDER BY step DESC, id DESC LIMIT 1`` is the summary's rule, applied
+#: within one node, so another node's higher step or later write cannot
+#: reach the answer. A descending seek on ``idx_exec_run_metrics_producer``.
+_PRODUCER_LAST_SQL = (
+    "SELECT value FROM exec_run_metrics "
+    "WHERE run_id = ? AND name = ? AND node_id = ? "
+    "ORDER BY step DESC, id DESC LIMIT 1")
+#: The same for the run-level series (``node_id`` NULL), which ``= ?``
+#: cannot match.
+_RUN_LEVEL_LAST_SQL = (
+    "SELECT value FROM exec_run_metrics "
+    "WHERE run_id = ? AND name = ? AND node_id IS NULL "
+    "ORDER BY step DESC, id DESC LIMIT 1")
+#: The next producer of one series after *previous*, by index seek: the
+#: same leapfrog ``_LATEST_METRICS_SQL`` does over names, one level down.
+#: ``MIN`` ignores NULL, so the run-level producer is asked for separately.
+_NEXT_PRODUCER_SQL = (
+    "SELECT MIN(node_id) AS node_id FROM exec_run_metrics "
+    "WHERE run_id = ? AND name = ? AND node_id > ?")
+_HAS_RUN_LEVEL_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM exec_run_metrics "
+    "WHERE run_id = ? AND name = ? AND node_id IS NULL) AS present")
+
+
+def metric_producers(
+    conn: sqlite3.Connection, run_id: str, name: str,
+) -> list[str | None]:
+    """Every node that logged the series *name* in ONE run (#641).
+
+    Sorted, with the run-level producer (``None``) first when there is
+    one, so the answer is the same however the points were written. Cost
+    is one seek per producer, never a walk of the series' points.
+    """
+    producers: list[str | None] = []
+    if conn.execute(_HAS_RUN_LEVEL_SQL, (run_id, name)).fetchone()["present"]:
+        producers.append(None)
+    previous = ""
+    while True:
+        node_id = conn.execute(_NEXT_PRODUCER_SQL,
+                               (run_id, name, previous)).fetchone()["node_id"]
+        if node_id is None:
+            return producers
+        producers.append(node_id)
+        previous = node_id
+
+
+def producer_last_value(
+    conn: sqlite3.Connection, run_id: str, name: str, node_id: str | None,
+) -> float | None:
+    """The last point of *name* as *node_id* logged it, in ONE run (#641).
+
+    None when that producer never logged the series, and when its last
+    point is non-finite (stored as NULL): a diverged loss has no number to
+    rank, and an earlier finite point is not its final value.
+    """
+    if node_id is None:
+        row = conn.execute(_RUN_LEVEL_LAST_SQL, (run_id, name)).fetchone()
+    else:
+        row = conn.execute(_PRODUCER_LAST_SQL,
+                           (run_id, name, node_id)).fetchone()
+    return None if row is None else row["value"]
 
 
 def _json_safe(value: Any) -> Any:
@@ -1095,9 +1155,11 @@ class RunStore:
         dropped from the result entirely, so a caller reads "this run has
         no final numbers" as a missing key rather than an empty map.
 
-        The per-run answer itself is :func:`last_metric_values`, which the
-        prune transaction shares (#404); this method is the batching and
-        the empty-run filter around it, nothing more.
+        The per-run answer itself is :func:`last_metric_values`; this
+        method is the batching and the empty-run filter around it, nothing
+        more. A sweep objective does NOT read this summary: it reads one
+        producer's series, so the collapse above cannot choose its value
+        (#641, ``sweep_store.read_objective``).
         """
         ids = list(run_ids)
         if not ids:
@@ -1110,6 +1172,36 @@ class RunStore:
         return {run_id: values
                 for run_id, values in (await self.db.run(_select)).items()
                 if values}
+
+    async def metric_producers_by_run(
+        self, run_ids: Sequence[str],
+    ) -> dict[str, dict[str, list[str | None]]]:
+        """``{run_id: {series name: [producer node ids]}}`` for a page of
+        runs (#641).
+
+        The evidence a sweep objective is chosen from: ``final_metrics``
+        collapses a name several nodes log, and this keeps them apart.
+        Seek-bounded like :meth:`latest_metrics` -- one leapfrog over the
+        names, then one over each name's producers. A run with no series is
+        dropped, as :meth:`latest_metrics` drops one with no numbers.
+        """
+        ids = list(run_ids)
+        if not ids:
+            return {}
+
+        def _select(conn: sqlite3.Connection
+                    ) -> dict[str, dict[str, list[str | None]]]:
+            result: dict[str, dict[str, list[str | None]]] = {}
+            for run_id in ids:
+                names = [row["name"] for row in
+                         conn.execute(_LATEST_METRICS_SQL, (run_id,))]
+                if names:
+                    result[run_id] = {
+                        name: metric_producers(conn, run_id, name)
+                        for name in names}
+            return result
+
+        return await self.db.run(_select)
 
     async def list_metric_names(self, run_id: str) -> list[str]:
         """Distinct series names for a run — the chart legend."""

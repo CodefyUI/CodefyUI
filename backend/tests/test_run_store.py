@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 4
+    assert _user_version(db) == len(MIGRATIONS) == 5
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -268,7 +268,7 @@ def test_migration_004_upgrades_a_v3_db(tmp_path, monkeypatch):
     new = Database(tmp_path / "s.db")
     new.connect()
     try:
-        assert _user_version(new) == 4
+        assert _user_version(new) == len(MIGRATIONS)
         assert "sweeps" in _tables(new)
         assert EXEC_TABLES <= _tables(new)
         columns = _columns(new, "exec_runs")
@@ -400,7 +400,10 @@ def test_metric_reads_are_index_served(db):
     ):
         plan = " ".join(r["detail"] for r in db._conn.execute(
             "EXPLAIN QUERY PLAN " + sql, params).fetchall())
-        assert "idx_exec_run_metrics_series" in plan
+        # Either (run_id, name, ...) index serves these; sqlite may take
+        # the covering producer index (#641) for the name list.
+        assert ("idx_exec_run_metrics_series" in plan
+                or "idx_exec_run_metrics_producer" in plan), plan
         assert "SCAN exec_run_metrics" not in plan
         assert "TEMP B-TREE" not in plan
 

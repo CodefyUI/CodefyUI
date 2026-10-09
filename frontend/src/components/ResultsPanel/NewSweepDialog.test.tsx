@@ -415,6 +415,59 @@ describe('NewSweepDialog', () => {
     expect(suggestions).toEqual(['eval_accuracy', 'train_loss', 'val_accuracy', 'val_loss']);
   });
 
+  it('offers the nodes that logged the metric and sends the chosen one with it (#641)', async () => {
+    useRunStore.setState({
+      runs: [
+        { final_metrics: { val_loss: 0.1 }, metric_producers: { val_loss: ['train', 'block/inner'], lr: [null] } },
+        { final_metrics: {}, metric_producers: { val_loss: ['train'] } },
+        { final_metrics: {} },
+      ] as never,
+    });
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    const objective = screen.getByLabelText(/objective metric/i) as HTMLInputElement;
+    const suggestions = Array.from(document.getElementById(objective.getAttribute('list')!)!.querySelectorAll('option'))
+      .map((option) => option.getAttribute('value'));
+    expect(suggestions).toContain('lr');
+
+    fireEvent.change(objective, { target: { value: 'val_loss' } });
+    const node = screen.getByLabelText(/objective node/i) as HTMLSelectElement;
+    // Labelled from the open graph where it can vouch for the id; an inner
+    // node logs under its flattened id, which is shown as it is.
+    expect(Array.from(node.options).map((option) => [option.value, option.textContent])).toEqual([
+      ['', 'Any node (only one may log it)'], ['block/inner', 'block/inner'], ['train', 'Trainer (train)'],
+    ]);
+    expect(screen.getByText(/2 nodes logged "val_loss"/)).toBeInTheDocument();
+
+    fireEvent.change(node, { target: { value: 'train' } });
+    expect(screen.queryByText(/nodes logged/)).not.toBeInTheDocument();
+    // A node chosen for one metric is dropped for a metric it did not log.
+    fireEvent.change(objective, { target: { value: 'lr' } });
+    expect(node.value).toBe('');
+    expect(Array.from(node.options).map((option) => option.value)).toEqual(['']);
+    fireEvent.change(objective, { target: { value: 'val_loss' } });
+    fireEvent.change(node, { target: { value: 'train' } });
+    // ...and kept for a metric it did log.
+    fireEvent.change(objective, { target: { value: 'val_loss ' } });
+    expect(node.value).toBe('train');
+
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    expect(api.createSweep.mock.calls[0][0].objective).toEqual({
+      metric: 'val_loss', direction: 'minimize', node_id: 'train',
+    });
+  });
+
+  it('sends a name-only objective when no node is chosen', async () => {
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    expect(api.createSweep.mock.calls[0][0].objective).toEqual({ metric: 'train_loss', direction: 'minimize' });
+  });
+
   it('warns past the default server caps but leaves the decision to the server', async () => {
     const createSweep = vi.fn().mockResolvedValue(true);
     useSweepStore.setState({ createSweep });

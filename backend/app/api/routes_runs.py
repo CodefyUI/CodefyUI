@@ -177,11 +177,14 @@ async def _queue_positions(service: RunService,
 
 def _run_payload(record: RunRecord, *, queue_position: int | None,
                  active: bool, last_cursor: int | None = None,
-                 final_metrics: dict[str, float] | None = None) -> dict[str, Any]:
+                 final_metrics: dict[str, float] | None = None,
+                 metric_producers: dict[str, list[str | None]] | None = None,
+                 ) -> dict[str, Any]:
     payload = asdict(record)
     payload["queue_position"] = queue_position
     payload["active"] = active
     payload["final_metrics"] = final_metrics or {}
+    payload["metric_producers"] = metric_producers or {}
     if last_cursor is not None:
         payload["last_cursor"] = last_cursor
     return payload
@@ -289,6 +292,11 @@ async def list_runs(
     the run recorded (#124). One grouped query for the whole page, so the
     Runs table can print a final loss per row without a metrics request per
     row; ``{}`` for a run that recorded nothing.
+
+    And ``metric_producers`` — ``{series name: [node ids that logged it]}``,
+    ``null`` for the run-level series (#641). ``final_metrics`` collapses a
+    name several nodes log into one number; this is what keeps them apart,
+    so a sweep objective can be chosen by node and metric from evidence.
     """
     service = _get_service(request)
     # Validate the CLIENT's input here rather than catching ValueError off
@@ -308,12 +316,15 @@ async def list_runs(
     total = await service.store.count_runs(status=status)
     positions = await _queue_positions(service, records)
     finals = await service.store.latest_metrics([r.id for r in records])
+    producers = await service.store.metric_producers_by_run(
+        [r.id for r in records])
     return {
         "runs": [
             _run_payload(record,
                          queue_position=positions.get(record.id),
                          active=service.is_active(record.id),
-                         final_metrics=finals.get(record.id))
+                         final_metrics=finals.get(record.id),
+                         metric_producers=producers.get(record.id))
             for record in records
         ],
         "total": total,
@@ -329,12 +340,14 @@ async def get_run(run_id: str, request: Request):
     record = await _require_run(service, run_id)
     positions = await _queue_positions(service, [record])
     finals = await service.store.latest_metrics([record.id])
+    producers = await service.store.metric_producers_by_run([record.id])
     return _run_payload(
         record,
         queue_position=positions.get(record.id),
         active=service.is_active(run_id),
         last_cursor=await service.store.latest_cursor(run_id),
         final_metrics=finals.get(record.id),
+        metric_producers=producers.get(record.id),
     )
 
 

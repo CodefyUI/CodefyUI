@@ -751,6 +751,11 @@ async def test_list_rows_carry_the_last_value_of_every_series(client):
     # The detail endpoint agrees with the row rather than always saying {}.
     detail = (await client.get(f"/api/runs/{with_metrics}")).json()
     assert detail["final_metrics"] == {"loss": 0.5}
+    # #641: which node logged each series -- the evidence a sweep objective
+    # is chosen from -- next to the unchanged summary.
+    assert rows[with_metrics]["metric_producers"] == {"loss": ["mid"]}
+    assert rows[without]["metric_producers"] == {}
+    assert detail["metric_producers"] == {"loss": ["mid"]}
 
 
 async def test_metrics_csv_for_a_run_with_no_series_is_header_only(client):

@@ -6,7 +6,7 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 
 001/002 are the Stage-2 publish subsystem; 003 is the Run Service store
 (see the naming-decision block above ``MIGRATION_003``); 004 is the sweep
-schema (#140).
+schema (#140); 005 indexes metrics by producer (#641).
 """
 
 from __future__ import annotations
@@ -283,8 +283,23 @@ ALTER TABLE exec_runs ADD COLUMN sweep_variant INTEGER;
 CREATE INDEX idx_exec_runs_sweep ON exec_runs(sweep_id, sweep_variant);
 """
 
+# ── Migration 005: per-producer metric index (#641) ───────────────────────
+#
+# A sweep objective names a node as well as a series, and its value is the
+# last point THAT node logged. idx_exec_run_metrics_series cannot answer it
+# by seek: within (run_id, name) its order is step, so finding one node's
+# last point, or the list of nodes that logged a name, walks every point of
+# every producer. This index puts node_id before step, which makes both a
+# seek (``run_store.metric_producers`` / ``producer_last_value``). The
+# series index stays: the Runs summary orders by step ACROSS producers,
+# which this index cannot serve.
+MIGRATION_005 = """
+CREATE INDEX idx_exec_run_metrics_producer
+  ON exec_run_metrics(run_id, name, node_id, step);
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
-                         MIGRATION_004]
+                         MIGRATION_004, MIGRATION_005]
 
 
 def _is_comment_only(statement: str) -> bool:
