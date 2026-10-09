@@ -26,6 +26,10 @@ function drillTo2D(values: unknown, leadingIdx: number[]): number[][] | number[]
   return cur as number[][];
 }
 
+function count(shape: number[]): number {
+  return shape.reduce((n, d) => n * d, 1);
+}
+
 function fmt(v: unknown): string {
   if (v === null || v === undefined) return '·';
   if (typeof v === 'number') {
@@ -63,6 +67,24 @@ export function TensorGridView({ tensor, highlight, label }: Props) {
   if (tensor.max !== undefined) headerStats.push(`max ${fmt(tensor.max)}`);
   if (tensor.mean !== undefined) headerStats.push(`mean ${fmt(tensor.mean)}`);
 
+  // A slice with fewer values than the tensor -- the server's bounded preview
+  // of one too large to send, or a slice a caller asked for -- is a part of
+  // it. The shape line keeps the full shape, and a second line names the part
+  // shown; the stats move onto it, because the server computes them over the
+  // values it sent.
+  const shown = count(tensor.sliced_shape);
+  const total = count(tensor.full_shape);
+  const sliceNote =
+    tensor.truncated || shown < total
+      ? t(tensor.truncated ? 'tensorGrid.preview' : 'tensorGrid.slice', {
+          slice: tensor.slice.split(',').join(', '),
+          shape: tensor.sliced_shape.join(', '),
+          shown,
+          total,
+        })
+      : null;
+  const statsText = headerStats.length > 0 ? headerStats.join(' · ') : null;
+
   return (
     <div className={styles.tensorView}>
       {label && <div className={styles.tensorLabel}>{label}</div>}
@@ -71,10 +93,14 @@ export function TensorGridView({ tensor, highlight, label }: Props) {
           shape [{tensor.full_shape.join(', ')}]
         </span>
         <span className={styles.tensorDtype}>{tensor.dtype}</span>
-        {headerStats.length > 0 && (
-          <span className={styles.tensorStats}>{headerStats.join(' · ')}</span>
-        )}
+        {!sliceNote && statsText && <span className={styles.tensorStats}>{statsText}</span>}
       </div>
+      {sliceNote && (
+        <div className={styles.tensorSliceNote}>
+          <span>{sliceNote}</span>
+          {statsText && <span className={styles.tensorStats}>{statsText}</span>}
+        </div>
+      )}
 
       {leadingCount > 0 && (
         <div className={styles.tensorLeadingRow}>
