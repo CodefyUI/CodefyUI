@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { cleanup, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Toolbar } from './Toolbar';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
@@ -19,6 +19,7 @@ import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
 import { CustomNodeManagerModal } from '../CustomNodeManager/CustomNodeManager';
+import { renderSettled } from '../../test/utils';
 // The layout test below asserts on where the separators sit in the tree, so
 // it needs the same generated class names the component renders with.
 import styles from './Toolbar.module.css';
@@ -258,14 +259,18 @@ describe('Toolbar', () => {
   });
 
   afterEach(() => {
+    // Unmount before the tab store is restored. The global cleanup in
+    // setup.ts runs after this hook, and a write to a store the mounted
+    // toolbar subscribes to re-renders it outside act() (#505).
+    cleanup();
     vi.restoreAllMocks();
     useTabStore.setState({ applyLayout: realApplyLayout });
   });
 
   // ── Basic render ────────────────────────────────────────────────────
 
-  it('renders the brand, run/stop, menus and right cluster', () => {
-    render(<Toolbar />);
+  it('renders the brand, run/stop, menus and right cluster', async () => {
+    await renderSettled(<Toolbar />);
     expect(screen.getByText('Codefy')).toBeInTheDocument();
     expect(screen.getByText('UI')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument();
@@ -287,7 +292,7 @@ describe('Toolbar', () => {
 
     it('lists the server devices behind a "follow Settings" option that names the Settings device', async () => {
       mockedRest.fetchDevices.mockResolvedValueOnce({ default: 'mps', devices: [CPU, MPS] });
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       await waitFor(() =>
         expect(within(select()).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
       );
@@ -300,7 +305,7 @@ describe('Toolbar', () => {
 
     it('marks the Settings device as unserved when the server does not list it', async () => {
       useUIStore.setState({ globalDevice: 'cuda' });
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
       // Still named as it is stored -- and followed by where the run really
       // lands, because this server downgrades such a run to CPU and the bare
@@ -317,7 +322,7 @@ describe('Toolbar', () => {
 
     it('choosing a device writes graphDevice; the empty option clears it', async () => {
       mockedRest.fetchDevices.mockResolvedValueOnce({ default: 'mps', devices: [CPU, MPS] });
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       await waitFor(() =>
         expect(within(select()).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
       );
@@ -328,15 +333,15 @@ describe('Toolbar', () => {
       expect(useTabStore.getState().tabs[0].graphDevice).toBeNull();
     });
 
-    it('is disabled on a read-only tab', () => {
+    it('is disabled on a read-only tab', async () => {
       setActiveTab({ readOnly: true });
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       expect(select()).toBeDisabled();
     });
 
-    it('stays enabled while a run is in flight', () => {
+    it('stays enabled while a run is in flight', async () => {
       setActiveTab({ status: 'running' });
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       expect(select()).not.toBeDisabled();
     });
 
@@ -344,7 +349,7 @@ describe('Toolbar', () => {
       'keeps a stored %s the server does not list, as a disabled option',
       async (stored) => {
         setActiveTab({ graphDevice: stored });
-        render(<Toolbar />);
+        await renderSettled(<Toolbar />);
         await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
         const synthetic = within(select()).getByRole('option', { name: stored }) as HTMLOptionElement;
         expect(synthetic).toBeDisabled();
@@ -356,7 +361,7 @@ describe('Toolbar', () => {
 
     it('adds no synthetic option for a stored device the server lists', async () => {
       setActiveTab({ graphDevice: 'cpu' });
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       await waitFor(() => expect(mockedRest.fetchDevices).toHaveBeenCalled());
       expect(within(select()).getAllByRole('option')).toHaveLength(2);
       expect(select().value).toBe('cpu');
@@ -365,8 +370,8 @@ describe('Toolbar', () => {
 
   // ── Run / Stop ──────────────────────────────────────────────────────
 
-  it('idle: Run enabled, Stop disabled; clicking Run executes', () => {
-    render(<Toolbar />);
+  it('idle: Run enabled, Stop disabled; clicking Run executes', async () => {
+    await renderSettled(<Toolbar />);
     const run = screen.getByRole('button', { name: 'Run' });
     const stopBtn = screen.getByText('Stop');
     expect(run).not.toBeDisabled();
@@ -375,9 +380,9 @@ describe('Toolbar', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('running: Run disabled & shows "Running...", Stop enabled; clicking Stop stops', () => {
+  it('running: Run disabled & shows "Running...", Stop enabled; clicking Stop stops', async () => {
     setActiveTab({ status: 'running' });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     const run = screen.getByRole('button', { name: 'Running...' });
     const stopBtn = screen.getByText('Stop');
     expect(run).toBeDisabled();
@@ -395,23 +400,23 @@ describe('Toolbar', () => {
     ['error', 'Error'],
     ['cached', 'Cached'],
     ['skipped', 'Skipped'],
-  ] as const)('renders status label for %s', (status, label) => {
+  ] as const)('renders status label for %s', async (status, label) => {
     setActiveTab({ status });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     expect(screen.getByText(label)).toBeInTheDocument();
   });
 
-  it('uses the fallback status color for an unknown status', () => {
+  it('uses the fallback status color for an unknown status', async () => {
     setActiveTab({ status: 'weird-unknown' as never });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     // The status key is unknown so t() echoes the key.
     expect(screen.getByText('status.weird-unknown')).toBeInTheDocument();
   });
 
   // ── File menu (MenuDropdown) ────────────────────────────────────────
 
-  it('opens and closes the File menu via toggle', () => {
-    render(<Toolbar />);
+  it('opens and closes the File menu via toggle', async () => {
+    await renderSettled(<Toolbar />);
     const fileBtn = screen.getByText('File');
     fireEvent.click(fileBtn);
     expect(screen.getByText('Save')).toBeInTheDocument();
@@ -421,23 +426,23 @@ describe('Toolbar', () => {
     expect(screen.queryByText('Save')).toBeNull();
   });
 
-  it('File menu closes on outside mousedown', () => {
-    render(<Toolbar />);
+  it('File menu closes on outside mousedown', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     expect(screen.getByText('Save')).toBeInTheDocument();
     fireEvent.mouseDown(document.body);
     expect(screen.queryByText('Save')).toBeNull();
   });
 
-  it('File menu does NOT close when mousedown is inside it', () => {
-    render(<Toolbar />);
+  it('File menu does NOT close when mousedown is inside it', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.mouseDown(screen.getByText('Save'));
     expect(screen.getByText('Save')).toBeInTheDocument();
   });
 
-  it('File menu closes on a mousedown on the canvas, which stops it from bubbling', () => {
-    render(<Toolbar />);
+  it('File menu closes on a mousedown on the canvas, which stops it from bubbling', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     expect(screen.getByText('Save')).toBeInTheDocument();
     const pane = canvasPane();
@@ -449,16 +454,16 @@ describe('Toolbar', () => {
   // File and Export share one `openMenu`, so a listener the File menu failed
   // to remove would close Export on a press inside it. Removing a capture
   // listener takes the capture flag again.
-  it('a closed File menu stops listening: a press inside Export keeps Export open', () => {
-    render(<Toolbar />);
+  it('a closed File menu stops listening: a press inside Export keeps Export open', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Export'));
     fireEvent.mouseDown(screen.getByText('Export as JSON'));
     expect(screen.getByText('Export as JSON')).toBeInTheDocument();
   });
 
-  it('opening a second menu closes the first (toggleMenu prev===name false branch)', () => {
-    render(<Toolbar />);
+  it('opening a second menu closes the first (toggleMenu prev===name false branch)', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     expect(screen.getByText('Save')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Export'));
@@ -468,8 +473,8 @@ describe('Toolbar', () => {
 
   // ── Wrapped-row layout ──────────────────────────────────────────────
 
-  it('every separator trails a cluster from inside it, so none can lead a row', () => {
-    const { container } = render(<Toolbar />);
+  it('every separator trails a cluster from inside it, so none can lead a row', async () => {
+    const { container } = await renderSettled(<Toolbar />);
     const root = container.querySelector<HTMLElement>(`.${styles.root}`)!;
 
     // `.root` is the one wrapping flex container in the toolbar, and a
@@ -506,8 +511,8 @@ describe('Toolbar', () => {
     // File menu's Save is not in the DOM until the menu is opened.
     const saveIcon = () => screen.getByRole('button', { name: 'Save' });
 
-    it('renders with an accessible name of Save', () => {
-      render(<Toolbar />);
+    it('renders with an accessible name of Save', async () => {
+      await renderSettled(<Toolbar />);
       expect(saveIcon()).toBeInTheDocument();
       // An icon-only button has nothing on screen to read, so the hover text
       // is the only label there is -- losing it leaves a blank square.
@@ -516,7 +521,7 @@ describe('Toolbar', () => {
 
     it('clicking it runs the same save as File -> Save', async () => {
       mockedRest.saveGraph.mockResolvedValueOnce({} as never);
-      render(<Toolbar />);
+      await renderSettled(<Toolbar />);
       fireEvent.click(saveIcon());
       // Same prompt, same payload as the menu item's save above: the icon is
       // wired to handleSave itself, not to a second copy of the logic.
@@ -528,8 +533,8 @@ describe('Toolbar', () => {
       );
     });
 
-    it('sits outside the File menu, so it takes one click and not two', () => {
-      render(<Toolbar />);
+    it('sits outside the File menu, so it takes one click and not two', async () => {
+      await renderSettled(<Toolbar />);
       const icon = saveIcon();
       // Nothing has been clicked yet, so the File menu has never rendered and
       // its Save has no text node on the page -- while the icon is already a
@@ -547,7 +552,7 @@ describe('Toolbar', () => {
   // ── Save action ─────────────────────────────────────────────────────
 
   it('Save: empty/blank name aborts without calling saveGraph', async () => {
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('   '); // whitespace -> trimmed empty
@@ -555,7 +560,7 @@ describe('Toolbar', () => {
   });
 
   it('Save: cancel (null) aborts', async () => {
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog(null);
@@ -569,7 +574,7 @@ describe('Toolbar', () => {
         { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('my-graph');
@@ -593,7 +598,7 @@ describe('Toolbar', () => {
         { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('my-graph');
@@ -606,7 +611,7 @@ describe('Toolbar', () => {
 
   it('Save: failure path toasts error', async () => {
     mockedRest.saveGraph.mockRejectedValueOnce(new Error('disk full'));
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('g');
@@ -620,7 +625,7 @@ describe('Toolbar', () => {
   it('Save: carries the tab description through to saveGraph (round-trip half)', async () => {
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
     setActiveTab({ description: 'my important description' });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('my-graph');
@@ -634,7 +639,7 @@ describe('Toolbar', () => {
   it('Save: forwards segmentGroups from the serialized graph', async () => {
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
     setActiveTab({ segmentGroups: [{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }] as never });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('seg-graph');
@@ -651,7 +656,7 @@ describe('Toolbar', () => {
     // "existing" with the taken-name 409 rather than writing over it (#455).
     mockedRest.saveGraph.mockRejectedValueOnce(new rest.GraphExistsError('existing', 'Existing'));
     setActiveTab({ currentGraphFile: null });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('existing');   // prompt: the server resolves it to 'existing'
@@ -664,7 +669,7 @@ describe('Toolbar', () => {
     mockedRest.saveGraph.mockRejectedValueOnce(new rest.GraphExistsError('existing', 'Existing'));
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
     setActiveTab({ currentGraphFile: null });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await resolveDialog('existing');   // prompt
@@ -683,7 +688,7 @@ describe('Toolbar', () => {
     // truth: no name prompt, and so no overwrite confirm either -- the only
     // graph it could collide with is the one it came from.
     setActiveTab({ currentGraphFile: 'existing', currentGraphName: 'existing' });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() =>
@@ -698,7 +703,7 @@ describe('Toolbar', () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
     setActiveTab({ currentGraphFile: 'bound-graph', currentGraphName: 'bound-graph' });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() =>
@@ -712,7 +717,7 @@ describe('Toolbar', () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     mockedRest.saveGraph.mockResolvedValueOnce({} as never);
     setActiveTab({ currentGraphFile: 'bound-graph', currentGraphName: 'bound-graph' });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Save As...'));
     await resolveDialog('bound-graph-copy');
@@ -727,7 +732,7 @@ describe('Toolbar', () => {
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Clear Canvas'));
     await resolveDialog(true);
@@ -738,7 +743,7 @@ describe('Toolbar', () => {
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('File'));
     fireEvent.click(screen.getByText('Clear Canvas'));
     await resolveDialog(false);
@@ -747,8 +752,8 @@ describe('Toolbar', () => {
 
   // ── Export menu actions ─────────────────────────────────────────────
 
-  it('Export JSON: empty canvas warns', () => {
-    render(<Toolbar />);
+  it('Export JSON: empty canvas warns', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
@@ -761,7 +766,7 @@ describe('Toolbar', () => {
       name: 'My Graph!!',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
@@ -781,7 +786,7 @@ describe('Toolbar', () => {
     };
     const nodes = [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }];
     setActiveTab({ ...SAVED, nodes, graphDevice: 'mps' });
-    const view = render(<Toolbar />);
+    const view = await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
@@ -789,7 +794,7 @@ describe('Toolbar', () => {
 
     view.unmount();
     setActiveTab({ ...SAVED, nodes });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(2));
@@ -802,7 +807,7 @@ describe('Toolbar', () => {
       name: '',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
@@ -822,7 +827,7 @@ describe('Toolbar', () => {
         { id: 'n1', type: 'baseNode', position: { x: 1.6, y: 2.4 }, data: { label: 'LLM', type: 'LLMChat', params: { openai_api_key: 'sk-secret' }, definition } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
@@ -873,15 +878,10 @@ describe('Toolbar', () => {
 
   it('Export JSON: blanks a key in a block whose node type has left the node list', async () => {
     keyInBlockOfDisabledType();
-    // Mounted inside act() so the device list the toolbar fetches on mount
-    // lands inside it too.
-    const view = await act(async () => render(<Toolbar />));
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
-    // Unmounted before the suite's afterEach sets the tab store, which would
-    // re-render a toolbar still subscribed to it outside act().
-    view.unmount();
     const blob = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
     const text = await new Promise<string>((resolve, reject) => {
       const fr = new FileReader();
@@ -896,7 +896,7 @@ describe('Toolbar', () => {
   it('Export Python: blanks a key in a block whose node type has left the node list', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'print(1)' });
     keyInBlockOfDisabledType();
-    const view = await act(async () => render(<Toolbar />));
+    const view = await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
@@ -906,8 +906,8 @@ describe('Toolbar', () => {
     expect(subgraphs![0].nodes[0].data.params.openai_api_key).toBe('');
   });
 
-  it('Export Workspace: is the last Export item, set apart by a divider', () => {
-    render(<Toolbar />);
+  it('Export Workspace: is the last Export item, set apart by a divider', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     const item = screen.getByRole('button', { name: 'Workspace (.cduiworkspace)' });
     expect(item.title).toBe('One file with every open tab');
@@ -922,11 +922,11 @@ describe('Toolbar', () => {
     ).not.toBeNull();
   });
 
-  it('Export Workspace: downloads a file whose name ends in .cduiworkspace', () => {
+  it('Export Workspace: downloads a file whose name ends in .cduiworkspace', async () => {
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Workspace (.cduiworkspace)'));
 
@@ -936,16 +936,16 @@ describe('Toolbar', () => {
     expect(anchor.download).toMatch(/^workspace-\d{4}-\d{2}-\d{2}\.cduiworkspace$/);
   });
 
-  it('Export Workspace: nothing exportable warns and downloads nothing', () => {
-    render(<Toolbar />);
+  it('Export Workspace: nothing exportable warns and downloads nothing', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Workspace (.cduiworkspace)'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('Export Subgraph: empty canvas warns', () => {
-    render(<Toolbar />);
+  it('Export Subgraph: empty canvas warns', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
@@ -955,7 +955,7 @@ describe('Toolbar', () => {
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     await resolveDialog('  ');
@@ -969,7 +969,7 @@ describe('Toolbar', () => {
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     await resolveDialog('my-preset');
@@ -1016,7 +1016,7 @@ describe('Toolbar', () => {
         },
       ],
     });
-    const { unmount } = render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     await resolveDialog('Holds A Card');
@@ -1024,8 +1024,6 @@ describe('Toolbar', () => {
     const body = mockedRest.createPreset.mock.calls[0][0];
     expect(body.presets).toEqual([labeler]);
     expect(body.nodes[0].data.internalParams).toEqual({ p: { label: 'set on the card' } });
-    // Before the suite's cleanup restores the tab store, as in `exportAs` below.
-    unmount();
   });
 
   it('Export Subgraph: createPreset rejection toasts error', async () => {
@@ -1033,7 +1031,7 @@ describe('Toolbar', () => {
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     await resolveDialog('p');
@@ -1066,15 +1064,14 @@ describe('Toolbar', () => {
      * `menu`/`item` are the labels to click, because the cases that run in
      * Traditional Chinese have a Traditional Chinese toolbar.
      *
-     * The caller unmounts the toolbar rather than the suite's cleanup: the
-     * afterEach above restores the tab store's applyLayout first, and a
-     * toolbar still subscribed to that store re-renders outside act().
+     * The caller unmounts the toolbar when it is done, so a case that exports
+     * more than once (one per refusal code) mounts one toolbar at a time.
      */
     async function exportAs(typed: string, menu = 'Export', item = 'Export as Subgraph') {
       setActiveTab({
         nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
       });
-      const view = render(<Toolbar />);
+      const view = await renderSettled(<Toolbar />);
       fireEvent.click(screen.getByText(menu));
       fireEvent.click(screen.getByText(item));
       await resolveDialog(typed);
@@ -1296,7 +1293,7 @@ describe('Toolbar', () => {
         },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     const errors = useToastStore.getState().toasts.filter((t) => t.type === 'error');
@@ -1309,7 +1306,7 @@ describe('Toolbar', () => {
     expect(mockedRest.createPreset).not.toHaveBeenCalled();
   });
 
-  it('Export Subgraph: falls back to the definition id when a block is unnamed', () => {
+  it('Export Subgraph: falls back to the definition id when a block is unnamed', async () => {
     setActiveTab({
       nodes: [
         { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
@@ -1321,27 +1318,27 @@ describe('Toolbar', () => {
         },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Subgraph'));
     const errors = useToastStore.getState().toasts.filter((t) => t.type === 'error');
     expect(errors[0].message).toContain('blk');
   });
 
-  it('Export Python: empty canvas warns', () => {
-    render(<Toolbar />);
+  it('Export Python: empty canvas warns', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
   });
 
-  it('Export Python: a canvas with only notes warns and does not call the API', () => {
+  it('Export Python: a canvas with only notes warns and does not call the API', async () => {
     setActiveTab({
       nodes: [
         { id: 'note1', type: 'noteNode', position: { x: 0, y: 0 }, data: { type: 'note', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
@@ -1354,7 +1351,7 @@ describe('Toolbar', () => {
       ...SAVED,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
@@ -1395,7 +1392,7 @@ describe('Toolbar', () => {
         { id: 'note-edge', source: 'preset1', target: 'note1', sourceHandle: 'x', targetHandle: 'y' },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
@@ -1427,7 +1424,7 @@ describe('Toolbar', () => {
       ],
       subgraphs: [definition],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
@@ -1446,7 +1443,7 @@ describe('Toolbar', () => {
       name: '',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     // The [] is `subgraphs` (core#137) -- a graph with no collapsed blocks
@@ -1465,7 +1462,7 @@ describe('Toolbar', () => {
       graphDevice: 'cuda:1',
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(
@@ -1487,7 +1484,7 @@ describe('Toolbar', () => {
       deterministic: true,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
@@ -1503,7 +1500,7 @@ describe('Toolbar', () => {
       deterministic: false,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
@@ -1519,7 +1516,7 @@ describe('Toolbar', () => {
       ...SAVED,
       nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() =>
@@ -1529,28 +1526,28 @@ describe('Toolbar', () => {
 
   // ── Export Diagram (SVG / PNG architecture) ─────────────────────────
 
-  it('Export Diagram: empty canvas warns and does not download', () => {
-    render(<Toolbar />);
+  it('Export Diagram: empty canvas warns and does not download', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export Diagram (SVG)'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('Export Diagram: a canvas with only notes warns (notes are not architecture)', () => {
+  it('Export Diagram: a canvas with only notes warns (notes are not architecture)', async () => {
     setActiveTab({
       nodes: [
         { id: 'note1', type: 'noteNode', position: { x: 0, y: 0 }, data: { type: 'note', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export Diagram (PNG)'));
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('Export Diagram (SVG): with nodes downloads an SVG blob', () => {
+  it('Export Diagram (SVG): with nodes downloads an SVG blob', async () => {
     setActiveTab({
       name: 'My Graph!!',
       nodes: [
@@ -1559,7 +1556,7 @@ describe('Toolbar', () => {
       ],
       edges: [{ id: 'e1', source: 'n1', target: 'n2', style: { stroke: '#4CAF50' } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export Diagram (SVG)'));
     expect(URL.createObjectURL).toHaveBeenCalled();
@@ -1567,14 +1564,14 @@ describe('Toolbar', () => {
     expect(mockedExportDiagram.svgToPngBlob).not.toHaveBeenCalled();
   });
 
-  it('Export Diagram (SVG): uses the "graph" filename fallback when the tab name is empty', () => {
+  it('Export Diagram (SVG): uses the "graph" filename fallback when the tab name is empty', async () => {
     setActiveTab({
       name: '',
       nodes: [
         { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export Diagram (SVG)'));
     expect(URL.createObjectURL).toHaveBeenCalled();
@@ -1586,7 +1583,7 @@ describe('Toolbar', () => {
         { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export Diagram (PNG)'));
     await waitFor(() => expect(mockedExportDiagram.svgToPngBlob).toHaveBeenCalled());
@@ -1600,7 +1597,7 @@ describe('Toolbar', () => {
         { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export Diagram (PNG)'));
     await waitFor(() =>
@@ -1615,7 +1612,7 @@ describe('Toolbar', () => {
   it('Reload Nodes: success calls store.reload', async () => {
     const reload = vi.fn().mockResolvedValue(undefined);
     useNodeDefStore.setState({ reload });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Reload Nodes'));
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
@@ -1623,7 +1620,7 @@ describe('Toolbar', () => {
   it('Reload Nodes: failure toasts error', async () => {
     const reload = vi.fn().mockRejectedValue(new Error('reload boom'));
     useNodeDefStore.setState({ reload });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Reload Nodes'));
     await waitFor(() =>
       expect(useToastStore.getState().toasts.some((t) => t.type === 'error' && t.message.includes('reload boom'))).toBe(true),
@@ -1640,7 +1637,7 @@ describe('Toolbar', () => {
 
   it('Custom Nodes: opens the one manager, as a modal, and closing it lowers the flag', async () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
-    render(
+    await renderSettled(
       <>
         <Toolbar />
         <CustomNodeManagerModal />
@@ -1668,7 +1665,7 @@ describe('Toolbar', () => {
     // The manager is mounted after the whole editor, so it has to take focus
     // for a keyboard user to reach it at all (the Custom Nodes manager issue).
     mockedRest.listCustomNodes.mockResolvedValue([]);
-    render(
+    await renderSettled(
       <>
         <Toolbar />
         <CustomNodeManagerModal />
@@ -1690,15 +1687,15 @@ describe('Toolbar', () => {
 
   // ── Auto Layout split button + dropdown ─────────────────────────────
 
-  it('Auto Layout main button runs layout with the last mode and persists it', () => {
-    render(<Toolbar />);
+  it('Auto Layout main button runs layout with the last mode and persists it', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByText('Auto Layout'));
     expect(applyLayout).toHaveBeenCalledWith('experiments');
     expect(useUIStore.getState().lastLayoutMode).toBe('experiments');
   });
 
-  it('Auto Layout caret toggles the dropdown and selecting a mode applies it', () => {
-    render(<Toolbar />);
+  it('Auto Layout caret toggles the dropdown and selecting a mode applies it', async () => {
+    await renderSettled(<Toolbar />);
     const caret = screen.getByRole('button', { name: 'Layout mode' });
     fireEvent.click(caret);
     expect(screen.getByRole('menuitem', { name: 'Layout Experiments' })).toBeInTheDocument();
@@ -1712,26 +1709,26 @@ describe('Toolbar', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  it('Auto Layout: selecting "Layout Experiments" from the dropdown applies it', () => {
+  it('Auto Layout: selecting "Layout Experiments" from the dropdown applies it', async () => {
     useUIStore.setState({ lastLayoutMode: 'all' });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     fireEvent.click(screen.getByText('Layout Experiments'));
     expect(useUIStore.getState().lastLayoutMode).toBe('experiments');
   });
 
-  it('Auto Layout: dropdown marks "Layout Selected" active when that is the last mode', () => {
+  it('Auto Layout: dropdown marks "Layout Selected" active when that is the last mode', async () => {
     useUIStore.setState({ lastLayoutMode: 'selected' });
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', selected: true, position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     expect(screen.getByText('Layout Selected (1)')).toBeInTheDocument();
   });
 
-  it('Auto Layout caret toggles closed when clicked twice', () => {
-    render(<Toolbar />);
+  it('Auto Layout caret toggles closed when clicked twice', async () => {
+    await renderSettled(<Toolbar />);
     const caret = screen.getByRole('button', { name: 'Layout mode' });
     expect(caret).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(caret);
@@ -1742,8 +1739,8 @@ describe('Toolbar', () => {
     expect(caret).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('Auto Layout: "Layout Selected" is disabled with 0 selected and clicking is a no-op', () => {
-    render(<Toolbar />);
+  it('Auto Layout: "Layout Selected" is disabled with 0 selected and clicking is a no-op', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     const selected = screen.getByRole('menuitem', { name: 'Layout Selected (0)' });
     expect(selected).toBeDisabled();
@@ -1755,14 +1752,14 @@ describe('Toolbar', () => {
     expect(screen.getByRole('menu', { name: 'Layout mode' })).toBeInTheDocument();
   });
 
-  it('Auto Layout: "Layout Selected" applies when nodes are selected', () => {
+  it('Auto Layout: "Layout Selected" applies when nodes are selected', async () => {
     setActiveTab({
       nodes: [
         { id: 'n1', type: 'baseNode', selected: true, position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } },
         { id: 'n2', type: 'baseNode', selected: true, position: { x: 10, y: 0 }, data: { type: 'Add', params: {} } },
       ],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     const selected = screen.getByRole('menuitem', { name: 'Layout Selected (2)' });
     expect(selected).toBeEnabled();
@@ -1771,26 +1768,26 @@ describe('Toolbar', () => {
     expect(useUIStore.getState().lastLayoutMode).toBe('selected');
   });
 
-  it('Auto Layout: dropdown highlights the active mode and reflects selected count', () => {
+  it('Auto Layout: dropdown highlights the active mode and reflects selected count', async () => {
     useUIStore.setState({ lastLayoutMode: 'all' });
     setActiveTab({
       nodes: [{ id: 'n1', type: 'baseNode', selected: true, position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
     });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     expect(screen.getByText('Layout Selected (1)')).toBeInTheDocument();
   });
 
-  it('Auto Layout: dropdown closes on outside mousedown', () => {
-    render(<Toolbar />);
+  it('Auto Layout: dropdown closes on outside mousedown', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     expect(screen.getByText('Layout Experiments')).toBeInTheDocument();
     fireEvent.mouseDown(document.body);
     expect(screen.queryByText('Layout Experiments')).toBeNull();
   });
 
-  it('Auto Layout: dropdown closes on a mousedown on the canvas, which stops it from bubbling', () => {
-    render(<Toolbar />);
+  it('Auto Layout: dropdown closes on a mousedown on the canvas, which stops it from bubbling', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     expect(screen.getByRole('menu', { name: 'Layout mode' })).toBeInTheDocument();
     const pane = canvasPane();
@@ -1799,8 +1796,8 @@ describe('Toolbar', () => {
     pane.remove();
   });
 
-  it('Auto Layout: mousedown inside the dropdown keeps it open', () => {
-    render(<Toolbar />);
+  it('Auto Layout: mousedown inside the dropdown keeps it open', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Layout mode' }));
     fireEvent.mouseDown(screen.getByText('Layout Experiments'));
     expect(screen.getByText('Layout Experiments')).toBeInTheDocument();
@@ -1844,8 +1841,8 @@ describe('Toolbar', () => {
     const rendered = (selector: string) =>
       selector.replace(/\.([A-Za-z_][\w-]*)/g, (_, name: string) => `.${styles[name]}`);
 
-    it('opens as a menu of three buttons', () => {
-      render(<Toolbar />);
+    it('opens as a menu of three buttons', async () => {
+      await renderSettled(<Toolbar />);
       fireEvent.click(caret());
       const items = within(menu()).getAllByRole('menuitem');
       expect(items.map((one) => one.textContent)).toEqual([
@@ -1860,8 +1857,8 @@ describe('Toolbar', () => {
     // The key that already closes the plugin overflow menu and the font size
     // menu. Found by text rather than by role, so this case is about the key
     // and nothing else.
-    it('closes on Escape', () => {
-      render(<Toolbar />);
+    it('closes on Escape', async () => {
+      await renderSettled(<Toolbar />);
       fireEvent.click(caret());
       expect(screen.getByText('Layout All')).toBeInTheDocument();
       fireEvent.keyDown(document, { key: 'Escape' });
@@ -1869,8 +1866,8 @@ describe('Toolbar', () => {
       expect(applyLayout).not.toHaveBeenCalled();
     });
 
-    it('opens inside nothing that clips it', () => {
-      render(<Toolbar />);
+    it('opens inside nothing that clips it', async () => {
+      await renderSettled(<Toolbar />);
       fireEvent.click(caret());
       // The panel is the items' parent. Found by text rather than by role, so
       // this case is about the clip and nothing else.
@@ -1889,8 +1886,8 @@ describe('Toolbar', () => {
     // jsdom has no pointer and no cascade, so each hover rule on the items is
     // asked whether it would match the disabled one with the pointer on it:
     // the rule's selector without `:hover`, matched against the element.
-    it('dims the disabled item and never lights it up on hover', () => {
-      render(<Toolbar />);
+    it('dims the disabled item and never lights it up on hover', async () => {
+      await renderSettled(<Toolbar />);
       fireEvent.click(caret());
       const disabled = item('Layout Selected (0)');
       const rules = cssRules().filter((rule) => /\.layoutDropdownItem(?![\w-])/.test(rule.selector));
@@ -1932,23 +1929,23 @@ describe('Toolbar', () => {
 
       const fromRightEdge = () => menu().classList.contains(styles.layoutDropdownRight);
 
-      it('opens from the split button\'s left edge when the menu fits there', () => {
+      it('opens from the split button\'s left edge when the menu fits there', async () => {
         layOut(16, 1100);
-        render(<Toolbar />);
+        await renderSettled(<Toolbar />);
         fireEvent.click(caret());
         expect(fromRightEdge()).toBe(false);
       });
 
-      it('opens from the right edge when the left edge would carry it past the window', () => {
+      it('opens from the right edge when the left edge would carry it past the window', async () => {
         layOut(966, 1100); // 966 + 200 = 1166 > 1100
-        render(<Toolbar />);
+        await renderSettled(<Toolbar />);
         fireEvent.click(caret());
         expect(fromRightEdge()).toBe(true);
       });
 
-      it('moves to the edge that fits when the window is resized while it is open', () => {
+      it('moves to the edge that fits when the window is resized while it is open', async () => {
         layOut(966, 1300);
-        render(<Toolbar />);
+        await renderSettled(<Toolbar />);
         fireEvent.click(caret());
         expect(fromRightEdge()).toBe(false);
         act(() => {
@@ -1967,8 +1964,8 @@ describe('Toolbar', () => {
 
   // ── Settings popover toggle ─────────────────────────────────────────
 
-  it('Settings: gear button toggles the popover open and closed', () => {
-    render(<Toolbar />);
+  it('Settings: gear button toggles the popover open and closed', async () => {
+    await renderSettled(<Toolbar />);
     const gear = screen.getByRole('button', { name: 'Settings' });
     expect(gear).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(gear);
@@ -1978,8 +1975,8 @@ describe('Toolbar', () => {
     expect(gear).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('Settings: the popover closing itself (Escape) drives the parent onClose', () => {
-    render(<Toolbar />);
+  it('Settings: the popover closing itself (Escape) drives the parent onClose', async () => {
+    await renderSettled(<Toolbar />);
     const gear = screen.getByRole('button', { name: 'Settings' });
     fireEvent.click(gear);
     expect(gear).toHaveAttribute('aria-expanded', 'true');
@@ -1990,8 +1987,8 @@ describe('Toolbar', () => {
 
   // ── Help button ─────────────────────────────────────────────────────
 
-  it('Help button toggles the shortcuts modal in the UI store', () => {
-    render(<Toolbar />);
+  it('Help button toggles the shortcuts modal in the UI store', async () => {
+    await renderSettled(<Toolbar />);
     expect(useUIStore.getState().shortcutsModalOpen).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Keyboard Shortcuts' }));
     expect(useUIStore.getState().shortcutsModalOpen).toBe(true);
@@ -1999,8 +1996,8 @@ describe('Toolbar', () => {
 
   // ── Font size menu ──────────────────────────────────────────────────
 
-  it('Font size: Aa button toggles the menu and a selection updates the store', () => {
-    render(<Toolbar />);
+  it('Font size: Aa button toggles the menu and a selection updates the store', async () => {
+    await renderSettled(<Toolbar />);
     const aa = screen.getByRole('button', { name: 'Font size' });
     expect(aa).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(aa);
@@ -2013,8 +2010,8 @@ describe('Toolbar', () => {
 
   // ── Language menu ───────────────────────────────────────────────────
 
-  it('Language: shows current locale label and lists options', () => {
-    render(<Toolbar />);
+  it('Language: shows current locale label and lists options', async () => {
+    await renderSettled(<Toolbar />);
     const langBtn = screen.getByRole('button', { name: 'Language' });
     expect(langBtn).toHaveTextContent('EN');
     fireEvent.click(langBtn);
@@ -2024,8 +2021,8 @@ describe('Toolbar', () => {
     expect(screen.getByText('✓')).toBeInTheDocument();
   });
 
-  it('Language: selecting a different locale switches and closes the menu', () => {
-    render(<Toolbar />);
+  it('Language: selecting a different locale switches and closes the menu', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Language' }));
     fireEvent.click(screen.getByText('繁體中文'));
     expect(useI18n.getState().locale).toBe('zh-TW');
@@ -2033,8 +2030,8 @@ describe('Toolbar', () => {
     expect(screen.queryByText('English')).toBeNull();
   });
 
-  it('Language: clicking the overlay closes the menu', () => {
-    render(<Toolbar />);
+  it('Language: clicking the overlay closes the menu', async () => {
+    await renderSettled(<Toolbar />);
     fireEvent.click(screen.getByRole('button', { name: 'Language' }));
     expect(screen.getByText('English')).toBeInTheDocument();
     // The overlay is the sibling div with an onClick; it is the element right
@@ -2045,9 +2042,9 @@ describe('Toolbar', () => {
     expect(screen.queryByText('English')).toBeNull();
   });
 
-  it('Language: falls back to the raw locale code when it is unsupported', () => {
+  it('Language: falls back to the raw locale code when it is unsupported', async () => {
     useI18n.setState({ locale: 'fr' as never });
-    render(<Toolbar />);
+    await renderSettled(<Toolbar />);
     expect(screen.getByRole('button', { name: 'Language' })).toHaveTextContent('fr');
   });
 });
