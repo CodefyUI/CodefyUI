@@ -1999,7 +1999,9 @@ async def test_deleting_a_downloaded_plugin_takes_its_files_and_its_entry(
     # An empty list is also what a failed computation answers, with this
     # warning: without the check, a swallowed exception would pass here.
     assert "could not tell" not in caplog.text
-    assert body["reinstall_hint"] == "cdui plugin install demo-external"
+    # Not in any catalog, so its name would install nothing: the command
+    # names the repository and ref it was installed from (#506).
+    assert body["reinstall_hint"] == "cdui plugin install alice/extras@v1.2.3"
 
     assert not (center_lockfile / "demo-external").exists()
     assert "demo-external" not in lockfile_of(center_lockfile)["plugins"]
@@ -2075,6 +2077,9 @@ async def test_deleting_a_builtin_pack_keeps_its_files_and_tombstones_it(
     assert body["files_removed"] is None
     assert body["python_deps_left"] == []
     assert body["uninstall_command"] is None
+    # Shown with nothing left behind too (#506): the catalog name is the
+    # command that clears the tombstone.
+    assert body["reinstall_hint"] == "cdui plugin install foundations"
 
     assert repo_dir.is_dir()
     assert (repo_dir / "cdui.plugin.toml").is_file()
@@ -2104,6 +2109,10 @@ async def test_unlinking_a_local_plugin_leaves_the_authors_checkout_alone(
     assert response.status_code == 200, response.text
     assert response.json()["files_removed"] is None
     assert response.json()["tombstoned"] is False
+    # Its folder is still there, so linking it again is the way back.
+    from app.core.plugins.deps import _shell_quote
+    assert response.json()["reinstall_hint"] == (
+        f"cdui plugin link {_shell_quote(str(work))}")
 
     assert (work / "cdui.plugin.toml").is_file()
     after = lockfile_of(center_lockfile)

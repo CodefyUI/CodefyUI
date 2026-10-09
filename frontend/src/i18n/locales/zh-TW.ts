@@ -1403,6 +1403,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.activity.depsLeft':
     '這些 Python 套件還留著：{packages}。要移除的話，請停止伺服器後執行：',
   'pluginCenter.activity.reinstall': '要再安裝回來：',
+  'pluginCenter.activity.reinstallTombstoned':
+    'cdui plugin sync 不會再把 {plugin} 裝回來。要再安裝回來：',
 
   // The steps of an install; `deps` reuses `packs.activity.step.pip`.
   'pluginCenter.step.resolve': '正在解析來源',

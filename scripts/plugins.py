@@ -1984,8 +1984,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     section(f"移除外掛：{plugin_id}", f"Uninstalling plugin: {plugin_id}")
 
     try:
+        catalog = load_catalog()
         outcome = core_lifecycle.uninstall_plugin(
-            plugin_id, builtin_ids=set(builtin_catalog_packs())
+            plugin_id,
+            builtin_ids=set(core_catalog.builtin_catalog_packs(catalog)),
+            catalog=catalog,
         )
     except LockfileBusy as exc:
         # Refused before the ``rmtree``, so the plugin's files are untouched
@@ -2032,13 +2035,18 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         )
         if outcome.uninstall_command is not None:
             print(f"      {outcome.uninstall_command}")
+    # How to get it back, on its own line for the same reason -- and by the
+    # panel's rule: whenever the lifecycle could build a command from where
+    # the plugin came from, whether or not packages were left above (#506).
+    # A tombstoned pack also says why sync will not do it for you.
     if outcome.tombstoned:
         info(
-            f"cdui plugin sync 不會再把 {plugin_id} 裝回來；"
-            f"要拿回它請執行 {outcome.reinstall_hint}",
-            f"`cdui plugin sync` will not bring {plugin_id} back. When you want "
-            f"it again, run `{outcome.reinstall_hint}`.",
+            f"cdui plugin sync 不會再把 {plugin_id} 裝回來。",
+            f"`cdui plugin sync` will not bring {plugin_id} back.",
         )
+    if outcome.reinstall_hint is not None:
+        info("要再安裝回來：", "To install the plugin again:")
+        print(f"      {outcome.reinstall_hint}")
     return 0
 
 

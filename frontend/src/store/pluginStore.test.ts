@@ -164,7 +164,7 @@ beforeEach(() => {
     files_removed: true,
     python_deps_left: [],
     uninstall_command: null,
-    reinstall_hint: '',
+    reinstall_hint: null,
   });
   api.setPluginEnabled.mockImplementation(async (id, enabled) => ({ id, enabled }));
   // Running-and-idle by default: an accidental follower parks instead of
@@ -1241,7 +1241,7 @@ describe('pluginStore — uninstall', () => {
     api.uninstallPlugin.mockResolvedValue({
       id: 'demo',
       removed: true,
-      tombstoned: false,
+      tombstoned: true,
       files_removed: true,
       python_deps_left: ['model2vec', 'numpy'],
       uninstall_command: 'uv pip uninstall model2vec numpy',
@@ -1257,6 +1257,8 @@ describe('pluginStore — uninstall', () => {
       depsLeft: ['model2vec', 'numpy'],
       uninstallCommand: 'uv pip uninstall model2vec numpy',
       reinstallHint: 'cdui plugin install demo',
+      // Kept, so the pane can say why a sync will not restore it (#506).
+      tombstoned: true,
     });
   });
 
@@ -1265,6 +1267,7 @@ describe('pluginStore — uninstall', () => {
 
     expect(usePluginStore.getState().removal).toMatchObject({
       pluginId: 'demo', depsLeft: [], uninstallCommand: null,
+      reinstallHint: null, tombstoned: false,
     });
   });
 

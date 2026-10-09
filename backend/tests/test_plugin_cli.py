@@ -1308,11 +1308,11 @@ def _stub_uninstall(monkeypatch, **fields) -> None:
 
     A real :class:`lifecycle.UninstallOutcome` rather than a look-alike, so a
     field the flow renames fails here instead of passing against a copy."""
+    fields.setdefault("reinstall_hint", "cdui plugin install demo")
     outcome = lifecycle.UninstallOutcome(
         plugin_id="demo",
         removed=True,
         files_removed=None,
-        reinstall_hint="cdui plugin install demo",
         **fields,
     )
     monkeypatch.setattr(lifecycle, "uninstall_plugin",
@@ -1362,7 +1362,8 @@ def test_an_uninstall_that_leaves_no_packages_says_nothing_about_them(
     isolated_lockfile, monkeypatch, capsys
 ):
     """No names, so no sentence and no command: a heading over an empty list
-    announces nothing. The output ends at the removal line, as it did."""
+    announces nothing. The reinstall line is still printed: whether it is
+    shown does not depend on packages being left (#506)."""
     monkeypatch.setenv("CODEFYUI_LANG", "en")
     _stub_uninstall(monkeypatch, tombstoned=False,
                     python_deps_left=(), uninstall_command=None)
@@ -1371,15 +1372,35 @@ def test_an_uninstall_that_leaves_no_packages_says_nothing_about_them(
     printed = capsys.readouterr().out
     assert "Python" not in printed
     assert "uv pip uninstall" not in printed
+    assert "cdui plugin sync" not in printed
+    assert printed.endswith("To install the plugin again:"
+                            f"{plugin_cli.RESET}\n      cdui plugin install demo\n")
+
+
+def test_an_uninstall_with_no_reinstall_command_prints_none(
+    isolated_lockfile, monkeypatch, capsys
+):
+    """A source nothing can install again -- a linked folder that is gone --
+    gets no command at all, rather than ``cdui plugin install <id>`` for an
+    id no catalog lists (#506). The output ends at the removal line."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    _stub_uninstall(monkeypatch, tombstoned=False, python_deps_left=(),
+                    uninstall_command=None, reinstall_hint=None)
+
+    assert plugin_cli.main(["uninstall", "demo"]) == 0
+    printed = capsys.readouterr().out
+    assert "cdui plugin install" not in printed
+    assert "install the plugin again" not in printed
     assert printed.endswith(f"Removed demo{plugin_cli.RESET}\n")
 
 
-def test_a_builtin_pack_that_declared_no_packages_ends_at_the_sync_line(
+def test_a_builtin_pack_that_declared_no_packages_ends_at_the_reinstall_line(
     isolated_lockfile, monkeypatch, capsys
 ):
     """The common case, end to end and unstubbed: a built-in pack with no
-    ``[python_deps]``. It is tombstoned, so the last thing said is how to get
-    it back -- and there is nothing about packages to say at all."""
+    ``[python_deps]``. It is tombstoned, so the last things said are why sync
+    will not restore it and how to get it back -- and there is nothing about
+    packages to say at all."""
     monkeypatch.setenv("CODEFYUI_LANG", "en")
     lockfile = plugin_loader.load_lockfile()
     lockfile.setdefault("plugins", {})["rl"] = {
@@ -1392,8 +1413,8 @@ def test_a_builtin_pack_that_declared_no_packages_ends_at_the_sync_line(
     assert "Removed rl" in printed
     assert "Python" not in printed
     assert "uv pip uninstall" not in printed
-    assert printed.endswith(
-        f"run `cdui plugin install rl`.{plugin_cli.RESET}\n")
+    assert "`cdui plugin sync` will not bring rl back." in printed
+    assert printed.endswith("\n      cdui plugin install rl\n")
 
 
 def test_cmd_reload_no_server_returns_zero(isolated_lockfile):
