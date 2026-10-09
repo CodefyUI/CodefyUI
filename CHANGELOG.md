@@ -22,6 +22,16 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **BradleyTerryTrain gives the same result every run** ([#675]). It seeded the
+  process-wide random generator and then built its network from it, so two of
+  them in one graph without a run seed, such as a shortcut arm beside its
+  control, reseeded each other and trained from different weights on each
+  run: the shortcut arm's final holdout accuracy moved between 0.75 and 0.78.
+  The weights now come from the node's `seed` alone and are the ones a single
+  node gave before.
+
 ### Changed
 
 - **Switch picks its input from a param, grows as it is wired, and stops
@@ -5430,3 +5440,4 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#675]: https://github.com/CodefyUI/CodefyUI/issues/675
