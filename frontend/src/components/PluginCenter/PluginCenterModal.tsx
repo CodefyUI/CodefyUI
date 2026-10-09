@@ -143,13 +143,11 @@ function PluginCenterBody() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      // Something can sit ON TOP of this panel: a confirm dialog (uninstall
-      // asks first), or the shortcuts modal, which renders at `z-index: 9000`
-      // — behind this panel rather than over it — and has no Escape handler of
-      // its own, so swallowing the key is what keeps one press from closing
-      // this panel and leaving a shortcuts window nobody can see.
+      // A confirm dialog can sit ON TOP of this panel (uninstall asks first),
+      // and it owns the key while it is open. The shortcuts sheet can too,
+      // and it stops its own Escape before it gets here (stack policy in
+      // `shared/ShortcutsModal.tsx`).
       if (useDialogStore.getState().active !== null) return;
-      if (useUIStore.getState().shortcutsModalOpen) return;
       // The diff window is a third window on the same key and renders two
       // rungs above this one (`SourceControl/GitDiffModal.module.css`), so a
       // press while it is open belongs to it. It stops the press itself; this

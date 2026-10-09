@@ -1015,11 +1015,8 @@ describe('PackCenterModal — closing', () => {
   });
 
   it('leaves Escape alone while something is stacked above it', () => {
-    useUIStore.setState({ shortcutsModalOpen: true });
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(useUIStore.getState().packCenterOpen).toBe(true);
-    useUIStore.setState({ shortcutsModalOpen: false });
-
+    // The shortcuts sheet stops its own Escape before this panel's handler;
+    // `PluginCenter/escapeStacking.test.tsx` covers it over this panel.
     useDialogStore.setState({ active: { kind: 'confirm', title: 'x' } as never });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().packCenterOpen).toBe(true);

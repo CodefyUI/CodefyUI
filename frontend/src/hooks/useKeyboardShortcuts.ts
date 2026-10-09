@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
+import { useDialogStore } from '../store/dialogStore';
+import { usePackStore } from '../store/packStore';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
-import { isAnyModalOpen, type ModalName } from '../store/modalState';
+import { isAnyModalOpen } from '../store/modalState';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
 
 /** Node kinds with no detail modal to open (mirrors NodeDetailModal). */
@@ -48,9 +50,6 @@ function hasTextSelection(): boolean {
 function isHelpKey(e: KeyboardEvent): boolean {
   return e.key === '?' || (e.shiftKey && e.key === '/');
 }
-
-/** The shortcuts sheet, as the one modal `?` is allowed to act on. */
-const HELP_KEY_IGNORES: readonly ModalName[] = ['shortcuts'];
 
 /**
  * Ctrl+S / Cmd+S exactly: Shift and Alt make other chords. Lower-cased for
@@ -121,10 +120,8 @@ export function useKeyboardShortcuts() {
       // re-laid-out the graph the user could not see, and Ctrl+Z undid work
       // behind a confirm dialog.
       //
-      // `?` is the single exception, and only because it is what OPENED the
-      // shortcuts sheet: its own branch re-asks, counting every modal but
-      // that one, so it still closes the sheet and still refuses to stack a
-      // second one on the Package Center.
+      // `?` is the single exception: it opens the shortcuts sheet over a
+      // panel and closes it again, and its own branch says when it may not.
       if (isAnyModalOpen() && !isHelpKey(e)) return;
 
       // Ctrl+Z / Cmd+Z — Undo
@@ -212,13 +209,16 @@ export function useKeyboardShortcuts() {
 
       // ? — Toggle shortcuts help.
       //
-      // The one key the modal gate above lets past, so it can close the sheet
-      // it opened. It still has to refuse every OTHER modal: pressing ? over
-      // the Package Center used to put a second modal on top of it — and,
-      // because the sheet sits below the panels in the stacking order, an
-      // invisible one whose open state then swallowed Escape (#380).
+      // The one key the modal gate above lets past. The sheet may open over
+      // any panel: it renders above them all and owns Escape while it is
+      // open (stack policy in `components/shared/ShortcutsModal.tsx`, #490).
+      // Two layers above the sheet refuse it. A confirm dialog owns the
+      // keyboard until it is answered, and the restart overlay covers the
+      // whole page, so a sheet opened under it could not be seen (#380 was
+      // that bug, when the sheet still sat below the panels).
       if (isHelpKey(e)) {
-        if (isAnyModalOpen(HELP_KEY_IGNORES)) return;
+        if (useDialogStore.getState().active) return;
+        if (usePackStore.getState().restart.phase !== 'idle') return;
         e.preventDefault();
         useUIStore.getState().toggleShortcutsModal();
         return;

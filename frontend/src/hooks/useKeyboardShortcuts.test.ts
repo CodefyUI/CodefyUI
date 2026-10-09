@@ -5,6 +5,7 @@ import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
 import { useDialogStore } from '../store/dialogStore';
 import { useProjectStore } from '../store/projectStore';
+import { usePackStore } from '../store/packStore';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
 
 vi.mock('../utils/saveActiveGraph', () => ({
@@ -547,12 +548,42 @@ describe('useKeyboardShortcuts behind an open modal', () => {
     expect(e.defaultPrevented).toBe(true);
   });
 
-  it('? does not stack the shortcuts sheet on top of the Package Center', () => {
-    useUIStore.setState({ packCenterOpen: true } as any);
+  // Stack policy (#490): the sheet renders above every panel and owns Escape
+  // while it is open, so `?` may open it over any of them.
+  it.each(MODALS.filter(([name]) => name !== 'a confirm dialog' && name !== 'the shortcuts sheet'))(
+    '? opens the shortcuts sheet over %s',
+    (_name, open) => {
+      open();
+      renderHook(() => useKeyboardShortcuts());
+      const e = dispatchKey({ key: '?' });
+      expect(toggleShortcutsModal).toHaveBeenCalledTimes(1);
+      expect(e.defaultPrevented).toBe(true);
+    },
+  );
+
+  it('? does not open the shortcuts sheet under a confirm dialog', () => {
+    // The dialog renders above the sheet and owns the keyboard until it is
+    // answered.
+    useDialogStore.setState({ active: { kind: 'confirm', title: 'sure?' }, resolve: null });
     renderHook(() => useKeyboardShortcuts());
     const e = dispatchKey({ key: '?' });
     expect(toggleShortcutsModal).not.toHaveBeenCalled();
     expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('? does not open the shortcuts sheet under the restart overlay', () => {
+    // The overlay covers the whole page; a sheet opened under it could not be
+    // seen (#380).
+    const restart = usePackStore.getState().restart;
+    usePackStore.setState({ restart: { ...restart, phase: 'waiting' } as any });
+    try {
+      renderHook(() => useKeyboardShortcuts());
+      const e = dispatchKey({ key: '?' });
+      expect(toggleShortcutsModal).not.toHaveBeenCalled();
+      expect(e.defaultPrevented).toBe(false);
+    } finally {
+      usePackStore.setState({ restart });
+    }
   });
 
   it('? still closes the shortcuts sheet, which is the only modal it may answer', () => {
