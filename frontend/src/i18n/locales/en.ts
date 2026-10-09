@@ -279,6 +279,11 @@ const en = {
   // selector that sits right under the raw `shape` / `dtype` / `min` / `max`
   // read-out, and it is the word the student types in PyTorch (dim=0).
   'tensorGrid.dim': 'dim {dim}',
+  // A captured tensor shown in part, under the full `shape` read-out (#640).
+  // `slice` is the index the server took, e.g. `0, 0:218`; min / max / mean on
+  // the same line describe the values shown.
+  'tensorGrid.preview': 'Preview: slice [{slice}] · shape [{shape}] · {shown} of {total} values',
+  'tensorGrid.slice': 'Slice [{slice}] · shape [{shape}] · {shown} of {total} values',
 
   // Node
   'node.opt': 'opt',

@@ -120,12 +120,52 @@ def _parse_slice(slice_str: str) -> tuple[Any, ...] | None:
     return tuple(pieces)
 
 
-def _serialize_tensor(value: Any, slice_str: str, max_elements: int) -> dict[str, Any]:
+def _preview_slice(shape: list[int], max_elements: int) -> str:
+    """The leading slice of a tensor of ``shape`` that fits ``max_elements``.
+
+    Walks the dims from the front: a dim whose trailing block alone is still
+    too big is pinned to index 0; the first dim whose trailing block fits
+    keeps as many leading entries as fit (pinned to 0 when that is one). So
+    ``[16,3,224,224]`` previews as ``0,0`` (one 224x224 plane), ``[4,70000]``
+    as ``0,0:65536`` and ``[100000]`` as ``0:65536`` at a limit of 65,536.
+    Called only for a tensor larger than the limit, so the walk always ends
+    on a dim it cuts short.
+    """
+    pieces: list[str] = []
+    for i in range(len(shape)):
+        trailing = 1
+        for d in shape[i + 1:]:
+            trailing *= d
+        if trailing > max_elements:
+            pieces.append("0")
+            continue
+        keep = max_elements // trailing
+        pieces.append("0" if keep == 1 else f"0:{keep}")
+        break
+    return ",".join(pieces)
+
+
+def _serialize_tensor(
+    value: Any, slice_str: str, max_elements: int, preview: bool = False,
+) -> dict[str, Any]:
     import torch
 
     tensor: torch.Tensor = value
     full_shape = list(tensor.shape)
     dtype = str(tensor.dtype)
+
+    # A bounded preview (#640): the server knows the shape, so it picks the
+    # slice instead of the client guessing one rank-blind. A tensor within the
+    # limit is sent whole, exactly as without ``preview``.
+    truncated = False
+    if preview:
+        if slice_str:
+            raise HTTPException(
+                status_code=400, detail="'preview' and 'slice' cannot be combined",
+            )
+        if tensor.numel() > max_elements:
+            slice_str = _preview_slice(full_shape, max_elements)
+            truncated = True
 
     try:
         slicer = _parse_slice(slice_str)
@@ -160,7 +200,7 @@ def _serialize_tensor(value: Any, slice_str: str, max_elements: int) -> dict[str
         "slice": slice_str or "",
         "sliced_shape": list(sliced.shape),
         "values": sliced.cpu().tolist(),
-        "truncated": False,
+        "truncated": truncated,
     }
     if sliced.numel() > 0 and sliced.is_floating_point():
         summary["min"] = round(float(sliced.min()), 6)
@@ -172,12 +212,14 @@ def _serialize_tensor(value: Any, slice_str: str, max_elements: int) -> dict[str
     return summary
 
 
-def _serialize_value(value: Any, slice_str: str, max_elements: int) -> dict[str, Any]:
+def _serialize_value(
+    value: Any, slice_str: str, max_elements: int, preview: bool = False,
+) -> dict[str, Any]:
     try:
         import torch
 
         if isinstance(value, torch.Tensor):
-            return _serialize_tensor(value, slice_str, max_elements)
+            return _serialize_tensor(value, slice_str, max_elements, preview)
         if isinstance(value, torch.nn.Module):
             total = sum(p.numel() for p in value.parameters())
             trainable = sum(p.numel() for p in value.parameters() if p.requires_grad)
@@ -430,6 +472,7 @@ async def get_output(
     request: Request,
     slice: str = Query(default=""),
     max_elements: int = Query(default=4096, ge=1, le=1_000_000),
+    preview: bool = Query(default=False),
 ):
     store = _get_store(request)
     if not await store.has_run(run_id):
@@ -448,7 +491,7 @@ async def get_output(
         # the browser logs every 404 as a failed resource, and the Inspector
         # reads one as an expired run.
         return Response(status_code=204)
-    payload = _serialize_value(value, slice, max_elements)
+    payload = _serialize_value(value, slice, max_elements, preview)
     payload["run_id"] = run_id
     payload["node_id"] = node_id
     payload["port"] = port
@@ -484,9 +527,11 @@ async def get_output_query(
     port: str = Query(...),
     slice: str = Query(default=""),
     max_elements: int = Query(default=4096, ge=1, le=1_000_000),
+    preview: bool = Query(default=False),
 ):
     return await get_output(
-        run_id, node_id, port, request, slice=slice, max_elements=max_elements,
+        run_id, node_id, port, request,
+        slice=slice, max_elements=max_elements, preview=preview,
     )
 
 

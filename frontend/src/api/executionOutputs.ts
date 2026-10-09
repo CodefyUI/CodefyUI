@@ -88,11 +88,14 @@ export async function fetchOutput(
   runId: string,
   nodeId: string,
   port: string,
-  opts: { slice?: string; maxElements?: number } = {},
+  opts: { slice?: string; maxElements?: number; preview?: boolean } = {},
 ): Promise<OutputData> {
   const params = new URLSearchParams();
   if (opts.slice) params.set('slice', opts.slice);
   if (opts.maxElements != null) params.set('max_elements', String(opts.maxElements));
+  // The server picks a slice that fits from the tensor's shape (#640) and
+  // marks the answer `truncated`; a tensor within the limit comes back whole.
+  if (opts.preview) params.set('preview', 'true');
 
   const url = captureUrl(runId, 'value', nodeId, port, params);
 
