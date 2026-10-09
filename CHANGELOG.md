@@ -22,6 +22,14 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The results panel shows the log when there is no training to show**
+  ([#671]). The panel's tab is shared by every canvas tab but the log is not,
+  so after switching to a graph that trains nothing, starting a new run or
+  clearing the log, the panel stayed on the disabled **Training** tab and hid
+  the run's output. It now goes back to **Log**; **Runs** stays where it is.
+
 ### Changed
 
 - **Switch picks its input from a param, grows as it is wired, and stops
@@ -5430,3 +5438,4 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#671]: https://github.com/CodefyUI/CodefyUI/issues/671

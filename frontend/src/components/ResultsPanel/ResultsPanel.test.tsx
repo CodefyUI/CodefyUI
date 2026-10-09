@@ -352,17 +352,42 @@ describe('ResultsPanel — training tab', () => {
     expect(screen.queryByText('a log line')).not.toBeInTheDocument();
   });
 
-  it('shows the trainingEmpty state if logs are cleared while on the Training tab', () => {
+  it('falls back to the Log tab when the logs are cleared while on the Training tab', () => {
     seedLogs([
       makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
-    // auto-switched to training; now clear logs -> hasTraining becomes false while
-    // panelTab is still 'training' -> the `!hasTraining` trainingEmpty branch shows.
+    // auto-switched to training; clearing the logs disables the Training tab,
+    // so the panel goes back to the Log instead of showing a dead tab.
     expect(screen.getByTestId('loss-chart')).toBeInTheDocument();
     fireEvent.click(screen.getByText(t('results.clear')));
-    expect(screen.getByText(t('results.trainingEmpty'))).toBeInTheDocument();
     expect(screen.queryByTestId('loss-chart')).not.toBeInTheDocument();
+    expect(screen.queryByText(t('results.trainingEmpty'))).not.toBeInTheDocument();
+    expect(screen.getByText(t('results.training')).closest('button')).toBeDisabled();
+    expect(screen.getByText(t('results.empty'))).toBeInTheDocument();
+  });
+
+  it('falls back to the Log tab when the active canvas tab has no training data', () => {
+    // The logs follow the active canvas tab: switching from a training graph
+    // to one that trains nothing must show that graph's log.
+    seedLogs([
+      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+    ]);
+    render(<ResultsPanel />);
+    expect(screen.getByTestId('loss-chart')).toBeInTheDocument();
+    act(() => seedLogs([makeLog({ message: 'Print: 0.55' })]));
+    expect(screen.getByText('Print: 0.55')).toBeInTheDocument();
+    expect(screen.queryByTestId('loss-chart')).not.toBeInTheDocument();
+  });
+
+  it('stays on Runs when the training data goes away', () => {
+    seedLogs([
+      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+    ]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    act(() => seedLogs([makeLog({ message: 'other' })]));
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
   });
 
   it('lets the user switch back to the Log tab after training auto-switch', () => {
