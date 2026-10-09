@@ -22,6 +22,14 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Error messages fill a placeholder they use twice** ([#667]). The
+  shape-mismatch hints named the numbers twice, once in the diagnosis and once
+  in the fix, and only the first was filled: a Linear mismatch ended with
+  "change in_features to {got}". Every occurrence is filled now, in both
+  languages.
+
 ### Changed
 
 - **Switch picks its input from a param, grows as it is wired, and stops
@@ -5430,3 +5438,4 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#667]: https://github.com/CodefyUI/CodefyUI/issues/667
