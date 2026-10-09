@@ -173,13 +173,12 @@ describe('applyLayout', () => {
           : t,
       ),
     }));
-    useUIStore.setState({ layoutFitRequest: null });
+    useUIStore.setState({ layoutFitRequests: {} });
 
     useTabStore.getState().applyLayout('experiments');
 
-    const req = useUIStore.getState().layoutFitRequest;
-    expect(req).not.toBeNull();
-    const { bounds } = req!;
+    const bounds = useUIStore.getState().layoutFitRequests[useTabStore.getState().activeTabId]!;
+    expect(bounds).toBeDefined();
     expect(bounds.width).toBeGreaterThan(0);
     expect(bounds.height).toBeGreaterThan(0);
     // The bound note follows its parent during layout at offset (20, -40), so
@@ -190,10 +189,10 @@ describe('applyLayout', () => {
 
     // Requests are one-shot: the consumer clears, and a later layout
     // publishes a fresh request object.
-    useUIStore.getState().clearLayoutFit();
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    useUIStore.getState().clearLayoutFit(useTabStore.getState().activeTabId);
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
     useTabStore.getState().applyLayout('experiments');
-    expect(useUIStore.getState().layoutFitRequest).not.toBeNull();
+    expect(useUIStore.getState().layoutFitRequests[useTabStore.getState().activeTabId]).toBeDefined();
   });
 });
 
@@ -3315,7 +3314,7 @@ describe('bypass — graph I/O contract nodes (core#128 review)', () => {
 describe('insertGraph — viewport fit (core#128 review)', () => {
   beforeEach(() => {
     resetToSingleTab();
-    useUIStore.setState({ layoutFitRequest: null });
+    useUIStore.setState({ layoutFitRequests: {} });
   });
 
   it('asks the canvas to fit the inserted block, not the whole graph', () => {
@@ -3324,16 +3323,16 @@ describe('insertGraph — viewport fit (core#128 review)', () => {
     store().setNodes([bnode('n1', { position: { x: 0, y: 0 } })]);
     store().insertGraph([bnode('t1', { position: { x: 900, y: 900 } })], []);
 
-    const request = useUIStore.getState().layoutFitRequest;
-    expect(request).not.toBeNull();
+    const request = useUIStore.getState().layoutFitRequests[activeTab().id];
+    expect(request).toBeDefined();
     const inserted = activeTab().nodes.find((n) => n.selected)!;
-    expect(request!.bounds.x).toBe(inserted.position.x);
-    expect(request!.bounds.y).toBe(inserted.position.y);
+    expect(request!.x).toBe(inserted.position.x);
+    expect(request!.y).toBe(inserted.position.y);
   });
 
   it('does not request a fit for an empty template', () => {
     store().insertGraph([], []);
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
   });
 
   it('does not move the viewport when the caller named a drop point (#348)', () => {
@@ -3342,7 +3341,7 @@ describe('insertGraph — viewport fit (core#128 review)', () => {
     // canvas out from under the gesture that just finished.
     store().setNodes([bnode('n1', { position: { x: 0, y: 0 } })]);
     store().insertGraph([bnode('t1')], [], [], { x: 900, y: 900 });
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
   });
 });
 

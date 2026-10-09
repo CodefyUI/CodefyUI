@@ -239,7 +239,7 @@ export function focusNode(id: string): void {
   store.selectNodeExclusively(target.id);
   // Centred rather than zoomed in hard: FlowCanvas inflates a box this small.
   const bounds = nodesBoundingBox([target]);
-  if (bounds) useUIStore.getState().requestLayoutFit(bounds);
+  if (bounds) useUIStore.getState().requestLayoutFit(store.activeTabId, bounds);
 }
 
 /** Take down the toasts the last validation raised. */

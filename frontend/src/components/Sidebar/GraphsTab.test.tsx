@@ -1116,7 +1116,7 @@ describe('opening into the empty tab', () => {
   };
 
   beforeEach(() => {
-    useUIStore.setState({ layoutFitRequest: null });
+    useUIStore.setState({ layoutFitRequests: {} });
     mockedRest.listGraphs.mockResolvedValue([graph({ name: 'alpha', file: 'alpha' })]);
   });
 
@@ -1146,8 +1146,8 @@ describe('opening into the empty tab', () => {
       expect(activeTab().currentGraphFile).toBe('alpha');
     });
     // The node's 200x80 fallback box, where the file puts it.
-    expect(useUIStore.getState().layoutFitRequest).toEqual({
-      bounds: { x: 300, y: 120, width: 200, height: 80 },
+    expect(useUIStore.getState().layoutFitRequests).toEqual({
+      [activeTab().id]: { x: 300, y: 120, width: 200, height: 80 },
     });
   });
 
@@ -1165,7 +1165,7 @@ describe('opening into the empty tab', () => {
     expect(tabById(front).nodes.map((n) => n.id)).toEqual(['n1']);
     expect(tabById(front).name).toBe('Tab 1');
     // The canvas frames a tab it shows for the first time by itself.
-    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    expect(useUIStore.getState().layoutFitRequests).toEqual({});
   });
 
   it('opens a tab of its own beside an empty tab a plugin opened', async () => {
