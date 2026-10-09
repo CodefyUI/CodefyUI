@@ -51,6 +51,7 @@ import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
 import { markParamEdit, paramEditContinues, paramEditKeepAlive } from './paramEditUndo';
 import { pushRemovalStep } from './removalUndo'; // a deletion is one undo step
+import { grownSwitchParams } from '../utils/switchNode';
 import {
   effectivePresets,
   mergeOwnedPresets,
@@ -3784,9 +3785,22 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     };
     if (connection.target) get().markDirty(connection.target);
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
-        edges: [...tab.edges, edge],
-      })),
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
+        // A wire on a Switch's last empty input adds another (#655), in the
+        // same undo step as the wire.
+        const target = tab.nodes.find((n) => n.id === connection.target);
+        const grown = grownSwitchParams(target, connection.targetHandle);
+        return {
+          edges: [...tab.edges, edge],
+          ...(grown && target
+            ? {
+                nodes: tab.nodes.map((n) =>
+                  n.id === target.id ? { ...n, data: { ...n.data, params: grown } } : n,
+                ),
+              }
+            : {}),
+        };
+      }),
     });
   },
 

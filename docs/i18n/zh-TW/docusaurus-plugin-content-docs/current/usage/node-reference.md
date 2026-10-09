@@ -49,7 +49,7 @@ CodefyUI 內建 **152 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 - **Diffusion 鏈**（Diffusion）— `GaussianNoise` 建立帶 seed 的 noise，並可符合上游張量的 shape。`DiffusionUNet` 提供將 `(x, t)` 映射至 predicted noise 的 toy U-Net，`DiffusionTrainingLoop` 則訓練此模型。`DDPMSampler` 在單一節點內執行 reverse process，使圖維持無環；其詳細 trace 會記錄 trajectory snapshot。`TimestepEmbedding`、`Upsample` 與 `Lerp` 可用來明確建構相同運算。Diffusion 範例包括 **Forward diffusion on a digit**（`GaussianNoise` 與 `Lerp`），以及 **Toy reverse diffusion sampling** 和 **Mini U-Net node**（`GaussianNoise` → `DiffusionUNet` → `DDPMSampler`）。請參閱[範例集](./examples-gallery)。
 - **`ModelSaver` / `ModelLoader`**（IO）— 寫入與讀取模型檔。預設的 `state_dict` 模式會儲存張量，且不要求載入任何類別。`full_model` 模式會儲存以 pickle 序列化的模組，並使用受限解序列化器載入；此解序列化器允許 torch 與 CodefyUI 的 layer class，以及 CodefyUI Transformer layer 所儲存的兩個 torch activation function。模式選擇與載入需求請參閱[儲存與載入模型](./model-files)。
 - **`VideoWrite` / `VideoLoad`**（IO）— `VideoWrite` 將 `(T, C, H, W)` 或 `(T, H, W, C)` 的影格張量編碼後寫入媒體資料夾（`backend/data/media`，專案目錄模式下為 `assets/media`）。`format` 為 `auto` 時，若 `PATH` 中有 `ffmpeg` 執行檔就寫出 mp4，否則透過 Pillow 寫出 gif；選 `mp4` 則必須有 ffmpeg。相同的 `filename` 會覆寫先前的影片。執行紀錄與檢視器會直接播放 mp4，gif 則以圖片顯示；`preview` 輸出是中間影格的 PNG。`VideoLoad` 會將影片解碼為數值在 `[0, 1]` 的 `(T, 3, H, W)` 影格，並輸出 `fps` 與 `num_frames`；相對的 `path` 會從媒體資料夾讀取。mp4 與 webm 需要 `ffmpeg` 與 `ffprobe` 執行檔，gif 只需要 Pillow；`max_frames` 與 `stride` 可限制保留在記憶體中的影格數。
-- **`Switch`**（資料流）— 使用條件式路由，使只有一條分支執行。
+- **`Switch`**（資料流）— 依從 0 開始的索引，轉發其中一個輸入。`selector` 參數設定索引；`selector` 埠有接線時，改用執行時算出的值。接上最後一個空輸入時會再多出一個，最多 16 個。索引超出範圍或指到沒接線的輸入時，執行會停止並回報錯誤；若是 `selector` 參數如此設定，Run 會在任何節點執行前就拒絕。輸出的型別就是已接線輸入的型別，這些輸入必須是同一種型別。Switch 執行前，所有已接線的輸入都會先算完，包括沒被選到的那些。需要讓多個來源接到同一個輸入時，請把它們接到一個 Switch。
 
 ## 連接埠資料型別 {/* #port-data-types */}
 

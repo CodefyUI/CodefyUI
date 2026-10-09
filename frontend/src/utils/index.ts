@@ -6,6 +6,7 @@ import {
   normalizeSubgraphs,
 } from './subgraph';
 import { generateId } from './ids';
+import { SWITCH_TYPE, switchInputs } from './switchNode';
 
 export { generateId } from './ids';
 
@@ -316,7 +317,7 @@ export function resolveDynamicOutputs(
  * Resolve a node's *live* input ports. The mirror of
  * `resolveDynamicOutputs`, for the backend's `define_inputs_dynamic`.
  *
- * PythonScript and ComposeTransform vary their inputs; everything else
+ * PythonScript, ComposeTransform and Switch vary their inputs; everything else
  * returns `definition.inputs` verbatim (same reference — see above).
  */
 export function resolveDynamicInputs(
@@ -339,6 +340,7 @@ export function resolveDynamicInputs(
       optional: true,
     }));
   }
+  if (bare === SWITCH_TYPE) return switchInputs(params);
   if (bare === 'PythonScript') {
     const count = clampCount(params?.input_ports, 1, SCRIPT_MAX_PORTS);
     const types = resolvePortTypes(params?.input_types, count, 'TENSOR');

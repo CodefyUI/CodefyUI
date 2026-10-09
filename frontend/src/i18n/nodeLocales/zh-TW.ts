@@ -978,8 +978,14 @@ const zhTW: NodeTranslations = {
 
   // ── Data Flow ──
   Switch: {
-    description: '依 selector 索引轉發最多四個輸入中的一個',
-    details: '所有輸入都會先被求值，selector 才挑出其中一個，是資料流的選擇而不是會跳過計算的分支。索引從 0 開始，超出範圍或沒有連線時會退回 input_0。',
+    description: '依從 0 開始的索引，轉發其中一個輸入',
+    details:
+      'selector 參數決定要轉發哪個輸入；selector 埠有接線時，改用執行時算出的值。接上最後一個空輸入時會再多出一個。' +
+      '索引超出範圍或指到沒接線的輸入時，執行會停止並回報錯誤。Switch 執行前，所有已接線的輸入都會先算完，包括沒被選到的那些。',
+    params: {
+      selector: '要轉發的輸入索引（從 0 開始）；selector 埠有接線時以埠的值為準',
+      inputs: '可選擇的輸入數量',
+    },
   },
   Map: {
     description: '對清單中的每個元素各跑一次子圖，收集成結果清單',
