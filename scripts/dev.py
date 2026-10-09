@@ -4499,6 +4499,8 @@ def _render_node_status(payload: dict) -> None:
         print(f"  {GRAY}= {node} {t('（快取）', '(cached)')}{RESET}")
     elif status == "skipped":
         print(f"  {GRAY}- {node} {t('（略過）', '(skipped)')}{RESET}")
+    elif status == "bypassed":
+        print(f"  {GRAY}- {node} {t('（已略過）', '(bypassed)')}{RESET}")
     elif status == "error":
         print(f"  {RED}✗{RESET} {node}: {payload.get('error', '')}")
 
