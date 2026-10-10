@@ -89,6 +89,12 @@ received — each links to the release it was published as.
   order with its selector on the last one, so the result is what it was.
   Several wires meeting at one input inside a block, or into a bypassed node,
   are found too.
+- **The live training chart draws the validation loss** ([#665]). With a
+  `val_dataloader` wired, `TrainingLoop` already sent `val_loss` with every
+  epoch, and the **Training** tab dropped it: the chart had one curve and the
+  table one loss column. It now draws `train_loss` and `val_loss` with a
+  legend and lists the validation loss per epoch. A run without a validation
+  loader looks as before.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5450,3 +5456,4 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#665]: https://github.com/CodefyUI/CodefyUI/issues/665

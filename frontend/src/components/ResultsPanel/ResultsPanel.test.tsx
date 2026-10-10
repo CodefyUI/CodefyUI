@@ -12,8 +12,21 @@ import {
 // ResizeObserver bookkeeping stays out of these tests. We assert the props it
 // receives via data attributes.
 vi.mock('./LossChart', () => ({
-  LossChart: ({ losses, height }: { losses: number[]; height: number }) => (
-    <div data-testid="loss-chart" data-len={losses.length} data-height={height} />
+  LossChart: ({
+    losses,
+    series,
+    height,
+  }: {
+    losses: number[];
+    series?: { name: string; points: { x: number; y: number }[] }[];
+    height: number;
+  }) => (
+    <div
+      data-testid="loss-chart"
+      data-len={losses.length}
+      data-height={height}
+      data-series={series ? JSON.stringify(series) : undefined}
+    />
   ),
 }));
 
@@ -294,6 +307,55 @@ describe('ResultsPanel — training tab', () => {
     expect(screen.getByText('2.0s')).toBeInTheDocument();
     // first epoch elapsed/delta are '-'
     expect(screen.getAllByText('-').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('draws the single loss curve, with no val column, when no epoch carries val_loss', () => {
+    seedTraining();
+    render(<ResultsPanel />);
+    expect(screen.getByTestId('loss-chart').getAttribute('data-series')).toBeNull();
+    expect(screen.queryByText(t('results.col.valLoss'))).not.toBeInTheDocument();
+  });
+
+  it('charts val_loss beside the training loss and lists it per epoch when a val loader reports it', () => {
+    seedLogs([
+      makeLog({
+        timestamp: 1000,
+        message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9, val_loss: 0.7 }),
+      }),
+      makeLog({
+        timestamp: 2000,
+        message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.65 }),
+      }),
+    ]);
+    render(<ResultsPanel />);
+    const series = JSON.parse(screen.getByTestId('loss-chart').getAttribute('data-series')!);
+    expect(series).toEqual([
+      { name: 'train_loss', points: [{ x: 1, y: 0.9 }, { x: 2, y: 0.5 }] },
+      { name: 'val_loss', points: [{ x: 1, y: 0.7 }, { x: 2, y: 0.65 }] },
+    ]);
+    expect(screen.getByText(t('results.col.valLoss'))).toBeInTheDocument();
+    expect(screen.getByText('0.7000')).toBeInTheDocument();
+    expect(screen.getByText('0.6500')).toBeInTheDocument();
+  });
+
+  it('leaves a gap in the val curve for an epoch that reported none', () => {
+    seedLogs([
+      makeLog({
+        timestamp: 1000,
+        message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9 }),
+      }),
+      makeLog({
+        timestamp: 2000,
+        message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.6 }),
+      }),
+    ]);
+    render(<ResultsPanel />);
+    const series = JSON.parse(screen.getByTestId('loss-chart').getAttribute('data-series')!);
+    expect(series[1]).toEqual({ name: 'val_loss', points: [{ x: 2, y: 0.6 }] });
+    // epoch 1's val cell reads '-'
+    const rows = document.querySelectorAll('[class*="epochRowWithVal"]');
+    expect(rows.length).toBe(3); // header + 2 epochs
+    expect(rows[1].children[2].textContent).toBe('-');
   });
 
   it('renders the config-only training state: no summary, shows waitingEpoch, disables epoch UI', () => {

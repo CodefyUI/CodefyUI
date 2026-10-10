@@ -24,7 +24,7 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 ## 訓練迴圈與 loss 圖表 {/* #training-loops-and-loss-charts */}
 
-`TrainingLoop` 節點會在訓練期間發出進度事件。結果面板的**訓練**分頁會即時顯示這些事件：目前的**輪次**、最新與**最佳**的訓練 loss、進度條、每個 epoch 訓練 loss 的**損失曲線**、迴圈的**訓練設定**，以及列出每個 epoch 變化量與耗時的表格。
+`TrainingLoop` 節點會在訓練期間發出進度事件。結果面板的**訓練**分頁會即時顯示這些事件：目前的**輪次**、最新與**最佳**的訓練 loss、進度條、每個 epoch 訓練 loss 的**損失曲線**、迴圈的**訓練設定**，以及列出每個 epoch 變化量與耗時的表格。接上 `val_dataloader` 時，曲線也會畫出驗證 loss，分別標為 `train_loss` 與 `val_loss`，表格則多一欄**驗證損失**。
 
 迴圈記錄的每個數值也會以具名序列隨 run 儲存。在[執行任務面板](./run-queue#runs-panel)中開啟 run 的詳細資料，可以看到所有序列的圖表並下載 CSV；[參數掃描](./run-queue#sweeps)則依其中一個序列（`objective.metric`）為各個 variant 排名：
 

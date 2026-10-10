@@ -685,6 +685,7 @@ const en = {
   'results.waitingEpoch': 'Waiting for first epoch...',
   'results.epochsHeader': 'Epochs ({current}/{total})',
   'results.col.loss': 'Loss',
+  'results.col.valLoss': 'Val loss',
   'results.col.delta': 'Delta',
   'results.col.time': 'Time',
 

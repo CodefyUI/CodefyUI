@@ -598,6 +598,7 @@ const zhTW: Record<TranslationKey, string> = {
   'results.waitingEpoch': '等待第一個輪次...',
   'results.epochsHeader': '輪次（{current}/{total}）',
   'results.col.loss': '損失',
+  'results.col.valLoss': '驗證損失',
   'results.col.delta': '變化量',
   'results.col.time': '耗時',
 
