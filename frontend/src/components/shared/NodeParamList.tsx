@@ -10,6 +10,7 @@ import {
   usePackAvailability,
 } from '../../utils/packAvailability';
 import { ParamField } from './ParamField';
+import { HelpTip } from './HelpTip';
 import styles from './NodeParamList.module.css';
 
 interface NodeParamListProps {
@@ -68,8 +69,26 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
   const basic = visible.filter((param) => !param.advanced);
   const advanced = visible.filter((param) => param.advanced);
 
-  const renderField = (param: ParamDefinition) => (
-    <div key={param.name}>
+  // The description and the allowed range, behind a "?" at the end of the
+  // label row instead of two standing lines under every field.
+  const helpFor = (param: ParamDefinition): string | null => {
+    const lines: string[] = [];
+    if (param.description) lines.push(tn(nodeName, `param.${param.name}`, param.description));
+    if (param.min_value !== null || param.max_value !== null) {
+      lines.push(
+        t('config.range', {
+          min: param.min_value !== null ? param.min_value : '-∞',
+          max: param.max_value !== null ? param.max_value : '+∞',
+        }),
+      );
+    }
+    return lines.length > 0 ? lines.join('\n') : null;
+  };
+
+  const renderField = (param: ParamDefinition) => {
+    const help = helpFor(param);
+    return (
+    <div key={param.name} className={styles.paramRow}>
       <ParamField
         param={param}
         value={params[param.name]}
@@ -82,21 +101,10 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
         // one still has to offer its own way there.
         hidePackActionFor={missingPack?.packId}
       />
-      {param.description && (
-        <div className={styles.paramHint}>
-          {tn(nodeName, `param.${param.name}`, param.description)}
-        </div>
-      )}
-      {(param.min_value !== null || param.max_value !== null) && (
-        <div className={styles.paramHint}>
-          {t('config.range', {
-            min: param.min_value !== null ? param.min_value : '-∞',
-            max: param.max_value !== null ? param.max_value : '+∞',
-          })}
-        </div>
-      )}
+      {help && <HelpTip className={styles.paramHelp} text={help} topic={param.name} />}
     </div>
-  );
+    );
+  };
 
   return (
     <div className={className ? `${styles.list} ${className}` : styles.list}>

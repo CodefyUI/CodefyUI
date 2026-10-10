@@ -62,15 +62,6 @@
   line-height: var(--lh-snug);
 }
 
-/* Everything the palette list had no room for. Same size — density comes from
-   spacing here, not from shrinking text — and one tier back in ink. */
-.headerDetails {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  margin-top: var(--sp-2);
-  line-height: var(--lh-snug);
-}
-
 /* Scrollable content */
 .content {
   flex: 1;

@@ -103,7 +103,7 @@ beforeEach(() => {
 });
 
 describe('NodeParamList', () => {
-  it('renders a field per visible param with its description and range hints', () => {
+  it('renders a field per visible param, its description and range behind a "?"', () => {
     seedNode(nodeWith({ lr: 0.5, units: 8 }));
     render(
       <NodeParamList
@@ -116,9 +116,12 @@ describe('NodeParamList', () => {
       />,
     );
     expect(screen.getByTestId('field-lr')).toHaveTextContent('lr=0.5');
-    expect(screen.getByText('learning rate')).toBeInTheDocument();
-    expect(screen.getByText('Range: 0 — 1')).toBeInTheDocument();
-    expect(screen.getByText('Range: 1 — +∞')).toBeInTheDocument();
+    expect(screen.queryByText('learning rate')).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'About lr' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('learning rateRange: 0 — 1');
+    fireEvent.mouseLeave(screen.getByRole('button', { name: 'About lr' }));
+    fireEvent.focus(screen.getByRole('button', { name: 'About units' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Range: 1 — +∞');
   });
 
   it('commits an edit through updateNodeParams, marking the node dirty', () => {

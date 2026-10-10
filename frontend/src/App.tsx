@@ -23,6 +23,7 @@ import { WorkspaceLockOverlay } from './components/WorkspaceLock/WorkspaceLockOv
 import { settleAutosave } from './components/WorkspaceLock/settleAutosave';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
+import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
 import { PluginHost } from './plugins/PluginHost';
 import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
@@ -82,7 +83,7 @@ function RightColumn() {
   if (!hasSelection && !hasSegment && !hasPluginPanels) return null;
 
   return (
-    <div className={styles.rightColumn}>
+    <div className={styles.rightColumn} data-tour="node-panel">
       {hasSelection && <NodeConfigPanel />}
       {(hasSelection || hasSegment) && <InspectorPanel />}
       <PluginRightPanels />
@@ -115,7 +116,7 @@ function TabContent({ tabId }: { tabId: string }) {
       <div className={styles.tabInner}>
         <ReactFlowProvider>
           <NodePalette />
-          <div className={styles.canvasHost}>
+          <div className={styles.canvasHost} data-tour="canvas">
             <div className={styles.canvasFill}>
               <FlowCanvas tabId={tabId} />
             </div>
@@ -189,6 +190,7 @@ function App() {
       <GitDiffModal />
       <ToastContainer />
       <ShortcutsModal />
+      <GuideTour />
       <DialogContainer />
       <PluginHost />
       {/* Over everything but a server restart: a page that does not edit the

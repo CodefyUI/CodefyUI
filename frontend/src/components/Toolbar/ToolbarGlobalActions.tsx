@@ -48,6 +48,7 @@ export function ToolbarGlobalActions({ plugins = true }: ToolbarGlobalActionsPro
       <div className={styles.menuWrapper}>
         <button type="button"
           ref={settingsTriggerRef}
+          data-tour="settings"
           onClick={() => setSettingsOpen((v) => !v)}
           title={t('toolbar.settings.title')}
           className={`${styles.iconBtn} ${settingsOpen ? styles.active : ''}`}
@@ -65,6 +66,7 @@ export function ToolbarGlobalActions({ plugins = true }: ToolbarGlobalActionsPro
 
       {/* Help ? — opens shortcuts modal */}
       <button type="button"
+        data-tour="help"
         onClick={() => useUIStore.getState().toggleShortcutsModal()}
         className={styles.iconBtn}
         title={t('shortcuts.title')}
