@@ -293,6 +293,20 @@ describe('HeatmapPlot', () => {
     expect(ts).toEqual(['0.500', '0.500', '0.500', '0.500']);
   });
 
+  it('draws a row whose only weight sits on one cell at the peak colour', () => {
+    // Row 0 of a causal map: everything on key 0. Its non-zero range is 0,
+    // the same as a uniform row, but it is the sharpest row there is.
+    const m = [
+      [1.0, 0.0, 0.0],
+      [0.4, 0.6, 0.0],
+    ];
+    const { container } = render(<HeatmapPlot data={m} normalizePerRow />);
+    const get = (i: number, j: number) =>
+      container.querySelector(`rect[data-i="${i}"][data-j="${j}"]`);
+    expect(get(0, 0)?.getAttribute('data-color-t')).toBe('1.000');
+    expect(get(0, 1)?.getAttribute('data-color-t')).toBe('0.000');
+  });
+
   it('keeps causal-masked cells at colour-t=0 under normalization', () => {
     // Row 1 of a causal pattern: lower triangle [0.4, 0.6], upper [0].
     // Non-zero min=0.4, max=0.6, range=0.2.

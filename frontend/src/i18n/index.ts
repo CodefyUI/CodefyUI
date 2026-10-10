@@ -69,14 +69,16 @@ export const useI18n = create<I18nState>((set, get) => ({
     const { locale } = get();
     let text = messages[locale]?.[key] ?? messages.en[key] ?? key;
     if (vars) {
-      for (const [k, v] of Object.entries(vars)) {
-        // A FUNCTION replacement, so the value goes in verbatim. Passed as a
-        // string it is a replacement PATTERN: `$&`, `` $` ``, `$'` and `$$`
-        // are substitutions there, so a value holding one of them rewrote the
-        // sentence around it -- and values are arbitrary data now that a
-        // graph's parameters reach `git.gdiff.param`.
-        text = text.replace(`{${k}}`, () => String(v));
-      }
+      // One pass over every `{name}` in the message, so a placeholder the
+      // sentence uses twice is filled both times, and a value that itself
+      // contains `{other}` is never read as a placeholder. A FUNCTION
+      // replacement, so the value goes in verbatim: passed as a string it is
+      // a replacement PATTERN, where `$&`, `` $` ``, `$'` and `$$` are
+      // substitutions -- and values are arbitrary data now that a graph's
+      // parameters reach `git.gdiff.param`.
+      text = text.replace(/\{(\w+)\}/g, (match, name: string) =>
+        Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match,
+      );
     }
     return text;
   },

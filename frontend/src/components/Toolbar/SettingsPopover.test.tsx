@@ -866,10 +866,13 @@ describe('SettingsPopover', () => {
     // The copy describes THIS rule. n1 is selected second and still becomes
     // the head, so a description phrased around selection order would be
     // telling the reader something the handler does not do.
-    expect(screen.getByRole('button', { name: 'Create segment' })).toHaveAttribute(
-      'title',
-      "Compares the left-hand selected node's input with the right-hand one's output.",
+    const about = screen.getByRole('button', { name: 'About Compare segment' });
+    fireEvent.mouseEnter(about);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "Shows the left node's input next to the right node's output.",
     );
+    // Closed before the teardown empties document.body under its portal.
+    fireEvent.mouseLeave(about);
 
     fireEvent.click(screen.getByRole('button', { name: 'Create segment' }));
 
@@ -1020,9 +1023,23 @@ describe('SettingsPopover', () => {
     expect(useTabStore.getState().tabs[0].autoBackward).toBe(false);
   });
 
+  // ── Getting started guide ─────────────────────────────────────────
+
+  it('starts the guide from the top row and closes itself', async () => {
+    useUIStore.setState({ guideOpen: false });
+    const onClose = vi.fn();
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Getting started guide');
+    fireEvent.click(within(row).getByRole('button', { name: 'Start' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(useUIStore.getState().guideOpen).toBe(true);
+    useUIStore.getState().closeGuide();
+    expect(useUIStore.getState().guideOpen).toBe(false);
+  });
+
   // ── Reset weights ─────────────────────────────────────────────────
 
-  it('explains Reset on the row, which is the only place a disabled button can', async () => {
+  it('explains Reset with a "?" of its own, which works beside a disabled button', async () => {
     setupTab({ graphId: '' });
     await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     const row = rowFor('Reset all weights now');
@@ -1032,9 +1049,13 @@ describe('SettingsPopover', () => {
     // what the greyed-out button would have done.
     expect(btn).toBeDisabled();
     expect(btn).not.toHaveAttribute('title');
-    expect(
-      within(row).getByText('The next run starts from fresh initialisation.'),
-    ).toBeInTheDocument();
+    const help = within(row).getByRole('button', { name: 'About Reset all weights now' });
+    expect(help).toBeEnabled();
+    fireEvent.focus(help);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'The next run starts from freshly initialised weights.',
+    );
+    fireEvent.blur(help);
   });
 
   it('reset weights is disabled when there is no graphId and returns early', async () => {

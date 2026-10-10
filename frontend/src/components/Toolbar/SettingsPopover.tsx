@@ -424,6 +424,26 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
       </div>
 
       <div className={styles.body}>
+        {/* ── Getting started ────────────────────────────────────── */}
+        <section className={styles.section}>
+          <Row
+            name={t('settings.guide.name')}
+            help={t('settings.guide.help')}
+            ctrl={
+              <button
+                type="button"
+                className={`${styles.action} ${styles.accent}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCenter(() => useUIStore.getState().openGuide());
+                }}
+              >
+                {t('settings.guide.action')}
+              </button>
+            }
+          />
+        </section>
+
         {/* ── Execution ──────────────────────────────────────────── */}
         <section className={styles.section}>
           <div className={styles.sectionTitle}>
@@ -638,12 +658,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.record.name')}
+              help={t('settings.record.help')}
               onClick={toggleRecord}
               ctrl={
                 <button
                   type="button"
                   aria-label={t('settings.record.name')}
-                  title={t('settings.record.desc')}
                   aria-pressed={recording}
                   className={`${styles.toggle} ${recording ? styles.on : ''}`}
                   onClick={(e) => {
@@ -656,12 +676,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.verbose.name')}
+              help={t('settings.verbose.help')}
               onClick={toggleVerbose}
               ctrl={
                 <button
                   type="button"
                   aria-label={t('settings.verbose.name')}
-                  title={t('settings.verbose.desc')}
                   aria-pressed={verbose}
                   className={`${styles.toggle} ${verbose ? styles.on : ''}`}
                   onClick={(e) => {
@@ -674,10 +694,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.compare.name')}
+              help={t('settings.compare.help')}
               ctrl={
                 <button
                   type="button"
-                  title={t('settings.compare.desc')}
                   disabled={compareDisabled}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -699,7 +719,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.persist.name')}
-              desc={t('settings.persist.desc')}
+              help={t('settings.persist.help')}
               onClick={togglePersistWeights}
               ctrl={
                 <button
@@ -717,10 +737,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.resetWeights.name')}
-              // Visible, not a `title`: a disabled button fires no pointer
-              // events, so the tooltip was unreadable in exactly the state
-              // where the button explains nothing by being greyed out.
-              desc={t('settings.resetWeights.desc')}
+              // A "?" of its own, not a `title`: a disabled button fires no
+              // pointer events, so a tooltip on it was unreadable in exactly
+              // the state where the button explains nothing by being greyed.
+              help={t('settings.resetWeights.help')}
               ctrl={
                 <button
                   type="button"
@@ -738,7 +758,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.gradients.name')}
-              desc={t('settings.gradients.desc')}
+              help={t('settings.gradients.help')}
               onClick={toggleBackward}
               ctrl={
                 <button
@@ -756,7 +776,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.autoLoss.name')}
-              desc={t('settings.autoLoss.desc')}
+              help={t('settings.autoLoss.help')}
               disabled={!backward}
               onClick={backward ? toggleAutoBackward : undefined}
               ctrl={
@@ -782,7 +802,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 repeatable and, as a consequence, serial. */}
             <Row
               name={t('settings.seed.name')}
-              desc={t('settings.seed.desc')}
+              help={t('settings.seed.help')}
               ctrl={
                 <input
                   type="number"
@@ -803,7 +823,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
             <Row
               name={t('settings.deterministic.name')}
-              desc={t('settings.deterministic.desc')}
+              help={t('settings.deterministic.help')}
               onClick={toggleDeterministic}
               ctrl={
                 <button
@@ -830,12 +850,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.gridSnap.name')}
+            help={t('settings.gridSnap.help')}
             onClick={toggleGridSnap}
             ctrl={
               <button
                 type="button"
                 aria-label={t('settings.gridSnap.name')}
-                title={t('settings.gridSnap.desc')}
                 aria-pressed={gridSnapEnabled}
                 className={`${styles.toggle} ${gridSnapEnabled ? styles.on : ''}`}
                 onClick={(e) => {
@@ -848,12 +868,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.tooltips.name')}
+            help={t('settings.tooltips.help')}
             onClick={toggleTooltips}
             ctrl={
               <button
                 type="button"
                 aria-label={t('settings.tooltips.name')}
-                title={t('settings.tooltips.desc')}
                 aria-pressed={tooltipsEnabled}
                 className={`${styles.toggle} ${tooltipsEnabled ? styles.on : ''}`}
                 onClick={(e) => {
@@ -866,12 +886,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
           <Row
             name={t('settings.nodeMode.name')}
+            help={t('settings.nodeMode.help')}
             ctrl={
               <div
                 className={styles.seg}
                 role="group"
                 aria-label={t('settings.nodeMode.name')}
-                title={t('settings.nodeMode.desc')}
               >
                 <button
                   type="button"

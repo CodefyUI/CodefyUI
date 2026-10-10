@@ -82,6 +82,32 @@ describe('useI18n store (runtime methods)', () => {
       expect(t('git.diff.title', { path: 'a$$b.py' })).toBe('Changes: a$$b.py');
     });
 
+    it('fills a placeholder the message uses twice, in both places', async () => {
+      // error.linearShapeMismatch names {got} and {expected} twice each: once
+      // in the diagnosis and once in the suggested fix.
+      const { useI18n } = await import('./index');
+      for (const locale of ['en', 'zh-TW'] as const) {
+        useI18n.getState().setLocale(locale);
+        const out = useI18n.getState().t('error.linearShapeMismatch', { got: 32, expected: 64 });
+        expect(out).not.toMatch(/\{(got|expected)\}/);
+        expect(out.split('32').length - 1).toBe(2);
+        expect(out.split('64').length - 1).toBe(2);
+      }
+    });
+
+    it('leaves a placeholder it was given no value for, and never re-reads a value', async () => {
+      const { useI18n } = await import('./index');
+      useI18n.getState().setLocale('en');
+      const t = useI18n.getState().t;
+      // A value spelling another placeholder stays as written.
+      expect(t('git.gdiff.param', {
+        node: '{param}', param: 'label', from: 'a', to: 'b',
+      })).toBe('{param}: label a -> b');
+      // A var the message does not name changes nothing; a name with no var
+      // is left for the reader to see.
+      expect(t('git.diff.title', { other: 'x' })).toBe('Changes: {path}');
+    });
+
     it('returns text unchanged when no vars are passed', async () => {
       const { useI18n } = await import('./index');
       useI18n.getState().setLocale('en');
