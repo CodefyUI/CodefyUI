@@ -100,6 +100,13 @@ interface UIState {
   shortcutsModalOpen: boolean;
   toggleShortcutsModal: () => void;
   /**
+   * The getting-started tour (GuideTour), opened from Settings. Not
+   * persisted: it runs when someone asks for it.
+   */
+  guideOpen: boolean;
+  openGuide: () => void;
+  closeGuide: () => void;
+  /**
    * Template gallery modal (core#128). Workspace-global like the rest of the
    * panel state (#125) and deliberately NOT persisted — reopening the app on
    * top of a modal nobody remembers opening is never what you want.
@@ -310,6 +317,9 @@ export const useUIStore = create<UIState>((set) => ({
   setCanvasPanning: (panning) => set({ isCanvasPanning: panning }),
   shortcutsModalOpen: false,
   toggleShortcutsModal: () => set((state) => ({ shortcutsModalOpen: !state.shortcutsModalOpen })),
+  guideOpen: false,
+  openGuide: () => set({ guideOpen: true }),
+  closeGuide: () => set({ guideOpen: false }),
   templateGalleryOpen: false,
   openTemplateGallery: () => set({ templateGalleryOpen: true }),
   closeTemplateGallery: () => set({ templateGalleryOpen: false }),

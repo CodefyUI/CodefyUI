@@ -1186,15 +1186,23 @@ describe('InspectorPanel — while the graph is running', () => {
     expect(callsFor('t')).toBe(1);
   });
 
-  it('still reports expired data for a node that never produced any', async () => {
-    // Out of scope to redesign: a node the run passed over has no captures,
-    // and once the run is over that is what the 404 means.
+  it('waits for the run to end before saying a passed-over node has nothing', async () => {
+    // A node the run passed over has no captures. While the run is going a
+    // 404 for it only means "nothing yet", so the row waits instead of
+    // calling it expired, and says what it means once the run is over.
     const a = at('skipped', node('a', 'NodeA', { outputs: ['out'] }));
     seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
     serveFinished(new Set());
     render(<InspectorPanel />);
-    await waitFor(() => expect(screen.getByText(EXPIRED)).toBeInTheDocument());
+    await waitFor(() => expect(mockOutput).toHaveBeenCalled());
+    expect(screen.queryByText(EXPIRED)).toBeNull();
     expect(screen.queryByText(RUNNING_NOTE)).toBeNull();
+    act(() => {
+      useTabStore.setState((st) => ({
+        tabs: st.tabs.map((t, i) => (i === 0 ? { ...t, status: 'error' } : t)),
+      }));
+    });
+    await waitFor(() => expect(screen.getByText(EXPIRED)).toBeInTheDocument());
   });
 });
 

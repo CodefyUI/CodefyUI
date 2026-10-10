@@ -756,6 +756,7 @@ export function Toolbar() {
             so "Run the graph" and "Stop execution" were the words on the
             button read back with the only object they could have. */}
         <button type="button"
+          data-tour="run"
           onClick={handleRun}
           disabled={isRunning}
           className={styles.runButton}
@@ -772,6 +773,7 @@ export function Toolbar() {
         {/* Stays enabled while a run is in flight: that run already holds
             its device, and the choice applies to the next one. */}
         <select
+          data-tour="device"
           aria-label={t('toolbar.device.aria')}
           title={t('toolbar.device.title')}
           className={styles.deviceSelect}
@@ -840,6 +842,7 @@ export function Toolbar() {
       {/* Node management */}
       <div className={styles.cluster}>
         <button type="button"
+          data-tour="templates"
           onClick={() => useUIStore.getState().openTemplateGallery()}
           title={t('gallery.open.title')}
           className={`${styles.ghost} ${styles.ghostMuted}`}

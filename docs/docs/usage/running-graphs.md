@@ -24,7 +24,7 @@ One consequence worth knowing: a reader node (`CSVReader`, `ImageReader`, and th
 
 ## Training loops and loss charts
 
-The `TrainingLoop` node emits progress events during training. The **Training** tab of the results panel follows them live: the current **Epoch**, the latest and **Best** training loss, a progress bar, a **Loss Curve** of the training loss per epoch, the loop's **Config**, and a per-epoch table with each epoch's change and duration.
+The `TrainingLoop` node emits progress events during training. The **Training** tab of the results panel follows them live: the current **Epoch**, the latest and **Best** training loss, a progress bar, a **Loss Curve** of the training loss per epoch, the loop's **Config**, and a per-epoch table with each epoch's change and duration. When a `val_dataloader` is wired, the curve also draws the validation loss, labelled `train_loss` and `val_loss`, and the table gains a **Val loss** column.
 
 Every value the loop records is also stored with the run as a named series. A run's detail in the [Runs panel](./run-queue#runs-panel) charts all of them and downloads them as CSV, and a [sweep](./run-queue#sweeps) ranks its variants by one of them (`objective.metric`):
 
