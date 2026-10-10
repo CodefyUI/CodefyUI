@@ -1,0 +1,616 @@
+{
+  "name": "Six classifiers on two moons",
+  "description": "Which boundary bends enough",
+  "gallery": {
+    "section": "concepts",
+    "order": 9
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 400
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "data",
+      "type": "SyntheticDataset",
+      "position": {
+        "x": 40,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "kind": "moons",
+          "n_samples": 400,
+          "noise": 0.3,
+          "seed": 42
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 340,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "test_size": 0.3,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "scatter",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 340,
+        "y": 820
+      },
+      "data": {
+        "params": {
+          "title": "Two moons, noise 0.3"
+        }
+      }
+    },
+    {
+      "id": "logreg",
+      "type": "LogisticRegression",
+      "position": {
+        "x": 700,
+        "y": -760
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "acc-logreg",
+      "type": "Accuracy",
+      "position": {
+        "x": 1020,
+        "y": -760
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-logreg",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": -760
+      },
+      "data": {
+        "params": {
+          "label": "Logistic regression test accuracy"
+        }
+      }
+    },
+    {
+      "id": "knn",
+      "type": "KNN",
+      "position": {
+        "x": 700,
+        "y": -290
+      },
+      "data": {
+        "params": {
+          "n_neighbors": 5
+        }
+      }
+    },
+    {
+      "id": "acc-knn",
+      "type": "Accuracy",
+      "position": {
+        "x": 1020,
+        "y": -290
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-knn",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": -290
+      },
+      "data": {
+        "params": {
+          "label": "KNN (k=5) test accuracy"
+        }
+      }
+    },
+    {
+      "id": "tree",
+      "type": "DecisionTreeClassifier",
+      "position": {
+        "x": 700,
+        "y": 180
+      },
+      "data": {
+        "params": {
+          "max_depth": 5
+        }
+      }
+    },
+    {
+      "id": "acc-tree",
+      "type": "Accuracy",
+      "position": {
+        "x": 1020,
+        "y": 180
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-tree",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": 180
+      },
+      "data": {
+        "params": {
+          "label": "Decision tree (depth 5) test accuracy"
+        }
+      }
+    },
+    {
+      "id": "forest",
+      "type": "RandomForestClassifier",
+      "position": {
+        "x": 700,
+        "y": 650
+      },
+      "data": {
+        "params": {
+          "n_estimators": 100,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "acc-forest",
+      "type": "Accuracy",
+      "position": {
+        "x": 1020,
+        "y": 650
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-forest",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": 650
+      },
+      "data": {
+        "params": {
+          "label": "Random forest (100 trees) test accuracy"
+        }
+      }
+    },
+    {
+      "id": "svm",
+      "type": "SVMClassifier",
+      "position": {
+        "x": 700,
+        "y": 1120
+      },
+      "data": {
+        "params": {
+          "kernel": "rbf"
+        }
+      }
+    },
+    {
+      "id": "acc-svm",
+      "type": "Accuracy",
+      "position": {
+        "x": 1020,
+        "y": 1120
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-svm",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": 1120
+      },
+      "data": {
+        "params": {
+          "label": "SVM (RBF kernel) test accuracy"
+        }
+      }
+    },
+    {
+      "id": "mlp",
+      "type": "MLPClassifier",
+      "position": {
+        "x": 700,
+        "y": 1590
+      },
+      "data": {
+        "params": {
+          "hidden_sizes": "16,16"
+        }
+      }
+    },
+    {
+      "id": "acc-mlp",
+      "type": "Accuracy",
+      "position": {
+        "x": 1020,
+        "y": 1590
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-mlp",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": 1590
+      },
+      "data": {
+        "params": {
+          "label": "MLP (16, 16) test accuracy"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Six classifiers, one dataset, one split. The two moons interlock, so no straight line separates them. Logistic regression draws a straight line and scores 0.82. KNN, the random forest, the RBF SVM and the MLP bend their boundary and score 0.86 to 0.90. The depth-5 decision tree cuts with axis-aligned steps and scores 0.83. Raise noise on SyntheticDataset and watch the gap close.\n\n六個分類器、同一份資料、同一次切分。兩個月牙彼此交錯，沒有一條直線能把它們分開。邏輯斯迴歸只能畫直線，分數 0.82。KNN、隨機森林、RBF SVM 和 MLP 能讓邊界彎曲，分數落在 0.86 到 0.90。深度 5 的決策樹只能沿座標軸切出階梯，分數 0.83。把 SyntheticDataset 的 noise 調高，看差距如何縮小。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-split",
+      "type": "note",
+      "position": {
+        "x": 340,
+        "y": 1080
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "stratify keeps the two classes in the same proportion in train and test. All six classifiers read the same x_train / y_train and are scored on the same 120 test points, so the numbers are comparable.\n\nstratify 讓訓練集和測試集裡兩類的比例相同。六個分類器讀同一份 x_train / y_train，並在同樣的 120 個測試點上評分，所以數字可以直接比較。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "split",
+        "boundOffset": {
+          "x": 0,
+          "y": 680
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_data",
+      "source": "start",
+      "target": "data",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_data_tensor_split_features",
+      "source": "data",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_data_labels_split_labels",
+      "source": "data",
+      "target": "split",
+      "sourceHandle": "labels",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_data_tensor_scatter_points",
+      "source": "data",
+      "target": "scatter",
+      "sourceHandle": "tensor",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_data_labels_scatter_labels",
+      "source": "data",
+      "target": "scatter",
+      "sourceHandle": "labels",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_split_x_train_logreg_x_train",
+      "source": "split",
+      "target": "logreg",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_split_y_train_logreg_y_train",
+      "source": "split",
+      "target": "logreg",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_split_x_test_logreg_x_query",
+      "source": "split",
+      "target": "logreg",
+      "sourceHandle": "x_test",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_logreg_predictions_acc-logreg_predictions",
+      "source": "logreg",
+      "target": "acc-logreg",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_split_y_test_acc-logreg_labels",
+      "source": "split",
+      "target": "acc-logreg",
+      "sourceHandle": "y_test",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_acc-logreg_accuracy_print-logreg_value",
+      "source": "acc-logreg",
+      "target": "print-logreg",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_split_x_train_knn_x_train",
+      "source": "split",
+      "target": "knn",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_split_y_train_knn_y_train",
+      "source": "split",
+      "target": "knn",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_split_x_test_knn_x_query",
+      "source": "split",
+      "target": "knn",
+      "sourceHandle": "x_test",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_knn_predictions_acc-knn_predictions",
+      "source": "knn",
+      "target": "acc-knn",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_split_y_test_acc-knn_labels",
+      "source": "split",
+      "target": "acc-knn",
+      "sourceHandle": "y_test",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_acc-knn_accuracy_print-knn_value",
+      "source": "acc-knn",
+      "target": "print-knn",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_split_x_train_tree_x_train",
+      "source": "split",
+      "target": "tree",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_split_y_train_tree_y_train",
+      "source": "split",
+      "target": "tree",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_split_x_test_tree_x_query",
+      "source": "split",
+      "target": "tree",
+      "sourceHandle": "x_test",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_tree_predictions_acc-tree_predictions",
+      "source": "tree",
+      "target": "acc-tree",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_split_y_test_acc-tree_labels",
+      "source": "split",
+      "target": "acc-tree",
+      "sourceHandle": "y_test",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_acc-tree_accuracy_print-tree_value",
+      "source": "acc-tree",
+      "target": "print-tree",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_split_x_train_forest_x_train",
+      "source": "split",
+      "target": "forest",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_split_y_train_forest_y_train",
+      "source": "split",
+      "target": "forest",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_split_x_test_forest_x_query",
+      "source": "split",
+      "target": "forest",
+      "sourceHandle": "x_test",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_forest_predictions_acc-forest_predictions",
+      "source": "forest",
+      "target": "acc-forest",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_split_y_test_acc-forest_labels",
+      "source": "split",
+      "target": "acc-forest",
+      "sourceHandle": "y_test",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_acc-forest_accuracy_print-forest_value",
+      "source": "acc-forest",
+      "target": "print-forest",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_split_x_train_svm_x_train",
+      "source": "split",
+      "target": "svm",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_split_y_train_svm_y_train",
+      "source": "split",
+      "target": "svm",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_split_x_test_svm_x_query",
+      "source": "split",
+      "target": "svm",
+      "sourceHandle": "x_test",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_svm_predictions_acc-svm_predictions",
+      "source": "svm",
+      "target": "acc-svm",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_split_y_test_acc-svm_labels",
+      "source": "split",
+      "target": "acc-svm",
+      "sourceHandle": "y_test",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_acc-svm_accuracy_print-svm_value",
+      "source": "acc-svm",
+      "target": "print-svm",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_split_x_train_mlp_x_train",
+      "source": "split",
+      "target": "mlp",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_split_y_train_mlp_y_train",
+      "source": "split",
+      "target": "mlp",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_split_x_test_mlp_x_query",
+      "source": "split",
+      "target": "mlp",
+      "sourceHandle": "x_test",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_mlp_predictions_acc-mlp_predictions",
+      "source": "mlp",
+      "target": "acc-mlp",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_split_y_test_acc-mlp_labels",
+      "source": "split",
+      "target": "acc-mlp",
+      "sourceHandle": "y_test",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_acc-mlp_accuracy_print-mlp_value",
+      "source": "acc-mlp",
+      "target": "print-mlp",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

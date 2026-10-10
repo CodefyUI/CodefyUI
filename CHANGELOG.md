@@ -30,6 +30,16 @@ received — each links to the release it was published as.
   Settings and shortcuts) with a one- or two-line card. Next / Previous or the
   arrow keys move between them, Escape leaves, and an area not on screen is
   skipped.
+- **Seven examples that run offline** ([#673]). Three in **Training** train
+  on generated data in under a minute on a CPU: **LSTM remembers the first
+  token** (a recall task the test split was never trained on), **Segment
+  shapes pixel by pixel** (per-pixel classes, scored against the 0.89 an
+  all-background answer gets) and **Train a DDPM on blobs** (train, then
+  sample new images). Four in **Concepts**: **Six classifiers on two moons**,
+  **Causal attention from scratch** with one operation per node, **Reward
+  hacking via a shortcut** with its control, and **One GRPO step on
+  rollouts** from a grid world to the clipped loss. Each explains itself in
+  bilingual notes, and every number a note quotes is held by a test.
 
 ### Changed
 
@@ -5476,3 +5486,4 @@ Release candidates before 1.0.0 are on the
 [#666]: https://github.com/CodefyUI/CodefyUI/issues/666
 [#667]: https://github.com/CodefyUI/CodefyUI/issues/667
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
+[#673]: https://github.com/CodefyUI/CodefyUI/issues/673

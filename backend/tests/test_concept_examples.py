@@ -1,7 +1,7 @@
 """The Concepts section ends on something the reader can check.
 
-The eight graphs in the gallery's ``concepts`` section each exist to show
-one idea. Three of them used to stop just short of showing it: the sklearn
+The graphs in the gallery's ``concepts`` section each exist to show one
+idea. Three of them used to stop just short of showing it: the sklearn
 KNN example fitted a classifier and printed its raw predictions without
 ever scoring them, the tabular pipeline ended on a 120x4 tensor dump, and
 the forward-diffusion example blended Gaussian noise into a ``randn``
@@ -47,6 +47,10 @@ _CONCEPT_EXAMPLES = (
     "Diffusion/Toy-Sampling",
     "Diffusion/Mini-UNet-Compact",
     "RL/RLHF-Reward-and-KL",
+    "Classical/Classifier-Showdown-Moons",
+    "Transformer/Causal-Attention-From-Scratch",
+    "RL/Reward-Hacking-Shortcut",
+    "RL/GRPO-Step-GridWorld",
 )
 
 
@@ -227,6 +231,109 @@ def test_the_unrolled_rnn_applies_one_set_of_weights():
     assert _has_edge(graph, "cell2", "hidden", "cell3", "hidden")
 
 
+def _run_with_its_seed(key: str) -> dict:
+    """Execute a concept graph under the run seed its file stores.
+
+    The canvas runs an opened example with ``settings.seed``, so a number a
+    note quotes off a seeded example is the number this run gives.
+    """
+    from app.core.execution_context import ExecutionContext
+
+    graph = _graph(key)
+    seed = graph["settings"]["seed"]
+    prev_cwd = Path.cwd()
+    os.chdir(_BACKEND_DIR)
+    try:
+        return asyncio.run(execute_graph(
+            graph["nodes"], graph["edges"], error_mode="fail_fast",
+            context=ExecutionContext(device="cpu", seed=seed)))
+    finally:
+        os.chdir(prev_cwd)
+
+
+# ── Six classifiers on two moons: the numbers the overview quotes ─────────
+
+def test_the_showdown_scores_every_classifier_on_the_same_split():
+    graph = _graph("Classical/Classifier-Showdown-Moons")
+    classifiers = ("logreg", "knn", "tree", "forest", "svm", "mlp")
+    for clf in classifiers:
+        assert _feeds(graph, clf, "x_train") == ("split", "x_train")
+        assert _feeds(graph, clf, "x_query") == ("split", "x_test")
+        assert _feeds(graph, f"acc-{clf}", "predictions") == (clf, "predictions")
+        assert _feeds(graph, f"acc-{clf}", "labels") == ("split", "y_test")
+
+
+def test_the_showdown_lands_where_its_note_says():
+    """0.82 for the straight line, 0.83 for the depth-5 tree, 0.86 to 0.90
+    for the four that bend."""
+    results = _run_with_its_seed("Classical/Classifier-Showdown-Moons")
+    acc = {clf: results[f"acc-{clf}"]["accuracy"]
+           for clf in ("logreg", "knn", "tree", "forest", "svm", "mlp")}
+    assert results["acc-logreg"]["total"] == 120, "the 30% split of 400 points"
+    assert f"{acc['logreg']:.2f}" == "0.82", acc
+    assert f"{acc['tree']:.2f}" == "0.83", acc
+    for clf in ("knn", "forest", "svm", "mlp"):
+        assert 0.86 <= round(acc[clf], 2) <= 0.90, acc
+        assert acc[clf] > acc["logreg"], acc
+
+
+# ── Causal attention from scratch: the mask shows in the weights ──────────
+
+def test_causal_attention_weights_are_lower_triangular_rows_of_one():
+    results = _run_with_its_seed("Transformer/Causal-Attention-From-Scratch")
+    weights = results["softmax"]["tensor"]
+    assert tuple(weights.shape) == (6, 6)
+    assert torch.equal(torch.triu(weights, diagonal=1), torch.zeros(6, 6)), (
+        "a position reads a later one")
+    assert torch.allclose(weights.sum(-1), torch.ones(6))
+    assert float(weights[0, 0]) == pytest.approx(1.0), (
+        "position 0 can read only itself")
+    assert tuple(results["out"]["tensor"].shape) == (6, 8)
+
+
+def test_causal_attention_scales_by_one_over_root_d():
+    graph = _graph("Transformer/Causal-Attention-From-Scratch")
+    d = int(_params(graph, "k")["shape"].split(",")[1])
+    assert _params(graph, "scale")["scalar"] == pytest.approx(d ** -0.5, abs=1e-6)
+
+
+# ── Reward hacking: the gap the overview quotes ───────────────────────────
+
+def test_reward_hacking_hides_from_the_training_score():
+    """Both arms fit training to 1.0; holdout ends near 0.78 with the
+    shortcut and about 0.96 without it."""
+    results = _run_with_its_seed("RL/Reward-Hacking-Shortcut")
+    hack, ctrl = results["rm-hack"], results["rm-ctrl"]
+    assert float(hack["train_accuracy"][-1]) == pytest.approx(1.0)
+    assert float(ctrl["train_accuracy"][-1]) == pytest.approx(1.0)
+    assert float(hack["holdout_accuracy"][-1]) == pytest.approx(0.78, abs=0.01)
+    assert float(ctrl["holdout_accuracy"][-1]) == pytest.approx(0.96, abs=0.01)
+
+
+# ── One GRPO step: 3 goals and 5 traps under the stored seed ──────────────
+
+def test_the_grpo_rollouts_are_the_ones_the_note_counts():
+    results = _run_with_its_seed("RL/GRPO-Step-GridWorld")
+    returns = results["rollout"]["returns"].tolist()
+    assert len(returns) == 8
+    assert returns.count(1.0) == 3, returns
+    assert returns.count(-1.0) == 5, returns
+
+    advantages = results["adv"]["advantages"]
+    assert float(advantages.sum()) == pytest.approx(0.0, abs=1e-5)
+    for ret, adv in zip(returns, advantages.tolist()):
+        assert (adv > 0) == (ret > sum(returns) / len(returns)), (returns, adv)
+
+
+def test_the_grpo_step_feeds_one_advantage_per_step_into_the_clip():
+    results = _run_with_its_seed("RL/GRPO-Step-GridWorld")
+    steps = int(results["rollout"]["episode_lengths"].sum())
+    assert tuple(results["adv"]["advantages_expanded"].shape) == (steps,)
+    # old == new log-probs: every ratio is 1, nothing is clipped.
+    assert torch.allclose(results["ppo"]["ratio"], torch.ones(steps))
+    assert results["ppo"]["clip_fraction"] == 0
+
+
 # ── the notes ─────────────────────────────────────────────────────────────
 
 def _notes(graph: dict) -> list[dict]:
@@ -287,3 +394,28 @@ def test_every_concept_note_is_written_in_both_languages(key: str):
             f"{key}: {note['id']}'s second half is not Chinese")
         assert not any("一" <= ch <= "鿿" for ch in english), (
             f"{key}: {note['id']} mixes Chinese into its English half")
+
+
+# ── Offline training examples: what their notes can check without training ─
+
+def test_the_segmentation_note_quotes_the_all_background_baseline():
+    """The note says a model answering background everywhere scores 0.89;
+    that is the background share of the held-out masks."""
+    from app.nodes.data.synthetic_segmentation_node import SyntheticSegmentationNode
+
+    graph = _graph("Usage_Example/Segmentation-Synthetic-Shapes")
+    params = {k: v for k, v in _params(graph, "seg-test").items()}
+    dataset = SyntheticSegmentationNode().execute({}, params)["dataset"]
+    masks = torch.stack([dataset[i][1] for i in range(len(dataset))])
+    assert f"{float((masks == 0).float().mean()):.2f}" == "0.89"
+    note = next(n for n in graph["nodes"] if n["id"] == "note-overview")
+    assert "0.89" in note["data"]["noteContent"]
+
+
+def test_the_lstm_example_tests_on_sequences_it_never_trained_on():
+    graph = _graph("RNN/LSTM-Recall-First-Token")
+    train, test = _params(graph, "seq-train"), _params(graph, "seq-test")
+    assert train["seed"] != test["seed"]
+    for key in ("kind", "seq_len", "n_classes", "n_distractors"):
+        assert train[key] == test[key], key
+    assert _feeds(graph, "eval", "dataset") == ("seq-test", "dataset")

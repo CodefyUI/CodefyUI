@@ -1,0 +1,328 @@
+{
+  "name": "Segment shapes pixel by pixel",
+  "description": "Label each pixel: circle, box or none",
+  "gallery": {
+    "section": "training",
+    "order": 8
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "seg-train",
+      "type": "SyntheticSegmentation",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "image_size": 32,
+          "n_samples": 400,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "seg-test",
+      "type": "SyntheticSegmentation",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "image_size": 32,
+          "n_samples": 100,
+          "seed": 1
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":1,\"out_channels\":16,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l1\",\"type\":\"ReLU\"},{\"id\":\"l2\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l3\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l4\",\"type\":\"ReLU\"},{\"id\":\"l5\",\"type\":\"ConvTranspose2d\",\"params\":{\"in_channels\":32,\"out_channels\":16,\"kernel_size\":2,\"stride\":2}},{\"id\":\"l6\",\"type\":\"ReLU\"},{\"id\":\"l7\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":3,\"kernel_size\":1}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"e7\",\"source\":\"l6\",\"target\":\"l7\"},{\"id\":\"eout\",\"source\":\"l7\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 340,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 32,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "dl-val",
+      "type": "DataLoader",
+      "position": {
+        "x": 340,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "batch_size": 100,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 340,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.003
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 340,
+        "y": 720
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 640,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "epochs": 8,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 960,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 100
+        }
+      }
+    },
+    {
+      "id": "print-acc",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Pixel accuracy on held-out images"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 960,
+        "y": 60
+      },
+      "data": {
+        "params": {
+          "title": "Segmentation training loss",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Semantic segmentation labels every pixel. SyntheticSegmentation draws circles and rectangles on 32x32 images and gives a mask with class 0 (background), 1 (circle) or 2 (rectangle) per pixel. The model outputs 3 scores per pixel, CrossEntropyLoss compares them with the mask, and EvaluateModel reports the fraction of pixels labelled correctly on 100 images it never trained on. About 89% of the pixels are background, so a model that answers background everywhere scores 0.89; this one scores about 0.96 after 8 epochs.\n\n語意分割要替每個像素標上類別。SyntheticSegmentation 會在 32x32 的影像上畫圓形和矩形，並給出每個像素的遮罩：0 是背景、1 是圓形、2 是矩形。模型對每個像素輸出 3 個分數，CrossEntropyLoss 拿它們和遮罩比對，EvaluateModel 則回報在 100 張沒訓練過的影像上，標對的像素比例。約 89% 的像素是背景，所以全部回答背景的模型就有 0.89；這個模型訓練 8 個 epoch 後約為 0.96。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 620
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Encoder-decoder in the layer editor: two 3x3 convolutions with a 2x2 max-pool between them halve the resolution, a stride-2 ConvTranspose2d restores it, and a 1x1 convolution maps 16 channels to 3 class scores per pixel.\n\n圖層編輯器裡是編碼器-解碼器：兩層 3x3 卷積之間夾一個 2x2 max-pool，把解析度減半；stride 2 的 ConvTranspose2d 再把解析度還原；最後用 1x1 卷積把 16 個通道轉成每個像素 3 個類別分數。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 200
+        },
+        "noteWidth": 280
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_seg-train",
+      "source": "start",
+      "target": "seg-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_seg-test",
+      "source": "start",
+      "target": "seg-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_seg-train_dataset_dl-train_dataset",
+      "source": "seg-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_seg-test_dataset_dl-val_dataset",
+      "source": "seg-test",
+      "target": "dl-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train_dataloader",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_dl-val_dataloader_train_val_dataloader",
+      "source": "dl-val",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_model_eval_model",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_seg-test_dataset_eval_dataset",
+      "source": "seg-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval_accuracy_print-acc_value",
+      "source": "eval",
+      "target": "print-acc",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train_losses_viz_data",
+      "source": "train",
+      "target": "viz",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
