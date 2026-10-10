@@ -22,18 +22,32 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **BradleyTerryTrain gives the same result every run** ([#675]). It seeded the
-  process-wide random generator and then built its network from it, so two of
-  them in one graph without a run seed, such as a shortcut arm beside its
-  control, reseeded each other and trained from different weights on each
-  run: the shortcut arm's final holdout accuracy moved between 0.75 and 0.78.
-  The weights now come from the node's `seed` alone and are the ones a single
-  node gave before.
+- **A getting-started guide in Settings**. **Settings → Getting started
+  guide → Start** frames one area of the screen at a time (the node list, the
+  side panels, the canvas, Run, the device, Templates, the results panel,
+  Settings and shortcuts) with a one- or two-line card. Next / Previous or the
+  arrow keys move between them, Escape leaves, and an area not on screen is
+  skipped.
+- **Seven examples that run offline** ([#673]). Three in **Training** train
+  on generated data in under a minute on a CPU: **LSTM remembers the first
+  token** (a recall task the test split was never trained on), **Segment
+  shapes pixel by pixel** (per-pixel classes, scored against the 0.89 an
+  all-background answer gets) and **Train a DDPM on blobs** (train, then
+  sample new images). Four in **Concepts**: **Six classifiers on two moons**,
+  **Causal attention from scratch** with one operation per node, **Reward
+  hacking via a shortcut** with its control, and **One GRPO step on
+  rollouts** from a grid world to the clipped loss. Each explains itself in
+  bilingual notes, and every number a note quotes is held by a test.
 
 ### Changed
 
+- **Explanations sit behind a "?" instead of under every control**. Settings
+  rows, each parameter's description and range, and a node's longer details
+  now open from a small **?** on hover, keyboard focus or tap, rewritten as
+  one short line. The node's one-line summary stays on screen. The **?** works
+  beside a disabled control, where a hover title never showed.
 - **Switch picks its input from a param, grows as it is wired, and stops
   instead of guessing** ([#655], part of [#562]). A new `selector` param picks
   the input, so a fixed choice no longer needs a constant node wired in;
@@ -58,6 +72,12 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **The Inspector waits for a run to end before saying a node has nothing**.
+  With the Inspector open during a run, a node that failed mid-run read "Run
+  data expired", and a node the run left out could read "Not in the last run"
+  when the run's end reached the editor before that node's status did. Rows
+  now ask again once the run is over or the node's status changes, so they
+  read "Failed in the last run" or "Not selected by a Switch" as they should.
 - **A wire dropped on an input that already has one replaces it** ([#657],
   part of [#562]). The input kept both wires before, and the run then read
   whichever wire came last in the saved file, which the canvas does not show.
@@ -79,6 +99,35 @@ received — each links to the release it was published as.
   order with its selector on the last one, so the result is what it was.
   Several wires meeting at one input inside a block, or into a bypassed node,
   are found too.
+- **The live training chart draws the validation loss** ([#665]). With a
+  `val_dataloader` wired, `TrainingLoop` already sent `val_loss` with every
+  epoch, and the **Training** tab dropped it: the chart had one curve and the
+  table one loss column. It now draws `train_loss` and `val_loss` with a
+  legend and lists the validation loss per epoch. A run without a validation
+  loader looks as before.
+- **A heatmap row with all its weight on one cell is drawn at the peak**
+  ([#666]). With row-normalised colours, as attention weights use, a row with
+  one non-zero cell and zeros elsewhere was drawn in the mid-ramp colour that
+  means "uniform, no peak". Row 0 of every causal attention map is such a row,
+  so the sharpest row in the map read as the flattest. It is now drawn at the
+  top of the ramp; a row of several equal weights keeps the neutral colour.
+- **Error messages fill a placeholder they use twice** ([#667]). The
+  shape-mismatch hints named the numbers twice, once in the diagnosis and once
+  in the fix, and only the first was filled: a Linear mismatch ended with
+  "change in_features to {got}". Every occurrence is filled now, in both
+  languages.
+- **The results panel shows the log when there is no training to show**
+  ([#671]). The panel's tab is shared by every canvas tab but the log is not,
+  so after switching to a graph that trains nothing, starting a new run or
+  clearing the log, the panel stayed on the disabled **Training** tab and hid
+  the run's output. It now goes back to **Log**; **Runs** stays where it is.
+- **BradleyTerryTrain gives the same result every run** ([#675]). It seeded the
+  process-wide random generator and then built its network from it, so two of
+  them in one graph without a run seed, such as a shortcut arm beside its
+  control, reseeded each other and trained from different weights on each
+  run: the shortcut arm's final holdout accuracy moved between 0.75 and 0.78.
+  The weights now come from the node's `seed` alone and are the ones a single
+  node gave before.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5440,4 +5489,9 @@ Release candidates before 1.0.0 are on the
 [#655]: https://github.com/CodefyUI/CodefyUI/issues/655
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
+[#665]: https://github.com/CodefyUI/CodefyUI/issues/665
+[#666]: https://github.com/CodefyUI/CodefyUI/issues/666
+[#667]: https://github.com/CodefyUI/CodefyUI/issues/667
+[#671]: https://github.com/CodefyUI/CodefyUI/issues/671
+[#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675

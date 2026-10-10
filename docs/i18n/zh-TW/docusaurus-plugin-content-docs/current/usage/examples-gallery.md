@@ -13,9 +13,9 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 | 區塊 | 內容 |
 |---------|----------|
 | **快速開始** | 最先跑的三個：**Train CNN on MNIST**、**Inference CNN on MNIST**，以及 **Call a graph over HTTP**（graph-as-a-function 示範）。 |
-| **訓練** | 從頭訓練出一個模型的圖：**Train a CNN on beans**（資料集來自 Hugging Face Hub）、**Train ResNet on CIFAR10**、**Train a Transformer on MNIST**、實測過的 **ResNet-18 CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Pretrain an LM on TinyStories**，以及 **Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中。 |
+| **訓練** | 從頭訓練出一個模型的圖：**Train a CNN on beans**（資料集來自 Hugging Face Hub）、**Train ResNet on CIFAR10**、**Train a Transformer on MNIST**、實測過的 **ResNet-18 CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Pretrain an LM on TinyStories**、**Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中 — 以及三個用產生的資料、在 CPU 上一分鐘內訓練完的範例：**LSTM remembers the first token**、**Segment shapes pixel by pixel** 與 **Train a DDPM on blobs**。 |
 | **LLM 與 RAG** | **Word embedding analogy**、**Sentence similarity in zh-TW**，以及兩個檢索範例 **Fully local RAG** 與 **RAG with a chat API**。 |
-| **觀念** | 一張圖講一個觀念，小到可以從頭看到尾：兩個 Iris 管線、**RNN unrolled over three steps**、**Mixture of Experts top-k routing**、三個 diffusion 範例（**Forward diffusion on a digit**、**Toy reverse diffusion sampling**、**Mini U-Net node**），以及 **RLHF reward and KL terms**。 |
+| **觀念** | 一張圖講一個觀念，小到可以從頭看到尾：兩個 Iris 管線、**RNN unrolled over three steps**、**Mixture of Experts top-k routing**、三個 diffusion 範例（**Forward diffusion on a digit**、**Toy reverse diffusion sampling**、**Mini U-Net node**），**RLHF reward and KL terms**、**Six classifiers on two moons**、**Causal attention from scratch**、**Reward hacking via a shortcut**，以及 **One GRPO step on rollouts**。 |
 | **模型架構** | 15 個經典架構導覽，再依模型家族分成 CNN、RNN、Transformer、Diffusion、RL 五組。 |
 | **擴充套件包** | 由已安裝的[外掛](/advanced/plugins)提供的範例，每個套件包一個小標題。只有存在時才會顯示。 |
 | **其他** | 沒有宣告區塊、或宣告了這份清單不認識的區塊的內建範例。 |

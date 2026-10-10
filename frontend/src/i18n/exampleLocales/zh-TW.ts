@@ -37,6 +37,9 @@ const zhTW: ExampleTranslations = {
   'Usage_Example/ResNet18-CIFAR10-Baseline': {
     description: '每一層都在編輯器裡，不寫 Python',
   },
+  'Usage_Example/Segmentation-Synthetic-Shapes': {
+    description: '替每個像素標上圓形、方形或背景',
+  },
 
   // ── Classical ML ──
   'Classical/Iris-Sklearn-KNN': {
@@ -44,6 +47,9 @@ const zhTW: ExampleTranslations = {
   },
   'Classical/Tabular-Iris-Pipeline': {
     description: '每個特徵的平均值最後都接近 0',
+  },
+  'Classical/Classifier-Showdown-Moons': {
+    description: '哪一種邊界彎得夠',
   },
 
   // ── LLM -- embeddings, retrieval, causal-LM training ──
@@ -73,20 +79,35 @@ const zhTW: ExampleTranslations = {
   'Diffusion/Toy-Sampling': {
     description: '20 步；沒訓練過，輸出仍是噪聲',
   },
+  'Diffusion/Train-DDPM-Blobs': {
+    description: '先學會去噪，再取樣出新影像',
+  },
 
   // ── Transformer ──
   'Transformer/MoE-TopK-Routing': {
     description: '每個 token 只跑 4 位專家中的 2 位',
+  },
+  'Transformer/Causal-Attention-From-Scratch': {
+    description: 'Q K^T、縮放、遮罩、softmax、乘上 V',
   },
 
   // ── RNN ──
   'RNN/RNN-OneStep': {
     description: '同一組權重，每一步都重複使用',
   },
+  'RNN/LSTM-Recall-First-Token': {
+    description: '把一個 token 帶過 9 步雜訊',
+  },
 
   // ── Reinforcement learning ──
   'RL/RLHF-Reward-and-KL': {
     description: '一個給答案打分，一個不讓策略跑遠',
+  },
+  'RL/Reward-Hacking-Shortcut': {
+    description: '訓練集滿分，保留集卻被騙',
+  },
+  'RL/GRPO-Step-GridWorld': {
+    description: '每一回合都和同組的回合比較',
   },
 
   // ── Vision-language-action ──

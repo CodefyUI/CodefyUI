@@ -127,7 +127,7 @@ describe('NodeConfigPanel — header & accent color', () => {
 
   // The palette list shows the summary alone; this panel is where the rest of
   // it goes, which is the whole point of splitting the two fields.
-  it('renders the details under the summary when the node has them', () => {
+  it('keeps the summary on screen and the details behind a "?"', () => {
     seedTab(
       [makeNode({
         data: {
@@ -141,9 +141,10 @@ describe('NodeConfigPanel — header & accent color', () => {
     );
     render(<NodeConfigPanel />);
     expect(screen.getByText('A dense layer')).toBeInTheDocument();
-    expect(
-      screen.getByText('Wraps nn.Linear. Bias is on unless you turn it off.'),
-    ).toBeInTheDocument();
+    const details = 'Wraps nn.Linear. Bias is on unless you turn it off.';
+    expect(screen.queryByText(details)).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'About My Node' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent(details);
     expect(screen.getAllByTestId('mathtext')).toHaveLength(2);
   });
 
@@ -180,7 +181,7 @@ describe('NodeConfigPanel — header & accent color', () => {
 });
 
 describe('NodeConfigPanel — params section', () => {
-  it('renders param fields, description hints, and range hints', () => {
+  it('renders param fields, with the description and range behind a "?"', () => {
     const def = makeDef({
       params: [
         makeParam({ name: 'lr', param_type: 'float', description: 'learning rate', min_value: 0, max_value: 1 }),
@@ -195,16 +196,21 @@ describe('NodeConfigPanel — params section', () => {
     // all 4 param fields rendered with their values
     expect(screen.getByTestId('paramfield-lr')).toHaveTextContent('field:lr:0.1');
     expect(screen.getByTestId('paramfield-units')).toBeInTheDocument();
-    // description hint only for lr
-    expect(screen.getByText('learning rate')).toBeInTheDocument();
-    // range hints: lr has both min & max (-∞/+∞ not used here)
-    expect(screen.getByText('Range: 0 — 1')).toBeInTheDocument();
-    // units: min only -> max shows +∞
-    expect(screen.getByText('Range: 1 — +∞')).toBeInTheDocument();
-    // bias: max only -> min shows -∞
-    expect(screen.getByText('Range: -∞ — 10')).toBeInTheDocument();
-    // exactly 3 range hints (lr, units, bias) — 'plain' has neither min nor max
-    expect(screen.getAllByText(/Range:/)).toHaveLength(3);
+    // Nothing standing under the fields any more.
+    expect(screen.queryByText('learning rate')).toBeNull();
+    // A "?" for lr, units and bias; 'plain' has no description and no range.
+    expect(screen.queryByRole('button', { name: 'About plain' })).toBeNull();
+    const tip = (name: string) => {
+      const icon = screen.getByRole('button', { name: `About ${name}` });
+      fireEvent.mouseEnter(icon);
+      const text = screen.getByRole('tooltip').textContent;
+      fireEvent.mouseLeave(icon);
+      return text;
+    };
+    expect(tip('lr')).toBe('learning rateRange: 0 — 1');
+    // units: min only -> max shows +∞; bias: max only -> min shows -∞
+    expect(tip('units')).toBe('Range: 1 — +∞');
+    expect(tip('bias')).toBe('Range: -∞ — 10');
   });
 
   it('wires handleChange to updateNodeParams on a field change', () => {

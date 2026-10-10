@@ -1,3 +1,4 @@
+import { HelpTip } from '../shared/HelpTip';
 import styles from './SettingsPopover.module.css';
 
 interface RowProps {
@@ -13,6 +14,13 @@ interface RowProps {
    * that. Everything else says it on the control, as a `title`.
    */
   desc?: React.ReactNode;
+  /**
+   * What the setting does, behind a "?" beside its name (`HelpTip`). The
+   * default place for an explanation: one short line, read on demand, and
+   * reachable by keyboard and next to a disabled control. `desc` is left for
+   * state the user must see without asking (a warning, who is signed in).
+   */
+  help?: string;
   ctrl: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
@@ -35,7 +43,7 @@ interface RowProps {
  * row had `tabIndex={0}` and no focus style of its own, so keyboard focus
  * landed on it invisibly one stop before the button that does the same thing.
  */
-export function SettingsRow({ name, desc, ctrl, onClick, disabled }: RowProps) {
+export function SettingsRow({ name, desc, help, ctrl, onClick, disabled }: RowProps) {
   const interactive = onClick !== undefined;
   return (
     <div
@@ -43,7 +51,10 @@ export function SettingsRow({ name, desc, ctrl, onClick, disabled }: RowProps) {
       onClick={onClick}
     >
       <div>
-        <div className={styles.name}>{name}</div>
+        <div className={styles.name}>
+          {name}
+          {help !== undefined && <HelpTip text={help} topic={name} />}
+        </div>
         {desc !== undefined && <div className={styles.desc}>{desc}</div>}
       </div>
       <div className={styles.ctrl}>{ctrl}</div>

@@ -1,0 +1,54 @@
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-left: 0.3rem;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.icon:hover,
+.icon[aria-expanded='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.icon:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.card {
+  position: fixed;
+  z-index: 10010;
+  max-width: 16rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.line {
+  margin: 0;
+}
+
+.line + .line {
+  margin-top: 0.25rem;
+  color: var(--text-secondary);
+}

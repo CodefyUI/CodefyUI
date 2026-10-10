@@ -12,8 +12,21 @@ import {
 // ResizeObserver bookkeeping stays out of these tests. We assert the props it
 // receives via data attributes.
 vi.mock('./LossChart', () => ({
-  LossChart: ({ losses, height }: { losses: number[]; height: number }) => (
-    <div data-testid="loss-chart" data-len={losses.length} data-height={height} />
+  LossChart: ({
+    losses,
+    series,
+    height,
+  }: {
+    losses: number[];
+    series?: { name: string; points: { x: number; y: number }[] }[];
+    height: number;
+  }) => (
+    <div
+      data-testid="loss-chart"
+      data-len={losses.length}
+      data-height={height}
+      data-series={series ? JSON.stringify(series) : undefined}
+    />
   ),
 }));
 
@@ -296,6 +309,55 @@ describe('ResultsPanel — training tab', () => {
     expect(screen.getAllByText('-').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('draws the single loss curve, with no val column, when no epoch carries val_loss', () => {
+    seedTraining();
+    render(<ResultsPanel />);
+    expect(screen.getByTestId('loss-chart').getAttribute('data-series')).toBeNull();
+    expect(screen.queryByText(t('results.col.valLoss'))).not.toBeInTheDocument();
+  });
+
+  it('charts val_loss beside the training loss and lists it per epoch when a val loader reports it', () => {
+    seedLogs([
+      makeLog({
+        timestamp: 1000,
+        message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9, val_loss: 0.7 }),
+      }),
+      makeLog({
+        timestamp: 2000,
+        message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.65 }),
+      }),
+    ]);
+    render(<ResultsPanel />);
+    const series = JSON.parse(screen.getByTestId('loss-chart').getAttribute('data-series')!);
+    expect(series).toEqual([
+      { name: 'train_loss', points: [{ x: 1, y: 0.9 }, { x: 2, y: 0.5 }] },
+      { name: 'val_loss', points: [{ x: 1, y: 0.7 }, { x: 2, y: 0.65 }] },
+    ]);
+    expect(screen.getByText(t('results.col.valLoss'))).toBeInTheDocument();
+    expect(screen.getByText('0.7000')).toBeInTheDocument();
+    expect(screen.getByText('0.6500')).toBeInTheDocument();
+  });
+
+  it('leaves a gap in the val curve for an epoch that reported none', () => {
+    seedLogs([
+      makeLog({
+        timestamp: 1000,
+        message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9 }),
+      }),
+      makeLog({
+        timestamp: 2000,
+        message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.6 }),
+      }),
+    ]);
+    render(<ResultsPanel />);
+    const series = JSON.parse(screen.getByTestId('loss-chart').getAttribute('data-series')!);
+    expect(series[1]).toEqual({ name: 'val_loss', points: [{ x: 2, y: 0.6 }] });
+    // epoch 1's val cell reads '-'
+    const rows = document.querySelectorAll('[class*="epochRowWithVal"]');
+    expect(rows.length).toBe(3); // header + 2 epochs
+    expect(rows[1].children[2].textContent).toBe('-');
+  });
+
   it('renders the config-only training state: no summary, shows waitingEpoch, disables epoch UI', () => {
     seedLogs([
       makeLog({ message: progress({ event: 'config', config: { lr: 0.1 } }) }),
@@ -352,17 +414,42 @@ describe('ResultsPanel — training tab', () => {
     expect(screen.queryByText('a log line')).not.toBeInTheDocument();
   });
 
-  it('shows the trainingEmpty state if logs are cleared while on the Training tab', () => {
+  it('falls back to the Log tab when the logs are cleared while on the Training tab', () => {
     seedLogs([
       makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
-    // auto-switched to training; now clear logs -> hasTraining becomes false while
-    // panelTab is still 'training' -> the `!hasTraining` trainingEmpty branch shows.
+    // auto-switched to training; clearing the logs disables the Training tab,
+    // so the panel goes back to the Log instead of showing a dead tab.
     expect(screen.getByTestId('loss-chart')).toBeInTheDocument();
     fireEvent.click(screen.getByText(t('results.clear')));
-    expect(screen.getByText(t('results.trainingEmpty'))).toBeInTheDocument();
     expect(screen.queryByTestId('loss-chart')).not.toBeInTheDocument();
+    expect(screen.queryByText(t('results.trainingEmpty'))).not.toBeInTheDocument();
+    expect(screen.getByText(t('results.training')).closest('button')).toBeDisabled();
+    expect(screen.getByText(t('results.empty'))).toBeInTheDocument();
+  });
+
+  it('falls back to the Log tab when the active canvas tab has no training data', () => {
+    // The logs follow the active canvas tab: switching from a training graph
+    // to one that trains nothing must show that graph's log.
+    seedLogs([
+      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+    ]);
+    render(<ResultsPanel />);
+    expect(screen.getByTestId('loss-chart')).toBeInTheDocument();
+    act(() => seedLogs([makeLog({ message: 'Print: 0.55' })]));
+    expect(screen.getByText('Print: 0.55')).toBeInTheDocument();
+    expect(screen.queryByTestId('loss-chart')).not.toBeInTheDocument();
+  });
+
+  it('stays on Runs when the training data goes away', () => {
+    seedLogs([
+      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+    ]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    act(() => seedLogs([makeLog({ message: 'other' })]));
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
   });
 
   it('lets the user switch back to the Log tab after training auto-switch', () => {

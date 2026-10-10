@@ -1,0 +1,242 @@
+{
+  "name": "Train a DDPM on blobs",
+  "description": "Learn to denoise, then sample new images",
+  "gallery": {
+    "section": "training",
+    "order": 9
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 60
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "shapes",
+      "type": "SyntheticShapes",
+      "position": {
+        "x": 40,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "image_size": 16,
+          "n_samples": 256,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "unet",
+      "type": "DiffusionUNet",
+      "position": {
+        "x": 40,
+        "y": 160
+      },
+      "data": {
+        "params": {
+          "in_channels": 1,
+          "base_channels": 16,
+          "channel_mult": "1,2",
+          "time_emb_dim": 32,
+          "num_groups": 4,
+          "seed": 42
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "DiffusionTrainingLoop",
+      "position": {
+        "x": 380,
+        "y": 20
+      },
+      "data": {
+        "params": {
+          "epochs": 30,
+          "batch_size": 32,
+          "lr": 0.002,
+          "num_timesteps": 160,
+          "schedule": "linear",
+          "beta_start": 0.0001,
+          "beta_end": 0.05,
+          "device": "auto",
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "noise",
+      "type": "TensorCreate",
+      "position": {
+        "x": 380,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "shape": "4,1,16,16",
+          "fill": "randn",
+          "value": 0,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "sample",
+      "type": "DDPMSampler",
+      "position": {
+        "x": 720,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "num_steps": 160,
+          "schedule": "linear",
+          "beta_start": 0.0001,
+          "beta_end": 0.05,
+          "seed": 42
+        }
+      }
+    },
+    {
+      "id": "viz-loss",
+      "type": "Visualize",
+      "position": {
+        "x": 720,
+        "y": -160
+      },
+      "data": {
+        "params": {
+          "title": "Noise-prediction loss",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "viz-img",
+      "type": "Visualize",
+      "position": {
+        "x": 1040,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "title": "Generated samples",
+          "plot_type": "image"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 60
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A complete DDPM in four nodes. SyntheticShapes makes 256 images of soft blobs. DiffusionTrainingLoop adds noise at a random timestep and trains the U-Net to predict that noise. DDPMSampler then starts from pure Gaussian noise and removes the predicted noise one step at a time, producing new blob images the model was never shown.\n\n四個節點組成完整的 DDPM。SyntheticShapes 產生 256 張柔和光斑的影像。DiffusionTrainingLoop 在隨機的時間步加入雜訊，訓練 U-Net 預測加進去的雜訊。DDPMSampler 接著從純高斯雜訊出發，一步一步扣掉預測的雜訊，生成模型沒看過的新光斑影像。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-sampler",
+      "type": "note",
+      "position": {
+        "x": 720,
+        "y": 570
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The sampler's schedule (linear, 160 steps, beta 0.0001 to 0.05) matches the training loop's. A sampler run with a different schedule removes the wrong amount of noise per step.\n\n取樣器的排程（linear、160 步、beta 0.0001 到 0.05）和訓練迴圈一致。若取樣器用不同的排程，每一步扣掉的雜訊量就會不對。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "sample",
+        "boundOffset": {
+          "x": 0,
+          "y": 370
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_shapes",
+      "source": "start",
+      "target": "shapes",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_unet",
+      "source": "start",
+      "target": "unet",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_noise",
+      "source": "start",
+      "target": "noise",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_shapes_dataset_train_dataset",
+      "source": "shapes",
+      "target": "train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_unet_model_train_model",
+      "source": "unet",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_train_model_sample_model",
+      "source": "train",
+      "target": "sample",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_noise_tensor_sample_noise",
+      "source": "noise",
+      "target": "sample",
+      "sourceHandle": "tensor",
+      "targetHandle": "noise"
+    },
+    {
+      "id": "e_train_losses_viz-loss_data",
+      "source": "train",
+      "target": "viz-loss",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_sample_image_viz-img_data",
+      "source": "sample",
+      "target": "viz-img",
+      "sourceHandle": "image",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

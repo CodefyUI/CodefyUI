@@ -1,0 +1,326 @@
+{
+  "name": "Reward hacking via a shortcut",
+  "description": "Perfect on train, fooled on holdout",
+  "gallery": {
+    "section": "concepts",
+    "order": 11
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 200
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "pairs-hack",
+      "type": "PreferenceDataset",
+      "position": {
+        "x": 40,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "n_pairs": 512,
+          "holdout_pairs": 256,
+          "feature_dim": 16,
+          "signal_dims": 8,
+          "shortcut_strength": 3.0,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "rm-hack",
+      "type": "BradleyTerryTrain",
+      "position": {
+        "x": 380,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "epochs": 60,
+          "hidden_dim": 32,
+          "lr": 0.01,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "viz-train-hack",
+      "type": "Visualize",
+      "position": {
+        "x": 720,
+        "y": -180
+      },
+      "data": {
+        "params": {
+          "title": "Train accuracy, shortcut 3",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "viz-hold-hack",
+      "type": "Visualize",
+      "position": {
+        "x": 720,
+        "y": 80
+      },
+      "data": {
+        "params": {
+          "title": "Holdout accuracy, shortcut 3",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "best-hack",
+      "type": "Print",
+      "position": {
+        "x": 1040,
+        "y": -60
+      },
+      "data": {
+        "params": {
+          "label": "Best holdout epoch, shortcut 3"
+        }
+      }
+    },
+    {
+      "id": "pairs-ctrl",
+      "type": "PreferenceDataset",
+      "position": {
+        "x": 40,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "n_pairs": 512,
+          "holdout_pairs": 256,
+          "feature_dim": 16,
+          "signal_dims": 8,
+          "shortcut_strength": 0.0,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "rm-ctrl",
+      "type": "BradleyTerryTrain",
+      "position": {
+        "x": 380,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "epochs": 60,
+          "hidden_dim": 32,
+          "lr": 0.01,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "viz-train-ctrl",
+      "type": "Visualize",
+      "position": {
+        "x": 720,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "title": "Train accuracy, shortcut 0 (control)",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "viz-hold-ctrl",
+      "type": "Visualize",
+      "position": {
+        "x": 720,
+        "y": 680
+      },
+      "data": {
+        "params": {
+          "title": "Holdout accuracy, shortcut 0 (control)",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "best-ctrl",
+      "type": "Print",
+      "position": {
+        "x": 1040,
+        "y": 540
+      },
+      "data": {
+        "params": {
+          "label": "Best holdout epoch, shortcut 0 (control)"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A reward model learns which of two responses a person preferred. PreferenceDataset plants a shortcut: one feature tracks quality in the training pairs and is pure noise in the holdout pairs. The top row trains with the shortcut at strength 3, the bottom row with it switched off. Both reach a training accuracy of 1.0. Only the holdout curve shows the difference: the top model learned the shortcut and ends near 0.78 on pairs where the shortcut no longer works, against about 0.96 for the control. That gap is reward hacking.\n\n獎勵模型要學會判斷兩個回答中人比較喜歡哪一個。PreferenceDataset 埋了一條捷徑：有一個特徵在訓練配對裡跟品質高度相關，在保留配對裡卻只是雜訊。上排用強度 3 的捷徑訓練，下排把捷徑關掉。兩者的訓練準確率都到 1.0，只有保留集曲線看得出差別：上排的模型學到了捷徑，在捷徑失效的配對上最後只有約 0.78，對照組則約 0.96。這個落差就是 reward hacking。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-ctrl",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 900
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The control: same seed, same sizes, shortcut_strength 0. Any gap between the two holdout curves comes from the shortcut alone.\n\n對照組：同樣的 seed、同樣的大小，只把 shortcut_strength 設為 0。兩條保留集曲線之間的差距完全來自捷徑。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "pairs-ctrl",
+        "boundOffset": {
+          "x": 0,
+          "y": 420
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_pairs-hack",
+      "source": "start",
+      "target": "pairs-hack",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_pairs-hack_train_w_rm-hack_train_w",
+      "source": "pairs-hack",
+      "target": "rm-hack",
+      "sourceHandle": "train_w",
+      "targetHandle": "train_w"
+    },
+    {
+      "id": "e_pairs-hack_train_l_rm-hack_train_l",
+      "source": "pairs-hack",
+      "target": "rm-hack",
+      "sourceHandle": "train_l",
+      "targetHandle": "train_l"
+    },
+    {
+      "id": "e_pairs-hack_holdout_w_rm-hack_holdout_w",
+      "source": "pairs-hack",
+      "target": "rm-hack",
+      "sourceHandle": "holdout_w",
+      "targetHandle": "holdout_w"
+    },
+    {
+      "id": "e_pairs-hack_holdout_l_rm-hack_holdout_l",
+      "source": "pairs-hack",
+      "target": "rm-hack",
+      "sourceHandle": "holdout_l",
+      "targetHandle": "holdout_l"
+    },
+    {
+      "id": "e_rm-hack_train_accuracy_viz-train-hack_data",
+      "source": "rm-hack",
+      "target": "viz-train-hack",
+      "sourceHandle": "train_accuracy",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_rm-hack_holdout_accuracy_viz-hold-hack_data",
+      "source": "rm-hack",
+      "target": "viz-hold-hack",
+      "sourceHandle": "holdout_accuracy",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_rm-hack_best_holdout_epoch_best-hack_value",
+      "source": "rm-hack",
+      "target": "best-hack",
+      "sourceHandle": "best_holdout_epoch",
+      "targetHandle": "value"
+    },
+    {
+      "id": "t_pairs-ctrl",
+      "source": "start",
+      "target": "pairs-ctrl",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_pairs-ctrl_train_w_rm-ctrl_train_w",
+      "source": "pairs-ctrl",
+      "target": "rm-ctrl",
+      "sourceHandle": "train_w",
+      "targetHandle": "train_w"
+    },
+    {
+      "id": "e_pairs-ctrl_train_l_rm-ctrl_train_l",
+      "source": "pairs-ctrl",
+      "target": "rm-ctrl",
+      "sourceHandle": "train_l",
+      "targetHandle": "train_l"
+    },
+    {
+      "id": "e_pairs-ctrl_holdout_w_rm-ctrl_holdout_w",
+      "source": "pairs-ctrl",
+      "target": "rm-ctrl",
+      "sourceHandle": "holdout_w",
+      "targetHandle": "holdout_w"
+    },
+    {
+      "id": "e_pairs-ctrl_holdout_l_rm-ctrl_holdout_l",
+      "source": "pairs-ctrl",
+      "target": "rm-ctrl",
+      "sourceHandle": "holdout_l",
+      "targetHandle": "holdout_l"
+    },
+    {
+      "id": "e_rm-ctrl_train_accuracy_viz-train-ctrl_data",
+      "source": "rm-ctrl",
+      "target": "viz-train-ctrl",
+      "sourceHandle": "train_accuracy",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_rm-ctrl_holdout_accuracy_viz-hold-ctrl_data",
+      "source": "rm-ctrl",
+      "target": "viz-hold-ctrl",
+      "sourceHandle": "holdout_accuracy",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_rm-ctrl_best_holdout_epoch_best-ctrl_value",
+      "source": "rm-ctrl",
+      "target": "best-ctrl",
+      "sourceHandle": "best_holdout_epoch",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
