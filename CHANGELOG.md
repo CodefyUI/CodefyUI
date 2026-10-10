@@ -101,6 +101,11 @@ received — each links to the release it was published as.
   means "uniform, no peak". Row 0 of every causal attention map is such a row,
   so the sharpest row in the map read as the flattest. It is now drawn at the
   top of the ramp; a row of several equal weights keeps the neutral colour.
+- **Error messages fill a placeholder they use twice** ([#667]). The
+  shape-mismatch hints named the numbers twice, once in the diagnosis and once
+  in the fix, and only the first was filled: a Linear mismatch ended with
+  "change in_features to {got}". Every occurrence is filled now, in both
+  languages.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5464,3 +5469,4 @@ Release candidates before 1.0.0 are on the
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
 [#665]: https://github.com/CodefyUI/CodefyUI/issues/665
 [#666]: https://github.com/CodefyUI/CodefyUI/issues/666
+[#667]: https://github.com/CodefyUI/CodefyUI/issues/667
