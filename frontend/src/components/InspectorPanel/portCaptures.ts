@@ -871,9 +871,26 @@ export function usePortFetches(
   const runIdRef = useRef(runId);
   runIdRef.current = runId;
   const aliveRef = useRef(true);
-  const askedRef = useRef<{ runId: string | null; keys: Set<string> }>({
+  // `statusOf` is what the owner's card said when its row was decided. The
+  // run's end can reach the tab before its last node frames do, so a row
+  // decided on the card's previous status ("Not in the last run" for a node
+  // the run then reports unselected) is decided again once the card changes.
+  const askedRef = useRef<{
+    runId: string | null;
+    keys: Set<string>;
+    statusOf: Map<string, ExecutionStatus | undefined>;
+  }>({
     runId: null,
     keys: new Set(),
+    statusOf: new Map(),
+  });
+  const runInProgress = useRunInProgress();
+  const statusKey = useTabStore((s) => {
+    if (prefix) return '';
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    return ports
+      .map((p) => tab?.nodes.find((n) => n.id === p.nodeId)?.data.executionStatus ?? '')
+      .join('|');
   });
   const seqRef = useRef<Map<string, number>>(new Map());
   // A run the tab is not running can end without the tab hearing of it: a
@@ -900,13 +917,19 @@ export function usePortFetches(
     }
     if (!runId) return;
     if (askedRef.current.runId !== runId) {
-      askedRef.current = { runId, keys: new Set() };
+      askedRef.current = { runId, keys: new Set(), statusOf: new Map() };
     }
-    const due = takeDuePorts(
-      toRunPorts(portsRef.current, prefix),
-      phasesRef.current,
-      askedRef.current.keys,
-    );
+    const asked = askedRef.current;
+    const runPorts = toRunPorts(portsRef.current, prefix);
+    if (!prefix) {
+      for (const t of runPorts) {
+        const key = keyOf(t.nodeId, t.port);
+        if (asked.keys.has(key) && asked.statusOf.get(key) !== canvasNodeStatus(t.nodeId)) {
+          asked.keys.delete(key);
+        }
+      }
+    }
+    const due = takeDuePorts(runPorts, phasesRef.current, asked.keys);
     if (due.length === 0) return;
 
     const updates: FetchMap = {};
@@ -927,6 +950,7 @@ export function usePortFetches(
     // an open block there is no status to read: the cards never get one.
     const runOver = !runInProgressNow();
     const statuses = due.map((t) => (prefix ? undefined : canvasNodeStatus(t.nodeId)));
+    due.forEach((t, i) => asked.statusOf.set(keyOf(t.nodeId, t.port), statuses[i]));
 
     void Promise.all(
       due.map(async (t, i) => {
@@ -983,6 +1007,17 @@ export function usePortFetches(
           // would freeze the wording into state, where a later locale
           // switch cannot reach it.
           const expired = e instanceof RunDataExpiredError;
+          // Asked while the run was still going: a node that has already
+          // failed, or one whose card still shows the last run, has nothing
+          // stored yet. Ask again when the run is over, instead of calling
+          // it expired.
+          if (expired && !runOver) {
+            asked.keys.delete(key);
+            // The answer can land after the run is over, when nothing else
+            // would ask again.
+            if (!runInProgressNow()) setRunEnded((n) => n + 1);
+            return;
+          }
           setFetches((prev) => ({
             ...prev,
             [key]: {
@@ -995,7 +1030,7 @@ export function usePortFetches(
         }
       }),
     );
-  }, [runId, prefix, portsKey, phasesKey, runEnded]);
+  }, [runId, prefix, portsKey, phasesKey, runEnded, statusKey, runInProgress]);
 
   return withPhaseNotes(
     withRecordingSetting(fromRunKeys(fetches, ports, prefix), recordOutputs),

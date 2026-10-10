@@ -4,6 +4,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { NodeParamList } from '../shared/NodeParamList';
 import { MathText } from '../shared/MathText';
+import { HelpTip } from '../shared/HelpTip';
 import { CATEGORY_COLORS } from '../../styles/theme';
 import styles from './NodeConfigPanel.module.css';
 
@@ -46,7 +47,17 @@ export function NodeConfigPanel() {
             <span className={styles.presetBadge}>{t('preset.badge')}</span>
           )}
         </div>
-        <div className={styles.headerName}>{selectedNode.data.label}</div>
+        <div className={styles.headerName}>
+          {selectedNode.data.label}
+          {/* The half of the documentation the palette list has no room
+              for, behind a "?" instead of a paragraph that pushed the
+              parameters below the fold. */}
+          {def?.details && (
+            <HelpTip topic={selectedNode.data.label}>
+              <MathText as="div" text={tn(nodeName, 'details', def.details)} />
+            </HelpTip>
+          )}
+        </div>
         <div className={styles.headerCategory} style={{ color: accentColor }}>
           {category}
         </div>
@@ -55,16 +66,6 @@ export function NodeConfigPanel() {
             as="div"
             className={styles.headerDescription}
             text={tn(nodeName, 'description', def.description)}
-          />
-        )}
-        {/* The half of the documentation the palette list has no room for.
-            Here rather than there because this panel is already open on the
-            one node you are working on. */}
-        {def?.details && (
-          <MathText
-            as="div"
-            className={styles.headerDetails}
-            text={tn(nodeName, 'details', def.details)}
           />
         )}
       </div>

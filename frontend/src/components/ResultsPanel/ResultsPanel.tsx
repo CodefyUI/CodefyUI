@@ -3,7 +3,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
 import { useI18n } from '../../i18n';
 import { friendlyError } from '../../utils/errorMessages';
-import { LossChart } from './LossChart';
+import { LossChart, type ChartSeries } from './LossChart';
 import { RunsPanel } from './RunsPanel';
 import { ChartView } from '../shared/ChartView';
 import { PluginDockPanel, usePluginPanels } from '../PluginPanels/PluginPanels';
@@ -107,13 +107,18 @@ export function ResultsPanel() {
   const isDragging = useRef(false);
   const startY = useRef(0);
   const startHeight = useRef(0);
-  const prevHadTraining = useRef(false);
   const colDragging = useRef(false);
   const rowDragging = useRef(false);
 
   // Read the training series off the structured progress entries (#117).
   const trainingData = useMemo(() => {
-    const epochs: { epoch: number; total: number; loss: number; ts: number }[] = [];
+    const epochs: {
+      epoch: number;
+      total: number;
+      loss: number;
+      valLoss: number | null;
+      ts: number;
+    }[] = [];
     let config: Record<string, any> | null = null;
 
     for (const entry of logs) {
@@ -126,6 +131,9 @@ export function ResultsPanel() {
           epoch: p.epoch,
           total: p.total_epochs,
           loss: p.loss,
+          // Present only when a val_dataloader is wired (TrainingLoop sends
+          // it in the same epoch payload as the training loss).
+          valLoss: typeof p.val_loss === 'number' ? p.val_loss : null,
           ts: entry.timestamp,
         });
       }
@@ -133,16 +141,46 @@ export function ResultsPanel() {
     return { epochs, config };
   }, [logs]);
 
+  // With a validation loader the chart draws both curves, named so the
+  // legend tells them apart; without one it stays the single loss curve.
+  const hasValLoss = trainingData.epochs.some((e) => e.valLoss !== null);
+  const lossSeries = useMemo<ChartSeries[] | undefined>(() => {
+    if (!hasValLoss) return undefined;
+    return [
+      {
+        name: 'train_loss',
+        points: trainingData.epochs.map((e) => ({ x: e.epoch, y: e.loss })),
+      },
+      {
+        name: 'val_loss',
+        points: trainingData.epochs.flatMap((e) =>
+          e.valLoss === null ? [] : [{ x: e.epoch, y: e.valLoss }],
+        ),
+      },
+    ];
+  }, [hasValLoss, trainingData.epochs]);
+
   const hasTraining = trainingData.epochs.length > 0 || trainingData.config !== null;
+  const epochRowClass = hasValLoss
+    ? `${styles.epochRow} ${styles.epochRowWithVal}`
+    : styles.epochRow;
 
   // Auto-switch to Training tab when first training data arrives — unless
   // the user is on Runs, which they had to navigate to deliberately and
   // which is where they watch OTHER runs from.
+  //
+  // And back to the Log when the training data goes away: the logs belong
+  // to the active canvas tab, so switching to a graph that trains nothing,
+  // starting a new run, or clearing the log leaves the Training tab disabled
+  // -- and staying on it would hide the log of the run that just happened.
   useEffect(() => {
-    if (hasTraining && !prevHadTraining.current) {
+    // The effect runs only when `hasTraining` flips, so each branch fires
+    // once per arrival or departure and a manual tab choice in between holds.
+    if (hasTraining) {
       setPanelTab((current) => (current === 'runs' ? current : 'training'));
+    } else {
+      setPanelTab((current) => (current === 'training' ? 'log' : current));
     }
-    prevHadTraining.current = hasTraining;
   }, [hasTraining]);
 
   // Only non-progress logs for the Log tab
@@ -279,6 +317,7 @@ export function ResultsPanel() {
   return (
     <div
       className={styles.panel}
+      data-tour="results"
       style={{ height: collapsed ? undefined : panelHeight }}
     >
       {/* Resize handle */}
@@ -515,6 +554,7 @@ export function ResultsPanel() {
                   {trainingData.epochs.length > 0 ? (
                     <LossChart
                       losses={trainingData.epochs.map((e) => e.loss)}
+                      series={lossSeries}
                       height={Math.max(80, panelHeight - 90)}
                       xLabel={t('results.epoch')}
                     />
@@ -574,9 +614,10 @@ export function ResultsPanel() {
                         );
                       })()}
                       <div className={styles.epochTable}>
-                        <div className={`${styles.epochRow} ${styles.epochRowHeader}`}>
+                        <div className={`${epochRowClass} ${styles.epochRowHeader}`}>
                           <span>#</span>
                           <span>{t('results.col.loss')}</span>
+                          {hasValLoss && <span>{t('results.col.valLoss')}</span>}
                           <span>{t('results.col.delta')}</span>
                           <span>{t('results.col.time')}</span>
                         </div>
@@ -587,9 +628,12 @@ export function ResultsPanel() {
                             ? ((ep.ts - trainingData.epochs[i - 1].ts) / 1000).toFixed(1) + 's'
                             : '-';
                           return (
-                            <div key={i} className={styles.epochRow}>
+                            <div key={i} className={epochRowClass}>
                               <span>{ep.epoch}</span>
                               <span>{ep.loss.toFixed(4)}</span>
+                              {hasValLoss && (
+                                <span>{ep.valLoss === null ? '-' : ep.valLoss.toFixed(4)}</span>
+                              )}
                               <span className={
                                 delta === null ? '' : delta < 0 ? styles.deltaDown : styles.deltaUp
                               }>

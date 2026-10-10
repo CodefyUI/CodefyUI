@@ -91,7 +91,7 @@ export function SidebarRail() {
   const toggleLabel = collapsed ? t('sidebar.expand') : t('sidebar.collapse');
 
   return (
-    <div className={styles.rail}>
+    <div className={styles.rail} data-tour="rail">
       <div
         className={styles.railTabs}
         role="tablist"
