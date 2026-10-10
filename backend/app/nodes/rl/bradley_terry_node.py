@@ -34,6 +34,7 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+from ...core.seeding import seeded_linear_init
 
 
 class BradleyTerryLossNode(BaseNode):
@@ -180,13 +181,20 @@ class BradleyTerryTrainNode(BaseNode):
             )
 
         epochs = int(params.get("epochs", 60))
-        torch.manual_seed(int(params.get("seed", 0)))
         d = tw.shape[-1]
-        model = nn.Sequential(
+        # Weights from the seed alone, never through ``torch.manual_seed``:
+        # two of these on one level of an unseeded run (a shortcut arm and
+        # its control) reseeded the process-global generator under each
+        # other and trained from different weights on every run.
+        # ``seeded_linear_init`` draws exactly what the seeded constructor
+        # drew, so the curves are the ones the old code gave run alone. The
+        # loop below is full-batch Adam, so the weights are its only
+        # randomness.
+        model = seeded_linear_init(nn.Sequential(
             nn.Linear(d, int(params.get("hidden_dim", 32))),
             nn.ReLU(),
             nn.Linear(int(params.get("hidden_dim", 32)), 1),
-        )
+        ), int(params.get("seed", 0)))
         opt = torch.optim.Adam(model.parameters(), lr=float(params.get("lr", 0.01)))
 
         def acc(a, b):

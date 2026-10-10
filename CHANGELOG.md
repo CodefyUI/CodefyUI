@@ -121,6 +121,13 @@ received — each links to the release it was published as.
   so after switching to a graph that trains nothing, starting a new run or
   clearing the log, the panel stayed on the disabled **Training** tab and hid
   the run's output. It now goes back to **Log**; **Runs** stays where it is.
+- **BradleyTerryTrain gives the same result every run** ([#675]). It seeded the
+  process-wide random generator and then built its network from it, so two of
+  them in one graph without a run seed, such as a shortcut arm beside its
+  control, reseeded each other and trained from different weights on each
+  run: the shortcut arm's final holdout accuracy moved between 0.75 and 0.78.
+  The weights now come from the node's `seed` alone and are the ones a single
+  node gave before.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5487,3 +5494,4 @@ Release candidates before 1.0.0 are on the
 [#667]: https://github.com/CodefyUI/CodefyUI/issues/667
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
+[#675]: https://github.com/CodefyUI/CodefyUI/issues/675
