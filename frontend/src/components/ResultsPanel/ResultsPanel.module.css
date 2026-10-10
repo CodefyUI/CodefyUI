@@ -413,6 +413,10 @@
   color: var(--text-secondary);
 }
 
+.epochRowWithVal {
+  grid-template-columns: 32px 1fr 1fr 1fr 48px;
+}
+
 .epochRowHeader {
   color: var(--text-muted);
   font-weight: var(--fw-semibold);

@@ -149,6 +149,7 @@ export function NodePalette() {
         <>
           <div
             className={styles.panel}
+            data-tour="palette"
             style={{ width: width ?? SIDEBAR_DEFAULT_WIDTH_CSS }}
             role="tabpanel"
             id={`sidebar-panel-${sidebarTab}`}

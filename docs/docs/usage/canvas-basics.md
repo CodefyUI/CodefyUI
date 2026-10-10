@@ -53,7 +53,7 @@ The toolbar contains these controls from left to right: **Run** and **Stop** (**
 
 ## The config panel
 
-Select a node to display its parameters in the right panel. The backend definition determines the parameter widgets: integers, floats, text, booleans, dropdowns (`select`), model, image and data file pickers, inline tensor-grid editors, masked secret fields, and a code editor that checks a script's imports (see [PythonScript Node](/advanced/python-script-node)). Parameters with a `visible_when` rule appear only when a related option has one of the specified values.
+Select a node to display its parameters in the right panel. The panel shows the node's one-line summary under its name; the longer explanation is behind the **?** next to the name. Each parameter's description and allowed range are behind the **?** at the end of its label. Hover over a **?**, focus it with the keyboard, or tap it to read it. The backend definition determines the parameter widgets: integers, floats, text, booleans, dropdowns (`select`), model, image and data file pickers, inline tensor-grid editors, masked secret fields, and a code editor that checks a script's imports (see [PythonScript Node](/advanced/python-script-node)). Parameters with a `visible_when` rule appear only when a related option has one of the specified values.
 
 Basic parameters appear immediately. Other parameters are in a collapsed **Advanced** section whose heading displays the hidden count. Advanced parameters are saved with the graph, included by the Python exporter, and processed in the same way as basic parameters.
 
@@ -91,7 +91,7 @@ Every runnable graph requires at least one **`Start`** node. Connect its trigger
 
 ## Settings popover
 
-The toolbar's **Settings** popover groups controls into these sections: **Execution**, **LLM Providers**, **Optional Packs & Plugins** ([**Package Center**](./optional-packs) and [**Plugin Center**](/advanced/plugins#plugin-center)), **Recording & Inspection**, **Training Behavior**, **Editor**, and **This Server**. **Recording & Inspection** and **Training Behavior** belong to the active tab's graph and appear only while a tab is open. The rows in each section are listed under [Settings popover toggles](./teaching-inspector#settings-popover-toggles); the recording and gradient controls there determine which data the **[Teaching Inspector](./teaching-inspector)** can display.
+The toolbar's **Settings** popover starts with **Getting started guide**: **Start** walks through the main areas of the screen one at a time, each framed with a short card. Move with **Next** and **Previous** or the arrow keys, and leave with **Escape** or **×**. An area that is not on screen, such as the node panel when no node is selected, is skipped. A **?** next to a setting's name says what it does. Below that, the popover groups controls into these sections: **Execution**, **LLM Providers**, **Optional Packs & Plugins** ([**Package Center**](./optional-packs) and [**Plugin Center**](/advanced/plugins#plugin-center)), **Recording & Inspection**, **Training Behavior**, **Editor**, and **This Server**. **Recording & Inspection** and **Training Behavior** belong to the active tab's graph and appear only while a tab is open. The rows in each section are listed under [Settings popover toggles](./teaching-inspector#settings-popover-toggles); the recording and gradient controls there determine which data the **[Teaching Inspector](./teaching-inspector)** can display.
 
 ## Notifications
 
