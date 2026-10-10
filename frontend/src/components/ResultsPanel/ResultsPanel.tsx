@@ -279,6 +279,7 @@ export function ResultsPanel() {
   return (
     <div
       className={styles.panel}
+      data-tour="results"
       style={{ height: collapsed ? undefined : panelHeight }}
     >
       {/* Resize handle */}
