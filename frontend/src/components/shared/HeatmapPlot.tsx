@@ -241,17 +241,27 @@ function SinglePanel({
   // the masked upper-triangle doesn't pin min at 0 (which would degenerate
   // back to divide-by-max). When a row's non-zero values are themselves
   // identical (true uniform), range collapses to 0 and we render those
-  // cells at colour-t=0.5 — a neutral signal that means "no peak".
+  // cells at colour-t=0.5 — a neutral signal that means "no peak". A row
+  // with ONE non-zero cell and zeros everywhere else collapses the same way
+  // but is the opposite case: all of its weight sits on that cell (row 0 of
+  // every causal map), so it is drawn at the peak colour.
   const rowStats = normalizePerRow
     ? matrix.map((row) => {
         let max = 0;
         let nonZeroMin = Infinity;
+        let nonZeroCount = 0;
+        let zeroCount = 0;
         for (const v of row) {
           if (v > max) max = v;
-          if (v > 0 && v < nonZeroMin) nonZeroMin = v;
+          if (v === 0) zeroCount += 1;
+          if (v > 0) {
+            nonZeroCount += 1;
+            if (v < nonZeroMin) nonZeroMin = v;
+          }
         }
         if (nonZeroMin === Infinity) nonZeroMin = 0;
-        return { min: nonZeroMin, max };
+        const single = nonZeroCount === 1 && zeroCount === row.length - 1;
+        return { min: nonZeroMin, max, single };
       })
     : null;
 
@@ -342,11 +352,15 @@ function SinglePanel({
               if (masked || v === 0) {
                 colorT = 0;
               } else {
-                const { min, max } = rowStats[i];
+                const { min, max, single } = rowStats[i];
                 const range = max - min;
-                colorT = range > 1e-9
-                  ? Math.max(0, Math.min(1, (v - min) / range))
-                  : 0.5; // truly-uniform row — neutral signal, no peak
+                if (range > 1e-9) {
+                  colorT = Math.max(0, Math.min(1, (v - min) / range));
+                } else {
+                  // One weighted cell is the row's peak; several equal ones
+                  // are a truly-uniform row — neutral signal, no peak.
+                  colorT = single ? 1 : 0.5;
+                }
               }
             } else if (valueRange) {
               const [lo, hi] = valueRange;

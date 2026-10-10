@@ -95,6 +95,12 @@ received — each links to the release it was published as.
   table one loss column. It now draws `train_loss` and `val_loss` with a
   legend and lists the validation loss per epoch. A run without a validation
   loader looks as before.
+- **A heatmap row with all its weight on one cell is drawn at the peak**
+  ([#666]). With row-normalised colours, as attention weights use, a row with
+  one non-zero cell and zeros elsewhere was drawn in the mid-ramp colour that
+  means "uniform, no peak". Row 0 of every causal attention map is such a row,
+  so the sharpest row in the map read as the flattest. It is now drawn at the
+  top of the ramp; a row of several equal weights keeps the neutral colour.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5457,3 +5463,4 @@ Release candidates before 1.0.0 are on the
 [#656]: https://github.com/CodefyUI/CodefyUI/issues/656
 [#658]: https://github.com/CodefyUI/CodefyUI/issues/658
 [#665]: https://github.com/CodefyUI/CodefyUI/issues/665
+[#666]: https://github.com/CodefyUI/CodefyUI/issues/666
