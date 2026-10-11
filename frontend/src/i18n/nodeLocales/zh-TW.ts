@@ -105,6 +105,10 @@ const zhTW: NodeTranslations = {
       kernel_size: '卷積核大小',
       stride: '卷積步幅',
       padding: '兩側的零填充',
+      dilation: '卷積核元素之間的間距（1 = 一般卷積）',
+      groups:
+        '把通道分成這麼多個獨立的組。in_channels 與 out_channels 都必須能被它整除；groups = in_channels 就是 depthwise 卷積。',
+      bias: '每個輸出通道加上可學習的偏差。後面緊接 BatchNorm 時通常關掉。',
     },
   },
   Conv2dExplicit: {
@@ -721,6 +725,17 @@ const zhTW: NodeTranslations = {
       axis: '計算統計量的軸。0 = 逐欄，1 = 逐列。',
     },
   },
+  DatasetSplit: {
+    description: '用固定種子把資料集切成訓練與驗證兩份',
+    details:
+      '先用種子打亂樣本索引，同一個種子每次都得到同樣的切分。`subset` 會先只保留這麼多筆打亂後的樣本，' +
+      '方便快速實驗。兩份共用輸入資料集的 transform。',
+    params: {
+      val_fraction: '保留作為驗證集的樣本比例。0 表示全部歸到訓練集。',
+      subset: '切分前只隨機保留這麼多筆樣本。0 表示全部保留。',
+      seed: '打亂用的種子。同一個種子得到同樣的切分。',
+    },
+  },
   TrainTestSplit: {
     description: '把特徵與標籤切成訓練集與測試集',
     details:
@@ -845,12 +860,20 @@ const zhTW: NodeTranslations = {
     params: {
       type: '排程器類型',
       step_size:
-        'StepLR：每隔多久降一次學習率。MultiStepLR：在此值的 1、2、3、4 倍處各降一次。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式算的是 epoch（不是 batch），optimizer_step 模式算的是優化器步數。兩種模式下都必須小於整次執行在該單位下的長度，否則第一次下降永遠不會發生，整次執行都在同一個學習率上跑。',
+        'StepLR：每隔多久降一次學習率。MultiStepLR（milestones 留空時）：在此值的 1、2、3、4 倍處各降一次。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式算的是 epoch（不是 batch），optimizer_step 模式算的是優化器步數。兩種模式下都必須小於整次執行在該單位下的長度，否則第一次下降永遠不會發生，整次執行都在同一個學習率上跑。',
       gamma:
         'StepLR、MultiStepLR、ExponentialLR 的衰減因子；ReduceLROnPlateau 也拿它當 factor。',
       T_max:
         'CosineAnnealingLR：一個 cosine 週期的長度。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式單位是 epoch，要設成和 TrainingLoop.epochs 一樣；optimizer_step 模式單位是優化器步數，要改成設成整次執行的步數預算（有設 max_steps 就是它，否則是 epochs × 每個 epoch 的批次數 ÷ accumulate_steps）。兩種模式下設小了會讓週期提早結束、cosine 曲線再往上翻，執行的尾段學習率反而是升的；設大了則是只走到曲線中途、結束時學習率還很高。兩者通常會少掉幾個百分點的準確率，而且畫面上完全看不出來是排程造成的。這裡刻意不強制：截斷的排程本來就是合理選擇。CosineAnnealingWarmRestarts 會把這個值當成 T_0（第一次重啟前的週期長度），那種情況下設成和整次執行的長度一樣反而永遠不會重啟。',
+      milestones:
+        'MultiStepLR：以逗號分隔的降速點，例如 "30, 80"，單位與 step_size 相同。留空則沿用舊規則：step_size 的 1、2、3、4 倍。',
+      eta_min: 'CosineAnnealingLR / CosineAnnealingWarmRestarts：cosine 曲線降到的最低學習率。',
+      T_mult: 'CosineAnnealingWarmRestarts：每次重啟後的週期是前一個的幾倍長。1 表示每個週期都是 T_max。',
+      patience: 'ReduceLROnPlateau：驗證損失連續幾個 epoch 沒有進步，才把學習率乘上 gamma。',
+      threshold: 'ReduceLROnPlateau：損失要進步多少比例才算變好（1e-4 = 0.01%）。',
+      min_lr: 'ReduceLROnPlateau：學習率不會降到這個值以下。',
       max_lr: 'OneCycleLR 的最大學習率',
+      pct_start: 'OneCycleLR：整個週期中把學習率升到 max_lr 所佔的比例，之後開始退火。',
       total_steps:
         'OneCycleLR：整個 one-cycle 排程的長度；warmup 家族也用這個值當總長（暖身斜坡 + 衰減）。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式是 epoch 數，要填 TrainingLoop.epochs，不是 batch 數（OneCycleLR 官方文件講的 step 是 batch）；optimizer_step 模式下它就是那個步數，要填整次執行的步數預算：有設 max_steps 就是它，否則是 epochs × 每個 epoch 的批次數 ÷ accumulate_steps。預設值 1000 遠大於一般的 epoch 數，在 epoch 模式照著不改就只會走到週期的開頭：學習率稍微升上去，然後從來不會退火下來。',
       warmup_steps:

@@ -356,3 +356,168 @@ def test_a_residual_block_with_a_pre_activation_identity_matches_pytorch():
     torch.testing.assert_close(got, expected)
     for name, p in model.named_parameters():
         torch.testing.assert_close(p.grad, expected_grads[name], msg=name)
+
+
+# ── #703: a runtime error names the layer that raised it ────────────────
+
+
+def _mlp_spec(fc2_in: int):
+    return _spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_x", "name": "x"}]},
+            {"id": "flat", "type": "Flatten"},
+            {"id": "fc1", "type": "Linear", "params": {"in_features": 784, "out_features": 1568}},
+            {"id": "act", "type": "ReLU"},
+            {"id": "fc2", "type": "Linear", "params": {"in_features": fc2_in, "out_features": 10}},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_y", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_x", "target": "flat"},
+            {"id": "e2", "source": "flat", "target": "fc1"},
+            {"id": "e3", "source": "fc1", "target": "act"},
+            {"id": "e4", "source": "act", "target": "fc2"},
+            {"id": "e5", "source": "fc2", "target": "out", "targetHandle": "p_y"},
+        ],
+    )
+
+
+def test_a_shape_mismatch_names_the_layer_id_and_type():
+    # The issue's repro: the last Linear has in_features=999 while the
+    # tensor reaching it has 1568 features.
+    model = build_graph_model(_mlp_spec(fc2_in=999))
+    with pytest.raises(RuntimeError) as info:
+        model(torch.randn(4, 1, 28, 28))
+    message = str(info.value)
+    assert message.startswith('layer "fc2" (Linear, in_features=999')
+    # torch's own wording is kept after the prefix, shapes included.
+    assert "1568" in message and "999" in message
+    assert isinstance(info.value.__cause__, RuntimeError)
+    assert "layer" not in str(info.value.__cause__)
+
+
+def test_a_correct_model_is_unaffected_by_the_error_wrapper():
+    model = build_graph_model(_mlp_spec(fc2_in=1568))
+    assert model(torch.randn(4, 1, 28, 28)).shape == (4, 10)
+
+
+def test_a_merge_shape_mismatch_names_the_merge_node():
+    spec = _spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_x", "name": "x"}]},
+            {"id": "a", "type": "Linear", "params": {"in_features": 4, "out_features": 3}},
+            {"id": "b", "type": "Linear", "params": {"in_features": 4, "out_features": 5}},
+            {"id": "sum", "type": "Add"},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_y", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_x", "target": "a"},
+            {"id": "e2", "source": "in", "sourceHandle": "p_x", "target": "b"},
+            {"id": "e3", "source": "a", "target": "sum"},
+            {"id": "e4", "source": "b", "target": "sum"},
+            {"id": "e5", "source": "sum", "target": "out", "targetHandle": "p_y"},
+        ],
+    )
+    with pytest.raises(RuntimeError, match=r'^layer "sum" \(Add\): '):
+        build_graph_model(spec)(torch.randn(2, 4))
+
+
+def test_a_wrapper_layer_is_named_by_the_type_the_user_picked():
+    spec = _spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_x", "name": "x"}]},
+            {"id": "rnn", "type": "LSTM", "params": {"input_size": 8, "hidden_size": 4}},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_y", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_x", "target": "rnn"},
+            {"id": "e2", "source": "rnn", "target": "out", "targetHandle": "p_y"},
+        ],
+    )
+    with pytest.raises(Exception, match=r'^layer "rnn" \(LSTM'):
+        build_graph_model(spec)(torch.randn(2, 5, 3))
+
+
+def test_an_out_of_memory_error_passes_through_unchanged(monkeypatch):
+    # The engine recognises OOM by type and message and adds its own hints;
+    # a prefix in front would be harmless, a different class would not.
+    model = build_graph_model(_mlp_spec(fc2_in=1568))
+    oom = torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    def boom(_x):
+        raise oom
+
+    monkeypatch.setattr(model.layers["fc1"], "forward", boom)
+    with pytest.raises(torch.OutOfMemoryError) as info:
+        model(torch.randn(1, 1, 28, 28))
+    assert info.value is oom
+
+
+def test_the_error_reaches_the_user_through_the_sequential_model_node():
+    import json
+
+    from app.nodes.utility.sequential_node import SequentialModelNode
+
+    model = SequentialModelNode().execute(
+        {}, {"layers": json.dumps(_mlp_spec(fc2_in=999))})["model"]
+    with pytest.raises(RuntimeError, match=r'layer "fc2" \(Linear, in_features=999'):
+        model(torch.randn(2, 1, 28, 28))
+
+
+# ── #703: the layer options a CNN needs ──────────────────────────────────
+
+
+def _single_layer(layer: dict):
+    return build_graph_model(_spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_x", "name": "x"}]},
+            {"id": "l", **layer},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_y", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_x", "target": "l"},
+            {"id": "e2", "source": "l", "target": "out", "targetHandle": "p_y"},
+        ],
+    ))
+
+
+def test_a_depthwise_conv_builds_from_the_layer_spec():
+    model = _single_layer({"type": "Conv2d", "params": {
+        "in_channels": 8, "out_channels": 8, "kernel_size": 3, "padding": 2,
+        "groups": 8, "dilation": 2, "bias": False}})
+    conv = model.layers["l"]
+    assert conv.groups == 8 and conv.dilation == (2, 2) and conv.bias is None
+    # One 3x3 filter per channel: 8 * 1 * 3 * 3 weights.
+    assert conv.weight.shape == (8, 1, 3, 3)
+    x = torch.randn(2, 8, 10, 10)
+    torch.testing.assert_close(
+        model(x), torch.nn.functional.conv2d(x, conv.weight, None, padding=2, dilation=2, groups=8))
+
+
+def test_leaky_relu_takes_its_negative_slope():
+    model = _single_layer({"type": "LeakyReLU", "params": {"negative_slope": 0.2}})
+    x = torch.tensor([-1.0, 2.0])
+    torch.testing.assert_close(model(x), torch.tensor([-0.2, 2.0]))
+
+
+def test_softmax_takes_its_dim():
+    model = _single_layer({"type": "Softmax", "params": {"dim": 0}})
+    x = torch.randn(3, 4)
+    torch.testing.assert_close(model(x), torch.softmax(x, dim=0))
+
+
+def test_activations_without_params_build_as_before():
+    leaky = _single_layer({"type": "LeakyReLU"}).layers["l"]
+    soft = _single_layer({"type": "Softmax"}).layers["l"]
+    assert leaky.negative_slope == 0.01
+    assert soft.dim == -1
+
+
+def test_dropout2d_zeroes_whole_channels():
+    model = _single_layer({"type": "Dropout2d", "params": {"p": 0.5}})
+    torch.manual_seed(0)
+    y = model.train()(torch.ones(4, 16, 5, 5))
+    per_channel = y.flatten(2)
+    # Every channel is either all zero or all scaled by 1 / (1 - p).
+    for channel in per_channel.reshape(-1, 25):
+        assert torch.all(channel == 0) or torch.allclose(channel, torch.full((25,), 2.0))
+    assert (per_channel.sum(-1) == 0).any()

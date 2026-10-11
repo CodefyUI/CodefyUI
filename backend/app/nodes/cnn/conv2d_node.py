@@ -16,6 +16,7 @@ class Conv2dNode(StatefulModuleMixin, BaseNode):
 
     structural_params = (
         "in_channels", "out_channels", "kernel_size", "stride", "padding",
+        "dilation", "groups", "bias",
     )
 
     @classmethod
@@ -38,6 +39,19 @@ class Conv2dNode(StatefulModuleMixin, BaseNode):
             ParamDefinition(name="kernel_size", param_type=ParamType.INT, default=3, description="Size of the convolving kernel"),
             ParamDefinition(name="stride", param_type=ParamType.INT, default=1, description="Stride of the convolution"),
             ParamDefinition(name="padding", param_type=ParamType.INT, default=1, description="Zero-padding added to both sides"),
+            ParamDefinition(name="dilation", param_type=ParamType.INT, default=1, min_value=1, description="Spacing between kernel elements (1 = a plain convolution)"),
+            ParamDefinition(
+                name="groups",
+                param_type=ParamType.INT,
+                default=1,
+                min_value=1,
+                description=(
+                    "Split the channels into this many independent groups. "
+                    "Both in_channels and out_channels must divide by it; "
+                    "groups = in_channels is a depthwise convolution."
+                ),
+            ),
+            ParamDefinition(name="bias", param_type=ParamType.BOOL, default=True, description="Add a learnable bias per output channel. Off is usual right before a BatchNorm."),
         ]
 
     def build_module(self, params: dict[str, Any]) -> Any:
@@ -48,6 +62,9 @@ class Conv2dNode(StatefulModuleMixin, BaseNode):
             kernel_size=params.get("kernel_size", 3),
             stride=params.get("stride", 1),
             padding=params.get("padding", 1),
+            dilation=params.get("dilation", 1),
+            groups=params.get("groups", 1),
+            bias=bool(params.get("bias", True)),
         )
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:

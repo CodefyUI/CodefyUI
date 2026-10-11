@@ -1287,6 +1287,7 @@ _ALL_LAYER_CONFIGS = [
     {"type": "AvgPool2d", "kernel_size": 2},
     {"type": "AdaptiveAvgPool2d", "output_size": 1},
     {"type": "Dropout"},
+    {"type": "Dropout2d"},
     {"type": "Linear", "in_features": 4, "out_features": 2},
     {"type": "Flatten"},
     {"type": "Embedding", "num_embeddings": 4, "embedding_dim": 2},

@@ -78,11 +78,32 @@ const p_float = (name: string, def: number, desc: string, min: number | null = 0
   { name, param_type: 'float', default: def, description: desc, options: [], min_value: min, max_value: max }
 );
 
+const p_bool = (name: string, def: boolean, desc: string): ParamDefinition => (
+  { name, param_type: 'bool', default: def, description: desc, options: [], min_value: null, max_value: null }
+);
+
+/**
+ * A one-line hint under a param whose meaning is not obvious from its name
+ * (#703). Keyed `Type.param`, because `dim` means something different on
+ * Softmax than on Concat.
+ */
+const PARAM_HINT_KEYS: Record<string, TranslationKey> = {
+  'Conv2d.dilation': 'layersEditor.hint.dilation',
+  'Conv2d.groups': 'layersEditor.hint.groups',
+  'Conv2d.bias': 'layersEditor.hint.bias',
+  'LeakyReLU.negative_slope': 'layersEditor.hint.negativeSlope',
+  'Softmax.dim': 'layersEditor.hint.softmaxDim',
+  'Dropout2d.p': 'layersEditor.hint.dropout2d',
+};
+
 const LAYER_DEFS: LayerDef[] = [
   // Convolution
   {
     type: 'Conv2d', category: 'Convolution',
-    params: [p_int('in_channels', 1, 'Input channels'), p_int('out_channels', 32, 'Output channels'), p_int('kernel_size', 3, 'Kernel size'), p_int('stride', 1, 'Stride'), p_int('padding', 1, 'Padding', 0)],
+    params: [
+      p_int('in_channels', 1, 'Input channels'), p_int('out_channels', 32, 'Output channels'), p_int('kernel_size', 3, 'Kernel size'), p_int('stride', 1, 'Stride'), p_int('padding', 1, 'Padding', 0),
+      p_int('dilation', 1, 'Kernel spacing'), p_int('groups', 1, 'Channel groups'), p_bool('bias', true, 'Learnable bias'),
+    ],
   },
   {
     type: 'Conv1d', category: 'Convolution',
@@ -130,6 +151,10 @@ const LAYER_DEFS: LayerDef[] = [
   {
     type: 'Dropout', category: 'Regularization',
     params: [p_float('p', 0.5, 'Dropout probability', 0, 1)],
+  },
+  {
+    type: 'Dropout2d', category: 'Regularization',
+    params: [p_float('p', 0.5, 'Channel drop probability', 0, 1)],
   },
   // Linear
   {
@@ -179,7 +204,7 @@ const LAYER_DEFS: LayerDef[] = [
   },
   // Activations
   { type: 'ReLU', category: 'Activation', params: [] },
-  { type: 'LeakyReLU', category: 'Activation', params: [] },
+  { type: 'LeakyReLU', category: 'Activation', params: [p_float('negative_slope', 0.01, 'Slope for negative inputs')] },
   { type: 'GELU', category: 'Activation', params: [] },
   { type: 'SiLU', category: 'Activation', params: [] },
   { type: 'Mish', category: 'Activation', params: [] },
@@ -189,7 +214,7 @@ const LAYER_DEFS: LayerDef[] = [
   { type: 'Sigmoid', category: 'Activation', params: [] },
   { type: 'Tanh', category: 'Activation', params: [] },
   { type: 'Hardswish', category: 'Activation', params: [] },
-  { type: 'Softmax', category: 'Activation', params: [] },
+  { type: 'Softmax', category: 'Activation', params: [p_int('dim', -1, 'Dimension that sums to 1', null)] },
 ];
 
 const MERGE_LAYER_DEFS: LayerDef[] = [
@@ -342,6 +367,25 @@ function ParamEditor({
 
       {def?.params.map((p) => {
         const val = node.data.params[p.name] ?? p.default;
+        const hintKey = PARAM_HINT_KEYS[`${def.type}.${p.name}`];
+        const hint = hintKey && (
+          <div style={{ fontSize: '0.6875rem', color: '#888', marginTop: 3 }}>{t(hintKey)}</div>
+        );
+        if (p.param_type === 'bool') {
+          return (
+            <div key={p.name} style={{ marginBottom: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: '#999', fontWeight: 500 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(val)}
+                  onChange={(e) => onParamChange(node.id, p.name, e.target.checked)}
+                />
+                {p.name}
+              </label>
+              {hint}
+            </div>
+          );
+        }
         return (
           <div key={p.name} style={{ marginBottom: 8 }}>
             <label style={{ display: 'block', fontSize: '0.75rem', color: '#999', marginBottom: 3, fontWeight: 500 }}>
@@ -366,6 +410,7 @@ function ParamEditor({
                 boxSizing: 'border-box',
               }}
             />
+            {hint}
           </div>
         );
       })}

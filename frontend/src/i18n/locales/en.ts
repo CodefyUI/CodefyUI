@@ -539,6 +539,12 @@ const en = {
   'layersEditor.port.duplicate': 'Duplicate port name',
   'layersEditor.port.list': 'Ports',
   'layersEditor.layerNode.moreParams': '+{count} more',
+  'layersEditor.hint.dilation': 'Spacing between kernel taps. 1 is a plain convolution.',
+  'layersEditor.hint.groups': 'Set equal to in_channels (and out_channels) for a depthwise convolution.',
+  'layersEditor.hint.bias': 'Turn off when a BatchNorm follows; it has its own shift.',
+  'layersEditor.hint.negativeSlope': 'A negative input comes out multiplied by this.',
+  'layersEditor.hint.softmaxDim': 'The dimension that sums to 1. -1 is the last one.',
+  'layersEditor.hint.dropout2d': 'Zeroes whole channels of an (N, C, H, W) tensor during training.',
 
   // Tooltips
   'toolbar.tooltips.on': 'Tips ON',

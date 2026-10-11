@@ -193,6 +193,12 @@ describe('LayersEditorModal', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it('returns null when no tab is open at all', () => {
+    useTabStore.setState({ tabs: [], activeTabId: null } as any);
+    const { container } = render(<LayersEditorModal />);
+    expect(container.firstChild).toBeNull();
+  });
+
   it('returns null when the referenced node is not found', () => {
     setupOpenModal(validGraphJson());
     // Point modal at a node id that does not exist.
@@ -697,6 +703,126 @@ describe('LayersEditorModal', () => {
     fireEvent.change(index, { target: { value: '-2' } });
     expect(paramsOf().index).toBe(-2);
     expect(index.value).toBe('-2');
+  });
+
+  // ── #703: the CNN layer options ────────────────────────────────────────
+
+  /** Input → <layer> → Output, with the layer given as `{ id, type, params? }`. */
+  function oneLayerGraph(layer: { id: string; type: string; params?: Record<string, unknown> }): string {
+    return JSON.stringify({
+      version: 2,
+      nodes: [
+        { id: 'in1', type: 'Input', ports: [{ id: 'ip1', name: 'x' }], position: { x: 0, y: 0 } },
+        { ...layer, position: { x: 0, y: 100 } },
+        { id: 'out1', type: 'Output', ports: [{ id: 'op1', name: 'y' }], position: { x: 0, y: 200 } },
+      ],
+      edges: [
+        { id: 'e1', source: 'in1', sourceHandle: 'ip1', target: layer.id, targetHandle: null },
+        { id: 'e2', source: layer.id, sourceHandle: null, target: 'out1', targetHandle: 'op1' },
+      ],
+    });
+  }
+
+  /** The input under the ParamEditor label that reads `name`. */
+  function paramInput(name: string): HTMLInputElement {
+    return screen.getByText(name, { selector: 'label' }).parentElement!.querySelector('input')!;
+  }
+
+  function savedLayer(nodeId: string, layerId: string): any {
+    fireEvent.click(screen.getByText('Apply'));
+    const node = useTabStore.getState().tabs[0].nodes.find((n) => n.id === nodeId)!;
+    return JSON.parse(node.data.params!.layers as string).nodes.find((n: any) => n.id === layerId);
+  }
+
+  it('builds a depthwise Conv2d: groups, dilation and an unticked bias reach the saved spec', () => {
+    const nodeId = setupOpenModal(oneLayerGraph({
+      id: 'conv1', type: 'Conv2d',
+      params: { in_channels: 8, out_channels: 8, kernel_size: 3, stride: 1, padding: 1 },
+    }));
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: 'conv1' });
+    });
+
+    expect(screen.getByText(/for a depthwise convolution/)).toBeTruthy();
+    expect(paramInput('groups').value).toBe('1');
+    expect(paramInput('dilation').value).toBe('1');
+    const bias = screen.getByRole('checkbox') as HTMLInputElement;
+    expect(bias.checked).toBe(true);
+
+    fireEvent.change(paramInput('groups'), { target: { value: '8' } });
+    fireEvent.change(paramInput('dilation'), { target: { value: '2' } });
+    fireEvent.click(bias);
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+
+    expect(savedLayer(nodeId, 'conv1').params).toEqual({
+      in_channels: 8, out_channels: 8, kernel_size: 3, stride: 1, padding: 1,
+      groups: 8, dilation: 2, bias: false,
+    });
+  });
+
+  it('LeakyReLU takes a negative_slope', () => {
+    const nodeId = setupOpenModal(oneLayerGraph({ id: 'act1', type: 'LeakyReLU' }));
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: 'act1' });
+    });
+    expect(screen.queryByText('No parameters')).toBeNull();
+    expect(paramInput('negative_slope').value).toBe('0.01');
+    fireEvent.change(paramInput('negative_slope'), { target: { value: '0.2' } });
+    expect(savedLayer(nodeId, 'act1').params).toEqual({ negative_slope: 0.2 });
+  });
+
+  it('Softmax takes a dim, -1 by default', () => {
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onDrop({
+        preventDefault: vi.fn(), clientX: 1, clientY: 1,
+        dataTransfer: { getData: () => 'Softmax' },
+      });
+    });
+    const softmax = (lastFlowProps.nodes as any[]).find((n) => n.data.layerType === 'Softmax');
+    expect(softmax.data.params).toEqual({ dim: -1 });
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: softmax.id });
+    });
+    expect(screen.getByText('The dimension that sums to 1. -1 is the last one.')).toBeTruthy();
+    fireEvent.change(paramInput('dim'), { target: { value: '1' } });
+    expect((lastFlowProps.nodes as any[]).find((n) => n.id === softmax.id).data.params).toEqual({ dim: 1 });
+  });
+
+  it('offers Dropout2d under Regularization and saves it by that type', () => {
+    expect(ALL_LAYER_DEFS.find((d) => d.type === 'Dropout2d')?.category).toBe('Regularization');
+    expect(layerCategoryOf('Dropout2d')).toBe('Regularization');
+
+    const nodeId = setupOpenModal(oneLayerGraph({ id: 'drop1', type: 'Dropout2d' }));
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onDrop({
+        preventDefault: vi.fn(), clientX: 1, clientY: 1,
+        dataTransfer: { getData: () => 'Dropout2d' },
+      });
+    });
+    const dropped = (lastFlowProps.nodes as any[]).filter((n) => n.data.layerType === 'Dropout2d');
+    expect(dropped).toHaveLength(2);
+    expect(dropped[1].data.params).toEqual({ p: 0.5 });
+    act(() => {
+      lastFlowProps.onNodesDelete([dropped[1]]);
+      lastFlowProps.onNodeClick({}, { id: 'drop1' });
+    });
+    expect(screen.getByText(/Zeroes whole channels/)).toBeTruthy();
+    expect(savedLayer(nodeId, 'drop1').type).toBe('Dropout2d');
+  });
+
+  it('shows the param hints in zh-TW', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    setupOpenModal(oneLayerGraph({ id: 'conv1', type: 'Conv2d' }));
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: 'conv1' });
+    });
+    expect(screen.getByText(/就是 depthwise 卷積/)).toBeTruthy();
   });
 
   // ── PortListEditor wiring (handleUpdatePorts / handleRemoveEdges) ──────────
