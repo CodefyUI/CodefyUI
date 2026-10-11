@@ -121,17 +121,40 @@ class TransformerEncoderBlock(nn.Module):
 
 
 class TransformerDecoderBlock(nn.Module):
-    """``nn.TransformerDecoder`` in self-attention mode (memory is the input)."""
+    """``nn.TransformerDecoder`` in self-attention mode (memory is the input).
 
-    def __init__(self, d_model: int, nhead: int, num_layers: int = 1, dim_feedforward: int = 2048):
+    With ``causal`` (the default) position ``i`` reads only positions ``<= i``,
+    in self-attention and in the cross-attention over its own input, so the
+    block can sit in a next-token language model without seeing the token it
+    is asked to predict.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        num_layers: int = 1,
+        dim_feedforward: int = 2048,
+        causal: bool = True,
+    ):
         super().__init__()
         layer = nn.TransformerDecoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, batch_first=True,
         )
         self.decoder = nn.TransformerDecoder(layer, num_layers=num_layers)
+        self._causal = bool(causal)
 
     def forward(self, x):
-        return self.decoder(x, x)
+        # A block pickled before ``causal`` existed has no ``_causal``; it
+        # loads as causal, like a new one.
+        if not getattr(self, "_causal", True):
+            return self.decoder(x, x)
+        mask = nn.Transformer.generate_square_subsequent_mask(
+            x.shape[-2], device=x.device, dtype=x.dtype,
+        )
+        return self.decoder(
+            x, x, tgt_mask=mask, memory_mask=mask, tgt_is_causal=True, memory_is_causal=True,
+        )
 
 
 class LSTMBlock(nn.Module):

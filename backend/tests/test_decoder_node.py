@@ -57,3 +57,16 @@ def test_multiple_layers_run_without_error():
         context=_ctx(),
     )
     assert res["tensor"].shape == (4, 1, 16)
+
+
+def test_two_runs_on_the_same_input_give_the_same_output():
+    """#690: the node is never trained, so dropout must not be active."""
+    torch.manual_seed(0)
+    tgt = torch.randn(5, 2, 16)
+    mem = torch.randn(7, 2, 16)
+    dec = TransformerDecoderNode()
+    ctx = _ctx()
+    p = {"d_model": 16, "nhead": 4, "num_layers": 2, "dim_feedforward": 32}
+    first = dec.execute({"tensor": tgt, "memory": mem}, p, context=ctx)["tensor"]
+    second = dec.execute({"tensor": tgt, "memory": mem}, p, context=ctx)["tensor"]
+    assert torch.equal(first, second)
