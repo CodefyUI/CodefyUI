@@ -29,7 +29,7 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 取而代之的是，`ModelLoader` 只在那一次載入期間，把受限解序列化器放寬到剛好三組名稱：
 
 1. **`torch.nn` 自己的層類別。** 用走訪 `nn.Module` 已載入子類別的方式推導出來，只留下 torch 自己定義的那些，所以它跟著你安裝的 torch 版本走，而不是跟著這裡寫死的一份清單走。
-2. **CodefyUI 自己的模組類別** —— `GraphModelModule`（每一個層編輯器模型都是它）、`SequentialModel` 的包裝類別（`Reshape`、`SelectIndex`，以及 LSTM／GRU／注意力／transformer 區塊）、`CausalLMModule` 與構成它的那些區塊、diffusion U-Net、VLA 策略網路，還有其餘幾個。這是一份精選的、逐一列名的類別清單，每一個都依照下面那些規則審核過。
+2. **CodefyUI 自己的模組類別** —— `GraphModelModule`（每一個層編輯器模型都是它）、`SequentialModel` 的包裝類別（`Reshape`、`SelectIndex`，以及 LSTM／GRU／注意力／transformer／位置編碼區塊）、`CausalLMModule` 與構成它的那些區塊、diffusion U-Net、VLA 策略網路，還有其餘幾個。這是一份精選的、逐一列名的類別清單，每一個都依照下面那些規則審核過。
 3. **兩個 torch 的啟動函式** —— `torch.nn.functional.relu` 與 `torch._C._nn.gelu`。torch 的 transformer 層把自己的啟動函式存成一個*可呼叫物件*屬性，而不是存成一個層，所以一個 `TransformerEncoder` 或 `TransformerDecoder` 的檢查點要載回來，就得靠這兩個名稱。這裡放行的是逐一列名的身分，不是整個 `torch.nn.functional` 命名空間：`handle_torch_function` 也住在那裡，而它會轉派到任意物件的 `__torch_function__`，所以放行整個命名空間等於放行一個通用的呼叫工具，也等於把 torch 以後往那裡新增的任何東西一起放行。
 
 其他一切都會被拒絕，並附上一則指名它停在哪裡的訊息。一個指名 `os.system` 的 pickle 載不進來，因為 `os.system` 不在上面這三組裡的任何一組 —— 而除了那兩個之外的任何函式也一樣不在。

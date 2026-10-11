@@ -411,6 +411,8 @@ const zhTW: Record<TranslationKey, string> = {
   'layersEditor.params': '參數',
   'layersEditor.noParams': '無參數',
   'layersEditor.deleteLayer': '刪除',
+  'layersEditor.param.causalHint': '每個位置只關注自己和更早的位置。下一個 token 預測的語言模型要開啟。',
+  'layersEditor.param.learnedHint': '改用可訓練的位置表，取代固定的正弦位置編碼。',
   'layersEditor.hint': '雙擊以編輯架構',
   'layersEditor.import.fail': '匯入失敗：{error}',
   'layersEditor.import.selectModel': '選擇要匯入的 SequentialModel',
