@@ -292,6 +292,17 @@ const loadSidebarWidth = (): number | null => {
   return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : null;
 };
 
+/** Below this window width the sidebar starts collapsed (#687). */
+export const SIDEBAR_AUTO_COLLAPSE_WIDTH = 640;
+
+/** The persisted choice when there is one. Without one, a phone-width window
+ * starts with the panel collapsed: open, it left the canvas about 70 px wide. */
+const loadSidebarCollapsed = (): boolean => {
+  const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+  if (saved !== null) return saved === 'true';
+  return window.innerWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH;
+};
+
 const loadFontSize = (): FontSize => {
   const saved = localStorage.getItem(FONT_SIZE_KEY);
   if (saved === 'small' || saved === 'default' || saved === 'large') return saved;
@@ -389,7 +400,7 @@ export const useUIStore = create<UIState>((set) => ({
     localStorage.setItem(SIDEBAR_TAB_KEY, tab);
     set({ sidebarTab: tab });
   },
-  sidebarCollapsed: localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
+  sidebarCollapsed: loadSidebarCollapsed(),
   setSidebarCollapsed: (collapsed) => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
     set({ sidebarCollapsed: collapsed });
