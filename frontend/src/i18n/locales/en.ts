@@ -2,6 +2,8 @@ const en = {
   // Toolbar
   'toolbar.run': 'Run',
   'toolbar.running': 'Running...',
+  // A run submitted but waiting to start (#680).
+  'toolbar.queued': 'Queued...',
   'toolbar.stop': 'Stop',
   'toolbar.device.aria': 'Device for this graph',
   // Says nothing about overriding Settings: the first option in this select
@@ -14,6 +16,9 @@ const en = {
 
   // Menu: File
   'toolbar.menu.file': 'File',
+  // File > Open... shows the Graphs panel, where saved graphs are listed (#689).
+  'toolbar.open': 'Open...',
+  'toolbar.open.title': 'Show the saved graphs in the Graphs panel',
   'toolbar.save': 'Save',
   'toolbar.save.prompt': 'Enter a name for this graph:',
   'toolbar.save.success': 'Graph "{name}" saved successfully.',
@@ -114,6 +119,10 @@ const en = {
   // Status
   'status.idle': 'Idle',
   'status.running': 'Running',
+  // The toolbar status while a submitted run waits to start (#680).
+  'status.queuedDevice': 'Queued (#{position} on {device})',
+  'status.queuedDeviceNoPosition': 'Queued (on {device})',
+  'status.queuedSeed': 'Queued (waiting for a seeded run)',
   'status.completed': 'Completed',
   'status.error': 'Error',
   'status.skipped': 'Skipped',
@@ -642,6 +651,9 @@ const en = {
   // is the graph's own output, the text the exported script prints too.
   // {status} is the engine's raw token, for a status this table has no line for.
   'runLog.started': 'Execution started',
+  'runLog.queuedDevice': 'Queued: #{position} in the {device} queue. The run starts when the runs ahead of it finish.',
+  'runLog.queuedDeviceNoPosition': 'Queued in the {device} queue. The run starts when the runs ahead of it finish.',
+  'runLog.queuedSeed': 'Queued: waiting for another run to finish. A run with a fixed seed never runs alongside another run.',
   'runLog.completed': 'Execution completed successfully',
   'runLog.cancelled': 'Execution cancelled',
   'runLog.error': 'Execution error: {error}',

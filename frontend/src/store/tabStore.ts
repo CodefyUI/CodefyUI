@@ -285,6 +285,16 @@ export interface InnerRunState {
   progress?: NodeProgress;
 }
 
+/**
+ * Why a submitted run has not started (#680). `device`: it waits in its
+ * device's FIFO, at `position` (1-based, null when the server cannot say).
+ * `seed`: a canvas run waits on the process-wide lock that gives a seeded
+ * run the process to itself.
+ */
+export type RunQueueInfo =
+  | { reason: 'device'; device: string | null; position: number | null }
+  | { reason: 'seed' };
+
 export interface TabState {
   id: string;
   name: string;
@@ -469,6 +479,13 @@ export interface TabState {
   // Teaching Inspector state
   recordOutputs: boolean;
   lastRunId: string | null;
+  /**
+   * Set while the tab's run is submitted but waiting to start (#680): the
+   * tab's `status` is `running` throughout, so Stop and the re-attach work
+   * as for a started run, and this says why nothing is happening yet.
+   * Session state, never saved; any `setTabStatus` clears it.
+   */
+  runQueue?: RunQueueInfo | null;
   // #121: highest event cursor this tab has rendered for `lastRunId`. Used
   // to resume an attach after a dropped socket without replaying history
   // that is already on screen. In-memory only — a page reload starts with
@@ -1084,6 +1101,7 @@ interface TabStoreState {
   setTabOutputSummary: (tabId: string, nodeId: string, summary: Record<string, OutputSummary>) => void;
   clearOutputSummaries: () => void;
   setTabStatus: (tabId: string, s: ExecutionStatus) => void;
+  setTabRunQueue: (tabId: string, queue: RunQueueInfo | null) => void;
   addTabLog: (tabId: string, entry: Omit<LogEntry, 'timestamp'>) => void;
 
   // Teaching Inspector actions
@@ -2811,10 +2829,17 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
   // node list has not answered yet, so this fills nothing there and the list's
   // arrival does it (`fillParamDefaults`); a later restore has the list.
   const { definitions } = useNodeDefStore.getState();
-  const nodes = withParamDefaults(
+  // A record carries `lastRunId` only for a run that was in flight when it
+  // was written, and the re-attach repaints those nodes as the run goes on.
+  // Any other record restores with no run id, so its nodes restore with no
+  // run state either: a Completed or Failed badge next to an Inspector that
+  // has nothing captured is two answers to one question (#714).
+  const inFlight = typeof t.lastRunId === 'string';
+  const restored = withParamDefaults(
     normalizePresetAttachments(t.nodes ?? [], presets),
     definitions,
   );
+  const nodes = inFlight ? restored : withoutRunState(restored);
   return {
     ...base,
     name: t.name,
@@ -2856,7 +2881,10 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     subgraphs: withSubgraphParamDefaults(normalizeSubgraphs(t.subgraphs), definitions),
     // Never restored from disk: a reload lands at the top level.
     subgraphStack: [],
-    lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
+    lastRunId: inFlight ? t.lastRunId! : null,
+    // The run state of the nodes inside blocks, by the same rule: a block
+    // entered after the restore paints from this map (#714).
+    innerRunStates: inFlight ? base.innerRunStates : {},
     recordOutputs: t.recordOutputs ?? true,
     verboseMode: t.verboseMode ?? false,
     seed: t.seed ?? null,
@@ -3042,6 +3070,29 @@ const RUN_STATE_DATA_KEYS: ReadonlySet<string> = new Set([
   'error',
   'progress',
 ]);
+
+/**
+ * `nodes` with every run-state key (`RUN_STATE_DATA_KEYS`) reset: status
+ * back to idle, no error, no progress. Nodes that carry none of it keep their
+ * object, so an idle graph restores reference-for-reference.
+ */
+function withoutRunState(nodes: Node<NodeData>[]): Node<NodeData>[] {
+  return nodes.map((n) => {
+    const data = n.data as Record<string, unknown> | undefined;
+    if (data == null) return n;
+    const stale = Object.keys(data).some(
+      (key) => RUN_STATE_DATA_KEYS.has(key)
+        && !(key === 'executionStatus' && data[key] === 'idle'),
+    );
+    if (!stale) return n;
+    const clean: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (!RUN_STATE_DATA_KEYS.has(key)) clean[key] = value;
+    }
+    clean.executionStatus = 'idle';
+    return { ...n, data: clean as unknown as NodeData };
+  });
+}
 
 /**
  * Do two node `data` objects differ in anything the DOCUMENT keeps? (#341)
@@ -5631,7 +5682,10 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ outputSummaries: {} })) }),
 
   setTabStatus: (tabId, s) =>
-    set({ tabs: updateTab(get().tabs, tabId, () => ({ status: s })) }),
+    set({ tabs: updateTab(get().tabs, tabId, () => ({ status: s, runQueue: null })) }),
+
+  setTabRunQueue: (tabId, queue) =>
+    set({ tabs: updateTab(get().tabs, tabId, () => ({ runQueue: queue })) }),
 
   addTabLog: (tabId, entry) =>
     set({

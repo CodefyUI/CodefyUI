@@ -4,6 +4,7 @@ const zhTW: Record<TranslationKey, string> = {
   // Toolbar
   'toolbar.run': '執行',
   'toolbar.running': '執行中...',
+  'toolbar.queued': '排隊中...',
   'toolbar.stop': '停止',
   'toolbar.device.aria': '此圖的裝置',
   'toolbar.device.title': '這張圖要在哪個裝置上執行；選擇會存進圖檔',
@@ -14,6 +15,8 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Menu: File
   'toolbar.menu.file': '檔案',
+  'toolbar.open': '開啟...',
+  'toolbar.open.title': '在「圖表」面板中顯示已儲存的圖表',
   'toolbar.save': '儲存',
   'toolbar.save.prompt': '請輸入圖表名稱：',
   'toolbar.save.success': '圖表「{name}」儲存成功。',
@@ -86,6 +89,9 @@ const zhTW: Record<TranslationKey, string> = {
   // Status
   'status.idle': '閒置',
   'status.running': '執行中',
+  'status.queuedDevice': '排隊中（{device} 第 {position} 位）',
+  'status.queuedDeviceNoPosition': '排隊中（{device}）',
+  'status.queuedSeed': '排隊中（等待設定亂數種子的執行）',
   'status.completed': '已完成',
   'status.error': '錯誤',
   'status.skipped': '已跳過',
@@ -555,6 +561,9 @@ const zhTW: Record<TranslationKey, string> = {
   // {status} is the engine's raw token, for a status this table has no line for.
   // Skipped is 已跳過 as on the card (node.skipped): 略過 is this UI's word for bypass.
   'runLog.started': '開始執行',
+  'runLog.queuedDevice': '排隊中：{device} 佇列第 {position} 位，前面的執行完成後就會開始。',
+  'runLog.queuedDeviceNoPosition': '排隊中：在 {device} 佇列等候，前面的執行完成後就會開始。',
+  'runLog.queuedSeed': '排隊中：正在等待另一個執行完成。設定亂數種子的執行不會與其他執行同時進行。',
   'runLog.completed': '執行完成',
   'runLog.cancelled': '已取消執行',
   'runLog.error': '執行錯誤：{error}',

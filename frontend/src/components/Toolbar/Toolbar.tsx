@@ -17,6 +17,7 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { exportWorkspace } from '../../utils/exportWorkspace';
+import { importFile } from '../../utils/importGraphFile';
 import { exportTarget, exportFileStemNow, nameTabAfterExport } from '../../utils/exportFileName';
 import { dismissValidationToasts, showGraphRefusal } from '../../utils/validationToasts';
 import { SaveIcon } from '../shared/Icons';
@@ -450,6 +451,24 @@ export function Toolbar() {
   const handleSave = useCallback(() => saveActiveGraph(), []);
   const handleSaveAs = useCallback(() => saveActiveGraph({ saveAs: true }), []);
 
+  // File > Open... and Import... (#689) are the Graphs panel's own: Open
+  // shows that panel, where the saved graphs are listed, and Import is the
+  // panel's Import... button, the same `importFile` behind the same picker.
+  const handleOpen = useCallback(() => {
+    const ui = useUIStore.getState();
+    ui.setSidebarTab('graphs');
+    ui.setSidebarCollapsed(false);
+  }, []);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const handleImport = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    // Not awaited, and cleared now, so picking the SAME file again still
+    // fires `change`.
+    void importFile(file);
+    event.target.value = '';
+  }, []);
+
   const handleClear = useCallback(async () => {
     const ok = await confirm({
       title: t('toolbar.clear.confirm'),
@@ -707,6 +726,13 @@ export function Toolbar() {
   // stating before Clear Canvas -- that one undo brings it back -- is in the
   // confirm dialog it raises. The Export items keep theirs, which name a file format.
   const fileMenuItems: MenuItem[] = [
+    { label: t('toolbar.open'), title: t('toolbar.open.title'), onClick: handleOpen },
+    {
+      label: t('graphs.import'),
+      title: t('graphs.import.title'),
+      onClick: () => importInputRef.current?.click(),
+      dividerAfter: true,
+    },
     { label: t('toolbar.save'), onClick: handleSave },
     { label: t('toolbar.saveAs'), onClick: handleSaveAs },
     { label: t('toolbar.clear'), onClick: handleClear },
@@ -738,8 +764,19 @@ export function Toolbar() {
     skipped: 'var(--status-skipped)',
   };
   const statusDotColor = statusDotColors[status] ?? 'var(--status-idle)';
+  // A run that waits to start (#680) is still `running` -- Stop cancels it --
+  // but says why nothing is happening yet, and does not glow.
+  const runQueue = isRunning ? activeTab.runQueue ?? null : null;
+  const statusLabel =
+    runQueue === null
+      ? t(statusKey)
+      : runQueue.reason === 'seed'
+        ? t('status.queuedSeed')
+        : runQueue.position === null
+          ? t('status.queuedDeviceNoPosition', { device: runQueue.device ?? '?' })
+          : t('status.queuedDevice', { device: runQueue.device ?? '?', position: runQueue.position });
   // Must stay translucent: a solid colour here draws a hard ring, not a glow.
-  const statusGlow = status === 'running' ? 'var(--glow-running)' : 'none';
+  const statusGlow = isRunning && runQueue === null ? 'var(--glow-running)' : 'none';
 
   return (
     <div className={styles.root}>
@@ -761,7 +798,7 @@ export function Toolbar() {
           disabled={isRunning}
           className={styles.runButton}
         >
-          {isRunning ? t('toolbar.running') : t('toolbar.run')}
+          {!isRunning ? t('toolbar.run') : runQueue ? t('toolbar.queued') : t('toolbar.running')}
         </button>
         <button type="button"
           onClick={handleStop}
@@ -827,6 +864,14 @@ export function Toolbar() {
           open={openMenu === 'file'}
           onToggle={() => toggleMenu('file')}
           onClose={closeMenus}
+        />
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,.cduiworkspace"
+          style={{ display: 'none' }}
+          data-testid="file-menu-import-input"
+          onChange={handleImport}
         />
         <MenuDropdown
           label={t('toolbar.menu.export')}
@@ -926,7 +971,7 @@ export function Toolbar() {
             style={{ background: statusDotColor, boxShadow: statusGlow }}
           />
           <span style={{ color: status === 'running' ? 'var(--status-running)' : undefined }}>
-            {t(statusKey)}
+            {statusLabel}
           </span>
         </div>
       </div>

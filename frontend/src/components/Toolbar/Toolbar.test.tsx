@@ -166,6 +166,8 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
     // `subgraphs` is now a positional argument of `exportGraph` — the leak
     // shows up as a neighbouring test asserting on the wrong export payload.
     subgraphs: [],
+    // Same reason: a queued run (#680) is session state of one test.
+    runQueue: null,
     ...overrides,
   };
   useTabStore.setState({ tabs: [tab as never], activeTabId: 'tab-1' });
@@ -391,6 +393,35 @@ describe('Toolbar', () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  // #680: a run waiting to start says so, and Stop still cancels it.
+  it.each([
+    [{ reason: 'device', device: 'cpu', position: 2 }, 'Queued (#2 on cpu)'],
+    [{ reason: 'device', device: 'cuda:0', position: null }, 'Queued (on cuda:0)'],
+    [{ reason: 'seed' }, 'Queued (waiting for a seeded run)'],
+  ] as const)('queued %o: says why the run has not started, and Stop stays enabled', async (runQueue, label) => {
+    setActiveTab({ status: 'running', runQueue });
+    await renderSettled(<Toolbar />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText('Running')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Queued...' })).toBeDisabled();
+    fireEvent.click(screen.getByText('Stop'));
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('queued: reads in Traditional Chinese', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    setActiveTab({ status: 'running', runQueue: { reason: 'device', device: 'cpu', position: 1 } });
+    await renderSettled(<Toolbar />);
+    expect(screen.getByText('排隊中（cpu 第 1 位）')).toBeInTheDocument();
+  });
+
+  it('a queue left on a tab that is no longer running is not shown', async () => {
+    setActiveTab({ status: 'completed', runQueue: { reason: 'seed' } });
+    await renderSettled(<Toolbar />);
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Run' })).not.toBeDisabled();
+  });
+
   // ── Status visuals (statusDotColor map + glow + running text color) ─
 
   it.each([
@@ -424,6 +455,70 @@ describe('Toolbar', () => {
     // toggle again closes
     fireEvent.click(fileBtn);
     expect(screen.queryByText('Save')).toBeNull();
+  });
+
+  // #689: the Graphs panel's Open and Import are reachable from File too.
+  it('File menu lists Open... and Import... above Save', async () => {
+    await renderSettled(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    const labels = [...document.querySelectorAll(`.${styles.menuItem}`)].map((el) => el.textContent);
+    expect(labels.slice(0, 3)).toEqual(['Open...', 'Import...', 'Save']);
+  });
+
+  it('File > Open... shows the Graphs panel, opening a collapsed sidebar', async () => {
+    useUIStore.setState({ sidebarTab: 'nodes', sidebarCollapsed: true });
+    await renderSettled(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Open...'));
+    expect(useUIStore.getState().sidebarTab).toBe('graphs');
+    expect(useUIStore.getState().sidebarCollapsed).toBe(false);
+    // The menu closes behind the choice.
+    expect(screen.queryByText('Open...')).toBeNull();
+  });
+
+  it('File > Import... opens the file picker and imports a graph into the canvas', async () => {
+    await renderSettled(<Toolbar />);
+    const input = screen.getByTestId('file-menu-import-input') as HTMLInputElement;
+    expect(input.accept).toBe('.json,.cduiworkspace');
+    const pick = vi.spyOn(input, 'click').mockImplementation(() => {});
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Import...'));
+    expect(pick).toHaveBeenCalledTimes(1);
+
+    const graph = {
+      nodes: [{ id: 'imported', type: 'Dropout', position: { x: 0, y: 0 }, data: { params: {} } }],
+      edges: [],
+    };
+    const file = new File([JSON.stringify(graph)], 'mine.json', { type: 'application/json' });
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+    await waitFor(() =>
+      expect(useTabStore.getState().getActiveTab().nodes.map((n) => n.id)).toEqual(['imported']),
+    );
+    expect(input.value).toBe('');
+  });
+
+  it('File > Import... says "Import failed" for a file that is not a graph', async () => {
+    await renderSettled(<Toolbar />);
+    const input = screen.getByTestId('file-menu-import-input') as HTMLInputElement;
+    const file = new File(['this is not json'], 'broken.json', { type: 'application/json' });
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [file] } });
+    });
+    await waitFor(() =>
+      expect(
+        useToastStore.getState().toasts.some((toast) => toast.message.startsWith('Import failed')),
+      ).toBe(true),
+    );
+  });
+
+  it('File > Import... with nothing picked imports nothing', async () => {
+    await renderSettled(<Toolbar />);
+    const before = useTabStore.getState().tabs;
+    fireEvent.change(screen.getByTestId('file-menu-import-input'), { target: { files: [] } });
+    expect(useTabStore.getState().tabs).toBe(before);
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 
   it('File menu closes on outside mousedown', async () => {
