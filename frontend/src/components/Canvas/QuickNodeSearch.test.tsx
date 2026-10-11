@@ -134,6 +134,23 @@ describe('QuickNodeSearch', () => {
     expect(getAllByText).toBeTruthy();
   });
 
+  // #684: the rows' category labels and a shipped preset's description stayed
+  // English in the Chinese UI.
+  it('labels categories and shipped presets in the UI language', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    setStore(
+      [def('Add', { category: 'Tensor Operations' })],
+      [preset('LSTM Sequence', { category: 'RNN', description: 'LSTM layer followed by an activation.' })],
+    );
+    const { getByText, queryByText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
+    );
+    expect(getByText('張量運算')).toBeInTheDocument();
+    expect(getByText('RNN')).toBeInTheDocument();
+    expect(getByText(/^LSTM 層後接一個激活函數/)).toBeInTheDocument();
+    expect(queryByText('LSTM layer followed by an activation.')).toBeNull();
+  });
+
   it('skips a preset list entry with fields missing, with or without a query', () => {
     setStore([def('Conv2d')], [{ preset_name: 'Broken' } as unknown as PresetDefinition, preset('MyBlock')]);
     const { getByPlaceholderText, getByText, queryByText } = render(

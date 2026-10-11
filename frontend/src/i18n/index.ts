@@ -3,6 +3,7 @@ import en from './locales/en';
 import zhTW from './locales/zh-TW';
 import zhTWNodes from './nodeLocales/zh-TW';
 import zhTWExamples from './exampleLocales/zh-TW';
+import zhTWPresets from './presetLocales/zh-TW';
 import type { TranslationKey } from './locales/en';
 import type { NodeTranslations } from './nodeLocales/types';
 import type { ExampleTranslations } from './exampleLocales/types';
@@ -20,6 +21,10 @@ const nodeMessages: Partial<Record<Locale, NodeTranslations>> = {
 
 const exampleMessages: Partial<Record<Locale, ExampleTranslations>> = {
   'zh-TW': zhTWExamples,
+};
+
+const presetMessages: Partial<Record<Locale, Record<string, { description?: string }>>> = {
+  'zh-TW': zhTWPresets,
 };
 
 // All supported locales — add new ones here
@@ -45,7 +50,12 @@ interface I18nState {
   /** Translate node field. Falls back to `fallback` (the English backend text) if no translation exists. */
   tn: (
     nodeName: string,
-    field: 'description' | 'details' | `param.${string}`,
+    field:
+      | 'description'
+      | 'details'
+      | `param.${string}`
+      | `input.${string}`
+      | `output.${string}`,
     fallback: string,
   ) => string;
   /**
@@ -55,6 +65,12 @@ interface I18nState {
    * -- or one a third-party plugin ships -- still reads, in English.
    */
   te: (examplePath: string, fallback: string) => string;
+  /**
+   * Translate a preset's description, keyed by its `preset_name`. Falls back
+   * to `fallback` (the backend's English text), so a preset a user saved or a
+   * plugin ships still reads.
+   */
+  tp: (presetName: string, fallback: string) => string;
 }
 
 export const useI18n = create<I18nState>((set, get) => ({
@@ -94,19 +110,25 @@ export const useI18n = create<I18nState>((set, get) => ({
       return nodeT[field] ?? fallback;
     }
 
-    // field = "param.xxx"
-    if (field.startsWith('param.')) {
-      const paramName = field.slice(6);
-      return nodeT.params?.[paramName] ?? fallback;
-    }
-
-    return fallback;
+    // field = "param.xxx", "input.xxx" or "output.xxx"
+    const dot = field.indexOf('.');
+    const name = field.slice(dot + 1);
+    const section = { param: nodeT.params, input: nodeT.inputs, output: nodeT.outputs }[
+      field.slice(0, dot) as 'param' | 'input' | 'output'
+    ];
+    return section?.[name] ?? fallback;
   },
 
   te: (examplePath: string, fallback: string) => {
     const { locale } = get();
     if (locale === 'en') return fallback;
     return exampleMessages[locale]?.[examplePath]?.description ?? fallback;
+  },
+
+  tp: (presetName: string, fallback: string) => {
+    const { locale } = get();
+    if (locale === 'en') return fallback;
+    return presetMessages[locale]?.[presetName]?.description ?? fallback;
   },
 }));
 

@@ -28,11 +28,11 @@ class ScatterPlot2DNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="points", data_type=DataType.TENSOR, description="2D 點，shape [N, 2]。"),
+            PortDefinition(name="points", data_type=DataType.TENSOR, description="2D points, shape [N, 2]."),
             PortDefinition(
                 name="labels",
                 data_type=DataType.LIST,
-                description="每點的類別標籤（長度 N）；沒接就全部畫成同一色。",
+                description="Class label of each point (length N). Unconnected, every point gets one colour.",
                 optional=True,
             ),
         ]
@@ -43,7 +43,7 @@ class ScatterPlot2DNode(BaseNode):
             PortDefinition(
                 name="image",
                 data_type=DataType.STRING,
-                description="base64 編碼的 PNG 散點圖。",
+                description="The scatter plot as a base64-encoded PNG.",
                 media=MEDIA_IMAGE,
             ),
         ]
@@ -51,7 +51,7 @@ class ScatterPlot2DNode(BaseNode):
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
         return [
-            ParamDefinition(name="title", param_type=ParamType.STRING, default="", description="圖標題。"),
+            ParamDefinition(name="title", param_type=ParamType.STRING, default="", description="Plot title."),
         ]
 
     def execute(

@@ -11,13 +11,13 @@ class ArgmaxNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="tensor", data_type=DataType.TENSOR, description="輸入張量（通常是 logits）。"),
+            PortDefinition(name="tensor", data_type=DataType.TENSOR, description="Input tensor (usually logits)."),
         ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="tensor", data_type=DataType.TENSOR, description="argmax 後的索引張量（少掉被取的那一維）。"),
+            PortDefinition(name="tensor", data_type=DataType.TENSOR, description="Tensor of argmax indices, without the reduced dimension."),
         ]
 
     @classmethod
@@ -27,13 +27,16 @@ class ArgmaxNode(BaseNode):
                 name="dim",
                 param_type=ParamType.INT,
                 default=-1,
-                description="沿哪一維取 argmax。分割輸出 (N,C,H,W) 取類別用 dim=1。",
+                description=(
+                    "Dimension to take the argmax over. Use dim=1 for the classes of a "
+                    "segmentation output (N,C,H,W)."
+                ),
             ),
             ParamDefinition(
                 name="keepdim",
                 param_type=ParamType.BOOL,
                 default=False,
-                description="是否保留被取的那一維（長度變 1）。",
+                description="Keep the reduced dimension with length 1.",
             ),
         ]
 

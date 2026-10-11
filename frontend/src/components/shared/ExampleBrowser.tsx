@@ -40,7 +40,7 @@ function renderCard(
   // "Model Architecture" on every card of a section already headed
   // "Model Architectures" said nothing twice over. And no chip at all when
   // the sub-header right above the card is that same word.
-  const chipLabel = exampleChipLabel(example);
+  const chipLabel = exampleChipLabel(example, t);
   const showChip = chipLabel !== heading;
   const shown = truncateToWidth(example.description, CARD_DESC_COLUMNS);
   return (

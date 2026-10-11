@@ -23,6 +23,7 @@ import type { NodeDefinition, PresetDefinition } from '../../types';
 import { DIFFICULTY_COLORS } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
 import { orderCategories } from './categories';
+import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import { CategoryList, type CategoryGroup } from './CategoryList';
 import styles from './NodePalette.module.css';
 
@@ -164,7 +165,8 @@ export function PresetItem({ preset }: PresetItemProps) {
   // stated a level nobody chose.
   const tags: unknown = preset.tags;
   const difficulty = (Array.isArray(tags) ? tags : []).find(isDifficulty);
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
+  const description = tp(preset.preset_name, preset.description);
 
   const handleDragStart = (event: React.DragEvent) => {
     event.dataTransfer.setData('application/codefyui-preset', preset.preset_name);
@@ -177,7 +179,7 @@ export function PresetItem({ preset }: PresetItemProps) {
       onDragStart={handleDragStart}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      title={preset.description}
+      title={description}
       className={styles.presetItem}
       // Gold preset-hover tint: a semantic per-item accent (same family as
       // CATEGORY_COLORS/DIFFICULTY_COLORS below), not chrome, so it is left
@@ -207,7 +209,7 @@ export function PresetItem({ preset }: PresetItemProps) {
         )}
       </div>
       <div className={styles.presetDesc}>
-        {preset.description}
+        {description}
       </div>
       <div className={styles.presetNodeCount}>
         {t('empty.nodeCount', { count: readablePresetNodes(preset).length })}
@@ -370,10 +372,12 @@ export function NodesTab() {
                   ? <PresetItem preset={entry} />
                   : <NodeItem definition={entry} />
               }
-              // Only the pinned group is renamed; a node category still shows
-              // the key the server sent, as it did before presets moved in.
+              // The group keys stay the server's categories; the heading is
+              // the UI language's label for one (#684).
               labelFor={(category) =>
-                category === PRESET_GROUP ? t('palette.presets.category') : category
+                category === PRESET_GROUP
+                  ? t('palette.presets.category')
+                  : nodeCategoryLabel(category, t)
               }
             />
           )

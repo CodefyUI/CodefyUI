@@ -40,12 +40,12 @@ class RowSelectorNode(BaseNode):
             PortDefinition(
                 name="tensor",
                 data_type=DataType.TENSOR,
-                description="輸入的 2D tensor [rows, cols]。",
+                description="Input 2D tensor [rows, cols].",
             ),
             PortDefinition(
                 name="labels",
                 data_type=DataType.LIST,
-                description="可選的列標籤清單——用 `names` 選列時需要連上。",
+                description="Optional list of row labels. Required when selecting rows by `names`.",
                 optional=True,
             ),
         ]
@@ -56,7 +56,7 @@ class RowSelectorNode(BaseNode):
             PortDefinition(
                 name="tensor",
                 data_type=DataType.TENSOR,
-                description="shape [len(selected_rows), cols] 的 tensor。",
+                description="Tensor of shape [len(selected_rows), cols].",
             ),
         ]
 
@@ -67,13 +67,16 @@ class RowSelectorNode(BaseNode):
                 name="indices",
                 param_type=ParamType.STRING,
                 default="0",
-                description="逗號分隔的列索引，例如 '0,2,3'。當 `names` 留空時使用。",
+                description="Comma-separated row indices, for example '0,2,3'. Used when `names` is empty.",
             ),
             ParamDefinition(
                 name="names",
                 param_type=ParamType.STRING,
                 default="",
-                description="逗號分隔的列名稱。設定時優先於 `indices`，且需要連上 `labels` 輸入。",
+                description=(
+                    "Comma-separated row names. Takes precedence over `indices` and needs the "
+                    "`labels` input connected."
+                ),
             ),
         ]
 

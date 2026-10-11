@@ -397,6 +397,11 @@ const en = {
   'examples.section.architectures': 'Model Architectures',
   'examples.section.plugin': 'Plugin Packs',
   'examples.section.other': 'Other',
+  // An example's category is its folder under examples/; these label it.
+  'examples.category.Classical': 'Classical',
+  'examples.category.Model_Architecture': 'Model Architecture',
+  'examples.category.Others': 'Others',
+  'examples.category.Usage_Example': 'Usage Example',
 
   // Context Menu
   'contextMenu.rename': 'Rename',
@@ -465,6 +470,7 @@ const en = {
 
   // Tabs
   'tabs.add': 'New tab',
+  'tabs.defaultName': 'Tab {n}',
   'tabs.closeRunning': 'This tab is still running. Close it anyway?',
   'tabs.close.confirmTitle': 'Close "{name}"?',
   'tabs.close.confirmMessage':
@@ -668,8 +674,16 @@ const en = {
   'runLog.node.errorBare': 'Node {label} error',
   'runLog.node.other': 'Node {label} {status}',
 
-  // Node palette — control category / start node
+  // Node palette — category labels (utils/categoryLabels.ts). The category
+  // the backend sends stays the identifier; these are what a reader sees.
+  'palette.category.classical': 'Classical',
   'palette.category.control': 'Control',
+  'palette.category.data': 'Data',
+  'palette.category.dataFlow': 'Data Flow',
+  'palette.category.normalization': 'Normalization',
+  'palette.category.tensorOps': 'Tensor Operations',
+  'palette.category.training': 'Training',
+  'palette.category.utility': 'Utility',
   'palette.start.description': 'Marks an execution entry point. Connect to the first node of a script.',
 
   // Keyboard Shortcuts

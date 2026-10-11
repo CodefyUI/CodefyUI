@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useI18n } from '../i18n';
 import type { ExampleSummary } from '../api/rest';
+import { exampleCategoryLabel } from './exampleSections';
 
 /** An example with its description already resolved for the active locale.
  *
@@ -85,14 +86,16 @@ export function truncateToWidth(text: string, maxWidth: number): string {
 
 /** Does this example match a lowercased search query?
  *
- * Name and category are English in every locale; the description is matched in
- * both the displayed language and the original English.
+ * The name is English in every locale. The description and the category are
+ * matched in both the displayed language and the original English, so
+ * `usage` and 「使用範例」 both find a usage example (#684).
  */
 export function exampleMatches(example: LocalizedExample, query: string): boolean {
   return (
     example.name.toLowerCase().includes(query) ||
     example.description.toLowerCase().includes(query) ||
     example.descriptionEn.toLowerCase().includes(query) ||
-    example.category.toLowerCase().includes(query)
+    example.category.toLowerCase().includes(query) ||
+    exampleCategoryLabel(example.category, useI18n.getState().t).toLowerCase().includes(query)
   );
 }

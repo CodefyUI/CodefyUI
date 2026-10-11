@@ -325,6 +325,10 @@ const zhTW: Record<TranslationKey, string> = {
   'examples.section.architectures': '模型架構',
   'examples.section.plugin': '擴充套件包',
   'examples.section.other': '其他',
+  'examples.category.Classical': '傳統機器學習',
+  'examples.category.Model_Architecture': '模型架構',
+  'examples.category.Others': '其他',
+  'examples.category.Usage_Example': '使用範例',
 
   // Context Menu
   'contextMenu.rename': '重新命名',
@@ -380,6 +384,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Tabs
   'tabs.add': '新增分頁',
+  'tabs.defaultName': '分頁 {n}',
   'tabs.closeRunning': '此分頁仍在執行中，確定要關閉嗎？',
   'tabs.close.confirmTitle': '要關閉「{name}」嗎？',
   'tabs.close.confirmMessage':
@@ -579,7 +584,14 @@ const zhTW: Record<TranslationKey, string> = {
   'runLog.node.other': '節點 {label}：{status}',
 
   // Node palette — control category / start node
+  'palette.category.classical': '傳統機器學習',
   'palette.category.control': '控制',
+  'palette.category.data': '資料',
+  'palette.category.dataFlow': '資料流',
+  'palette.category.normalization': '正規化',
+  'palette.category.tensorOps': '張量運算',
+  'palette.category.training': '訓練',
+  'palette.category.utility': '工具',
   'palette.start.description': '標記執行的起點。連接到你想執行的第一個節點。',
 
   // Keyboard Shortcuts

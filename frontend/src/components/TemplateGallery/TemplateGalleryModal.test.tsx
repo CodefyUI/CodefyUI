@@ -208,6 +208,34 @@ describe('TemplateGalleryModal', () => {
     expect(screen.getByText('No matching examples')).toBeInTheDocument();
   });
 
+  // #684: the chip and the detail pane named the category in English in the
+  // Chinese UI. A search matches it in both languages.
+  it('names the category in the UI language and finds it by either name', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'u/1', section: 'training' }),
+      ex({ name: 'Iris', category: 'Classical', path: 'c/1', section: 'concepts' }),
+    ]);
+    const { unmount } = render(<TemplateGalleryModal />);
+    const zhGrid = () => screen.getByRole('region', { name: '範例清單' });
+    await waitFor(() => expect(within(zhGrid()).getByText('Train CNN')).toBeInTheDocument());
+
+    const chips = [...zhGrid().querySelectorAll('[class*="cardChip"]')].map((el) => el.textContent);
+    expect(chips).toEqual(['使用範例', '傳統機器學習']);
+    expect(within(screen.getByRole('complementary', { name: '範例詳情' })).getByText('使用範例')).toBeInTheDocument();
+
+    const input = screen.getByPlaceholderText('搜尋範例...');
+    fireEvent.change(input, { target: { value: '使用範例' } });
+    expect(within(zhGrid()).getByText('Train CNN')).toBeInTheDocument();
+    expect(within(zhGrid()).queryByText('Iris')).toBeNull();
+    fireEvent.change(input, { target: { value: 'usage' } });
+    expect(within(zhGrid()).getByText('Train CNN')).toBeInTheDocument();
+    expect(within(zhGrid()).queryByText('Iris')).toBeNull();
+    // Unmounted here, so closing the gallery in afterEach re-renders nothing
+    // outside act.
+    unmount();
+  });
+
   it('describes the first example until another is chosen', async () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'First', description: 'the first one', path: 'a', node_count: 4, edge_count: 3 }),

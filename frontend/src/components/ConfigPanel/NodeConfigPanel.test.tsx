@@ -119,6 +119,18 @@ describe('NodeConfigPanel — header & accent color', () => {
     expect(screen.getByText('CNN')).toBeInTheDocument();
   });
 
+  // #684: the category line stayed "Tensor Operations" in the Chinese UI.
+  it('shows the category in the UI language', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedTab(
+      [makeNode({ data: { definition: makeDef({ node_name: 'Add', category: 'Tensor Operations' }) } })],
+      'n1',
+    );
+    render(<NodeConfigPanel />);
+    expect(screen.getByText('張量運算')).toBeInTheDocument();
+    expect(screen.queryByText('Tensor Operations')).not.toBeInTheDocument();
+  });
+
   it('renders the description via MathText when present', () => {
     seedTab([makeNode({ data: { definition: makeDef({ description: 'A dense layer' }) } })], 'n1');
     render(<NodeConfigPanel />);
@@ -269,6 +281,31 @@ describe('NodeConfigPanel — preset node', () => {
     // preset path renders neither the params section nor noParams
     expect(screen.queryByText('No parameters')).not.toBeInTheDocument();
     expect(screen.queryByText('Parameters')).not.toBeInTheDocument();
+  });
+
+  // #684: a shipped preset's description is translated like a node's.
+  it('shows a shipped preset description in the UI language', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const presetNode = makeNode({
+      id: 'p1',
+      type: 'presetNode',
+      data: {
+        label: 'Training Pipeline',
+        type: 'preset:Training Pipeline',
+        isPreset: true,
+        definition: makeDef({
+          node_name: 'Training Pipeline',
+          category: 'Training',
+          description: 'Complete training pipeline.',
+        }),
+        presetDefinition: { nodes: [] } as any,
+        params: {},
+      },
+    });
+    seedTab([presetNode], 'p1');
+    render(<NodeConfigPanel />);
+    expect(screen.getByText(/^完整的訓練流程/)).toBeInTheDocument();
+    expect(screen.queryByText('Complete training pipeline.')).not.toBeInTheDocument();
   });
 
   it('falls back to 0 nodes when presetDefinition is missing', () => {

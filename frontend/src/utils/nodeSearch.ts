@@ -169,7 +169,15 @@ export function nodeSearchTexts(
  * and it is the same function in every language.
  */
 export function presetSearchTexts(preset: PresetDefinition): string[] {
-  const { t } = useI18n.getState();
+  const { t, tp } = useI18n.getState();
   const words = preset.tags.filter(isDifficulty).map((tag) => t(DIFFICULTY_LABEL_KEYS[tag]));
-  return [preset.description, ...preset.tags, ...words.filter((word) => !preset.tags.includes(word))];
+  // The description the palette shows, so a Chinese query finds a preset by
+  // it (#684). Empty when it is the English text, which is already listed.
+  const translated = tp(preset.preset_name, '');
+  return [
+    preset.description,
+    ...(translated ? [translated] : []),
+    ...preset.tags,
+    ...words.filter((word) => !preset.tags.includes(word)),
+  ];
 }
