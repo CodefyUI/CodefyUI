@@ -23,7 +23,7 @@ from typing import Any
 # Ensure the backend package is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.core.device_utils import graph_settings_device
+from app.core.device_utils import graph_settings_device, graph_settings_seed
 from app.core.graph_engine import (
     GraphValidationError,
     build_preset_fallback,
@@ -83,6 +83,7 @@ async def run(
     verbose: bool = False,
     device: str | None = None,
     seed: int | None = None,
+    no_seed: bool = False,
     deterministic: bool = False,
 ) -> None:
     t0 = time.time()
@@ -98,8 +99,13 @@ async def run(
     edges = graph.get("edges", [])
     name = graph.get("name", path.stem)
     # ``--device`` beats the file's own assignment; with neither set the
-    # engine's default context (cpu) is used below.
+    # engine's default context (cpu) is used below. The seed follows the
+    # same rule (#704); ``--no-seed`` asks for an unseeded run.
     device = device or graph_settings_device(graph)
+    seed_source = ""
+    if seed is None and not no_seed:
+        seed = graph_settings_seed(graph)
+        seed_source = " (graph)"
 
     logger.info("=" * 60)
     logger.info("  Graph: %s", name)
@@ -147,7 +153,8 @@ async def run(
             # engine drops to one worker so per-node seeding cannot be
             # clobbered mid-execute. A user wondering why a wide graph got
             # slower should be able to read the reason here.
-            logger.info("Seed: %d (nodes execute serially)", seed)
+            logger.info("Seed: %d%s (nodes execute serially)", seed,
+                        seed_source)
             seed_rngs(seed)
         if deterministic:
             # Announced only; the engine applies it through
@@ -215,8 +222,12 @@ def main() -> None:
     parser.add_argument("--device", default=None,
                         help="cpu / auto / cuda / cuda:N / mps (default: the "
                              "graph's settings.device, else cpu)")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Seed every node from this value; makes the run reproducible")
+    seeding = parser.add_mutually_exclusive_group()
+    seeding.add_argument("--seed", type=int, default=None,
+                         help="Seed every node from this value; makes the run "
+                              "reproducible (default: the graph's settings.seed)")
+    seeding.add_argument("--no-seed", action="store_true",
+                         help="Run unseeded even when the graph has a settings.seed")
     parser.add_argument("--deterministic", action="store_true",
                         help="Ask torch for deterministic kernels (warns on ops that have none)")
     args = parser.parse_args()
@@ -226,7 +237,8 @@ def main() -> None:
 
     _init_registries()
     asyncio.run(run(args.graph, validate_only=args.validate_only, verbose=args.verbose,
-                    device=args.device, seed=args.seed, deterministic=args.deterministic))
+                    device=args.device, seed=args.seed, no_seed=args.no_seed,
+                    deterministic=args.deterministic))
 
 
 if __name__ == "__main__":

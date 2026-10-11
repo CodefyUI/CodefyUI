@@ -47,7 +47,8 @@
                                         （省略時用圖檔的 settings.device，
                                         再沒有就是 cpu；auto 表示這台伺服器
                                         最好的加速器；解析後的裝置就是佇列 key）
-                      --seed <n>        隨機種子
+                      --seed <n>        隨機種子（省略時用圖檔的 settings.seed）
+                      --no-seed         不設種子執行，即使圖檔有 settings.seed
                       --deterministic   要求 torch 用確定性演算法（沒有確定性實作
                                         的 op 只警告，不中斷 run）
                       --record-outputs  保留節點輸出供事後檢視
@@ -4334,10 +4335,15 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
                         "graph file's settings.device, else cpu. auto: the "
                         "best accelerator this server has. The RESOLVED "
                         "device is the queue this run joins.")
-    p.add_argument("--seed", type=int, default=None,
-                   help="seed for random / numpy / torch. Every node is "
-                        "seeded from it, and the run executes serially so "
-                        "the same seed gives the same numbers.")
+    seeding = p.add_mutually_exclusive_group()
+    seeding.add_argument("--seed", type=int, default=None,
+                         help="seed for random / numpy / torch. Every node is "
+                              "seeded from it, and the run executes serially "
+                              "so the same seed gives the same numbers. "
+                              "Omitted: the graph file's settings.seed, if any.")
+    seeding.add_argument("--no-seed", action="store_true",
+                         help="run unseeded even when the graph file has a "
+                              "settings.seed")
     p.add_argument("--deterministic", action="store_true",
                    help="also ask torch for deterministic kernels; ops with "
                         "no deterministic implementation warn instead of "
@@ -4430,8 +4436,12 @@ def _run_submit_body(args) -> dict:
     # else cpu; the CLI does not repeat that rule locally.
     if args.device is not None:
         options["device"] = args.device
+    # Omitted means the server applies the graph file's settings.seed
+    # (#704); an explicit null asks for an unseeded run.
     if args.seed is not None:
         options["seed"] = args.seed
+    elif getattr(args, "no_seed", False):
+        options["seed"] = None
     if getattr(args, "deterministic", False):
         options["deterministic"] = True
     body = {"graph": graph, "options": options}
@@ -4451,6 +4461,21 @@ def _run_display_device(args, graph: dict) -> str:
     if isinstance(value, str) and value.strip():
         return f"{value.strip().lower()} (graph)"
     return "cpu"
+
+
+def _run_display_seed(args, graph: dict) -> str:
+    """The seed line printed after submit: the flag, else the graph file's
+    ``settings.seed`` marked ``(graph)``, else ``none``. Display only, like
+    :func:`_run_display_device`; the server validates the value."""
+    if args.seed is not None:
+        return str(args.seed)
+    if getattr(args, "no_seed", False):
+        return "none"
+    graph_settings = graph.get("settings") if isinstance(graph, dict) else None
+    value = graph_settings.get("seed") if isinstance(graph_settings, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return f"{value} (graph)"
+    return "none"
 
 
 def _run_status_color(status: str) -> str:
@@ -4719,6 +4744,7 @@ def run_graph() -> None:
     _kv(t("Run ID", "Run ID"), run_id)
     _kv(t("圖檔", "Graph"), str(path))
     _kv(t("裝置", "Device"), _run_display_device(args, body["graph"]))
+    _kv(t("種子", "Seed"), _run_display_seed(args, body["graph"]))
     if args.name:
         _kv(t("名稱", "Name"), args.name)
     _kv(t("狀態", "Status"),

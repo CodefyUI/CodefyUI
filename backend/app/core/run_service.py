@@ -39,7 +39,9 @@ The run's device is resolved once, in :meth:`RunService.submit`: the
 effective value is ``options["device"]`` when the key is present, else the
 graph's ``settings.device``, else ``cpu``; ``auto`` resolves to the best
 accelerator this server has. The same string becomes ``exec_runs.queue_key``
-and ``ExecutionContext.device``.
+and ``ExecutionContext.device``. The seed follows the same rule:
+``options["seed"]`` when the key is present (``null`` is an unseeded run),
+else the graph's ``settings.seed``, else none.
 
 ``options["lane"]`` labels where a run came from. ``queued`` (the default)
 is a server-owned, fully isolated run — the shape the FIFO queue schedules.
@@ -140,7 +142,13 @@ from .db import utc_now_iso
 #: "which card does a bare ``cuda`` mean in this process" is one policy
 #: decision, and #135 gave ``device_utils`` a second copy of it for the
 #: index-validation fallback. Two copies of a policy drift.
-from .device_utils import DEVICE_PATTERN, _current_cuda_index, resolve_device
+from .device_utils import (
+    DEVICE_PATTERN,
+    _current_cuda_index,
+    graph_settings_device,
+    graph_settings_seed,
+    resolve_device,
+)
 from .execution_context import (
     ArtifactSignal,
     CancellationError,
@@ -690,6 +698,15 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
             raise RunSubmitError(
                 f"unknown graph.settings.device {device!r}; expected cpu, "
                 "auto, cuda, cuda:N, mps or mps:N")
+    seed = (settings or {}).get("seed")
+    if seed is not None:
+        # Strict like ``GraphSettings.seed``: ``"7"``, ``true`` or ``2.0``
+        # is refused, never coerced (bool is an int subclass).
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise RunSubmitError("graph.settings.seed must be an integer")
+        if not 0 <= seed <= MAX_SEED:
+            raise RunSubmitError(
+                f"graph.settings.seed must be between 0 and {MAX_SEED}")
     normalized = {
         "nodes": nodes,
         "edges": edges,
@@ -697,10 +714,43 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
         "subgraphs": subgraphs,
     }
     # Kept only when set, so the snapshot records the assignment and a
-    # graph with none stays shaped as before.
+    # graph with none stays shaped as before. A seed of 0 is set.
+    kept = {}
     if device:
-        normalized["settings"] = {"device": device}
+        kept["device"] = device
+    if seed is not None:
+        kept["seed"] = seed
+    if kept:
+        normalized["settings"] = kept
     return normalized
+
+
+def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
+    """Fill the run options the caller left out from the graph's settings.
+
+    ``options["device"]`` absent takes ``settings.device`` and
+    ``options["seed"]`` absent takes ``settings.seed`` (#704). Key absence
+    is the test, so a caller that names a value keeps it: an explicit
+    ``"seed": null`` is an unseeded run of a seeded graph, and an explicit
+    ``"device": null`` still fails in :func:`normalize_options`. A non-dict
+    *options* is returned untouched for that function to refuse.
+
+    *graph* is read through :func:`graph_settings_device` and
+    :func:`graph_settings_seed`, which drop an invalid value; the submit
+    path has already refused one in :func:`normalize_graph`.
+    """
+    if options is not None and not isinstance(options, dict):
+        return options
+    filled = dict(options or {})
+    if "device" not in filled:
+        device = graph_settings_device(graph)
+        if device:
+            filled["device"] = device
+    if "seed" not in filled:
+        seed = graph_settings_seed(graph)
+        if seed is not None:
+            filled["seed"] = seed
+    return filled if filled or options is not None else options
 
 
 def json_size(value: Any) -> int:
@@ -1495,7 +1545,8 @@ class RunService:
         disagree. The effective device is ``options["device"]`` when that
         key is present, else the graph's ``settings.device``, else ``cpu``;
         the effective value is written into the stored options so the row
-        stays self-describing. ``auto`` resolves to the best accelerator
+        stays self-describing. ``options["seed"]`` falls back to the graph's
+        ``settings.seed`` the same way (see :func:`apply_graph_settings`). ``auto`` resolves to the best accelerator
         this server has.
 
         *session* is the canvas's process-local state; see
@@ -1514,11 +1565,7 @@ class RunService:
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
         normalized_graph = normalize_graph(graph)
-        settings_device = normalized_graph.get("settings", {}).get("device")
-        if settings_device and (options is None or (
-                isinstance(options, dict) and "device" not in options)):
-            # Key absence is the test: an explicit null still fails below.
-            options = {**(options or {}), "device": settings_device}
+        options = apply_graph_settings(normalized_graph, options)
         normalized_options = normalize_options(options)
         normalized_name = normalize_name(name)
         lane = normalized_options["lane"]

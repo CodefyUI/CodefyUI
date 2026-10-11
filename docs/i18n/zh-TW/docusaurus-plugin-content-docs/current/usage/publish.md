@@ -85,7 +85,7 @@ POST /api/keys/{id}/revoke    (session token)  -- soft revoke; the row stays lis
 POST /api/apps/{slug}/invoke          (auth: Authorization: Bearer cdui_...)
 ```
 
-request body 與 [`/api/graph/run`](./graph-as-a-function) 相同：整個 body 為選填，其中 `inputs`、`timeout_s`、`device` 也都是選填欄位。沒有 `device` 的 body 會使用已發佈 graph 的 [`settings.device`](/advanced/device-backends#the-graph-settings-object)，沒有設定時使用 CPU；`"device": "auto"` 會使用可用的最佳加速器。兩者有以下差異：
+request body 與 [`/api/graph/run`](./graph-as-a-function) 相同：整個 body 為選填，其中 `inputs`、`timeout_s`、`device`、`seed` 也都是選填欄位。沒有 `device` 的 body 會使用已發佈 graph 的 [`settings.device`](/advanced/device-backends#the-graph-settings-object)，沒有設定時使用 CPU；`"device": "auto"` 會使用可用的最佳加速器。沒有 `seed` 的 body 會使用已發佈 graph 的 `settings.seed`，`"seed": null` 則不設種子執行。兩者有以下差異：
 
 - `record_outputs` **會被接受但忽略**；已發佈的執行會記錄在 SQLite（見下方），不會寫入編輯器的檢視器儲存區。
 - `timeout_s` 涵蓋**包含排隊等待在內**的完整請求時間。同一個應用程式的 invoke 由每個 slug 各自的鎖逐一執行；若呼叫在等待前一個 invoke 時用完時間，會回傳 `timeout` 錯誤，並註明逾時發生在排隊期間。不同 slug 可以平行執行。

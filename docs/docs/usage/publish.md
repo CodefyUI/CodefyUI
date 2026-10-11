@@ -85,7 +85,7 @@ POST /api/keys/{id}/revoke    (session token)  -- soft revoke; the row stays lis
 POST /api/apps/{slug}/invoke          (auth: Authorization: Bearer cdui_...)
 ```
 
-The body is the same as [`/api/graph/run`](./graph-as-a-function): optional, with optional `inputs`, `timeout_s`, `device`. A body with no `device` runs on the published graph's [`settings.device`](/advanced/device-backends#the-graph-settings-object), else on the CPU; `"device": "auto"` takes the best accelerator available. Two differences:
+The body is the same as [`/api/graph/run`](./graph-as-a-function): optional, with optional `inputs`, `timeout_s`, `device`, `seed`. A body with no `device` runs on the published graph's [`settings.device`](/advanced/device-backends#the-graph-settings-object), else on the CPU; `"device": "auto"` takes the best accelerator available. A body with no `seed` uses the published graph's `settings.seed`, and `"seed": null` runs unseeded. Two differences:
 
 - `record_outputs` is **accepted and ignored** -- published runs are recorded in SQLite (below), never in the editor's inspector store.
 - `timeout_s` covers TOTAL request time INCLUDING queue wait: invokes of one app run one-at-a-time (per-slug lock), and a call that spends its budget waiting behind another invoke fails with the `timeout` envelope noting it expired while queued. Different slugs run in parallel.

@@ -26,9 +26,9 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 - **可用值：**`cpu`、`auto`、`cuda`、`cuda:N`、`mps` 或 `mps:N`，不分大小寫。空字串代表未指定。Mac 只有一個 MPS 裝置，所以 `mps:N` 會在 `mps` 上執行。
 - **只在有指定時寫入。** 存檔只在圖有指定裝置或種子時寫入 `settings`，而且只寫有設定的鍵（`settings.seed` 為 0 也算），所以兩者都沒有的圖會與原本逐位元組相同。在[專案目錄](/usage/project-directories)中，它寫在受 git 追蹤的 `graphs/<name>.graph.json`，不在 layout 檔。
 - **其他值一律拒絕：**`POST /api/graph/save`、`/api/graph/validate` 與 `/api/graph/export` 回傳 `422`；`POST /api/runs` 與 `POST /api/sweeps` 回傳 `400`（因此 `cdui run` 會回報提交失敗）；畫布執行這張圖時會收到 `execution_error` 訊框；`cdui project validate` 會回報 `invalid_settings`。離線執行器（`backend/run_graph.py`）、[`POST /api/graph/run/{name}`](/usage/graph-as-a-function) 與 [`POST /api/apps/{slug}/invoke`](/usage/publish) 只在呼叫沒有指定裝置（`--device` 或 body 的 `device`）時讀取 `settings.device`；此時會忽略無效值、記錄警告，並在 CPU 上執行。
-- **種子：**`settings.seed` 是 0 到 4294967295 的整數；其他值會讓存檔、驗證與匯出回傳 `422`。它就是分頁的**亂數種子**（設定 → 訓練行為）：存檔會寫入它，開啟與匯入會用它設定分頁的種子，匯出 Python 也會把它寫進腳本。沒有 `settings.seed` 的檔案（例如 2.8.9 之前存的圖）不會改動分頁原本的種子。無介面執行不會讀取它：`cdui run` 請加上 `--seed`。
+- **種子：**`settings.seed` 是 0 到 4294967295 的整數；其他值會讓存檔、驗證與匯出回傳 `422`。它就是分頁的**亂數種子**（設定 → 訓練行為）：存檔會寫入它，開啟與匯入會用它設定分頁的種子，匯出 Python 也會把它寫進腳本。沒有 `settings.seed` 的檔案（例如 2.8.9 之前存的圖）不會改動分頁原本的種子。無介面執行讀取它的方式與 `settings.device` 相同：`backend/run_graph.py`、`cdui run`、`POST /api/runs`、[`POST /api/graph/run/{name}`](/usage/graph-as-a-function) 與 [`POST /api/apps/{slug}/invoke`](/usage/publish) 在呼叫沒有指定種子時使用圖檔的種子。明確指定的 `--seed N` 或 `"seed": N` 優先；`--no-seed` 或 `"seed": null` 會讓有種子的圖以不設種子的方式執行。sweep 的 variant 例外：它們的種子由 sweep 管理（`sweep_spec.seed` 搭配 `seed_variants`），因此不讀 `settings.seed`。`POST /api/runs` 與 `POST /api/sweeps` 會以 `400` 拒絕無效的 `settings.seed`；離線執行器與兩個函式路由則記錄警告後忽略它，不設種子執行。
 
-不帶 `--device` 的 `cdui run` 會把圖檔的裝置顯示為 `<device> (graph)`。
+不帶 `--device` 的 `cdui run` 會把圖檔的裝置顯示為 `<device> (graph)`；不帶 `--seed` 時，會把圖檔的種子顯示為 `<seed> (graph)`，`run_graph.py` 的日誌也一樣。
 
 ### 裝置對齊由引擎保證 {/* #device-alignment-is-guaranteed-by-the-engine */}
 

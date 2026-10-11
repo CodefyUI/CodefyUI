@@ -26,7 +26,11 @@ from fastapi.responses import JSONResponse
 
 from ..core import api_contract
 from ..core.api_contract import InputCoercionError, OutputSerializationError
-from ..core.device_utils import graph_settings_device, resolve_device
+from ..core.device_utils import (
+    graph_settings_device,
+    graph_settings_seed,
+    resolve_device,
+)
 from ..core.execution_context import ExecutionContext
 from ..core.graph_engine import (
     GraphValidationError,
@@ -36,6 +40,7 @@ from ..core.graph_engine import (
 )
 from ..core.node_registry import registry
 from ..core.run_service import run_exclusion
+from ..core.seeding import MAX_SEED, seed_rngs
 from ..schemas import (
     ContractInputSchema,
     ContractOutputSchema,
@@ -234,6 +239,12 @@ async def get_contract(name: str):
     )
 
 
+#: ``_RunRequest.seed`` when the body has no ``seed`` key: the route then
+#: takes the graph's ``settings.seed``. Distinct from ``None``, which is a
+#: body asking for an unseeded run.
+SEED_UNSET: Any = object()
+
+
 @dataclass
 class _RunRequest:
     """Validated fields of the OPTIONAL /run body (absent body == {})."""
@@ -242,13 +253,28 @@ class _RunRequest:
     timeout_s: float = 300.0
     device: str | None = None
     record_outputs: bool = False
+    seed: Any = SEED_UNSET
+
+
+def with_graph_settings(run_req: _RunRequest, graph: Any) -> _RunRequest:
+    """Fill the device and seed the body left out from the graph's settings.
+
+    An omitted device means ``settings.device``; a missing or invalid one
+    stays None and resolves to cpu. An omitted seed means ``settings.seed``
+    (#704), and an explicit ``"seed": null`` stays an unseeded run.
+    """
+    if run_req.device is None:
+        run_req = replace(run_req, device=graph_settings_device(graph))
+    if run_req.seed is SEED_UNSET:
+        run_req = replace(run_req, seed=graph_settings_seed(graph))
+    return run_req
 
 
 def _parse_run_body(raw: bytes) -> tuple[_RunRequest, list[dict[str, str]]]:
     """Manual in-handler body parse.
 
     Malformed JSON, a non-dict body, a non-dict ``inputs``, or wrong-typed
-    ``timeout_s``/``device``/``record_outputs`` all yield enveloped 422
+    ``timeout_s``/``device``/``seed``/``record_outputs`` all yield enveloped 422
     field errors — FastAPI's ``RequestValidationError`` can never bypass
     the envelope. The Content-Type header is not used for dispatch.
     Unknown body fields are ignored (forward compatibility).
@@ -301,6 +327,25 @@ def _parse_run_body(raw: bytes) -> tuple[_RunRequest, list[dict[str, str]]]:
         })
     else:
         req.device = device
+
+    if "seed" in body:
+        seed = body["seed"]
+        if seed is not None and (isinstance(seed, bool)
+                                 or not isinstance(seed, int)):
+            errors.append({
+                "field": "seed",
+                "reason": (
+                    f"expected integer or null, got "
+                    f"{api_contract.json_type_name(seed)}"
+                ),
+            })
+        elif seed is not None and not 0 <= seed <= MAX_SEED:
+            errors.append({
+                "field": "seed",
+                "reason": f"must be between 0 and {MAX_SEED}, got {seed}",
+            })
+        else:
+            req.seed = seed
 
     record_outputs = body.get("record_outputs", False)
     if not isinstance(record_outputs, bool):
@@ -440,8 +485,12 @@ async def execute_contract_run(
     #    rebuilds modules per call, so concurrent requests share no mutable
     #    state; the app-global stores are simply not used.
     device = resolve_device(run_req.device)
+    # The caller fills an omitted seed from the graph (with_graph_settings);
+    # one still unset here is an unseeded run.
+    seed = None if run_req.seed is SEED_UNSET else run_req.seed
     ctx = ExecutionContext(
         device=device,
+        seed=seed,
         weights_persistent=False,
         node_state_store=None,
         graph_id=f"api:{graph_label}",
@@ -486,14 +535,19 @@ async def execute_contract_run(
         the exact pre-gate signature. This request is unseeded, so it takes
         the SHARED hold: invokes still overlap each other and the ordinary
         parallel runs; only a seeded run makes them wait, and only for as
-        long as it runs.
+        long as it runs. A seeded request (#704) takes the EXCLUSIVE hold,
+        the rule ``RunService`` applies to its own seeded runs.
 
         Taken INSIDE the task rather than around the await below, so the
         hold covers the execution itself — a timeout returns 500 while the
         nodes are still unwinding, and those nodes must not be running
         outside the gate.
         """
-        async with run_exclusion().shared():
+        async with run_exclusion().for_seed(seed):
+            if seed is not None:
+                # The run-level baseline, as RunService.apply_seed sets it;
+                # the engine then seeds each node from (seed, node id).
+                seed_rngs(seed)
             return await execute_graph(
                 patched_nodes,
                 edges,
@@ -649,11 +703,9 @@ async def run_graph_as_function(name: str, request: Request):
                               code="invalid_input",
                               message="invalid request body",
                               details=field_errors)
-    if run_req.device is None:
-        # An omitted device means the graph's own assignment; a missing or
-        # invalid one stays None and resolves to cpu. ``auto`` resolves to
-        # the best accelerator in execute_contract_run.
-        run_req = replace(run_req, device=graph_settings_device(graph_data))
+    # An omitted device or seed means the graph's own; ``auto`` resolves
+    # to the best accelerator in execute_contract_run.
+    run_req = with_graph_settings(run_req, graph_data)
 
     # Steps 5-12 live in execute_contract_run. The output_store getattr is
     # hoisted HERE (editor-only surface); the invoke route passes None.

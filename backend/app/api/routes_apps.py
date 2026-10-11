@@ -40,7 +40,6 @@ from ..core.api_keys import (
     require_session_token,
 )
 from ..core.db import Database, utc_now_iso
-from ..core.device_utils import graph_settings_device
 from ..core.graph_engine import find_entry_points, validate_graph
 from ..core.secret_params import find_secret_violations
 from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
@@ -50,6 +49,7 @@ from .routes_graph_run import (
     build_envelope,
     error_response,
     execute_contract_run,
+    with_graph_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -716,11 +716,9 @@ async def invoke_app(
                 0.001, run_req.timeout_s - (time.monotonic() - started),
             ),
         )
-        if exec_req.device is None:
-            # An omitted device means the snapshot's own assignment
-            # (settings.device), else cpu.
-            exec_req = replace(
-                exec_req, device=graph_settings_device(snapshot))
+        # An omitted device or seed means the snapshot's own
+        # (settings.device, settings.seed); else cpu and unseeded.
+        exec_req = with_graph_settings(exec_req, snapshot)
         # output_store=None: Decision H1 — isolation is structural, not a
         # flag. The editor inspector store can never contain this data.
         from ..core.graph_engine import build_preset_fallback

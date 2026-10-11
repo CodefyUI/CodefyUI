@@ -109,7 +109,8 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
 | `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
-| `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#reproducible-runs-seed)**。 |
+| `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。省略時使用圖檔的 `settings.seed`（若有）。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#reproducible-runs-seed)**。 |
+| `--no-seed` | 即使圖檔有 `settings.seed`，也不設種子執行（送出 `"seed": null`） |
 | `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |
 | `--record-outputs` | 保留節點輸出供事後檢視 |
 | `--wait` | 串流進度直到 run 結束（**預設**） |

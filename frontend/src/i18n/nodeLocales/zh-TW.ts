@@ -373,7 +373,8 @@ const zhTW: NodeTranslations = {
     description: '依 ID 建立環境並 reset',
     details:
       '封裝 Gymnasium，env_name 可填 gymnasium.make 接受的任何 ID，例如 CartPole-v1，' +
-      '而且必須先安裝該套件。不想多裝套件時，改用 GridWorldEnv。reset 同時輸出第一個觀測。',
+      '而且必須先安裝該套件。不想多裝套件時，改用 GridWorldEnv。reset 同時輸出第一個觀測。' +
+      '設了種子的執行會用執行種子 reset 環境並設定動作空間的種子，所以第一個觀測每次相同；沒設種子時每次不同。',
     params: {
       env_name: 'Gymnasium 環境 ID',
     },
@@ -420,7 +421,9 @@ const zhTW: NodeTranslations = {
     details:
       '動作是從 softmax(logits / temperature) 抽樣而來，所以同一顆策略跑兩次不會一樣；seed 固定整批。' +
       '另外會輸出 logits、抽樣當下記錄的 log_probs（PPO 的 log_probs_old）、每回合的回報、長度與 ' +
-      'episode_ids，以及文字報告和第一個回合的逐步表格。env 只需要提供 reset() 與 step(action)。',
+      'episode_ids，以及文字報告和第一個回合的逐步表格。env 只需要提供 reset() 與 step(action)：' +
+      'GridWorldEnv 的，或 EnvWrapper 產生的 Gymnasium 環境（觀測會轉成浮點張量，terminated 或 ' +
+      'truncated 時回合結束）。',
     params: {
       episodes: '要走幾個回合。設成 1 看單一軌跡；設成 K 就是 GRPO 的一組樣本。',
       temperature: '抽樣溫度。低 = 偏向利用（每次都挑機率最高的動作）、高 = 偏向探索。',

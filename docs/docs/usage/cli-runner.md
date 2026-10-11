@@ -27,7 +27,8 @@ The runner discovers all nodes via the registry, validates the DAG, executes it 
 | `--validate-only` | Validate the graph (DAG, types, ports, Start node) without executing it. |
 | `--verbose`, `-v` | `DEBUG`-level logging, plus the full traceback when a node fails at runtime. There is no CLI switch for the Inspector's step traces. |
 | `--device` | `cpu` / `cuda` / `cuda:N` / `mps` / `auto`. Omitted: the graph file's [`settings.device`](/advanced/device-backends#the-graph-settings-object), else `cpu`. `auto` takes the best accelerator present. |
-| `--seed N` | Seed every node from `N` so the run is reproducible. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
+| `--seed N` | Seed every node from `N` so the run is reproducible. Omitted: the graph file's [`settings.seed`](/advanced/device-backends#the-graph-settings-object), if any. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
+| `--no-seed` | Run unseeded even when the graph file has a `settings.seed`. |
 | `--deterministic` | Ask PyTorch for deterministic kernels (`warn_only`, so an op with no deterministic implementation warns rather than failing the run). |
 
 ```bash

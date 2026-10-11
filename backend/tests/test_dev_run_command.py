@@ -186,6 +186,37 @@ def test_the_device_line_reads_the_graph_file(graph_file, tmp_path):
     assert dev._run_display_device(args, body["graph"]) == "cpu"
 
 
+def test_no_seed_sends_an_explicit_null_the_server_accepts(graph_file):
+    """#704: an omitted seed is the graph file's settings.seed, so asking
+    for an unseeded run has to say so on the wire."""
+    args = dev._parse_run_args([str(graph_file), "--no-seed"])
+    body = dev._run_submit_body(args)
+    assert "seed" in body["options"] and body["options"]["seed"] is None
+    assert normalize_options(body["options"])["seed"] is None
+
+
+def test_seed_and_no_seed_are_exclusive(graph_file):
+    with pytest.raises(SystemExit):
+        dev._parse_run_args([str(graph_file), "--seed", "1", "--no-seed"])
+
+
+def test_the_seed_line_reads_the_graph_file(graph_file, tmp_path):
+    """The printed seed is the flag, else the file's seed, else none."""
+    graph = json.loads(graph_file.read_text(encoding="utf-8"))
+    assert dev._run_display_seed(
+        dev._parse_run_args([str(graph_file)]), graph) == "none"
+    seeded = {**graph, "settings": {"seed": 0}}
+    pinned = tmp_path / "seeded.json"
+    pinned.write_text(json.dumps(seeded), encoding="utf-8")
+    args = dev._parse_run_args([str(pinned)])
+    assert "seed" not in dev._run_submit_body(args)["options"]
+    assert dev._run_display_seed(args, seeded) == "0 (graph)"
+    args = dev._parse_run_args([str(pinned), "--seed", "3"])
+    assert dev._run_display_seed(args, seeded) == "3"
+    args = dev._parse_run_args([str(pinned), "--no-seed"])
+    assert dev._run_display_seed(args, seeded) == "none"
+
+
 def test_deterministic_flag_reaches_the_options(graph_file):
     """core#134: the other half of a reproducible run."""
     args = dev._parse_run_args([str(graph_file), "--seed", "7",
