@@ -24,6 +24,77 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A CausalLMModel smaller than its tokenizer stops with an error naming both
+  sizes** ([#681]). TrainingLoop, PerplexityEvaluate and TextGenerate compare
+  the model's `vocab_size` with the tokenizer's before the first batch, for
+  example "the tokenizer emits ids up to 50256 but CausalLMModel.vocab_size is
+  1000". On MPS the mismatch used to train without an error and report a
+  perplexity the data cannot reach; on CPU it failed with a bare "index out of
+  range in self". The model also checks its first batch of ids, for datasets
+  that do not record a tokenizer.
+- **Edu-SelfAttention and Edu-MultiHeadAttention with `causal` on run on MPS
+  and CUDA** ([#683]). The causal mask is built on the scores' device, and an
+  external `mask` input, in these two nodes and in Edu-CrossAttention, is
+  moved there. The Multi-Head-Causal example now runs with the device set to
+  mps.
+- **MultiHeadAttention's step-through trace shows the layer's own
+  computation** ([#686]). The steps now project Q, K and V with the layer's
+  weights, split them into heads, scale by the head width, and apply the
+  output projection, so the averaged weights and the final output in the
+  trace equal the node's `weights` and `output`. The old steps attended over
+  the raw inputs with one head.
+- **The layer editor's TransformerDecoder layer is causal** ([#688]). Each
+  position now reads only itself and earlier positions, in self-attention and
+  in the cross-attention over its own input, so a next-token language model
+  built from it can no longer see the token it predicts. A `causal: false`
+  entry in the layer spec keeps the old full attention.
+- **TransformerEncoder and TransformerDecoder nodes give the same output for
+  the same input** ([#690]). Their layers ran with dropout on every run,
+  although nothing trains these nodes; they now run in eval mode, in the app
+  and in exported Python.
+- **Right-clicking a box selection opens the node menu** ([#679]). After a
+  Shift+drag selection, a right-click on the selected nodes showed no menu, so
+  **Collapse to subgraph** could not be reached. The menu now opens for the
+  node under the pointer, keeps the whole selection, and collapses it as the
+  menu of a Shift+click selection does.
+- **A wire the target port cannot take says so** ([#685]). While dragging, the
+  line turns red and dashed over a port of an incompatible type, and the
+  active wire colour over one it can feed. Releasing it there shows a short
+  message naming both types, such as "TENSOR cannot connect to DATASET". A
+  release on the empty canvas stays silent.
+- **The selected node stays in view when the side panels open** ([#687]).
+  Node Config and the Inspector take their width from the canvas, and a node
+  on the right half of it ended up past the new edge. The canvas now pans by
+  the least amount that brings the selected node back inside. Fit view leaves
+  the minimap's column free, the minimap is hidden on a canvas narrower than
+  600 px or shorter than 400 px, and a window narrower than 640 px starts with
+  the sidebar collapsed unless a choice was saved.
+- **KLDivergence averages the per-sample KL for every input shape** ([#707]).
+  A 1-D `[V]` input was divided by V under the default `batchmean`, and `mean`
+  divided by batch size times V (with a torch warning). A 1-D input is now one
+  sample, leading axes are flattened into samples, and `batchmean` and `mean`
+  both give the mean of the per-sample KL. `sum` and `none` are unchanged.
+- **Edu-LinearRegression applies the same ridge penalty in both modes**
+  ([#708]). `gradient_descent` penalised the weights n times more strongly
+  than `closed_form` for the same `regularization`. Both now minimise
+  ‖Xw + b − y‖² + λ‖w‖², the objective of sklearn's `Ridge(alpha=λ)`, and the
+  node's details give that formula.
+- **CSVReader stops on a missing target value and keeps integer labels
+  integral** ([#709]). An empty target cell became a `'nan'` class and turned
+  every other label into `'0.0'`, `'1.0'`. The run now stops and names the data
+  rows; the new `drop_missing_target` param drops them and logs which ones.
+  Integral labels read `'0'`, `'1'`, and NaN in a feature column logs a
+  warning naming the column.
+- **The Iris examples fit Normalize on the training split only** ([#713]).
+  Tabular Iris feature pipeline, Classify Iris with sklearn KNN and the
+  foundations pack's KNN from Scratch on Iris normalised the whole table before
+  splitting it, so the test rows shaped the training data. Normalize has a new
+  optional `stats` input: wire one Normalize's `stats` into another and it
+  applies those statistics instead of fitting. The examples now split first,
+  fit on `x_train` and reuse the statistics on `x_test`; the tabular example
+  prints the test split's column means. The `stats` output is typed ANY to
+  match the dict it carries; LIST let it connect to list inputs that then
+  failed at run time.
 - **A skip connection taken before an activation keeps its value** ([#694]).
   SequentialModel built ReLU, LeakyReLU, ELU, SiLU, Mish, SELU and Hardswish
   to run in place, so when one tensor fed both an activation and another
@@ -5638,6 +5709,21 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#679]: https://github.com/CodefyUI/CodefyUI/issues/679
+[#681]: https://github.com/CodefyUI/CodefyUI/issues/681
+[#683]: https://github.com/CodefyUI/CodefyUI/issues/683
+[#685]: https://github.com/CodefyUI/CodefyUI/issues/685
+[#686]: https://github.com/CodefyUI/CodefyUI/issues/686
+[#687]: https://github.com/CodefyUI/CodefyUI/issues/687
+[#688]: https://github.com/CodefyUI/CodefyUI/issues/688
+[#690]: https://github.com/CodefyUI/CodefyUI/issues/690
+[#694]: https://github.com/CodefyUI/CodefyUI/issues/694
+[#696]: https://github.com/CodefyUI/CodefyUI/issues/696
+[#697]: https://github.com/CodefyUI/CodefyUI/issues/697
+[#707]: https://github.com/CodefyUI/CodefyUI/issues/707
+[#708]: https://github.com/CodefyUI/CodefyUI/issues/708
+[#709]: https://github.com/CodefyUI/CodefyUI/issues/709
+[#713]: https://github.com/CodefyUI/CodefyUI/issues/713
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
 [#620]: https://github.com/CodefyUI/CodefyUI/issues/620
 [#618]: https://github.com/CodefyUI/CodefyUI/issues/618
@@ -5660,6 +5746,3 @@ Release candidates before 1.0.0 are on the
 [#430]: https://github.com/CodefyUI/CodefyUI/issues/430
 [#642]: https://github.com/CodefyUI/CodefyUI/issues/642
 [#652]: https://github.com/CodefyUI/CodefyUI/issues/652
-[#694]: https://github.com/CodefyUI/CodefyUI/issues/694
-[#696]: https://github.com/CodefyUI/CodefyUI/issues/696
-[#697]: https://github.com/CodefyUI/CodefyUI/issues/697

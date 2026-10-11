@@ -101,3 +101,35 @@ def test_missing_input_raises():
             {"x_train": torch.zeros(5, 2)},
             {"method": "closed_form", "lr": 0.01, "epochs": 100, "regularization": 0.0},
         )
+
+
+# ── #708: one ridge objective in both modes, the one sklearn Ridge uses ──
+
+
+def _ridge_problem():
+    torch.manual_seed(0)
+    x = torch.randn(60, 3)
+    y = x @ torch.tensor([1.5, -2.0, 0.3]) + 0.7 + 0.1 * torch.randn(60)
+    return x, y
+
+
+@pytest.mark.parametrize("method,extra", [
+    ("closed_form", {}),
+    ("gradient_descent", {"lr": 0.05, "epochs": 5000}),
+])
+def test_both_modes_match_sklearn_ridge_with_alpha_lambda(method, extra):
+    from sklearn.linear_model import Ridge
+
+    x, y = _ridge_problem()
+    lam = 10.0
+    ref = Ridge(alpha=lam).fit(x.double().numpy(), y.double().numpy())
+    res = _run(x, y, x, method=method, regularization=lam, **extra)
+    assert res["weights"].tolist() == pytest.approx(ref.coef_.tolist(), abs=2e-3)
+    assert res["bias"].item() == pytest.approx(float(ref.intercept_), abs=2e-3)
+
+
+def test_gradient_descent_and_closed_form_agree_under_regularization():
+    x, y = _ridge_problem()
+    cf = _run(x, y, x, method="closed_form", regularization=10.0)
+    gd = _run(x, y, x, method="gradient_descent", lr=0.05, epochs=5000, regularization=10.0)
+    assert torch.allclose(gd["weights"], cf["weights"], atol=2e-3)

@@ -1293,6 +1293,8 @@ const en = {
 
   // Edge data tooltip
   'edge.viewStats': 'View stats',
+  // A data wire released on a port of a type it cannot feed (#685)
+  'canvas.wireRefused': '{from} cannot connect to {to}',
 
   // Shared plots
   'plot.noData': 'No data',

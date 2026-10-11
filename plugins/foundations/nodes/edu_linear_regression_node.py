@@ -10,9 +10,11 @@ Two solver paths so the textbook can show both:
   the same machinery used by every neural network in the rest of the
   curriculum.
 
-The ``regularization`` param applies L2 (ridge) penalty in both modes:
-``L = ||Xw + b − y||² + λ||w||²``. Gradient descent operates on the
-augmented loss; closed form solves the regularised normal equation.
+The ``regularization`` param applies the same L2 (ridge) penalty in both
+modes: both minimise ``L = ||Xw + b − y||² + λ||w||²``, the objective of
+sklearn's ``Ridge(alpha=λ)``. Closed form solves the regularised normal
+equation; gradient descent steps on ``L / n``, which has the same minimiser
+and keeps the step size independent of the row count.
 
 Bias is handled by augmenting X with a column of ones internally — the
 external ``weights`` output stays in feature dimensions and the bias is
@@ -43,8 +45,10 @@ class EduLinearRegressionNode(BaseNode):
         "`closed_form` solves the normal equation $w = (X^T X + \\lambda I)^{-1} "
         "X^T y$, falling back to a least-squares solve when the matrix is "
         "singular; `gradient_descent` runs `epochs` steps at `lr`. "
-        "`regularization` adds an L2 (ridge) penalty on the weights only, in both "
-        "modes."
+        "Both modes minimise $\\lVert Xw + b - y \\rVert^2 + \\lambda \\lVert w "
+        "\\rVert^2$ (sklearn `Ridge(alpha=λ)`), with λ = `regularization` on the "
+        "weights only; gradient descent steps on that loss divided by the row "
+        "count, which has the same minimiser."
     )
 
     @classmethod
@@ -89,7 +93,7 @@ class EduLinearRegressionNode(BaseNode):
                 name="regularization",
                 param_type=ParamType.FLOAT,
                 default=0.0,
-                description="L2 (ridge) regularisation strength λ.",
+                description="L2 (ridge) strength λ in ‖Xw + b − y‖² + λ‖w‖², as sklearn Ridge(alpha=λ).",
             ),
         ]
 
@@ -152,7 +156,9 @@ class EduLinearRegressionNode(BaseNode):
             for _ in range(epochs):
                 preds = x_train @ weights + bias
                 err = preds - y_train
-                grad_w = (2 / n) * x_train.T @ err + 2 * lam * weights
+                # Gradient of (‖Xw + b − y‖² + λ‖w‖²) / n: the closed-form
+                # objective scaled by 1/n, so both modes share one minimiser.
+                grad_w = (2 / n) * (x_train.T @ err + lam * weights)
                 grad_b = (2 / n) * err.sum()
                 weights = weights - lr * grad_w
                 bias = bias - lr * grad_b

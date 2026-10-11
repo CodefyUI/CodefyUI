@@ -1678,6 +1678,9 @@ class TrainingLoopNode(BaseNode):
         val_dataloader = inputs.get("val_dataloader")
         lr_scheduler = inputs.get("lr_scheduler")
         start_epoch = _coerce_start_epoch(inputs.get("start_epoch"))
+        from ..llm.causal_lm_model_node import check_vocab_fits, tokenizer_vocab_size_of
+        for loader in (dataloader, val_dataloader):
+            check_vocab_fits(model, tokenizer_vocab_size_of(loader), node="TrainingLoop")
 
         epochs = params.get("epochs", 5)
         device = resolve_node_device(params.get("device"), context)

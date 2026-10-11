@@ -294,6 +294,9 @@ class PerplexityEvaluateNode(BaseNode):
                 "LMTokenizedDataset into that input, packed from the split you "
                 "want to measure on.")
 
+        from .causal_lm_model_node import check_vocab_fits, tokenizer_vocab_size_of
+        check_vocab_fits(model, tokenizer_vocab_size_of(dataset), node="PerplexityEvaluate")
+
         batch_size = max(1, int(params.get("batch_size", 8) or 8))
         # ``or 0`` is safe here because 0 IS the disabled value.
         max_batches = max(0, int(params.get("max_batches", 0) or 0))
