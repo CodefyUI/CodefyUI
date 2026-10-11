@@ -52,6 +52,23 @@ received — each links to the release it was published as.
   the same input** ([#690]). Their layers ran with dropout on every run,
   although nothing trains these nodes; they now run in eval mode, in the app
   and in exported Python.
+- **Right-clicking a box selection opens the node menu** ([#679]). After a
+  Shift+drag selection, a right-click on the selected nodes showed no menu, so
+  **Collapse to subgraph** could not be reached. The menu now opens for the
+  node under the pointer, keeps the whole selection, and collapses it as the
+  menu of a Shift+click selection does.
+- **A wire the target port cannot take says so** ([#685]). While dragging, the
+  line turns red and dashed over a port of an incompatible type, and the
+  active wire colour over one it can feed. Releasing it there shows a short
+  message naming both types, such as "TENSOR cannot connect to DATASET". A
+  release on the empty canvas stays silent.
+- **The selected node stays in view when the side panels open** ([#687]).
+  Node Config and the Inspector take their width from the canvas, and a node
+  on the right half of it ended up past the new edge. The canvas now pans by
+  the least amount that brings the selected node back inside. Fit view leaves
+  the minimap's column free, the minimap is hidden on a canvas narrower than
+  600 px or shorter than 400 px, and a window narrower than 640 px starts with
+  the sidebar collapsed unless a choice was saved.
 
 ## [2.9.0] — 2026-10-11
 
@@ -5641,9 +5658,12 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#679]: https://github.com/CodefyUI/CodefyUI/issues/679
 [#681]: https://github.com/CodefyUI/CodefyUI/issues/681
 [#683]: https://github.com/CodefyUI/CodefyUI/issues/683
+[#685]: https://github.com/CodefyUI/CodefyUI/issues/685
 [#686]: https://github.com/CodefyUI/CodefyUI/issues/686
+[#687]: https://github.com/CodefyUI/CodefyUI/issues/687
 [#688]: https://github.com/CodefyUI/CodefyUI/issues/688
 [#690]: https://github.com/CodefyUI/CodefyUI/issues/690
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
