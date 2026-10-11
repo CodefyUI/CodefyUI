@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { ExecutionStatus } from '../types';
-import { flushSubgraphEditing, useTabStore, type TabState } from '../store/tabStore';
+import {
+  flushSubgraphEditing,
+  useTabStore,
+  type RunQueueInfo,
+  type TabState,
+} from '../store/tabStore';
 import {
   queueTabInnerNodeProgress,
   queueTabInnerNodeStatus,
@@ -87,6 +92,31 @@ function sayWhyRunEnded(tabId: string, message: string): void {
 const reattached = new Set<string>();
 
 /**
+ * How long a run may sit between its `attached` and its `execution_start`
+ * before the tab asks the server whether it is waiting (#680), and how often
+ * it asks again while it is. A canvas run's ack says `running` even while it
+ * waits on the seed lock, so its row's status is the only way to tell.
+ */
+export const QUEUE_CHECK_DELAY_MS = 400;
+export const QUEUE_POLL_MS = 3000;
+
+function sameQueue(a: RunQueueInfo | null | undefined, b: RunQueueInfo): boolean {
+  if (!a || a.reason !== b.reason) return false;
+  if (a.reason === 'seed' || b.reason === 'seed') return true;
+  return a.device === b.device && a.position === b.position;
+}
+
+/** The log line for a run that has to wait (#680). */
+function queuedLogMessage(queue: RunQueueInfo): string {
+  const { t } = useI18n.getState();
+  if (queue.reason === 'seed') return t('runLog.queuedSeed');
+  const device = queue.device ?? '?';
+  return queue.position === null
+    ? t('runLog.queuedDeviceNoPosition', { device })
+    : t('runLog.queuedDevice', { device, position: queue.position });
+}
+
+/**
  * "Persist weights between runs" as each tab's run in flight was sent with
  * it, for the note that run's completion logs. Read once there and dropped.
  */
@@ -166,6 +196,12 @@ export function useGraphExecution() {
   // contract is satisfied without breaking that persistence.
   useEffect(() => {
     const attached = new Map<string, WsHandlerEntry[]>();
+    // The pending "is this run waiting?" check per tab (#680).
+    const queueTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const cancelQueueCheck = (tabId: string) => {
+      clearTimeout(queueTimers.get(tabId));
+      queueTimers.delete(tabId);
+    };
 
     const detachTab = (tabId: string) => {
       const entries = attached.get(tabId);
@@ -173,6 +209,7 @@ export function useGraphExecution() {
       /* v8 ignore start */
       if (!entries) return;
       /* v8 ignore stop */
+      cancelQueueCheck(tabId);
       for (const { ws, type, handler } of entries) ws.off(type, handler);
       attached.delete(tabId);
     };
@@ -201,6 +238,57 @@ export function useGraphExecution() {
       // terminal `attached` and the closing frame its replay ends with both
       // say so; the user hears it once.
       let reportedRunId: string | null = null;
+
+      // #680: the run this tab's socket was last attached to, the runs that
+      // have started, and the run whose wait the log has already reported.
+      let attachedRunId: string | null = null;
+      const startedRuns = new Set<string>();
+      let queuedLoggedRunId: string | null = null;
+
+      // Ask the run's row whether it is still waiting, and show why. The
+      // row says `queued` until the run begins, for a run in its device's
+      // FIFO and for a canvas run waiting on the seed lock alike; `lane`
+      // tells the two apart. Repeats while the run waits, so the position
+      // counts down as the runs ahead finish.
+      // Still waiting, as far as this tab has heard: attached to the run,
+      // not started, not ended, and the tab still running.
+      const mayBeWaiting = (runId: string) =>
+        attachedRunId === runId
+        && !startedRuns.has(runId)
+        && !closedRuns.has(runId)
+        && useTabStore.getState().tabs.find((t) => t.id === tabId)?.status === 'running';
+      const checkQueue = (runId: string, delay: number) => {
+        cancelQueueCheck(tabId);
+        queueTimers.set(tabId, setTimeout(() => {
+          queueTimers.delete(tabId);
+          if (!mayBeWaiting(runId)) return;
+          void (async () => {
+            let run = null;
+            try {
+              run = await getRun(runId);
+            } catch {
+              return; // server unreachable: the run's own frames will say
+            }
+            if (!run || run.status !== 'queued' || !mayBeWaiting(runId)) return;
+            const store = useTabStore.getState();
+            const tab = store.tabs.find((t) => t.id === tabId)!;
+            const queue: RunQueueInfo = run.options?.lane === 'interactive'
+              ? { reason: 'seed' }
+              : {
+                  reason: 'device',
+                  device: run.queue_key
+                    ?? (typeof run.options?.device === 'string' ? run.options.device : null),
+                  position: run.queue_position ?? null,
+                };
+            if (!sameQueue(tab.runQueue, queue)) store.setTabRunQueue(tabId, queue);
+            if (queuedLoggedRunId !== runId) {
+              queuedLoggedRunId = runId;
+              store.addTabLog(tabId, { message: queuedLogMessage(queue), type: 'info' });
+            }
+            checkQueue(runId, QUEUE_POLL_MS);
+          })();
+        }, delay));
+      };
 
       // A card a run left running never gets a frame of its own: one the dead
       // process was running, or a block's card whose other inner nodes a Stop
@@ -517,6 +605,9 @@ export function useGraphExecution() {
         // Replayed history of a run that has already ended (#552).
         if (typeof data.run_id === 'string' && closedRuns.has(data.run_id)) return;
         const store = useTabStore.getState();
+        if (typeof data.run_id === 'string') startedRuns.add(data.run_id);
+        cancelQueueCheck(tabId);
+        // Also clears the queued state (#680).
         store.setTabStatus(tabId, 'running');
         if (typeof data.run_id === 'string') {
           store.setLastRunId(tabId, data.run_id);
@@ -558,6 +649,14 @@ export function useGraphExecution() {
         const data = raw as { run_id?: unknown; status?: unknown };
         if (data.status === 'running' || data.status === 'queued') {
           useTabStore.getState().setTabStatus(tabId, 'running');
+          // A run that has not started yet may be waiting (#680). An ack
+          // that says `queued` is asked about at once; `running` is what a
+          // canvas run's ack says even while it waits on the seed lock, so
+          // that one is asked about only if it has not started by then.
+          if (typeof data.run_id === 'string' && !startedRuns.has(data.run_id)) {
+            attachedRunId = data.run_id;
+            checkQueue(data.run_id, data.status === 'queued' ? 0 : QUEUE_CHECK_DELAY_MS);
+          }
           return;
         }
         if (!isFinishedRunStatus(data.status)) return;

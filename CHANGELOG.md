@@ -141,6 +141,33 @@ received — each links to the release it was published as.
   download and delete routes compared the extension case-sensitively, so the
   file was left in the models folder with no way to reach it.
 
+### Added
+
+- **File menu: Open... and Import...** ([#689]). **Open...** shows the Graphs
+  panel with the saved graphs, opening the sidebar if it is collapsed.
+  **Import...** is the Graphs panel's Import button: it takes a graph (.json)
+  or a workspace (.cduiworkspace) and reports "Import failed" for a file it
+  cannot read.
+
+### Fixed
+
+- **A run waiting to start says it is queued** ([#680]). A canvas run that
+  waits for another run to release the process-wide seed lock, or a run that
+  waits in its device's queue, showed Running with an empty log. The toolbar
+  now reads "Queued (#2 on cpu)" or "Queued (waiting for a seeded run)", the
+  log records why the run waits and then that it started, and Stop still
+  cancels it.
+- **A reload no longer leaves nodes marked Completed** ([#714]). After a
+  finished run and a reload, nodes kept their Completed or Failed badges while
+  the Inspector said nothing was captured. Nodes now restore idle, as the run
+  id already did, including the nodes inside blocks. A run still in flight at
+  the reload is re-attached and keeps its node states as before.
+- **The Template Gallery preselects the first card shown** ([#678]). With no
+  card chosen, the detail pane described the first example in the server's
+  order, often a card far down the list, and Open in new tab opened that one.
+  The pane, the highlighted card and Open in new tab now follow the first card
+  on screen, also after a search.
+
 ## [2.9.0] — 2026-10-11
 
 ### Added
@@ -5729,7 +5756,9 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#678]: https://github.com/CodefyUI/CodefyUI/issues/678
 [#679]: https://github.com/CodefyUI/CodefyUI/issues/679
+[#680]: https://github.com/CodefyUI/CodefyUI/issues/680
 [#681]: https://github.com/CodefyUI/CodefyUI/issues/681
 [#682]: https://github.com/CodefyUI/CodefyUI/issues/682
 [#683]: https://github.com/CodefyUI/CodefyUI/issues/683
@@ -5737,6 +5766,7 @@ Release candidates before 1.0.0 are on the
 [#686]: https://github.com/CodefyUI/CodefyUI/issues/686
 [#687]: https://github.com/CodefyUI/CodefyUI/issues/687
 [#688]: https://github.com/CodefyUI/CodefyUI/issues/688
+[#689]: https://github.com/CodefyUI/CodefyUI/issues/689
 [#690]: https://github.com/CodefyUI/CodefyUI/issues/690
 [#694]: https://github.com/CodefyUI/CodefyUI/issues/694
 [#696]: https://github.com/CodefyUI/CodefyUI/issues/696
@@ -5749,6 +5779,7 @@ Release candidates before 1.0.0 are on the
 [#709]: https://github.com/CodefyUI/CodefyUI/issues/709
 [#710]: https://github.com/CodefyUI/CodefyUI/issues/710
 [#713]: https://github.com/CodefyUI/CodefyUI/issues/713
+[#714]: https://github.com/CodefyUI/CodefyUI/issues/714
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
 [#620]: https://github.com/CodefyUI/CodefyUI/issues/620
 [#618]: https://github.com/CodefyUI/CodefyUI/issues/618
