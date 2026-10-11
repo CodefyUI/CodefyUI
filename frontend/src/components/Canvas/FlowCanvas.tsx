@@ -15,7 +15,9 @@ import {
   BackgroundVariant,
   getViewportForBounds,
   useReactFlow,
+  useStore,
   useStoreApi,
+  type FitViewOptions,
   type Node,
   type NodeTypes,
   type EdgeTypes,
@@ -64,6 +66,7 @@ import { triggerDropConnection } from './triggerDrop';
 import { withoutOccupants } from '../../utils/occupiedInput';
 import type { FinalConnectionState } from '@xyflow/react';
 import { useTabStore } from '../../store/tabStore';
+import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { isAnyModalOpen } from '../../store/modalState';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
@@ -121,6 +124,20 @@ const minimapNodeColor = (node: any) => {
   return CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility;
 };
 
+// The minimap is React Flow's default 200 x 150, in a corner panel 15 px from
+// the edges. A canvas narrower or shorter than these limits hides it: on a
+// phone, or beside both side panels, it covered most of what was left (#687).
+const MINIMAP_MIN_CANVAS_WIDTH = 600;
+const MINIMAP_MIN_CANVAS_HEIGHT = 400;
+// Fit view keeps React Flow's default 0.1 padding on three sides and leaves
+// the minimap's column free on the right, so no fitted node sits under it.
+const FIT_WITH_MINIMAP: FitViewOptions = {
+  padding: { top: 0.1, bottom: 0.1, left: 0.1, right: '230px' },
+};
+const FIT_WITHOUT_MINIMAP: FitViewOptions = { padding: 0.1 };
+// How far inside the canvas edge a selected node is brought (#687).
+const SELECTION_MARGIN = 24;
+
 /**
  * React Flow's `onBeforeDelete` for this canvas: no deletion while a modal is
  * open.
@@ -168,6 +185,33 @@ function duplicateEdgeOf(
         : (e.sourceHandle ?? '') === (connection.sourceHandle ?? '') &&
           (e.targetHandle ?? '') === (connection.targetHandle ?? '')),
   );
+}
+
+const outputsOf = (n: Node<NodeData>) => resolveDynamicOutputs(n.data.definition, n.data.params);
+const inputsOf = (n: Node<NodeData>) => resolveDynamicInputs(n.data.definition, n.data.params);
+
+/**
+ * The data types at both ends of a wire: the type the source output carries
+ * now and the type the target input takes. Null when either port cannot be
+ * found, which the validity check allows and the refusal message (#685) does
+ * not name.
+ */
+function wireTypes(
+  tab: { nodes: Node<NodeData>[]; edges: Edge[] },
+  connection: Pick<Edge, 'source' | 'target' | 'sourceHandle' | 'targetHandle'>,
+): { source: string; target: string } | null {
+  const { source, target, sourceHandle, targetHandle } = connection;
+  const sourceNode = tab.nodes.find((n) => n.id === source);
+  const targetNode = tab.nodes.find((n) => n.id === target);
+  if (!sourceNode?.data.definition || !targetNode?.data.definition) return null;
+  // Live port sets, not the palette template: a script node's ports and their
+  // types follow its params (core#131).
+  const sourceOutput = outputsOf(sourceNode).find((o) => o.name === sourceHandle);
+  const targetInput = inputsOf(targetNode).find((i) => i.name === targetHandle);
+  if (!sourceOutput || !targetInput) return null;
+  // A Switch output carries the type of the inputs it chooses between (#655).
+  const sourceType = liveOutputType(sourceNode, sourceHandle, tab.nodes, tab.edges, outputsOf);
+  return { source: sourceType, target: targetInput.data_type };
 }
 
 /*
@@ -672,30 +716,13 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       }
 
       if (sourceHandle && targetHandle) {
-        if (!sourceNode || !targetNode) return true;
-
-        const sourceDef = sourceNode.data.definition;
-        const targetDef = targetNode.data.definition;
-        if (!sourceDef || !targetDef) return true;
-
-        // Live port sets, not the palette template: a script node's ports
-        // and their types follow its params (core#131).
-        const sourceOutput = resolveDynamicOutputs(sourceDef, sourceNode.data.params)
-          .find((o) => o.name === sourceHandle);
-        const targetInput = resolveDynamicInputs(targetDef, targetNode.data.params)
-          .find((i) => i.name === targetHandle);
-        if (!sourceOutput || !targetInput) return true;
-
+        const types = wireTypes(tab, edgeOrConnection);
+        if (!types) return true;
+        if (!isValidConnection(types.source, types.target)) return false;
         // A Switch output carries the type of the inputs it chooses between,
         // and a new option must match them (#655).
-        const outputsOf = (n: Node<NodeData>) =>
-          resolveDynamicOutputs(n.data.definition, n.data.params);
-        const inputsOf = (n: Node<NodeData>) =>
-          resolveDynamicInputs(n.data.definition, n.data.params);
-        const sourceType = liveOutputType(sourceNode, sourceHandle, tab.nodes, tab.edges, outputsOf);
-        if (!isValidConnection(sourceType, targetInput.data_type)) return false;
-        return !isSwitchNode(targetNode) || switchAcceptsType(
-          targetNode, targetHandle, sourceType, tab.nodes, tab.edges, outputsOf, inputsOf,
+        return !isSwitchNode(targetNode!) || switchAcceptsType(
+          targetNode!, targetHandle, types.source, tab.nodes, tab.edges, outputsOf, inputsOf,
           isValidConnection,
         );
       }
@@ -776,6 +803,34 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     );
   }, []);
 
+  // A data wire released on a port whose type it cannot feed is refused by
+  // the validity check above, and nothing else on screen said so (#685). The
+  // toast names both types. A release on the empty canvas, or a refusal for
+  // another reason (a copy of a wire, a note), stays silent.
+  const reportRefusedWire = useCallback(
+    (state: FinalConnectionState | undefined) => {
+      if (!state || state.isValid !== false || !state.fromHandle || !state.toHandle) return;
+      // Output on output, or input on input: no wire to name.
+      if (state.fromHandle.type === state.toHandle.type) return;
+      const fromSource = state.fromHandle.type === 'source';
+      const [out, into] = fromSource
+        ? [state.fromHandle, state.toHandle]
+        : [state.toHandle, state.fromHandle];
+      const tab = useTabStore.getState().getActiveTab();
+      const types = wireTypes(tab, {
+        source: out.nodeId,
+        sourceHandle: out.id,
+        target: into.nodeId,
+        targetHandle: into.id,
+      });
+      if (!types || isValidConnection(types.source, types.target)) return;
+      useToastStore
+        .getState()
+        .addToast(t('canvas.wireRefused', { from: types.source, to: types.target }), 'warning');
+    },
+    [t],
+  );
+
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
       const ui = useUIStore.getState();
@@ -786,7 +841,10 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       // so a trigger released anywhere else on a card is connected here. A
       // trigger wire being moved lands the same way: React Flow ends a
       // reconnect here too, just before onReconnectEnd would delete the wire.
-      if (!draggedTrigger) return;
+      if (!draggedTrigger) {
+        reportRefusedWire(state);
+        return;
+      }
       const { tabs, activeTabId } = useTabStore.getState();
       const { edges } = tabs.find((t) => t.id === activeTabId)!;
       // Still set when the wire was moved and React Flow did not connect it.
@@ -803,7 +861,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       const moved = edges.find((e) => e.id === moving);
       if (moved) onReconnect(moved, connection);
     },
-    [handleConnect, handleIsValidConnection, onReconnect],
+    [handleConnect, handleIsValidConnection, onReconnect, reportRefusedWire],
   );
 
   const onReconnectEnd = useCallback((_: any, edge: Edge) => {
@@ -933,6 +991,75 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     [selectNodeExclusively]
   );
 
+  // After a box selection React Flow draws a rectangle over the selected
+  // nodes, and a right-click lands on it instead of on a node (#679). It opens
+  // the node menu for the node under the pointer, or the first selected one
+  // when the pointer is on the rectangle between nodes; the selection stays
+  // whole, so Collapse to subgraph is offered as for a Shift+click selection.
+  const handleSelectionContextMenu = useCallback(
+    (event: React.MouseEvent, nodes: Node[]) => {
+      event.preventDefault();
+      const p = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const under = nodes.find((n) => {
+        const b = nodesBoundingBox([n])!;
+        return p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height;
+      });
+      const target = under ?? nodes[0];
+      if (target) handleNodeContextMenu(event, target);
+    },
+    [screenToFlowPosition, handleNodeContextMenu],
+  );
+
+  // The side panels open beside the canvas when a node is selected and take
+  // their width from it, so a node on the right half of the canvas ended up
+  // past its new edge (#687). Each time the canvas gets narrower, the view
+  // pans by the least that brings the whole selected node back inside it. A
+  // node still in view, or a canvas that grows, does not move the view, so a
+  // view put back on a tab switch or on leaving a block stays as it was.
+  const keepSelectionInView = useCallback(
+    (width: number, height: number) => {
+      const tab = useTabStore.getState().getActiveTab();
+      const selected = tab.nodes.find((n) => n.id === tab.selectedNodeId);
+      if (!selected) return;
+      const box = nodesBoundingBox([selected as Node])!;
+      const { x, y, zoom } = getViewport();
+      const shift = (start: number, size: number, extent: number) => {
+        if (start + size > extent - SELECTION_MARGIN) {
+          return Math.max(extent - SELECTION_MARGIN - (start + size), SELECTION_MARGIN - start);
+        }
+        return start < SELECTION_MARGIN ? SELECTION_MARGIN - start : 0;
+      };
+      const dx = shift(box.x * zoom + x, box.width * zoom, width);
+      const dy = shift(box.y * zoom + y, box.height * zoom, height);
+      if (dx !== 0 || dy !== 0) void setViewport({ x: x + dx, y: y + dy, zoom });
+    },
+    [getViewport, setViewport],
+  );
+
+  useEffect(() => {
+    const el = containerRef.current!;
+    let lastWidth = el.offsetWidth;
+    // Called after layout and before paint, so the frame with the panels
+    // open already shows the node.
+    const observer = new ResizeObserver(() => {
+      const width = el.offsetWidth;
+      const narrower = width < lastWidth;
+      lastWidth = width;
+      if (narrower) keepSelectionInView(width, el.offsetHeight);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [keepSelectionInView]);
+
+  // React Flow's last measured size of the canvas; 0 until it has measured,
+  // when the minimap stays.
+  const showMinimap = useStore(
+    (s) =>
+      (s.width === 0 || s.width >= MINIMAP_MIN_CANVAS_WIDTH) &&
+      (s.height === 0 || s.height >= MINIMAP_MIN_CANVAS_HEIGHT),
+  );
+  const fitViewOptions = showMinimap ? FIT_WITH_MINIMAP : FIT_WITHOUT_MINIMAP;
+
   const handleRename = useCallback(
     async (nodeId: string) => {
       const node = activeTab.nodes.find((n) => n.id === nodeId);
@@ -988,6 +1115,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           onEdgeClick={handleEdgeClick}
           onNodeContextMenu={handleNodeContextMenu}
           onPaneContextMenu={handlePaneContextMenu}
+          onSelectionContextMenu={handleSelectionContextMenu}
           onPaneClick={handlePaneClick}
           onDragOver={onDragOver}
           onDrop={onDrop}
@@ -997,6 +1125,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           edgeTypes={edgeTypes}
           // Only when the canvas mounts on a graph (#622, `fitViewOnMount`).
           fitView={fitViewOnMount}
+          fitViewOptions={fitViewOptions}
           // Skip the node components the viewport cannot show (#162). See
           // ONLY-RENDER-VISIBLE above the component for why this is safe and
           // where it does and does not pay.
@@ -1031,15 +1160,17 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           />
           <SegmentBubble />
           <NoteBindingLines />
-          <Controls />
-          <MiniMap
-            pannable
-            zoomable
-            position="bottom-right"
-            nodeColor={minimapNodeColor}
-            maskColor="var(--surface-scrim)"
-            style={{ background: 'var(--surface-raised)' }}
-          />
+          <Controls fitViewOptions={fitViewOptions} />
+          {showMinimap && (
+            <MiniMap
+              pannable
+              zoomable
+              position="bottom-right"
+              nodeColor={minimapNodeColor}
+              maskColor="var(--surface-scrim)"
+              style={{ background: 'var(--surface-raised)' }}
+            />
+          )}
         </ReactFlow>
       </EdgeLaneProvider>
 

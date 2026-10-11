@@ -696,3 +696,123 @@ describe('FlowCanvas per-tab viewport', () => {
     });
   });
 });
+
+/**
+ * The side panels take their width from the canvas when a node is selected
+ * (#687). A node on the right half of the canvas was then past its new edge,
+ * under where the panels now are, and the view did not move.
+ */
+describe('a selected node when the canvas gets narrower (#687)', () => {
+  // jsdom has no layout, so the ResizeObserver is driven by hand: each one is
+  // kept with the element it watches, and `resizeCanvas` calls the ones on the
+  // canvas container (the element around `.react-flow`).
+  let observers: { callback: ResizeObserverCallback; el: Element }[] = [];
+  let restoreSize: (() => void) | null = null;
+
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private callback: ResizeObserverCallback) {}
+        observe(el: Element) {
+          observers.push({ callback: this.callback, el });
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  });
+
+  afterEach(() => {
+    restoreSize?.();
+    restoreSize = null;
+    vi.unstubAllGlobals();
+  });
+
+  function resizeCanvas(width: number, height = 600) {
+    restoreSize?.();
+    restoreSize = withCanvasSize(width, height);
+    const flowEl = document.querySelector('.react-flow')!;
+    act(() => {
+      for (const { callback, el } of observers) {
+        if (el !== flowEl && el.contains(flowEl)) callback([], {} as ResizeObserver);
+      }
+    });
+  }
+
+  /** Where node `id` (200 x 80 unmeasured) is on screen, in canvas pixels. */
+  function screenBox(id: string) {
+    const n = useTabStore.getState().getActiveTab().nodes.find((m) => m.id === id)!;
+    const { x, y, zoom } = flow!.getViewport();
+    return {
+      left: n.position.x * zoom + x,
+      right: (n.position.x + 200) * zoom + x,
+      top: n.position.y * zoom + y,
+      bottom: (n.position.y + 80) * zoom + y,
+    };
+  }
+
+  function onCanvasOf900(nodeX: number, selected: boolean) {
+    useTabStore.setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === 'tab-a'
+          ? {
+              ...t,
+              nodes: [{ ...node('a1'), position: { x: nodeX, y: 100 } }],
+              selectedNodeId: selected ? 'a1' : null,
+            }
+          : t,
+      ),
+    }));
+    restoreSize = withCanvasSize(900, 600);
+    mount();
+    setViewport({ x: 0, y: 0, zoom: 1 });
+  }
+
+  it('pans so the whole selected node is inside the narrower canvas', () => {
+    // The node spans 600..800 on a 900 px canvas; the panels leave 450 px.
+    onCanvasOf900(600, true);
+    resizeCanvas(450);
+    const box = screenBox('a1');
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.right).toBeLessThanOrEqual(450);
+    // The least pan that does it: the node's right edge 24 px from the edge.
+    expect(box.right).toBeCloseTo(426, 3);
+    expect(flow!.getViewport().zoom).toBe(1);
+  });
+
+  it('pans down as well when the canvas gets shorter', () => {
+    onCanvasOf900(600, true);
+    resizeCanvas(450, 150);
+    const box = screenBox('a1');
+    expect(box.right).toBeLessThanOrEqual(450);
+    expect(box.bottom).toBeLessThanOrEqual(150);
+    expect(box.top).toBeGreaterThanOrEqual(0);
+  });
+
+  it('pans right for a selected node past the left edge', () => {
+    onCanvasOf900(-100, true);
+    resizeCanvas(450);
+    expect(screenBox('a1').left).toBeCloseTo(24, 3);
+  });
+
+  it('leaves the view alone when the selected node is still in view', () => {
+    onCanvasOf900(100, true);
+    resizeCanvas(450);
+    expect(flow!.getViewport()).toEqual({ x: 0, y: 0, zoom: 1 });
+  });
+
+  it('leaves the view alone when nothing is selected', () => {
+    onCanvasOf900(600, false);
+    resizeCanvas(450);
+    expect(flow!.getViewport()).toEqual({ x: 0, y: 0, zoom: 1 });
+  });
+
+  it('leaves the view alone when the canvas gets wider', () => {
+    // The panels closing must not move a view the user set.
+    onCanvasOf900(1000, true);
+    resizeCanvas(1200);
+    expect(flow!.getViewport()).toEqual({ x: 0, y: 0, zoom: 1 });
+  });
+});

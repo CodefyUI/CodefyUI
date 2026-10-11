@@ -1166,6 +1166,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Edge data tooltip
   'edge.viewStats': '查看統計',
+  'canvas.wireRefused': '{from} 無法連接到 {to}',
 
   // Shared plots
   'plot.noData': '沒有資料',

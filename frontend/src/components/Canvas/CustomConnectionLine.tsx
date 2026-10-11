@@ -9,6 +9,7 @@ export function CustomConnectionLine({
   toY,
   fromPosition,
   toPosition,
+  connectionStatus,
 }: ConnectionLineComponentProps) {
   const circuit = useUIStore((s) => s.edgeStyle) === 'circuit';
   // Match the live edge look while dragging: orthogonal smoothstep in circuit
@@ -24,10 +25,26 @@ export function CustomConnectionLine({
         borderRadius: CIRCUIT_BORDER_RADIUS,
       })[0]
     : `M${fromX},${fromY} C${fromX + 80},${fromY} ${toX - 80},${toY} ${toX},${toY}`;
+  // Over a port, React Flow reports whether the wire may land there. A port
+  // it cannot feed turns the line red and dashed, so a refusal is visible
+  // before the release (#685); a port it can feed turns it the active wire
+  // colour. Away from any port it stays grey.
+  const stroke =
+    connectionStatus === 'invalid'
+      ? 'var(--status-error)'
+      : connectionStatus === 'valid'
+        ? 'var(--wire-active)'
+        : '#888';
   return (
-    <g>
-      <path fill="none" stroke="#888" strokeWidth={2} d={d} />
-      <circle cx={toX} cy={toY} r={4} fill="#888" />
+    <g data-status={connectionStatus ?? 'none'}>
+      <path
+        fill="none"
+        stroke={stroke}
+        strokeWidth={2}
+        strokeDasharray={connectionStatus === 'invalid' ? '6 4' : undefined}
+        d={d}
+      />
+      <circle cx={toX} cy={toY} r={4} fill={stroke} />
     </g>
   );
 }
