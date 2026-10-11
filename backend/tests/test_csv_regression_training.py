@@ -53,7 +53,7 @@ def _write_csv(path: Path) -> Path:
     y = x @ _WEIGHTS + 0.05 * rng.standard_normal(_ROWS)
     lines = ["a,b,c,target"] + [
         ",".join(f"{v:.6f}" for v in (*row, t)) for row, t in zip(x, y)]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 

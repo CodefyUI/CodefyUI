@@ -83,7 +83,7 @@ async def client(db):
 
 
 def _example(relative: str) -> dict[str, Any]:
-    graph = json.loads((_EXAMPLES / relative / "graph.json").read_text())
+    graph = json.loads((_EXAMPLES / relative / "graph.json").read_text(encoding="utf-8"))
     return {"nodes": graph_nodes(graph), "edges": graph["edges"]}
 
 
