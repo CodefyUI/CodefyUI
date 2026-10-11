@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-10-11
+
 ### Added
 
 - **A getting-started guide in Settings**. **Settings → Getting started
@@ -69,6 +71,14 @@ received — each links to the release it was published as.
   nothing selected inside says so too. A node that also feeds anything else
   still runs. A Switch set by its `selector` port decides during the run, so
   every input it has still runs first.
+- **The node list's default width grows with the type size** ([#502]). At
+  its default width every node summary fits, at any window width and at the
+  Small, Default and Large font settings, in English and zh-TW: from 273px
+  for a 1366px window on Default up to 352px for a 2560px window on Large. A
+  width you set by dragging the splitter is kept as it was.
+- **Delete in Source Control and the Graphs tab turns red when you point at
+  it** ([#426], [#430]). The red border or rule it already had stays, so the
+  cue does not rest on colour alone.
 
 ### Fixed
 
@@ -128,6 +138,110 @@ received — each links to the release it was published as.
   run: the shortcut arm's final holdout accuracy moved between 0.75 and 0.78.
   The weights now come from the node's `seed` alone and are the ones a single
   node gave before.
+- **Importing a `.cduiworkspace` keeps a tab that one undo would refill**
+  ([#625]). A lone tab emptied with Clear Canvas was closed by the import,
+  together with its undo history; it now stays beside the imported tabs.
+  Ctrl+Z after Clear Canvas brings back the graph's saved file, name,
+  description and device along with its nodes, so Ctrl+S saves in place
+  again. Clear Canvas inside an open block no longer scrambles the undo
+  history, and its confirm now says Ctrl+Z undoes it.
+- **Ctrl+S keeps a block or tab name you are still typing** ([#620]). In the
+  block breadcrumb and the tab's name box, Ctrl+S applies the name as Enter
+  does and then saves; before, the file kept the old name. Undoing a block
+  rename puts the old name back on every card of the block, and a block
+  renamed two levels deep renames its other copies at once.
+- **Export as Subgraph works on a canvas with a preset card** ([#618]). The
+  card is copied in as its own nodes with its settings, where every try used
+  to fail with a 500. A bypassed node is left out and wired past, the new
+  preset's settings read in the order data flows with a repeated type
+  numbered, and a refused name opens the name box again with the reason
+  under it. The refusals are in your language, and zh-TW calls a preset
+  預設組合 everywhere.
+- **An exported preset shows no made-up difficulty, and a run is listed
+  under its tab's name** ([#623]). A preset with no difficulty tag shows no
+  badge, the badges and the search read 入門 / 中級 / 進階 in zh-TW, and the
+  Runs panel lists a run under its tab's name, cut to 64 characters. A sweep
+  left unnamed takes the tab's name, and its runs read `<name> #1`, `#2`, ...
+- **A note inside a block no longer breaks the graph** ([#624]). A block
+  holding only notes counts as empty and gets the empty-block refusal, and a
+  note beside real nodes is ignored by validation and Export as Python. An
+  exported script that needs a plugin which is installed but fails to load,
+  or whose files are gone, says which and gives a command that works. Run no
+  longer adds an English toast per wire on a node of an unknown type.
+- **A wire that already exists is never added twice** ([#619]). Dropping,
+  clicking or moving a wire onto ports it already joins connects nothing.
+  While a trigger wire is moved, the card it is leaving turns red, and a
+  selected card keeps its green entry-point outline. The Inspector no longer
+  leaves the previous node's rows when one output feeds two inputs.
+- **The Inspector and Node details work inside a block** ([#621]). A node
+  inside an open block shows the values it captured, in each copy of the
+  block, where every row read "Run data expired". A node the last run did
+  not include reads "Not in the last run", one that failed reads "Failed in
+  the last run", and a run made with Record node outputs off says to turn it
+  on. Plugins get `instanceId` on each level of `api.graph.getView().path`.
+- **Graphs, blocks and new tabs open framed on screen** ([#622]). A graph is
+  framed by its nodes' real sizes, so a tall note is no longer cut off;
+  entering a block frames its nodes and leaving it restores the view
+  around it. A new tab starts at zoom 1, an empty block says it is empty
+  instead of showing the gallery, and a double-click on a starter or
+  template opens it once.
+- **A heatmap card draws any tensor, and a card that fails to draw no longer
+  stops the page** ([#635]). A 1-D tensor draws as one row, NaN and ±inf as
+  grey cells, a 0-D tensor as one cell, and an empty or 5-D tensor says so.
+  A card that still throws while drawing becomes a small box naming the
+  node, and the rest of the editor keeps working.
+- **Collapsing or expanding nodes inside an open block keeps its ports and
+  wires** ([#636]). The block no longer loses the port and the outer wire a
+  collapsed or expanded node stood on, and Run prints the same before and
+  after. Expanding a block card wired from Start keeps that wire.
+- **One Ctrl+Z after Delete brings a node back with its wires** ([#637]).
+  This also holds for several nodes at once, for a block card and inside an
+  open block; redo deletes them again in one step.
+- **Run from inside a block runs the whole graph** ([#638]). Since 2.8.8 it
+  stopped with "No entry points defined". Refusals name the open block's
+  card and **Show** works inside a block, the log names inner nodes, and
+  after Stop a block's card reads interrupted.
+- **An exported Map runs its preset where that preset is not installed**
+  ([#639]). The script carries a copy of each preset its Map nodes run, so
+  `python x.py` on another machine prints what the canvas printed. A Map
+  naming a preset this install does not have is refused before the run.
+- **An install log opened late says how many lines it missed** ([#489]). The
+  Package Center and Plugin Center activity panes show one notice instead
+  of silently starting mid-log, and `cdui packs install` / `remove` print
+  their follow-up lines on stderr beside the error.
+- **A plugin's `auto_layout` and a tab switch in one handler frame each tab
+  by its own graph** ([#522]).
+- **Every plugin uninstall shows a reinstall command that works for its
+  source** ([#506]): a catalog name, `owner/repo@ref`, or `cdui plugin link
+  <path>`, the same in the Plugin Center and `cdui plugin uninstall`.
+- **Modals stay usable in a narrow window, and the shortcuts sheet opens over
+  panels** ([#490]). The scatter, heatmap, preset and Custom Nodes windows
+  keep their close button and actions on screen at 375px; `?` over a panel
+  opens the shortcuts sheet on top, and Escape closes only the sheet.
+- **A tensor too large to send shows a bounded preview of any rank**
+  ([#640]). The Inspector and Node details show its leading part, with a
+  second line naming the slice and how many values are shown, where they
+  used to fail with a 413 or 400.
+- **A sweep ranks by one node's metric** ([#641]). An objective can name the
+  node (`objective.node_id`); **New sweep** gains an **Objective node** field.
+  When several nodes log a name-only metric, the variant is left unranked and
+  marked Ambiguous. JSON and CSV exports carry the node and any ambiguity.
+- **An open block shows each inner node's run status** ([#654]). Inner nodes
+  show running, completed, cached, error, interrupted or bypassed in each
+  copy of the block, a bypassed node says so in the Inspector, and Steps and
+  Backward on a block or preset card list what its inner nodes recorded.
+
+### Internal
+
+- **A real browser checks the save, run, inspect and export round trips**
+  ([#642]). `pnpm e2e` in `frontend/` runs them in Chromium against the
+  production build and an isolated backend, and the new Browser Workflow
+  Checks workflow runs them on every pull request.
+- **A zh-TW docs page whose headings or anchors drift from its English twin
+  fails the docs build** ([#399]). `pnpm check:locale-parity` in `docs/`
+  runs the same check.
+- **The FlowCanvas, Toolbar and SettingsPopover tests print no act()
+  warnings** ([#652]), and the warning budget drops to 462.
 
 ## [2.8.9] — 2026-10-05
 
@@ -5464,7 +5578,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.9.0...main
+[2.9.0]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...2.9.0
 [2.8.9]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...2.8.9
 [2.8.8]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...2.8.8
 [2.8.7]: https://github.com/CodefyUI/CodefyUI/compare/2.8.6...2.8.7
@@ -5495,3 +5610,25 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#625]: https://github.com/CodefyUI/CodefyUI/issues/625
+[#620]: https://github.com/CodefyUI/CodefyUI/issues/620
+[#618]: https://github.com/CodefyUI/CodefyUI/issues/618
+[#623]: https://github.com/CodefyUI/CodefyUI/issues/623
+[#624]: https://github.com/CodefyUI/CodefyUI/issues/624
+[#619]: https://github.com/CodefyUI/CodefyUI/issues/619
+[#621]: https://github.com/CodefyUI/CodefyUI/issues/621
+[#622]: https://github.com/CodefyUI/CodefyUI/issues/622
+[#635]: https://github.com/CodefyUI/CodefyUI/issues/635
+[#636]: https://github.com/CodefyUI/CodefyUI/issues/636
+[#637]: https://github.com/CodefyUI/CodefyUI/issues/637
+[#638]: https://github.com/CodefyUI/CodefyUI/issues/638
+[#639]: https://github.com/CodefyUI/CodefyUI/issues/639
+[#522]: https://github.com/CodefyUI/CodefyUI/issues/522
+[#640]: https://github.com/CodefyUI/CodefyUI/issues/640
+[#641]: https://github.com/CodefyUI/CodefyUI/issues/641
+[#654]: https://github.com/CodefyUI/CodefyUI/issues/654
+[#502]: https://github.com/CodefyUI/CodefyUI/issues/502
+[#426]: https://github.com/CodefyUI/CodefyUI/issues/426
+[#430]: https://github.com/CodefyUI/CodefyUI/issues/430
+[#642]: https://github.com/CodefyUI/CodefyUI/issues/642
+[#652]: https://github.com/CodefyUI/CodefyUI/issues/652
