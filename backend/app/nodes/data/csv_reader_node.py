@@ -14,6 +14,13 @@ Three params shape the output:
 * ``skip_header`` — almost always True; turn off only for headerless
   CSVs (then columns are auto-named 0, 1, 2, ...).
 
+A row with no target value is refused by default, naming the rows, because
+pandas reads the gap as NaN and ``str(nan)`` would become a ``'nan'`` class.
+``drop_missing_target`` drops those rows instead and logs which ones.
+Integral labels render as ints (``'1'``, not ``'1.0'``) even when pandas
+read the column as float. NaN in a feature column is kept and logged as a
+warning naming the column.
+
 Why this exists when ``HuggingFaceDataset`` already loads tabular data:
 HuggingFace requires an internet round-trip + dataset publishing; for
 classroom use, students need to point at a local CSV they wrote
@@ -23,6 +30,7 @@ their CSV in pandas before pointing this node at it.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +44,39 @@ from ...core.node_base import (
     PortDefinition,
 )
 
+logger = logging.getLogger(__name__)
+
+# Row numbers quoted in a missing-target message before it says "and N more".
+_MAX_NAMED_ROWS = 10
+
+
+def _row_list(rows: list[int]) -> str:
+    shown = ", ".join(str(r) for r in rows[:_MAX_NAMED_ROWS])
+    if len(rows) > _MAX_NAMED_ROWS:
+        shown += f" and {len(rows) - _MAX_NAMED_ROWS} more"
+    return shown
+
+
+def _label_strings(values: Any) -> list[str]:
+    """Stringify a target column, keeping integer classes integral.
+
+    One missing value promotes an int column to float64, and a column
+    written as ``0.0, 1.0`` reads as float too; either way the classes are
+    integers, so render them as ``'0'``/``'1'``.
+    """
+    import pandas as pd
+
+    if pd.api.types.is_float_dtype(values) and all(float(v).is_integer() for v in values):
+        return [str(int(v)) for v in values]
+    return [str(v) for v in values.tolist()]
+
+
+def _warn(context: Any, detail: str) -> None:
+    logger.warning("%s", detail)
+    log_warning = getattr(context, "log_warning", None)
+    if callable(log_warning):
+        log_warning("csv_reader", detail)
+
 
 class CSVReaderNode(BaseNode):
     NODE_NAME = "CSVReader"
@@ -44,7 +85,11 @@ class CSVReaderNode(BaseNode):
     DETAILS = (
         "Numeric columns become the [N, F] float32 tensor; `include_columns` "
         "narrows that set, and without it non-numeric columns are dropped. The "
-        "column named in `target_column` becomes the string label list. Turn "
+        "column named in `target_column` becomes the string label list; a row "
+        "with no target value stops the run, naming the data rows, unless "
+        "`drop_missing_target` is on, which drops them. Integral labels read as "
+        "'1', not '1.0'. NaN in a feature column is kept and logged as a "
+        "warning. Turn "
         "`skip_header` off for a headerless file, whose columns are then named 0, "
         "1, 2 and so on."
     )
@@ -156,6 +201,15 @@ class CSVReaderNode(BaseNode):
                 ),
             ),
             ParamDefinition(
+                name="drop_missing_target",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Drop rows whose target value is empty and log which ones. "
+                    "Off: such a row stops the run with the row numbers."
+                ),
+            ),
+            ParamDefinition(
                 name="skip_header",
                 param_type=ParamType.BOOL,
                 default=True,
@@ -196,6 +250,26 @@ class CSVReaderNode(BaseNode):
                 f"Available columns: {list(df.columns)}"
             )
 
+        if target_column:
+            missing_mask = df[target_column].isna()
+            if missing_mask.any():
+                # 1-based data rows: the first row after the header is row 1.
+                rows = [int(i) + 1 for i in df.index[missing_mask]]
+                if not bool(params.get("drop_missing_target", False)):
+                    first = "the first row after the header" if skip_header else "the first line"
+                    raise ValueError(
+                        f"CSVReader: target_column={target_column!r} is empty in "
+                        f"{len(rows)} row(s): data rows {_row_list(rows)} (row 1 is "
+                        f"{first}). Fill them in, or turn on drop_missing_target "
+                        f"to skip those rows."
+                    )
+                df = df.loc[~missing_mask]
+                _warn(
+                    context,
+                    f"CSVReader: dropped {len(rows)} row(s) with no "
+                    f"{target_column!r} value: data rows {_row_list(rows)}.",
+                )
+
         include_raw = str(params.get("include_columns", "")).strip()
         if include_raw:
             requested = [c.strip() for c in include_raw.split(",") if c.strip()]
@@ -220,6 +294,15 @@ class CSVReaderNode(BaseNode):
                 ]
 
         if feature_cols:
+            nan_counts = df[feature_cols].isna().sum()
+            nan_cols = [f"{c} ({int(n)})" for c, n in nan_counts.items() if n > 0]
+            if nan_cols:
+                _warn(
+                    context,
+                    f"CSVReader: feature columns with missing values (count), "
+                    f"kept as NaN: {', '.join(nan_cols)}. Normalize and most "
+                    f"models turn a NaN column into all NaN.",
+                )
             features = df[feature_cols].to_numpy(dtype="float32")
             tensor = torch.from_numpy(features)
         else:
@@ -227,7 +310,7 @@ class CSVReaderNode(BaseNode):
 
         labels: list[str] = []
         if target_column:
-            labels = [str(v) for v in df[target_column].tolist()]
+            labels = _label_strings(df[target_column])
 
         return {
             "tensor": tensor,
