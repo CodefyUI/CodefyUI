@@ -12,6 +12,7 @@ from ..core.graph_engine import (
     GraphValidationError,
     build_preset_fallback,
     build_subgraph_index,
+    shared_model_training_warnings,
     subgraph_id_of,
     validate_graph,
 )
@@ -166,6 +167,7 @@ async def validate(graph: GraphData):
     # with it go the code, node and values issue_payload reads.
     return GraphValidationResponse(
         valid=len(errors) == 0, errors=errors, issues=issue_payload(errors),
+        warnings=issue_payload(shared_model_training_warnings(nodes, edges)),
     )
 
 

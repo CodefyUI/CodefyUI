@@ -295,6 +295,9 @@ class GraphValidationResponse(BaseModel):
     errors: list[str] = []
     #: One ValidationIssueOut per ``errors`` line, in the same order.
     issues: list[ValidationIssueOut] = []
+    #: Findings that do not stop a run, such as one model trained by two
+    #: nodes (#696). ``valid`` does not depend on them.
+    warnings: list[ValidationIssueOut] = []
 
 
 class NodeExecutionStatus(BaseModel):

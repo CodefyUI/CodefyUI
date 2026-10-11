@@ -105,7 +105,7 @@ def _augmented(seed: int | None, node_id: str = "tf1",
     torch.manual_seed(999)
     if warmup:
         torch.rand(warmup)
-    attach_transform(dataset, _augmenting_chain(), _context(seed, node_id))
+    dataset = attach_transform(dataset, _augmenting_chain(), _context(seed, node_id))
     return _epoch(dataset)
 
 
@@ -379,8 +379,10 @@ def test_no_context_leaves_the_pipeline_alone():
 def test_attach_transform_installs_it_on_the_dataset():
     dataset = _ImageDataset()
     returned = attach_transform(dataset, _augmenting_chain(), _context(7))
-    assert returned is dataset
-    assert isinstance(dataset.transform, SeededAugmentation)
+    assert isinstance(returned.transform, SeededAugmentation)
+    # On a copy (#697): the dataset it was handed keeps no pipeline.
+    assert returned is not dataset
+    assert dataset.transform is None
 
 
 def test_attach_transform_warns_on_a_dataset_that_ignores_it(caplog):
@@ -409,20 +411,21 @@ def test_attach_transform_is_quiet_on_a_dataset_that_honours_it(caplog):
 
 def test_transform_node_wraps_a_wired_chain():
     dataset = _ImageDataset()
-    TransformNode().execute(
+    out = TransformNode().execute(
         {"dataset": dataset, "transform": _augmenting_chain()}, {},
-        context=_context(7))
-    assert isinstance(dataset.transform, SeededAugmentation)
+        context=_context(7))["dataset"]
+    assert isinstance(out.transform, SeededAugmentation)
 
 
 def test_transform_node_params_path_is_never_wrapped():
     """The three built-in steps contain no randomness."""
     dataset = _ImageDataset()
-    TransformNode().execute(
+    out = TransformNode().execute(
         {"dataset": dataset},
         {"resize": 0, "normalize": True, "to_tensor": True},
-        context=_context(7))
-    assert not isinstance(dataset.transform, SeededAugmentation)
+        context=_context(7))["dataset"]
+    assert out.transform is not None
+    assert not isinstance(out.transform, SeededAugmentation)
 
 
 # ── the properties that make it worth having ─────────────────────────────
@@ -449,7 +452,7 @@ def test_the_augmentation_still_varies_between_samples():
 
 def test_the_augmentation_still_varies_between_epochs():
     dataset = _ImageDataset()
-    attach_transform(dataset, _augmenting_chain(), _context(4242))
+    dataset = attach_transform(dataset, _augmenting_chain(), _context(4242))
     first, second = _epoch(dataset), _epoch(dataset)
     assert first.shape == second.shape
     assert not torch.equal(first, second)
@@ -474,7 +477,7 @@ def test_the_wrapper_hands_the_callers_rng_back_untouched():
     loader's consumption into the measurement.
     """
     dataset = _ImageDataset()
-    attach_transform(dataset, _augmenting_chain(), _context(4242))
+    dataset = attach_transform(dataset, _augmenting_chain(), _context(4242))
 
     torch.manual_seed(5)
     expected = torch.rand(3)
@@ -576,7 +579,7 @@ def _python_random_datasets(seed: int = 4242):
     made = []
     for index, name in enumerate(("RandomChoice", "RandomOrder")):
         dataset = _ImageDataset(count=16)
-        attach_transform(
+        dataset = attach_transform(
             dataset,
             T.Compose([getattr(T, name)(branches()), T.ToTensor()]),
             _context(seed, f"tf{index}"))
@@ -650,7 +653,7 @@ def test_the_wrapper_hands_the_callers_python_random_back_untouched():
     import random
 
     dataset = _ImageDataset()
-    attach_transform(dataset, _augmenting_chain(), _context(4242))
+    dataset = attach_transform(dataset, _augmenting_chain(), _context(4242))
 
     random.seed(5)
     expected = [random.random() for _ in range(3)]

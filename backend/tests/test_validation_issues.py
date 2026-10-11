@@ -537,7 +537,7 @@ async def test_a_valid_graph_has_no_issues(test_client, sample_graph):
     response = await test_client.post("/api/graph/validate", json=sample_graph)
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"valid": True, "errors": [], "issues": []}
+    assert response.json() == {"valid": True, "errors": [], "issues": [], "warnings": []}
 
 
 async def test_a_value_json_cannot_write_does_not_break_the_route(test_client):
