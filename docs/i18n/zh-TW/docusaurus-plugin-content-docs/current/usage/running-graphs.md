@@ -106,7 +106,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 ## 可重現的執行（亂數種子） {/* #reproducible-runs-seed */}
 
-預設情況下，run 使用 PyTorch 選擇的熵，因此同一張圖執行兩次時，權重初始化與洗牌順序會略有不同，loss 曲線也會不同。在**設定 → 訓練行為**中設定**亂數種子**，可讓 run 重現相同結果。種子會以 `settings.seed` 存進圖檔，開啟與匯入時會跟著回來；新分頁會沿用目前分頁的種子，匯出 Python 時也會把它寫成腳本預設的 `--seed`。
+預設情況下，run 使用 PyTorch 選擇的熵，因此同一張圖執行兩次時，權重初始化與洗牌順序會略有不同，loss 曲線也會不同。在**設定 → 訓練行為**中設定**亂數種子**，可讓 run 重現相同結果。種子會以 `settings.seed` 存進圖檔，開啟與匯入時會跟著回來；新分頁會沿用目前分頁的種子，匯出 Python 時也會把它寫成腳本預設的 `--seed`。無介面執行（`cdui run`、`run_graph.py`、run API 與 graph-as-a-function）沒有指定種子時也會使用它；`--no-seed` 會不設種子執行。
 
 沒設 seed 時，edu 套件包的 `FFNLayer` 與 `TrainAndEvaluate` 是例外：它們的初始權重與 seed 0 相同，每次執行和匯出的腳本都一樣。設定 seed 後：
 

@@ -67,6 +67,7 @@ request body 是**選填的**（沒有 body 等同 `{}`），而且每個欄位�
   "inputs": {"prompt": "hello"},   // default {}
   "timeout_s": 300,                // default 300, min 1, max 3600
   "device": "cuda",                // "cpu" / "cuda" / "cuda:N" / "mps" / "auto"; omitted = the graph's settings.device, else cpu; unavailable falls back to CPU
+  "seed": 42,                      // 0..4294967295 or null; omitted = the graph's settings.seed, else unseeded; null = unseeded
   "record_outputs": false          // default false; see gotchas before enabling
 }
 ```
@@ -214,6 +215,7 @@ curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 - `record_outputs=true` 會讓區域網路上任何知道 `run_id` 的使用者都可讀取輸入與結果（GET 輸出端點不需要驗證；傳輸是純 HTTP）。已發佈應用程式的執行紀錄儲存在 SQLite 並受 key 保護；檢視器儲存區只供編輯器使用，invoke 不會寫入。若要讓 graph 的執行內容固定在特定版本並受 key 保護，請將它[發佈](./publish)。
 - 不要把機密寫入 `default` 值 —— `GET /contract` 與 `/load` 都不需要驗證。
 - `device: "auto"` 會解析為伺服器能看到的最佳加速器（依序為 `cuda`、`mps`、`cpu`）；無法使用的裝置會在不回報錯誤的情況下改用 CPU，只有本機沒有的 `cuda:N` 編號例外，會改在目前的 GPU 上執行。沒有 `device` 的 body 會使用已儲存 graph 的 [`settings.device`](/advanced/device-backends#the-graph-settings-object)，沒有設定時使用 CPU。封裝格式中的 `device` 欄位會顯示實際使用的裝置。
+- 沒有 `seed` 的 body 會使用已儲存 graph 的 [`settings.seed`](/advanced/device-backends#the-graph-settings-object)，`"seed": null` 則不設種子執行。設了種子的呼叫會等目前執行中的 run 結束後單獨執行，詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
 - 單一 tensor 輸出超過 65,536 個元素時，整次呼叫會失敗。請移除該 GraphOutput，或改用 `record_outputs` 與可切片的輸出 API（`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`）；輸出篩選器尚未實作。
 - 並行執行共用行程的預設執行緒池（每次執行的平行上限為 4，並非全域上限），因此高負載執行會競爭 CPU／GPU 資源。
 - 伺服器中只要有任何**設定亂數種子的**執行正在進行，其他呼叫就會等待；設定亂數種子的執行也會等待既有呼叫完成。一般呼叫仍可彼此重疊。請見[可重現的執行](./running-graphs#reproducible-runs-seed)—— 如果同一台伺服器也用於設定亂數種子的訓練，請將等待時間計入 `timeout_s`。

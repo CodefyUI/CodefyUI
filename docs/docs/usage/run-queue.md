@@ -109,7 +109,8 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <text>` | Label stored on the run and shown wherever runs are listed |
 | `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`. Omitted: the graph's `settings.device`, else `cpu`. `auto`: the best accelerator this server has. The resolved device is the queue it joins. |
-| `--seed <n>` | Seed every node from `n`, making the run reproducible. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
+| `--seed <n>` | Seed every node from `n`, making the run reproducible. Omitted: the graph's `settings.seed`, if any. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
+| `--no-seed` | Run unseeded even when the graph has a `settings.seed` (sends `"seed": null`) |
 | `--deterministic` | Also ask PyTorch for deterministic kernels (`warn_only`) |
 | `--record-outputs` | Capture node outputs for later inspection |
 | `--wait` | Stream progress until the run ends (**default**) |

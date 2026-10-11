@@ -106,7 +106,7 @@ Text that a node inside the box writes, such as a `Print` line or a `TrainingLoo
 
 ## Reproducible runs (seed)
 
-By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable. The seed is saved in the graph file as `settings.seed` and comes back on Open and Import; a new tab starts with the seed of the tab you were on, and Export Python bakes the seed in as the script's default `--seed`.
+By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training Behavior** to make a run repeatable. The seed is saved in the graph file as `settings.seed` and comes back on Open and Import; a new tab starts with the seed of the tab you were on, and Export Python bakes the seed in as the script's default `--seed`. Headless runs (`cdui run`, `run_graph.py`, the run API and graph-as-a-function) use it too when they name no seed of their own; `--no-seed` runs the graph unseeded.
 
 With no seed set, the edu pack's `FFNLayer` and `TrainAndEvaluate` are the exception: they start from the weights seed 0 gives, the same on every run and in an exported script. With a seed set:
 

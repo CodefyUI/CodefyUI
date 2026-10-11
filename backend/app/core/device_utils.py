@@ -296,6 +296,28 @@ def graph_settings_device(graph: Any) -> str | None:
     return None
 
 
+def graph_settings_seed(graph: Any) -> int | None:
+    """``settings.seed`` off a graph dict; None when absent or invalid.
+
+    The seed counterpart of :func:`graph_settings_device`, used by the same
+    callers: a run that names no seed of its own takes the graph's (#704).
+    Stdlib only, like that function. Strict like ``GraphSettings.seed``: a
+    whole number from 0 to ``MAX_SEED``; ``"7"``, ``True`` or ``2.0`` is
+    logged and dropped, and the run is unseeded.
+    """
+    from .seeding import MAX_SEED
+
+    settings = graph.get("settings") if isinstance(graph, dict) else None
+    value = settings.get("seed") if isinstance(settings, dict) else None
+    if value is None:
+        return None
+    if (isinstance(value, int) and not isinstance(value, bool)
+            and 0 <= value <= MAX_SEED):
+        return value
+    logger.warning("Ignoring invalid settings.seed %r; running unseeded", value)
+    return None
+
+
 def device_options(param_name: str, options: list[str]) -> list[str]:
     """The ``device`` SELECT vocabulary this machine can actually offer.
 

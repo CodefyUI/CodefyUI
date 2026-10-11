@@ -167,6 +167,31 @@ received — each links to the release it was published as.
   order, often a card far down the list, and Open in new tab opened that one.
   The pane, the highlighted card and Open in new tab now follow the first card
   on screen, also after a search.
+- **Headless runs use the graph's seed** ([#704]). `run_graph.py`,
+  `cdui run`, `POST /api/runs`, `POST /api/graph/run/{name}` and app invoke
+  read `settings.device` but not `settings.seed`, so a graph saved with a seed
+  gave different numbers on every headless run. A run that names no seed now
+  takes the graph's, the same rule the device follows; `--seed` and a body
+  `seed` still win, and `--no-seed` or `"seed": null` runs a seeded graph
+  unseeded. `cdui run` and `run_graph.py` print the seed as `<seed> (graph)`.
+  Sweep variants keep the seed the sweep gives them.
+- **EnvWrapper follows the run seed** ([#706]). It reset its Gymnasium
+  environment without a seed, so Gymnasium drew one from the OS and two runs
+  with the same `--seed` started from different observations. A seeded run
+  now resets the environment and seeds its action and observation spaces
+  from the run seed; an unseeded run still varies. EnvWrapper is also no
+  longer served from the canvas cache, which handed a re-run the environment
+  the last rollout had already stepped.
+- **PolicyRollout drives a Gymnasium environment** ([#705]). An
+  `EnvWrapper` environment failed with `'tuple' object has no attribute
+  'unsqueeze'`, because PolicyRollout only understood GridWorldEnv's
+  `reset()` and 4-value `step()`. It now also takes Gymnasium's
+  `(obs, info)` reset and 5-value step, turns numpy observations into float
+  tensors and ends an episode when it is terminated or truncated; GridWorld
+  rollouts are unchanged. An environment with neither API, and a policy whose
+  input size does not match the observation (such as the default
+  `DQN(state_dim=4)` on a 4×4 GridWorld), now get an error naming the
+  expected API or both sizes.
 
 ## [2.9.0] — 2026-10-11
 
@@ -5774,6 +5799,9 @@ Release candidates before 1.0.0 are on the
 [#698]: https://github.com/CodefyUI/CodefyUI/issues/698
 [#699]: https://github.com/CodefyUI/CodefyUI/issues/699
 [#701]: https://github.com/CodefyUI/CodefyUI/issues/701
+[#704]: https://github.com/CodefyUI/CodefyUI/issues/704
+[#705]: https://github.com/CodefyUI/CodefyUI/issues/705
+[#706]: https://github.com/CodefyUI/CodefyUI/issues/706
 [#707]: https://github.com/CodefyUI/CodefyUI/issues/707
 [#708]: https://github.com/CodefyUI/CodefyUI/issues/708
 [#709]: https://github.com/CodefyUI/CodefyUI/issues/709
