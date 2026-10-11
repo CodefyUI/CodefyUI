@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { screen, fireEvent, act, cleanup } from '@testing-library/react';
-import { useReactFlow, type Node, type Edge } from '@xyflow/react';
+import { getViewportForBounds, useReactFlow, useStoreApi, type Node, type Edge } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../../types';
 import { CATEGORY_COLORS } from '../../styles/theme';
 
@@ -10,10 +10,11 @@ import { CATEGORY_COLORS } from '../../styles/theme';
 // the props and renders a `.react-flow__pane` (the dblclick effect attaches to
 // it) plus the children. Every other xyflow export stays real.
 type RFProps = Record<string, any>;
-const captured: { rf: RFProps; minimap: RFProps; overlay: RFProps } = {
+const captured: { rf: RFProps; minimap: RFProps; overlay: RFProps; controls: RFProps } = {
   rf: {},
   minimap: {},
   overlay: {},
+  controls: {},
 };
 // When false, the stubbed ReactFlow renders WITHOUT a `.react-flow__pane`,
 // so the dblclick effect's `if (pane)` guards take their false branch.
@@ -42,7 +43,10 @@ vi.mock('@xyflow/react', async (importActual) => {
       return <div data-testid="minimap" />;
     },
     Background: () => <div data-testid="background" />,
-    Controls: () => <div data-testid="controls" />,
+    Controls: (props: RFProps) => {
+      captured.controls = props;
+      return <div data-testid="controls" />;
+    },
   };
 });
 
@@ -86,6 +90,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useDialogStore } from '../../store/dialogStore';
+import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 import { insertExample } from '../../utils/openExample';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
@@ -171,6 +176,7 @@ beforeEach(() => {
   captured.rf = {};
   captured.minimap = {};
   captured.overlay = {};
+  captured.controls = {};
   renderPane.value = true;
   realFlow.value = false;
   vi.mocked(insertExample).mockClear();
@@ -912,6 +918,250 @@ describe('context menus', () => {
     // Closing it removes the menu.
     act(() => fireEvent.click(screen.getByTestId('pane-menu')));
     expect(screen.queryByTestId('pane-menu')).toBeNull();
+  });
+});
+
+// ── Right-click on a box selection (#679) ──────────────────────────────────
+
+describe('right-click on a box selection (#679)', () => {
+  const t = (key: Parameters<ReturnType<typeof useI18n.getState>['t']>[0]) =>
+    useI18n.getState().t(key);
+
+  // a -> b, both selected as a box selection leaves them; c outside it. Each
+  // node is 200 x 80 unmeasured, and the stub canvas maps screen to flow 1:1.
+  function boxSelected() {
+    setTab({
+      nodes: [
+        node('a', { position: { x: 0, y: 0 }, selected: true }),
+        node('b', { position: { x: 400, y: 0 }, selected: true }),
+        node('c', { position: { x: 0, y: 400 }, selected: false }),
+      ],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out', target: 'b', targetHandle: 'in' }],
+    });
+  }
+
+  function selectionContextMenu(x: number, y: number) {
+    const event = { preventDefault: vi.fn(), clientX: x, clientY: y };
+    const selected = activeTab().nodes.filter((n) => n.selected);
+    act(() => captured.rf.onSelectionContextMenu(event as any, selected));
+    return event;
+  }
+
+  async function collapseFromMenu(name: string) {
+    await act(async () => {
+      fireEvent.click(screen.getByText(t('contextMenu.collapseToSubgraph')));
+    });
+    await act(async () => {
+      useDialogStore.getState().close(name);
+    });
+  }
+
+  /** What the canvas holds after a collapse, without the random ids. */
+  function canvasSummary() {
+    return {
+      nodes: activeTab().nodes.map((n) => `${n.type}:${n.data.label}`).sort(),
+      edges: activeTab().edges.length,
+    };
+  }
+
+  it('opens the node menu with Collapse to subgraph and keeps the whole selection', () => {
+    boxSelected();
+    renderCanvas();
+    // On node b, inside the selection rectangle.
+    const event = selectionContextMenu(450, 40);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(screen.getByText(t('contextMenu.collapseToSubgraph'))).toBeTruthy();
+    expect(screen.getByText(t('contextMenu.rename'))).toBeTruthy();
+    expect(activeTab().selectedNodeId).toBe('b');
+    expect(activeTab().nodes.filter((n) => n.selected).map((n) => n.id)).toEqual(['a', 'b']);
+  });
+
+  it('opens the menu for the first selected node when the pointer is between nodes', () => {
+    boxSelected();
+    renderCanvas();
+    selectionContextMenu(300, 40);
+    expect(screen.getByText(t('contextMenu.collapseToSubgraph'))).toBeTruthy();
+    expect(activeTab().selectedNodeId).toBe('a');
+  });
+
+  it('collapses the selection as the menu of a Shift+click selection does', async () => {
+    boxSelected();
+    renderCanvas();
+    act(() =>
+      captured.rf.onNodeContextMenu({ preventDefault: vi.fn(), clientX: 1, clientY: 1 } as any, { id: 'a' }),
+    );
+    await collapseFromMenu('Block');
+    const fromShiftClick = canvasSummary();
+    cleanup();
+
+    boxSelected();
+    renderCanvas();
+    selectionContextMenu(450, 40);
+    await collapseFromMenu('Block');
+    const fromBox = canvasSummary();
+
+    // The two selected nodes became one block; c stayed outside it.
+    expect(fromShiftClick.nodes).toHaveLength(2);
+    expect(fromShiftClick.nodes).toContain('baseNode:c');
+    expect(fromBox).toEqual(fromShiftClick);
+  });
+
+  it('opens no menu for an empty selection', () => {
+    renderCanvas();
+    const event = { preventDefault: vi.fn(), clientX: 1, clientY: 1 };
+    act(() => captured.rf.onSelectionContextMenu(event as any, []));
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(screen.queryByText(t('contextMenu.rename'))).toBeNull();
+  });
+});
+
+// ── A refused wire says why (#685) ─────────────────────────────────────────
+
+describe('releasing a wire on a port it cannot feed (#685)', () => {
+  // A TENSOR output and a DATASET input, as TensorCreate.tensor and
+  // DataLoader.dataset.
+  beforeEach(() => {
+    useToastStore.setState({ toasts: [] });
+    setTab({
+      nodes: [
+        node('tensor', {
+          data: { label: 'TensorCreate', type: 'TensorCreate', params: {}, definition: makeDef({
+            outputs: [{ name: 'tensor', data_type: 'TENSOR', description: '', optional: false }],
+          }) },
+        }),
+        node('loader', {
+          data: { label: 'DataLoader', type: 'DataLoader', params: {}, definition: makeDef({
+            inputs: [
+              { name: 'dataset', data_type: 'DATASET', description: '', optional: false },
+              { name: 'x', data_type: 'TENSOR', description: '', optional: false },
+            ],
+          }) },
+        }),
+      ],
+    });
+    renderCanvas();
+  });
+
+  const handle = (nodeId: string, id: string, type: 'source' | 'target') => ({ nodeId, id, type });
+
+  /** End a drag from `from` to `to` as React Flow does, asking the canvas's own validity check. */
+  function release(from: ReturnType<typeof handle> | null, to: ReturnType<typeof handle> | null) {
+    let isValid: boolean | null = null;
+    if (from && to) {
+      const [out, into] = from.type === 'source' ? [from, to] : [to, from];
+      isValid = captured.rf.isValidConnection({
+        source: out.nodeId, sourceHandle: out.id, target: into.nodeId, targetHandle: into.id,
+      });
+    }
+    act(() =>
+      captured.rf.onConnectEnd(new MouseEvent('mouseup'), {
+        isValid, fromHandle: from, toHandle: to, from: null, to: null,
+      }),
+    );
+  }
+
+  const messages = () => useToastStore.getState().toasts.map((x) => x.message);
+
+  it('names both types in a toast', () => {
+    release(handle('tensor', 'tensor', 'source'), handle('loader', 'dataset', 'target'));
+    expect(messages()).toEqual(['TENSOR cannot connect to DATASET']);
+  });
+
+  it('names them in source-to-target order when the drag starts at the input', () => {
+    release(handle('loader', 'dataset', 'target'), handle('tensor', 'tensor', 'source'));
+    expect(messages()).toEqual(['TENSOR cannot connect to DATASET']);
+  });
+
+  it('says it in the language on screen', () => {
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    release(handle('tensor', 'tensor', 'source'), handle('loader', 'dataset', 'target'));
+    expect(messages()).toEqual(['TENSOR 無法連接到 DATASET']);
+  });
+
+  it('stays silent for a release on the empty canvas', () => {
+    release(handle('tensor', 'tensor', 'source'), null);
+    expect(messages()).toEqual([]);
+  });
+
+  it('stays silent for a wire that connects', () => {
+    release(handle('tensor', 'tensor', 'source'), handle('loader', 'x', 'target'));
+    expect(messages()).toEqual([]);
+  });
+
+  it('stays silent for a refusal that is not about types', () => {
+    // The same wire twice is refused (#619), and both ports are TENSOR.
+    act(() =>
+      setTab({
+        edges: [{ id: 'e1', source: 'tensor', sourceHandle: 'tensor', target: 'loader', targetHandle: 'x' }],
+      }),
+    );
+    release(handle('tensor', 'tensor', 'source'), handle('loader', 'x', 'target'));
+    expect(messages()).toEqual([]);
+  });
+
+  it('stays silent for an output dropped on another output', () => {
+    release(handle('tensor', 'tensor', 'source'), handle('loader', 'dataset', 'source'));
+    expect(messages()).toEqual([]);
+  });
+});
+
+// ── The minimap and fit view (#687) ────────────────────────────────────────
+
+describe('the minimap and fit view (#687)', () => {
+  let flowStore: ReturnType<typeof useStoreApi> | null = null;
+  function StoreProbe() {
+    flowStore = useStoreApi();
+    return null;
+  }
+
+  function renderSized(width: number, height: number) {
+    setTab({
+      nodes: [
+        node('first', { position: { x: 0, y: 0 } }),
+        node('last', { position: { x: 600, y: 300 } }),
+      ],
+    });
+    renderWithFlow(
+      <>
+        <StoreProbe />
+        <FlowCanvas />
+      </>,
+    );
+    // The canvas size React Flow measures.
+    act(() => flowStore!.setState({ width, height }));
+  }
+
+  it('leaves no node under the minimap after the fit-view control', () => {
+    renderSized(1200, 800);
+    expect(screen.getByTestId('minimap')).toBeTruthy();
+    // Fit the graph's box with the options the control is given.
+    const bounds = { x: 0, y: 0, width: 800, height: 380 };
+    const { x, y, zoom } = getViewportForBounds(
+      bounds, 1200, 800, 0.1, 2, captured.controls.fitViewOptions.padding,
+    );
+    // The minimap is 200 x 150, 15 px in from the bottom-right corner.
+    const minimap = { left: 1200 - 15 - 200, top: 800 - 15 - 150 };
+    const right = (bounds.x + bounds.width) * zoom + x;
+    const bottom = (bounds.y + bounds.height) * zoom + y;
+    expect(right <= minimap.left || bottom <= minimap.top).toBe(true);
+    // The first fit, on mount, frames the same way.
+    expect(captured.rf.fitViewOptions).toBe(captured.controls.fitViewOptions);
+  });
+
+  it('hides the minimap on a narrow canvas, and fit view uses the whole width', () => {
+    renderSized(450, 800);
+    expect(screen.queryByTestId('minimap')).toBeNull();
+    expect(captured.controls.fitViewOptions).toEqual({ padding: 0.1 });
+  });
+
+  it('hides the minimap on a short canvas', () => {
+    renderSized(1200, 300);
+    expect(screen.queryByTestId('minimap')).toBeNull();
+  });
+
+  it('keeps the minimap before React Flow has measured the canvas', () => {
+    renderSized(0, 0);
+    expect(screen.getByTestId('minimap')).toBeTruthy();
   });
 });
 

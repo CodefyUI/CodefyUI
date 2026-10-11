@@ -611,6 +611,7 @@ const en = {
   'graphValidation.param_not_number': '{node}: "{param}" must be a number (got {value})',
   'graphValidation.param_below_min': '{node}: "{param}" is {value}, below the minimum {min}',
   'graphValidation.param_above_max': '{node}: "{param}" is {value}, above the maximum {max}',
+  'graphValidation.param_not_an_option': '{node}: "{param}" is {value}, which is not one of its options ({options})',
   'graphValidation.unknown_node_type': '{node}: node type "{type}" is not installed',
   'graphValidation.unknown_preset': '{node}: preset "{preset}" is not available',
   'graphValidation.invalid_output_port': '{node} has no output "{port}"',
@@ -1305,6 +1306,8 @@ const en = {
 
   // Edge data tooltip
   'edge.viewStats': 'View stats',
+  // A data wire released on a port of a type it cannot feed (#685)
+  'canvas.wireRefused': '{from} cannot connect to {to}',
 
   // Shared plots
   'plot.noData': 'No data',

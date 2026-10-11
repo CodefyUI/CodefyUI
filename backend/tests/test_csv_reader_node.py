@@ -106,3 +106,66 @@ def test_target_with_numeric_values_stringified(tmp_path):
     path.write_text("x,y,target\n1,2,0\n3,4,1\n5,6,0\n", encoding="utf-8")
     res = _run(path, target_column="target")
     assert res["labels"] == ["0", "1", "0"]
+
+
+# ── #709: missing target values, integral labels, NaN features ──
+
+
+def _write(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "data.csv"
+    path.write_text(text)
+    return path
+
+
+_GAPPY = (
+    "x1,x2,label\n"
+    "0.1,0.2,0\n"
+    "0.3,0.1,1\n"
+    "0.2,0.4,0\n"
+    "0.5,0.7,\n"
+    "0.6,0.9,1\n"
+    "0.4,0.3,\n"
+)
+
+
+def test_missing_target_is_refused_naming_the_rows(tmp_path):
+    with pytest.raises(ValueError, match=r"label.*2 row\(s\): data rows 4, 6"):
+        _run(_write(tmp_path, _GAPPY), target_column="label")
+
+
+def test_drop_missing_target_drops_rows_keeps_integer_labels_and_logs(tmp_path, caplog):
+    warnings: list[tuple[str, str]] = []
+
+    class _Ctx:
+        def log_warning(self, kind, detail):
+            warnings.append((kind, detail))
+
+    p = {"path": str(_write(tmp_path, _GAPPY)), "target_column": "label",
+         "include_columns": "", "skip_header": True, "drop_missing_target": True}
+    with caplog.at_level("WARNING"):
+        res = CSVReaderNode().execute({}, p, context=_Ctx())
+    assert res["labels"] == ["0", "1", "0", "1"]
+    assert torch.allclose(
+        res["tensor"], torch.tensor([[0.1, 0.2], [0.3, 0.1], [0.2, 0.4], [0.6, 0.9]])
+    )
+    assert "data rows 4, 6" in caplog.text
+    assert len(warnings) == 1 and "data rows 4, 6" in warnings[0][1]
+
+
+def test_float_written_integer_labels_render_as_ints(tmp_path):
+    res = _run(_write(tmp_path, "x,label\n1,0.0\n2,1.0\n3,2.0\n"), target_column="label")
+    assert res["labels"] == ["0", "1", "2"]
+
+
+def test_non_integral_float_labels_keep_their_decimals(tmp_path):
+    res = _run(_write(tmp_path, "x,label\n1,0.5\n2,1.0\n"), target_column="label")
+    assert res["labels"] == ["0.5", "1.0"]
+
+
+def test_nan_in_a_feature_column_is_warned_by_name(tmp_path, caplog):
+    path = _write(tmp_path, "x1,x2,label\n1,2,a\n,4,b\n5,6,a\n")
+    with caplog.at_level("WARNING"):
+        res = _run(path, target_column="label")
+    assert torch.isnan(res["tensor"][1, 0])
+    assert "x1 (1)" in caplog.text
+    assert "x2" not in caplog.text
