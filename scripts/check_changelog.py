@@ -135,6 +135,29 @@ def _unreleased_entries(text: str) -> list[str]:
     return entries or []
 
 
+def _repeated_subsections(text: str) -> list[str]:
+    """A ``### `` heading that appears more than once under one ``## ``."""
+    found: list[str] = []
+    section, seen = None, {}
+
+    def report() -> None:
+        for sub, count in seen.items():
+            if count > 1:
+                found.append(f"## {section} has ### {sub} {count} times: merge them into "
+                             f"one ### {sub}")
+
+    for line in text.splitlines():
+        heading = _HEADING.match(line)
+        if heading:
+            report()
+            section, seen = heading.group(1).strip(), {}
+        elif section is not None and line.startswith("### "):
+            sub = line[4:].strip()
+            seen[sub] = seen.get(sub, 0) + 1
+    report()
+    return found
+
+
 def _defined_twice(label: str, count: int) -> str:
     return (f"[{label}]: is defined {count} times, and Markdown uses the first: "
             f"delete the stale one")
@@ -162,6 +185,10 @@ def problems(text: str, version: str) -> list[str]:
                      f"is above it")
     if unreleased > 1:
         found.append(f"## [Unreleased] appears {unreleased} times: keep one, above {newest}")
+
+    # Each section lists a subsection once. A merge that resolves a conflict
+    # by keeping both sides leaves a second ### Fixed below the first.
+    found.extend(_repeated_subsections(text))
 
     # The newest release sits right below it, dated, and is the version shipped.
     if not versions:
