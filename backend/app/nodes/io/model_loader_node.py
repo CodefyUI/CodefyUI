@@ -189,6 +189,7 @@ _CODEFYUI_MODULE_CLASSES: tuple[tuple[str, str], ...] = (
     ("app.nodes.utility.sequential_modules", "GRUBlock"),
     ("app.nodes.utility.sequential_modules", "RNNBlock"),
     ("app.nodes.utility.sequential_modules", "MultiHeadAttentionBlock"),
+    ("app.nodes.utility.sequential_modules", "PositionalEncodingBlock"),
 
     # The LLM wave's model (#289) and the three classes it is built from --
     # admitting the outer class alone would refuse the file one level down.
