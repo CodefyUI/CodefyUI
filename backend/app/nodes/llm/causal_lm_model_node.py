@@ -469,6 +469,20 @@ class CausalLMModule(nn.Module):
         # ``.long()`` rather than a rejection for int32/int16: nn.Embedding
         # only takes long, and widening an integer id is never lossy.
         ids = input_ids if input_ids.dtype == torch.long else input_ids.long()
+        if not getattr(self, "_ids_checked", False):
+            # Once per module, because ``.item()`` waits for the device. On
+            # MPS an id past the embedding table reads a row of zeros and
+            # trains without an error (#681), so this is the only place a
+            # tokenizer bigger than vocab_size is caught when no node upstream
+            # knew the tokenizer's size.
+            largest = int(ids.max().item()) if ids.numel() else -1
+            if largest >= self.vocab_size:
+                raise ValueError(
+                    f"CausalLMModel got token id {largest}, but its "
+                    f"vocab_size is {self.vocab_size}, so ids must be below "
+                    f"{self.vocab_size}. Set vocab_size to the tokenizer's "
+                    f"vocab_size (LMTokenizer's vocab_size output).")
+            self._ids_checked = True
 
         x = self.tok_emb(ids)
         if self.pos_emb is not None:
@@ -495,6 +509,44 @@ class CausalLMModule(nn.Module):
                 x = block(x, cos, sin)
 
         return self.lm_head(self.norm_f(x))
+
+
+def check_vocab_fits(model: Any, tokenizer_vocab_size: Any, *, node: str) -> None:
+    """Refuse a CausalLMModel whose vocab_size is smaller than the tokenizer's.
+
+    *model* that is not a CausalLMModel, or an unknown tokenizer size, passes:
+    there is nothing to compare. Raised before the first batch, so the error
+    names both sizes on every device; without it MPS trains on zero vectors
+    for the ids past the table and reports a perplexity that means nothing
+    (#681).
+    """
+    model_vocab = getattr(model, "vocab_size", None)
+    if not isinstance(model, nn.Module) or not isinstance(model_vocab, int):
+        return
+    if not isinstance(tokenizer_vocab_size, int) or isinstance(tokenizer_vocab_size, bool):
+        return
+    if tokenizer_vocab_size > model_vocab:
+        raise ValueError(
+            f"{node}: the tokenizer emits ids up to {tokenizer_vocab_size - 1} "
+            f"but CausalLMModel.vocab_size is {model_vocab}. Set CausalLMModel's "
+            f"vocab_size to {tokenizer_vocab_size} (LMTokenizer's vocab_size "
+            f"output) and rebuild the model.")
+
+
+def tokenizer_vocab_size_of(data: Any) -> int | None:
+    """The tokenizer size LMTokenizedDataset recorded on *data*, if any.
+
+    Looks through the ``.dataset`` of a DataLoader and of a Subset, so the
+    dataloader TrainingLoop receives answers the same as the dataset itself.
+    """
+    for _ in range(4):
+        if data is None:
+            return None
+        size = getattr(data, "tokenizer_vocab_size", None)
+        if isinstance(size, int):
+            return size
+        data = getattr(data, "dataset", None)
+    return None
 
 
 def _positive_int(params: dict[str, Any], name: str, default: int) -> int:

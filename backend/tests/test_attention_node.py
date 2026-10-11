@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from app.core.execution_context import ExecutionContext
@@ -82,3 +83,53 @@ def test_cross_attention_with_different_sequences():
     )
     # Output sequence length matches query sequence length
     assert res["output"].shape == (3, 1, 16)
+
+
+# ── #686: the step-through trace is the layer's own computation ─────────────
+
+
+def _trace(res, name):
+    (step,) = [s for s in res["__steps__"] if s.name == name]
+    return step.tensors
+
+
+@pytest.mark.parametrize("batch_first", [False, True])
+def test_trace_weights_and_output_equal_the_node_outputs(batch_first):
+    torch.manual_seed(0)
+    x = torch.randn(1, 5, 8) if batch_first else torch.randn(5, 1, 8)
+    res = MultiHeadAttentionNode().execute(
+        {"query": x, "key": x, "value": x},
+        {"embed_dim": 8, "num_heads": 2, "batch_first": batch_first},
+        context=_ctx(verbose=True),
+    )
+    output = res["output"] if batch_first else res["output"].transpose(0, 1)
+
+    torch.testing.assert_close(_trace(res, "softmax_weights")["weights"], res["weights"])
+    torch.testing.assert_close(_trace(res, "attended_output")["output"], output)
+
+
+def test_trace_handles_cross_attention_and_unbatched_input():
+    torch.manual_seed(1)
+    q, kv = torch.randn(3, 8), torch.randn(6, 8)
+    res = MultiHeadAttentionNode().execute(
+        {"query": q, "key": kv, "value": kv},
+        {"embed_dim": 8, "num_heads": 4},
+        context=_ctx(verbose=True),
+    )
+    weights = _trace(res, "softmax_weights")
+    assert weights["head_weights"].shape == (4, 3, 6)
+    torch.testing.assert_close(weights["weights"], res["weights"])
+    torch.testing.assert_close(_trace(res, "attended_output")["output"], res["output"])
+
+
+def test_trace_scales_scores_by_the_head_dimension():
+    torch.manual_seed(2)
+    x = torch.randn(4, 1, 8)
+    res = MultiHeadAttentionNode().execute(
+        {"query": x, "key": x, "value": x},
+        {"embed_dim": 8, "num_heads": 2},
+        context=_ctx(verbose=True),
+    )
+    heads = _trace(res, "split_heads")
+    expected = heads["Q"] @ heads["K"].transpose(-2, -1) / 2.0  # sqrt(d_k), d_k = 4
+    torch.testing.assert_close(_trace(res, "scaled_scores")["scores"], expected)

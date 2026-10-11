@@ -204,7 +204,7 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d)
 
         # Combine causal + explicit mask into a single boolean. True = blocked.
-        combined_mask = self._build_mask(seq, causal, inputs.get("mask"))
+        combined_mask = self._build_mask(seq, causal, inputs.get("mask"), scores.device)
         if combined_mask is not None:
             # Broadcast mask [seq, seq] over batch dim.
             scores = scores.masked_fill(combined_mask.unsqueeze(0), float("-inf"))
@@ -272,11 +272,15 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
         return {"output": output, "weights": weights_out, "labels": labels_out}
 
     @staticmethod
-    def _build_mask(seq: int, causal: bool, explicit_mask: Any) -> torch.Tensor | None:
+    def _build_mask(
+        seq: int, causal: bool, explicit_mask: Any, device: torch.device | str = "cpu"
+    ) -> torch.Tensor | None:
         """Combine causal + explicit masks. Returns None if no masking needed."""
         causal_mask = None
         if causal:
-            causal_mask = torch.triu(torch.ones(seq, seq, dtype=torch.bool), diagonal=1)
+            causal_mask = torch.triu(
+                torch.ones(seq, seq, dtype=torch.bool, device=device), diagonal=1
+            )
 
         ext_mask = None
         if explicit_mask is not None:
@@ -289,6 +293,7 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
                 raise ValueError(
                     f"EduSelfAttention: mask shape {tuple(ext_mask.shape)} doesn't match seq_len={seq}."
                 )
+            ext_mask = ext_mask.to(device)
 
         if causal_mask is None and ext_mask is None:
             return None
