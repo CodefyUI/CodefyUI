@@ -188,6 +188,24 @@ received — each links to the release it was published as.
   downloaded and deleted** ([#710]). Upload accepted `X.PT`, and the list,
   download and delete routes compared the extension case-sensitively, so the
   file was left in the models folder with no way to reach it.
+- **Ten built-in nodes describe their ports and params in English**
+  ([#693]). RandomForestClassifier, DatasetBatch, RowSelector,
+  SyntheticSegmentation, SyntheticSequence, SyntheticShapes, Argmax,
+  DiffusionTrainingLoop, DecisionBoundary and ScatterPlot2D showed Chinese
+  port and param descriptions in the English UI. The Chinese text moved to the
+  zh-TW node catalog, which now also translates input and output
+  descriptions, so the Chinese UI still shows it on port hover and in the Docs
+  tab. DiffusionTrainingLoop's `device` param uses the shared English
+  description.
+- **The Chinese UI translates node categories, example categories, new tab
+  names and preset descriptions** ([#684]). The node list headings, the
+  category line in Node Config, the node card header and the quick search
+  read 資料, 張量運算, 傳統機器學習 and so on; acronyms such as CNN and LLM
+  stay as they are. Example chips and the gallery's detail pane read 使用範例
+  and 模型架構, and an example search matches the category in either
+  language. A new tab is named 分頁 2, and the three built-in presets have
+  Chinese descriptions in the node list, the quick search, Node Config and
+  the preset dialog.
 - **A run waiting to start says it is queued** ([#680]). A canvas run that
   waits for another run to release the process-wide seed lock, or a run that
   waits in its device's queue, showed Running with an empty log. The toolbar
@@ -5839,6 +5857,7 @@ Release candidates before 1.0.0 are on the
 [#681]: https://github.com/CodefyUI/CodefyUI/issues/681
 [#682]: https://github.com/CodefyUI/CodefyUI/issues/682
 [#683]: https://github.com/CodefyUI/CodefyUI/issues/683
+[#684]: https://github.com/CodefyUI/CodefyUI/issues/684
 [#685]: https://github.com/CodefyUI/CodefyUI/issues/685
 [#686]: https://github.com/CodefyUI/CodefyUI/issues/686
 [#687]: https://github.com/CodefyUI/CodefyUI/issues/687
@@ -5847,6 +5866,7 @@ Release candidates before 1.0.0 are on the
 [#690]: https://github.com/CodefyUI/CodefyUI/issues/690
 [#691]: https://github.com/CodefyUI/CodefyUI/issues/691
 [#692]: https://github.com/CodefyUI/CodefyUI/issues/692
+[#693]: https://github.com/CodefyUI/CodefyUI/issues/693
 [#694]: https://github.com/CodefyUI/CodefyUI/issues/694
 [#695]: https://github.com/CodefyUI/CodefyUI/issues/695
 [#696]: https://github.com/CodefyUI/CodefyUI/issues/696

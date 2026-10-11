@@ -120,14 +120,14 @@ class SyntheticSequenceNode(BaseNode):
             PortDefinition(
                 name="dataset",
                 data_type=DataType.DATASET,
-                description="序列資料集：每筆是 (序列 (seq_len,) int64、標籤 int)。",
+                description="Sequence dataset: each item is (sequence (seq_len,) int64, label int).",
             ),
             PortDefinition(
                 name="vocab_size",
                 data_type=DataType.SCALAR,
                 description=(
-                    "這份資料用到的 Token 種類數（= n_classes + n_distractors）。"
-                    "下游 Embedding 的 num_embeddings 至少要設成這個數。"
+                    "Number of distinct tokens in the data (n_classes + n_distractors). "
+                    "Set a downstream Embedding's num_embeddings to at least this."
                 ),
             ),
         ]
@@ -141,30 +141,35 @@ class SyntheticSequenceNode(BaseNode):
                 default="recall_first",
                 options=["recall_first", "recall_last"],
                 description=(
-                    "recall_first：答案在第 1 個位置，模型必須把它記到最後一步（依賴距離 = seq_len）。"
-                    "recall_last：答案在最後一個位置（依賴距離 = 1）。"
-                    "兩者其餘完全相同，只差『距離』——這是梯度消失對照實驗的唯一變因。"
+                    "recall_first: the answer is at the first position, so the model must carry it "
+                    "to the last step (dependency distance = seq_len). recall_last: the "
+                    "answer is at the last position (distance = 1). Everything else is the "
+                    "same, so distance is the only variable in a vanishing-gradient comparison."
                 ),
             ),
             ParamDefinition(
                 name="seq_len",
                 param_type=ParamType.INT,
                 default=60,
-                description="每條序列的長度 T。調大會拉長依賴距離，純 RNN 會先撐不住。",
+                description=(
+                    "Length T of each sequence. A larger T stretches the dependency distance, "
+                    "and a plain RNN fails first."
+                ),
             ),
             ParamDefinition(
                 name="n_samples",
                 param_type=ParamType.INT,
                 default=2000,
-                description="產生幾筆序列。",
+                description="Number of sequences to generate.",
             ),
             ParamDefinition(
                 name="n_classes",
                 param_type=ParamType.INT,
                 default=10,
                 description=(
-                    "答案有幾種（也就是分類的類別數）。Token 0 到 n_classes-1 是答案 Token，"
-                    "同時也是標籤。亂猜的準確率是 1/n_classes。"
+                    "Number of possible answers (the number of classes). Tokens 0 to "
+                    "n_classes-1 are the answer tokens and also the labels. Chance "
+                    "accuracy is 1/n_classes."
                 ),
             ),
             ParamDefinition(
@@ -172,15 +177,15 @@ class SyntheticSequenceNode(BaseNode):
                 param_type=ParamType.INT,
                 default=10,
                 description=(
-                    "干擾 Token 有幾種。它們佔用 n_classes 之後的編號，本身不帶任何資訊，"
-                    "唯一的作用是把答案和輸出隔開。"
+                    "Number of distractor tokens. They take the ids after n_classes, carry no "
+                    "information, and only separate the answer from the output."
                 ),
             ),
             ParamDefinition(
                 name="seed",
                 param_type=ParamType.INT,
                 default=0,
-                description="隨機種子。訓練集與測試集請用不同的 seed。",
+                description="Random seed. Use different seeds for the training and test sets.",
             ),
         ]
 

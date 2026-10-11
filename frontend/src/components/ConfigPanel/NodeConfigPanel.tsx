@@ -1,5 +1,6 @@
 import { useTabStore } from '../../store/tabStore';
 import { readablePresetNodes, resolveDynamicInputs, resolveDynamicOutputs } from '../../utils';
+import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { NodeParamList } from '../shared/NodeParamList';
@@ -14,7 +15,7 @@ export function NodeConfigPanel() {
   const selectedNodeId = activeTab.selectedNodeId;
   const openPresetModal = useTabStore((s) => s.openPresetModal);
   const isCanvasPanning = useUIStore((s) => s.isCanvasPanning);
-  const { t, tn } = useI18n();
+  const { t, tn, tp } = useI18n();
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const def = selectedNode?.data.definition;
@@ -59,13 +60,17 @@ export function NodeConfigPanel() {
           )}
         </div>
         <div className={styles.headerCategory} style={{ color: accentColor }}>
-          {category}
+          {nodeCategoryLabel(category, t)}
         </div>
         {def?.description && (
           <MathText
             as="div"
             className={styles.headerDescription}
-            text={tn(nodeName, 'description', def.description)}
+            text={
+              isPreset
+                ? tp(nodeName, def.description)
+                : tn(nodeName, 'description', def.description)
+            }
           />
         )}
       </div>

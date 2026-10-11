@@ -219,6 +219,21 @@ describe('presetSearchTexts', () => {
     expect(matchTier('LeNet', presetSearchTexts(tagged('beginner')), '中級')).toBeNull();
   });
 
+  // #684: the palette shows a shipped preset's description in the UI
+  // language, so a search for words in it has to find the preset.
+  it('reads the translated description of a shipped preset', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const preset = {
+      preset_name: 'Simple CNN Classifier',
+      category: 'CNN',
+      description: 'A basic CNN classifier',
+      tags: [],
+    } as unknown as PresetDefinition;
+    const texts = presetSearchTexts(preset);
+    expect(matchTier('Simple CNN Classifier', texts, '影像分類')).toBe(MatchTier.Text);
+    expect(matchTier('Simple CNN Classifier', texts, 'basic cnn')).toBe(MatchTier.Text);
+  });
+
   it('adds no word for a tag that is not a difficulty, an inherited key included', () => {
     useI18n.setState({ locale: 'zh-TW' });
     expect(presetSearchTexts(tagged('vision', 'constructor'))).toEqual([

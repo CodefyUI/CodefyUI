@@ -372,8 +372,8 @@ def test_every_device_param_offers_the_indexed_forms(four_cards):
         raw = params["device"]
         assert raw.advanced is True, name
         assert raw.options == list(DEVICE_PARAM_OPTIONS), name
-        if name != "DiffusionTrainingLoop":
-            assert raw.description == DEVICE_PARAM_DESCRIPTION, name
+        # DiffusionTrainingLoop was exempt while its text was Chinese (#693).
+        assert raw.description == DEVICE_PARAM_DESCRIPTION, name
         definition = _node_to_definition(name, cls)
         device_param = next(p for p in definition.params if p.name == "device")
         assert "cuda:2" in device_param.options, name

@@ -173,6 +173,21 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getByText('5 nodes')).toBeInTheDocument();
   });
 
+  // #684: the chip read "Usage Example" in the Chinese UI.
+  it('labels the category chip in the UI language', async () => {
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Train MLP', category: 'Usage_Example', section: 'quickstart' }),
+      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris', section: 'concepts' }),
+    ]);
+    renderOverlay();
+
+    await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
+    expect(screen.getByText('使用範例')).toBeInTheDocument();
+    expect(screen.getByText('傳統機器學習')).toBeInTheDocument();
+    expect(screen.queryByText('Usage Example')).toBeNull();
+  });
+
   it('renders the sections in the contract order, whatever order the server listed', async () => {
     // Deliberately shuffled: the order comes from the gallery metadata each
     // example carries, not from where the backend happened to put it.

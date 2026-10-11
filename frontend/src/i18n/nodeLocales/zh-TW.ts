@@ -100,6 +100,21 @@ const zhTW: NodeTranslations = {
       'sklearn 的 RandomForestClassifier：每棵樹在隨機重抽的樣本上訓練，投票結果以各類別機率輸出，' +
       '邊界比單棵決策樹平滑。n_estimators 決定樹的數量，越多越穩也越慢；max_depth 設成 0 代表深度不限。輸入與 ' +
       'predictions 輸出和其他 classical 分類器一致。',
+    params: {
+      n_estimators: '森林裡的樹數量。越多通常越穩、越慢。',
+      max_depth: '每棵樹的最大深度，0 = 不限。',
+      seed: '隨機種子，固定後結果可重現。',
+    },
+    inputs: {
+      x_train: '訓練特徵 [N, F]。',
+      y_train: '訓練標籤（長度 N）。',
+      x_query: '要分類的查詢特徵 [M, F]。',
+    },
+    outputs: {
+      predictions: '每筆查詢的預測標籤。',
+      probabilities: '各類別的投票機率 [M, C]。',
+      classes: '類別標籤，與 probabilities 欄序一致（排序後）。',
+    },
   },
 
   // ── CNN ──
@@ -568,6 +583,10 @@ const zhTW: NodeTranslations = {
       n_distractors: '干擾 Token 有幾種。它們不帶任何資訊，只負責把答案和輸出隔開。',
       seed: '可重現用的隨機種子。訓練集與測試集請用不同的 seed。',
     },
+    outputs: {
+      dataset: '序列資料集：每筆是 (序列 (seq_len,) int64、標籤 int)。',
+      vocab_size: '這份資料用到的 Token 種類數（= n_classes + n_distractors）。下游 Embedding 的 num_embeddings 至少要設成這個數。',
+    },
   },
   HuggingFaceDataset: {
     description: '從 HuggingFace 載入影像分類資料集',
@@ -761,24 +780,63 @@ const zhTW: NodeTranslations = {
     details:
       '影像輸出形狀為 (N, C, H, W)。標籤在分類資料集是 (N,) 的類別編號，在分割資料集是 (N, H, W) 的逐像素遮罩。' +
       'start_index 超過資料集長度時會繞回開頭。',
+    params: {
+      batch_size: '一次取幾筆樣本（決定輸出的 N）。',
+      start_index: '從資料集的第幾筆開始取（方便換不同樣本觀察）。',
+    },
+    inputs: {
+      dataset: '來源資料集（例如 Dataset 節點輸出的 MNIST）。',
+    },
+    outputs: {
+      images: '影像批次張量，形狀 (N, C, H, W)。',
+      labels: '對應的標籤：分類資料集是 (N,) 類別；分割資料集是 (N, H, W) 的逐像素遮罩。',
+    },
   },
   RowSelector: {
     description: '從 2D 張量中挑出指定的列，依位置或名稱',
     details:
       '用名稱挑選時必須連上 labels 輸入；indices 與 names 同時設定時以 names 為準。要依條件（例如分數 > 80）' +
       '篩選，請用 EDU 套件裡的 FilterRows。',
+    params: {
+      indices: '逗號分隔的列索引，例如 \'0,2,3\'。當 `names` 留空時使用。',
+      names: '逗號分隔的列名稱。設定時優先於 `indices`，且需要連上 `labels` 輸入。',
+    },
+    inputs: {
+      tensor: '輸入的 2D tensor [rows, cols]。',
+      labels: '可選的列標籤清單——用 `names` 選列時需要連上。',
+    },
+    outputs: {
+      tensor: 'shape [len(selected_rows), cols] 的 tensor。',
+    },
   },
   SyntheticSegmentation: {
     description: '生成影像與逐像素遮罩的資料集',
     details:
       '每張是單通道小圖，上面隨機畫一到兩個形狀；遮罩逐像素標記 0 為背景、1 為圓形、2 為方形，規模小到能在 CPU 上訓練 UNet。' +
       '全部由 seed 在記憶體中生成，不需要下載；訓練集與測試集請用不同的 seed。',
+    params: {
+      image_size: '正方形影像邊長（像素）。CPU 上建議 32–96。',
+      n_samples: '產生幾張影像。',
+      noise: '加到影像上的高斯雜訊強度（不影響遮罩）。',
+      seed: '亂數種子；換 seed 換一批不同的圖（train / test 用不同 seed）。',
+    },
+    outputs: {
+      dataset: '分割資料集：每筆是 (影像 (1,H,W) float、遮罩 (H,W) 整數，0/1/2 三類)。',
+    },
   },
   SyntheticShapes: {
     description: '生成小圖資料集，每張有一個柔和光斑',
     details:
       '影像為單通道，數值正規化到 [-1, 1]，也就是擴散模型訓練慣用的範圍。每個光斑是暗背景上的高斯函數，位置與大小由 seed 決定。' +
       '每筆附一個固定為 0 的假標籤，可以直接通過 DataLoader。',
+    params: {
+      image_size: '正方形影像邊長（像素）。擴散在 CPU 上偏慢，建議 16–32。',
+      n_samples: '產生幾張影像。',
+      seed: '亂數種子，決定這批光斑的位置與大小。',
+    },
+    outputs: {
+      dataset: '影像生成資料集：每筆是 (影像 (1,H,W) float、範圍 [-1,1])。',
+    },
   },
 
   // ── Training ──
@@ -1131,6 +1189,16 @@ const zhTW: NodeTranslations = {
   },
   Argmax: {
     description: '沿指定維度取最大值的索引',
+    params: {
+      dim: '沿哪一維取 argmax。分割輸出 (N,C,H,W) 取類別用 dim=1。',
+      keepdim: '是否保留被取的那一維（長度變 1）。',
+    },
+    inputs: {
+      tensor: '輸入張量（通常是 logits）。',
+    },
+    outputs: {
+      tensor: 'argmax 後的索引張量（少掉被取的那一維）。',
+    },
   },
   ScalarMultiply: {
     description: '把張量的每個元素乘上一個常數',
@@ -1227,10 +1295,33 @@ const zhTW: NodeTranslations = {
     details:
       'model 要接 Classifier 節點的輸出：節點會在涵蓋 x_train 的密格上呼叫 predict()，而且只支援 2D 特徵。' +
       'grid_steps 越大邊界越平滑也越慢；show_support_vectors 只在 model 是 SVM 時有效。',
+    params: {
+      grid_steps: '每軸鋪幾格（越大邊界越平滑、越慢）。',
+      show_support_vectors: '標出支持向量（只有 SVM 的 model 帶這個資訊；其他分類器會自動忽略）。',
+      title: '圖標題。',
+    },
+    inputs: {
+      model: 'Classifier 節點吐出的 model（訓練好的分類器）。',
+      x_train: '訓練特徵 [N, 2]（決定畫布範圍、疊點；只支援 2D）。',
+      y_train: '訓練標籤（長度 N，給疊點上色）。',
+    },
+    outputs: {
+      image: 'base64 編碼的 PNG 決策邊界圖。',
+    },
   },
   ScatterPlot2D: {
     description: '把 (N, 2) 的點畫成散點圖，依標籤上色',
     details: '沒有接 labels 時，所有點都畫成同一個顏色。',
+    params: {
+      title: '圖標題。',
+    },
+    inputs: {
+      points: '2D 點，shape [N, 2]。',
+      labels: '每點的類別標籤（長度 N）；沒接就全部畫成同一色。',
+    },
+    outputs: {
+      image: 'base64 編碼的 PNG 散點圖。',
+    },
   },
 
   // ── LLM ──
@@ -1626,6 +1717,25 @@ const zhTW: NodeTranslations = {
       '每一步取一張乾淨影像、隨機挑一個時間步加上雜訊，再用預測雜訊與實際雜訊的 MSE 更新權重，輸出訓練後的模型與每輪 loss。' +
       '這裡設定的雜訊排程（schedule、num_timesteps、beta_start、beta_end）會記錄在訓練後的模型上，' +
       'DDPMSampler 會用它取樣，並在自身參數不同時發出警告。',
+    params: {
+      epochs: '訓練幾輪。',
+      batch_size: '每批幾張圖。',
+      lr: '學習率（Adam）。',
+      num_timesteps: '擴散總步數 T。要和取樣的 DDPMSampler 的 num_steps 一致。',
+      schedule: '雜訊排程。要和 DDPMSampler 一致。linear + beta_end=0.05 在小 T 下既能噪滿又穩定。',
+      beta_start: 'linear 排程起始 beta（要和 DDPMSampler 一致）。',
+      beta_end: 'linear 排程結束 beta（要和 DDPMSampler 一致）。',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
+      seed: '亂數種子（決定每步挑的時間步與加的雜訊）。',
+    },
+    inputs: {
+      model: '會去雜訊的 U-Net（如 DiffusionUNet），forward 吃 (x, t) 吐預測雜訊。',
+      dataset: '乾淨影像資料集（如 SyntheticShapes），每筆 (影像, 標籤)，標籤會被忽略。',
+    },
+    outputs: {
+      model: '訓練好的去雜訊模型。',
+      losses: '每個 epoch 的平均訓練 loss。',
+    },
   },
 
   // ── VLA ──

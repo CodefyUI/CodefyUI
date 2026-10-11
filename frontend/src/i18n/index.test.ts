@@ -167,6 +167,20 @@ describe('useI18n store (runtime methods)', () => {
       expect(useI18n.getState().tn('Start', 'param.anything', 'FB')).toBe('FB');
     });
 
+    // #693: port descriptions are translated from the catalog like params.
+    it('translates input and output port descriptions, per side', async () => {
+      const { useI18n } = await import('./index');
+      useI18n.getState().setLocale('zh-TW');
+      const { tn } = useI18n.getState();
+      expect(tn('Argmax', 'input.tensor', 'FB')).toBe('輸入張量（通常是 logits）。');
+      expect(tn('Argmax', 'output.tensor', 'FB')).toBe('argmax 後的索引張量（少掉被取的那一維）。');
+      expect(tn('Argmax', 'input.__nope__', 'FB')).toBe('FB');
+      // Start has no port table at all.
+      expect(tn('Start', 'output.trigger', 'FB')).toBe('FB');
+      useI18n.getState().setLocale('en');
+      expect(useI18n.getState().tn('Argmax', 'input.tensor', 'FB')).toBe('FB');
+    });
+
     it('returns fallback for a field that is neither description nor param.*', async () => {
       const { useI18n } = await import('./index');
       useI18n.getState().setLocale('zh-TW');
@@ -174,6 +188,23 @@ describe('useI18n store (runtime methods)', () => {
         useI18n.getState().tn('Start', 'somethingElse' as never, 'FB'),
       ).toBe('FB');
     });
+  });
+});
+
+describe('tp()', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  // #684: shipped preset descriptions were English in the Chinese UI.
+  it('translates a shipped preset description and falls back for any other', async () => {
+    const { useI18n } = await import('./index');
+    useI18n.getState().setLocale('zh-TW');
+    const { tp } = useI18n.getState();
+    expect(tp('Training Pipeline', 'FB')).toMatch(/^完整的訓練流程/);
+    expect(tp('A preset a user saved', 'FB')).toBe('FB');
+    useI18n.getState().setLocale('en');
+    expect(useI18n.getState().tp('Training Pipeline', 'FB')).toBe('FB');
   });
 });
 
