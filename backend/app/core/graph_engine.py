@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 from ..config import settings
+from .advisories import emit_advisory
 from .backward_pass import (
     attach_retain_grad,
     capture_grads,
@@ -2162,6 +2163,124 @@ def topological_levels(nodes: list[dict], edges: list[dict]) -> list[list[str]]:
     return levels
 
 
+def _is_live_handle(value: Any) -> bool:
+    """True for an ``nn.Module`` or a ``torch.optim.Optimizer``.
+
+    These are the objects a node changes in place (``train()``/``eval()``,
+    ``to(device)``, an optimizer step), and every consumer of the output
+    they came from holds the same one.
+    """
+    try:
+        import torch
+    except ImportError:  # pragma: no cover - torch is a hard dependency
+        return False
+    return isinstance(value, (torch.nn.Module, torch.optim.Optimizer))
+
+
+def shared_handle_groups(
+    level: list[str],
+    inputs_of: Callable[[str], Iterable[Any]],
+) -> list[list[str]]:
+    """Split *level* into groups that may run concurrently (#696).
+
+    Nodes that receive the SAME live model or optimizer object end up in one
+    group, transitively, and keep their order from *level*; a group runs one
+    node at a time. Every other node is a group of its own, so independent
+    branches keep their parallelism. *inputs_of* yields the input values a
+    node is about to receive.
+
+    Running two of them at once is a data race on one module: Inference's
+    ``eval()`` switches Dropout and BatchNorm off in the middle of a
+    TrainingLoop's epoch, its ``to(device)`` moves the weights out from under
+    it, and two TrainingLoops stepping one module fail autograd's version
+    check.
+    """
+    parent = {nid: nid for nid in level}
+
+    def find(nid: str) -> str:
+        while parent[nid] != nid:
+            parent[nid] = parent[parent[nid]]
+            nid = parent[nid]
+        return nid
+
+    owner: dict[int, str] = {}
+    for nid in level:
+        for value in inputs_of(nid):
+            if not _is_live_handle(value):
+                continue
+            first = owner.setdefault(id(value), nid)
+            root_a, root_b = find(first), find(nid)
+            if root_a != root_b:
+                # The earlier node in the level stays the root, so a group
+                # is keyed by its first member.
+                if level.index(root_a) <= level.index(root_b):
+                    parent[root_b] = root_a
+                else:
+                    parent[root_a] = root_b
+
+    groups: dict[str, list[str]] = {}
+    for nid in level:
+        groups.setdefault(find(nid), []).append(nid)
+    return list(groups.values())
+
+
+#: Node types that update the weights of the model wired into them. One model
+#: output feeding two of these trains a single module twice (#696).
+_MODEL_TRAINING_NODE_TYPES = frozenset(
+    {"TrainingLoop", "DiffusionTrainingLoop", "Optimizer"})
+
+
+def shared_model_training_warnings(
+    nodes: list[dict], edges: list[dict],
+) -> list[str]:
+    """One warning per model output wired into more than one trainer.
+
+    A comparison built as two Optimizer -> TrainingLoop arms off one
+    SequentialModel trains ONE module: the arms share weights, and on a run
+    where they take turns the second arm starts from the first one's
+    result. The graph is legal and runs, so this is a warning and never a
+    refusal. Counted per kind (loops, optimizers), so the ordinary single
+    arm, where the model feeds one Optimizer and one TrainingLoop, is quiet.
+    """
+    from .validation_issues import validation_issue
+
+    node_type = {n["id"]: n.get("type", "") for n in nodes}
+    consumers: dict[tuple[str, str], dict[str, set[str]]] = {}
+    for edge in edges:
+        if edge.get("type", "data") == "trigger":
+            continue
+        kind = node_type.get(edge.get("target", ""), "")
+        if kind not in _MODEL_TRAINING_NODE_TYPES:
+            continue
+        if edge.get("targetHandle", "") != "model":
+            continue
+        group = "optimizer" if kind == "Optimizer" else "loop"
+        source = (edge["source"], edge.get("sourceHandle", ""))
+        consumers.setdefault(source, {}).setdefault(group, set()).add(
+            edge["target"])
+
+    warnings: list[str] = []
+    for (source_id, source_port), by_kind in consumers.items():
+        # The loops name the arms best; the optimizers when only they fan out.
+        trainers = sorted(by_kind.get("loop", ()))
+        if len(trainers) < 2:
+            trainers = sorted(by_kind.get("optimizer", ()))
+        if len(trainers) < 2:
+            continue
+        warnings.append(validation_issue(
+            "shared_model_training",
+            f"Node '{source_id}' output '{source_port}' is trained by "
+            f"{len(trainers)} nodes ({', '.join(trainers)}). They share one "
+            "set of weights, and each one continues from what the others "
+            "left. To compare training setups fairly, give each arm its "
+            "own model node.",
+            node_id=source_id,
+            port=source_port,
+            trainers=trainers,
+        ))
+    return warnings
+
+
 def invoke_node(
     instance: BaseNode,
     inputs: dict[str, Any],
@@ -3306,6 +3425,36 @@ async def execute_graph(
             node_errors[node_id] = str(last_error)
             await _emit_preset_aware(node_id, "error", error_detail)
 
+    def _input_values(node_id: str) -> Iterable[Any]:
+        """The values *node_id* is about to receive, as gathered above."""
+        for src_id, src_handle, _ in incoming.get(node_id, []):
+            produced = outputs.get(src_id)
+            if produced is not None and src_handle in produced:
+                yield produced[src_handle]
+
+    async def _execute_in_turn(
+        group: list[str],
+    ) -> list[BaseException | None]:
+        """Run *group* one node after another; one outcome per node.
+
+        A failure does not stop the rest of the group, the way a failing
+        sibling never stopped the others in a level: the caller decides
+        what to raise once the whole level has finished.
+        """
+        outcomes: list[BaseException | None] = []
+        for node_id in group:
+            try:
+                await _execute_single_node(node_id)
+            except CancellationError as exc:
+                # The rest of the group would only raise it again.
+                outcomes.extend([exc] * (len(group) - len(outcomes)))
+                break
+            except Exception as exc:  # noqa: BLE001 - reported by the caller
+                outcomes.append(exc)
+            else:
+                outcomes.append(None)
+        return outcomes
+
     # Entered by hand rather than with a ``with`` block so the whole body
     # below keeps its indentation; the paired exit lives in the ``finally``
     # that already owns this function's teardown.
@@ -3375,6 +3524,13 @@ async def execute_graph(
         if context is not None and getattr(context, "backward_mode", False):
             zero_module_grads(context.node_state_store, context.graph_id)
 
+        # One model trained by several nodes (#696). Legal, so it is said
+        # and the run goes on; the arms take turns on the shared module.
+        for note in shared_model_training_warnings(
+                expanded_nodes, expanded_edges):
+            emit_advisory(note, kind="shared_model_training", prefix="",
+                          context=context, logger=logger)
+
         # Execute level by level
         for level in levels:
             if context and context.cancelled:
@@ -3383,9 +3539,26 @@ async def execute_graph(
             if len(level) == 1:
                 await _execute_single_node(level[0])
             else:
-                # Run independent nodes in this level concurrently
-                tasks = [asyncio.create_task(_execute_single_node(nid)) for nid in level]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Run independent nodes in this level concurrently, except
+                # nodes handed the same live model or optimizer, which take
+                # turns in level order (#696). A seeded run is serial
+                # already, and keeps its one-task-per-node schedule.
+                groups = (
+                    [[nid] for nid in level] if max_workers == 1
+                    else shared_handle_groups(level, _input_values)
+                )
+                tasks = [asyncio.create_task(_execute_in_turn(group))
+                         for group in groups]
+                gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                # Back in level order, one outcome per node, so the first
+                # failure raised below is the one it always was.
+                outcome: dict[str, BaseException | None] = {}
+                for group, group_result in zip(groups, gathered):
+                    if isinstance(group_result, BaseException):
+                        outcome.update(dict.fromkeys(group, group_result))
+                    else:
+                        outcome.update(zip(group, group_result))
+                results = [outcome[nid] for nid in level]
                 for i, result in enumerate(results):
                     if isinstance(result, CancellationError):
                         raise result

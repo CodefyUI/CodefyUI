@@ -47,6 +47,7 @@ and is still a function of the run seed alone.
 
 from __future__ import annotations
 
+import copy
 import logging
 import random
 from typing import Any
@@ -413,11 +414,16 @@ def attach_transform(
     context: Any = None,
     label: str = "",
 ) -> Any:
-    """Install *pipeline* on an EXISTING *dataset*, seeded when asked for.
+    """Install *pipeline* on a copy of *dataset*, seeded when asked for.
 
-    Returns the dataset, which is mutated in place -- the same contract
-    ``TransformNode`` has always had, and what torchvision datasets expect
-    (``transform`` is a public, writable attribute on all of them). A node
+    Returns a shallow copy carrying the pipeline; *dataset* itself is left
+    as it was (#697). Every consumer of a ``Dataset`` output holds the same
+    object, so writing to it would hand the pipeline to a sibling branch
+    wired to the untransformed dataset, and two Transforms on one dataset
+    (train and eval) would overwrite each other. The copy shares the
+    samples, so it costs one object. ``transform`` is a public, writable
+    attribute on every torchvision dataset, and the copy keeps the source's
+    ``target_transform`` and ``transforms`` as they were. A node
     that builds the dataset itself should pass :func:`seeded_for_node` to
     the constructor instead.
 
@@ -439,8 +445,9 @@ def attach_transform(
             "it will not be applied to any sample -- this dataset builds its "
             "own tensors. Any augmentation wired here has no effect.",
             type(dataset).__name__)
-    dataset.transform = seed_pipeline(pipeline, context, node_id)
-    return dataset
+    transformed = copy.copy(dataset)
+    transformed.transform = seed_pipeline(pipeline, context, node_id)
+    return transformed
 
 
 class TransformStepNode(BaseNode):

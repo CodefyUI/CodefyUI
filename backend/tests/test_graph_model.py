@@ -250,3 +250,109 @@ def test_sequential_node_executes_v2_spec():
     model = result["model"]
     y = model(torch.randn(3, 4))
     assert y.shape == (3, 2)
+
+
+# ── #694: an activation must not rewrite a value another consumer reads ──
+
+
+def _pre_activation_skip(activation: str) -> dict:
+    """``Input -> <activation> -> Add`` plus ``Input -> Add``."""
+    return _spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_x", "name": "x"}]},
+            {"id": "act", "type": activation},
+            {"id": "add", "type": "Add"},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_y", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_x", "target": "act"},
+            {"id": "e2", "source": "act", "target": "add"},
+            {"id": "e3", "source": "in", "sourceHandle": "p_x", "target": "add"},
+            {"id": "e4", "source": "add", "target": "out", "targetHandle": "p_y"},
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "activation, reference",
+    [
+        ("ReLU", torch.nn.functional.relu),
+        ("LeakyReLU", torch.nn.functional.leaky_relu),
+        ("ELU", torch.nn.functional.elu),
+        ("SiLU", torch.nn.functional.silu),
+        ("Mish", torch.nn.functional.mish),
+        ("SELU", torch.nn.functional.selu),
+        ("Hardswish", torch.nn.functional.hardswish),
+    ],
+)
+def test_a_skip_taken_before_the_activation_keeps_the_raw_value(
+    activation, reference,
+):
+    """The issue's repro: ``relu(x) + x``, and the caller's ``x`` unchanged.
+
+    Measured before the fix for ReLU: ``[0, 4, 0]`` for ``[-1, 2, -3]``,
+    and the input came back as ``[0, 2, 0]``.
+    """
+    model = build_graph_model(_pre_activation_skip(activation))
+    x = torch.tensor([-1.0, 2.0, -3.0, 0.5])
+    before = x.clone()
+
+    y = model(x)
+
+    torch.testing.assert_close(y, reference(before) + before)
+    torch.testing.assert_close(x, before)
+
+
+def test_a_residual_block_with_a_pre_activation_identity_matches_pytorch():
+    """``conv -> bn -> (ReLU -> conv) + bn``, forward and gradients.
+
+    The reference runs the graph model's own layers in plain PyTorch, so
+    the only difference left is how the graph hands values around. Before
+    the fix the identity path came out fully ReLU'd (max |diff| 2.15 at
+    this scale) and training ran without an autograd error.
+    """
+    spec = _spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_x", "name": "x"}]},
+            {"id": "c1", "type": "Conv2d",
+             "params": {"in_channels": 2, "out_channels": 4, "kernel_size": 3,
+                        "padding": 1}},
+            {"id": "bn", "type": "BatchNorm2d", "params": {"num_features": 4}},
+            {"id": "relu", "type": "ReLU"},
+            {"id": "c2", "type": "Conv2d",
+             "params": {"in_channels": 4, "out_channels": 4, "kernel_size": 3,
+                        "padding": 1}},
+            {"id": "add", "type": "Add"},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_y", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_x", "target": "c1"},
+            {"id": "e2", "source": "c1", "target": "bn"},
+            {"id": "e3", "source": "bn", "target": "relu"},
+            {"id": "e4", "source": "relu", "target": "c2"},
+            {"id": "e5", "source": "c2", "target": "add"},
+            {"id": "e6", "source": "bn", "target": "add"},  # identity
+            {"id": "e7", "source": "add", "target": "out", "targetHandle": "p_y"},
+        ],
+    )
+    torch.manual_seed(0)
+    model = build_graph_model(spec)
+    layers = model.layers
+    x = torch.randn(3, 2, 5, 5)
+
+    def reference(inp):
+        h = layers["bn"](layers["c1"](inp))
+        return layers["c2"](torch.relu(h)) + h
+
+    model.eval()  # BN running stats stay put between the two passes
+    expected = reference(x)
+    expected.square().sum().backward()
+    expected_grads = {name: p.grad.clone() for name, p in model.named_parameters()}
+    model.zero_grad()
+
+    got = model(x)
+    got.square().sum().backward()
+
+    torch.testing.assert_close(got, expected)
+    for name, p in model.named_parameters():
+        torch.testing.assert_close(p.grad, expected_grads[name], msg=name)

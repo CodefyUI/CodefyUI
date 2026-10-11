@@ -90,19 +90,21 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
         "MultiHeadAttention": MultiHeadAttentionBlock,
     }
 
-    # Activation functions
+    # Activation functions. None of them run in place (#694): a graph model
+    # hands one tensor to every consumer, so an in-place ReLU would rewrite
+    # the value a skip connection reads, and the caller's input with it.
     activations: dict[str, nn.Module] = {
-        "ReLU": nn.ReLU(inplace=True),
+        "ReLU": nn.ReLU(),
         "GELU": nn.GELU(),
         "Sigmoid": nn.Sigmoid(),
         "Tanh": nn.Tanh(),
-        "LeakyReLU": nn.LeakyReLU(inplace=True),
-        "ELU": nn.ELU(inplace=True),
-        "SiLU": nn.SiLU(inplace=True),
-        "Mish": nn.Mish(inplace=True),
-        "SELU": nn.SELU(inplace=True),
+        "LeakyReLU": nn.LeakyReLU(),
+        "ELU": nn.ELU(),
+        "SiLU": nn.SiLU(),
+        "Mish": nn.Mish(),
+        "SELU": nn.SELU(),
         "PReLU": nn.PReLU(),
-        "Hardswish": nn.Hardswish(inplace=True),
+        "Hardswish": nn.Hardswish(),
         "Softmax": nn.Softmax(dim=-1),
     }
     if t in activations:

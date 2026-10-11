@@ -656,7 +656,7 @@ async def test_validate_accepts_a_wired_subgraph_instance(test_client):
     resp = await test_client.post("/api/graph/validate",
                                   json=_subgraph_graph())
     assert resp.status_code == 200
-    assert resp.json() == {"valid": True, "errors": [], "issues": []}
+    assert resp.json() == {"valid": True, "errors": [], "issues": [], "warnings": []}
 
 
 @pytest.mark.asyncio
