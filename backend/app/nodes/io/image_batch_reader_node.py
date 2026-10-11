@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from .image_reader_node import TRANSFORM_INPUT_DESC, apply_wired_transform
 
 if TYPE_CHECKING:
     # `pathlib` is imported lazily inside the methods below (startup cost);
@@ -19,7 +20,10 @@ class ImageBatchReaderNode(BaseNode):
     DETAILS = (
         "Files matching the glob pattern are read in sorted order and each is "
         "resized to the same square size so they can be stacked; an image that "
-        "fails to open is skipped. max_images caps how many are read."
+        "fails to open is skipped. max_images caps how many are read. A chain "
+        "wired into `transform` (the training dataset's eval_transform) replaces "
+        "resize and the [0, 1] conversion, so the batch is preprocessed exactly "
+        "as the training data was; every image must then come out the same size."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds an aggregate
@@ -74,7 +78,14 @@ class ImageBatchReaderNode(BaseNode):
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
-        return []
+        return [
+            PortDefinition(
+                name="transform",
+                data_type=DataType.TRANSFORM,
+                description=TRANSFORM_INPUT_DESC,
+                optional=True,
+            ),
+        ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
@@ -102,7 +113,7 @@ class ImageBatchReaderNode(BaseNode):
                 name="resize",
                 param_type=ParamType.INT,
                 default=224,
-                description="Resize all images to this square size (required for batching)",
+                description="Resize all images to this square size (required for batching). Ignored when a transform is wired.",
                 min_value=1,
             ),
             ParamDefinition(
@@ -158,21 +169,40 @@ class ImageBatchReaderNode(BaseNode):
         if not paths:
             raise ValueError(f"No images found matching '{pattern}' in {directory}")
 
+        wired = inputs.get("transform")
         transform = transforms.Compose([
             transforms.Resize((resize, resize)),
             transforms.ToTensor(),
         ])
 
         tensors = []
+        names = []
         for p in paths:
             try:
                 img = Image.open(p).convert(mode)
-                tensors.append(transform(img))
             except Exception as e:
                 logger.warning("Skipping %s: %s", p.name, e)
+                continue
+            if wired is not None:
+                # Outside the skip above: a chain that is wrong for these
+                # images is wrong for all of them, so it fails the node.
+                tensors.append(apply_wired_transform(wired, img, "ImageBatchReader", p.name))
+            else:
+                tensors.append(transform(img))
+            names.append(p.name)
 
         if not tensors:
             raise ValueError("No images could be loaded")
+
+        first = tuple(tensors[0].shape)
+        for name, t in zip(names, tensors):
+            if tuple(t.shape) != first:
+                raise ValueError(
+                    f"ImageBatchReader: the images do not share one size after "
+                    f"preprocessing ({names[0]} is {first}, {name} is "
+                    f"{tuple(t.shape)}), so they cannot be stacked. Add "
+                    f"ResizeTransform to the wired chain."
+                )
 
         batch = torch.stack(tensors)  # (N, C, H, W)
         logger.info("Loaded %d images, batch shape: %s", len(tensors), batch.shape)

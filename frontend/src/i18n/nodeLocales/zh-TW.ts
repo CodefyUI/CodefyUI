@@ -919,11 +919,15 @@ const zhTW: NodeTranslations = {
   // ── IO ──
   ImageReader: {
     description: '讀取影像為 (C,H,W) 張量，值域 [0,1]',
-    details: '只寫檔名時會先找上傳影像目錄，找不到才依原樣相對於執行圖的行程工作目錄解析。resize 設為 0 就保留原尺寸。',
+    details:
+      '只寫檔名時會先找上傳影像目錄，找不到才依原樣相對於執行圖的行程工作目錄解析。resize 設為 0 就保留原尺寸。' +
+      '把訓練資料集用的變換鏈接到 transform，影像就會以相同方式前處理，此時 resize 與 [0, 1] 轉換不再套用。' +
+      'add_batch_dim 會輸出 (1, C, H, W)，可直接送進需要批次維度的模型。',
     params: {
       path: '選擇已上傳的影像，或上傳新檔案',
       mode: '載入影像的色彩模式（L = 灰階）',
-      resize: '縮放為 (resize, resize) 正方形（0 = 不縮放）',
+      resize: '縮放為 (resize, resize) 正方形（0 = 不縮放）。接上變換鏈時會被忽略。',
+      add_batch_dim: '輸出 (1, C, H, W)，影像可直接送進需要批次維度的模型',
     },
   },
   ImageWriter: {
@@ -959,11 +963,14 @@ const zhTW: NodeTranslations = {
   },
   ImageBatchReader: {
     description: '把目錄下每張影像堆成 (N, C, H, W)',
-    details: '符合 glob 樣式的檔案依檔名排序讀入，並全部縮放成同一個正方形尺寸才能堆疊；開不起來的影像會略過。max_images 可限制讀取張數。',
+    details:
+      '符合 glob 樣式的檔案依檔名排序讀入，並全部縮放成同一個正方形尺寸才能堆疊；開不起來的影像會略過。max_images 可限制讀取張數。' +
+      '接到 transform 的變換鏈（訓練資料集的 eval_transform）會取代 resize 與 [0, 1] 轉換，批次的前處理就和訓練資料完全相同；' +
+      '此時每張影像處理後的尺寸必須一致。',
     params: {
       directory: '包含影像檔案的目錄',
       pattern: '檔案比對模式（如 *.png、*.jpg）',
-      resize: '將所有影像調整為此正方形大小（批次處理必需）',
+      resize: '將所有影像調整為此正方形大小（批次處理必需）。接上變換鏈時會被忽略。',
       max_images: '最大載入影像數（0 = 全部）',
       mode: '色彩模式',
     },

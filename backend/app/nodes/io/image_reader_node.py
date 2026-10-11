@@ -9,6 +9,34 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+#: Shared with ImageBatchReader so the two ports read the same.
+TRANSFORM_INPUT_DESC = (
+    "Preprocessing chain, e.g. the eval_transform the training dataset used. "
+    "Replaces resize and the [0, 1] conversion when wired, so it must "
+    "produce a tensor (end it with ToTensorTransform or a step after it)."
+)
+
+
+def apply_wired_transform(pipeline: Any, img: Any, node_name: str, file_name: str) -> Any:
+    """Run a TRANSFORM chain on one PIL image and insist on a tensor result.
+
+    The chain is applied as given, without the per-node seeding wrapper the
+    dataset nodes install: that wrapper reseeds per DataLoader sample, and
+    the reader is not a dataset. A seeded run already seeds the global RNG
+    before this node runs, so a random step stays reproducible.
+    """
+    import torch
+
+    out = pipeline(img)
+    if not isinstance(out, torch.Tensor):
+        raise ValueError(
+            f"{node_name}: the wired transform returned {type(out).__name__} for "
+            f"'{file_name}', not a tensor. Add ToTensorTransform to the chain "
+            f"(before NormalizeTransform)."
+        )
+    return out
+
+
 class ImageReaderNode(BaseNode):
     NODE_NAME = "ImageReader"
     CATEGORY = "IO"
@@ -16,7 +44,10 @@ class ImageReaderNode(BaseNode):
     DETAILS = (
         "A bare filename resolves in the uploaded-images directory first, then as "
         "written, relative to the working directory of the process running the "
-        "graph. resize=0 keeps the original size."
+        "graph. resize=0 keeps the original size. Wire the transform chain the "
+        "training dataset used into `transform` to preprocess the image the same "
+        "way; it then replaces resize and the [0, 1] conversion. add_batch_dim "
+        "returns (1, C, H, W) for a model that expects a batch."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds the resolved
@@ -64,12 +95,19 @@ class ImageReaderNode(BaseNode):
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
-        return []
+        return [
+            PortDefinition(
+                name="transform",
+                data_type=DataType.TRANSFORM,
+                description=TRANSFORM_INPUT_DESC,
+                optional=True,
+            ),
+        ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="image", data_type=DataType.IMAGE, description="Image as tensor (C, H, W)"),
+            PortDefinition(name="image", data_type=DataType.IMAGE, description="Image as tensor (C, H, W), or (1, C, H, W) with add_batch_dim"),
             PortDefinition(name="tensor", data_type=DataType.TENSOR, description="Same image as generic tensor"),
         ]
 
@@ -93,8 +131,14 @@ class ImageReaderNode(BaseNode):
                 name="resize",
                 param_type=ParamType.INT,
                 default=0,
-                description="Resize image to a (resize, resize) square (0 = no resize)",
+                description="Resize image to a (resize, resize) square (0 = no resize). Ignored when a transform is wired.",
                 min_value=0,
+            ),
+            ParamDefinition(
+                name="add_batch_dim",
+                param_type=ParamType.BOOL,
+                default=False,
+                description="Return (1, C, H, W) so the image can go straight into a model that expects a batch",
             ),
         ]
 
@@ -127,14 +171,21 @@ class ImageReaderNode(BaseNode):
             pass
         img = img.convert(mode)
 
-        transform_list = []
-        if resize > 0:
-            # Resize to (resize, resize) square — required by downstream
-            # convolutional models that expect a fixed input shape.
-            transform_list.append(transforms.Resize((resize, resize)))
-        transform_list.append(transforms.ToTensor())
-        transform = transforms.Compose(transform_list)
+        wired = inputs.get("transform")
+        if wired is not None:
+            tensor = apply_wired_transform(wired, img, "ImageReader", p.name)
+        else:
+            transform_list = []
+            if resize > 0:
+                # Resize to (resize, resize) square — required by downstream
+                # convolutional models that expect a fixed input shape.
+                transform_list.append(transforms.Resize((resize, resize)))
+            transform_list.append(transforms.ToTensor())
+            transform = transforms.Compose(transform_list)
 
-        tensor = transform(img)  # (C, H, W), values in [0, 1]
+            tensor = transform(img)  # (C, H, W), values in [0, 1]
+
+        if params.get("add_batch_dim", False):
+            tensor = tensor.unsqueeze(0)
 
         return {"image": tensor, "tensor": tensor}

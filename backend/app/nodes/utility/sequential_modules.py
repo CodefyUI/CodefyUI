@@ -64,6 +64,9 @@ every checkpoint saved before the rename.
 
 from __future__ import annotations
 
+import math
+
+import torch
 import torch.nn as nn
 
 
@@ -201,12 +204,66 @@ class GRUBlock(nn.Module):
 
 
 class MultiHeadAttentionBlock(nn.Module):
-    """``nn.MultiheadAttention`` in self-attention mode, weights discarded."""
+    """``nn.MultiheadAttention`` in self-attention mode, weights discarded.
 
-    def __init__(self, embed_dim: int, num_heads: int):
+    ``causal`` (off by default, since an encoder-style block wants every
+    position) masks position ``i`` to positions ``<= i``.
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int, causal: bool = False):
         super().__init__()
         self.attn = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+        self._causal = bool(causal)
 
     def forward(self, x):
-        out, _ = self.attn(x, x, x)
+        # A block pickled before ``causal`` existed has no ``_causal`` and
+        # was not causal, so it loads that way.
+        if not getattr(self, "_causal", False):
+            out, _ = self.attn(x, x, x)
+            return out
+        mask = nn.Transformer.generate_square_subsequent_mask(
+            x.shape[-2], device=x.device, dtype=x.dtype,
+        )
+        out, _ = self.attn(x, x, x, attn_mask=mask, is_causal=True, need_weights=False)
         return out
+
+
+def _sinusoidal_table(max_len: int, d_model: int) -> torch.Tensor:
+    """``PE(pos, 2i) = sin(pos / 10000^(2i/d))``, ``PE(pos, 2i+1) = cos(...)``.
+
+    The formula ``PositionalEncodingNode._sinusoidal_pe`` uses; a test holds
+    the two equal. Not imported from there so this module's constructors
+    stay free of import side effects (see the audit note above).
+    """
+    pe = torch.zeros(max_len, d_model)
+    position = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) * -(math.log(10000.0) / d_model))
+    pe[:, 0::2] = torch.sin(position * div_term[: pe[:, 0::2].shape[1]])
+    pe[:, 1::2] = torch.cos(position * div_term[: pe[:, 1::2].shape[1]])
+    return pe
+
+
+class PositionalEncodingBlock(nn.Module):
+    """Add a position code to ``(batch, seq, d_model)`` or ``(seq, d_model)``.
+
+    Sinusoidal by default (Vaswani et al. 2017), kept as a non-persistent buffer so it
+    follows the module across devices without entering the state dict.
+    ``learned`` swaps it for a trainable ``(max_len, d_model)`` table.
+    """
+
+    def __init__(self, d_model: int, max_len: int = 512, learned: bool = False):
+        super().__init__()
+        self._max_len = int(max_len)
+        if learned:
+            self.pe = nn.Parameter(torch.randn(self._max_len, d_model) * 0.02)
+        else:
+            self.register_buffer("pe", _sinusoidal_table(self._max_len, d_model), persistent=False)
+
+    def forward(self, x):
+        seq = x.shape[-2]
+        if seq > self._max_len:
+            raise ValueError(
+                f"PositionalEncoding: sequence length {seq} exceeds max_len={self._max_len}; "
+                f"raise max_len on the layer."
+            )
+        return x + self.pe[:seq].to(dtype=x.dtype)

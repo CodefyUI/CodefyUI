@@ -97,6 +97,7 @@ const LAYER_CATEGORIES: Record<string, LayerCategory> = {
   LSTM: 'Recurrent', GRU: 'Recurrent', RNN: 'Recurrent',
   MultiHeadAttention: 'Attention',
   TransformerEncoder: 'Attention', TransformerDecoder: 'Attention',
+  PositionalEncoding: 'Attention',
   Flatten: 'Utility', Reshape: 'Utility', SelectIndex: 'Utility',
   ReLU: 'Activation', LeakyReLU: 'Activation', GELU: 'Activation',
   SiLU: 'Activation', Mish: 'Activation', ELU: 'Activation',

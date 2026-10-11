@@ -503,6 +503,8 @@ const en = {
   'layersEditor.params': 'Parameters',
   'layersEditor.noParams': 'No parameters',
   'layersEditor.deleteLayer': 'Delete',
+  'layersEditor.param.causalHint': 'Each position attends only to itself and earlier positions. Turn on for a next-token language model.',
+  'layersEditor.param.learnedHint': 'Use a trainable position table instead of the fixed sinusoidal one.',
   'layersEditor.hint': 'Double-click to edit architecture',
   'layersEditor.import.fail': 'Import failed: {error}',
   'layersEditor.import.selectModel': 'Select SequentialModel to Import',
