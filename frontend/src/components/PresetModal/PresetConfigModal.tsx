@@ -53,7 +53,7 @@ export function PresetConfigModal() {
   const closePresetModal = useTabStore((s) => s.closePresetModal);
   const updatePresetInternalParam = useTabStore((s) => s.updatePresetInternalParam);
   const pushUndoSnapshot = useTabStore((s) => s.pushUndoSnapshot);
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
 
   const presetModalNodeId = activeTab?.presetModalNodeId ?? null;
   const node = activeTab?.nodes.find((n) => n.id === presetModalNodeId);
@@ -132,7 +132,9 @@ export function PresetConfigModal() {
               <span className={styles.headerTitle}>{preset.preset_name}</span>
               <span className={styles.headerBadge}>{t('preset.badge')}</span>
             </div>
-            <div className={styles.headerDescription}>{preset.description}</div>
+            <div className={styles.headerDescription}>
+              {tp(preset.preset_name, preset.description)}
+            </div>
           </div>
           <button type="button" onClick={handleCancel} className={styles.closeBtn}>
             ✕

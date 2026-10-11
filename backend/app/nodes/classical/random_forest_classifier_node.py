@@ -39,17 +39,17 @@ class RandomForestClassifierNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="x_train", data_type=DataType.TENSOR, description="訓練特徵 [N, F]。"),
-            PortDefinition(name="y_train", data_type=DataType.LIST, description="訓練標籤（長度 N）。"),
-            PortDefinition(name="x_query", data_type=DataType.TENSOR, description="要分類的查詢特徵 [M, F]。"),
+            PortDefinition(name="x_train", data_type=DataType.TENSOR, description="Training features [N, F]."),
+            PortDefinition(name="y_train", data_type=DataType.LIST, description="Training labels (length N)."),
+            PortDefinition(name="x_query", data_type=DataType.TENSOR, description="Query features to classify [M, F]."),
         ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="predictions", data_type=DataType.LIST, description="每筆查詢的預測標籤。"),
-            PortDefinition(name="probabilities", data_type=DataType.TENSOR, description="各類別的投票機率 [M, C]。"),
-            PortDefinition(name="classes", data_type=DataType.LIST, description="類別標籤，與 probabilities 欄序一致（排序後）。"),
+            PortDefinition(name="predictions", data_type=DataType.LIST, description="Predicted label for each query."),
+            PortDefinition(name="probabilities", data_type=DataType.TENSOR, description="Per-class vote probabilities [M, C]."),
+            PortDefinition(name="classes", data_type=DataType.LIST, description="Class labels, sorted, in the column order of probabilities."),
         ]
 
     @classmethod
@@ -60,20 +60,20 @@ class RandomForestClassifierNode(BaseNode):
                 param_type=ParamType.INT,
                 default=100,
                 min_value=1,
-                description="森林裡的樹數量。越多通常越穩、越慢。",
+                description="Number of trees in the forest. More trees are usually steadier and slower.",
             ),
             ParamDefinition(
                 name="max_depth",
                 param_type=ParamType.INT,
                 default=0,
                 min_value=0,
-                description="每棵樹的最大深度，0 = 不限。",
+                description="Maximum depth of each tree. 0 = unlimited.",
             ),
             ParamDefinition(
                 name="seed",
                 param_type=ParamType.INT,
                 default=0,
-                description="隨機種子，固定後結果可重現。",
+                description="Random seed. A fixed seed makes the result reproducible.",
             ),
         ]
 

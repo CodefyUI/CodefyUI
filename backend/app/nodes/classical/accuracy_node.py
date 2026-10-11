@@ -31,8 +31,14 @@ class AccuracyNode(BaseNode):
     DETAILS = (
         "Accuracy is correct / total, in [0, 1]. Labels are compared as strings, "
         "so 0 and '0' match; the two lists must be the same length, and two empty "
-        "lists give 0."
+        "lists give 0. The accuracy is also recorded as the run metric "
+        "`accuracy`, so a sweep can rank by it."
     )
+
+    # The accuracy goes out through ``context.log_metric`` as well as the
+    # output port, and a cache hit returns the outputs without calling
+    # execute(), so the metric would be missing on every rerun (#254, #711).
+    cacheable = False
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -102,8 +108,11 @@ class AccuracyNode(BaseNode):
 
         correct = sum(1 for p, y in zip(preds_s, labels_s) if p == y)
         total = len(preds_s)
+        accuracy = float(correct) / float(total)
+        if context is not None:
+            context.log_metric("accuracy", accuracy, 0)
         return {
-            "accuracy": float(correct) / float(total),
+            "accuracy": accuracy,
             "correct": int(correct),
             "total": int(total),
         }

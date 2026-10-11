@@ -8,6 +8,7 @@ import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS, STATUS_COLORS, PRESET_GOLD } from '../../styles/theme';
 import { topologicalOrder } from '../../utils/topoOrder';
 import { readablePresetNodes } from '../../utils';
+import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import { MathText } from '../shared/MathText';
 import { NodeParamList } from '../shared/NodeParamList';
 import {
@@ -302,7 +303,7 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
             <div className={styles.meta}>
               <span className={styles.metaType}>{nodeName}</span>
               <span className={styles.categoryChip} style={{ color: accent, borderColor: accent }}>
-                {category}
+                {nodeCategoryLabel(category, t)}
               </span>
               {isPreset && (
                 <span className={styles.presetChip} style={{ color: accent, borderColor: accent }}>

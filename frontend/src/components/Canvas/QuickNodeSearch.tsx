@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS } from '../../styles/theme';
 import { nodeSearchTexts, presetSearchTexts, rankMatches } from '../../utils/nodeSearch';
 import { isCompletePreset } from '../../utils/presetOwnership';
+import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 import { MathText } from '../shared/MathText';
 import styles from './QuickNodeSearch.module.css';
@@ -31,7 +32,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
   const pluginsById = usePluginStore(selectPluginsById);
   const addNode = useTabStore((s) => s.addNode);
   const addPresetNode = useTabStore((s) => s.addPresetNode);
-  const { t, tn } = useI18n();
+  const { t, tn, tp } = useI18n();
 
   // Filter and rank results
   const results: SearchResult[] = (() => {
@@ -192,7 +193,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
           const category = r.kind === 'node' ? r.def.category : r.preset.category;
           const desc = r.kind === 'node'
             ? tn(r.def.node_name, 'description', r.def.description)
-            : r.preset.description;
+            : tp(r.preset.preset_name, r.preset.description);
           const color = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility;
 
           return (
@@ -212,7 +213,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
                   ? <MathText className={styles.itemDesc} text={desc} />
                   : <span className={styles.itemDesc}>{desc}</span>)}
               </div>
-              <span className={styles.itemCategory}>{category}</span>
+              <span className={styles.itemCategory}>{nodeCategoryLabel(category, t)}</span>
             </button>
           );
         })}

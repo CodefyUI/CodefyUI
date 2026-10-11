@@ -291,6 +291,7 @@ WRAPPER_LAYER_CONFIGS = [
     {"type": "GRU", "input_size": 4, "hidden_size": 3, "batch_first": True},
     {"type": "RNN", "input_size": 4, "hidden_size": 3, "batch_first": True},
     {"type": "MultiHeadAttention", "embed_dim": 4, "num_heads": 2},
+    {"type": "PositionalEncoding", "d_model": 4, "max_len": 8},
 ]
 
 

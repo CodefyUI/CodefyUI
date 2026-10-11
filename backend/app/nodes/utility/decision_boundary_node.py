@@ -37,9 +37,9 @@ class DecisionBoundaryNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="model", data_type=DataType.MODEL, description="Classifier 節點吐出的 model（訓練好的分類器）。"),
-            PortDefinition(name="x_train", data_type=DataType.TENSOR, description="訓練特徵 [N, 2]（決定畫布範圍、疊點；只支援 2D）。"),
-            PortDefinition(name="y_train", data_type=DataType.LIST, description="訓練標籤（長度 N，給疊點上色）。"),
+            PortDefinition(name="model", data_type=DataType.MODEL, description="The model a Classifier node outputs (a trained classifier)."),
+            PortDefinition(name="x_train", data_type=DataType.TENSOR, description="Training features [N, 2]; set the plot range and are drawn on top. 2D only."),
+            PortDefinition(name="y_train", data_type=DataType.LIST, description="Training labels (length N), used to colour the points."),
         ]
 
     @classmethod
@@ -48,7 +48,7 @@ class DecisionBoundaryNode(BaseNode):
             PortDefinition(
                 name="image",
                 data_type=DataType.STRING,
-                description="base64 編碼的 PNG 決策邊界圖。",
+                description="The decision boundary as a base64-encoded PNG.",
                 media=MEDIA_IMAGE,
             ),
         ]
@@ -62,15 +62,15 @@ class DecisionBoundaryNode(BaseNode):
                 default=200,
                 min_value=20,
                 max_value=500,
-                description="每軸鋪幾格（越大邊界越平滑、越慢）。",
+                description="Grid cells per axis. More cells give a smoother boundary and a slower plot.",
             ),
             ParamDefinition(
                 name="show_support_vectors",
                 param_type=ParamType.BOOL,
                 default=False,
-                description="標出支持向量（只有 SVM 的 model 帶這個資訊；其他分類器會自動忽略）。",
+                description="Mark the support vectors. Only an SVM model has them; other classifiers ignore this.",
             ),
-            ParamDefinition(name="title", param_type=ParamType.STRING, default="", description="圖標題。"),
+            ParamDefinition(name="title", param_type=ParamType.STRING, default="", description="Plot title."),
         ]
 
     def execute(

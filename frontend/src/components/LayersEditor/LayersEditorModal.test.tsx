@@ -193,7 +193,7 @@ describe('LayersEditorModal', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('returns null when no tab is open at all', () => {
+  it('returns null when no tab is open (the welcome screen)', () => {
     useTabStore.setState({ tabs: [], activeTabId: null } as any);
     const { container } = render(<LayersEditorModal />);
     expect(container.firstChild).toBeNull();
@@ -823,6 +823,91 @@ describe('LayersEditorModal', () => {
       lastFlowProps.onNodeClick({}, { id: 'conv1' });
     });
     expect(screen.getByText(/就是 depthwise 卷積/)).toBeTruthy();
+  });
+
+  // #688: the causal toggle and the PositionalEncoding layer reach the saved
+  // layers JSON, which is what the backend builds the model from.
+  function causalGraphJson(decoderParams: Record<string, unknown>): string {
+    return JSON.stringify({
+      version: 2,
+      nodes: [
+        { id: 'in1', type: 'Input', ports: [{ id: 'ip1', name: 'x' }], position: { x: 0, y: 0 } },
+        { id: 'dec1', type: 'TransformerDecoder', params: decoderParams, position: { x: 0, y: 100 } },
+        { id: 'out1', type: 'Output', ports: [{ id: 'op1', name: 'y' }], position: { x: 0, y: 200 } },
+      ],
+      edges: [
+        { id: 'e1', source: 'in1', sourceHandle: 'ip1', target: 'dec1', targetHandle: null },
+        { id: 'e2', source: 'dec1', sourceHandle: null, target: 'out1', targetHandle: 'op1' },
+      ],
+    });
+  }
+
+  function savedSpecLayer(nodeId: string, layerId: string) {
+    const node = useTabStore.getState().tabs[0].nodes.find((n) => n.id === nodeId)!;
+    const spec = JSON.parse(node.data.params!.layers as string);
+    return spec.nodes.find((n: any) => n.id === layerId);
+  }
+
+  it('ParamEditor: the TransformerDecoder causal box starts ticked and unticking it saves causal: false', () => {
+    // A graph saved before the toggle existed has no `causal` key; the box
+    // shows the backend default (on).
+    const nodeId = setupOpenModal(causalGraphJson({ d_model: 16, nhead: 2 }));
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: 'dec1' });
+    });
+    const box = screen.getByRole('checkbox', { name: 'causal' }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(screen.getByText(/attends only to itself and earlier positions/)).toBeTruthy();
+
+    fireEvent.click(box);
+    expect(box.checked).toBe(false);
+    fireEvent.click(screen.getByText('Apply'));
+    expect(savedSpecLayer(nodeId, 'dec1').params).toEqual({ d_model: 16, nhead: 2, causal: false });
+  });
+
+  it('ParamEditor: ticking causal on a MultiHeadAttention layer saves causal: true', () => {
+    const nodeId = setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onDrop({
+        preventDefault: vi.fn(), clientX: 1, clientY: 1,
+        dataTransfer: { getData: () => 'MultiHeadAttention' },
+      });
+    });
+    const attn = (lastFlowProps.nodes as any[]).find((n) => n.data.layerType === 'MultiHeadAttention');
+    // Dropped with the palette defaults: off for a plain attention layer.
+    expect(attn.data.params).toEqual({ embed_dim: 512, num_heads: 8, causal: false });
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: attn.id });
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'causal' }));
+    const params = (lastFlowProps.nodes as any[]).find((n) => n.id === attn.id).data.params;
+    expect(params.causal).toBe(true);
+    expect(nodeId).toBe('sg-node');
+  });
+
+  it('the palette offers PositionalEncoding with a learned toggle, hinted in zh-TW', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onDrop({
+        preventDefault: vi.fn(), clientX: 1, clientY: 1,
+        dataTransfer: { getData: () => 'PositionalEncoding' },
+      });
+    });
+    const pe = (lastFlowProps.nodes as any[]).find((n) => n.data.layerType === 'PositionalEncoding');
+    expect(pe.data.params).toEqual({ d_model: 512, max_len: 512, learned: false });
+    expect(layerCategoryOf('PositionalEncoding')).toBe('Attention');
+    act(() => {
+      lastFlowProps.onNodeClick({}, { id: pe.id });
+    });
+    const box = screen.getByRole('checkbox', { name: 'learned' }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByText('改用可訓練的位置表，取代固定的正弦位置編碼。')).toBeTruthy();
+    fireEvent.click(box);
+    expect((lastFlowProps.nodes as any[]).find((n) => n.id === pe.id).data.params.learned).toBe(true);
   });
 
   // ── PortListEditor wiring (handleUpdatePorts / handleRemoveEdges) ──────────

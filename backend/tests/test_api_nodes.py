@@ -551,7 +551,25 @@ TRANSLATED_NODES = (
     "RandomRotation",
     "ResizeTransform",
     "ToTensorTransform",
+    # #693: these ten wrote their port and param descriptions in Chinese in
+    # the backend. The English is there now, and the Chinese moved here.
+    "Argmax",
+    "DatasetBatch",
+    "DecisionBoundary",
+    "DiffusionTrainingLoop",
+    "RandomForestClassifier",
+    "RowSelector",
+    "ScatterPlot2D",
+    "SyntheticSegmentation",
+    "SyntheticSequence",
+    "SyntheticShapes",
 )
+
+#: Nodes whose input and output descriptions are pinned as translated, for the
+#: same reason as ``TRANSLATED_NODES``: #693 moved their Chinese port texts
+#: into the zh-TW catalog, and a port added later in English would otherwise
+#: go unnoticed.
+PORT_TRANSLATED_NODES = TRANSLATED_NODES[-10:]
 
 #: Built-in nodes with no zh-TW block at all. PRE-EXISTING debt, all of it
 #: older than core#136 -- listed rather than fixed because translating
@@ -624,6 +642,37 @@ def test_training_node_params_all_have_a_zh_tw_description():
 
     assert not missing, (
         "these params render in English under zh-TW; add them to "
+        f"frontend/src/i18n/nodeLocales/zh-TW.ts: {missing}")
+
+
+def test_ported_nodes_keep_their_chinese_port_descriptions():
+    """Every port of every node in ``PORT_TRANSLATED_NODES`` is translated.
+
+    The UI reads these from ``inputs`` and ``outputs`` in the node's zh-TW
+    block, the way it reads ``params`` (#693).
+    """
+    import re
+
+    from app.core.node_registry import registry
+
+    catalog = _node_catalog()
+    missing: list[str] = []
+    for node_name in PORT_TRANSLATED_NODES:
+        node_cls = registry.get(node_name)
+        block = re.search(rf"\n  {node_name}: \{{(.*?)\n  \}},", catalog, re.DOTALL)
+        assert block, f"{node_name} has no zh-TW entry at all"
+        for kind, ports in (("inputs", node_cls.define_inputs()),
+                            ("outputs", node_cls.define_outputs())):
+            section = re.search(rf"\n    {kind}: \{{(.*?)\n    \}},", block.group(1), re.DOTALL)
+            for port in ports:
+                if not port.description:
+                    continue
+                if not section or not re.search(
+                        rf"\n      {re.escape(port.name)}:\s", section.group(1)):
+                    missing.append(f"{node_name}.{kind}.{port.name}")
+
+    assert not missing, (
+        "these ports render in English under zh-TW; add them to "
         f"frontend/src/i18n/nodeLocales/zh-TW.ts: {missing}")
 
 
@@ -786,6 +835,47 @@ def test_no_builtin_node_describes_itself_in_a_paragraph():
 
     _assert_palette_summaries(
         {name: registry.get(name).DESCRIPTION for name in _builtin_node_names()})
+
+
+@pytest.mark.asyncio
+async def test_no_builtin_node_shows_chinese_in_the_english_ui(test_client):
+    """Every text a built-in node sends to the UI is English (#693).
+
+    The check above reads DESCRIPTION only, and ten nodes shipped Chinese
+    port and param descriptions that the English UI rendered as they were.
+    This reads what ``/api/nodes`` serves -- DESCRIPTION, DETAILS, and the
+    description of every input, output and param -- so a text added anywhere
+    a node shows it is covered. The Chinese goes in
+    ``frontend/src/i18n/nodeLocales/zh-TW.ts`` (``params``, ``inputs``,
+    ``outputs``).
+    """
+    import re
+
+    # Ideographs only: an English description may name CJK punctuation, as
+    # TextChunker's does when it lists the sentence ends it splits on.
+    chinese = re.compile(r"[一-鿿㐀-䶿]")
+    builtin = set(_builtin_node_names())
+    resp = await test_client.get("/api/nodes")
+    assert resp.status_code == 200
+
+    found: list[str] = []
+    served: set[str] = set()
+    for node in resp.json():
+        name = node["node_name"]
+        if name not in builtin:
+            continue
+        served.add(name)
+        texts = [("DESCRIPTION", node.get("description")), ("DETAILS", node.get("details"))]
+        for kind in ("inputs", "outputs", "params"):
+            texts += [(f"{kind}.{item['name']}", item.get("description"))
+                      for item in node.get(kind) or []]
+        found += [f"{name}.{field}" for field, text in texts
+                  if text and chinese.search(text)]
+
+    assert served == builtin, sorted(builtin - served)
+    assert not found, (
+        "the English UI shows these as Chinese; write them in English and put "
+        f"the Chinese in frontend/src/i18n/nodeLocales/zh-TW.ts: {found}")
 
 
 def _pack_node_descriptions(root: Path | None = None) -> tuple[dict[str, str | None], set[str]]:

@@ -50,6 +50,7 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
         GRUBlock,
         LSTMBlock,
         MultiHeadAttentionBlock,
+        PositionalEncodingBlock,
         Reshape,
         SelectIndex,
         RNNBlock,
@@ -89,6 +90,7 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
         "GRU": GRUBlock,
         "RNN": RNNBlock,
         "MultiHeadAttention": MultiHeadAttentionBlock,
+        "PositionalEncoding": PositionalEncodingBlock,
     }
 
     # Activation functions. None of them run in place (#694): a graph model

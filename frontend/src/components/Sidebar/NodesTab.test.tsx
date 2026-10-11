@@ -162,6 +162,33 @@ describe('NodesTab', () => {
     expect(categoryNames).toEqual(['Data', 'CNN', 'Apple', 'Zebra']);
   });
 
+  // #684: the headings followed the server's keys in every language, so the
+  // Chinese UI listed "Control", "Data" and "Tensor Operations".
+  it('labels the categories in the UI language and keeps an acronym or unknown key as sent', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedStore({
+      categorized: {
+        Control: [def('Start', 'Control')],
+        Data: [def('Dataset', 'Data')],
+        Classical: [def('KNN', 'Classical')],
+        CNN: [def('Conv2d', 'CNN')],
+        'Tensor Operations': [def('Add', 'Tensor Operations')],
+        Zebra: [def('ZNode', 'Zebra')],
+      },
+    });
+    const { container } = render(<NodesTab />);
+    expect(categoryNames(container)).toEqual([
+      '控制',
+      '資料',
+      '傳統機器學習',
+      'CNN',
+      '張量運算',
+      'Zebra',
+    ]);
+    // The jump index names the same headings.
+    expect(screen.getByRole('button', { name: '張量運算' })).toBeTruthy();
+  });
+
   it('expands and collapses a category section', () => {
     seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
     render(<NodesTab />);
@@ -943,6 +970,33 @@ describe('NodesTab — presets group', () => {
     expect(item.style.background).toContain('rgba(212, 160, 23');
     fireEvent.mouseLeave(item);
     expect(item.style.background).toBe('transparent');
+  });
+
+  // #684: a shipped preset's description stayed English in the Chinese UI.
+  it('shows a shipped preset in the UI language and finds it by either text', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedStore({
+      presets: [
+        preset('Simple CNN Classifier', 'CNN', {
+          description: 'A basic CNN classifier: Conv2d -> ReLU -> MaxPool2d.',
+        }),
+        preset('My Own', 'CNN', { description: 'a preset a user saved' }),
+      ],
+    });
+    render(<NodesTab />);
+    const row = screen.getByText('Simple CNN Classifier').parentElement!.parentElement!;
+    expect(within(row).getByText(/^基本的 CNN 分類器/)).toBeTruthy();
+    expect(row.getAttribute('title')).toMatch(/^基本的 CNN 分類器/);
+    expect(screen.queryByText(/A basic CNN classifier/)).toBeNull();
+    // A preset with no translation keeps its own words.
+    expect(screen.getByText('a preset a user saved')).toBeTruthy();
+
+    const search = screen.getByRole('textbox');
+    fireEvent.change(search, { target: { value: '影像分類' } });
+    expect(screen.getByText('Simple CNN Classifier')).toBeTruthy();
+    expect(screen.queryByText('My Own')).toBeNull();
+    fireEvent.change(search, { target: { value: 'maxpool2d' } });
+    expect(screen.getByText('Simple CNN Classifier')).toBeTruthy();
   });
 
   it('translates the node count for a non-English locale', () => {

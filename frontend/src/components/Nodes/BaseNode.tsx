@@ -27,6 +27,7 @@ import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor, SURFACE_RAI
 import { MathText } from '../shared/MathText';
 import { layerNodeCount } from '../LayersEditor/graphSerialization';
 import { subgraphIdOf } from '../../utils/subgraph';
+import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import { useIsTriggerTarget } from './triggerTarget';
 import styles from './BaseNode.module.css';
 
@@ -163,6 +164,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
     switchType && switchType !== 'ANY'
       ? declaredOutputs.map((o) => (o.name === SWITCH_OUTPUT ? { ...o, data_type: switchType } : o))
       : declaredOutputs;
+  const nodeName = def?.node_name ?? '';
   const category = def?.category ?? 'Utility';
   // Fallback used to be the raw, unlifted '#607D8B' — a different (dimmer)
   // value than CATEGORY_COLORS.Utility ('#8097a2'), so an unrecognised
@@ -423,7 +425,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
             needs 3:1; the label itself is ordinary text and gets the text
             bar. Measured worst case across all 14 categories: 5.11:1. */}
         <span className={styles.headerCategory}>
-          {category}
+          {nodeCategoryLabel(category, t)}
         </span>
       </div>
 
@@ -435,7 +437,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
           <div
             key={`in-${input.name}`}
             className={styles.portRowInput}
-            title={input.description}
+            title={tn(nodeName, `input.${input.name}`, input.description)}
           >
             <Handle
               type="target"
@@ -475,7 +477,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
           <div
             key={`out-${output.name}`}
             className={styles.portRowOutput}
-            title={output.description}
+            title={tn(nodeName, `output.${output.name}`, output.description)}
           >
             <span
               className={styles.portLabel}

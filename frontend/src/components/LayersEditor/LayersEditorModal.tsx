@@ -77,7 +77,6 @@ const p_int = (name: string, def: number, desc: string, min: number | null = 1):
 const p_float = (name: string, def: number, desc: string, min: number | null = 0, max: number | null = null): ParamDefinition => (
   { name, param_type: 'float', default: def, description: desc, options: [], min_value: min, max_value: max }
 );
-
 const p_bool = (name: string, def: boolean, desc: string): ParamDefinition => (
   { name, param_type: 'bool', default: def, description: desc, options: [], min_value: null, max_value: null }
 );
@@ -94,6 +93,9 @@ const PARAM_HINT_KEYS: Record<string, TranslationKey> = {
   'LeakyReLU.negative_slope': 'layersEditor.hint.negativeSlope',
   'Softmax.dim': 'layersEditor.hint.softmaxDim',
   'Dropout2d.p': 'layersEditor.hint.dropout2d',
+  'MultiHeadAttention.causal': 'layersEditor.param.causalHint',
+  'TransformerDecoder.causal': 'layersEditor.param.causalHint',
+  'PositionalEncoding.learned': 'layersEditor.param.learnedHint',
 };
 
 const LAYER_DEFS: LayerDef[] = [
@@ -183,7 +185,7 @@ const LAYER_DEFS: LayerDef[] = [
   // Attention
   {
     type: 'MultiHeadAttention', category: 'Attention',
-    params: [p_int('embed_dim', 512, 'Model dimension'), p_int('num_heads', 8, 'Number of heads')],
+    params: [p_int('embed_dim', 512, 'Model dimension'), p_int('num_heads', 8, 'Number of heads'), p_bool('causal', false, 'Mask each position to itself and earlier positions')],
   },
   {
     type: 'TransformerEncoder', category: 'Attention',
@@ -191,7 +193,13 @@ const LAYER_DEFS: LayerDef[] = [
   },
   {
     type: 'TransformerDecoder', category: 'Attention',
-    params: [p_int('d_model', 512, 'Model dimension'), p_int('nhead', 8, 'Number of heads'), p_int('num_layers', 1, 'Stacked blocks'), p_int('dim_feedforward', 2048, 'FFN hidden size')],
+    params: [p_int('d_model', 512, 'Model dimension'), p_int('nhead', 8, 'Number of heads'), p_int('num_layers', 1, 'Stacked blocks'), p_int('dim_feedforward', 2048, 'FFN hidden size'), p_bool('causal', true, 'Mask each position to itself and earlier positions')],
+  },
+  // The backend's PositionalEncodingBlock: adds a sinusoidal (or learned)
+  // position code, the order information attention layers lack on their own.
+  {
+    type: 'PositionalEncoding', category: 'Attention',
+    params: [p_int('d_model', 512, 'Model dimension'), p_int('max_len', 512, 'Longest sequence'), p_bool('learned', false, 'Trainable table instead of sinusoidal')],
   },
   // Utility
   {

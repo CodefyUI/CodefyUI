@@ -125,7 +125,9 @@ class BradleyTerryTrainNode(BaseNode):
         "between the two accuracies is reward hacking made visible: a model can "
         "score a perfect 1.000 on the pairs it trained on and still have learned a "
         "shortcut instead of the preference. The holdout inputs are optional; "
-        "without them the holdout numbers are NaN."
+        "without them the holdout numbers are NaN. Each epoch is also recorded "
+        "as the run metrics `train_loss`, `train_accuracy` and, with a holdout, "
+        "`holdout_accuracy`, so a sweep can rank by them."
     )
 
     #: Owns trained weights and has no required upstream that changes; a cache
@@ -213,6 +215,12 @@ class BradleyTerryTrainNode(BaseNode):
             tr_acc.append(acc(tw, tl))
             ho_acc.append(acc(hw, hl) if hw is not None and hl is not None else float("nan"))
             lines.append(f"epoch {ep + 1:3d}: loss {losses[-1]:.4f}  train {tr_acc[-1]:.3f}  holdout {ho_acc[-1]:.3f}")
+            if context is not None:
+                # Per epoch, at the epoch's 1-based number, like TrainingLoop.
+                context.log_metric("train_loss", losses[-1], ep + 1)
+                context.log_metric("train_accuracy", tr_acc[-1], ep + 1)
+                if hw is not None and hl is not None:
+                    context.log_metric("holdout_accuracy", ho_acc[-1], ep + 1)
 
         finite = [(i, a) for i, a in enumerate(ho_acc) if a == a]
         best = max(finite, key=lambda p: p[1])[0] + 1 if finite else 0

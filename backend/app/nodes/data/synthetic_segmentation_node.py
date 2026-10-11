@@ -102,7 +102,10 @@ class SyntheticSegmentationNode(BaseNode):
             PortDefinition(
                 name="dataset",
                 data_type=DataType.DATASET,
-                description="分割資料集：每筆是 (影像 (1,H,W) float、遮罩 (H,W) 整數，0/1/2 三類)。",
+                description=(
+                    "Segmentation dataset: each item is (image (1,H,W) float, mask (H,W) int "
+                    "with classes 0/1/2)."
+                ),
             ),
         ]
 
@@ -114,27 +117,30 @@ class SyntheticSegmentationNode(BaseNode):
                 param_type=ParamType.INT,
                 default=64,
                 min_value=16,
-                description="正方形影像邊長（像素）。CPU 上建議 32–96。",
+                description="Side length of the square images in pixels. 32-96 suits a CPU.",
             ),
             ParamDefinition(
                 name="n_samples",
                 param_type=ParamType.INT,
                 default=200,
                 min_value=4,
-                description="產生幾張影像。",
+                description="Number of images to generate.",
             ),
             ParamDefinition(
                 name="noise",
                 param_type=ParamType.FLOAT,
                 default=0.05,
                 min_value=0.0,
-                description="加到影像上的高斯雜訊強度（不影響遮罩）。",
+                description="Strength of the Gaussian noise added to the images. The masks are unaffected.",
             ),
             ParamDefinition(
                 name="seed",
                 param_type=ParamType.INT,
                 default=42,
-                description="亂數種子；換 seed 換一批不同的圖（train / test 用不同 seed）。",
+                description=(
+                    "Random seed. A different seed gives a different set of images; use "
+                    "different seeds for train and test."
+                ),
             ),
         ]
 
