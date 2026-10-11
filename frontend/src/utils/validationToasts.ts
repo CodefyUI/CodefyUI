@@ -41,6 +41,7 @@ const ISSUE_KEYS = new Map<string, TranslationKey>([
   ['param_not_number', 'graphValidation.param_not_number'],
   ['param_below_min', 'graphValidation.param_below_min'],
   ['param_above_max', 'graphValidation.param_above_max'],
+  ['param_not_an_option', 'graphValidation.param_not_an_option'],
   ['unknown_node_type', 'graphValidation.unknown_node_type'],
   ['unknown_preset', 'graphValidation.unknown_preset'],
   ['invalid_output_port', 'graphValidation.invalid_output_port'],

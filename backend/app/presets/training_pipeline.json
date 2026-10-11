@@ -8,7 +8,7 @@
     { "id": "dataloader", "type": "DataLoader", "params": { "batch_size": 32, "shuffle": true, "num_workers": 0 } },
     { "id": "loss", "type": "Loss", "params": { "type": "CrossEntropyLoss" } },
     { "id": "optimizer", "type": "Optimizer", "params": { "type": "Adam", "lr": 0.001, "weight_decay": 0.0 } },
-    { "id": "train_loop", "type": "TrainingLoop", "params": { "epochs": 5, "device": "cpu" } }
+    { "id": "train_loop", "type": "TrainingLoop", "params": { "epochs": 5, "device": "auto" } }
   ],
   "edges": [
     { "source": "dataset", "sourceHandle": "dataset", "target": "dataloader", "targetHandle": "dataset" },

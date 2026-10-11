@@ -514,6 +514,7 @@ const zhTW: Record<TranslationKey, string> = {
   'graphValidation.param_not_number': '「{node}」的「{param}」必須是數字（目前是 {value}）',
   'graphValidation.param_below_min': '「{node}」的「{param}」是 {value}，小於最小值 {min}',
   'graphValidation.param_above_max': '「{node}」的「{param}」是 {value}，大於最大值 {max}',
+  'graphValidation.param_not_an_option': '「{node}」的「{param}」是 {value}，不在可選項目中（{options}）',
   'graphValidation.unknown_node_type': '「{node}」的節點類型「{type}」未安裝',
   'graphValidation.unknown_preset': '「{node}」使用的預設組合「{preset}」不存在',
   'graphValidation.invalid_output_port': '「{node}」沒有輸出「{port}」',

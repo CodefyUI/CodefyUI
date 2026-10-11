@@ -69,3 +69,20 @@ def test_unknown_fill_raises():
 def test_4d_image_shape():
     res = _run(shape="1,3,224,224", fill="zeros")
     assert res["tensor"].shape == (1, 3, 224, 224)
+
+
+# -- #682: a malformed shape names the param and the format ------------------
+
+
+@pytest.mark.parametrize("shape", ["abc", "", "1,,3", "2,0", "2,-1", "1.5,2"])
+def test_a_malformed_shape_names_the_param_and_the_format(shape):
+    with pytest.raises(ValueError) as exc:
+        _run(shape=shape, fill="zeros")
+    assert str(exc.value) == (
+        "shape must be comma-separated positive integers "
+        f"(e.g. 1,3,224,224), got {shape!r}"
+    )
+
+
+def test_a_shape_with_spaces_still_parses():
+    assert _run(shape=" 2, 3 ", fill="zeros")["tensor"].shape == (2, 3)

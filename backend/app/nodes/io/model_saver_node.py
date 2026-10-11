@@ -312,6 +312,15 @@ class ModelSaverNode(BaseNode):
         note = ""
         note_level = ""
 
+        # Checked here too, for callers that skip validate_graph: an unknown
+        # value used to fall through to full_model / pytorch (#698).
+        if save_mode not in ("state_dict", "full_model"):
+            raise ValueError(
+                f"save_mode must be 'state_dict' or 'full_model', got {save_mode!r}")
+        if fmt not in ("pytorch", "safetensors"):
+            raise ValueError(
+                f"format must be 'pytorch' or 'safetensors', got {fmt!r}")
+
         # Inside the data directory, and not over CodefyUI's own storage --
         # ``core.data_paths`` owns both halves of that rule and is shared
         # with ImageWriter and the checkpoint writers (#224).
