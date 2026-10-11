@@ -121,7 +121,8 @@ describe('TemplateGalleryModal', () => {
     ]);
 
     render(<TemplateGalleryModal />);
-    await screen.findByText('Train CNN');
+    // In the grid: the detail pane names the preselected first card too.
+    await within(grid()).findByText('Train CNN');
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     // The same sections, in the same order, as the sidebar's Templates tab and
@@ -164,9 +165,9 @@ describe('TemplateGalleryModal', () => {
     // CNN's group is headed "Training", so its family chip stays.
     expect(chips).toEqual(['CNN', 'Classical']);
     // The detail pane still names the category of whatever is chosen — the
-    // first example the server listed, until a card is clicked — because it is
-    // the one place with room for the example's own provenance.
-    expect(within(detail()).getByText('Model Architecture')).toBeInTheDocument();
+    // first card shown, until a card is clicked (#678) — because it is the one
+    // place with room for the example's own provenance.
+    expect(within(detail()).getByText('Usage Example')).toBeInTheDocument();
   });
 
   it('shows the loading, empty, and error states', async () => {
@@ -225,6 +226,45 @@ describe('TemplateGalleryModal', () => {
     fireEvent.click(within(grid()).getByText('Second'));
     expect(within(detail()).getByText('the second one')).toBeInTheDocument();
     expect(within(detail()).getByText('From plugin pack "c2"')).toBeInTheDocument();
+  });
+
+  it('preselects the first card shown, in display order, before and after a search', async () => {
+    // #678: the API lists an architecture before the quick-start examples,
+    // but the gallery renders Quick Start first. The pane, the pressed card
+    // and "Open in new tab" all have to agree with the card at the top.
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Two moons', description: 'six classifiers', category: 'Model_Architecture', path: 'm/moons', section: 'architectures' }),
+      ex({ name: 'Inference CNN on MNIST', description: 'mnist inference', path: 'u/infer', section: 'quickstart' }),
+      ex({ name: 'Train CNN on MNIST', description: 'mnist training', path: 'u/train', section: 'quickstart', order: 0 }),
+    ]);
+    mockedRest.loadExample.mockResolvedValue({ name: 'Train CNN on MNIST', nodes: [raw('a')], edges: [] });
+    render(<TemplateGalleryModal />);
+    await within(grid()).findByText('Two moons');
+
+    const cards = () => within(grid()).getAllByRole('button');
+    const pressed = () =>
+      cards().filter((c) => c.getAttribute('aria-pressed') === 'true');
+    const names = () => cards().map((c) => c.querySelector('span')!.textContent);
+
+    // Display order: Quick Start (order 0 first), then the architecture.
+    expect(names()).toEqual(['Train CNN on MNIST', 'Inference CNN on MNIST', 'Two moons']);
+    expect(pressed()).toEqual([cards()[0]]);
+    expect(within(detail()).getByText('mnist training')).toBeInTheDocument();
+    expect(within(detail()).queryByText('six classifiers')).toBeNull();
+
+    // After a search the fallback is the first card of the filtered list as
+    // rendered, which is not the first match in API order.
+    fireEvent.change(screen.getByPlaceholderText('Search templates...'), {
+      target: { value: 'mnist' },
+    });
+    expect(names()).toEqual(['Train CNN on MNIST', 'Inference CNN on MNIST']);
+    expect(pressed()).toEqual([cards()[0]]);
+    expect(within(detail()).getByText('mnist training')).toBeInTheDocument();
+
+    // "Open in new tab" opens the example the pane describes.
+    fireEvent.click(screen.getByText('Open in new tab'));
+    await waitFor(() => expect(store().tabs).toHaveLength(2));
+    expect(mockedRest.loadExample).toHaveBeenCalledWith('u/train');
   });
 
   it('names the plugin the catalog knows, and the id until it answers', async () => {

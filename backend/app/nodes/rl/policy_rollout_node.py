@@ -35,6 +35,13 @@ The policy is any module mapping ``[B, state_dim]`` to action scores. A bare
 ``Linear`` is the tabular policy the textbook draws as arrows; a ``PPO``
 actor-critic works too -- if it returns a tuple, the first element is taken as
 the action distribution and probabilities are converted back to logits.
+
+**Two environment APIs.** GridWorldEnv's ``reset() -> obs`` and
+``step(a) -> (obs, reward, done, info)`` with tensor observations, and
+Gymnasium's (what ``EnvWrapper`` makes) ``reset() -> (obs, info)`` and
+``step(a) -> (obs, reward, terminated, truncated, info)`` with numpy
+observations (#705). :func:`_reset` and :func:`_step` turn both into a
+float tensor observation and one ``done`` flag.
 """
 
 from __future__ import annotations
@@ -50,6 +57,96 @@ from ...core.node_base import (
 )
 
 
+#: Named in every error about an env this node cannot drive.
+_EXPECTED_API = (
+    "PolicyRollout drives an env with reset() -> obs or (obs, info), and "
+    "step(action) -> (obs, reward, done, info) or (obs, reward, terminated, "
+    "truncated, info)"
+)
+
+
+def _as_observation(obs: Any, where: str):
+    """A float32 tensor of *obs*. A tensor passes through untouched, so
+    GridWorld's observations are exactly what they were."""
+    import numpy as np
+    import torch
+
+    if isinstance(obs, torch.Tensor):
+        return obs
+    try:
+        array = np.asarray(obs, dtype=np.float32)
+    except (TypeError, ValueError):
+        array = None
+    if array is None or array.dtype == object or array.ndim == 0:
+        raise ValueError(
+            f"PolicyRollout: env.{where} gave an observation of type "
+            f"{type(obs).__name__}, which is not an array of numbers. "
+            f"{_EXPECTED_API}.")
+    return torch.tensor(array)
+
+
+def _reset(env: Any):
+    """``env.reset()`` as a float tensor observation, for either API."""
+    out = env.reset()
+    if isinstance(out, tuple):
+        # Gymnasium: (obs, info). Any other tuple is not an observation.
+        if len(out) != 2 or not isinstance(out[1], dict):
+            raise ValueError(
+                f"PolicyRollout: env.reset() returned a {len(out)}-tuple. "
+                f"{_EXPECTED_API}.")
+        out = out[0]
+    return _as_observation(out, "reset()")
+
+
+def _step(env: Any, action: int, outcome: str):
+    """``env.step(action)`` as ``(obs, reward, done, outcome)``, for either API.
+
+    *outcome* is the previous step's, kept when the env does not name one.
+    GridWorld names it in ``info["outcome"]``; a Gymnasium episode that
+    ends without one ends at ``terminated`` or ``truncated``.
+    """
+    out = env.step(action)
+    if not isinstance(out, tuple) or len(out) not in (4, 5):
+        shape = (f"a {len(out)}-tuple" if isinstance(out, tuple)
+                 else type(out).__name__)
+        raise ValueError(
+            f"PolicyRollout: env.step() returned {shape}. {_EXPECTED_API}.")
+    if len(out) == 5:
+        obs, reward, terminated, truncated, info = out
+        done = bool(terminated) or bool(truncated)
+        if done:
+            outcome = "terminated" if terminated else "truncated"
+    else:
+        obs, reward, done, info = out
+        done = bool(done)
+    if isinstance(info, dict):
+        outcome = info.get("outcome", outcome)
+    return _as_observation(obs, "step()"), float(reward), done, outcome
+
+
+def _check_state_dim(model: Any, obs: Any) -> None:
+    """Name both sizes when the env's observation does not fit the policy.
+
+    Without this a GridWorld(size=4) wired to the default DQN(state_dim=4)
+    fails with torch's ``mat1 and mat2 shapes cannot be multiplied (1x16
+    and 4x128)``. Checked only when the policy's first layer is a Linear
+    and the observation is a vector; anything else is left to the model.
+    """
+    import torch.nn as nn
+
+    modules = getattr(model, "modules", None)
+    if modules is None or obs.ndim != 1:
+        return
+    first = next((m for m in modules()
+                  if not list(m.children()) and list(m.parameters(recurse=False))),
+                 None)
+    if isinstance(first, nn.Linear) and first.in_features != obs.shape[0]:
+        raise ValueError(
+            f"PolicyRollout: env observations have {obs.shape[0]} features "
+            f"but the model expects {first.in_features}. Set the model's "
+            f"state_dim (its input size) to {obs.shape[0]}.")
+
+
 class PolicyRolloutNode(BaseNode):
     NODE_NAME = "PolicyRollout"
     CATEGORY = "RL"
@@ -60,7 +157,9 @@ class PolicyRolloutNode(BaseNode):
         "the logits, the log_probs recorded at sampling time (PPO's "
         "log_probs_old), per-episode returns, lengths and episode_ids, a text "
         "report and the first episode step by step. The env input only needs "
-        "reset() and step(action)."
+        "reset() and step(action): GridWorldEnv's, or a Gymnasium env from "
+        "EnvWrapper (its observations become float tensors and an episode "
+        "ends when it is terminated or truncated)."
     )
 
     #: Rolls a stochastic policy through a stateful env; a cached batch would
@@ -78,7 +177,7 @@ class PolicyRolloutNode(BaseNode):
             PortDefinition(
                 name="env",
                 data_type=DataType.ANY,
-                description="Environment exposing reset() and step(action), e.g. from GridWorldEnv.",
+                description="Environment exposing reset() and step(action), e.g. from GridWorldEnv or EnvWrapper.",
             ),
         ]
 
@@ -161,7 +260,8 @@ class PolicyRolloutNode(BaseNode):
             if not hasattr(env, name):
                 raise ValueError(
                     f"PolicyRollout: the `env` input has no {name}() -- it does not look like "
-                    "an environment. GridWorldEnv's `env` output is what belongs here."
+                    "an environment. GridWorldEnv's or EnvWrapper's `env` output is what "
+                    "belongs here."
                 )
 
         episodes = int(params.get("episodes", 1))
@@ -188,7 +288,9 @@ class PolicyRolloutNode(BaseNode):
 
         try:
             for ep in range(episodes):
-                obs = env.reset()
+                obs = _reset(env)
+                if ep == 0:
+                    _check_state_dim(model, obs)
                 done = False
                 total, steps = 0.0, 0
                 outcome = "timeout"
@@ -217,11 +319,10 @@ class PolicyRolloutNode(BaseNode):
                     # exactly the denominator of PPO's ratio.
                     lp_all.append(torch.log(probs[action].clamp_min(1e-12)))
 
-                    obs, reward, done, info = env.step(action)
-                    r_all.append(float(reward))
-                    total += float(reward)
+                    obs, reward, done, outcome = _step(env, action, outcome)
+                    r_all.append(reward)
+                    total += reward
                     steps += 1
-                    outcome = info.get("outcome", outcome) if isinstance(info, dict) else outcome
 
                 returns.append(total)
                 lengths.append(steps)

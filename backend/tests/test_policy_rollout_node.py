@@ -223,3 +223,111 @@ def test_log_probs_are_taken_at_the_sampling_temperature(temperature):
     expected = torch.log_softmax(out["logits"] / temperature, dim=-1).gather(
         1, out["actions"].unsqueeze(1)).squeeze(1)
     assert out["log_probs"].tolist() == pytest.approx(expected.tolist(), abs=1e-5)
+
+
+# ── Gymnasium envs (#705) ─────────────────────────────────────────────────
+
+
+class _GymApiEnv:
+    """The Gymnasium API without gymnasium: ``reset() -> (obs, info)`` and a
+    5-tuple ``step`` with float64 numpy observations. The episode ends after
+    ``end_after`` steps, by termination or truncation. Records the actions it
+    was handed, so the test can see they arrive as Python ints."""
+
+    def __init__(self, end_after: int = 3, how: str = "terminated"):
+        import numpy as np
+
+        self.np = np
+        self.end_after = end_after
+        self.how = how
+        self.actions: list = []
+        self._t = 0
+
+    def _obs(self):
+        return self.np.array([self._t, 0.5, -0.25, 2.0], dtype=self.np.float64)
+
+    def reset(self, *, seed=None, options=None):
+        self._t = 0
+        return self._obs(), {}
+
+    def step(self, action):
+        self.actions.append(action)
+        self._t += 1
+        end = self._t >= self.end_after
+        return (self._obs(), self.np.float64(1.0),
+                end and self.how == "terminated",
+                end and self.how == "truncated", {})
+
+
+def _cartpole_policy():
+    torch.manual_seed(0)
+    return nn.Linear(4, 2)
+
+
+@pytest.mark.parametrize("how", ["terminated", "truncated"])
+def test_a_gymnasium_api_env_is_driven_to_the_end_of_each_episode(how):
+    env = _GymApiEnv(end_after=3, how=how)
+    out = _run(model=_cartpole_policy(), env=env, episodes=2)
+    assert out["episode_lengths"].tolist() == [3, 3]
+    assert out["states"].dtype == torch.float32
+    # The numpy observations, as float tensors, in order: t = 0, 1, 2.
+    assert out["states"][:3].tolist() == [
+        [0.0, 0.5, -0.25, 2.0], [1.0, 0.5, -0.25, 2.0], [2.0, 0.5, -0.25, 2.0]]
+    assert out["rewards"].tolist() == [1.0] * 6
+    assert out["returns"].tolist() == [3.0, 3.0]
+    assert all(type(a) is int for a in env.actions)
+    assert out["report"].splitlines()[0].endswith(f"ended at {how}")
+
+
+def test_envwrapper_cartpole_rolls_out_with_a_4_in_2_out_policy():
+    pytest.importorskip("gymnasium")
+    from app.nodes.rl.env_wrapper_node import EnvWrapperNode
+
+    env = EnvWrapperNode().execute({}, {"env_name": "CartPole-v1"})["env"]
+    out = _run(model=_cartpole_policy(), env=env, episodes=3)
+    n = int(out["episode_lengths"].sum())
+    assert out["states"].shape == (n, 4)
+    assert out["states"].dtype == torch.float32
+    assert out["actions"].shape == (n,)
+    assert set(out["actions"].tolist()) <= {0, 1}
+    # CartPole pays +1 per step, so each return is its episode's length.
+    assert out["returns"].tolist() == out["episode_lengths"].float().tolist()
+    assert out["logits"].shape == (n, 2)
+
+
+class _BadStepEnv:
+    def reset(self):
+        return torch.zeros(4)
+
+    def step(self, action):
+        return torch.zeros(4), 0.0, True
+
+
+class _BadResetEnv:
+    def reset(self):
+        return "start"
+
+    def step(self, action):  # pragma: no cover - never reached
+        raise AssertionError
+
+
+@pytest.mark.parametrize("env, where", [
+    (_BadStepEnv(), "env.step() returned a 3-tuple"),
+    (_BadResetEnv(), "env.reset() gave an observation of type str"),
+])
+def test_an_env_with_an_unsupported_api_names_the_expected_one(env, where):
+    with pytest.raises(ValueError) as excinfo:
+        _run(model=_cartpole_policy(), env=env)
+    message = str(excinfo.value)
+    assert where in message
+    assert "reset() -> obs or (obs, info)" in message
+    assert "(obs, reward, terminated, truncated, info)" in message
+
+
+def test_a_state_dim_mismatch_names_both_sizes():
+    """GridWorld(size=4) emits 16 features; the default DQN takes 4."""
+    from app.nodes.rl.dqn_node import DQNNode
+
+    model = DQNNode().execute({}, {"state_dim": 4, "action_dim": 4})["model"]
+    with pytest.raises(ValueError, match="16 features but the model expects 4"):
+        _run(model=model)

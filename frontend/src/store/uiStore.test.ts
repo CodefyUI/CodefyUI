@@ -629,6 +629,43 @@ describe('useUIStore', () => {
       expect(mod.useUIStore.getState().globalDevice).toBe('mps');
     });
 
+    // A phone-width window left the canvas about 70 px wide beside the open
+    // sidebar (#687).
+    describe('sidebarCollapsed (#687)', () => {
+      const desktopWidth = window.innerWidth;
+      afterEach(() => {
+        window.innerWidth = desktopWidth;
+      });
+
+      it('starts collapsed in a phone-width window with nothing persisted', async () => {
+        vi.resetModules();
+        window.innerWidth = 390;
+        const mod = await import('./uiStore');
+        expect(mod.useUIStore.getState().sidebarCollapsed).toBe(true);
+      });
+
+      it('starts open in a wider window with nothing persisted', async () => {
+        vi.resetModules();
+        window.innerWidth = 1024;
+        const mod = await import('./uiStore');
+        expect(mod.useUIStore.getState().sidebarCollapsed).toBe(false);
+      });
+
+      it('keeps a persisted choice at any width', async () => {
+        vi.resetModules();
+        window.innerWidth = 390;
+        localStorage.setItem(KEYS.SIDEBAR_COLLAPSED, 'false');
+        const open = await import('./uiStore');
+        expect(open.useUIStore.getState().sidebarCollapsed).toBe(false);
+
+        vi.resetModules();
+        window.innerWidth = 1024;
+        localStorage.setItem(KEYS.SIDEBAR_COLLAPSED, 'true');
+        const closed = await import('./uiStore');
+        expect(closed.useUIStore.getState().sidebarCollapsed).toBe(true);
+      });
+    });
+
     it('edgeStyle defaults to circuit when nothing is persisted', async () => {
       vi.resetModules();
       const mod = await import('./uiStore');

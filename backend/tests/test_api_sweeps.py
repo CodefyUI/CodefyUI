@@ -641,6 +641,21 @@ async def test_seed_variants_off_leaves_every_variant_unseeded(client, store):
         assert child.options["seed"] is None
 
 
+async def test_seed_variants_off_ignores_the_base_graphs_seed(client, store):
+    """#704 gives a run with no options.seed the graph's settings.seed. A
+    sweep owns its variants' seeds, so a seeded base graph still yields
+    unseeded variants when seed_variants is off (RULING 1)."""
+    graph = {**_graph(), "settings": {"seed": 5}}
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1, 0.2]), graph=graph))
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert all(v["seed"] is None for v in body["variants"])
+    for child in await store.list_runs_by_sweep(body["sweep_id"]):
+        assert child.options["seed"] is None
+        await _await_terminal(store, child.id)
+
+
 async def test_seed_variants_on_derives_seed_plus_index_mod_2_32(
         client, store):
     """The modulo is mandatory: normalize_options rejects a seed above

@@ -1723,3 +1723,35 @@ async def test_a_preset_made_from_a_card_runs_with_its_input_wired(
     results = await execute_graph(nodes, edges, context=ExecutionContext(
         device="cpu", weights_persistent=False, graph_id="f1-card-in-preset"))
     assert results["c__node_1"]["value"] == "hi"
+
+
+# -- #699: the Training Pipeline preset trains on the graph's device ---------
+
+
+def _pipeline_card(internal_params: dict) -> dict:
+    return {
+        "id": "train-pipeline",
+        "type": "preset:Training Pipeline",
+        "position": {"x": 0, "y": 0},
+        "data": {"params": {}, "internalParams": internal_params},
+    }
+
+
+def _train_loop_device(internal_params: dict, graph_device: str) -> str:
+    from types import SimpleNamespace
+
+    from app.core.device_utils import resolve_node_device
+    from app.core.graph_engine import expand_presets
+
+    nodes, _, _ = expand_presets([_pipeline_card(internal_params)], [])
+    (loop,) = [n for n in nodes if n["type"] == "TrainingLoop"]
+    return resolve_node_device(
+        loop["data"]["params"].get("device"), SimpleNamespace(device=graph_device))
+
+
+def test_a_freshly_dropped_training_pipeline_follows_the_graph_device():
+    assert _train_loop_device({}, "cuda") == "cuda"
+
+
+def test_a_training_pipeline_saved_with_cpu_keeps_cpu():
+    assert _train_loop_device({"train_loop": {"device": "cpu"}}, "cuda") == "cpu"

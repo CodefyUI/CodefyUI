@@ -5,9 +5,14 @@ flows in as one ``features`` tensor + matching ``labels`` list, and
 flows out as four streams that the rest of the pipeline can wire
 independently — typical pattern is:
 
-    CSVReader → ColumnSelector → Normalize ──→ TrainTestSplit ──→ x_train ──→ Classifier.fit
-                                                              ╰── x_test  ──→ Classifier.predict
-                                                              ╰── y_test  ──→ accuracy
+    CSVReader → ColumnSelector → TrainTestSplit ──→ x_train → Normalize ──→ Classifier.fit
+                                                │                  ╰── stats ─╮
+                                                ╰── x_test  → Normalize(stats) → Classifier.predict
+                                                ╰── y_test  ──→ accuracy
+
+Normalize goes after the split: it fits on ``x_train`` alone, and its
+``stats`` output carries those statistics to the Normalize of ``x_test``,
+so the test rows never influence the scaling the model trains on.
 
 Stratified splits preserve class proportions in both partitions, which
 matters for imbalanced datasets — a 90/10 binary classifier could

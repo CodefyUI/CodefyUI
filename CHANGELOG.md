@@ -22,6 +22,177 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A CausalLMModel smaller than its tokenizer stops with an error naming both
+  sizes** ([#681]). TrainingLoop, PerplexityEvaluate and TextGenerate compare
+  the model's `vocab_size` with the tokenizer's before the first batch, for
+  example "the tokenizer emits ids up to 50256 but CausalLMModel.vocab_size is
+  1000". On MPS the mismatch used to train without an error and report a
+  perplexity the data cannot reach; on CPU it failed with a bare "index out of
+  range in self". The model also checks its first batch of ids, for datasets
+  that do not record a tokenizer.
+- **Edu-SelfAttention and Edu-MultiHeadAttention with `causal` on run on MPS
+  and CUDA** ([#683]). The causal mask is built on the scores' device, and an
+  external `mask` input, in these two nodes and in Edu-CrossAttention, is
+  moved there. The Multi-Head-Causal example now runs with the device set to
+  mps.
+- **MultiHeadAttention's step-through trace shows the layer's own
+  computation** ([#686]). The steps now project Q, K and V with the layer's
+  weights, split them into heads, scale by the head width, and apply the
+  output projection, so the averaged weights and the final output in the
+  trace equal the node's `weights` and `output`. The old steps attended over
+  the raw inputs with one head.
+- **The layer editor's TransformerDecoder layer is causal** ([#688]). Each
+  position now reads only itself and earlier positions, in self-attention and
+  in the cross-attention over its own input, so a next-token language model
+  built from it can no longer see the token it predicts. A `causal: false`
+  entry in the layer spec keeps the old full attention.
+- **TransformerEncoder and TransformerDecoder nodes give the same output for
+  the same input** ([#690]). Their layers ran with dropout on every run,
+  although nothing trains these nodes; they now run in eval mode, in the app
+  and in exported Python.
+- **Right-clicking a box selection opens the node menu** ([#679]). After a
+  Shift+drag selection, a right-click on the selected nodes showed no menu, so
+  **Collapse to subgraph** could not be reached. The menu now opens for the
+  node under the pointer, keeps the whole selection, and collapses it as the
+  menu of a Shift+click selection does.
+- **A wire the target port cannot take says so** ([#685]). While dragging, the
+  line turns red and dashed over a port of an incompatible type, and the
+  active wire colour over one it can feed. Releasing it there shows a short
+  message naming both types, such as "TENSOR cannot connect to DATASET". A
+  release on the empty canvas stays silent.
+- **The selected node stays in view when the side panels open** ([#687]).
+  Node Config and the Inspector take their width from the canvas, and a node
+  on the right half of it ended up past the new edge. The canvas now pans by
+  the least amount that brings the selected node back inside. Fit view leaves
+  the minimap's column free, the minimap is hidden on a canvas narrower than
+  600 px or shorter than 400 px, and a window narrower than 640 px starts with
+  the sidebar collapsed unless a choice was saved.
+- **KLDivergence averages the per-sample KL for every input shape** ([#707]).
+  A 1-D `[V]` input was divided by V under the default `batchmean`, and `mean`
+  divided by batch size times V (with a torch warning). A 1-D input is now one
+  sample, leading axes are flattened into samples, and `batchmean` and `mean`
+  both give the mean of the per-sample KL. `sum` and `none` are unchanged.
+- **Edu-LinearRegression applies the same ridge penalty in both modes**
+  ([#708]). `gradient_descent` penalised the weights n times more strongly
+  than `closed_form` for the same `regularization`. Both now minimise
+  ‖Xw + b − y‖² + λ‖w‖², the objective of sklearn's `Ridge(alpha=λ)`, and the
+  node's details give that formula.
+- **CSVReader stops on a missing target value and keeps integer labels
+  integral** ([#709]). An empty target cell became a `'nan'` class and turned
+  every other label into `'0.0'`, `'1.0'`. The run now stops and names the data
+  rows; the new `drop_missing_target` param drops them and logs which ones.
+  Integral labels read `'0'`, `'1'`, and NaN in a feature column logs a
+  warning naming the column.
+- **The Iris examples fit Normalize on the training split only** ([#713]).
+  Tabular Iris feature pipeline, Classify Iris with sklearn KNN and the
+  foundations pack's KNN from Scratch on Iris normalised the whole table before
+  splitting it, so the test rows shaped the training data. Normalize has a new
+  optional `stats` input: wire one Normalize's `stats` into another and it
+  applies those statistics instead of fitting. The examples now split first,
+  fit on `x_train` and reuse the statistics on `x_test`; the tabular example
+  prints the test split's column means. The `stats` output is typed ANY to
+  match the dict it carries; LIST let it connect to list inputs that then
+  failed at run time.
+- **A skip connection taken before an activation keeps its value** ([#694]).
+  SequentialModel built ReLU, LeakyReLU, ELU, SiLU, Mish, SELU and Hardswish
+  to run in place, so when one tensor fed both an activation and another
+  layer (a pre-activation skip into Add), the other layer read the activated
+  value and the forward pass and gradients were wrong without an error. The
+  caller's input tensor was changed too. The activations now return a new
+  tensor.
+- **A Transform no longer changes the dataset wired into it** ([#697]).
+  Transform installed its pipeline on the dataset object every other
+  consumer of that Dataset output also holds, so an untransformed sibling
+  branch saw the transform, and two Transforms on one dataset (train and
+  eval) both got whichever pipeline came last. Transform now returns a copy
+  with the pipeline; the copy shares the samples.
+- **Nodes handed the same model take turns** ([#696]). The nodes of one
+  level run concurrently, so a TrainingLoop and a sanity-check Inference on
+  the same model ran at once: Inference's `eval()` switched Dropout and
+  BatchNorm off in the middle of the epoch and changed the loss, and its
+  device move could crash the training. Two TrainingLoops on one model
+  failed with an in-place autograd error. Nodes in a level that receive the
+  same model or optimizer object now run one after another in a stable
+  order, and other nodes still run concurrently. A seeded run is unchanged.
+  When one model output is trained by more than one TrainingLoop or
+  Optimizer, the run logs a warning and `POST /api/graph/validate` lists it
+  under `warnings`: the arms share one set of weights, and a fair comparison
+  needs one model node per arm.
+- **A dropdown parameter set to a value outside its options fails validation**
+  ([#698]). Run, `POST /api/graph/validate` and `run_graph.py --validate-only`
+  now name the node, the parameter and the allowed values, for example an
+  Optimizer `type` of `Adamm`. ModelSaver also refuses an unknown `save_mode` or
+  `format` when it runs; before, `save_mode: "statedict"` wrote a full-model
+  pickle, and `format: "safetensor"` wrote a PyTorch file.
+- **TensorCreate says what is wrong with a malformed `shape`** ([#682]). A
+  value such as `abc`, an empty dimension, or a zero or negative one now fails
+  with `shape must be comma-separated positive integers (e.g. 1,3,224,224)`
+  and the value given, in place of Python's `invalid literal for int()`.
+- **ModelLoader loads the weights from a CheckpointSaver file** ([#701]). In
+  `state_dict` mode it reads the checkpoint's `model_state_dict` entry, where
+  it used to fail with a list of missing and unexpected keys.
+- **The Training Pipeline preset trains on the graph's device** ([#699]). Its
+  TrainingLoop defaulted to `cpu`, which overrides the device chosen for the
+  graph; it now defaults to `auto`. Graphs saved with `cpu` keep it.
+- **A model file uploaded with an uppercase extension can be listed,
+  downloaded and deleted** ([#710]). Upload accepted `X.PT`, and the list,
+  download and delete routes compared the extension case-sensitively, so the
+  file was left in the models folder with no way to reach it.
+
+### Added
+
+- **File menu: Open... and Import...** ([#689]). **Open...** shows the Graphs
+  panel with the saved graphs, opening the sidebar if it is collapsed.
+  **Import...** is the Graphs panel's Import button: it takes a graph (.json)
+  or a workspace (.cduiworkspace) and reports "Import failed" for a file it
+  cannot read.
+
+### Fixed
+
+- **A run waiting to start says it is queued** ([#680]). A canvas run that
+  waits for another run to release the process-wide seed lock, or a run that
+  waits in its device's queue, showed Running with an empty log. The toolbar
+  now reads "Queued (#2 on cpu)" or "Queued (waiting for a seeded run)", the
+  log records why the run waits and then that it started, and Stop still
+  cancels it.
+- **A reload no longer leaves nodes marked Completed** ([#714]). After a
+  finished run and a reload, nodes kept their Completed or Failed badges while
+  the Inspector said nothing was captured. Nodes now restore idle, as the run
+  id already did, including the nodes inside blocks. A run still in flight at
+  the reload is re-attached and keeps its node states as before.
+- **The Template Gallery preselects the first card shown** ([#678]). With no
+  card chosen, the detail pane described the first example in the server's
+  order, often a card far down the list, and Open in new tab opened that one.
+  The pane, the highlighted card and Open in new tab now follow the first card
+  on screen, also after a search.
+- **Headless runs use the graph's seed** ([#704]). `run_graph.py`,
+  `cdui run`, `POST /api/runs`, `POST /api/graph/run/{name}` and app invoke
+  read `settings.device` but not `settings.seed`, so a graph saved with a seed
+  gave different numbers on every headless run. A run that names no seed now
+  takes the graph's, the same rule the device follows; `--seed` and a body
+  `seed` still win, and `--no-seed` or `"seed": null` runs a seeded graph
+  unseeded. `cdui run` and `run_graph.py` print the seed as `<seed> (graph)`.
+  Sweep variants keep the seed the sweep gives them.
+- **EnvWrapper follows the run seed** ([#706]). It reset its Gymnasium
+  environment without a seed, so Gymnasium drew one from the OS and two runs
+  with the same `--seed` started from different observations. A seeded run
+  now resets the environment and seeds its action and observation spaces
+  from the run seed; an unseeded run still varies. EnvWrapper is also no
+  longer served from the canvas cache, which handed a re-run the environment
+  the last rollout had already stepped.
+- **PolicyRollout drives a Gymnasium environment** ([#705]). An
+  `EnvWrapper` environment failed with `'tuple' object has no attribute
+  'unsqueeze'`, because PolicyRollout only understood GridWorldEnv's
+  `reset()` and 4-value `step()`. It now also takes Gymnasium's
+  `(obs, info)` reset and 5-value step, turns numpy observations into float
+  tensors and ends an episode when it is terminated or truncated; GridWorld
+  rollouts are unchanged. An environment with neither API, and a policy whose
+  input size does not match the observation (such as the default
+  `DQN(state_dim=4)` on a 4×4 GridWorld), now get an error naming the
+  expected API or both sizes.
+
 ### Added
 
 - **Character- and byte-level tokenizers for the LM stack** ([#692]).
@@ -5638,6 +5809,36 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#678]: https://github.com/CodefyUI/CodefyUI/issues/678
+[#679]: https://github.com/CodefyUI/CodefyUI/issues/679
+[#680]: https://github.com/CodefyUI/CodefyUI/issues/680
+[#681]: https://github.com/CodefyUI/CodefyUI/issues/681
+[#682]: https://github.com/CodefyUI/CodefyUI/issues/682
+[#683]: https://github.com/CodefyUI/CodefyUI/issues/683
+[#685]: https://github.com/CodefyUI/CodefyUI/issues/685
+[#686]: https://github.com/CodefyUI/CodefyUI/issues/686
+[#687]: https://github.com/CodefyUI/CodefyUI/issues/687
+[#688]: https://github.com/CodefyUI/CodefyUI/issues/688
+[#689]: https://github.com/CodefyUI/CodefyUI/issues/689
+[#690]: https://github.com/CodefyUI/CodefyUI/issues/690
+[#691]: https://github.com/CodefyUI/CodefyUI/issues/691
+[#692]: https://github.com/CodefyUI/CodefyUI/issues/692
+[#694]: https://github.com/CodefyUI/CodefyUI/issues/694
+[#695]: https://github.com/CodefyUI/CodefyUI/issues/695
+[#696]: https://github.com/CodefyUI/CodefyUI/issues/696
+[#697]: https://github.com/CodefyUI/CodefyUI/issues/697
+[#698]: https://github.com/CodefyUI/CodefyUI/issues/698
+[#699]: https://github.com/CodefyUI/CodefyUI/issues/699
+[#701]: https://github.com/CodefyUI/CodefyUI/issues/701
+[#704]: https://github.com/CodefyUI/CodefyUI/issues/704
+[#705]: https://github.com/CodefyUI/CodefyUI/issues/705
+[#706]: https://github.com/CodefyUI/CodefyUI/issues/706
+[#707]: https://github.com/CodefyUI/CodefyUI/issues/707
+[#708]: https://github.com/CodefyUI/CodefyUI/issues/708
+[#709]: https://github.com/CodefyUI/CodefyUI/issues/709
+[#710]: https://github.com/CodefyUI/CodefyUI/issues/710
+[#713]: https://github.com/CodefyUI/CodefyUI/issues/713
+[#714]: https://github.com/CodefyUI/CodefyUI/issues/714
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
 [#620]: https://github.com/CodefyUI/CodefyUI/issues/620
 [#618]: https://github.com/CodefyUI/CodefyUI/issues/618
@@ -5660,6 +5861,3 @@ Release candidates before 1.0.0 are on the
 [#430]: https://github.com/CodefyUI/CodefyUI/issues/430
 [#642]: https://github.com/CodefyUI/CodefyUI/issues/642
 [#652]: https://github.com/CodefyUI/CodefyUI/issues/652
-[#691]: https://github.com/CodefyUI/CodefyUI/issues/691
-[#692]: https://github.com/CodefyUI/CodefyUI/issues/692
-[#695]: https://github.com/CodefyUI/CodefyUI/issues/695
