@@ -148,6 +148,21 @@ received — each links to the release it was published as.
   **Import...** is the Graphs panel's Import button: it takes a graph (.json)
   or a workspace (.cduiworkspace) and reports "Import failed" for a file it
   cannot read.
+- **ImageReader and ImageBatchReader take the training preprocessing**
+  ([#702]). Both have an optional `transform` input: wire the chain the
+  training dataset uses as its `eval_transform` (for example
+  ToTensorTransform -> NormalizeTransform) and new images reach the model
+  exactly as the training images did. Before, the readers only scaled to
+  [0, 1], and a CIFAR-10 model trained on normalized images misclassified
+  most new images. ImageReader also gets `add_batch_dim`, which returns
+  `(1, C, H, W)` so a single image goes straight into a BatchNorm model.
+- **The layer editor has a PositionalEncoding layer and causal checkboxes**
+  ([#688]). PositionalEncoding adds a sinusoidal position code (or a
+  trainable table with `learned`) to `(batch, seq, d_model)` input, so
+  Transformer layers built in the editor can use token order. The
+  TransformerDecoder layer shows its `causal` setting as a checkbox, on by
+  default, and the MultiHeadAttention layer gets one, off by default. With
+  `causal` on, a later token never changes an earlier position's output.
 
 ### Fixed
 
@@ -5830,6 +5845,7 @@ Release candidates before 1.0.0 are on the
 [#698]: https://github.com/CodefyUI/CodefyUI/issues/698
 [#699]: https://github.com/CodefyUI/CodefyUI/issues/699
 [#701]: https://github.com/CodefyUI/CodefyUI/issues/701
+[#702]: https://github.com/CodefyUI/CodefyUI/issues/702
 [#704]: https://github.com/CodefyUI/CodefyUI/issues/704
 [#705]: https://github.com/CodefyUI/CodefyUI/issues/705
 [#706]: https://github.com/CodefyUI/CodefyUI/issues/706

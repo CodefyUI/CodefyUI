@@ -77,6 +77,15 @@ const p_int = (name: string, def: number, desc: string, min: number | null = 1):
 const p_float = (name: string, def: number, desc: string, min: number | null = 0, max: number | null = null): ParamDefinition => (
   { name, param_type: 'float', default: def, description: desc, options: [], min_value: min, max_value: max }
 );
+const p_bool = (name: string, def: boolean, desc: string): ParamDefinition => (
+  { name, param_type: 'bool', default: def, description: desc, options: [], min_value: null, max_value: null }
+);
+
+/** One-line explanation under a checkbox, per bool param name. */
+const BOOL_PARAM_HINTS: Record<string, TranslationKey> = {
+  causal: 'layersEditor.param.causalHint',
+  learned: 'layersEditor.param.learnedHint',
+};
 
 const LAYER_DEFS: LayerDef[] = [
   // Convolution
@@ -158,7 +167,7 @@ const LAYER_DEFS: LayerDef[] = [
   // Attention
   {
     type: 'MultiHeadAttention', category: 'Attention',
-    params: [p_int('embed_dim', 512, 'Model dimension'), p_int('num_heads', 8, 'Number of heads')],
+    params: [p_int('embed_dim', 512, 'Model dimension'), p_int('num_heads', 8, 'Number of heads'), p_bool('causal', false, 'Mask each position to itself and earlier positions')],
   },
   {
     type: 'TransformerEncoder', category: 'Attention',
@@ -166,7 +175,13 @@ const LAYER_DEFS: LayerDef[] = [
   },
   {
     type: 'TransformerDecoder', category: 'Attention',
-    params: [p_int('d_model', 512, 'Model dimension'), p_int('nhead', 8, 'Number of heads'), p_int('num_layers', 1, 'Stacked blocks'), p_int('dim_feedforward', 2048, 'FFN hidden size')],
+    params: [p_int('d_model', 512, 'Model dimension'), p_int('nhead', 8, 'Number of heads'), p_int('num_layers', 1, 'Stacked blocks'), p_int('dim_feedforward', 2048, 'FFN hidden size'), p_bool('causal', true, 'Mask each position to itself and earlier positions')],
+  },
+  // The backend's PositionalEncodingBlock: adds a sinusoidal (or learned)
+  // position code, the order information attention layers lack on their own.
+  {
+    type: 'PositionalEncoding', category: 'Attention',
+    params: [p_int('d_model', 512, 'Model dimension'), p_int('max_len', 512, 'Longest sequence'), p_bool('learned', false, 'Trainable table instead of sinusoidal')],
   },
   // Utility
   {
@@ -342,6 +357,23 @@ function ParamEditor({
 
       {def?.params.map((p) => {
         const val = node.data.params[p.name] ?? p.default;
+        if (p.param_type === 'bool') {
+          return (
+            <div key={p.name} style={{ marginBottom: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', color: '#999', fontWeight: 500 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(val)}
+                  onChange={(e) => onParamChange(node.id, p.name, e.target.checked)}
+                />
+                {p.name}
+              </label>
+              <div style={{ fontSize: '0.6875rem', color: '#777', marginTop: 2 }}>
+                {t(BOOL_PARAM_HINTS[p.name])}
+              </div>
+            </div>
+          );
+        }
         return (
           <div key={p.name} style={{ marginBottom: 8 }}>
             <label style={{ display: 'block', fontSize: '0.75rem', color: '#999', marginBottom: 3, fontWeight: 500 }}>
