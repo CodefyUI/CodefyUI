@@ -6,8 +6,9 @@ reference (frozen) policy:
     L = E[ r(x) − β · KL(π_policy(x) || π_ref(x)) ]
 
 This node computes that KL term given two probability (or logit) tensors
-of the same shape ``[..., V]``. ``reduction`` controls whether the output
-is per-sample or scalar (matching the PyTorch convention).
+of the same shape ``[..., V]``. ``reduction`` aggregates the per-sample KL
+(the sum over the last axis): ``batchmean`` and ``mean`` average it over
+samples, ``sum`` totals it and ``none`` returns it per sample.
 """
 
 from __future__ import annotations
@@ -31,8 +32,10 @@ class KLDivergenceNode(BaseNode):
     CATEGORY = "RL"
     DESCRIPTION = "KL(p || q) from probabilities or logits"
     DETAILS = (
-        "reduction follows the PyTorch convention, with batchmean (the sum divided "
-        "by batch size) the RLHF default and none returning one value per sample. "
+        "reduction aggregates the per-sample KL, the sum over the last axis: "
+        "batchmean (the RLHF default) and mean both average it over samples, sum "
+        "adds it up and none returns one value per sample. A 1-D input is one "
+        "sample. "
         "KL is not symmetric: p is the policy and q the frozen reference it is "
         "held near."
     )
@@ -65,7 +68,7 @@ class KLDivergenceNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="batchmean",
                 options=["batchmean", "sum", "mean", "none"],
-                description="How to aggregate per-sample KL. batchmean = sum / batch_size (the RLHF default).",
+                description="How to aggregate per-sample KL. batchmean and mean = average over samples (the RLHF default); sum = total; none = one value per sample.",
             ),
         ]
 
@@ -108,14 +111,19 @@ class KLDivergenceNode(BaseNode):
             p_probs = p
 
         # KL(p || q) = Σ p_i (log p_i − log q_i). F.kl_div with log_target=False
-        # computes target * (log target − input) per element.
+        # computes target * (log target − input) per element; summing the last
+        # axis gives one KL per sample. A 1-D input is a single sample, and any
+        # leading axes are flattened into the sample axis.
+        kl_elem = F.kl_div(log_q, p_probs, reduction="none", log_target=False)
+        per_sample = kl_elem.sum(dim=-1).reshape(-1)
+
         if reduction == "none":
-            # Element-wise KL contribution; reduce over last dim to get per-sample.
-            kl_elem = F.kl_div(log_q, p_probs, reduction="none", log_target=False)
-            kl = kl_elem.sum(dim=-1)
-            # Flatten leading batch dims into [B] when multi-axis.
-            kl = kl.reshape(-1) if kl.dim() > 1 else kl
+            kl = per_sample
+        elif reduction == "sum":
+            kl = per_sample.sum()
+        elif reduction in ("batchmean", "mean"):
+            kl = per_sample.mean()
         else:
-            kl = F.kl_div(log_q, p_probs, reduction=reduction, log_target=False)
+            raise ValueError(f"KLDivergence: unknown reduction {reduction!r}")
 
         return {"kl": kl}

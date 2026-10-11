@@ -81,3 +81,47 @@ def test_missing_input_raises():
             {"p": torch.zeros(3, 5)},
             {"input_kind": "probs", "reduction": "batchmean"},
         )
+
+
+# ── #707: reductions aggregate per-sample KL, whatever the input rank ──
+
+_P = [0.5, 0.5]
+_Q = [0.9, 0.1]
+# KL(p || q) by hand: 0.5·ln(0.5/0.9) + 0.5·ln(0.5/0.1)
+_KL_PQ = 0.5 * math.log(0.5 / 0.9) + 0.5 * math.log(0.5 / 0.1)
+
+
+def test_one_dimensional_input_is_one_sample_with_batchmean():
+    res = _run(torch.tensor(_P), torch.tensor(_Q))
+    assert float(res["kl"]) == pytest.approx(_KL_PQ, abs=1e-5)
+    assert float(res["kl"]) == pytest.approx(0.5108, abs=1e-4)
+
+
+def test_mean_equals_batchmean_without_a_torch_warning(recwarn):
+    p = torch.tensor([_P, [0.2, 0.8], [0.7, 0.3]])
+    q = torch.tensor([_Q, [0.5, 0.5], [0.1, 0.9]])
+    hand = [
+        sum(pi * math.log(pi / qi) for pi, qi in zip(prow, qrow))
+        for prow, qrow in zip(p.tolist(), q.tolist())
+    ]
+    mean = float(_run(p, q, reduction="mean")["kl"])
+    batchmean = float(_run(p, q, reduction="batchmean")["kl"])
+    assert mean == pytest.approx(sum(hand) / 3, abs=1e-5)
+    assert batchmean == pytest.approx(mean, abs=1e-7)
+    assert not [w for w in recwarn if "reduction" in str(w.message)]
+
+
+def test_sum_and_none_on_a_batch_match_the_hand_computed_kl():
+    p = torch.tensor([_P, [1.0, 0.0]])
+    q = torch.tensor([_Q, [0.5, 0.5]])
+    expected = [_KL_PQ, math.log(2.0)]
+    none = _run(p, q, reduction="none")["kl"]
+    assert none.tolist() == pytest.approx(expected, abs=1e-5)
+    assert float(_run(p, q, reduction="sum")["kl"]) == pytest.approx(sum(expected), abs=1e-5)
+
+
+def test_leading_axes_are_flattened_into_samples_for_the_mean():
+    p = torch.tensor([[_P, [1.0, 0.0]], [[0.5, 0.5], _P]])
+    q = torch.tensor([[_Q, [0.5, 0.5]], [[0.5, 0.5], _Q]])
+    expected = (_KL_PQ + math.log(2.0) + 0.0 + _KL_PQ) / 4
+    assert float(_run(p, q)["kl"]) == pytest.approx(expected, abs=1e-5)

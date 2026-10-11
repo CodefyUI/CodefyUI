@@ -248,6 +248,7 @@ class EduCrossAttentionNode(StatefulModuleMixin, BaseNode):
                 raise ValueError(
                     f"EduCrossAttention: mask shape {tuple(ext_mask.shape)} doesn't match (Q_seq={Q_seq}, K_seq={K_seq})."
                 )
+            ext_mask = ext_mask.to(scores.device)
             scores = scores.masked_fill(ext_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
 
         weights = F.softmax(scores, dim=-1)

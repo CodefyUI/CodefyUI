@@ -1587,3 +1587,62 @@ def test_state_dict_mode_writes_the_same_bytes_as_before():
         target.unlink()
         torch.save(model.state_dict(), str(target))
         assert written == target.read_bytes()
+
+
+# -- #698: an unknown save_mode / format is refused, not read as another ------
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"save_mode": "statedict", "format": "pytorch"},
+         "save_mode must be 'state_dict' or 'full_model', got 'statedict'"),
+        ({"save_mode": "state_dict", "format": "safetensor"},
+         "format must be 'pytorch' or 'safetensors', got 'safetensor'"),
+    ],
+    ids=["save_mode", "format"],
+)
+def test_saver_refuses_an_unknown_mode_or_format_and_writes_nothing(
+        tmp_path, monkeypatch, params, message):
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    with pytest.raises(ValueError) as exc:
+        ModelSaverNode().execute({"model": _model()}, {"path": "x.safetensors", **params})
+    assert str(exc.value) == message
+    assert not (tmp_path / "models" / "x.safetensors").exists()
+
+
+# -- #701: ModelLoader given a CheckpointSaver file --------------------------
+
+
+def test_loader_loads_the_weights_out_of_a_checkpoint_saver_file(tmp_path, monkeypatch):
+    from app.nodes.io.checkpoint_node import CheckpointSaverNode
+
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    trained = _model(seed=7)
+    saved = CheckpointSaverNode().execute(
+        {"model": trained, "optimizer": torch.optim.SGD(trained.parameters(), lr=0.1)},
+        {"path": "ckpt.pt", "epoch": 3},
+    )
+
+    fresh = _model(seed=99)
+    assert not torch.equal(fresh.weight, trained.weight)
+    loaded = ModelLoaderNode().execute(
+        {"model": fresh},
+        {"path": saved["path"], "load_mode": "state_dict", "device": "cpu", "strict": True},
+    )["model"]
+
+    assert torch.equal(loaded.weight, trained.weight)
+    assert torch.equal(loaded.bias, trained.bias)
+
+
+def test_loader_still_loads_a_plain_state_dict(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    trained = _model(seed=7)
+    ModelSaverNode().execute(
+        {"model": trained}, {"path": "w.pt", "save_mode": "state_dict", "format": "pytorch"})
+
+    loaded = ModelLoaderNode().execute(
+        {"model": _model(seed=99)},
+        {"path": "w.pt", "load_mode": "state_dict", "device": "cpu", "strict": True},
+    )["model"]
+    assert torch.equal(loaded.weight, trained.weight)

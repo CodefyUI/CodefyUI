@@ -89,3 +89,60 @@ def test_dtype_is_float32():
     x = torch.tensor([[1, 2], [3, 4]], dtype=torch.int32)
     res = _run(x)
     assert res["tensor"].dtype == torch.float32
+
+
+# ── #713: apply training statistics to test data; stats port type ──
+
+_TRAIN = torch.tensor([[1.0, 10.0], [2.0, 30.0], [3.0, 20.0], [6.0, 40.0]])
+_TEST = torch.tensor([[4.0, 25.0], [0.0, 50.0]])
+
+
+@pytest.mark.parametrize("mode", ["zscore", "minmax", "unit_norm"])
+def test_wired_stats_reproduce_the_training_transform_on_test_rows(mode):
+    fit = _run(_TRAIN, mode=mode, axis=0)
+    applied = NormalizeNode().execute(
+        {"tensor": _TEST, "stats": fit["stats"]}, {"mode": "zscore", "axis": 0}
+    )
+    if mode == "zscore":
+        ref = (_TEST - _TRAIN.mean(0)) / _TRAIN.std(0, unbiased=False)
+    elif mode == "minmax":
+        mn, mx = _TRAIN.min(0).values, _TRAIN.max(0).values
+        ref = (_TEST - mn) / (mx - mn)
+    else:
+        ref = _TEST / _TRAIN.norm(dim=0)
+    assert torch.allclose(applied["tensor"], ref, atol=1e-6)
+    # The same stats applied to the training rows give the fitted output back.
+    again = NormalizeNode().execute({"tensor": _TRAIN, "stats": fit["stats"]}, {"axis": 0})
+    assert torch.allclose(again["tensor"], fit["tensor"], atol=1e-6)
+
+
+def test_wired_stats_do_not_refit_on_the_test_rows():
+    fit = _run(_TRAIN, mode="zscore", axis=0)
+    applied = NormalizeNode().execute(
+        {"tensor": _TEST, "stats": fit["stats"]}, {"mode": "zscore", "axis": 0}
+    )
+    # A refit on the two test rows would give each column mean 0 exactly.
+    assert not torch.allclose(applied["tensor"].mean(0), torch.zeros(2), atol=1e-3)
+
+
+def test_single_column_stats_round_trip():
+    train = torch.tensor([[1.0], [3.0]])
+    fit = _run(train, mode="zscore", axis=0)
+    applied = NormalizeNode().execute({"tensor": torch.tensor([[5.0]]), "stats": fit["stats"]}, {"axis": 0})
+    assert applied["tensor"].item() == pytest.approx(3.0)
+
+
+def test_stats_with_the_wrong_column_count_are_refused():
+    fit = _run(_TRAIN, mode="zscore", axis=0)
+    with pytest.raises(ValueError, match="needs 3"):
+        NormalizeNode().execute({"tensor": torch.zeros(2, 3), "stats": fit["stats"]}, {"axis": 0})
+
+
+def test_stats_port_type_accepts_the_dict_it_carries():
+    from app.core.node_base import DataType
+
+    out = {p.name: p for p in NormalizeNode.define_outputs()}["stats"]
+    inp = {p.name: p for p in NormalizeNode.define_inputs()}["stats"]
+    assert isinstance(_run(_TRAIN)["stats"], dict)
+    assert out.data_type == DataType.ANY
+    assert inp.data_type == DataType.ANY and inp.optional

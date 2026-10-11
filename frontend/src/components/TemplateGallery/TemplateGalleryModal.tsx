@@ -145,9 +145,11 @@ function TemplateGalleryBody() {
 
   // The detail pane always describes something as long as anything is
   // listed: a search that filters the chosen example away falls back to the
-  // first remaining one rather than emptying the pane.
+  // first card on screen rather than emptying the pane. The fallback reads
+  // `groups` because the cards render in that sectioned order; `visible` is
+  // in API order, and its head is usually a card further down (#678).
   const chosen =
-    visible.find((e) => e.path === chosenPath) ?? visible[0] ?? null;
+    visible.find((e) => e.path === chosenPath) ?? groups[0]?.items[0] ?? null;
   // One question, one answer: the NAME is both the gate (null means the
   // example is a built-in, or names no plugin at all) and the word the pane
   // prints. `pluginNameOf` already falls back to the bare id while the

@@ -43,16 +43,12 @@ class TransformNode(BaseNode):
         "SyntheticSegmentation ignore an installed pipeline."
     )
 
-    # This node MUTATES its input and returns it, so a cache hit would hand
-    # back the very object a previous run wrote to.
-    #
-    # ``Dataset`` and ``ImageFolderDataset`` are cacheable (#144/#259), so a
-    # later run can hand this node the same dataset object it wrote to last
-    # time; ``HuggingFaceDataset`` and ``KaggleDataset`` are not. Re-running
-    # costs one attribute assignment and installs the pipeline afresh, with
-    # a new seeded wrapper on a seeded run. Augmentation state a cached
-    # dataset carries into the next run is reset by ``seeding.begin_run``
-    # (#603).
+    # This node returns a COPY of its input with the pipeline installed
+    # (#697); the input dataset, which sibling branches also hold, is left
+    # untouched. Still not cached: re-running costs one shallow copy and
+    # installs the pipeline afresh, with a new seeded wrapper on a seeded
+    # run. Augmentation state a cached dataset carries into the next run is
+    # reset by ``seeding.begin_run`` (#603).
     cacheable = False
 
     @classmethod
@@ -118,6 +114,6 @@ class TransformNode(BaseNode):
             # Through ``attach_transform`` like the wired branch, so the two
             # paths agree on everything downstream of "which steps". Nothing
             # here is random, so the seeding wrapper is never installed.
-            attach_transform(dataset, compose(transform_list), context)
+            dataset = attach_transform(dataset, compose(transform_list), context)
 
         return {"dataset": dataset}
