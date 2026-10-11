@@ -140,7 +140,7 @@ def test_param_definitions_match_the_issue_spec():
     against (#289), so they are pinned rather than described."""
     params = {p.name: p for p in CausalLMModelNode.define_params()}
     expected = {
-        "vocab_size": (50257, 256, 300000),
+        "vocab_size": (50257, 2, 300000),  # min lowered for char/byte tokenizers (#692)
         "d_model": (1024, 64, 8192),
         "n_layers": (12, 1, 64),
         "n_heads": (16, 1, 64),

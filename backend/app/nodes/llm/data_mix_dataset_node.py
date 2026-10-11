@@ -1,12 +1,14 @@
 """DataMixDatasetNode — 依權重、可重現地混合多個文字語料（#300）。
 
 資料混合與課程研究的入口：TinyStories 配多少比例的 wikitext？先簡單後困難
-的排序有沒有差？這顆吃 2–6 個 TextCorpusDataset 的輸出，依權重以種子化的
-順序交錯（interleave）或依序串接（concat）成一個新的文字資料集，接
-LMTokenizedDataset 之後就是可研究的混合預訓練資料。
+的排序有沒有差？這顆吃 2–6 個 TextCorpusDataset 的輸出，依權重決定各來源
+的列數（ratio）、依權重以種子化的順序交錯（interleave）或依序串接
+（concat）成一個新的文字資料集，接 LMTokenizedDataset 之後就是可研究的混合
+預訓練資料。
 
-決定的是「列的順序」而不是列的內容：混合結果只存 (來源, 列號) 索引、
-逐列惰性讀取，混兩個 HF 語料不會把文字實體化進記憶體。
+interleave 與 concat 只決定「列的順序」，每個語料的每一列都恰好出現一次；
+ratio 決定各來源的列數，必要時重複或略過列（#695）。混合結果只存
+(來源, 列號) 索引、逐列惰性讀取，混兩個 HF 語料不會把文字實體化進記憶體。
 """
 
 from __future__ import annotations
@@ -32,13 +34,18 @@ _DRAW_CHUNK = 8192
 class DataMixDatasetNode(BaseNode):
     NODE_NAME = "DataMixDataset"
     CATEGORY = "LLM"
-    DESCRIPTION = "Mix 2-6 text corpora: weighted draws or in order"
+    DESCRIPTION = "Mix 2-6 text corpora: by ratio, weighted order or concat"
     DETAILS = (
-        "interleave draws rows proportionally without replacement and is "
-        "deterministic per seed; a corpus that empties stops being drawn and the "
-        "rest renormalise. concat runs corpus_1 to the end, then corpus_2. The "
-        "mixture stores only (source, row) indices and reads rows lazily. Feed "
-        "TextCorpusDataset outputs in and the result into LMTokenizedDataset."
+        "ratio makes the weights the share of each corpus in the output: "
+        "total_rows rows (0 = the sum of the corpus sizes), split by the weights; "
+        "a corpus asked for more rows than it has repeats rows, one asked for "
+        "fewer contributes a seeded subset, and the rows are shuffled by the seed. "
+        "interleave uses every row of every corpus exactly once, so the output "
+        "share is the corpus sizes; the weights only set how the corpora are "
+        "spread through the order (a corpus that empties stops being drawn and "
+        "the rest renormalise). concat runs corpus_1 to the end, then corpus_2. "
+        "The mixture stores only (source, row) indices and reads rows lazily. "
+        "Feed TextCorpusDataset outputs in and the result into LMTokenizedDataset."
     )
 
     # Consumes live DATASET handles a fingerprint cannot describe (the
@@ -98,22 +105,35 @@ class DataMixDatasetNode(BaseNode):
                 # and two weights refuse every mix of three or more sources.
                 default="",
                 description=(
-                    "Comma-separated draw weights, one per source "
-                    "(normalized; interleave mode only). Empty: equal "
-                    "weights. A source that empties stops being drawn and "
-                    "the rest renormalize — the tail of the mixture is "
-                    "whatever corpora remain."
+                    "Comma-separated weights, one per source (normalized; "
+                    "ignored by concat). Empty: equal weights. ratio: the "
+                    "share of each source in the output. interleave: only "
+                    "the order; every row is used once, so the output share "
+                    "is the corpus sizes."
                 ),
             ),
             ParamDefinition(
                 name="mode",
                 param_type=ParamType.SELECT,
                 default="interleave",
-                options=["interleave", "concat"],
+                options=["interleave", "ratio", "concat"],
                 description=(
-                    "interleave: seeded proportional draws without "
-                    "replacement. concat: corpus_1 fully, then corpus_2, "
+                    "ratio: total_rows rows split by the weights, repeating "
+                    "or subsampling rows as needed, in seeded order. "
+                    "interleave: every row once, in a seeded order the "
+                    "weights spread. concat: corpus_1 fully, then corpus_2, "
                     "... — an ordered curriculum."
+                ),
+            ),
+            ParamDefinition(
+                name="total_rows",
+                param_type=ParamType.INT,
+                default=0,
+                min_value=0,
+                visible_when={"mode": "ratio"},
+                description=(
+                    "ratio mode only: rows in the output. 0 = the sum of the "
+                    "corpus sizes."
                 ),
             ),
             ParamDefinition(
@@ -121,7 +141,7 @@ class DataMixDatasetNode(BaseNode):
                 param_type=ParamType.INT,
                 default=0,
                 min_value=0,
-                description="Interleave order seed — the same seed and inputs reproduce the same mixture",
+                description="Mixture seed (interleave order, ratio row picks and order) — the same seed and inputs reproduce the same mixture",
             ),
         ]
 
@@ -163,14 +183,28 @@ class DataMixDatasetNode(BaseNode):
                 for source_index in range(count)
                 for row in range(lengths[source_index])
             ]
+        elif mode == "ratio":
+            weights = self._parse_weights(
+                str(params.get("weights", "") or ""), count)
+            total_rows = max(0, int(params.get("total_rows", 0) or 0))
+            index_pairs = self._ratio(
+                lengths, weights, total_rows or sum(lengths), seed, torch)
         else:
             weights = self._parse_weights(
                 str(params.get("weights", "") or ""), count)
             index_pairs = self._interleave(lengths, weights, seed, torch)
 
         dataset = MixedTextDataset(sources, index_pairs)
-        breakdown = ", ".join(
-            f"corpus_{i + 1}: {lengths[i]:,}" for i in range(count))
+        if mode == "ratio":
+            used = [0] * count
+            for source_index, _row in index_pairs:
+                used[source_index] += 1
+            breakdown = ", ".join(
+                f"corpus_{i + 1}: {used[i]:,} of {lengths[i]:,}"
+                for i in range(count))
+        else:
+            breakdown = ", ".join(
+                f"corpus_{i + 1}: {lengths[i]:,}" for i in range(count))
         return {
             "dataset": dataset,
             "num_rows": len(dataset),
@@ -204,6 +238,39 @@ class DataMixDatasetNode(BaseNode):
                 "with weight 0 should simply not be wired.")
         total = sum(values)
         return [value / total for value in values]
+
+    @staticmethod
+    def _ratio(
+        lengths: list[int], weights: list[float], total: int, seed: int,
+        torch: Any,
+    ) -> list[tuple[int, int]]:
+        """``total`` rows whose per-source counts follow ``weights``.
+
+        Each source's quota is ``total * weight`` rounded by largest
+        remainder, so the counts sum to ``total`` and match the weights as
+        closely as whole rows allow. A source's rows come from seeded
+        permutations of the whole corpus, one full pass after another: no
+        row repeats before every row of that source has been used once.
+        The combined rows are then shuffled by the same seed.
+        """
+        generator = torch.Generator().manual_seed(seed)
+        exact = [total * weight for weight in weights]
+        quotas = [int(value) for value in exact]
+        by_remainder = sorted(
+            range(len(weights)), key=lambda i: exact[i] - quotas[i],
+            reverse=True)
+        for i in by_remainder[: total - sum(quotas)]:
+            quotas[i] += 1
+        pairs: list[tuple[int, int]] = []
+        for source, (length, quota) in enumerate(zip(lengths, quotas)):
+            picked = 0
+            while picked < quota:
+                take = min(length, quota - picked)
+                rows = torch.randperm(length, generator=generator)[:take]
+                pairs.extend((source, row) for row in rows.tolist())
+                picked += take
+        order = torch.randperm(len(pairs), generator=generator).tolist()
+        return [pairs[i] for i in order]
 
     @staticmethod
     def _interleave(

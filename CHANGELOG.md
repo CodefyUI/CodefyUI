@@ -193,6 +193,34 @@ received — each links to the release it was published as.
   `DQN(state_dim=4)` on a 4×4 GridWorld), now get an error naming the
   expected API or both sizes.
 
+### Added
+
+- **Character- and byte-level tokenizers for the LM stack** ([#692]).
+  LMTokenizer gains `byte` (the 256 UTF-8 byte values plus an end-of-text id,
+  257 ids) and `char` (one id per distinct character of the text on its new
+  `corpus` input, plus end-of-text and unknown-character ids). Both work with
+  LMTokenizedDataset, TextGenerate and CausalLMModel, whose `vocab_size` now
+  accepts values down to 2 instead of 256, so the classic character-level GPT
+  exercise trains with built-in nodes.
+
+### Fixed
+
+- **DDPMSampler samples with the schedule the model was trained on**
+  ([#691]). The sampler's defaults (20 steps, `beta_end` 0.02) differed from
+  DiffusionTrainingLoop's (160 steps, `beta_end` 0.05), so a fresh pair of
+  nodes produced faded samples without any warning. The defaults now match,
+  DiffusionTrainingLoop records its schedule on the trained model, and the
+  sampler uses that schedule and logs a warning naming any of its own
+  schedule params that differ. The built-in examples set matching params and
+  sample the same images as before.
+- **DataMixDataset can mix corpora at the ratio its weights give** ([#695]).
+  In `interleave` mode every row of every corpus is used once, so the output
+  share is always the corpus sizes and the weights only affect the order. The
+  new `ratio` mode returns `total_rows` rows (0 = the sum of the corpus sizes)
+  split by the weights, repeating or subsampling rows as needed, in an order
+  fixed by the seed. `interleave` stays the default, and the node and
+  `weights` descriptions now say what the weights control in each mode.
+
 ## [2.9.0] — 2026-10-11
 
 ### Added
@@ -5793,7 +5821,10 @@ Release candidates before 1.0.0 are on the
 [#688]: https://github.com/CodefyUI/CodefyUI/issues/688
 [#689]: https://github.com/CodefyUI/CodefyUI/issues/689
 [#690]: https://github.com/CodefyUI/CodefyUI/issues/690
+[#691]: https://github.com/CodefyUI/CodefyUI/issues/691
+[#692]: https://github.com/CodefyUI/CodefyUI/issues/692
 [#694]: https://github.com/CodefyUI/CodefyUI/issues/694
+[#695]: https://github.com/CodefyUI/CodefyUI/issues/695
 [#696]: https://github.com/CodefyUI/CodefyUI/issues/696
 [#697]: https://github.com/CodefyUI/CodefyUI/issues/697
 [#698]: https://github.com/CodefyUI/CodefyUI/issues/698

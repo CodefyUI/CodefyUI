@@ -6,9 +6,9 @@ much noise, and ask the model to predict the noise we added. This node
 packages that loop so a small diffusion model can be trained on CPU, then
 sampled with ``DDPMSampler``.
 
-CRITICAL: the noise schedule here (``schedule`` / ``num_timesteps`` /
-``beta_start`` / ``beta_end``) must MATCH the ``DDPMSampler`` used to sample
-afterwards, or generation will fail. The defaults (linear, T=160,
+The noise schedule here (``schedule`` / ``num_timesteps`` / ``beta_start`` /
+``beta_end``) is recorded on the trained model, and ``DDPMSampler`` samples
+with it (#691); its own defaults match these. The defaults (linear, T=160,
 beta_end=0.05) are chosen so the schedule both fully noises the image
 (alpha_bar_T ~ 0) and stays numerically stable in the reverse loop.
 """
@@ -31,8 +31,9 @@ class DiffusionTrainingLoopNode(BaseNode):
         "Each step noises a clean image at a random timestep and updates the "
         "weights on the MSE between the predicted and the added noise, returning "
         "the trained model and the per-epoch loss. The noise schedule set here "
-        "(schedule, num_timesteps, beta_start, beta_end) must match the "
-        "DDPMSampler that samples from it afterwards, or generation breaks."
+        "(schedule, num_timesteps, beta_start, beta_end) is stored on the "
+        "trained model, and DDPMSampler samples with it, warning when its own "
+        "params differ."
     )
 
     @classmethod
@@ -101,7 +102,11 @@ class DiffusionTrainingLoopNode(BaseNode):
             save_interrupt_checkpoint,
             stop_checker,
         )
-        from ..diffusion.ddpm_sampler_node import _cosine_betas, _linear_betas
+        from ..diffusion.ddpm_sampler_node import (
+            _cosine_betas,
+            _linear_betas,
+            record_schedule,
+        )
 
         model = inputs.get("model")
         dataset = inputs.get("dataset")
@@ -135,6 +140,7 @@ class DiffusionTrainingLoopNode(BaseNode):
         alpha_bars = torch.cumprod(1.0 - betas, dim=0).to(device)
 
         model = model.to(device)
+        record_schedule(model, T, schedule, beta_start, beta_end)
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
