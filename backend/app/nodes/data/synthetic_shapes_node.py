@@ -70,7 +70,7 @@ class SyntheticShapesNode(BaseNode):
             PortDefinition(
                 name="dataset",
                 data_type=DataType.DATASET,
-                description="影像生成資料集：每筆是 (影像 (1,H,W) float、範圍 [-1,1])。",
+                description="Image generation dataset: each item is an image (1,H,W) float in [-1, 1].",
             ),
         ]
 
@@ -82,20 +82,23 @@ class SyntheticShapesNode(BaseNode):
                 param_type=ParamType.INT,
                 default=24,
                 min_value=8,
-                description="正方形影像邊長（像素）。擴散在 CPU 上偏慢，建議 16–32。",
+                description=(
+                    "Side length of the square images in pixels. Diffusion is slow on a CPU; "
+                    "16-32 is recommended."
+                ),
             ),
             ParamDefinition(
                 name="n_samples",
                 param_type=ParamType.INT,
                 default=384,
                 min_value=8,
-                description="產生幾張影像。",
+                description="Number of images to generate.",
             ),
             ParamDefinition(
                 name="seed",
                 param_type=ParamType.INT,
                 default=0,
-                description="亂數種子，決定這批光斑的位置與大小。",
+                description="Random seed. Sets the position and size of each blob.",
             ),
         ]
 

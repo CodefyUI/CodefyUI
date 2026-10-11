@@ -1085,6 +1085,29 @@ describe('BaseNode', () => {
     expect(screen.getByText('Default Export Node')).toBeTruthy();
   });
 
+  // #693 and #684: a port's hover text and the header's category line follow
+  // the UI language; a port with no translation keeps the backend's text.
+  it('labels the ports and the category in the UI language', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const def = makeDef({
+      node_name: 'ScatterPlot2D',
+      category: 'Utility',
+      inputs: [
+        { name: 'points', data_type: 'TENSOR', description: '2D points, shape [N, 2].', optional: false },
+        { name: 'extra', data_type: 'TENSOR', description: 'not in the catalog', optional: true },
+      ],
+      outputs: [
+        { name: 'image', data_type: 'IMAGE', description: 'The scatter plot as a base64-encoded PNG.', optional: false },
+      ],
+    });
+    const { container } = renderBody(baseData({ definition: def }));
+    const titles = Array.from(container.querySelectorAll('[title]')).map((el) => el.getAttribute('title'));
+    expect(titles).toContain('2D 點，shape [N, 2]。');
+    expect(titles).toContain('base64 編碼的 PNG 散點圖。');
+    expect(titles).toContain('not in the catalog');
+    expect(screen.getByText('工具')).toBeTruthy();
+  });
+
   it('localizes the description via tn for non-English locale (falls back when untranslated)', () => {
     // zh-TW with NO node translation for this name → falls back to the English description.
     useI18n.setState({ locale: 'zh-TW' });

@@ -27,7 +27,7 @@ class DatasetBatchNode(BaseNode):
             PortDefinition(
                 name="dataset",
                 data_type=DataType.DATASET,
-                description="來源資料集（例如 Dataset 節點輸出的 MNIST）。",
+                description="Source dataset (for example MNIST from a Dataset node).",
             ),
         ]
 
@@ -37,12 +37,15 @@ class DatasetBatchNode(BaseNode):
             PortDefinition(
                 name="images",
                 data_type=DataType.TENSOR,
-                description="影像批次張量，形狀 (N, C, H, W)。",
+                description="Image batch tensor of shape (N, C, H, W).",
             ),
             PortDefinition(
                 name="labels",
                 data_type=DataType.TENSOR,
-                description="對應的標籤：分類資料集是 (N,) 類別；分割資料集是 (N, H, W) 的逐像素遮罩。",
+                description=(
+                    "Matching labels: (N,) class ids for a classification dataset, "
+                    "(N, H, W) per-pixel masks for a segmentation dataset."
+                ),
             ),
         ]
 
@@ -53,14 +56,14 @@ class DatasetBatchNode(BaseNode):
                 name="batch_size",
                 param_type=ParamType.INT,
                 default=1,
-                description="一次取幾筆樣本（決定輸出的 N）。",
+                description="Number of samples to take (the N of the outputs).",
                 min_value=1,
             ),
             ParamDefinition(
                 name="start_index",
                 param_type=ParamType.INT,
                 default=0,
-                description="從資料集的第幾筆開始取（方便換不同樣本觀察）。",
+                description="Index of the first sample to take. Change it to look at other samples.",
                 min_value=0,
             ),
         ]

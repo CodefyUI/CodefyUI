@@ -16,7 +16,7 @@ beta_end=0.05) are chosen so the schedule both fully noises the image
 import logging
 from typing import Any
 
-from ...core.device_utils import DEVICE_PARAM_OPTIONS
+from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
@@ -39,48 +39,45 @@ class DiffusionTrainingLoopNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="model", data_type=DataType.MODEL, description="會去雜訊的 U-Net（如 DiffusionUNet），forward 吃 (x, t) 吐預測雜訊。"),
-            PortDefinition(name="dataset", data_type=DataType.DATASET, description="乾淨影像資料集（如 SyntheticShapes），每筆 (影像, 標籤)，標籤會被忽略。"),
+            PortDefinition(name="model", data_type=DataType.MODEL, description="Denoising U-Net (such as DiffusionUNet); forward takes (x, t) and returns the predicted noise."),
+            PortDefinition(name="dataset", data_type=DataType.DATASET, description="Dataset of clean images (such as SyntheticShapes); each item is (image, label) and the label is ignored."),
         ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="model", data_type=DataType.MODEL, description="訓練好的去雜訊模型。"),
-            PortDefinition(name="losses", data_type=DataType.TENSOR, description="每個 epoch 的平均訓練 loss。"),
+            PortDefinition(name="model", data_type=DataType.MODEL, description="The trained denoising model."),
+            PortDefinition(name="losses", data_type=DataType.TENSOR, description="Mean training loss of each epoch."),
         ]
 
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
         return [
-            ParamDefinition(name="epochs", param_type=ParamType.INT, default=200, min_value=1, description="訓練幾輪。"),
-            ParamDefinition(name="batch_size", param_type=ParamType.INT, default=32, min_value=1, description="每批幾張圖。"),
-            ParamDefinition(name="lr", param_type=ParamType.FLOAT, default=0.002, min_value=0.0, description="學習率（Adam）。"),
+            ParamDefinition(name="epochs", param_type=ParamType.INT, default=200, min_value=1, description="Number of training epochs."),
+            ParamDefinition(name="batch_size", param_type=ParamType.INT, default=32, min_value=1, description="Images per batch."),
+            ParamDefinition(name="lr", param_type=ParamType.FLOAT, default=0.002, min_value=0.0, description="Learning rate (Adam)."),
             ParamDefinition(
                 name="num_timesteps", param_type=ParamType.INT, default=160, min_value=2,
-                description="擴散總步數 T。要和取樣的 DDPMSampler 的 num_steps 一致。",
+                description="Total diffusion steps T. Match the num_steps of the DDPMSampler that samples.",
             ),
             ParamDefinition(
                 name="schedule", param_type=ParamType.SELECT, default="linear", options=["linear", "cosine"],
-                description="雜訊排程。要和 DDPMSampler 一致。linear + beta_end=0.05 在小 T 下既能噪滿又穩定。",
+                description=(
+                    "Noise schedule. Match the DDPMSampler. linear with beta_end=0.05 reaches full "
+                    "noise and stays stable at a small T."
+                ),
             ),
-            ParamDefinition(name="beta_start", param_type=ParamType.FLOAT, default=0.0001, min_value=0.0, description="linear 排程起始 beta（要和 DDPMSampler 一致）。"),
-            ParamDefinition(name="beta_end", param_type=ParamType.FLOAT, default=0.05, min_value=0.0, description="linear 排程結束 beta（要和 DDPMSampler 一致）。"),
-            # 'auto' 跟隨這張圖的裝置，和其他所有 device 參數同一套講法；
-            # 選項清單與描述的英文版都來自 device_utils，這裡只保留中文說明。
+            ParamDefinition(name="beta_start", param_type=ParamType.FLOAT, default=0.0001, min_value=0.0, description="Starting beta of the linear schedule (match the DDPMSampler)."),
+            ParamDefinition(name="beta_end", param_type=ParamType.FLOAT, default=0.05, min_value=0.0, description="Final beta of the linear schedule (match the DDPMSampler)."),
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
                 default="auto",
                 options=list(DEVICE_PARAM_OPTIONS),
-                description=(
-                    "此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，"
-                    "沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要"
-                    "不同裝置，請拆成兩張圖。"
-                ),
+                description=DEVICE_PARAM_DESCRIPTION,
                 advanced=True,
             ),
-            ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="亂數種子（決定每步挑的時間步與加的雜訊）。"),
+            ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="Random seed (sets the timestep and the noise drawn at each step)."),
         ]
 
     def execute(

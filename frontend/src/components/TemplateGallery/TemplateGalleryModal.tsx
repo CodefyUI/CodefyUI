@@ -283,7 +283,7 @@ function TemplateGalleryBody() {
                             <span className={styles.cardFooter}>
                               {/* No chip when the group heading right above is
                                   that same word (an architecture family). */}
-                              {exampleChipLabel(example) !== label && (
+                              {exampleChipLabel(example, t) !== label && (
                                 <span
                                   className={styles.cardChip}
                                   // Hue on the border (a graphic, 3:1) and in the
@@ -292,7 +292,7 @@ function TemplateGalleryBody() {
                                   // 4.5:1.
                                   style={{ borderColor: chipColor, background: chipFill }}
                                 >
-                                  {exampleChipLabel(example)}
+                                  {exampleChipLabel(example, t)}
                                 </span>
                               )}
                               <span className={styles.cardCount}>
@@ -319,7 +319,7 @@ function TemplateGalleryBody() {
                 <div className={styles.detailScroll}>
                   <div className={styles.detailName}>{chosen.name}</div>
                   <div className={styles.detailMeta}>
-                    <span>{exampleCategoryLabel(chosen.category)}</span>
+                    <span>{exampleCategoryLabel(chosen.category, t)}</span>
                     <span>{t('empty.nodeCount', { count: chosen.node_count })}</span>
                     <span>{t('gallery.edgeCount', { count: chosen.edge_count })}</span>
                   </div>

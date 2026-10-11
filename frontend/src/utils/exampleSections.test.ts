@@ -6,6 +6,8 @@ import {
   groupExamplesBySection,
 } from './exampleSections';
 import type { TranslationKey } from '../i18n';
+import en from '../i18n/locales/en';
+import zhTW from '../i18n/locales/zh-TW';
 import type { ExampleSummary } from '../api/rest';
 
 function ex(overrides: Partial<ExampleSummary> & { path: string }): ExampleSummary {
@@ -298,17 +300,34 @@ describe('flattenExampleSections', () => {
 });
 
 describe('example labels', () => {
+  const tEn = (key: TranslationKey) => en[key];
+  const tZh = (key: TranslationKey) => zhTW[key];
+
   it('spells a category out for display', () => {
-    expect(exampleCategoryLabel('Model_Architecture')).toBe('Model Architecture');
+    expect(exampleCategoryLabel('Model_Architecture', tEn)).toBe('Model Architecture');
+    // A folder the table does not know -- a plugin's -- keeps its own name.
+    expect(exampleCategoryLabel('Robot_Arms', tZh)).toBe('Robot Arms');
+  });
+
+  it('labels a category in the UI language (#684)', () => {
+    expect(exampleCategoryLabel('Usage_Example', tZh)).toBe('使用範例');
+    expect(exampleCategoryLabel('Model_Architecture', tZh)).toBe('模型架構');
+    expect(exampleCategoryLabel('Classical', tZh)).toBe('傳統機器學習');
+    expect(exampleCategoryLabel('Others', tZh)).toBe('其他');
+    // An acronym reads the same in both.
+    expect(exampleCategoryLabel('LLM', tZh)).toBe('LLM');
   });
 
   it('puts the family on a card that has one, and the category on one that does not', () => {
-    expect(exampleChipLabel(ex({ path: 'm/a', category: 'Model_Architecture', family: 'CNN' }))).toBe(
-      'CNN',
+    expect(
+      exampleChipLabel(ex({ path: 'm/a', category: 'Model_Architecture', family: 'CNN' }), tEn),
+    ).toBe('CNN');
+    expect(exampleChipLabel(ex({ path: 'u/a', category: 'Usage_Example' }), tEn)).toBe(
+      'Usage Example',
     );
-    expect(exampleChipLabel(ex({ path: 'u/a', category: 'Usage_Example' }))).toBe('Usage Example');
+    expect(exampleChipLabel(ex({ path: 'u/a', category: 'Usage_Example' }), tZh)).toBe('使用範例');
     // An empty family is no family, not an empty chip.
-    expect(exampleChipLabel(ex({ path: 'u/b', category: 'Usage_Example', family: '' }))).toBe(
+    expect(exampleChipLabel(ex({ path: 'u/b', category: 'Usage_Example', family: '' }), tEn)).toBe(
       'Usage Example',
     );
     // Wherever a family is declared, not only inside architectures and not
@@ -317,10 +336,10 @@ describe('example labels', () => {
     // even though the grouping ignores its `gallery` block. Any string, too:
     // the five shipped families are a sort order, not a vocabulary.
     expect(
-      exampleChipLabel(ex({ path: 'LLM/A', category: 'LLM', section: 'llm', family: 'Mamba' })),
+      exampleChipLabel(ex({ path: 'LLM/A', category: 'LLM', section: 'llm', family: 'Mamba' }), tEn),
     ).toBe('Mamba');
     expect(
-      exampleChipLabel(ex({ path: 'plugin:c1/A', category: 'Classical', family: 'CNN' })),
+      exampleChipLabel(ex({ path: 'plugin:c1/A', category: 'Classical', family: 'CNN' }), tZh),
     ).toBe('CNN');
   });
 });

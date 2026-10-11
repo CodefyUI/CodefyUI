@@ -1160,6 +1160,41 @@ describe('NodeDetailModal — Docs tab', () => {
     expect(docs.getByText('A dense layer.')).toBeInTheDocument();
   });
 
+  // #693: ten built-ins wrote their port and param texts in Chinese in the
+  // backend. They are English there now, and the Chinese UI reads them from
+  // the node catalog, ports included.
+  it('documents ports and params in the UI language, and the category too (#684)', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedTab({
+      nodes: [
+        node('n1', {
+          definition: def({
+            node_name: 'RandomForestClassifier',
+            category: 'Classical',
+            inputs: [{ name: 'x_train', data_type: 'TENSOR', description: 'Training features [N, F].', optional: false }],
+            outputs: [{ name: 'classes', data_type: 'LIST', description: 'Class labels, sorted.', optional: false }],
+            params: [numberParam('n_estimators', { description: 'Number of trees in the forest.' })],
+          }),
+        }),
+      ],
+      nodeDetailNodeId: 'n1',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByText('傳統機器學習')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '說明' }));
+    const docs = within(screen.getByRole('tabpanel'));
+    expect(docs.getByText('訓練特徵 [N, F]。')).toBeInTheDocument();
+    expect(docs.getByText('類別標籤，與 probabilities 欄序一致（排序後）。')).toBeInTheDocument();
+    expect(docs.getByText('森林裡的樹數量。越多通常越穩、越慢。')).toBeInTheDocument();
+    expect(docs.queryByText('Training features [N, F].')).toBeNull();
+    await waitFor(() => expect(mockNodeDef).toHaveBeenCalled());
+
+    // The English UI shows the backend's English.
+    act(() => useI18n.setState({ locale: 'en' }));
+    expect(docs.getByText('Training features [N, F].')).toBeInTheDocument();
+    expect(screen.getByText('Classical')).toBeInTheDocument();
+  });
+
   it('prints the details under the description, and nothing when there are none', async () => {
     seedTab({
       nodes: [node('n1', {

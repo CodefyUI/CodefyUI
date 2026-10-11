@@ -65,6 +65,23 @@ describe('TabBar', () => {
     );
   });
 
+  // #684: a new tab was "Tab 2" in every language, and its close button read
+  // 關閉「Tab 2」 in the Chinese UI.
+  it('names a new tab in the UI language', () => {
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    render(<TabBar />);
+    fireEvent.click(screen.getByTitle('新增分頁'));
+    expect(screen.getByText('分頁 2')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '關閉「分頁 2」' })).toBeTruthy();
+    expect(screen.queryByText('Tab 2')).toBeNull();
+  });
+
+  it('names a new tab "Tab N" in the English UI', () => {
+    render(<TabBar />);
+    fireEvent.click(screen.getByTitle('New tab'));
+    expect(screen.getByText('Tab 2')).toBeTruthy();
+  });
+
   it('selects a tab when clicking on it', () => {
     useTabStore.getState().addTab('Tab 2');
     const firstId = useTabStore.getState().tabs[0].id;

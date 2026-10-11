@@ -7,8 +7,16 @@ import { MathText } from '../shared/MathText';
 import { getPortColor } from '../../utils';
 import styles from './NodeDetailModal.module.css';
 
-function PortRows({ ports }: { ports: PortDefinition[] }) {
-  const { t } = useI18n();
+function PortRows({
+  ports,
+  nodeName,
+  side,
+}: {
+  ports: PortDefinition[];
+  nodeName: string;
+  side: 'input' | 'output';
+}) {
+  const { t, tn } = useI18n();
   return (
     <>
       {ports.map((p) => (
@@ -17,7 +25,11 @@ function PortRows({ ports }: { ports: PortDefinition[] }) {
           <span className={styles.docsPortName}>{p.name}</span>
           <span className={styles.docsPortType}>{p.data_type}</span>
           {p.optional && <span className={styles.docsPortOptional}>{t('config.optional')}</span>}
-          {p.description && <span className={styles.docsPortDesc}>{p.description}</span>}
+          {p.description && (
+            <span className={styles.docsPortDesc}>
+              {tn(nodeName, `${side}.${p.name}`, p.description)}
+            </span>
+          )}
         </div>
       ))}
     </>
@@ -128,7 +140,7 @@ export function DocsTab({ node }: { node: Node<NodeData> }) {
         {inputs.length === 0 ? (
           <div className={styles.docsEmpty}>{t('nodeDetail.docs.noPorts')}</div>
         ) : (
-          <PortRows ports={inputs} />
+          <PortRows ports={inputs} nodeName={nodeName} side="input" />
         )}
       </section>
 
@@ -137,7 +149,7 @@ export function DocsTab({ node }: { node: Node<NodeData> }) {
         {outputs.length === 0 ? (
           <div className={styles.docsEmpty}>{t('nodeDetail.docs.noPorts')}</div>
         ) : (
-          <PortRows ports={outputs} />
+          <PortRows ports={outputs} nodeName={nodeName} side="output" />
         )}
       </section>
     </div>

@@ -224,15 +224,35 @@ export function flattenExampleSections<T>(
   );
 }
 
-/** A category key as a reader sees it. Categories are the example's folder and
- * stay English in every locale. */
-export function exampleCategoryLabel(category: string): string {
-  return category.replace(/_/g, ' ');
+/** Display keys for the example categories whose name is a word to translate
+ * (#684). The category is the example's folder and stays the identifier; the
+ * acronyms (LLM, RL, RNN, VLA) and names (Diffusion, Transformer) read the same
+ * in both locales and have no key. */
+const EXAMPLE_CATEGORY_KEYS: Record<string, TranslationKey> = {
+  Classical: 'examples.category.Classical',
+  Model_Architecture: 'examples.category.Model_Architecture',
+  Others: 'examples.category.Others',
+  Usage_Example: 'examples.category.Usage_Example',
+};
+
+/** A category key as a reader sees it, in the UI language. A category this
+ * table does not know -- one a plugin's examples bring -- shows its folder
+ * name with spaces for underscores. */
+export function exampleCategoryLabel(
+  category: string,
+  t: (key: TranslationKey) => string,
+): string {
+  return Object.prototype.hasOwnProperty.call(EXAMPLE_CATEGORY_KEYS, category)
+    ? t(EXAMPLE_CATEGORY_KEYS[category])
+    : category.replace(/_/g, ' ');
 }
 
 /** What a card's chip says: the model family when the example names one -- the
  * architectures are all one category, and "CNN" is what tells them apart -- and
  * the category otherwise. */
-export function exampleChipLabel(example: ExampleSummary): string {
-  return familyOf(example) ?? exampleCategoryLabel(example.category);
+export function exampleChipLabel(
+  example: ExampleSummary,
+  t: (key: TranslationKey) => string,
+): string {
+  return familyOf(example) ?? exampleCategoryLabel(example.category, t);
 }

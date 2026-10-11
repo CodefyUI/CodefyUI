@@ -2933,7 +2933,12 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
     // Corrupted data — fall through to default
   }
   const id = generateId();
-  return { tabs: [createTabState(id, 'Tab 1')], activeTabId: id };
+  return { tabs: [createTabState(id, defaultTabName(1))], activeTabId: id };
+}
+
+/** The name a tab gets when nothing names it: "Tab 2", 「分頁 2」 (#684). */
+function defaultTabName(n: number): string {
+  return useI18n.getState().t('tabs.defaultName', { n });
 }
 
 /** The `set` a zustand state creator is handed, named so it can be wrapped. */
@@ -3429,7 +3434,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // opens a tab of its own; a seed in the file still replaces it. With
         // no tab open there is none to copy.
         {
-          ...createTabState(id, options?.title ?? `Tab ${tabCount + 1}`),
+          ...createTabState(id, options?.title ?? defaultTabName(tabCount + 1)),
           seed: get().getTab(get().activeTabId)?.seed ?? null,
         },
       ],
