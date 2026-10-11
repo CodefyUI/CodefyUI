@@ -7,8 +7,9 @@ column, and emits both as tensor + label-list.
 Three params shape the output:
 
 * ``target_column`` — when set, its values become the ``labels`` LIST
-  output (always stringified for downstream classifier nodes that
-  expect string class labels). Other columns become the tensor.
+  output, stringified for downstream classifier nodes that expect string
+  class labels, or as floats when ``target_type`` is ``number`` (#712).
+  Other columns become the tensor.
 * ``include_columns`` — comma-separated whitelist of feature columns.
   Empty means "all numeric columns except the target".
 * ``skip_header`` — almost always True; turn off only for headerless
@@ -71,6 +72,27 @@ def _label_strings(values: Any) -> list[str]:
     return [str(v) for v in values.tolist()]
 
 
+def _target_numbers(values: Any, column: str) -> list[float]:
+    """A regression target as floats, refusing any cell that is not a number.
+
+    Missing values never reach here: they stop the run or are dropped
+    earlier, under ``drop_missing_target``.
+    """
+    import pandas as pd
+
+    numbers = pd.to_numeric(values, errors="coerce")
+    bad = numbers.isna()
+    if bad.any():
+        rows = [int(i) + 1 for i in values.index[bad]]
+        sample = ", ".join(repr(str(v)) for v in values[bad].tolist()[:3])
+        raise ValueError(
+            f"CSVReader: target_type='number' but target_column={column!r} "
+            f"is not a number in data rows {_row_list(rows)} ({sample}). "
+            f"Use target_type='class' for class labels."
+        )
+    return [float(v) for v in numbers.tolist()]
+
+
 def _warn(context: Any, detail: str) -> None:
     logger.warning("%s", detail)
     log_warning = getattr(context, "log_warning", None)
@@ -85,10 +107,12 @@ class CSVReaderNode(BaseNode):
     DETAILS = (
         "Numeric columns become the [N, F] float32 tensor; `include_columns` "
         "narrows that set, and without it non-numeric columns are dropped. The "
-        "column named in `target_column` becomes the string label list; a row "
+        "column named in `target_column` becomes the string label list, or a "
+        "list of floats when `target_type` is `number`; a row "
         "with no target value stops the run, naming the data rows, unless "
         "`drop_missing_target` is on, which drops them. Integral labels read as "
-        "'1', not '1.0'. NaN in a feature column is kept and logged as a "
+        "'1', not '1.0'. A `number` target that is not a number stops the run, "
+        "naming the data rows. NaN in a feature column is kept and logged as a "
         "warning. Turn "
         "`skip_header` off for a headerless file, whose columns are then named 0, "
         "1, 2 and so on."
@@ -162,7 +186,10 @@ class CSVReaderNode(BaseNode):
             PortDefinition(
                 name="labels",
                 data_type=DataType.LIST,
-                description="String labels from `target_column` (empty list when no target column set).",
+                description=(
+                    "Values of `target_column`: strings, or floats when "
+                    "target_type is number (empty list when no target column set)."
+                ),
             ),
             PortDefinition(
                 name="columns",
@@ -190,6 +217,16 @@ class CSVReaderNode(BaseNode):
                 param_type=ParamType.STRING,
                 default="",
                 description="Optional name of the label column. Leave blank for unsupervised loading.",
+            ),
+            ParamDefinition(
+                name="target_type",
+                param_type=ParamType.SELECT,
+                default="class",
+                options=["class", "number"],
+                description=(
+                    "class: the target becomes string class labels. number: "
+                    "the target becomes a list of floats, for regression."
+                ),
             ),
             ParamDefinition(
                 name="include_columns",
@@ -308,9 +345,12 @@ class CSVReaderNode(BaseNode):
         else:
             tensor = torch.zeros((len(df), 0), dtype=torch.float32)
 
-        labels: list[str] = []
+        labels: list[Any] = []
         if target_column:
-            labels = _label_strings(df[target_column])
+            if str(params.get("target_type", "class")) == "number":
+                labels = _target_numbers(df[target_column], target_column)
+            else:
+                labels = _label_strings(df[target_column])
 
         return {
             "tensor": tensor,

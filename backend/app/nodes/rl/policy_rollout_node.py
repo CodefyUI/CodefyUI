@@ -159,7 +159,9 @@ class PolicyRolloutNode(BaseNode):
         "report and the first episode step by step. The env input only needs "
         "reset() and step(action): GridWorldEnv's, or a Gymnasium env from "
         "EnvWrapper (its observations become float tensors and an episode "
-        "ends when it is terminated or truncated)."
+        "ends when it is terminated or truncated). The success rate and the "
+        "mean episode return are also recorded as the run metrics "
+        "`success_rate` and `mean_return`, so a sweep can rank by them."
     )
 
     #: Rolls a stochastic policy through a stateful env; a cached batch would
@@ -349,6 +351,11 @@ class PolicyRolloutNode(BaseNode):
             traj.append(f"{t:4d} | {state:5d} | {a_all[t]:6d} | {r_all[t]:+.3f}")
         traj.append(f"episode 0 ended at {outcomes[0] if outcomes else 'n/a'}")
 
+        success_rate = n_goal / episodes
+        if context is not None:
+            context.log_metric("success_rate", success_rate, 0)
+            context.log_metric("mean_return", sum(returns) / episodes, 0)
+
         return {
             "states": torch.stack(s_all),
             "actions": torch.tensor(a_all, dtype=torch.long),
@@ -358,7 +365,7 @@ class PolicyRolloutNode(BaseNode):
             "returns": torch.tensor(returns, dtype=torch.float32),
             "episode_lengths": torch.tensor(lengths, dtype=torch.long),
             "episode_ids": torch.tensor(ep_all, dtype=torch.long),
-            "success_rate": n_goal / episodes,
+            "success_rate": success_rate,
             "report": "\n".join(lines),
             "trajectory": "\n".join(traj),
         }

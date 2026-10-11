@@ -12,7 +12,16 @@ const zhTW: NodeTranslations = {
   // ── Classical (sklearn) ──
   Accuracy: {
     description: '比對預測標籤與真實標籤，輸出正確率、答對數與總數',
-    details: '正確率是答對數除以總數，範圍在 [0, 1]。標籤會轉成字串比對，所以 0 和 \'0\' 算相同；兩份清單長度必須一致，兩邊都空的時候回傳 0。',
+    details:
+      '正確率是答對數除以總數，範圍在 [0, 1]。標籤會轉成字串比對，所以 0 和 \'0\' 算相同；兩份清單長度必須一致，兩邊都空的時候回傳 0。' +
+      '正確率也會記錄為 run metric accuracy，讓 sweep 可以依此排序。',
+  },
+  RegressionMetrics: {
+    description: '比對預測值與真實值，輸出 MSE、MAE 與 R²',
+    details:
+      'MSE 是均方誤差，MAE 是平均絕對誤差，R² 是 1 - SS_res / SS_tot，其中 SS_tot 是目標值相對其平均的離散程度：' +
+      '1 代表完全擬合，0 代表和直接預測平均值一樣，低於 0 則更差。預測值與目標值會攤平，所以 [N] 與 [N, 1] 逐元素比較；' +
+      '兩者的數值個數必須相同。所有目標值都相同時 R² 為 NaN。三個數值也會記錄為 run metric mse、mae 與 r2，讓 sweep 可以依此排序。',
   },
   DecisionTreeClassifier: {
     description: '遞迴切分特徵，輸出學到的規則',
@@ -424,7 +433,8 @@ const zhTW: NodeTranslations = {
       '另外會輸出 logits、抽樣當下記錄的 log_probs（PPO 的 log_probs_old）、每回合的回報、長度與 ' +
       'episode_ids，以及文字報告和第一個回合的逐步表格。env 只需要提供 reset() 與 step(action)：' +
       'GridWorldEnv 的，或 EnvWrapper 產生的 Gymnasium 環境（觀測會轉成浮點張量，terminated 或 ' +
-      'truncated 時回合結束）。',
+      'truncated 時回合結束）。成功率與平均回合回報也會記錄為 run metric：success_rate 與 mean_return，' +
+      '讓 sweep 可以依此排序。',
     params: {
       episodes: '要走幾個回合。設成 1 看單一軌跡；設成 K 就是 GRPO 的一組樣本。',
       temperature: '抽樣溫度。低 = 偏向利用（每次都挑機率最高的動作）、高 = 偏向探索。',
@@ -486,7 +496,8 @@ const zhTW: NodeTranslations = {
     description: '在偏好對上訓練獎勵模型',
     details:
       '以 Bradley-Terry 目標訓練一個兩層 MLP，每個 epoch 記錄損失與兩個準確率。兩個準確率之間的落差就是獎勵作弊：' +
-      '模型可以在訓練過的那批資料上拿到滿分 1.000，學到的卻是捷徑而不是偏好。保留集輸入是選填的，沒接時保留集的數字是 NaN。',
+      '模型可以在訓練過的那批資料上拿到滿分 1.000，學到的卻是捷徑而不是偏好。保留集輸入是選填的，沒接時保留集的數字是 NaN。' +
+      '每個 epoch 也會記錄為 run metric：train_loss、train_accuracy，接了保留集時還有 holdout_accuracy，讓 sweep 可以依此排序。',
     params: {
       epochs: '在偏好對上跑幾輪。夠把訓練集完全學起來即可。',
       hidden_dim: '獎勵頭中間層的寬度。',
@@ -690,12 +701,14 @@ const zhTW: NodeTranslations = {
     description: '把 CSV 載入為特徵、標籤與欄位名稱',
     details:
       '數值欄位組成 [N, F] 的 float32 張量；include_columns 會再縮小這個範圍，沒設定時非數值欄位一律捨棄。' +
-      'target_column 指定的欄位變成字串標籤列表；有列缺少目標值時會停止執行並列出資料列編號，開啟 ' +
-      'drop_missing_target 則改為捨棄這些列。整數標籤顯示為 \'1\' 而非 \'1.0\'。特徵欄位中的 NaN 會保留，並記錄警告。' +
+      'target_column 指定的欄位變成字串標籤列表，target_type 設為 number 時則變成浮點數列表；有列缺少目標值時會停止執行並列出資料列編號，開啟 ' +
+      'drop_missing_target 則改為捨棄這些列。整數標籤顯示為 \'1\' 而非 \'1.0\'。number 目標中有非數字的值時會停止執行並列出資料列編號。' +
+      '特徵欄位中的 NaN 會保留，並記錄警告。' +
       '檔案沒有標題列時關掉 skip_header，欄位會依序命名為 0、1、2。',
     params: {
       path: 'CSV 檔案路徑（絕對路徑或相對於後端工作目錄）。',
       target_column: '標籤欄位名稱（選填）。留空表示沒有標籤、純資料載入。',
+      target_type: 'class：目標變成字串類別標籤。number：目標變成浮點數列表，用於回歸。',
       include_columns: '要保留的特徵欄位（逗號分隔，選填）。留空表示「除了 target 之外所有數值欄位」。',
       drop_missing_target: '捨棄目標值為空的列並記錄是哪些列。關閉時，這種列會讓執行停止並列出列編號。',
       skip_header: 'True 代表第一列是欄位名稱；False 則自動把欄位命名為 0、1、2…',
@@ -719,6 +732,17 @@ const zhTW: NodeTranslations = {
     params: {
       mode: '正規化方法。',
       axis: '計算統計量的軸。0 = 逐欄，1 = 逐列。',
+    },
+  },
+  TensorDataset: {
+    description: '把特徵張量與目標配對成資料集',
+    details:
+      '包裝 torch.utils.data.TensorDataset，讓 DataLoader 與 TrainingLoop 能用張量訓練，例如 CSVReader → TrainTestSplit 的輸出。' +
+      'target_type 為 number 時目標轉成 float32，一維目標會變成 [N, 1]，對齊單一輸出的模型，讓 MSELoss 逐元素比較。' +
+      '為 class 時目標轉成給 CrossEntropyLoss 用的 int64 類別索引：標籤依排序編號（全是數字時依數值排序），classes 列出這個順序；' +
+      '整數張量則直接視為類別索引。特徵與目標的列數必須相同。',
+    params: {
+      target_type: 'number：float32 目標，用於回歸損失。class：int64 類別索引，用於 CrossEntropyLoss。',
     },
   },
   TrainTestSplit: {

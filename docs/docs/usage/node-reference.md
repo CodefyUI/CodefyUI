@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: Node Reference
-description: Every built-in node — 152 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
+description: Every built-in node — 154 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
 ---
 
 # Node Reference
 
-CodefyUI ships **152 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
+CodefyUI ships **154 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
 
 :::tip
 This table reflects the current release, but the backend is authoritative. Check the live node palette or `GET /api/nodes` for the nodes available in your installation. Double-click the canvas to search for a node.
@@ -18,7 +18,7 @@ This table reflects the current release, but the backend is authoritative. Check
 | **RNN** | LSTM, GRU, RNNCell | 3 |
 | **Transformer** | MultiHeadAttention, TransformerEncoder, TransformerDecoder, MoELayer | 4 |
 | **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence, PolicyRollout, PPOClipObjective, GroupRelativeAdvantage, Discount, GridWorldEnv, PreferenceDataset, BradleyTerryLoss, BradleyTerryTrain | 13 |
-| **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform | 27 |
+| **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform, TensorDataset | 28 |
 | **Data Flow** | Map, Reduce, Switch | 3 |
 | **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce | 7 |
 | **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference, GraphInput, GraphOutput, VideoLoad, VideoWrite | 13 |
@@ -27,7 +27,7 @@ This table reflects the current release, but the backend is authoritative. Check
 | **Normalization** | BatchNorm1d, LayerNorm, GroupNorm, InstanceNorm2d | 4 |
 | **Tensor Operations** | Add, MatMul, Mean, Multiply, ScalarMultiply, Permute, Softmax, Argmax, Split, Squeeze, Stack, TensorCreate, Unsqueeze, MaskedFill | 14 |
 | **LLM** | LLMChat, Tokenizer, WordVector, TextEmbedding, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding, CausalLMModel, LMCrossEntropyLoss, LMTokenizer, TextCorpusDataset, LMTokenizedDataset, DataMixDataset, PerplexityEvaluate, TextGenerate, DocumentLoader, TextChunker, VectorStore, Retriever, PromptBuilder, HFTextGenerate | 23 |
-| **Classical** | KNN, LinearRegression, LogisticRegression, DecisionTreeClassifier, RandomForestClassifier, SVMClassifier, MLPClassifier, Accuracy | 8 |
+| **Classical** | KNN, LinearRegression, LogisticRegression, DecisionTreeClassifier, RandomForestClassifier, SVMClassifier, MLPClassifier, Accuracy, RegressionMetrics | 9 |
 | **Diffusion** | Upsample, TimestepEmbedding, Lerp, GaussianNoise, DDPMSampler, DiffusionUNet, DiffusionTrainingLoop | 7 |
 | **VLA** | VLAModel, VLARollout, VLAActionEval, PushWorldEnv, PushWorldDemos | 5 |
 
@@ -37,6 +37,7 @@ This table reflects the current release, but the backend is authoritative. Check
 - **`TensorInput`** (Data) — provides an inline grid for entering explicit tensor values. [Teaching Inspector](./teaching-inspector) examples use it as their input node.
 - **The transform chain** (Data) — nine nodes compose a `transforms.Compose`: `ResizeTransform` resizes to a square; `ToTensorTransform` converts a PIL image to a `[0, 1]` tensor; `NormalizeTransform` applies per-channel normalisation and provides presets; `RandomCrop`, `RandomHorizontalFlip`, `RandomRotation`, `ColorJitter`, and `RandAugment` apply augmentations; and `ComposeTransform` joins two separately constructed chains. See [Data and Augmentation](./data-augmentation) for parameters and ordering rules.
 - **`ImageFolderDataset`** (Data) — loads images from one directory per class, using the directory structure expected by torchvision's `ImageFolder`.
+- **The tabular training path** (Data, Classical) — `CSVReader` → `TrainTestSplit` → `TensorDataset` → `DataLoader` → `TrainingLoop` trains a neural network on a CSV. Set `CSVReader`'s `target_type` to `number` for a regression target, which then arrives as a list of floats. `TensorDataset` pairs features with targets: `number` gives float32 targets, a 1-D target becoming `[N, 1]` to match a model with one output; `class` gives int64 class indices for `CrossEntropyLoss`. `RegressionMetrics` compares predictions with true values and returns MSE, MAE and R², which it also records as run metrics, as `Accuracy` records `accuracy`.
 - **`TrainingLoop`** (Training) — runs training and sends the live loss chart to the Results panel. Its options and the metric series it records are listed in [Training loops and loss charts](./running-graphs#training-loops-and-loss-charts). Its **Advanced** section contains the memory controls `precision` and `accumulate_steps`; see [Training Memory](/advanced/training-memory).
 - **`SequentialModel`** (Training) — represents a layer stack in one node. Double-click it to open the **Model Architecture** editor. The editor provides a searchable layer palette grouped by category and a canvas for connecting layers. An architecture must have exactly one `Input` node and one `Output` node, and merge layers have a port-list editor. The controls include **Snap ON/OFF**, top-to-bottom **Auto Layout**, JSON **Import** and **Export**, and **Apply**. Validation rejects cycles. **Export** downloads the architecture as `model_architecture.json`. **Import** reads such a file, or a canvas graph `.json`: its layer nodes become an `Input` → layers → `Output` chain, or, if it has no layer nodes, a `SequentialModel` in it is loaded (with several, **Select SequentialModel to Import** asks which one). Any other file fails with **Import failed: No layers or SequentialModel nodes in this file.** Import replaces what the editor shows; the node changes only when you click **Apply**.
 - **`EmbeddingScatter`** (LLM) — projects embeddings to 2D with PCA or t-SNE and displays a zoomable scatter plot.

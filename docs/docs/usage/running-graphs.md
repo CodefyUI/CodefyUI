@@ -41,7 +41,7 @@ Every value the loop records is also stored with the run as a named series. A ru
 
 The config panel shows `log_interval` (Advanced) only while `batch_metrics` is on, but the `grad_norm` and `update_ratio` rows above follow its value either way.
 
-`EvaluateModel` adds one `eval_accuracy` point when it runs.
+`EvaluateModel` adds one `eval_accuracy` point when it runs. The classical and RL evaluation nodes record theirs the same way, so a sweep can rank those graphs too: `Accuracy` records `accuracy`; `RegressionMetrics` records `mse`, `mae` and `r2`; `PolicyRollout` records `success_rate` and `mean_return`; and `BradleyTerryTrain` records `train_loss`, `train_accuracy` and `holdout_accuracy` once per epoch. When two nodes in one graph record the same name, a sweep objective on that name is ambiguous; name the node with `objective.node_id`.
 
 The loop's other options:
 

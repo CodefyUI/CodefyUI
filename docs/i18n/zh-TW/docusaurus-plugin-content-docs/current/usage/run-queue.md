@@ -178,7 +178,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **Grid 或 random。** `method: grid` 會列舉每一種組合，最後列出的 param 變動最快，且不接受 `samples`。`method: random` 會抽取 `samples` 種不重複的組合，而且 `samples` 與 `seed`（0 到 4294967295）缺一不可；相同的 seed 永遠會抽到相同組合。要求的 sample 多於空間能提供的組合會被拒絕；編譯後 variant 數量超過上限的 sweep 也會被拒絕，絕不會默默截斷。
 
-**`objective` 是必填的。** `metric` 是節點所記錄的一個 series 名稱（`train_loss`、`val_loss`、`val_accuracy`、`eval_accuracy`，或外掛節點記錄的任何名稱；`TrainingLoop` 記錄的 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)），`direction` 則是 `minimize` 或 `maximize`。送出時不會檢查這個名稱，因為當時還沒有任何 variant 跑過；如果最後沒有任何 variant 記錄它，排名表會是空的，並附上一個 `objective_warning`，列出各 run 實際記錄的 series。
+**`objective` 是必填的。** `metric` 是節點所記錄的一個 series 名稱（`train_loss`、`val_loss`、`val_accuracy`、`eval_accuracy`、`accuracy`、`mse`、`r2`、`success_rate`，或外掛節點記錄的任何名稱；`TrainingLoop` 與各評估節點記錄的 series 列在[執行圖](./running-graphs#training-loops-and-loss-charts)），`direction` 則是 `minimize` 或 `maximize`。送出時不會檢查這個名稱，因為當時還沒有任何 variant 跑過；如果最後沒有任何 variant 記錄它，排名表會是空的，並附上一個 `objective_warning`，列出各 run 實際記錄的 series。
 
 **`objective.node_id` 指定以哪個節點的 series 排名。** 此欄位可省略；block 內的節點以攤平後的 id（`block/inner`）指定。指定後，每個 variant 的 objective 是該節點記錄的最後一點（`step` 最大者，同 step 取最後寫入者），其他節點記錄同名 series 不會改變這個值。省略時只以名稱選取：只有一個節點記錄該指標時，使用該節點的最後一點。同一個 run 中有多個節點記錄它時，該 variant 沒有 objective 也不排名，其 `ambiguous_producers` 會列出這些節點，`objective_warning` 也會提示指定節點。系統不會替你挑選節點。在 `node_id` 推出前建立的 sweep 依相同的名稱規則處理：已收回的值會保留，之後收回且由多個節點記錄的 variant 不排名。
 
