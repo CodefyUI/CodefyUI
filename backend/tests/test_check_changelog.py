@@ -64,11 +64,17 @@ def _next(version: str) -> str:
 
 
 def _with_an_entry(text: str) -> str:
-    """*text* with a pending fix under ``## [Unreleased]``, as a PR leaves it."""
-    return text.replace(
-        "## [Unreleased]\n",
-        "## [Unreleased]\n\n### Fixed\n\n- **Something was wrong.** It is not now. ([#999])\n",
-        1)
+    """*text* with a pending fix under ``## [Unreleased]``, as a PR leaves it:
+    in its ``### Fixed`` when it has one, which a PR adds to rather than
+    opening a second."""
+    entry = "- **Something was wrong.** It is not now. ([#999])\n"
+    start = text.index("## [Unreleased]\n")
+    end = text.index("\n## ", start)
+    fixed = text.find("### Fixed\n\n", start, end)
+    if fixed != -1:
+        at = fixed + len("### Fixed\n\n")
+        return text[:at] + entry + text[at:]
+    return text.replace("## [Unreleased]\n", f"## [Unreleased]\n\n### Fixed\n\n{entry}", 1)
 
 
 def _promote(text: str, *, fresh: bool = True, below: bool = False,
@@ -215,6 +221,14 @@ def test_a_half_done_promotion_is_refused(promote, bumped, names):
                  id="no version heading at all"),
     pytest.param(lambda t: re.sub(r"^\[Unreleased\]: \S+\n", "", t, count=1, flags=re.MULTILINE),
                  "[Unreleased] has no link definition", id="no [Unreleased] link"),
+    pytest.param(lambda t: t.replace("## [Unreleased]\n",
+                                     "## [Unreleased]\n\n### Fixed\n\n- a\n\n### Added\n\n- b\n\n"
+                                     "### Fixed\n\n- c\n", 1),
+                 "## [Unreleased] has ### Fixed ", id="a subsection twice under [Unreleased]"),
+    pytest.param(lambda t: t.replace(_newest_heading(t),
+                                     f"{_newest_heading(t)}\n\n### Added\n\n- a\n\n### Added\n\n- b\n",
+                                     1),
+                 "has ### Added ", id="a subsection twice under a release"),
 ])
 def test_a_broken_structure_is_refused(break_it, names):
     """The same file, version unchanged, broken in a way no promotion step

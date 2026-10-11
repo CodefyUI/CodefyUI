@@ -22,6 +22,36 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **File menu: Open... and Import...** ([#689]). **Open...** shows the Graphs
+  panel with the saved graphs, opening the sidebar if it is collapsed.
+  **Import...** is the Graphs panel's Import button: it takes a graph (.json)
+  or a workspace (.cduiworkspace) and reports "Import failed" for a file it
+  cannot read.
+- **Character- and byte-level tokenizers for the LM stack** ([#692]).
+  LMTokenizer gains `byte` (the 256 UTF-8 byte values plus an end-of-text id,
+  257 ids) and `char` (one id per distinct character of the text on its new
+  `corpus` input, plus end-of-text and unknown-character ids). Both work with
+  LMTokenizedDataset, TextGenerate and CausalLMModel, whose `vocab_size` now
+  accepts values down to 2 instead of 256, so the classic character-level GPT
+  exercise trains with built-in nodes.
+- **ImageReader and ImageBatchReader take the training preprocessing**
+  ([#702]). Both have an optional `transform` input: wire the chain the
+  training dataset uses as its `eval_transform` (for example
+  ToTensorTransform -> NormalizeTransform) and new images reach the model
+  exactly as the training images did. Before, the readers only scaled to
+  [0, 1], and a CIFAR-10 model trained on normalized images misclassified
+  most new images. ImageReader also gets `add_batch_dim`, which returns
+  `(1, C, H, W)` so a single image goes straight into a BatchNorm model.
+- **The layer editor has a PositionalEncoding layer and causal checkboxes**
+  ([#688]). PositionalEncoding adds a sinusoidal position code (or a
+  trainable table with `learned`) to `(batch, seq, d_model)` input, so
+  Transformer layers built in the editor can use token order. The
+  TransformerDecoder layer shows its `causal` setting as a checkbox, on by
+  default, and the MultiHeadAttention layer gets one, off by default. With
+  `causal` on, a later token never changes an earlier position's output.
+
 ### Fixed
 
 - **A CausalLMModel smaller than its tokenizer stops with an error naming both
@@ -140,32 +170,6 @@ received — each links to the release it was published as.
   downloaded and deleted** ([#710]). Upload accepted `X.PT`, and the list,
   download and delete routes compared the extension case-sensitively, so the
   file was left in the models folder with no way to reach it.
-
-### Added
-
-- **File menu: Open... and Import...** ([#689]). **Open...** shows the Graphs
-  panel with the saved graphs, opening the sidebar if it is collapsed.
-  **Import...** is the Graphs panel's Import button: it takes a graph (.json)
-  or a workspace (.cduiworkspace) and reports "Import failed" for a file it
-  cannot read.
-- **ImageReader and ImageBatchReader take the training preprocessing**
-  ([#702]). Both have an optional `transform` input: wire the chain the
-  training dataset uses as its `eval_transform` (for example
-  ToTensorTransform -> NormalizeTransform) and new images reach the model
-  exactly as the training images did. Before, the readers only scaled to
-  [0, 1], and a CIFAR-10 model trained on normalized images misclassified
-  most new images. ImageReader also gets `add_batch_dim`, which returns
-  `(1, C, H, W)` so a single image goes straight into a BatchNorm model.
-- **The layer editor has a PositionalEncoding layer and causal checkboxes**
-  ([#688]). PositionalEncoding adds a sinusoidal position code (or a
-  trainable table with `learned`) to `(batch, seq, d_model)` input, so
-  Transformer layers built in the editor can use token order. The
-  TransformerDecoder layer shows its `causal` setting as a checkbox, on by
-  default, and the MultiHeadAttention layer gets one, off by default. With
-  `causal` on, a later token never changes an earlier position's output.
-
-### Fixed
-
 - **A run waiting to start says it is queued** ([#680]). A canvas run that
   waits for another run to release the process-wide seed lock, or a run that
   waits in its device's queue, showed Running with an empty log. The toolbar
@@ -207,19 +211,6 @@ received — each links to the release it was published as.
   input size does not match the observation (such as the default
   `DQN(state_dim=4)` on a 4×4 GridWorld), now get an error naming the
   expected API or both sizes.
-
-### Added
-
-- **Character- and byte-level tokenizers for the LM stack** ([#692]).
-  LMTokenizer gains `byte` (the 256 UTF-8 byte values plus an end-of-text id,
-  257 ids) and `char` (one id per distinct character of the text on its new
-  `corpus` input, plus end-of-text and unknown-character ids). Both work with
-  LMTokenizedDataset, TextGenerate and CausalLMModel, whose `vocab_size` now
-  accepts values down to 2 instead of 256, so the classic character-level GPT
-  exercise trains with built-in nodes.
-
-### Fixed
-
 - **DDPMSampler samples with the schedule the model was trained on**
   ([#691]). The sampler's defaults (20 steps, `beta_end` 0.02) differed from
   DiffusionTrainingLoop's (160 steps, `beta_end` 0.05), so a fresh pair of
