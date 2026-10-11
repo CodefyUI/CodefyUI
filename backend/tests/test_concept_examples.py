@@ -138,24 +138,74 @@ def test_the_tabular_pipeline_prints_a_number_and_not_a_tensor_dump():
     assert _nodes_by_id(graph)["mean-cols"]["type"] == "Mean"
     # dim 0 reduces over rows, so what comes out is one value per feature.
     assert _params(graph, "mean-cols")["dim"] == "0"
-    assert _feeds(graph, "mean-cols", "tensor") == ("split", "x_train")
+    assert _feeds(graph, "mean-cols", "tensor") == ("norm-test", "tensor")
     assert _feeds(graph, "print", "value") == ("mean-cols", "tensor")
 
 
-def test_the_tabular_pipeline_means_come_out_near_zero():
-    """z-scoring per column puts the whole table's mean at 0.
+def test_the_tabular_pipeline_test_means_come_out_near_zero():
+    """z-scoring fitted on the training rows puts THEIR means at 0 exactly.
 
-    The 120-row training split is a subset, so its means are near zero
-    rather than at it -- which is exactly the thing the graph is asking the
-    reader to check, and what the overview note quotes as "within about
-    0.03". The bound here is the claim in that note with room to breathe,
-    not a generous one: the largest of the four measures 0.021.
+    The 30 test rows are scaled with those statistics, so their means are
+    near zero rather than at it -- what the graph asks the reader to check,
+    and what the overview note quotes as "the largest about 0.10 away".
+    It measures 0.1007; the bounds hold the note's claim, and the lower one
+    fails if the test rows were z-scored on their own statistics (#713).
     """
     results = _run("Classical/Tabular-Iris-Pipeline")
 
+    train_means = results["norm"]["tensor"].mean(dim=0)
+    assert float(train_means.abs().max()) < 1e-5, train_means.tolist()
+
     means = results["mean-cols"]["tensor"]
     assert tuple(means.shape) == (4,), "one mean per Iris feature"
-    assert float(means.abs().max()) < 0.05, means.tolist()
+    assert 0.08 < float(means.abs().max()) < 0.12, means.tolist()
+
+
+# ── #713: every Iris example fits Normalize on the training split only ────
+
+_PLUGIN_EXAMPLES_ROOT = _REPO_ROOT / "plugins" / "foundations" / "examples"
+
+_SPLIT_THEN_NORMALIZE = (
+    (_EXAMPLES_ROOT, "Classical/Tabular-Iris-Pipeline"),
+    (_EXAMPLES_ROOT, "Classical/Iris-Sklearn-KNN"),
+    (_PLUGIN_EXAMPLES_ROOT, "Classical/KNN-from-Scratch"),
+)
+
+
+@pytest.mark.parametrize("root,key", _SPLIT_THEN_NORMALIZE,
+                         ids=[k for _, k in _SPLIT_THEN_NORMALIZE])
+def test_normalize_is_fitted_on_the_training_split_and_reused_on_test(root, key):
+    graph = json.loads((root / key / "graph.json").read_text(encoding="utf-8"))
+    nodes = _nodes_by_id(graph)
+
+    assert nodes["norm"]["type"] == nodes["norm-test"]["type"] == "Normalize"
+    assert _feeds(graph, "split", "features") == ("select", "tensor")
+    assert _feeds(graph, "norm", "tensor") == ("split", "x_train")
+    assert _feeds(graph, "norm-test", "tensor") == ("split", "x_test")
+    assert _feeds(graph, "norm-test", "stats") == ("norm", "stats")
+    # Nothing between the reader and the split normalises the whole table.
+    assert not any(n["type"] == "Normalize" for n in graph["nodes"]
+                   if n["id"] not in ("norm", "norm-test"))
+    if "knn" in nodes:
+        assert _feeds(graph, "knn", "x_train") == ("norm", "tensor")
+        assert _feeds(graph, "knn", "x_query") == ("norm-test", "tensor")
+
+
+def test_knn_from_scratch_gets_29_of_30_as_its_note_says():
+    graph = json.loads((_PLUGIN_EXAMPLES_ROOT / "Classical/KNN-from-Scratch"
+                        / "graph.json").read_text(encoding="utf-8"))
+    prev_cwd = Path.cwd()
+    os.chdir(_BACKEND_DIR)
+    try:
+        results = asyncio.run(execute_graph(
+            graph["nodes"], graph["edges"], error_mode="fail_fast"))
+    finally:
+        os.chdir(prev_cwd)
+
+    preds = results["knn"]["predictions"]
+    truth = results["split"]["y_test"]
+    assert sum(p == t for p, t in zip(preds, truth)) == 29
+    assert len(truth) == 30
 
 
 # ── Forward diffusion: a real image under the noise ───────────────────────
