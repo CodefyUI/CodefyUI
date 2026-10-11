@@ -51,6 +51,24 @@ received — each links to the release it was published as.
   TransformerDecoder layer shows its `causal` setting as a checkbox, on by
   default, and the MultiHeadAttention layer gets one, off by default. With
   `causal` on, a later token never changes an earlier position's output.
+- **Sweeps can rank classical and RL graphs** ([#711]). Accuracy records the
+  run metric `accuracy`, PolicyRollout records `success_rate` and
+  `mean_return`, and BradleyTerryTrain records `train_loss`,
+  `train_accuracy` and `holdout_accuracy` each epoch. A sweep of the Iris KNN
+  example over `n_neighbors` with objective `accuracy` used to finish with no
+  metrics and "no variant recorded a metric named 'accuracy'"; it now ranks
+  the variants. When two nodes record the same name, such as the two
+  BradleyTerryTrain nodes of the Reward-Hacking example, the sweep says so
+  and `objective.node_id` picks one.
+- **Train a neural network on a CSV** ([#712]). The new TensorDataset node
+  pairs a feature tensor with its targets as a dataset for DataLoader and
+  TrainingLoop, so CSVReader → TrainTestSplit → TensorDataset → DataLoader →
+  TrainingLoop trains an MLP. CSVReader gains `target_type: number`, which
+  outputs the target as floats. TensorDataset's `number` targets are float32
+  and a 1-D target becomes `[N, 1]`, the shape of a one-output model, so
+  MSELoss compares element by element; `class` targets become int64 class
+  indices. The new RegressionMetrics node returns MSE, MAE and R² and records
+  them as the run metrics `mse`, `mae` and `r2`.
 
 ### Fixed
 
@@ -5864,6 +5882,8 @@ Release candidates before 1.0.0 are on the
 [#708]: https://github.com/CodefyUI/CodefyUI/issues/708
 [#709]: https://github.com/CodefyUI/CodefyUI/issues/709
 [#710]: https://github.com/CodefyUI/CodefyUI/issues/710
+[#711]: https://github.com/CodefyUI/CodefyUI/issues/711
+[#712]: https://github.com/CodefyUI/CodefyUI/issues/712
 [#713]: https://github.com/CodefyUI/CodefyUI/issues/713
 [#714]: https://github.com/CodefyUI/CodefyUI/issues/714
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625

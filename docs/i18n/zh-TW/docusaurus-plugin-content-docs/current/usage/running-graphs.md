@@ -41,7 +41,7 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 設定面板只有在 `batch_metrics` 開啟時才會顯示 `log_interval`（進階），但不論 `batch_metrics` 是否開啟，上表的 `grad_norm` 與 `update_ratio` 都依它的值記錄。
 
-`EvaluateModel` 執行時會新增一個 `eval_accuracy` 資料點。
+`EvaluateModel` 執行時會新增一個 `eval_accuracy` 資料點。傳統機器學習與 RL 的評估節點也以同樣方式記錄，所以 sweep 也能排序這些圖：`Accuracy` 記錄 `accuracy`；`RegressionMetrics` 記錄 `mse`、`mae` 與 `r2`；`PolicyRollout` 記錄 `success_rate` 與 `mean_return`；`BradleyTerryTrain` 每個 epoch 記錄 `train_loss`、`train_accuracy` 與 `holdout_accuracy`。同一張圖中有兩個節點記錄同一名稱時，以該名稱為 sweep objective 會有歧義，請用 `objective.node_id` 指定節點。
 
 迴圈的其他選項：
 
