@@ -135,6 +135,7 @@ describe('issueText', () => {
     issue('switch_selected_unwired', ENC, { value: 2, port: 'input_2' }),
     issue('switch_input_types_differ', ENC, { types: 'STRING, TENSOR' }),
     issue('multiple_sources', DEC, { port: 'tensor', sources: [ENC, LOSS], count: 2 }),
+    issue('param_not_an_option', ENC, { param: 'type', value: 'Adamm', options: 'Adam, SGD' }),
   ];
 
   it.each(['en', 'zh-TW'] as const)(
@@ -163,6 +164,13 @@ describe('issueText', () => {
     );
     expect(issueText(BY_CODE[10], NODES, t)).toBe(
       'The graph has a loop: Encoder -> Decoder -> Encoder',
+    );
+  });
+
+  it('says which option a misspelt value is not (#698)', () => {
+    const finding = BY_CODE.find((f) => f.code === 'param_not_an_option')!;
+    expect(issueText(finding, NODES, t)).toBe(
+      'Encoder: "type" is "Adamm", which is not one of its options (Adam, SGD)',
     );
   });
 

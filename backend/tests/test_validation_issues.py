@@ -241,6 +241,43 @@ def test_a_param_out_of_range_names_the_param_and_the_values(value, code, params
     assert issue.params == params
 
 
+def test_a_misspelt_option_names_the_param_and_the_allowed_values():
+    # #698: a SELECT value outside its options passed validation.
+    errors = validate_graph(
+        [_node("start", "Start"),
+         _node("save", "ModelSaver", save_mode="statedict", format="pytorch",
+               path="x.pt"),
+         _node("opt", "Optimizer", type="Adamm")],
+        [_trigger("start", "save"), _trigger("start", "opt")],
+    )
+
+    found = {issue.node_id: issue for issue in _issues(errors, "param_not_an_option")}
+    assert set(found) == {"save", "opt"}
+    assert found["save"] == (
+        "Parameter 'save_mode' on node save (ModelSaver): value 'statedict' "
+        "is not one of its options (state_dict, full_model)"
+    )
+    assert found["save"].params == {
+        "param": "save_mode", "value": "statedict",
+        "options": "state_dict, full_model",
+    }
+    assert found["opt"].params["param"] == "type"
+    assert found["opt"].params["value"] == "Adamm"
+
+
+def test_every_listed_option_passes():
+    from app.core.node_registry import registry
+
+    options = next(p.options for p in registry.get("Optimizer").define_params()
+                   if p.name == "type")
+    for option in options:
+        errors = validate_graph(
+            [_node("start", "Start"), _node("opt", "Optimizer", type=option)],
+            [_trigger("start", "opt")],
+        )
+        assert _issues(errors, "param_not_an_option") == [], option
+
+
 def test_an_unknown_node_type_names_the_node_and_the_type():
     errors = validate_graph(
         [_node("start", "Start"), _node("ghost", "NoSuchNode")],

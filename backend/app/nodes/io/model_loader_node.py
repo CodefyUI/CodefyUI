@@ -635,6 +635,15 @@ class ModelLoaderNode(BaseNode):
                 state_dict = load_file(str(p), device=load_device)
             else:
                 state_dict = torch.load(str(p), map_location=load_device, weights_only=True)
+            if isinstance(state_dict, dict) and isinstance(
+                    state_dict.get("model_state_dict"), dict):
+                # A CheckpointSaver file wraps the weights next to the epoch
+                # and the optimizer state; its model entry is what was meant
+                # (#701).
+                logger.info(
+                    "%s is a CheckpointSaver checkpoint; loading its "
+                    "model_state_dict", p.name)
+                state_dict = state_dict["model_state_dict"]
             model.load_state_dict(state_dict, strict=strict)
             model = to_device(model, device)
             param_count = sum(p_.numel() for p_ in model.parameters())

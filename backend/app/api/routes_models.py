@@ -59,7 +59,7 @@ async def list_model_files():
 
     files = []
     for f in sorted(models_dir.iterdir()):
-        if f.is_file() and f.suffix in ALLOWED_EXTENSIONS:
+        if f.is_file() and f.suffix.lower() in ALLOWED_EXTENSIONS:
             files.append({
                 "filename": f.name,
                 "size": f.stat().st_size,
@@ -115,7 +115,7 @@ async def download_model_file(filename: str):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
     if not filepath.is_file():
         raise HTTPException(status_code=400, detail="Not a file")
-    if filepath.suffix not in ALLOWED_EXTENSIONS:
+    if filepath.suffix.lower() not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Not a model file")
 
     logger.info("Downloading model file: %s (%d bytes)", filename, filepath.stat().st_size)
@@ -136,7 +136,7 @@ async def delete_model_file(filename: str):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
     if not filepath.is_file():
         raise HTTPException(status_code=400, detail="Not a file")
-    if filepath.suffix not in ALLOWED_EXTENSIONS:
+    if filepath.suffix.lower() not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Not a model file")
 
     filepath.unlink()

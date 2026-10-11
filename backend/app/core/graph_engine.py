@@ -36,7 +36,7 @@ from .execution_context import (
     MetricSignal,
     ProgressSignal,
 )
-from .node_base import BaseNode
+from .node_base import BaseNode, ParamType
 from .node_registry import registry
 from .param_defaults import fill_missing_params
 from .seeding import deterministic_scope, seed_rngs
@@ -1783,6 +1783,22 @@ def validate_graph(
             if param_def.name not in param_values:
                 continue
             value = param_values[param_def.name]
+            if param_def.param_type is ParamType.SELECT:
+                # A misspelt option used to pass here and either fail at run
+                # time or be read as some other option (#698). A SELECT with
+                # no options lists its choices elsewhere, so it is skipped.
+                if param_def.options and value not in param_def.options:
+                    allowed = ", ".join(param_def.options)
+                    errors.append(validation_issue(
+                        "param_not_an_option",
+                        (
+                            f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
+                            f"value {value!r} is not one of its options ({allowed})"
+                        ),
+                        node_id=node["id"], param=param_def.name, value=value,
+                        options=allowed,
+                    ))
+                continue
             # Both comparisons under one guard, because a bound is only
             # meaningful against a value that can be ORDERED against it and
             # the check used to assume that silently (#193). ``"abc" < 1``
