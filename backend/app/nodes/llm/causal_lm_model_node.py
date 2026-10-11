@@ -500,13 +500,16 @@ class CausalLMModule(nn.Module):
 def _positive_int(params: dict[str, Any], name: str, default: int) -> int:
     """A size param, floored at 1 -- never clamped to the declared range.
 
-    The ``min_value`` on each :class:`ParamDefinition` below is the editor's
-    guard rail for a model somebody intends to train (a 32-dimensional LM
-    learns nothing). Enforcing it HERE would silently rewrite the deliberately
-    tiny configurations that teaching material and this file's tests are made
-    of -- ``vocab_size=100, d_model=32`` would quietly become 256 and 64, and
-    an analytic parameter count would stop matching the model. So execute
-    enforces only what the module physically needs to be constructible.
+    The ``min_value`` / ``max_value`` on each :class:`ParamDefinition` below
+    are enforced before a graph runs (``validate_graph`` rejects a value
+    outside them), so they are the ranges a graph can use; ``vocab_size``
+    goes down to 2 so a character- or byte-level tokenizer fits (#692).
+    This helper does not clamp to those ranges: a direct ``execute`` call,
+    such as this file's tests or the Python export, builds exactly the sizes
+    it asks for, and a silent rewrite (``d_model=32`` quietly becoming 64)
+    would make an analytic parameter count stop matching the model. So
+    execute enforces only what the module physically needs to be
+    constructible.
 
     The coercion itself is for hand-built or Copilot-generated graph JSON;
     the INT widget cannot produce a string or a None. A value ``int()``
@@ -693,11 +696,12 @@ class CausalLMModelNode(StatefulModuleMixin, BaseNode):
                 name="vocab_size",
                 param_type=ParamType.INT,
                 default=50257,
-                min_value=256,
+                min_value=2,
                 max_value=300000,
                 description=(
                     "How many distinct tokens the model knows. Must match "
-                    "the tokenizer feeding it -- 50257 is GPT-2's."
+                    "the tokenizer feeding it -- 50257 is GPT-2's, 257 is "
+                    "LMTokenizer's byte encoding."
                 ),
             ),
             ParamDefinition(

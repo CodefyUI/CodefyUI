@@ -98,3 +98,90 @@ def test_missing_corpus_and_empty_corpus_are_refused():
             {"corpus_1": LocalTextListDataset(["x"])}, {"sources": 2})
     with pytest.raises(RuntimeError, match="corpus_2 has no rows"):
         _mix([LocalTextListDataset(["x"]), LocalTextListDataset([])])
+
+
+# ── #695: ratio mode, where the weights set the output share ────────────
+
+
+def _rows_of(result):
+    return [result["dataset"][i] for i in range(result["num_rows"])]
+
+
+def _share(rows, prefix):
+    return sum(1 for row in rows if row.startswith(prefix)) / len(rows)
+
+
+def test_ratio_mode_hits_the_weights_on_equal_corpora():
+    """The issue's repro: two 1000-row corpora at 0.95/0.05. interleave
+    returns 1000 of each; ratio returns 95% from corpus_1."""
+    rows = _rows_of(_mix(_corpora(1000, 1000),
+                         {"mode": "ratio", "weights": "0.95, 0.05",
+                          "total_rows": 2000, "seed": 0}))
+    assert len(rows) == 2000
+    assert sum(row.startswith("a") for row in rows) == 1900
+    assert sum(row.startswith("b") for row in rows) == 100
+
+
+def test_ratio_mode_total_rows_zero_means_the_sum_of_the_corpus_sizes():
+    result = _mix(_corpora(300, 100), {"mode": "ratio", "weights": "1, 3"})
+    rows = _rows_of(result)
+    assert result["num_rows"] == 400
+    assert _share(rows, "a") == pytest.approx(0.25)
+
+
+def test_ratio_mode_repeats_a_small_corpus_evenly():
+    """A corpus asked for more rows than it has repeats them, and no row
+    repeats before every row of that corpus has been used once."""
+    rows = _rows_of(_mix(_corpora(5, 1000),
+                         {"mode": "ratio", "weights": "0.5, 0.5",
+                          "total_rows": 23, "seed": 4}))
+    from_a = [row for row in rows if row.startswith("a")]
+    assert len(from_a) == 12
+    counts = {row: from_a.count(row) for row in set(from_a)}
+    assert set(counts) == {f"a{i}" for i in range(5)}
+    assert max(counts.values()) - min(counts.values()) <= 1
+
+
+def test_ratio_mode_subsamples_without_repeats_and_shuffles():
+    rows = _rows_of(_mix(_corpora(1000, 1000),
+                         {"mode": "ratio", "weights": "0.5, 0.5",
+                          "total_rows": 200, "seed": 1}))
+    assert len(set(rows)) == 200
+    # Mixed through the whole output, not one corpus then the other.
+    assert 0.3 <= _share(rows[:100], "a") <= 0.7
+
+
+def test_ratio_mode_is_deterministic_per_seed():
+    params = {"mode": "ratio", "weights": "0.7, 0.3", "total_rows": 50}
+    first = _rows_of(_mix(_corpora(40, 40), {**params, "seed": 2}))
+    again = _rows_of(_mix(_corpora(40, 40), {**params, "seed": 2}))
+    other = _rows_of(_mix(_corpora(40, 40), {**params, "seed": 3}))
+    assert first == again
+    assert first != other
+
+
+def test_ratio_mode_quotas_sum_to_total_rows_for_three_sources():
+    rows = _rows_of(_mix(_corpora(10, 10, 10),
+                         {"sources": 3, "mode": "ratio", "weights": "1, 1, 1",
+                          "total_rows": 10, "seed": 0}))
+    assert len(rows) == 10
+    assert sorted(sum(r.startswith(p) for r in rows) for p in "abc") == [3, 3, 4]
+
+
+def test_interleave_keeps_the_corpus_sizes_whatever_the_weights():
+    """interleave stays available and does what its text says: every row
+    once, so the weights cannot change the share."""
+    rows = _rows_of(_mix(_corpora(1000, 1000),
+                         {"weights": "0.95, 0.05", "seed": 0}))
+    assert len(rows) == 2000
+    assert _share(rows, "a") == 0.5
+
+
+def test_the_descriptions_say_what_the_weights_control():
+    params = {p.name: p for p in DataMixDatasetNode.define_params()}
+    assert params["mode"].options == ["interleave", "ratio", "concat"]
+    assert params["mode"].default == "interleave"
+    assert params["total_rows"].default == 0
+    weights_text = params["weights"].description
+    assert "share" in weights_text and "only" in weights_text
+    assert "corpus sizes" in DataMixDatasetNode.DETAILS

@@ -22,6 +22,7 @@ denoised image.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -34,6 +35,65 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+
+logger = logging.getLogger(__name__)
+
+# The defaults DiffusionTrainingLoop trains with, shared so a fresh sampler
+# samples with the schedule a fresh training loop trained on (#691).
+DEFAULT_NUM_TIMESTEPS = 160
+DEFAULT_BETA_START = 0.0001
+DEFAULT_BETA_END = 0.05
+
+# DiffusionTrainingLoop records the schedule it trained with on the model
+# under this attribute; DDPMSampler reads it back.
+SCHEDULE_ATTR = "diffusion_schedule"
+
+
+def record_schedule(model: Any, num_timesteps: int, schedule: str,
+                    beta_start: float, beta_end: float) -> None:
+    """Store the training noise schedule on ``model`` for DDPMSampler."""
+    try:
+        setattr(model, SCHEDULE_ATTR, {
+            "num_timesteps": int(num_timesteps),
+            "schedule": str(schedule),
+            "beta_start": float(beta_start),
+            "beta_end": float(beta_end),
+        })
+    except (AttributeError, TypeError):
+        # A model that refuses new attributes still trains; the sampler
+        # then falls back to its own params.
+        pass
+
+
+def _recorded_schedule(model: Any) -> dict[str, Any] | None:
+    recorded = getattr(model, SCHEDULE_ATTR, None)
+    if not isinstance(recorded, dict):
+        return None
+    try:
+        return {
+            "num_timesteps": int(recorded["num_timesteps"]),
+            "schedule": str(recorded["schedule"]),
+            "beta_start": float(recorded["beta_start"]),
+            "beta_end": float(recorded["beta_end"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _schedule_differences(recorded: dict[str, Any], num_steps: int, schedule: str,
+                          beta_start: float, beta_end: float) -> list[str]:
+    """Describe each sampler param that differs from the recorded schedule."""
+    diffs: list[str] = []
+    if num_steps != recorded["num_timesteps"]:
+        diffs.append(f"num_steps={num_steps} (trained with {recorded['num_timesteps']})")
+    if schedule != recorded["schedule"]:
+        diffs.append(f"schedule={schedule} (trained with {recorded['schedule']})")
+    if recorded["schedule"] == "linear":
+        if not math.isclose(beta_start, recorded["beta_start"], rel_tol=1e-6, abs_tol=1e-12):
+            diffs.append(f"beta_start={beta_start} (trained with {recorded['beta_start']})")
+        if not math.isclose(beta_end, recorded["beta_end"], rel_tol=1e-6, abs_tol=1e-12):
+            diffs.append(f"beta_end={beta_end} (trained with {recorded['beta_end']})")
+    return diffs
 
 
 def _linear_betas(num_steps: int, beta_start: float, beta_end: float) -> torch.Tensor:
@@ -58,7 +118,10 @@ class DDPMSamplerNode(BaseNode):
         "Each step calls `model(x_t, t)` to predict the noise, then applies the "
         "DDPM update; `schedule` is the original linear one or the cosine variant. "
         "The whole loop runs inside the node, which keeps the graph acyclic, and "
-        "`seed` fixes the Gaussian noise added at each step."
+        "`seed` fixes the Gaussian noise added at each step. A model trained by "
+        "DiffusionTrainingLoop carries the schedule it was trained with; the "
+        "sampler uses that schedule and logs a warning naming any of its own "
+        "schedule params that differ. The defaults match DiffusionTrainingLoop's."
     )
 
     cacheable = False  # Has internal randomness; conservative to skip cache.
@@ -100,9 +163,12 @@ class DDPMSamplerNode(BaseNode):
             ParamDefinition(
                 name="num_steps",
                 param_type=ParamType.INT,
-                default=20,
+                default=DEFAULT_NUM_TIMESTEPS,
                 min_value=1,
-                description="Number of reverse-diffusion steps. More steps = smoother trajectory but slower.",
+                description=(
+                    "Number of reverse-diffusion steps. Must equal the training "
+                    "`num_timesteps`; a model from DiffusionTrainingLoop overrides it."
+                ),
             ),
             ParamDefinition(
                 name="schedule",
@@ -114,14 +180,14 @@ class DDPMSamplerNode(BaseNode):
             ParamDefinition(
                 name="beta_start",
                 param_type=ParamType.FLOAT,
-                default=0.0001,
+                default=DEFAULT_BETA_START,
                 min_value=0.0,
                 description="Starting variance for the linear schedule. Ignored for cosine.",
             ),
             ParamDefinition(
                 name="beta_end",
                 param_type=ParamType.FLOAT,
-                default=0.02,
+                default=DEFAULT_BETA_END,
                 min_value=0.0,
                 description="Ending variance for the linear schedule. Ignored for cosine.",
             ),
@@ -157,13 +223,34 @@ class DDPMSamplerNode(BaseNode):
         if not callable(model):
             raise ValueError("DDPMSampler: `model` input is not callable.")
 
-        num_steps = int(params.get("num_steps", 20))
+        num_steps = int(params.get("num_steps", DEFAULT_NUM_TIMESTEPS))
         if num_steps < 1:
             raise ValueError(f"DDPMSampler: num_steps must be ≥ 1, got {num_steps}.")
         schedule = str(params.get("schedule", "linear"))
-        beta_start = float(params.get("beta_start", 0.0001))
-        beta_end = float(params.get("beta_end", 0.02))
+        beta_start = float(params.get("beta_start", DEFAULT_BETA_START))
+        beta_end = float(params.get("beta_end", DEFAULT_BETA_END))
         seed = int(params.get("seed", 42))
+
+        # #691: sampling with a schedule other than the one the model was
+        # trained on gives washed-out samples and no error, so a schedule
+        # recorded by DiffusionTrainingLoop wins over the params.
+        recorded = _recorded_schedule(model)
+        if recorded is not None:
+            diffs = _schedule_differences(recorded, num_steps, schedule,
+                                          beta_start, beta_end)
+            if diffs:
+                detail = (
+                    "DDPMSampler: the model was trained with a different noise "
+                    "schedule; sampling with the training schedule and ignoring "
+                    + ", ".join(diffs) + "."
+                )
+                logger.warning(detail)
+                if context is not None and hasattr(context, "log_warning"):
+                    context.log_warning("diffusion_schedule_mismatch", detail)
+            num_steps = recorded["num_timesteps"]
+            schedule = recorded["schedule"]
+            beta_start = recorded["beta_start"]
+            beta_end = recorded["beta_end"]
 
         # Build the schedule.
         if schedule == "linear":

@@ -1279,7 +1279,7 @@ const zhTW: NodeTranslations = {
       '跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值會建出約 ' +
       '204M 參數的模型；把 d_model 與 n_layers 調小，筆電才訓練得動。改動任何結構參數都會丟棄已保存的權重。',
     params: {
-      vocab_size: '模型認得幾種不同的 token。必須與餵進來的 tokenizer 一致 — 50257 是 GPT-2 的詞彙量。',
+      vocab_size: '模型認得幾種不同的 token。必須與餵進來的 tokenizer 一致 — 50257 是 GPT-2 的詞彙量，257 是 LMTokenizer 的 byte 編碼。',
       d_model: 'residual stream 的寬度：每個 token 穿過整個網路時所攜帶的向量大小。必須能被 n_heads 整除。',
       n_layers: '堆疊幾層 transformer block。深度決定了模型能做幾步推理，成本隨層數線性增加。',
       n_heads: '每一層的寬度要切給幾個 attention head。head 越多、同時追蹤的關係越多，但每個 head 的子空間就越窄（寬度為 d_model / n_heads）。',
@@ -1313,11 +1313,12 @@ const zhTW: NodeTranslations = {
     description: '可重用 tokenizer：文字與 token 互轉',
     details:
       '接到 LMTokenizedDataset 可把語料打包成訓練區塊，接到生成節點則讓它們使用與訓練時相同的 token ids。gpt2 ' +
-      '的 50257 個 token 訓練成本最低；cl100k_base 與 o200k_base 每個 token 塞得下更多文字，' +
-      '但輸出層要更寬。每種編碼只會下載一次 BPE 對照表，之後就能離線使用。',
+      '的 50257 個 token 是最小的 BPE 詞彙表；cl100k_base 與 o200k_base 每個 token 塞得下更多文字，' +
+      '但輸出層要更寬。每種 BPE 編碼只會下載一次對照表，之後就能離線使用。byte 使用 256 個 UTF-8 位元組值加上' +
+      '一個文字結束 id（共 257 個）。char 從 corpus 輸入的文字建立詞彙表：每個不同的字元一個 id，再加上文字結束與未知字元 id。',
     params: {
       encoding:
-        '要使用哪一套 BPE 詞彙表。gpt2（50257 個 token）訓練成本最低；cl100k_base（GPT-3.5/4）與 o200k_base（GPT-4o）能用同樣的 token 數塞進更多文字，但輸出層也要寬得多。',
+        '要使用哪一套詞彙表。gpt2（50257 個 token）是最小的 BPE 詞彙表；cl100k_base（GPT-3.5/4）與 o200k_base（GPT-4o）能用同樣的 token 數塞進更多文字，但輸出層也要寬得多。byte：257 個 id（256 個位元組值 + 文字結束）。char：corpus 輸入中每個字元一個 id，再加上文字結束與未知字元。',
     },
   },
   TextCorpusDataset: {
@@ -1359,16 +1360,19 @@ const zhTW: NodeTranslations = {
     },
   },
   DataMixDataset: {
-    description: '把 2-6 個語料混成資料集：依權重抽取或依序串接',
+    description: '混合 2-6 個語料：依比例、依權重排序或依序串接',
     details:
-      'interleave 依權重不重複抽取，同一個種子得到同樣順序；某個語料抽完後就不再被抽，其餘權重重新正規化。concat 則是 ' +
-      'corpus_1 全部跑完再接 corpus_2。混合只記錄（來源, 列號）索引，逐列惰性讀取。輸入接 TextCorpusDataset ' +
+      'ratio 讓權重決定各語料在輸出中的占比：輸出 total_rows 列（0 = 各語料列數總和），依權重分配；' +
+      '分到的列數多於語料本身時會重複列，少於時取種子化的子集，最後依種子打亂順序。interleave 會把每個語料的每一列恰好用一次，' +
+      '所以輸出占比等於各語料的大小，權重只決定各語料在順序中的分布（某個語料抽完後就不再被抽，其餘權重重新正規化）。' +
+      'concat 則是 corpus_1 全部跑完再接 corpus_2。混合只記錄（來源, 列號）索引，逐列惰性讀取。輸入接 TextCorpusDataset ' +
       '的輸出，結果餵給 LMTokenizedDataset。',
     params: {
       sources: '這顆節點有幾個語料輸入埠。',
-      weights: '逗號分隔的抽取權重，每個來源一個（會正規化；只在 interleave 模式使用）。留空：平均權重。抽完的來源不再被抽，其餘來源重新正規化 — 混合的尾段就是還有剩的語料。',
-      mode: 'interleave：種子化的比例抽取、不重複。concat：corpus_1 全部、再 corpus_2… — 有順序的課程。',
-      seed: '交錯順序的種子 — 相同種子與輸入會重現同一個混合順序。',
+      weights: '逗號分隔的權重，每個來源一個（會正規化；concat 不使用）。留空：平均權重。ratio：各來源在輸出中的占比。interleave：只影響順序；每一列都只用一次，所以輸出占比等於各語料的大小。',
+      mode: 'ratio：輸出 total_rows 列，依權重分配，必要時重複或抽樣，順序由種子決定。interleave：每一列用一次，權重決定種子化順序中的分布。concat：corpus_1 全部、再 corpus_2… — 有順序的課程。',
+      total_rows: '只用於 ratio 模式：輸出的列數。0 = 各語料列數總和。',
+      seed: '混合的種子（interleave 的順序、ratio 抽哪些列與順序）— 相同種子與輸入會重現同一個混合。',
     },
   },
   PerplexityEvaluate: {
@@ -1565,9 +1569,11 @@ const zhTW: NodeTranslations = {
     description: '執行反向 DDPM 迴圈，將噪聲張量去噪成影像',
     details:
       '每一步呼叫 `model(x_t, t)` 預測噪聲，再套用 DDPM 更新公式；schedule 可選原始的 linear 或 ' +
-      'cosine。整個迴圈在節點內部執行，圖因此維持無環，每步加入的高斯噪聲由 seed 決定。',
+      'cosine。整個迴圈在節點內部執行，圖因此維持無環，每步加入的高斯噪聲由 seed 決定。' +
+      'DiffusionTrainingLoop 訓練出的模型會帶著訓練時的排程；取樣器會使用該排程，並在自身的排程參數不同時記錄警告，列出這些參數。' +
+      '預設值與 DiffusionTrainingLoop 相同。',
     params: {
-      num_steps: '反向 diffusion 的步數。步數越多軌跡越平滑，但也越慢。',
+      num_steps: '反向 diffusion 的步數。必須等於訓練時的 num_timesteps；DiffusionTrainingLoop 訓練出的模型會覆蓋此值。',
       schedule: '噪聲排程。linear 是原版 DDPM；cosine（Nichol & Dhariwal 2021）在接近資料的區域噪聲增加得更慢。',
       beta_start: '線性排程的起始 variance。cosine 模式會忽略此值。',
       beta_end: '線性排程的結束 variance。cosine 模式會忽略此值。',
@@ -1578,8 +1584,8 @@ const zhTW: NodeTranslations = {
     description: '訓練 U-Net 預測加入的雜訊（DDPM）',
     details:
       '每一步取一張乾淨影像、隨機挑一個時間步加上雜訊，再用預測雜訊與實際雜訊的 MSE 更新權重，輸出訓練後的模型與每輪 loss。' +
-      '這裡設定的雜訊排程（schedule、num_timesteps、beta_start、beta_end）必須和之後取樣的 ' +
-      'DDPMSampler 一致，否則生成會壞掉。',
+      '這裡設定的雜訊排程（schedule、num_timesteps、beta_start、beta_end）會記錄在訓練後的模型上，' +
+      'DDPMSampler 會用它取樣，並在自身參數不同時發出警告。',
   },
 
   // ── VLA ──

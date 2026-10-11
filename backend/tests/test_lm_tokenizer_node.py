@@ -30,13 +30,15 @@ def _run(encoding: str = "gpt2") -> dict:
 def test_node_metadata():
     assert LMTokenizerNode.NODE_NAME == "LMTokenizer"
     assert LMTokenizerNode.CATEGORY == "LLM"
-    assert LMTokenizerNode.define_inputs() == []
+    # #692: one optional input, read only by the char encoding.
+    [corpus] = LMTokenizerNode.define_inputs()
+    assert corpus.name == "corpus" and corpus.optional
     assert [p.name for p in LMTokenizerNode.define_outputs()] == [
         "tokenizer", "vocab_size"]
     params = {p.name: p for p in LMTokenizerNode.define_params()}
     assert params["encoding"].default == "gpt2"
     assert params["encoding"].options == [
-        "gpt2", "p50k_base", "cl100k_base", "o200k_base"]
+        "gpt2", "p50k_base", "cl100k_base", "o200k_base", "char", "byte"]
 
 
 def test_gpt2_vocab_size_and_eos_id():
