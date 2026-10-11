@@ -3,6 +3,21 @@ from typing import Any
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 
+def parse_shape(shape_str: Any) -> tuple[int, ...]:
+    """``"1,3,224,224"`` as a tuple of positive ints, or a ValueError naming
+    the ``shape`` param and the format it expects (#682)."""
+    try:
+        shape = tuple(int(s.strip()) for s in str(shape_str).split(","))
+    except ValueError:
+        shape = ()
+    if not shape or any(dim <= 0 for dim in shape):
+        raise ValueError(
+            "shape must be comma-separated positive integers "
+            f"(e.g. 1,3,224,224), got {shape_str!r}"
+        )
+    return shape
+
+
 class TensorCreateNode(BaseNode):
     NODE_NAME = "TensorCreate"
     CATEGORY = "Tensor Operations"
@@ -53,8 +68,7 @@ class TensorCreateNode(BaseNode):
 
         from ...core.device_utils import context_device, to_device
 
-        shape_str = params.get("shape", "1,3,224,224")
-        shape = tuple(int(s.strip()) for s in shape_str.split(","))
+        shape = parse_shape(params.get("shape", "1,3,224,224"))
         fill = params.get("fill", "zeros")
         value = params.get("value", 0.0)
         requires_grad = params.get("requires_grad", False)

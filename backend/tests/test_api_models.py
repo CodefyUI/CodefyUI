@@ -108,3 +108,37 @@ async def test_list_and_delete(test_client, models_dir):
     resp = await test_client.delete("/api/models/a.pt")
     assert resp.status_code == 200
     assert not (models_dir / "a.pt").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_uppercase_extension_is_listed_downloaded_and_deleted(test_client, models_dir):
+    # #710: upload lowercased the extension before checking it, and list,
+    # download and delete did not, so an uploaded X.PT was orphaned.
+    payload = b"UPPERCASE_WEIGHTS"
+    resp = await test_client.post(
+        "/api/models/upload",
+        files={"file": ("X.PT", payload, "application/octet-stream")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["filename"] == "X.PT"
+
+    resp = await test_client.get("/api/models")
+    assert [item["filename"] for item in resp.json()] == ["X.PT"]
+
+    resp = await test_client.get("/api/models/download/X.PT")
+    assert resp.status_code == 200
+    assert resp.content == payload
+
+    resp = await test_client.delete("/api/models/X.PT")
+    assert resp.status_code == 200
+    assert not (models_dir / "X.PT").exists()
+
+
+@pytest.mark.asyncio
+async def test_an_uppercase_non_model_extension_is_still_refused(test_client, models_dir):
+    (models_dir / "README.TXT").write_bytes(b"not a model")
+
+    assert (await test_client.get("/api/models")).json() == []
+    assert (await test_client.get("/api/models/download/README.TXT")).status_code == 400
+    assert (await test_client.delete("/api/models/README.TXT")).status_code == 400
+    assert (models_dir / "README.TXT").exists()

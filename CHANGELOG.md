@@ -120,6 +120,26 @@ received — each links to the release it was published as.
   Optimizer, the run logs a warning and `POST /api/graph/validate` lists it
   under `warnings`: the arms share one set of weights, and a fair comparison
   needs one model node per arm.
+- **A dropdown parameter set to a value outside its options fails validation**
+  ([#698]). Run, `POST /api/graph/validate` and `run_graph.py --validate-only`
+  now name the node, the parameter and the allowed values, for example an
+  Optimizer `type` of `Adamm`. ModelSaver also refuses an unknown `save_mode` or
+  `format` when it runs; before, `save_mode: "statedict"` wrote a full-model
+  pickle, and `format: "safetensor"` wrote a PyTorch file.
+- **TensorCreate says what is wrong with a malformed `shape`** ([#682]). A
+  value such as `abc`, an empty dimension, or a zero or negative one now fails
+  with `shape must be comma-separated positive integers (e.g. 1,3,224,224)`
+  and the value given, in place of Python's `invalid literal for int()`.
+- **ModelLoader loads the weights from a CheckpointSaver file** ([#701]). In
+  `state_dict` mode it reads the checkpoint's `model_state_dict` entry, where
+  it used to fail with a list of missing and unexpected keys.
+- **The Training Pipeline preset trains on the graph's device** ([#699]). Its
+  TrainingLoop defaulted to `cpu`, which overrides the device chosen for the
+  graph; it now defaults to `auto`. Graphs saved with `cpu` keep it.
+- **A model file uploaded with an uppercase extension can be listed,
+  downloaded and deleted** ([#710]). Upload accepted `X.PT`, and the list,
+  download and delete routes compared the extension case-sensitively, so the
+  file was left in the models folder with no way to reach it.
 
 ## [2.9.0] — 2026-10-11
 
@@ -5711,6 +5731,7 @@ Release candidates before 1.0.0 are on the
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
 [#679]: https://github.com/CodefyUI/CodefyUI/issues/679
 [#681]: https://github.com/CodefyUI/CodefyUI/issues/681
+[#682]: https://github.com/CodefyUI/CodefyUI/issues/682
 [#683]: https://github.com/CodefyUI/CodefyUI/issues/683
 [#685]: https://github.com/CodefyUI/CodefyUI/issues/685
 [#686]: https://github.com/CodefyUI/CodefyUI/issues/686
@@ -5720,9 +5741,13 @@ Release candidates before 1.0.0 are on the
 [#694]: https://github.com/CodefyUI/CodefyUI/issues/694
 [#696]: https://github.com/CodefyUI/CodefyUI/issues/696
 [#697]: https://github.com/CodefyUI/CodefyUI/issues/697
+[#698]: https://github.com/CodefyUI/CodefyUI/issues/698
+[#699]: https://github.com/CodefyUI/CodefyUI/issues/699
+[#701]: https://github.com/CodefyUI/CodefyUI/issues/701
 [#707]: https://github.com/CodefyUI/CodefyUI/issues/707
 [#708]: https://github.com/CodefyUI/CodefyUI/issues/708
 [#709]: https://github.com/CodefyUI/CodefyUI/issues/709
+[#710]: https://github.com/CodefyUI/CodefyUI/issues/710
 [#713]: https://github.com/CodefyUI/CodefyUI/issues/713
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
 [#620]: https://github.com/CodefyUI/CodefyUI/issues/620
