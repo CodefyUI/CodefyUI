@@ -1073,7 +1073,7 @@ describe('releasing a wire on a port it cannot feed (#685)', () => {
   });
 
   it('says it in the language on screen', () => {
-    useI18n.setState({ locale: 'zh-TW' });
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
     release(handle('tensor', 'tensor', 'source'), handle('loader', 'dataset', 'target'));
     expect(messages()).toEqual(['TENSOR 無法連接到 DATASET']);
   });
@@ -1090,9 +1090,11 @@ describe('releasing a wire on a port it cannot feed (#685)', () => {
 
   it('stays silent for a refusal that is not about types', () => {
     // The same wire twice is refused (#619), and both ports are TENSOR.
-    setTab({
-      edges: [{ id: 'e1', source: 'tensor', sourceHandle: 'tensor', target: 'loader', targetHandle: 'x' }],
-    });
+    act(() =>
+      setTab({
+        edges: [{ id: 'e1', source: 'tensor', sourceHandle: 'tensor', target: 'loader', targetHandle: 'x' }],
+      }),
+    );
     release(handle('tensor', 'tensor', 'source'), handle('loader', 'x', 'target'));
     expect(messages()).toEqual([]);
   });
