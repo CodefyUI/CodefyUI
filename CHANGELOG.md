@@ -95,6 +95,31 @@ received — each links to the release it was published as.
   prints the test split's column means. The `stats` output is typed ANY to
   match the dict it carries; LIST let it connect to list inputs that then
   failed at run time.
+- **A skip connection taken before an activation keeps its value** ([#694]).
+  SequentialModel built ReLU, LeakyReLU, ELU, SiLU, Mish, SELU and Hardswish
+  to run in place, so when one tensor fed both an activation and another
+  layer (a pre-activation skip into Add), the other layer read the activated
+  value and the forward pass and gradients were wrong without an error. The
+  caller's input tensor was changed too. The activations now return a new
+  tensor.
+- **A Transform no longer changes the dataset wired into it** ([#697]).
+  Transform installed its pipeline on the dataset object every other
+  consumer of that Dataset output also holds, so an untransformed sibling
+  branch saw the transform, and two Transforms on one dataset (train and
+  eval) both got whichever pipeline came last. Transform now returns a copy
+  with the pipeline; the copy shares the samples.
+- **Nodes handed the same model take turns** ([#696]). The nodes of one
+  level run concurrently, so a TrainingLoop and a sanity-check Inference on
+  the same model ran at once: Inference's `eval()` switched Dropout and
+  BatchNorm off in the middle of the epoch and changed the loss, and its
+  device move could crash the training. Two TrainingLoops on one model
+  failed with an in-place autograd error. Nodes in a level that receive the
+  same model or optimizer object now run one after another in a stable
+  order, and other nodes still run concurrently. A seeded run is unchanged.
+  When one model output is trained by more than one TrainingLoop or
+  Optimizer, the run logs a warning and `POST /api/graph/validate` lists it
+  under `warnings`: the arms share one set of weights, and a fair comparison
+  needs one model node per arm.
 
 ## [2.9.0] — 2026-10-11
 
@@ -5692,6 +5717,9 @@ Release candidates before 1.0.0 are on the
 [#687]: https://github.com/CodefyUI/CodefyUI/issues/687
 [#688]: https://github.com/CodefyUI/CodefyUI/issues/688
 [#690]: https://github.com/CodefyUI/CodefyUI/issues/690
+[#694]: https://github.com/CodefyUI/CodefyUI/issues/694
+[#696]: https://github.com/CodefyUI/CodefyUI/issues/696
+[#697]: https://github.com/CodefyUI/CodefyUI/issues/697
 [#707]: https://github.com/CodefyUI/CodefyUI/issues/707
 [#708]: https://github.com/CodefyUI/CodefyUI/issues/708
 [#709]: https://github.com/CodefyUI/CodefyUI/issues/709
