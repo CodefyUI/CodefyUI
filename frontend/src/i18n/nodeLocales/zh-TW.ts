@@ -381,11 +381,12 @@ const zhTW: NodeTranslations = {
   KLDivergence: {
     description: 'KL(p || q)，輸入可為機率或 logits',
     details:
-      'reduction 沿用 PyTorch 慣例，預設 batchmean（總和除以批次大小），none 則每個樣本給一個值。KL 不對稱：' +
+      'reduction 聚合每個樣本的 KL（最後一軸的總和）：預設 batchmean 與 mean 都是對樣本取平均，sum 加總，' +
+      'none 每個樣本給一個值。1-D 輸入視為一個樣本。KL 不對稱：' +
       'p 是策略，q 是被拉近的那個凍結參考策略。',
     params: {
       input_kind: 'p、q 是已經算好的機率，還是尚未經過 softmax 的 logits。',
-      reduction: '如何把每個樣本的 KL 聚合起來。batchmean = sum / batch_size，是 RLHF 的預設用法。',
+      reduction: '如何把每個樣本的 KL 聚合起來。batchmean 與 mean = 對樣本取平均（RLHF 的預設）；sum = 加總；none = 每個樣本一個值。',
     },
   },
   RewardModel: {
@@ -686,11 +687,14 @@ const zhTW: NodeTranslations = {
     description: '把 CSV 載入為特徵、標籤與欄位名稱',
     details:
       '數值欄位組成 [N, F] 的 float32 張量；include_columns 會再縮小這個範圍，沒設定時非數值欄位一律捨棄。' +
-      'target_column 指定的欄位變成字串標籤列表。檔案沒有標題列時關掉 skip_header，欄位會依序命名為 0、1、2。',
+      'target_column 指定的欄位變成字串標籤列表；有列缺少目標值時會停止執行並列出資料列編號，開啟 ' +
+      'drop_missing_target 則改為捨棄這些列。整數標籤顯示為 \'1\' 而非 \'1.0\'。特徵欄位中的 NaN 會保留，並記錄警告。' +
+      '檔案沒有標題列時關掉 skip_header，欄位會依序命名為 0、1、2。',
     params: {
       path: 'CSV 檔案路徑（絕對路徑或相對於後端工作目錄）。',
       target_column: '標籤欄位名稱（選填）。留空表示沒有標籤、純資料載入。',
       include_columns: '要保留的特徵欄位（逗號分隔，選填）。留空表示「除了 target 之外所有數值欄位」。',
+      drop_missing_target: '捨棄目標值為空的列並記錄是哪些列。關閉時，這種列會讓執行停止並列出列編號。',
       skip_header: 'True 代表第一列是欄位名稱；False 則自動把欄位命名為 0、1、2…',
     },
   },
@@ -706,7 +710,9 @@ const zhTW: NodeTranslations = {
     description: '沿指定軸正規化張量，並輸出所用的統計量',
     details:
       'zscore = $(x-\\mu)/\\sigma$、minmax = $(x-\\min)/(\\max-\\min)$、unit_norm = ' +
-      '$x/\\|x\\|_2$。axis=0 逐欄計算，axis=1 逐列計算。整欄數值相同時除以 1 而不是 0，結果為 0 而非 NaN。',
+      '$x/\\|x\\|_2$。axis=0 逐欄計算，axis=1 逐列計算。整欄數值相同時除以 1 而不是 0，結果為 0 而非 NaN。' +
+      'stats 接上另一個 Normalize 的統計量時，直接套用、不重新計算：把訓練集的 stats 接到測試集的 Normalize。' +
+      '此時正規化方法依 stats 而定，mode 不起作用。',
     params: {
       mode: '正規化方法。',
       axis: '計算統計量的軸。0 = 逐欄，1 = 逐列。',
@@ -1780,8 +1786,9 @@ const zhTW: NodeTranslations = {
     description: '以封閉解或梯度下降擬合 $y=Xw+b$',
     details:
       'closed_form 解正規方程 $w = (X^T X + \\lambda I)^{-1} X^T y$，矩陣奇異時退回最小平方求解；' +
-      'gradient_descent 用 lr 跑 epochs 次迭代。regularization 在兩種解法下都只對權重加 ' +
-      'L2（ridge）懲罰。',
+      'gradient_descent 用 lr 跑 epochs 次迭代。兩種解法都最小化 ' +
+      '$\\lVert Xw + b - y \\rVert^2 + \\lambda \\lVert w \\rVert^2$（即 sklearn `Ridge(alpha=λ)`），' +
+      'λ = regularization，只懲罰權重；梯度下降用的是同一損失除以列數，最小值點相同。',
   },
   'foundations:Edu-LogisticRegression': {
     description: '以梯度下降訓練 softmax，輸出標籤與機率',

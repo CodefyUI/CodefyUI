@@ -22,6 +22,35 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **KLDivergence averages the per-sample KL for every input shape** ([#707]).
+  A 1-D `[V]` input was divided by V under the default `batchmean`, and `mean`
+  divided by batch size times V (with a torch warning). A 1-D input is now one
+  sample, leading axes are flattened into samples, and `batchmean` and `mean`
+  both give the mean of the per-sample KL. `sum` and `none` are unchanged.
+- **Edu-LinearRegression applies the same ridge penalty in both modes**
+  ([#708]). `gradient_descent` penalised the weights n times more strongly
+  than `closed_form` for the same `regularization`. Both now minimise
+  ‖Xw + b − y‖² + λ‖w‖², the objective of sklearn's `Ridge(alpha=λ)`, and the
+  node's details give that formula.
+- **CSVReader stops on a missing target value and keeps integer labels
+  integral** ([#709]). An empty target cell became a `'nan'` class and turned
+  every other label into `'0.0'`, `'1.0'`. The run now stops and names the data
+  rows; the new `drop_missing_target` param drops them and logs which ones.
+  Integral labels read `'0'`, `'1'`, and NaN in a feature column logs a
+  warning naming the column.
+- **The Iris examples fit Normalize on the training split only** ([#713]).
+  Tabular Iris feature pipeline, Classify Iris with sklearn KNN and the
+  foundations pack's KNN from Scratch on Iris normalised the whole table before
+  splitting it, so the test rows shaped the training data. Normalize has a new
+  optional `stats` input: wire one Normalize's `stats` into another and it
+  applies those statistics instead of fitting. The examples now split first,
+  fit on `x_train` and reuse the statistics on `x_test`; the tabular example
+  prints the test split's column means. The `stats` output is typed ANY to
+  match the dict it carries; LIST let it connect to list inputs that then
+  failed at run time.
+
 ## [2.9.0] — 2026-10-11
 
 ### Added
@@ -5610,6 +5639,10 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#707]: https://github.com/CodefyUI/CodefyUI/issues/707
+[#708]: https://github.com/CodefyUI/CodefyUI/issues/708
+[#709]: https://github.com/CodefyUI/CodefyUI/issues/709
+[#713]: https://github.com/CodefyUI/CodefyUI/issues/713
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
 [#620]: https://github.com/CodefyUI/CodefyUI/issues/620
 [#618]: https://github.com/CodefyUI/CodefyUI/issues/618
