@@ -45,7 +45,10 @@ class TransformerEncoderNode(StatefulModuleMixin, BaseNode):
             dim_feedforward=params.get("dim_feedforward", 2048),
             batch_first=False,
         )
-        return nn.TransformerEncoder(encoder_layer, num_layers=params.get("num_layers", 6))
+        encoder = nn.TransformerEncoder(encoder_layer, num_layers=params.get("num_layers", 6))
+        # Nothing trains this node, so dropout would only make the same
+        # input give a different output on every run.
+        return encoder.eval()
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]

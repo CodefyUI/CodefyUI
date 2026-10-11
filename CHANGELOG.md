@@ -24,6 +24,34 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A CausalLMModel smaller than its tokenizer stops with an error naming both
+  sizes** ([#681]). TrainingLoop, PerplexityEvaluate and TextGenerate compare
+  the model's `vocab_size` with the tokenizer's before the first batch, for
+  example "the tokenizer emits ids up to 50256 but CausalLMModel.vocab_size is
+  1000". On MPS the mismatch used to train without an error and report a
+  perplexity the data cannot reach; on CPU it failed with a bare "index out of
+  range in self". The model also checks its first batch of ids, for datasets
+  that do not record a tokenizer.
+- **Edu-SelfAttention and Edu-MultiHeadAttention with `causal` on run on MPS
+  and CUDA** ([#683]). The causal mask is built on the scores' device, and an
+  external `mask` input, in these two nodes and in Edu-CrossAttention, is
+  moved there. The Multi-Head-Causal example now runs with the device set to
+  mps.
+- **MultiHeadAttention's step-through trace shows the layer's own
+  computation** ([#686]). The steps now project Q, K and V with the layer's
+  weights, split them into heads, scale by the head width, and apply the
+  output projection, so the averaged weights and the final output in the
+  trace equal the node's `weights` and `output`. The old steps attended over
+  the raw inputs with one head.
+- **The layer editor's TransformerDecoder layer is causal** ([#688]). Each
+  position now reads only itself and earlier positions, in self-attention and
+  in the cross-attention over its own input, so a next-token language model
+  built from it can no longer see the token it predicts. A `causal: false`
+  entry in the layer spec keeps the old full attention.
+- **TransformerEncoder and TransformerDecoder nodes give the same output for
+  the same input** ([#690]). Their layers ran with dropout on every run,
+  although nothing trains these nodes; they now run in eval mode, in the app
+  and in exported Python.
 - **Right-clicking a box selection opens the node menu** ([#679]). After a
   Shift+drag selection, a right-click on the selected nodes showed no menu, so
   **Collapse to subgraph** could not be reached. The menu now opens for the
@@ -5630,6 +5658,14 @@ Release candidates before 1.0.0 are on the
 [#671]: https://github.com/CodefyUI/CodefyUI/issues/671
 [#673]: https://github.com/CodefyUI/CodefyUI/issues/673
 [#675]: https://github.com/CodefyUI/CodefyUI/issues/675
+[#679]: https://github.com/CodefyUI/CodefyUI/issues/679
+[#681]: https://github.com/CodefyUI/CodefyUI/issues/681
+[#683]: https://github.com/CodefyUI/CodefyUI/issues/683
+[#685]: https://github.com/CodefyUI/CodefyUI/issues/685
+[#686]: https://github.com/CodefyUI/CodefyUI/issues/686
+[#687]: https://github.com/CodefyUI/CodefyUI/issues/687
+[#688]: https://github.com/CodefyUI/CodefyUI/issues/688
+[#690]: https://github.com/CodefyUI/CodefyUI/issues/690
 [#625]: https://github.com/CodefyUI/CodefyUI/issues/625
 [#620]: https://github.com/CodefyUI/CodefyUI/issues/620
 [#618]: https://github.com/CodefyUI/CodefyUI/issues/618
@@ -5652,6 +5688,3 @@ Release candidates before 1.0.0 are on the
 [#430]: https://github.com/CodefyUI/CodefyUI/issues/430
 [#642]: https://github.com/CodefyUI/CodefyUI/issues/642
 [#652]: https://github.com/CodefyUI/CodefyUI/issues/652
-[#679]: https://github.com/CodefyUI/CodefyUI/issues/679
-[#685]: https://github.com/CodefyUI/CodefyUI/issues/685
-[#687]: https://github.com/CodefyUI/CodefyUI/issues/687

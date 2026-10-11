@@ -98,9 +98,15 @@ class PackedTokenBlocks(Dataset):
     DataLoader worker process can name the class (#283).
     """
 
-    def __init__(self, tokens: torch.Tensor, seq_len: int) -> None:
+    def __init__(
+        self, tokens: torch.Tensor, seq_len: int, tokenizer_vocab_size: int | None = None,
+    ) -> None:
         self.tokens = tokens
         self.seq_len = seq_len
+        # How many ids the tokenizer that packed these blocks can emit, so the
+        # nodes downstream can refuse a CausalLMModel with a smaller
+        # vocab_size before the first batch (#681).
+        self.tokenizer_vocab_size = tokenizer_vocab_size
         # ``- 1`` because the very last token can only ever be a LABEL: a block
         # needs seq_len inputs AND the token after the last one.
         self.num_blocks = max(0, (int(tokens.numel()) - 1) // seq_len)
@@ -488,7 +494,7 @@ class LMTokenizedDatasetNode(BaseNode):
                 logger.info(
                     "LMTokenizedDataset reused %d cached tokens from %s",
                     cached.numel(), cache_path)
-                return self._result(cached, seq_len, cached=True)
+                return self._result(cached, seq_len, tokenizer, cached=True)
 
         tokens, rows_done, stopped = self._tokenize(
             dataset, tokenizer, total_rows,
@@ -500,7 +506,7 @@ class LMTokenizedDatasetNode(BaseNode):
             # (``core.loop_control``). And nothing is cached: the key describes
             # the WHOLE corpus, so a partial stream stored under it would serve
             # a truncated dataset to every later run of the same graph.
-            result = self._result(tokens, seq_len, cached=False)
+            result = self._result(tokens, seq_len, tokenizer, cached=False)
             result.update(interrupted_result(rows=rows_done))
             return result
 
@@ -513,7 +519,7 @@ class LMTokenizedDatasetNode(BaseNode):
 
         if cache_path is not None:
             _save_cached(cache_path, tokens)
-        return self._result(tokens, seq_len, cached=False)
+        return self._result(tokens, seq_len, tokenizer, cached=False)
 
     @staticmethod
     def _tokenize(
@@ -585,9 +591,9 @@ class LMTokenizedDatasetNode(BaseNode):
 
     @staticmethod
     def _result(
-        tokens: torch.Tensor, seq_len: int, *, cached: bool,
+        tokens: torch.Tensor, seq_len: int, tokenizer: Any, *, cached: bool,
     ) -> dict[str, Any]:
-        blocks = PackedTokenBlocks(tokens, seq_len)
+        blocks = PackedTokenBlocks(tokens, seq_len, int(tokenizer.vocab_size))
         total_tokens = int(tokens.numel())
         note = (
             f"{total_tokens:,} tokens packed into {blocks.num_blocks:,} blocks "
