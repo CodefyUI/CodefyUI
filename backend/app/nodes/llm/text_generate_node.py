@@ -392,6 +392,8 @@ class TextGenerateNode(BaseNode):
                 "-- or the model output of the TrainingLoop that trained it -- "
                 "into that input.")
         _check_tokenizer(tokenizer)
+        from .causal_lm_model_node import check_vocab_fits
+        check_vocab_fits(model, int(tokenizer.vocab_size), node="TextGenerate")
 
         # Same fallback contract as Tokenizer's `text` port: a connected input
         # wins, and the param is what the node uses on its own. An input
