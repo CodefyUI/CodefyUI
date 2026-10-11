@@ -16,6 +16,11 @@ class EnvWrapperNode(BaseNode):
         "unseeded run starts from fresh entropy."
     )
 
+    # The env is a live object its consumers step. Served from the canvas
+    # cache, a re-run got the env the last rollout left mid-episode, so the
+    # same run seed gave a different rollout each time.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []

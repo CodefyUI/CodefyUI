@@ -113,3 +113,32 @@ def test_a_seeded_run_seeds_the_action_space():
         return [int(env.action_space.sample()) for _ in range(32)]
 
     assert samples() == samples()
+
+
+async def test_a_canvas_rerun_with_the_same_seed_repeats_the_rollout():
+    """The canvas keeps one ExecutionCache across runs of a tab.
+
+    A cached EnvWrapper handed the second run the env object the first
+    rollout had already stepped, so the same seed gave a different rollout
+    on every re-run (found in the E2E check of #706).
+    """
+    from app.core.cache import ExecutionCache
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    async def run(cache: ExecutionCache | None) -> dict:
+        nodes, edges = _rollout_graph()
+        return await execute_graph(
+            nodes, edges, context=ExecutionContext(device="cpu", seed=3),
+            cache=cache)
+
+    fresh = await run(None)
+    cache = ExecutionCache()
+    for attempt in range(3):
+        rerun = await run(cache)
+        assert torch.equal(rerun["roll"]["actions"],
+                           fresh["roll"]["actions"]), (
+            f"run {attempt + 1} on a shared cache took other actions than a "
+            "fresh run at the same seed")
+        assert torch.equal(rerun["roll"]["episode_lengths"],
+                           fresh["roll"]["episode_lengths"])

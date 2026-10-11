@@ -179,7 +179,9 @@ received — each links to the release it was published as.
   environment without a seed, so Gymnasium drew one from the OS and two runs
   with the same `--seed` started from different observations. A seeded run
   now resets the environment and seeds its action and observation spaces
-  from the run seed; an unseeded run still varies.
+  from the run seed; an unseeded run still varies. EnvWrapper is also no
+  longer served from the canvas cache, which handed a re-run the environment
+  the last rollout had already stepped.
 - **PolicyRollout drives a Gymnasium environment** ([#705]). An
   `EnvWrapper` environment failed with `'tuple' object has no attribute
   'unsqueeze'`, because PolicyRollout only understood GridWorldEnv's
