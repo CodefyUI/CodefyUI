@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: Node Reference
-description: Every built-in node — 154 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
+description: Every built-in node — 155 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
 ---
 
 # Node Reference
 
-CodefyUI ships **154 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
+CodefyUI ships **155 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
 
 :::tip
 This table reflects the current release, but the backend is authoritative. Check the live node palette or `GET /api/nodes` for the nodes available in your installation. Double-click the canvas to search for a node.
@@ -18,7 +18,7 @@ This table reflects the current release, but the backend is authoritative. Check
 | **RNN** | LSTM, GRU, RNNCell | 3 |
 | **Transformer** | MultiHeadAttention, TransformerEncoder, TransformerDecoder, MoELayer | 4 |
 | **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence, PolicyRollout, PPOClipObjective, GroupRelativeAdvantage, Discount, GridWorldEnv, PreferenceDataset, BradleyTerryLoss, BradleyTerryTrain | 13 |
-| **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform, TensorDataset | 28 |
+| **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, DatasetSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform, TensorDataset | 29 |
 | **Data Flow** | Map, Reduce, Switch | 3 |
 | **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce | 7 |
 | **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference, GraphInput, GraphOutput, VideoLoad, VideoWrite | 13 |

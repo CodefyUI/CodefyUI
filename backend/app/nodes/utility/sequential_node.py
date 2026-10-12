@@ -74,6 +74,7 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
         "AvgPool2d": nn.AvgPool2d,
         "AdaptiveAvgPool2d": nn.AdaptiveAvgPool2d,
         "Dropout": nn.Dropout,
+        "Dropout2d": nn.Dropout2d,
         "Linear": nn.Linear,
         "Flatten": nn.Flatten,
         "Embedding": nn.Embedding,
@@ -95,22 +96,26 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
     # Activation functions. None of them run in place (#694): a graph model
     # hands one tensor to every consumer, so an in-place ReLU would rewrite
     # the value a skip connection reads, and the caller's input with it.
-    activations: dict[str, nn.Module] = {
-        "ReLU": nn.ReLU(),
-        "GELU": nn.GELU(),
-        "Sigmoid": nn.Sigmoid(),
-        "Tanh": nn.Tanh(),
-        "LeakyReLU": nn.LeakyReLU(),
-        "ELU": nn.ELU(),
-        "SiLU": nn.SiLU(),
-        "Mish": nn.Mish(),
-        "SELU": nn.SELU(),
-        "PReLU": nn.PReLU(),
-        "Hardswish": nn.Hardswish(),
-        "Softmax": nn.Softmax(dim=-1),
+    # LeakyReLU and Softmax read one param each (#703); the defaults are
+    # the values they were built with before that, so saved specs that
+    # carry no params build the same module.
+    activations: dict[str, Any] = {
+        "ReLU": nn.ReLU,
+        "GELU": nn.GELU,
+        "Sigmoid": nn.Sigmoid,
+        "Tanh": nn.Tanh,
+        "LeakyReLU": lambda: nn.LeakyReLU(
+            negative_slope=float(p.get("negative_slope", 0.01))),
+        "ELU": nn.ELU,
+        "SiLU": nn.SiLU,
+        "Mish": nn.Mish,
+        "SELU": nn.SELU,
+        "PReLU": nn.PReLU,
+        "Hardswish": nn.Hardswish,
+        "Softmax": lambda: nn.Softmax(dim=int(p.get("dim", -1))),
     }
     if t in activations:
-        return activations[t]
+        return activations[t]()
 
     # Try wrapper modules first, then standard builders
     wcls = wrappers.get(t)

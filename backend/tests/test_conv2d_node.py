@@ -91,3 +91,37 @@ def test_batch_preserved():
         context=_ctx(),
     )
     assert res["tensor"].shape[0] == 8
+
+
+# ── #703: groups, dilation and bias ──────────────────────────────────────
+
+
+def test_canvas_conv2d_builds_a_depthwise_conv():
+    x = torch.randn(2, 6, 9, 9)
+    node = Conv2dNode()
+    params = {"in_channels": 6, "out_channels": 6, "kernel_size": 3, "stride": 1,
+              "padding": 2, "dilation": 2, "groups": 6, "bias": False}
+    conv = node.build_module(params)
+    assert conv.weight.shape == (6, 1, 3, 3)
+    assert conv.bias is None
+    out = node.execute({"tensor": x}, params, context=_ctx())["tensor"]
+    assert out.shape == (2, 6, 9, 9)
+
+
+def test_canvas_conv2d_defaults_build_the_old_module():
+    defaults = {p.name: p.default for p in Conv2dNode.define_params()}
+    conv = Conv2dNode().build_module(defaults)
+    assert conv.groups == 1 and conv.dilation == (1, 1) and conv.bias is not None
+
+
+def test_changing_groups_rebuilds_the_persisted_module():
+    # groups changes the weight shape, so it has to be part of the
+    # structure hash; otherwise a persisted (6, 6, 3, 3) weight would be
+    # handed to a node that now asks for a depthwise conv.
+    ctx = _ctx()
+    base = {"in_channels": 6, "out_channels": 6, "kernel_size": 3, "stride": 1, "padding": 1}
+    x = torch.randn(1, 6, 8, 8)
+    Conv2dNode().execute({"tensor": x}, {**base, "groups": 1}, context=ctx)
+    node = Conv2dNode()
+    node.execute({"tensor": x}, {**base, "groups": 6}, context=ctx)
+    assert node.get_or_build_module(ctx, {**base, "groups": 6}).groups == 6

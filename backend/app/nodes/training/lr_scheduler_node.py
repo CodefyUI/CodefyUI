@@ -3,6 +3,30 @@ from typing import Any
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 
+def _parse_milestones(raw: Any) -> list[int]:
+    """``"30, 80"`` -> ``[30, 80]``; blank -> ``[]`` (the caller's fallback)."""
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    out: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            raise ValueError(
+                f"LRScheduler milestones: {part!r} is not a whole number. "
+                f"Write the drop points as comma-separated integers, e.g. \"30, 80\"."
+            ) from None
+        if value < 1:
+            raise ValueError(
+                f"LRScheduler milestones: {value} is not a positive step count.")
+        out.append(value)
+    return sorted(set(out))
+
+
 class LRSchedulerNode(BaseNode):
     NODE_NAME = "LRScheduler"
     CATEGORY = "Training"
@@ -81,8 +105,9 @@ class LRSchedulerNode(BaseNode):
                 param_type=ParamType.INT,
                 default=10,
                 description=(
-                    "StepLR: how long between each LR drop. MultiStepLR: "
-                    "drops at 1x, 2x, 3x and 4x this value. The unit follows "
+                    "StepLR: how long between each LR drop. MultiStepLR with "
+                    "blank milestones: drops at 1x, 2x, 3x and 4x this value. "
+                    "The unit follows "
                     "TrainingLoop.scheduler_step (#308): EPOCHS at the "
                     "default `epoch` (not batches), OPTIMIZER STEPS at "
                     "`optimizer_step`. Either way it has to be smaller than "
@@ -122,7 +147,86 @@ class LRSchedulerNode(BaseNode):
                     "with the run's length would mean no restart ever happens."
                 ),
             ),
+            # #700: the knobs below default to what torch (or the node, for
+            # milestones) used before they existed, so a saved graph keeps
+            # its LR sequence.
+            ParamDefinition(
+                name="milestones",
+                param_type=ParamType.STRING,
+                default="",
+                description=(
+                    "MultiStepLR: comma-separated drop points, e.g. "
+                    "\"30, 80\". Same unit as step_size. Empty keeps the old "
+                    "rule: 1x, 2x, 3x and 4x step_size."
+                ),
+                visible_when={"type": ["MultiStepLR"]},
+            ),
+            ParamDefinition(
+                name="eta_min",
+                param_type=ParamType.FLOAT,
+                default=0.0,
+                min_value=0.0,
+                description=(
+                    "CosineAnnealingLR / CosineAnnealingWarmRestarts: the "
+                    "lowest LR the cosine reaches."
+                ),
+                visible_when={"type": ["CosineAnnealingLR", "CosineAnnealingWarmRestarts"]},
+            ),
+            ParamDefinition(
+                name="T_mult",
+                param_type=ParamType.INT,
+                default=1,
+                min_value=1,
+                description=(
+                    "CosineAnnealingWarmRestarts: each restart cycle is this "
+                    "many times longer than the one before. 1 keeps every "
+                    "cycle at T_max."
+                ),
+                visible_when={"type": ["CosineAnnealingWarmRestarts"]},
+            ),
+            ParamDefinition(
+                name="patience",
+                param_type=ParamType.INT,
+                default=10,
+                min_value=0,
+                description=(
+                    "ReduceLROnPlateau: epochs without improvement in the "
+                    "validation loss before the LR is multiplied by gamma."
+                ),
+                visible_when={"type": ["ReduceLROnPlateau"]},
+            ),
+            ParamDefinition(
+                name="threshold",
+                param_type=ParamType.FLOAT,
+                default=1e-4,
+                min_value=0.0,
+                description=(
+                    "ReduceLROnPlateau: relative improvement the loss must "
+                    "make to count as better (1e-4 = 0.01%)."
+                ),
+                visible_when={"type": ["ReduceLROnPlateau"]},
+            ),
+            ParamDefinition(
+                name="min_lr",
+                param_type=ParamType.FLOAT,
+                default=0.0,
+                min_value=0.0,
+                description="ReduceLROnPlateau: the LR never drops below this.",
+                visible_when={"type": ["ReduceLROnPlateau"]},
+            ),
             ParamDefinition(name="max_lr", param_type=ParamType.FLOAT, default=0.01, description="Max learning rate for OneCycleLR"),
+            ParamDefinition(
+                name="pct_start",
+                param_type=ParamType.FLOAT,
+                default=0.3,
+                min_value=0.0,
+                max_value=1.0,
+                description=(
+                    "OneCycleLR: share of the cycle spent raising the LR "
+                    "to max_lr before it anneals."
+                ),
+                visible_when={"type": ["OneCycleLR"]},
+            ),
             ParamDefinition(
                 name="total_steps",
                 param_type=ParamType.INT,
@@ -155,21 +259,35 @@ class LRSchedulerNode(BaseNode):
         if sched_type == "StepLR":
             sched = lr_scheduler.StepLR(optimizer, step_size=params.get("step_size", 10), gamma=params.get("gamma", 0.1))
         elif sched_type == "CosineAnnealingLR":
-            sched = lr_scheduler.CosineAnnealingLR(optimizer, T_max=params.get("T_max", 50))
+            sched = lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=params.get("T_max", 50),
+                eta_min=float(params.get("eta_min", 0.0)))
         elif sched_type == "ExponentialLR":
             sched = lr_scheduler.ExponentialLR(optimizer, gamma=params.get("gamma", 0.1))
         elif sched_type == "ReduceLROnPlateau":
-            sched = lr_scheduler.ReduceLROnPlateau(optimizer, factor=params.get("gamma", 0.1))
+            sched = lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                factor=params.get("gamma", 0.1),
+                patience=int(params.get("patience", 10)),
+                threshold=float(params.get("threshold", 1e-4)),
+                min_lr=float(params.get("min_lr", 0.0)),
+            )
         elif sched_type == "CosineAnnealingWarmRestarts":
-            sched = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=params.get("T_max", 50))
+            sched = lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer, T_0=params.get("T_max", 50),
+                T_mult=int(params.get("T_mult", 1)),
+                eta_min=float(params.get("eta_min", 0.0)))
         elif sched_type == "MultiStepLR":
-            milestones = [params.get("step_size", 10) * i for i in range(1, 5)]
+            milestones = _parse_milestones(params.get("milestones", ""))
+            if not milestones:
+                milestones = [params.get("step_size", 10) * i for i in range(1, 5)]
             sched = lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=params.get("gamma", 0.1))
         elif sched_type == "OneCycleLR":
             sched = lr_scheduler.OneCycleLR(
                 optimizer,
                 max_lr=params.get("max_lr", 0.01),
                 total_steps=params.get("total_steps", 1000),
+                pct_start=float(params.get("pct_start", 0.3)),
             )
         elif sched_type in ("warmup_cosine", "warmup_linear", "constant_with_warmup"):
             # The standard LM pretraining shapes (#297): a linear ramp from

@@ -17,7 +17,7 @@ The left sidebar is an icon rail of tabs; the ones covered here are **Nodes**, *
 - **Templates** lists example graphs. Click a template to insert it into the current canvas, or drag it to select its location. See [Examples Gallery](./examples-gallery).
 - **Custom & Plugins** provides **Custom Nodes → Manage...**, **Optional packs → Package Center...**, and **Plugins → Plugin Center...**. See [Plugin Center](/advanced/plugins#plugin-center). Installed [plugin packs](/advanced/plugins) add namespaced nodes such as `foundations:Edu-KNN` to the Nodes tab.
 
-The **Node category mode** setting (**Settings → Editor**) sets how much of the library the **Nodes** tab lists. **All**, the default, lists all 154 built-in nodes in 16 categories. **Basic** lists only the **Data**, **CNN**, **Training** and **IO** categories, and only the presets filed under them. It hides every other category, including **Control**, which holds the `Start` node every runnable graph needs, **Utility** (`Print`, `Reshape`) and **Tensor Operations** (`Softmax`). Quick search is not filtered: double-click the canvas to add any node in either mode.
+The **Node category mode** setting (**Settings → Editor**) sets how much of the library the **Nodes** tab lists. **All**, the default, lists all 155 built-in nodes in 16 categories. **Basic** lists only the **Data**, **CNN**, **Training** and **IO** categories, and only the presets filed under them. It hides every other category, including **Control**, which holds the `Start` node every runnable graph needs, **Utility** (`Print`, `Reshape`) and **Tensor Operations** (`Softmax`). Quick search is not filtered: double-click the canvas to add any node in either mode.
 
 ## The canvas
 

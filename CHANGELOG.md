@@ -69,6 +69,21 @@ received — each links to the release it was published as.
   MSELoss compares element by element; `class` targets become int64 class
   indices. The new RegressionMetrics node returns MSE, MAE and R² and records
   them as the run metrics `mse`, `mae` and `r2`.
+- **LRScheduler exposes the parameters each schedule is usually tuned by**
+  ([#700]). ReduceLROnPlateau gains `patience`, `threshold` and `min_lr`;
+  MultiStepLR gains `milestones` (comma-separated, such as "30, 80");
+  CosineAnnealingLR and CosineAnnealingWarmRestarts gain `eta_min`, and
+  WarmRestarts `T_mult`; OneCycleLR gains `pct_start`. Each shows only for
+  the schedules that use it. The defaults are the values the node used
+  before, so saved graphs keep their LR sequence, and Export Python passes
+  the new values through.
+- **More CNN layer options, and a DatasetSplit node** ([#703]). Conv2d, in
+  the layer editor and on the canvas, takes `groups`, `dilation` and `bias`,
+  so a depthwise convolution (`groups` = `in_channels`) can be built. In the
+  layer editor LeakyReLU takes `negative_slope`, Softmax takes `dim`, and
+  Dropout2d is a new layer. DatasetSplit splits a DATASET into `train` and
+  `val` with a seeded shuffle, so the same seed gives the same split, and
+  `subset` keeps only that many samples for a quick experiment.
 
 ### Fixed
 
@@ -206,6 +221,13 @@ received — each links to the release it was published as.
   language. A new tab is named 分頁 2, and the three built-in presets have
   Chinese descriptions in the node list, the quick search, Node Config and
   the preset dialog.
+- **An error inside a SequentialModel names the layer that raised it**
+  ([#703]). A shape mismatch used to show only torch's message, such as
+  "mat1 and mat2 shapes cannot be multiplied (256x1568 and 999x10)". It now
+  starts with the layer's id, type and arguments: `layer "fc2" (Linear,
+  in_features=999, out_features=10, bias=True): ...`. Merge layers are named
+  the same way.
+
 - **A run waiting to start says it is queued** ([#680]). A canvas run that
   waits for another run to release the process-wide seed lock, or a run that
   waits in its device's queue, showed Running with an empty log. The toolbar
@@ -5873,8 +5895,10 @@ Release candidates before 1.0.0 are on the
 [#697]: https://github.com/CodefyUI/CodefyUI/issues/697
 [#698]: https://github.com/CodefyUI/CodefyUI/issues/698
 [#699]: https://github.com/CodefyUI/CodefyUI/issues/699
+[#700]: https://github.com/CodefyUI/CodefyUI/issues/700
 [#701]: https://github.com/CodefyUI/CodefyUI/issues/701
 [#702]: https://github.com/CodefyUI/CodefyUI/issues/702
+[#703]: https://github.com/CodefyUI/CodefyUI/issues/703
 [#704]: https://github.com/CodefyUI/CodefyUI/issues/704
 [#705]: https://github.com/CodefyUI/CodefyUI/issues/705
 [#706]: https://github.com/CodefyUI/CodefyUI/issues/706

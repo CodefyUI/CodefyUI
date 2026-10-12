@@ -462,6 +462,12 @@ const zhTW: Record<TranslationKey, string> = {
   'layersEditor.port.duplicate': '連接埠名稱重複',
   'layersEditor.port.list': '連接埠',
   'layersEditor.layerNode.moreParams': '+{count} 更多',
+  'layersEditor.hint.dilation': '卷積核取樣點之間的間距。1 是一般卷積。',
+  'layersEditor.hint.groups': '設成與 in_channels（以及 out_channels）相同，就是 depthwise 卷積。',
+  'layersEditor.hint.bias': '後面接 BatchNorm 時可以關掉，BatchNorm 有自己的平移項。',
+  'layersEditor.hint.negativeSlope': '輸入為負時，輸出是輸入乘上這個值。',
+  'layersEditor.hint.softmaxDim': '加總為 1 的維度。-1 表示最後一維。',
+  'layersEditor.hint.dropout2d': '訓練時把 (N, C, H, W) 張量的整個通道歸零。',
 
   // Tooltips
   'toolbar.tooltips.on': '提示 ON',

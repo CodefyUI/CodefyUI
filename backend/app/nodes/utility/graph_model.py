@@ -36,9 +36,13 @@ class GraphModelModule(nn.Module):
         input_ports: list[tuple[str, str]],
         output_ports: list[tuple[str, str]],
         output_incoming: list[tuple[str, str | None, str | None]],
+        layer_types: dict[str, str] | None = None,
     ):
         super().__init__()
         self.layers = nn.ModuleDict(layers)
+        # The spec's type name per layer id, for error messages. A wrapper
+        # such as LSTMBlock reads better as the "LSTM" the user picked.
+        self.layer_types = dict(layer_types or {})
         self.merge_specs = merge_specs
         self.topo_order = topo_order
         self.incoming = incoming
@@ -91,15 +95,57 @@ class GraphModelModule(nn.Module):
 
             if node_id in self.merge_specs:
                 spec = self.merge_specs[node_id]
-                values[(node_id, None)] = _apply_merge(spec["type"], inputs, spec.get("params", {}))
+                try:
+                    values[(node_id, None)] = _apply_merge(spec["type"], inputs, spec.get("params", {}))
+                except Exception as exc:
+                    _raise_naming_the_layer(exc, node_id, spec["type"], "")
             else:
                 if len(inputs) != 1:
                     raise ValueError(f"Plain layer '{node_id}' expects 1 input, got {len(inputs)}")
-                values[(node_id, None)] = self.layers[node_id](inputs[0])
+                layer = self.layers[node_id]
+                try:
+                    values[(node_id, None)] = layer(inputs[0])
+                except Exception as exc:
+                    _raise_naming_the_layer(
+                        exc, node_id,
+                        # getattr: a model pickled before #703 has no table.
+                        getattr(self, "layer_types", {}).get(node_id, type(layer).__name__),
+                        layer.extra_repr(),
+                    )
 
         if len(self.output_ports) == 1:
             return outputs[self.output_ports[0][1]]
         return outputs
+
+
+def _raise_naming_the_layer(exc: Exception, node_id: str, layer_type: str, detail: str) -> None:
+    """Re-raise *exc* worded to say which layer raised it (#703).
+
+    torch's own message names the operation (``linear(): input and
+    weight.T shapes cannot be multiplied``) but not the layer, which in a
+    29-layer graph leaves the user guessing. The prefix carries the layer's
+    id and type plus its ``extra_repr()`` -- the constructor arguments --
+    so the mismatching ``in_features`` is on screen next to the shapes.
+    The original exception stays attached as ``__cause__``.
+
+    The exception keeps its class where the class can be rebuilt from a
+    message, so anything that catches ``ValueError`` or ``RuntimeError``
+    still does. An out-of-memory error is re-raised unchanged: the engine
+    recognises it by type and message and gives it hints of its own.
+    """
+    from ...core.error_handling import is_out_of_memory
+
+    if is_out_of_memory(exc):
+        raise exc
+    what = f"{layer_type}, {detail}" if detail else layer_type
+    message = f'layer "{node_id}" ({what}): {exc}'
+    try:
+        renamed = type(exc)(message)
+    except Exception:  # noqa: BLE001 - a class that needs other args
+        renamed = RuntimeError(message)
+    if str(renamed) != message:
+        renamed = RuntimeError(message)
+    raise renamed from exc
 
 
 def _apply_merge(merge_type: str, inputs: list[torch.Tensor], params: dict[str, Any]) -> torch.Tensor:
@@ -255,5 +301,6 @@ def build_graph_model(spec: dict[str, Any]) -> GraphModelModule:
         input_ports=input_ports,
         output_ports=output_ports,
         output_incoming=incoming[output_node["id"]],
+        layer_types={nid: nodes_by_id[nid]["type"] for nid in layers},
     )
     return model
