@@ -81,6 +81,32 @@ def test_relative_path_prefers_images_dir(tmp_path, monkeypatch):
     assert res["tensor"].shape == (3, 4, 8)
 
 
+def test_exported_script_prefers_the_file_beside_it(tmp_path, monkeypatch):
+    """In an exported script a file in the working directory beats an upload
+    of the same name: a grader copies each testcase's image beside the script,
+    and an old upload on that machine must not answer for every testcase."""
+    from app.config import settings
+
+    upload_store = tmp_path / "images"
+    upload_store.mkdir()
+    Image.new("RGB", (8, 4), (1, 2, 3)).save(upload_store / "shared.png")
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    Image.new("RGB", (64, 32), (9, 9, 9)).save(workdir / "shared.png")
+
+    monkeypatch.setattr(settings, "IMAGES_DIR", upload_store)
+    monkeypatch.setattr(settings, "PREFER_WORKING_DIR", True)
+    monkeypatch.chdir(workdir)
+    res = ImageReaderNode().execute({}, {"path": "shared.png", "mode": "RGB", "resize": 0})
+    assert res["tensor"].shape == (3, 32, 64)
+
+    # Not beside the script: the upload store still answers.
+    (workdir / "shared.png").unlink()
+    res = ImageReaderNode().execute({}, {"path": "shared.png", "mode": "RGB", "resize": 0})
+    assert res["tensor"].shape == (3, 4, 8)
+
+
 def test_relative_path_falls_back_to_cwd(tmp_path, monkeypatch):
     """Not in the upload store -> read it relative to the working directory.
 

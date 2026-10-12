@@ -130,6 +130,7 @@ class CSVReaderNode(BaseNode):
         path that escapes the project directory, exactly as execute() does.
         """
         from ...config import settings
+        from ...core.data_paths import working_dir_file
 
         path = Path(path_str)
         # A bare filename is what the DATA_FILE upload dropdown produces —
@@ -141,6 +142,8 @@ class CSVReaderNode(BaseNode):
         # calls this too, so an uploaded file gets fingerprinted by its real
         # contents instead of silently falling back to None.
         if not path.is_absolute() and path.parent == Path("."):
+            if (local := working_dir_file(path)) is not None:
+                return local
             candidate = settings.DATA_FILES_DIR / path.name
             if candidate.is_file():
                 return candidate

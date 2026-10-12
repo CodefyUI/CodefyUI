@@ -61,10 +61,13 @@ class ImageReaderNode(BaseNode):
         from pathlib import Path
 
         from ...config import settings
+        from ...core.data_paths import working_dir_file
 
         p = Path(path)
         if p.is_absolute():
             return p
+        if (local := working_dir_file(p)) is not None:
+            return local
         # The uploaded-files dropdown writes a bare filename, so the upload
         # store goes first and a graph built from it resolves exactly as it
         # always did. `is_file()`, not `exists()`, so a directory of that name

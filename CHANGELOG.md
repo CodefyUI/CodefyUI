@@ -96,6 +96,12 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **An exported script reads the files beside it before same-named
+  uploads.** CSVReader, ImageReader, DocumentLoader and TextCorpusDataset
+  looked up a bare file name in the upload store first, so on a machine that
+  had once uploaded `CF2DINPUT.png` an exported script read that upload for
+  every testcase a grader copied beside it. In an exported script a file in
+  the working directory now wins; the editor resolves names as before.
 - **A CausalLMModel smaller than its tokenizer stops with an error naming both
   sizes** ([#681]). TrainingLoop, PerplexityEvaluate and TextGenerate compare
   the model's `vocab_size` with the tokenizer's before the first batch, for

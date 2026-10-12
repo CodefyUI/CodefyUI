@@ -133,6 +133,19 @@ def is_protected(path: Path) -> bool:
     return any(path.is_relative_to(reserved) for reserved in protected_paths())
 
 
+def working_dir_file(path: Path) -> Path | None:
+    """*path* when an exported script should read it from the working directory.
+
+    Only while ``settings.PREFER_WORKING_DIR`` is on (an exported script), and
+    only for a relative *path* that names a file there. The readers ask this
+    before their upload store, so a testcase file beside the script wins over
+    an upload of the same name. ``None`` leaves the usual resolution alone.
+    """
+    if not settings.PREFER_WORKING_DIR or path.is_absolute():
+        return None
+    return path if (Path.cwd() / path).is_file() else None
+
+
 def resolve_data_path(path: str | Path, *, base: Path) -> Path:
     """Absolute, validated destination for a node's file write.
 
