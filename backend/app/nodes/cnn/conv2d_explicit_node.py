@@ -195,7 +195,8 @@ class Conv2dExplicitNode(BaseNode):
         weight = weight.expand(c_in, 1, k, k).contiguous()
 
         stride = max(1, int(params.get("stride", 1) or 1))
-        padding = max(0, int(params.get("padding", 1) or 0))
+        padding = params.get("padding")
+        padding = max(0, int(1 if padding is None else padding))
 
         output = F.conv2d(
             tensor,

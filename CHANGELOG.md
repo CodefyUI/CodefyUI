@@ -96,6 +96,18 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **PPOClipObjective checks its log-probs before using them.** One
+  `log_probs_new` against eight `log_probs_old` broadcast into eight wrong
+  ratios; it is refused now, naming both shapes. Lists are accepted and the
+  result stays float32.
+- **GroupRelativeAdvantage groups by id value.** Ids `0` and `0.5` were cut
+  to the same integer and merged into one group.
+- **Permute reads `dims` the way people write them.** `"(1, 0)"`, `"[1,0]"`
+  and `"1 0"` work, and a count that does not match the tensor says how many
+  dims it has instead of torch's `permute(sparse_coo)` message.
+- **MatMul says which shapes do not fit.** The error names both inputs and
+  the two dims that must agree.
+- **Conv2dExplicit treats an unset `padding` as its default of 1**, not 0.
 - **A label column picked with ColumnSelector scores.** Its `[N, 1]` shape
   went through TrainTestSplit as one-element lists, and a float label column
   printed as `1.0` against CSVReader's `1`; either way Accuracy read 0 with

@@ -59,3 +59,8 @@ def test_output_shape_for_attention_style():
     k_t = torch.randn(2, 4, 16, 8)
     res = _run(q, k_t)
     assert res["tensor"].shape == (2, 4, 8, 8)
+
+
+def test_a_shape_mismatch_names_both_shapes():
+    with pytest.raises(RuntimeError, match=r"\(5, 4\).*\(3, 4\)"):
+        _run(torch.zeros(5, 4), torch.zeros(3, 4))

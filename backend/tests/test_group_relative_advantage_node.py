@@ -147,3 +147,8 @@ def test_expanded_advantages_still_sum_to_zero_when_groups_are_balanced():
     """Equal-length episodes keep the zero-sum property after broadcasting."""
     out = _run([0.0, 1.0], expand_index=[0, 0, 1, 1])
     assert float(out["advantages_expanded"].sum()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_ids_that_share_an_integer_part_are_separate_groups():
+    out = _run([1.0, 2.0, 10.0, 20.0], group_ids=[0.0, 0.0, 0.5, 0.5])
+    assert out["advantages"].tolist() == pytest.approx([-0.5, 0.5, -5.0, 5.0])

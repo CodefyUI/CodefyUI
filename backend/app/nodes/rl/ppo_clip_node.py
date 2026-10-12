@@ -135,8 +135,16 @@ class PPOClipObjectiveNode(BaseNode):
                     "PPOClipObjective: give either `ratio`, or both `log_probs_new` and "
                     "`log_probs_old` so the ratio can be computed as exp(new - old)."
                 )
-            lp_new = lp_new.flatten()
-            lp_old = lp_old.flatten().to(lp_new.device)
+            lp_new = torch.as_tensor(lp_new).float().flatten()
+            lp_old = torch.as_tensor(lp_old).float().flatten().to(lp_new.device)
+            if lp_new.shape != lp_old.shape:
+                # Checked before the subtraction, which would broadcast a
+                # single value against every sample without complaint.
+                raise ValueError(
+                    f"PPOClipObjective: log_probs_new has shape {tuple(lp_new.shape)} "
+                    f"but log_probs_old has {tuple(lp_old.shape)} -- one log-prob "
+                    f"per sample in each."
+                )
             ratio = torch.exp(lp_new - lp_old)
         else:
             if not isinstance(ratio, torch.Tensor):

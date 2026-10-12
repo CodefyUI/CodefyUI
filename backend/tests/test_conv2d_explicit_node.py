@@ -292,3 +292,9 @@ def test_rejects_3d_input_with_helpful_message():
 def test_rejects_non_tensor_input():
     with pytest.raises(ValueError, match=r"must be a torch.Tensor"):
         _run([[1, 2], [3, 4]], preset="EdgeDetection3x3")
+
+
+def test_padding_left_unset_means_the_default_of_one():
+    out = Conv2dExplicitNode().execute(
+        {"tensor": torch.zeros(1, 1, 4, 4)}, {"preset": "Sharpen3x3", "padding": None})
+    assert out["tensor"].shape[-2:] == (4, 4)
