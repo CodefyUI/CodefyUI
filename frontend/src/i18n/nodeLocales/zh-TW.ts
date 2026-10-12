@@ -1227,7 +1227,8 @@ const zhTW: NodeTranslations = {
     description: '把張量的每個元素乘上一個常數',
   },
   TensorStats: {
-    description: '張量的形狀、最小、最大、平均、總和與標準差，各自輸出並印進 Log；張量本身原樣傳出',
+    description: '張量的形狀、最小、最大、平均、總和與標準差',
+    details: '每項統計各有輸出埠，report 也會印進執行 Log；張量本身原樣傳出，可直接插在任何連線上。std 是母體標準差（除以 N）；整數與布林輸入先轉成 float32。precision 只影響 report 文字。',
     params: {
       precision: 'report 文字的小數位數（純量埠不四捨五入）',
     },

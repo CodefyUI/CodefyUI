@@ -31,9 +31,10 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 class TensorStatsNode(BaseNode):
     NODE_NAME = "TensorStats"
     CATEGORY = "Tensor Operations"
-    DESCRIPTION = "Shape, min, max, mean, sum and std of a tensor, on ports and in the log"
+    DESCRIPTION = "Shape, min, max, mean, sum and std of a tensor"
     DETAILS = (
-        "The input passes through unchanged, so the node can be dropped onto "
+        "Each statistic has its own port, and `report` also goes to the "
+        "Execution Log. The input passes through unchanged, so the node can be dropped onto "
         "any edge. Statistics cover the whole tensor; integer and boolean "
         "input is promoted to float32 first. `std` is the population value "
         "(divides by N, not N-1). `precision` only affects the text in `report`; "
