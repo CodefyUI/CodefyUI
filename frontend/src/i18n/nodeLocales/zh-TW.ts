@@ -2015,13 +2015,14 @@ const zhTW: NodeTranslations = {
     details:
       '列是真實類別、欄是預測類別，與 sklearn 的 confusion_matrix 一致。normalize 可除以真實列（對角線即 ' +
       'recall）、預測欄（precision）或總數，0/0 一律當 0。兩個輸入都接受標籤列表、1D 類別索引張量，或取每列 argmax ' +
-      '的 2D 分數矩陣。',
+      '的 2D 分數矩陣。accuracy 計入所有樣本，包含不在 class_names 裡的類別。',
   },
   'stats:Stats-Correlation': {
     description: 'Pearson 或 Spearman 相關矩陣',
     details:
       'drop_nan 開啟時（同 pandas 預設），每一對只取兩欄都有值的列，一個缺值不會縮短其他配對；關閉則讓 NaN 傳播。' +
-      'Spearman 是對平均排名做 Pearson，同分共用排名。熱圖固定在 -1..1，不隨資料伸縮；常數欄的結果是 NaN。',
+      'Spearman 是對平均排名做 Pearson，同分共用排名。熱圖固定在 -1..1，不隨資料伸縮；常數欄的結果是 NaN。' +
+      '與 pandas 相同，開啟 drop_nan 時 ±Inf 也會和 NaN 一起排除。',
   },
   'stats:Stats-Describe': {
     description: '每欄的筆數、平均、標準差、最小值、百分位數與最大值',
@@ -2035,14 +2036,14 @@ const zhTW: NodeTranslations = {
     details:
       '分組可接每列一個標籤的 keys（例如 CSVReader 的 labels），或用 group_by 指定表格自己的欄位；兩者都有時以 ' +
       'group_by 為準，被分組的欄位不再參與彙總。agg_overrides 以 column=agg 指定個別例外。NaN 照 ' +
-      'pandas 跳過，count 算有值的筆數，每組列數看 counts 輸出。',
+      'pandas 跳過，count 算有值的筆數，每組列數看 counts 輸出。分組鍵缺值的列不屬於任何組，筆數會寫在記錄中。',
   },
   'stats:Stats-Histogram': {
     description: '把張量分箱計數，另輸出長條圖',
     details:
       '每列是 bin_start、bin_end 與 count；開啟 density 時第三欄改成機率密度，樣本數不同的分布才能互相比較。' +
       'range_mode 設為 manual 可固定分箱範圍，讓連續幾次執行對得起來。非有限值（NaN、±Inf）在分箱前剔除，數量從 ' +
-      'dropped 輸出。',
+      'dropped 輸出；超出手動範圍的值不列入計數，圖表與記錄會註明筆數。',
   },
   'stats:Stats-Percentile': {
     description: '任意組百分位數，可取整個張量、逐欄或逐列',

@@ -252,7 +252,10 @@ class StatsChartViewNode(BaseNode):
             # Without them the row index is a continuous axis, so: a line.
             kind = "bar" if row_labels else "line"
 
-        labels = list(row_labels) or [str(i) for i in range(table.shape[0])]
+        # A short row_labels list must not drop rows from the chart: the
+        # unlabelled rows take their index, as Stats-TableView prints them.
+        labels = list(row_labels[: table.shape[0]])
+        labels.extend(str(i) for i in range(len(labels), table.shape[0]))
 
         if kind == "heatmap":
             return heatmap_chart(

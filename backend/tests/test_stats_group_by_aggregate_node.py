@@ -221,3 +221,51 @@ def test_output_feeds_straight_into_a_table_view_contract():
     assert result["table"].shape == (2, 2)
     assert len(result["columns"]) == result["table"].shape[1]
     assert len(result["row_labels"]) == result["table"].shape[0]
+
+
+# ── missing and numeric keys (2026-10-13 audit) ──────────────────────────────
+
+def test_nan_group_keys_are_dropped_as_in_pandas():
+    """NaN != NaN, so each NaN key used to open its own group and scramble the order."""
+    k = [2.0, math.nan, 1.0, math.nan, 1.0]
+    v = [1.0, 2.0, 3.0, 5.0, 7.0]
+    table = torch.tensor([k, v], dtype=torch.float64).T
+    result = _run(table, {"group_by": "k", "agg": "sum"}, columns=["k", "v"])
+
+    expected = pd.DataFrame({"k": k, "v": v}).groupby("k")["v"].sum()
+    assert result["row_labels"] == ["1", "2"]
+    assert result["table"].numpy()[:, 0].tolist() == pytest.approx(expected.tolist())
+    assert result["counts"].numpy().tolist() == [2.0, 1.0]
+    assert "2 of 5 row(s) have a missing group key" in result["__log__"]
+
+
+def test_missing_entries_in_the_keys_list_are_dropped():
+    table = torch.tensor([[1.0], [2.0], [4.0]])
+    result = _run(table, {"agg": "sum"}, keys=["a", None, "a"])
+    assert result["row_labels"] == ["a"]
+    assert result["table"].numpy().tolist() == [[5.0]]
+    assert "1 of 3 row(s)" in result["__log__"]
+
+
+def test_no_log_line_when_every_key_is_present():
+    result = _run(torch.tensor([[1.0], [2.0]]), keys=["a", "b"])
+    assert "__log__" not in result
+
+
+def test_numeric_keys_list_sorts_numerically_not_as_text():
+    table = torch.tensor([[1.0], [2.0], [3.0]])
+    result = _run(table, {"agg": "sum"}, keys=["10", "2", "2"])
+    assert result["row_labels"] == ["2", "10"]
+    assert result["table"].numpy().tolist() == [[5.0], [1.0]]
+
+
+def test_distinct_numeric_keys_get_distinct_labels():
+    """`{v:g}` printed 1234567 and 1234568 both as 1.23457e+06."""
+    table = torch.tensor(
+        [[1234567.0, 1.0], [1234568.0, 2.0], [0.1234567, 3.0], [0.1234568, 4.0]],
+        dtype=torch.float64,
+    )
+    labels = _run(table, {"group_by": "0"})["row_labels"]
+    assert labels[2:] == ["1234567", "1234568"]
+    assert len(set(labels)) == 4
+    assert labels[0] != labels[1]

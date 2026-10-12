@@ -25,10 +25,12 @@ the same class.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
 
+from app.core.advisories import emit_advisory
 from app.core.node_base import (
     MEDIA_CHART,
     BaseNode,
@@ -41,6 +43,11 @@ from app.core.node_base import (
 from ._stats_core import add_note, as_labels, heatmap_chart, parse_names, to_tensor
 
 _NORMALIZE = ("none", "true", "pred", "all")
+
+logger = logging.getLogger(__name__)
+
+CONFUSION_NOTE_PREFIX = "[Stats-ConfusionMatrix] "
+ENCODING_WARNING_KIND = "stats_label_encoding_mismatch"
 
 
 def _sorted_classes(labels: list[str]) -> list[str]:
@@ -65,7 +72,8 @@ class StatsConfusionMatrixNode(BaseNode):
         "`confusion_matrix`. `normalize` divides by the true row (recall on the "
         "diagonal), the predicted column (precision) or the grand total, with 0/0 "
         "resolved to 0. Each input takes a label list, a 1D tensor of class "
-        "indices, or a 2D score matrix whose row argmax is used."
+        "indices, or a 2D score matrix whose row argmax is used. `accuracy` counts "
+        "every sample, including those outside `class_names`."
     )
 
     @classmethod
@@ -107,7 +115,10 @@ class StatsConfusionMatrixNode(BaseNode):
             PortDefinition(
                 name="accuracy",
                 data_type=DataType.SCALAR,
-                description="Fraction of samples on the diagonal, from the raw counts.",
+                description=(
+                    "Fraction of all samples predicted correctly, as sklearn's "
+                    "accuracy_score; class_names does not change it."
+                ),
             ),
             PortDefinition(
                 name="chart",
@@ -197,7 +208,12 @@ class StatsConfusionMatrixNode(BaseNode):
             counts[row, col] += 1.0
 
         total = float(counts.sum())
-        accuracy = float(np.trace(counts) / total) if total else 0.0
+        # Over every aligned sample, as sklearn's accuracy_score: a sample
+        # left out of the matrix by class_names is still right or wrong.
+        # Dividing the trace by the matrix total would drop it from the
+        # denominator and report 1.0 where 0.5 is the answer.
+        correct = sum(1 for actual, predicted in zip(truth, predictions) if actual == predicted)
+        accuracy = float(correct / len(truth)) if truth else 0.0
 
         matrix = counts
         if normalize == "true":
@@ -227,13 +243,50 @@ class StatsConfusionMatrixNode(BaseNode):
                 f"{ignored} sample(s) ignored — their class is not in class_names",
             )
 
-        return {
+        result: dict[str, Any] = {
             "matrix": to_tensor(matrix),
             "columns": list(classes),
             "row_labels": list(classes),
             "accuracy": accuracy,
             "chart": chart,
         }
+        mismatch = _encoding_mismatch(truth, predictions)
+        if mismatch:
+            add_note(chart, "labels and predictions share no class")
+            result["__log__"] = emit_advisory(
+                mismatch,
+                kind=ENCODING_WARNING_KIND,
+                prefix=CONFUSION_NOTE_PREFIX,
+                context=context,
+                logger=logger,
+            )
+        return result
+
+
+def _preview(labels: list[str]) -> str:
+    shown = _sorted_classes(labels)
+    text = ", ".join(shown[:4])
+    return f"{text}, ..." if len(shown) > 4 else text
+
+
+def _encoding_mismatch(truth: list[str], predictions: list[str]) -> str | None:
+    """A sentence when the two inputs cannot be the same label encoding.
+
+    Class indices from an argmax against CSVReader's class names, booleans
+    against 0/1, or probabilities against 0/1 all share no label at all,
+    which gives a matrix with an empty diagonal and an accuracy of 0. That
+    is almost always a wiring mistake, so the node names both label sets.
+    """
+    if not truth or not predictions:
+        return None
+    if set(truth) & set(predictions):
+        return None
+    return (
+        f"`labels` ({_preview(truth)}) and `predictions` ({_preview(predictions)}) "
+        "share no class, so every sample counts as wrong. Use the same encoding on "
+        "both inputs: class names on both, or class indices on both (argmax or "
+        "threshold scores first)."
+    )
 
 
 def _divide(counts: np.ndarray, denominator: np.ndarray) -> np.ndarray:

@@ -111,12 +111,18 @@ class StatsTableViewNode(BaseNode):
             [str(r) for r in raw_rows] if isinstance(raw_rows, (list, tuple)) else []
         )
 
+        precision = int_param(params, "precision", 4, node=self.NODE_NAME)
+        if not 0 <= precision <= 12:
+            raise ValueError(
+                f"{self.NODE_NAME}: `precision` must be 0-12 decimal places; "
+                f"got {precision}."
+            )
         rendered = format_text_table(
             table,
             names,
             row_labels,
             max_rows=int_param(params, "max_rows", 20, node=self.NODE_NAME),
-            precision=int_param(params, "precision", 4, node=self.NODE_NAME),
+            precision=precision,
         )
         title = str(params.get("title", "") or "").strip()
         text = f"{title}\n{rendered}" if title else rendered

@@ -13,10 +13,12 @@ number is the difference between a quiet lie and a fact the reader can check.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
 
+from app.core.advisories import emit_advisory
 from app.core.node_base import (
     MEDIA_CHART,
     BaseNode,
@@ -30,12 +32,19 @@ from ._stats_core import (
     add_note,
     as_vector,
     bar_chart,
+    bool_param,
+    distinct_number_labels,
     float_param,
     int_param,
     to_tensor,
 )
 
 _RANGE_MODES = ("auto", "manual")
+
+logger = logging.getLogger(__name__)
+
+HISTOGRAM_NOTE_PREFIX = "[Stats-Histogram] "
+OUT_OF_RANGE_WARNING_KIND = "stats_histogram_out_of_range"
 
 
 class StatsHistogramNode(BaseNode):
@@ -46,7 +55,9 @@ class StatsHistogramNode(BaseNode):
         "Each row is bin_start, bin_end and count — or a density when `density` is "
         "set, so histograms of different sample sizes are comparable. `range_mode` "
         "set to manual pins the edges so successive runs line up. Non-finite "
-        "values are dropped before binning and counted on the `dropped` output."
+        "values are dropped before binning and counted on the `dropped` output; "
+        "values outside a manual range are not counted, and the chart and log "
+        "say how many."
     )
 
     @classmethod
@@ -158,7 +169,7 @@ class StatsHistogramNode(BaseNode):
         if bins < 1:
             raise ValueError(f"{self.NODE_NAME}: `bins` must be at least 1; got {bins}.")
 
-        density = bool(params.get("density", False))
+        density = bool_param(params, "density", False, node=self.NODE_NAME)
         mode = str(params.get("range_mode", "auto") or "auto")
         if mode not in _RANGE_MODES:
             raise ValueError(
@@ -190,11 +201,24 @@ class StatsHistogramNode(BaseNode):
                 finite, bins=bins, range=span, density=density
             )
 
+        # np.histogram silently leaves out values outside a given range.
+        outside = 0
+        if span is not None and finite.size:
+            outside = int(((finite < span[0]) | (finite > span[1])).sum())
+
         value_name = "density" if density else "count"
         table = np.stack(
             [edges[:-1], edges[1:], counts.astype(np.float64)], axis=1
         )
-        labels = [f"[{edges[i]:g}, {edges[i + 1]:g})" for i in range(len(counts))]
+        # Bins are half-open except the last, which numpy closes so the
+        # range's upper edge is counted. Edge text gains digits until
+        # neighbouring edges read differently (1000.0001 vs 1000.0002).
+        edge_text = distinct_number_labels(edges)
+        labels = [
+            f"[{edge_text[i]}, {edge_text[i + 1]}"
+            + ("]" if i == len(counts) - 1 else ")")
+            for i in range(len(counts))
+        ]
 
         chart = bar_chart(
             labels,
@@ -209,10 +233,25 @@ class StatsHistogramNode(BaseNode):
             # truncation the cap exists to disclose.
             add_note(chart, f"{dropped} non-finite value(s) excluded")
 
-        return {
+        result: dict[str, Any] = {
             "table": to_tensor(table),
             "columns": ["bin_start", "bin_end", value_name],
             "row_labels": labels,
             "chart": chart,
             "dropped": dropped,
         }
+        if outside:
+            text = (
+                f"{outside} of {values.size} value(s) outside the manual range "
+                f"[{edge_text[0]}, {edge_text[-1]}] are not counted"
+            )
+            add_note(chart, text)
+            result["__log__"] = emit_advisory(
+                f"{text}; widen range_min/range_max or use range_mode=auto to "
+                "include them.",
+                kind=OUT_OF_RANGE_WARNING_KIND,
+                prefix=HISTOGRAM_NOTE_PREFIX,
+                context=context,
+                logger=logger,
+            )
+        return result

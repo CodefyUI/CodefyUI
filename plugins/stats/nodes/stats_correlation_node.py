@@ -5,7 +5,9 @@ Matches ``pandas.DataFrame.corr`` on both counts:
 * **Pairwise NaN handling.** With ``drop_nan`` on (the default, and pandas'
   default) each cell is computed from the rows where *both* of its columns are
   present, so one hole in column C does not shrink the A-B correlation. Turn it
-  off to let NaN propagate the way ``numpy.corrcoef`` does.
+  off to let NaN propagate the way ``numpy.corrcoef`` does. Like pandas'
+  ``nancorr``, the pairwise mask also leaves out ±Inf, so one infinite cell
+  does not turn its whole column NaN; the chart says how many were left out.
 * **Spearman is Pearson on ranks**, with tied values sharing their average
   rank — the same definition ``scipy.stats.rankdata(method="average")`` uses.
 
@@ -29,7 +31,14 @@ from app.core.node_base import (
     PortDefinition,
 )
 
-from ._stats_core import as_matrix, heatmap_chart, resolve_columns, to_tensor
+from ._stats_core import (
+    add_note,
+    as_matrix,
+    bool_param,
+    heatmap_chart,
+    resolve_columns,
+    to_tensor,
+)
 
 _METHODS = ("pearson", "spearman")
 
@@ -85,7 +94,8 @@ class StatsCorrelationNode(BaseNode):
         "columns are present, so one gap does not shrink every other pair; off, "
         "NaN propagates. Spearman is Pearson on average ranks, with ties sharing a "
         "rank. The heatmap is pinned to -1..1 rather than the data's own range, "
-        "and a constant column comes back NaN."
+        "and a constant column comes back NaN. As in pandas, ±Inf is left out "
+        "with the NaN when `drop_nan` is on."
     )
 
     @classmethod
@@ -177,11 +187,12 @@ class StatsCorrelationNode(BaseNode):
                 f"{self.NODE_NAME}: unknown method {method!r}; "
                 f"expected one of {list(_METHODS)}."
             )
-        drop_nan = bool(params.get("drop_nan", True))
+        drop_nan = bool_param(params, "drop_nan", True, node=self.NODE_NAME)
 
         n_cols = table.shape[1]
         matrix = np.full((n_cols, n_cols), float("nan"), dtype=np.float64)
-        missing = np.isnan(table)
+        # pandas' nancorr masks every non-finite value, Inf included.
+        missing = ~np.isfinite(table)
 
         for i in range(n_cols):
             for j in range(i, n_cols):
@@ -214,6 +225,12 @@ class StatsCorrelationNode(BaseNode):
             vmin=-1.0,
             vmax=1.0,
         )
+        infinite = int(np.isinf(table).sum())
+        if drop_nan and infinite:
+            add_note(
+                chart,
+                f"{infinite} infinite value(s) left out pairwise, as pandas does",
+            )
 
         return {
             "matrix": to_tensor(matrix),
