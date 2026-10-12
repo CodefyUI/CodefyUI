@@ -143,7 +143,9 @@ class GroupRelativeAdvantageNode(BaseNode):
         else:
             if not isinstance(ids, torch.Tensor):
                 ids = torch.as_tensor(ids)
-            ids = ids.flatten().long().to(rewards.device)
+            # Grouped by value, not by .long(): ids 0 and 0.5 are two groups.
+            _, ids = torch.unique(ids.flatten(), return_inverse=True)
+            ids = ids.to(rewards.device)
             if ids.shape[0] != rewards.shape[0]:
                 raise ValueError(
                     f"GroupRelativeAdvantage: group_ids has {ids.shape[0]} entries but rewards "

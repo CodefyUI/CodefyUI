@@ -89,6 +89,7 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
     say which field to fix.
     """
     from ...config import settings
+    from ...core.data_paths import working_dir_file
 
     path = Path(path_str)
     if path.is_absolute():
@@ -98,6 +99,8 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
     # every file anyone ever uploaded and ``".."`` reads the folder above
     # the uploads directory -- both BEFORE the project guard below.
     if path.parent == Path(".") and path.name not in ("", ".", ".."):
+        if kind != "directory" and (local := working_dir_file(path)) is not None:
+            return local
         candidate = settings.DATA_FILES_DIR / path.name
         # Matched by kind rather than by mere existence: a bare name is the
         # dropdown's answer only when what sits there is the shape the param

@@ -45,3 +45,18 @@ def test_full_reverse_4d():
     x = torch.randn(2, 3, 4, 5)
     res = _run(x, dims="3,2,1,0")
     assert res["tensor"].shape == (5, 4, 3, 2)
+
+
+def test_dims_accept_the_ways_people_write_them():
+    x = torch.arange(6.0).reshape(2, 3)
+    for dims in ("1,0", "1, 0", "(1, 0)", "[1,0]", "1 0", "1,0,"):
+        assert _run(x, dims=dims)["tensor"].shape == (3, 2), dims
+
+
+def test_dims_that_do_not_match_the_tensor_say_so():
+    import pytest
+
+    with pytest.raises(ValueError, match="has 2 dims"):
+        _run(torch.zeros(2, 3), dims="0,2,1")
+    with pytest.raises(ValueError, match="integers"):
+        _run(torch.zeros(2, 3), dims="a,b")

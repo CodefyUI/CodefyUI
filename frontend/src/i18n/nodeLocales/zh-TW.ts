@@ -1226,6 +1226,27 @@ const zhTW: NodeTranslations = {
   ScalarMultiply: {
     description: '把張量的每個元素乘上一個常數',
   },
+  TensorStats: {
+    description: '張量的形狀、最小、最大、平均、總和與標準差',
+    details: '每項統計各有輸出埠，report 也會印進執行 Log；張量本身原樣傳出，可直接插在任何連線上。std 是母體標準差（除以 N）；整數與布林輸入先轉成 float32。precision 只影響 report 文字。',
+    params: {
+      precision: 'report 文字的小數位數（純量埠不四捨五入）',
+    },
+    inputs: {
+      tensor: '要統計的張量',
+    },
+    outputs: {
+      tensor: '輸入張量，原樣傳出',
+      shape: '形狀文字，例如 (1, 2, 48, 48)',
+      numel: '元素個數',
+      min: '最小元素',
+      max: '最大元素',
+      mean: '所有元素的平均',
+      sum: '所有元素的總和',
+      std: '母體標準差（除以 N）',
+      report: '以上全部合成一段文字',
+    },
+  },
 
   // ── Utility ──
   Print: {

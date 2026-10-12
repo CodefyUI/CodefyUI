@@ -125,3 +125,17 @@ def test_mismatched_lengths_are_rejected():
 def test_negative_epsilon_is_rejected():
     with pytest.raises(ValueError, match="epsilon"):
         _run(advantages=[1.0], ratio=[1.0], epsilon=-0.1)
+
+
+def test_log_probs_of_different_lengths_are_refused():
+    """exp(new - old) would broadcast one value against every sample."""
+    with pytest.raises(ValueError, match="log_probs_new has shape"):
+        _run([1.0, -1.0, 0.5], log_probs_new=[0.1], log_probs_old=[0.0, 0.2, 0.3])
+
+
+def test_log_probs_as_lists_stay_float32():
+    out = PPOClipObjectiveNode().execute(
+        {"advantages": torch.tensor([1.0, -1.0]),
+         "log_probs_new": [0.1, 0.2], "log_probs_old": [0.0, 0.0]},
+        {"epsilon": 0.2})
+    assert out["objective"].dtype == torch.float32

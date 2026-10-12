@@ -24,6 +24,15 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **`TensorStats`: shape, min, max, mean, sum and std of a tensor.** Each
+  statistic has its own port, and a one-block `report` also goes to the
+  Execution Log, so the numbers appear on Run with nothing else wired in. The
+  tensor passes through unchanged, so the node can sit on any edge. A problem
+  statement can quote "TensorStats after MaxPool2d shows mean=0.076823" as the
+  check, and the scalar ports let a judge compare a signature without the full
+  tensor. `precision` formats only the report; `std` is the population value;
+  integer and boolean input is promoted to float32; an empty tensor is refused
+  with its shape in the message.
 - **File menu: Open... and Import...** ([#689]). **Open...** shows the Graphs
   panel with the saved graphs, opening the sidebar if it is collapsed.
   **Import...** is the Graphs panel's Import button: it takes a graph (.json)
@@ -87,6 +96,37 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **PPOClipObjective checks its log-probs before using them.** One
+  `log_probs_new` against eight `log_probs_old` broadcast into eight wrong
+  ratios; it is refused now, naming both shapes. Lists are accepted and the
+  result stays float32.
+- **GroupRelativeAdvantage groups by id value.** Ids `0` and `0.5` were cut
+  to the same integer and merged into one group.
+- **Permute reads `dims` the way people write them.** `"(1, 0)"`, `"[1,0]"`
+  and `"1 0"` work, and a count that does not match the tensor says how many
+  dims it has instead of torch's `permute(sparse_coo)` message.
+- **MatMul says which shapes do not fit.** The error names both inputs and
+  the two dims that must agree.
+- **Conv2dExplicit treats an unset `padding` as its default of 1**, not 0.
+- **A label column picked with ColumnSelector scores.** Its `[N, 1]` shape
+  went through TrainTestSplit as one-element lists, and a float label column
+  printed as `1.0` against CSVReader's `1`; either way Accuracy read 0 with
+  no error. TrainTestSplit, the classifiers and Accuracy now take one label
+  per row and compare integer classes as integers, and Accuracy refuses a
+  probabilities tensor wired in as predictions, naming its shape.
+- **ColumnSelector refuses a `columns` list that describes another tensor.**
+  The CSV's column names wired to an already-selected tensor picked the
+  wrong column by index, with no error.
+- **CSVReader strips header names and keeps the target out of the features.**
+  A header written `a, b ,y` named a column `" b "` that no typed name could
+  match. A target listed in `include_columns` became a feature too, so any
+  classifier on top scored near 1.0; that is refused now.
+- **An exported script reads the files beside it before same-named
+  uploads.** CSVReader, ImageReader, DocumentLoader and TextCorpusDataset
+  looked up a bare file name in the upload store first, so on a machine that
+  had once uploaded `CF2DINPUT.png` an exported script read that upload for
+  every testcase a grader copied beside it. In an exported script a file in
+  the working directory now wins; the editor resolves names as before.
 - **A CausalLMModel smaller than its tokenizer stops with an error naming both
   sizes** ([#681]). TrainingLoop, PerplexityEvaluate and TextGenerate compare
   the model's `vocab_size` with the tokenizer's before the first batch, for

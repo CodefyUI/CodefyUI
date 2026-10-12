@@ -158,6 +158,15 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def _export_runtime_flag_does_not_leak(monkeypatch):
+    """``initialize_export_runtime`` turns on ``PREFER_WORKING_DIR`` for the
+    rest of the process, which is right for an exported script and wrong for
+    the next test; tests that call it in-process get the flag back off."""
+    monkeypatch.setattr(settings, "PREFER_WORKING_DIR", False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _pack_examples_read_the_real_user_data_dir(request, monkeypatch):
     """test_pack_examples_real.py runs the gallery examples against the models
     the developer actually installed, so it reads the real user data dir on

@@ -80,3 +80,20 @@ def test_preserves_dtype():
 def test_missing_input_raises():
     with pytest.raises(ValueError, match="requires"):
         ColumnSelectorNode().execute({}, {"indices": "0", "names": ""})
+
+
+def test_columns_that_describe_another_tensor_are_refused():
+    """The CSV's column list wired to an already-selected tensor would map a
+    name to the wrong index and pick the wrong column with no error."""
+    picked = torch.tensor([[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]])  # dev1, dev3, dev5
+    with pytest.raises(ValueError, match="3 columns"):
+        ColumnSelectorNode().execute(
+            {"tensor": picked, "columns": ["dev1", "dev2", "dev3", "dev4", "dev5"]},
+            {"names": "dev3"})
+
+
+def test_header_whitespace_does_not_hide_a_column():
+    x = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    out = ColumnSelectorNode().execute(
+        {"tensor": x, "columns": ["a", " b "]}, {"names": "b"})
+    assert out["tensor"].tolist() == [[2.0], [4.0]]

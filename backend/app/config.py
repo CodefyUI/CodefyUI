@@ -275,6 +275,12 @@ class Settings(BaseSettings):
     # endpoint, while this one is node OUTPUT served inline by /api/media;
     # keeping them apart means neither route can touch the other's files.
     MEDIA_DIR: Path = Path(__file__).parent.parent / "data" / "media"
+    # Set by an exported script (runtime.initialize_export_runtime): a bare
+    # file name that names a file in the working directory reads that file
+    # before the upload stores above. The script runs beside its data -- a
+    # grader copies each testcase's files next to it -- and an upload of the
+    # same name left on that machine must not stand in for them.
+    PREFER_WORKING_DIR: bool = False
     EXAMPLES_DIR: Path = Path(__file__).parent.parent.parent / "examples"
 
     # ── Project directory (spec 7.1) ───────────────────────────────────

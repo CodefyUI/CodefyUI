@@ -86,9 +86,12 @@ def _resolve_corpus_path(path_str: str) -> Path:
     it then.
     """
     from ...config import settings
+    from ...core.data_paths import working_dir_file
 
     path = Path(path_str)
     if not path.is_absolute() and path.parent == Path("."):
+        if (local := working_dir_file(path)) is not None:
+            return local
         candidate = settings.DATA_FILES_DIR / path.name
         if candidate.is_file():
             return candidate

@@ -19,6 +19,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from ..config import settings
 from . import plugin_loader
 from .node_registry import registry
 from .plugins.manifest import PLUGIN_ID_RE
@@ -87,6 +88,9 @@ def initialize_export_runtime(required_types: Iterable[str]) -> list[str]:
     when the type names a pack, saying what is wrong with it. An empty list
     means every type resolved.
     """
+    # A script runs beside its data: files in its working directory win over
+    # same-named uploads (config.Settings.PREFER_WORKING_DIR).
+    settings.PREFER_WORKING_DIR = True
     initialize_runtime()
     unresolved = sorted({t for t in required_types if registry.get(t) is None})
     if not unresolved:

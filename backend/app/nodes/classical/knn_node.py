@@ -28,6 +28,8 @@ from ...core.node_base import (
     PortDefinition,
 )
 
+from ._labels import class_labels
+
 
 class KNNNode(BaseNode):
     NODE_NAME = "KNN"
@@ -101,7 +103,7 @@ class KNNNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
+        labels = class_labels(y_train, "KNN y_train")
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"KNN: features and labels length mismatch — "

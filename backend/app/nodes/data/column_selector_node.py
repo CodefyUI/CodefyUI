@@ -103,7 +103,17 @@ class ColumnSelectorNode(BaseNode):
                     "ColumnSelector: `names` is set but no `columns` input is connected — "
                     "either connect a list of column names or use `indices` instead."
                 )
-            cols_list = [str(c) for c in cols_in]
+            cols_list = [str(c).strip() for c in cols_in]
+            if len(cols_list) != n_cols:
+                # Names are looked up in this list and used as indices into
+                # the tensor: a list describing another tensor (the CSV's,
+                # wired to an already-selected tensor) picks the wrong column.
+                raise ValueError(
+                    f"ColumnSelector: the `columns` input has {len(cols_list)} names "
+                    f"but the tensor has {n_cols} columns, so the names cannot say "
+                    f"which column is which. Wire the column list that describes "
+                    f"this tensor, or select by `indices`."
+                )
             requested = [c.strip() for c in names_param.split(",") if c.strip()]
             missing = [c for c in requested if c not in cols_list]
             if missing:

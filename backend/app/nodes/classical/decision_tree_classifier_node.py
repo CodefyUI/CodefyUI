@@ -23,6 +23,8 @@ from ...core.node_base import (
     PortDefinition,
 )
 
+from ._labels import class_labels
+
 
 class DecisionTreeClassifierNode(BaseNode):
     NODE_NAME = "DecisionTreeClassifier"
@@ -103,7 +105,7 @@ class DecisionTreeClassifierNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
+        labels = class_labels(y_train, "DecisionTreeClassifier y_train")
         labels = [str(v) for v in labels]
         if x_train_np.shape[0] != len(labels):
             raise ValueError(

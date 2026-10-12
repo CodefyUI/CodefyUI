@@ -611,6 +611,30 @@ async def test_presets_and_blocks_leave_the_answer_unchanged(
     assert PRINT_MARKER not in run.stdout
 
 
+@pytest.mark.asyncio
+async def test_the_file_beside_the_script_beats_a_same_named_upload(
+    test_client, tmp_path: Path,
+):
+    """A grader box that once ran the editor holds uploads under the names
+    the testcases use. Those must not stand in for the testcase files, or
+    every hidden testcase reads the one upload."""
+    script = await _export(test_client, _contract_graph())
+    folder = tmp_path / "grader"
+    _write_data_files(folder)
+    home = tmp_path / "home"
+    decoys = home / "data"
+    (decoys / "files").mkdir(parents=True)
+    (decoys / "images").mkdir(parents=True)
+    (decoys / "files" / CSV_NAME).write_bytes(b"a,b\n9,9\n9,9\n")
+    (decoys / "files" / NOTES_NAME).write_bytes(b"an old upload")
+    Image.new("L", (2, 2), 7).save(decoys / "images" / IMAGE_NAME)
+
+    run = _run_like_a_grader(script, folder, home)
+
+    assert run.returncode == 0, run.stderr
+    assert _answer_line(run) == EXPECTED_LAST_LINE
+
+
 # ── 3. Exit codes ────────────────────────────────────────────────────────
 
 

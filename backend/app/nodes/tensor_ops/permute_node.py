@@ -33,6 +33,20 @@ class PermuteNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         tensor = inputs["tensor"]
-        dims_str = params.get("dims", "0,2,1")
-        dims = [int(d.strip()) for d in dims_str.split(",")]
+        dims_str = str(params.get("dims", "0,2,1"))
+        # "1,0", "1, 0", "(1, 0)", "[1,0]" and "1 0" all mean the same order.
+        parts = dims_str.strip().strip("()[]").replace(",", " ").split()
+        try:
+            dims = [int(d) for d in parts]
+        except ValueError:
+            raise ValueError(
+                f"Permute: dims must be integers separated by commas, like '1,0'; "
+                f"got {dims_str!r}."
+            ) from None
+        if len(dims) != tensor.dim():
+            raise ValueError(
+                f"Permute: the tensor has {tensor.dim()} dims {tuple(tensor.shape)} but "
+                f"dims lists {len(dims)} ({dims_str!r}); give one entry per dim, "
+                f"e.g. '1,0' to transpose a 2-D tensor."
+            )
         return {"tensor": tensor.permute(*dims)}
