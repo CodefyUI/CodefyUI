@@ -22,6 +22,25 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.9.1] — 2026-10-12
+
+This release fixes the issues filed from the 2.9.0 dogfood session and adds
+what the CF exam problems need. The new TensorStats node shows a tensor's
+shape, min, max, mean, sum and std on its ports and in the Execution Log, so
+a problem statement can quote the numbers a correct graph produces. An
+exported script reads the data files in its own folder before a same-named
+file uploaded earlier, so a judge running the script in a testcase folder
+scores the testcase's data. A label column picked with ColumnSelector, or
+held as floats, now scores in Accuracy instead of reading 0.
+
+Other additions: File menu Open... and Import..., character- and byte-level
+tokenizers, the training transform on ImageReader and ImageBatchReader, a
+PositionalEncoding layer and causal checkboxes in the layer editor, sweeps
+over classical and RL graphs, TensorDataset and RegressionMetrics for
+training on a CSV, LRScheduler parameters, more Conv2d options and a
+DatasetSplit node. The fixes cover the canvas, validation, the LM stack, RL
+seeding and several nodes whose numbers differed from their docs.
+
 ### Added
 
 - **`TensorStats`: shape, min, max, mean, sum and std of a tensor.** Each
@@ -5881,7 +5900,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.9.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.9.1...main
+[2.9.1]: https://github.com/CodefyUI/CodefyUI/compare/2.9.0...2.9.1
 [2.9.0]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...2.9.0
 [2.8.9]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...2.8.9
 [2.8.8]: https://github.com/CodefyUI/CodefyUI/compare/2.8.7...2.8.8
