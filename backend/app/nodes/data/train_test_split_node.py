@@ -116,6 +116,10 @@ class TrainTestSplitNode(BaseNode):
 
         if not isinstance(features, torch.Tensor):
             features = torch.as_tensor(features, dtype=torch.float32)
+        # A label column picked with ColumnSelector arrives as [N, 1]; split
+        # it as N labels, not N one-element lists.
+        if isinstance(labels, torch.Tensor) and labels.dim() == 2 and labels.shape[1] == 1:
+            labels = labels.reshape(-1)
         labels_list = labels.tolist() if isinstance(labels, torch.Tensor) else list(labels)
 
         if features.shape[0] != len(labels_list):

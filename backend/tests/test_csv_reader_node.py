@@ -169,3 +169,16 @@ def test_nan_in_a_feature_column_is_warned_by_name(tmp_path, caplog):
     assert torch.isnan(res["tensor"][1, 0])
     assert "x1 (1)" in caplog.text
     assert "x2" not in caplog.text
+
+
+def test_header_names_are_stripped(tmp_path):
+    path = tmp_path / "spaced.csv"
+    path.write_text("a, b ,y\n1,2,x\n3,4,z\n")
+    out = _run(path, target_column="y", include_columns="b")
+    assert out["columns"] == ["b"]
+    assert out["tensor"].tolist() == [[2.0], [4.0]]
+
+
+def test_the_target_cannot_also_be_a_feature(tiny_csv):
+    with pytest.raises(ValueError, match="target column 'c'"):
+        _run(tiny_csv, target_column="c", include_columns="a,c")

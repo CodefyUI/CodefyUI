@@ -96,6 +96,19 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A label column picked with ColumnSelector scores.** Its `[N, 1]` shape
+  went through TrainTestSplit as one-element lists, and a float label column
+  printed as `1.0` against CSVReader's `1`; either way Accuracy read 0 with
+  no error. TrainTestSplit, the classifiers and Accuracy now take one label
+  per row and compare integer classes as integers, and Accuracy refuses a
+  probabilities tensor wired in as predictions, naming its shape.
+- **ColumnSelector refuses a `columns` list that describes another tensor.**
+  The CSV's column names wired to an already-selected tensor picked the
+  wrong column by index, with no error.
+- **CSVReader strips header names and keeps the target out of the features.**
+  A header written `a, b ,y` named a column `" b "` that no typed name could
+  match. A target listed in `include_columns` became a feature too, so any
+  classifier on top scored near 1.0; that is refused now.
 - **An exported script reads the files beside it before same-named
   uploads.** CSVReader, ImageReader, DocumentLoader and TextCorpusDataset
   looked up a bare file name in the upload store first, so on a machine that

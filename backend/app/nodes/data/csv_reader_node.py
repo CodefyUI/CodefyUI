@@ -282,6 +282,13 @@ class CSVReaderNode(BaseNode):
         # When no header, name columns 0, 1, 2 ...
         if not skip_header:
             df.columns = [str(i) for i in range(len(df.columns))]
+        else:
+            # "a, b ,y" names its columns " b " and "y"; every name typed into
+            # target_column, include_columns or ColumnSelector is stripped, so
+            # strip the header too (unless that would merge two columns).
+            stripped = [str(c).strip() for c in df.columns]
+            if len(set(stripped)) == len(stripped):
+                df.columns = stripped
 
         target_column = str(params.get("target_column", "")).strip()
         if target_column and target_column not in df.columns:
@@ -318,6 +325,14 @@ class CSVReaderNode(BaseNode):
                 raise ValueError(
                     f"CSVReader: include_columns references unknown columns: {missing}. "
                     f"Available: {list(df.columns)}"
+                )
+            if target_column and target_column in requested:
+                # The label would be a feature too, and any classifier on top
+                # scores near 1.0 for the wrong reason.
+                raise ValueError(
+                    f"CSVReader: include_columns lists the target column "
+                    f"{target_column!r}; the label cannot also be a feature. "
+                    f"Remove it from include_columns."
                 )
             feature_cols = requested
         else:

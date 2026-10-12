@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import torch
 
 from ...core.node_base import (
     BaseNode,
@@ -22,6 +21,8 @@ from ...core.node_base import (
     ParamDefinition,
     PortDefinition,
 )
+
+from ._labels import label_strings
 
 
 class AccuracyNode(BaseNode):
@@ -92,8 +93,10 @@ class AccuracyNode(BaseNode):
         if preds is None or labels is None:
             raise ValueError("Accuracy requires `predictions` and `labels` inputs.")
 
-        preds_list = preds.tolist() if isinstance(preds, torch.Tensor) else list(preds)
-        labels_list = labels.tolist() if isinstance(labels, torch.Tensor) else list(labels)
+        # One label per row, integral floats as ints: '1.0' and '[1.0]' would
+        # never equal CSVReader's '1' and the accuracy would read 0.
+        preds_list = label_strings(preds, "Accuracy predictions")
+        labels_list = label_strings(labels, "Accuracy labels")
 
         if len(preds_list) != len(labels_list):
             raise ValueError(
@@ -102,9 +105,8 @@ class AccuracyNode(BaseNode):
         if len(preds_list) == 0:
             return {"accuracy": 0.0, "correct": 0, "total": 0}
 
-        # Normalize to strings so '0' vs 0 mismatches don't sink the comparison.
-        preds_s = [str(p) for p in preds_list]
-        labels_s = [str(label) for label in labels_list]
+        preds_s = preds_list
+        labels_s = labels_list
 
         correct = sum(1 for p, y in zip(preds_s, labels_s) if p == y)
         total = len(preds_s)
