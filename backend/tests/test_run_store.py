@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 6
+    assert _user_version(db) == len(MIGRATIONS) == 7
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -160,6 +160,8 @@ def test_exec_runs_has_the_full_column_list(db):
         "sweep_id", "sweep_variant",
         # MIGRATION_006 (#344): the environment that started the run.
         "fingerprint_digest", "execution_facts",
+        # MIGRATION_007 (#343): the study attempt that submitted the run.
+        "study_id", "study_attempt_id",
     ]
 
 
@@ -426,8 +428,9 @@ def test_the_sweep_columns_arrived_without_a_table_rebuild(db):
     MIGRATION_004 ships it, it asserts what the stand-in was a proxy for."""
     from app.core.migrations import MIGRATION_003, iter_statements
 
-    # MIGRATION_006's two ALTERs (#344) come after the sweep pair.
-    assert _columns(db, "exec_runs")[-4:-2] == ["sweep_id", "sweep_variant"]
+    # MIGRATION_006's two ALTERs (#344) and MIGRATION_007's two (#343)
+    # come after the sweep pair.
+    assert _columns(db, "exec_runs")[-6:-4] == ["sweep_id", "sweep_variant"]
     ddl = db._conn.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'exec_runs'").fetchone()[0]
     # THE rebuild detector, and it has to be structural rather than a

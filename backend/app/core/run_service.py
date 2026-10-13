@@ -126,6 +126,7 @@ two id shapes for one run is how outputs stop being findable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -133,7 +134,7 @@ import weakref
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, NamedTuple
+from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
 
 from ..config import settings
 from .cache import ExecutionCache
@@ -1456,6 +1457,12 @@ class RunService:
         # that never did.
         self._run_secrets: dict[str, SecretVault] = {}
         self._shutting_down = False
+        # Called with ``(run_id, status)`` once a run's terminal status has
+        # LANDED on its row (#343). The study coordinator copies a child's
+        # evidence onto its attempt here, before ``_finalize`` runs
+        # retention -- which may delete the very row it reads.
+        self._terminal_listeners: list[
+            Callable[[str, str], Awaitable[None]]] = []
 
     # ── introspection ─────────────────────────────────────────────────────
 
@@ -1512,6 +1519,38 @@ class RunService:
         return {key: [entry.run_id for entry in queue]
                 for key, queue in self._pending.items() if queue}
 
+    # ── terminal listeners (#343) ─────────────────────────────────────────
+
+    def add_terminal_listener(
+        self, listener: Callable[[str, str], Awaitable[None]],
+    ) -> None:
+        """Register *listener* to be awaited as ``listener(run_id, status)``
+        whenever a run's terminal status lands on its row in this process.
+
+        Awaited inline, in registration order, BEFORE retention runs, so a
+        listener can still read the run's metrics. A listener must be quick
+        and must not wait on anything that waits on a run: ``cancel`` and
+        ``shutdown`` reach it too. Exceptions are logged and swallowed; a
+        bookkeeping failure must never fail the run that triggered it.
+        """
+        self._terminal_listeners.append(listener)
+
+    def remove_terminal_listener(
+        self, listener: Callable[[str, str], Awaitable[None]],
+    ) -> None:
+        with contextlib.suppress(ValueError):
+            self._terminal_listeners.remove(listener)
+
+    async def _notify_terminal(self, run_id: str, status: str) -> None:
+        for listener in list(self._terminal_listeners):
+            try:
+                await listener(run_id, status)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("run %s: a terminal listener failed",
+                               run_id, exc_info=True)
+
     # ── submit ────────────────────────────────────────────────────────────
 
     async def submit(
@@ -1524,6 +1563,9 @@ class RunService:
         provenance: RunProvenance | None = None,
         sweep_id: str | None = None,
         sweep_variant: int | None = None,
+        run_id: str | None = None,
+        study_id: str | None = None,
+        study_attempt_id: str | None = None,
     ) -> SubmitResult:
         """Persist a run, then SCHEDULE it. Raises ``RunSubmitError`` on input.
 
@@ -1562,6 +1604,12 @@ class RunService:
         variants: the default capture shells out to git twice per run in
         project mode, and thirty-two of those is thirty-two times the cost
         for one answer.
+
+        *run_id*, *study_id* and *study_attempt_id* serve the study
+        coordinator (#343): it mints the run id and records it on the
+        attempt BEFORE calling this, and the stamp on the row is how a child
+        whose linkage write was lost is found again. Like a sweep, a study
+        child cannot use the interactive lane.
         """
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
@@ -1574,7 +1622,8 @@ class RunService:
             raise RunSubmitError(
                 f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
                 f"got {lane!r}")
-        if sweep_id is not None and lane == LANE_INTERACTIVE:
+        if (sweep_id is not None or study_id is not None) \
+                and lane == LANE_INTERACTIVE:
             # Refused for the same reason a session on the wrong lane is:
             # _submit_interactive admits against RUN_INTERACTIVE_MAX_CONCURRENT
             # and REFUSES past it rather than queuing, so a 32-variant
@@ -1607,6 +1656,9 @@ class RunService:
             provenance=provenance,
             sweep_id=sweep_id,
             sweep_variant=sweep_variant,
+            run_id=run_id,
+            study_id=study_id,
+            study_attempt_id=study_attempt_id,
         )
         if self._shutting_down:
             # The same re-check ``_start`` makes, for the same reason and at
@@ -2194,6 +2246,8 @@ class RunService:
             logger.info(
                 "run %s was already terminal when %s was reported",
                 active.run_id, status)
+        else:
+            await self._notify_terminal(active.run_id, status)
         await self.prune_retention()
 
     def _progress_bridge(
@@ -2662,6 +2716,7 @@ class RunService:
             landed = await self.store.mark_finished(
                 run_id, STATUS_CANCELLED, expected=(STATUS_QUEUED,))
             if landed:
+                await self._notify_terminal(run_id, STATUS_CANCELLED)
                 return CancelOutcome(run_id=run_id, status=STATUS_CANCELLED,
                                      cancelled=True)
             record = await self.store.get_run(run_id) or record
@@ -2698,6 +2753,7 @@ class RunService:
             return None
         await self._emit(entry.run_id, EVENT_RUN_STOPPED, {"reason": reason})
         entry.close()
+        await self._notify_terminal(entry.run_id, status)
         return CancelOutcome(run_id=entry.run_id, status=status,
                              cancelled=True)
 

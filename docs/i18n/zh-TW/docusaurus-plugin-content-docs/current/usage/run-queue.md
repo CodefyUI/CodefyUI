@@ -218,6 +218,75 @@ sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `erro
 
 child 都是一般 run：它們在執行任務面板的清單中以 sweep 的 `name` 加上 variant 編號列出，編號與 sweep 表格上的相同，即其 `index` 加一（`lr x batch #3`）；兩者合計超過 64 個字元時，會截短 sweep 的名稱。沒有名稱的 sweep，其 child 也沒有名稱。`GET /api/runs` 的每一列都帶有 `sweep_id` 與 `sweep_variant`。要跟隨某一個 variant，可像其他 run 一樣使用 `GET /api/runs/{id}/events`。編輯器沒有過往 sweep 的清單；要再次開啟，請使用 child run 的**開啟所屬掃描**。
 
+## 實驗研究（study） {/* #studies */}
+
+**study** 是一個從頭到尾都由伺服器負責的實驗：一組圖的變體，每個變體重複執行固定次數、每次重複使用不同的種子，並依單一明確的目標排名。Graph Copilot 過去把這份計畫放在啟動它的瀏覽器分頁裡，關掉分頁 study 就跟著中斷。送到 `POST /api/studies` 的 study 存放在伺服器的資料庫中：分頁關閉後它會繼續執行，伺服器重新啟動後它仍在，繼續執行時也不會重跑已完成的重複。任何用戶端都能列出 study，並依 id 追蹤其中一個；study 與送出它的分頁或外掛沒有綁定關係。
+
+```json
+{
+  "name": "lr study",
+  "objective": {"node_id": "train", "metric": "val_loss", "direction": "minimize"},
+  "base_graph": {"nodes": [ ... ], "edges": [ ... ]},
+  "variants": [
+    {"label": "baseline", "ops": []},
+    {"label": "lr 1e-3", "ops": [{"node_id": "opt", "param": "lr", "value": 0.001}]},
+    {"label": "wide", "graph": {"nodes": [ ... ], "edges": [ ... ]}}
+  ],
+  "repetitions": 3,
+  "seed": 7,
+  "options": {"device": "cuda:0"},
+  "budget": {"max_runs": 12, "max_parallel_runs": 1},
+  "resume_policy": "explicit"
+}
+```
+
+每個變體可以是一張完整的 `graph`，或是一串套用在 `base_graph` 上的 `ops`（`[]` 就是 base graph 本身）；`label` 必填，且在同一個 study 內不可重複。一個 op 設定一個節點的一個參數，檢查方式與 sweep 參數完全相同：節點必須恰好存在一個、必須是已註冊的節點，且不能是 preset 或 subgraph 實例；值必須符合參數的型別、選項與上下限。op 不能設定 `SECRET` 參數。最多接受 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體與 32 次 `repetitions`。
+
+study、它的變體與所有 attempt 會在同一個 transaction 中寫入，因此被拒絕的請求（`400`；body 不符合 schema 時為 `422`）不會留下任何資料。回覆為 `201`，內容與 `GET /api/studies/{id}` 回傳的 study 相同，另加 `created: true`。各 route 列在 [API 參考](../advanced/api-reference#runs-and-sweeps)；`POST` 需要 session token，`GET` 是開放的。
+
+### 送出 study {/* #submitting-a-study */}
+
+**`objective` 指定一個明確的產生者。** `node_id`、`metric` 與 `direction` 三者皆必填。一次重複的值，是該節點以這個 series 名稱記錄的最後一個點（`step` 最大者，其次為最後寫入者），與帶有 `objective.node_id` 的 sweep 使用相同規則。study 沒有只靠名稱的寫法：可能據以晉升某個變體的排名，需要每個 run 都有一個不含糊的數字。
+
+**種子。** 每個變體的第 `r` 次重複都以種子 `(seed + r) mod 2^32` 執行。同一次重複的所有變體共用它的種子，因此同一次重複內的比較是成對的；重試某次重複時也沿用它的種子。省略 `seed` 時，伺服器會自行挑選並記錄。`options.seed` 會被拒絕，因為種子由 study 決定；`lane: interactive` 也會被拒絕，因為 study 的 child 一律排隊。每個 child 都是指定種子的 run，因此一次只執行一個節點，也不會有其他 run 同時執行，與指定種子的 sweep 相同。
+
+**冪等性（idempotency）。** 請送出 `Idempotency-Key` header（或 body 欄位 `idempotency_key`；兩者同時送出時必須相同）。以同一個 key 重送相同請求時，會以 `200` 與 `created: false` 回傳同一個 study，且不建立任何 run，因此遺失第一次回覆的用戶端可以放心重送。同一個 key 用於不同請求時回傳 `409`，並指出既有的 study。比對請求時會先清空 `SECRET` 值，因此只有 secret 值不同的重送會被視為同一個請求。
+
+**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。由於每個 child 都指定了種子，child 仍會一次執行一個；較大的值只是讓後面的 child 提早進入佇列。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。用完 `max_runs` 時仍有重複未完成的 study 會以 `failed` 結束。單一 run 的時間上限與總執行時間上限目前尚未實作。
+
+**順序。** child 依重複逐輪送出：先送所有變體的第 0 次重複，再送所有變體的第 1 次重複，依此類推。因此中途停下的 study，所有變體都已在相同的種子上比較過。每個 child 都是一般 run，名稱為 `<study 名稱> / <label> / r<n>`，`GET /api/runs` 的每一列都帶有 `study_id` 與 `study_attempt_id`。
+
+### 讀取 study {/* #reading-a-study */}
+
+`GET /api/studies/{id}` 會回傳 study 的 `status`、`revision`（study 或其 attempt 每次變動都會增加）、目前 attempt 依狀態分類的 `counts`，以及每個變體一筆資料，內容包括：
+
+- `repetitions`：每次重複的種子與目前的 attempt。
+- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`。
+- `aggregate`：對記錄到目標值的目前 attempt 計算的 `count`、`mean` 與 `std`，以及 `values`，也就是每次重複的原始值（沒有值時為 `null`）。`std` 是樣本標準差，值少於兩個時為 `null`。
+- `eligible`、`ineligible_reasons`、`rank`、`tie` 與 `tied_with`。
+
+`rankings` 會由最佳開始列出已排名的變體。只有當每次排定重複的目前 attempt 都成功，且都記錄到有限的目標值時，變體才**具排名資格**。失敗的重複是一個結果，不會被重試；即使它在失敗前記錄了數字，也會讓所屬變體失去排名資格，那個數字仍會出現在 `values` 中。這比 sweep 表格嚴格：sweep 表格會以失敗 run 達到的值為它排名。排名採用對具資格平均值的競賽排名：平均值完全相同的變體共用同一個名次，標示 `tie: true`，並在 `tied_with` 中列出彼此，下一個名次則相應跳號（1、1、3）。執行時不做任何平手裁定，結果也不受變體列出順序影響。
+
+study 的證據比它的 child 存在得更久。child 結束時，它的目標值、最終指標、開始與結束時間，以及環境摘要都會複製到它的 attempt 上；retention 在刪除 run 之前，也會把尚未複製的內容複製過去。retention 刪除 study 的 child 之後，`GET /api/studies/{id}` 仍會回傳所有數值與排名，只有 `run_id` 指向一個已不存在的 run。
+
+`GET /api/studies/{id}/events?cursor=` 會回傳 cursor 之後的 study 稽核紀錄：`study_created`、`study_started`、`attempt_submitting`、`attempt_submitted`、`attempt_started`、`attempt_finished`、`attempt_relinked`、`attempt_lost`、`attempt_added`、`study_cancel_requested`、`study_cancelled`、`study_interrupted`、`study_resumed`、`study_failed` 與 `study_finished`（其 payload 帶有最終排名）。cursor 連續不中斷，每個 payload 都帶有該次變動產生的 `revision`。study 仍在進行時，`?wait=` 最多長輪詢 60 秒。`GET /api/studies` 由新到舊列出 study；`?status=queued|running|cancel_requested` 可找出仍在進行的 study。
+
+### 取消與繼續 study {/* #cancelling-and-resuming-a-study */}
+
+`POST /api/studies/{id}/cancel` 會停止排程，並對 study 每個排隊中或執行中的 child 送出協作式取消；`cancelled_runs` 列出取消請求送達的 run。在每個 child 都停下之前，study 顯示 `cancel_requested`，之後變成 `cancelled`。已完成的 attempt 會保留，從未送出的 attempt 維持 `pending`。再次取消已 cancelled 的 study 不會有任何變化；`succeeded` 的 study 不能取消（`409`）。
+
+`POST /api/studies/{id}/resume` 會繼續一個 `interrupted`、`cancelled` 或 `failed` 的 study。目前 attempt 已成功或失敗的重複維持原樣，永遠不會再執行。目前 attempt 被取消、中斷或遺失的重複，會得到一筆新的 attempt 紀錄，使用下一個 attempt 編號與相同的種子，舊的 attempt 則留在 `attempts` 中作為歷史紀錄。接著，pending 的重複照常送出。對其他狀態呼叫 resume 會回傳 `409`。
+
+以 `POST /api/runs/{id}/cancel` 直接取消的 child，會讓所屬 study 變成 `interrupted`。study 不會自行重試那個 run；要再執行那次重複，請繼續（resume）該 study。
+
+### 重新啟動前後的 study {/* #studies-across-a-restart */}
+
+執行佇列不會跨越重新啟動保留，因此伺服器再次啟動時，會把 study 排隊中與執行中的 child 標記為 `interrupted`（請見[伺服器停止時](#when-the-server-stops)）。接著，study coordinator 會整理每一個仍在進行的 study：每個 child 的證據會複製到它的 attempt 上，正在取消中的 study 會變成 `cancelled`，其他未完成的 study 則變成 `interrupted` 並等待。在你呼叫 `resume` 之前不會重送任何東西；若 study 送出時指定了 `"resume_policy": "auto"`，則會在重新啟動後自行繼續。
+
+每個 attempt 在 child 送出之前，就會先記錄它即將使用的 run id，而 child 也帶有該 attempt 的 id。如果伺服器在送出 child 與記錄「已送出」之間停止，或該次寫入失敗，study 會依這個標記找到 child 並重新連結（`attempt_relinked`），而不會再送出第二個。若沒有任何 child 帶有這個標記，代表該次送出從未建立 run；這個 attempt 會被標記為 `lost`，該次重複則會得到新的 attempt。
+
+`SECRET` 參數值只保存在接收該 study 的伺服器記憶體中，與任何排隊中的 run 相同。重新啟動後繼續的 study，執行時這些值會是空白。
+
 ## 伺服器停止時 {/* #when-the-server-stops */}
 
 佇列不會在伺服器重啟後繼續執行。排程只存在伺服器記憶體中；如果保留等待中的資料列，它會持續等待已不存在的排程器。
@@ -227,6 +296,8 @@ child 都是一般 run：它們在執行任務面板的清單中以 sweep 的 `n
 在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，並寫入與正常關閉相同的停止事件；若該 run 的事件紀錄已經以結束事件收尾，就不再寫入。因此重新連上的編輯器分頁，以及讀取 `GET /api/runs/{id}/events` 的程式，都會看到這次 run 已結束。兩者都不會繼續執行。
 
 若仍要執行這些工作，請重新送出。
+
+study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後執行尚未完成的重複；請見[重新啟動前後的 study](#studies-across-a-restart)。
 
 ## 設定 {/* #configuration */}
 
@@ -251,4 +322,4 @@ Retention 會在啟動時及每個 run 結束後執行，保留最新的 `KEEP_L
 
 - [執行圖](./running-graphs) — 單一 run 內部發生了什麼
 - [CLI 圖形執行器](./cli-runner) — 不開伺服器執行一張圖
-- [API 參考](../advanced/api-reference) — `/api/runs` 端點
+- [API 參考](../advanced/api-reference) — `/api/runs`、`/api/sweeps` 與 `/api/studies` 端點

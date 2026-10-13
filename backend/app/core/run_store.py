@@ -108,7 +108,7 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
     "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant, "
-    "fingerprint_digest, execution_facts"
+    "fingerprint_digest, execution_facts, study_id, study_attempt_id"
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
@@ -330,6 +330,14 @@ class RunRecord:
     #: ``env_fingerprint.execution_facts``. Same lifecycle as the digest.
     #: Small, so it rides on every list row; the fingerprint does not.
     execution_facts: dict[str, Any] | None = None
+    #: The study (#343) and the study attempt that submitted this run, or
+    #: None for a run no study owns. Written once by ``create_run``, before
+    #: the run can execute; ``study_attempt_id`` is the stamp the study
+    #: coordinator recovers a child by when the attempt's own linkage write
+    #: did not land. ``ON DELETE SET NULL`` clears ``study_id`` alone, like
+    #: ``sweep_id``.
+    study_id: str | None = None
+    study_attempt_id: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
@@ -357,6 +365,8 @@ class RunRecord:
             sweep_variant=row["sweep_variant"],
             fingerprint_digest=row["fingerprint_digest"],
             execution_facts=_loads(row["execution_facts"]),
+            study_id=row["study_id"],
+            study_attempt_id=row["study_attempt_id"],
         )
 
 
@@ -529,6 +539,8 @@ class RunStore:
         provenance: RunProvenance | None = None,
         sweep_id: str | None = None,
         sweep_variant: int | None = None,
+        study_id: str | None = None,
+        study_attempt_id: str | None = None,
     ) -> RunRecord:
         """Insert a run and return its row.
 
@@ -546,6 +558,9 @@ class RunStore:
         the ``sweeps`` row must already exist. They are a pair only at
         INSERT time — ``ON DELETE SET NULL`` later clears ``sweep_id`` alone
         and leaves ``sweep_variant`` behind on the orphaned row.
+
+        *study_id* / *study_attempt_id* stamp the run as the child of one
+        study attempt (#343); the ``studies`` row must exist (enforced FK).
         """
         if status not in RUN_STATUSES:
             raise ValueError(
@@ -576,6 +591,8 @@ class RunStore:
             plugin_pins=_json_safe(provenance.plugin_pins),
             sweep_id=sweep_id,
             sweep_variant=sweep_variant,
+            study_id=study_id,
+            study_attempt_id=study_attempt_id,
         )
         params = (
             record.id, record.name, _dumps(graph_snapshot),
@@ -584,14 +601,16 @@ class RunStore:
             None if record.git_dirty is None else int(record.git_dirty),
             None if record.plugin_pins is None else _dumps(record.plugin_pins),
             record.sweep_id, record.sweep_variant,
+            record.study_id, record.study_attempt_id,
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
-                "plugin_pins, sweep_id, sweep_variant) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "plugin_pins, sweep_id, sweep_variant, study_id, "
+                "study_attempt_id) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
@@ -626,6 +645,37 @@ class RunStore:
             ).fetchall()
 
         return [RunRecord.from_row(row) for row in await self.db.run(_select)]
+
+    async def find_runs_by_study_attempt(
+        self, attempt_ids: Sequence[str],
+    ) -> dict[str, RunRecord]:
+        """``{study_attempt_id: run}`` for the runs stamped with any of
+        *attempt_ids* (#343).
+
+        The orphan-recovery read: a study attempt whose linkage write did
+        not land is matched to the child it did submit by this stamp, never
+        by guessing from names or timestamps. Served by the partial index
+        ``idx_exec_runs_study_attempt``. When two rows carry one stamp
+        (which the coordinator never writes) the oldest wins, so the answer
+        is stable.
+        """
+        ids = list(dict.fromkeys(attempt_ids))
+        if not ids:
+            return {}
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs WHERE study_attempt_id "
+                f"IN ({','.join('?' * len(ids))}) "
+                "ORDER BY created_at DESC, rowid DESC", ids,
+            ).fetchall()
+
+        found: dict[str, RunRecord] = {}
+        for row in await self.db.run(_select):
+            record = RunRecord.from_row(row)
+            found[record.study_attempt_id or ""] = record
+        found.pop("", None)
+        return found
 
     async def get_graph_snapshot(self, run_id: str) -> dict[str, Any] | None:
         """The submitted graph, fetched on demand (not part of ``RunRecord``).
@@ -1522,6 +1572,19 @@ class RunStore:
                         "of the runs about to be deleted; their variants "
                         "keep whatever was harvested before and the delete "
                         "proceeds", exc_info=True)
+                # The same backstop for study attempts (#343): a child's
+                # evidence is copied onto its attempt row before the row
+                # goes. Deferred import and best-effort for the reasons
+                # given for the sweep harvest above.
+                from .study_store import harvest_doomed_attempts
+
+                try:
+                    harvest_doomed_attempts(conn, where_clause, params)
+                except Exception:
+                    logger.warning(
+                        "retention: could not copy the evidence of study "
+                        "children about to be deleted onto their attempts; "
+                        "the delete proceeds", exc_info=True)
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
