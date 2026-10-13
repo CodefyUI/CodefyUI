@@ -136,7 +136,7 @@ def test_partial_utf8_tokens_are_shown_as_bytes():
 
 
 def test_latin_accents_and_emoji_keep_exact_offsets():
-    text = "café 🙂 done"
+    text = "café \U0001f642 done"  # an accent and a 4-byte character
     res = _run("cl100k_base", text)
     assert "".join(res["tokens"]) == text
     assert "".join(text[s:e] for s, e in res["offsets"]) == text
