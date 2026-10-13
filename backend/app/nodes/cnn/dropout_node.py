@@ -43,7 +43,10 @@ class DropoutNode(BaseNode):
         import torch.nn as nn
 
         tensor = inputs["tensor"]
-        p = params.get("p", 0.5)
+        from ...core.param_values import float_param
+
+        p = float_param(params, "p", node="Dropout", default=0.5,
+                        min_value=0.0, max_value=1.0)
 
         dropout = nn.Dropout(p=p)
         output = dropout(tensor)

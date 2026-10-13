@@ -53,4 +53,4 @@ class TransformerEncoderNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         encoder = self.get_or_build_module(context, params)
-        return {"tensor": encoder(tensor)}
+        return {"tensor": encoder(self.match_input_dtype(tensor, encoder))}

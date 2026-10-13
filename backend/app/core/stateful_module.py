@@ -130,6 +130,50 @@ class StatefulModuleMixin:
             module = to_device(module, node_target_device(params, context, self))
         return module
 
+    def match_input_dtype(
+        self,
+        tensor: Any,
+        module: "torch.nn.Module",
+        *,
+        port: str = "tensor",
+    ) -> Any:
+        """*tensor* in the floating dtype *module* computes in.
+
+        On MPS ``to_device`` downcasts a float64 input to float32, so a
+        float64 tensor into a float32 layer ran on a Mac and failed on a CPU
+        machine (``mat1 and mat2 must have the same dtype``) -- the same
+        graph, and the same exported script, with a device-dependent
+        outcome. Casting here makes every device behave like MPS. A float
+        input that already matches is returned as is, so nothing changes
+        for float32 graphs, and under autocast the input is left for
+        autocast to handle.
+
+        A non-floating input (integer, bool) gets a message naming the node
+        and the port: these layers need floats, and torch's own complaint
+        does not say which node received what.
+        """
+        import torch
+
+        if not isinstance(tensor, torch.Tensor):
+            return tensor
+        name = getattr(self, "NODE_NAME", type(self).__name__)
+        if not tensor.is_floating_point():
+            raise ValueError(
+                f"{name}: the `{port}` input is {str(tensor.dtype).replace('torch.', '')} "
+                f"but this layer needs floating-point values. Convert it to "
+                f"float first (for example a PythonScript returning "
+                f"inputs['in1'].float()); integer token ids belong in an "
+                f"Embedding node."
+            )
+        reference = next(iter(module.parameters()), None)
+        if reference is None or not reference.is_floating_point():
+            return tensor
+        if tensor.dtype == reference.dtype:
+            return tensor
+        if torch.is_autocast_enabled(tensor.device.type):
+            return tensor
+        return tensor.to(reference.dtype)
+
 
 #: How many evicted node ids a single warning names before it stops
 #: listing them. A budget that evicts twenty nodes at once has a message

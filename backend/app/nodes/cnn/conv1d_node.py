@@ -53,4 +53,4 @@ class Conv1dNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         conv = self.get_or_build_module(context, params)
-        return {"tensor": conv(tensor)}
+        return {"tensor": conv(self.match_input_dtype(tensor, conv))}

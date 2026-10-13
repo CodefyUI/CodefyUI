@@ -28,16 +28,28 @@ class MaxPool2dNode(BaseNode):
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
         return [
-            ParamDefinition(name="kernel_size", param_type=ParamType.INT, default=2, description="Size of the max pooling window"),
+            ParamDefinition(name="kernel_size", param_type=ParamType.INT, default=2, min_value=1, description="Size of the max pooling window"),
             ParamDefinition(name="stride", param_type=ParamType.INT, default=2, description="Stride of the pooling window"),
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        import torch
         import torch.nn as nn
 
+        from ...core.param_values import int_param, is_blank
+
+        node = "MaxPool2d"
         tensor = inputs["tensor"]
-        kernel_size = params.get("kernel_size", 2)
-        stride = params.get("stride", 2)
+        kernel_size = int_param(params, "kernel_size", node=node, default=2, min_value=1)
+        # A blank stride means "same as kernel_size", as in torch.
+        stride = (None if "stride" in params and is_blank(params["stride"])
+                  else int_param(params, "stride", node=node, default=2, min_value=1))
+        if isinstance(tensor, torch.Tensor) and tensor.dim() not in (3, 4):
+            raise ValueError(
+                f"{node}: the input must be (C, H, W) or (N, C, H, W), got "
+                f"shape {tuple(tensor.shape)}. For a single (H, W) image add "
+                f"the channel dimension with an Unsqueeze (dim=0)."
+            )
 
         pool = nn.MaxPool2d(kernel_size=kernel_size, stride=stride)
         output = pool(tensor)

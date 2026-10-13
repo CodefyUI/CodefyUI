@@ -30,7 +30,24 @@ class AddNode(BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         import torch
 
+        from ...core.param_values import float_param
+
         a = inputs["tensor_a"]
         b = inputs["tensor_b"]
-        alpha = params.get("alpha", 1.0)
+        alpha = float_param(params, "alpha", node="Add", default=1.0)
+        if alpha == 1:
+            # The default. torch.add refuses a float alpha (even 1.0) for
+            # integer and bool tensors, and a + b is the same sum.
+            return {"tensor": a + b}
+
+        def integral(t: Any) -> bool:
+            return isinstance(t, torch.Tensor) and not (
+                t.is_floating_point() or t.is_complex())
+
+        if integral(a) and integral(b):
+            if alpha.is_integer():
+                return {"tensor": torch.add(a, b, alpha=int(alpha))}
+            # A fractional alpha on integers: compute in float rather than
+            # truncate the scaled term.
+            a, b = a.float(), b.float()
         return {"tensor": torch.add(a, b, alpha=alpha)}

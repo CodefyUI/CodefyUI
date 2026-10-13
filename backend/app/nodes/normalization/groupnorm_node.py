@@ -45,4 +45,4 @@ class GroupNormNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         gn = self.get_or_build_module(context, params)
-        return {"tensor": gn(tensor)}
+        return {"tensor": gn(self.match_input_dtype(tensor, gn))}

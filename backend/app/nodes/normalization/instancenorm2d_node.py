@@ -46,4 +46,14 @@ class InstanceNorm2dNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         norm = self.get_or_build_module(context, params)
+        tensor = self.match_input_dtype(tensor, norm)
+        num_features = norm.num_features
+        if tensor.dim() in (3, 4) and tensor.shape[-3] != num_features:
+            # nn.InstanceNorm2d checks this only when affine is on; without
+            # it a 3-channel input ran under num_features=7.
+            raise ValueError(
+                f"InstanceNorm2d: the input has {tensor.shape[-3]} channels "
+                f"but num_features is {num_features}. Set num_features to "
+                f"{tensor.shape[-3]}."
+            )
         return {"tensor": norm(tensor)}

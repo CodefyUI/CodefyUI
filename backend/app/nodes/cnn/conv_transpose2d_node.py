@@ -56,4 +56,4 @@ class ConvTranspose2dNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         conv_t = self.get_or_build_module(context, params)
-        return {"tensor": conv_t(tensor)}
+        return {"tensor": conv_t(self.match_input_dtype(tensor, conv_t))}

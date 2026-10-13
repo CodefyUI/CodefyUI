@@ -236,14 +236,16 @@ async def test_a_writing_script_writes_on_every_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_script_that_mutates_its_input_mutates_it_on_every_run() -> None:
+async def test_a_script_that_mutates_its_input_is_refused_on_every_run() -> None:
     """The side-effect route no static analysis can see.
 
-    ``t.add_(1)`` is indistinguishable from a pure transform in the AST, and
-    no security policy will ever refuse it -- it is the numerics this node
-    exists for. It still changes an object the upstream node owns and every
-    downstream node shares, so skipping it on a cache hit leaves the graph
-    holding a value that does not match what a fresh run would produce.
+    ``t.add_(1)`` is indistinguishable from a pure transform in the AST. It
+    changes an object the upstream node owns and every downstream node
+    shares, so the node refuses it after the script returns (the tensor's
+    version counter moved). The refusal has to happen on EVERY run: a cache
+    hit on the second run would skip the script, and with it both the
+    mutation and the error, leaving a graph that fails once and then
+    "passes".
     """
     code = (
         "def run(inputs, params):\n"
@@ -259,17 +261,7 @@ async def test_a_script_that_mutates_its_input_mutates_it_on_every_run() -> None
     async def track(node_id, status, data):
         statuses[node_id] = status
 
-    await execute_graph(nodes, edges, on_progress=track, cache=cache)
-    await execute_graph(nodes, edges, on_progress=track, cache=cache)
-
-    # The upstream ran once and was cached; ExecutionCache stores by
-    # reference, so both runs saw the same tensor object.
-    assert statuses["src"] == "cached"
-    assert len(_ZeroTensorNode.produced) == 1
-    shared = _ZeroTensorNode.produced[0]
-
-    assert shared.tolist() == [2.0, 2.0, 2.0], (
-        "the script's in-place mutation ran only once across two runs -- "
-        "the second run was served from cache, so the tensor every "
-        f"downstream node sees is stale (it holds {shared.tolist()})"
-    )
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="in place"):
+            await execute_graph(nodes, edges, on_progress=track, cache=cache)
+        assert statuses["py"] == "error"

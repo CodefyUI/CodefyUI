@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
@@ -32,6 +33,37 @@ MIN_KERNEL_SIZE = 1
 MAX_KERNEL_SIZE = 15
 
 
+def _parse_weights_text(text: str) -> Any:
+    """Read a kernel typed as text: JSON (``[[0,-1,0],...]``) or numbers
+    separated by whitespace, newlines, commas or semicolons.
+
+    A TENSOR_GRID param is normally a nested list, but a CLI run, a preset
+    or a hand-edited graph can carry the matrix as a string; without this it
+    flattened to ONE element and failed the size check with a message that
+    did not say why.
+    """
+    import json
+
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except ValueError:
+        pass
+    tokens = [t for t in re.split(r"[\s,;\[\]()]+", stripped) if t]
+    values: list[float] = []
+    for token in tokens:
+        try:
+            values.append(float(token))
+        except ValueError:
+            raise ValueError(
+                f"Conv2dExplicit: `weights` must be a matrix of numbers; "
+                f"{token!r} is not a number. Write it as JSON "
+                f"([[0, -1, 0], [-1, 5, -1], [0, -1, 0]]) or as rows of "
+                f"numbers separated by spaces."
+            ) from None
+    return values
+
+
 def _flatten(x: Any) -> list[float]:
     if isinstance(x, (list, tuple)):
         out: list[float] = []
@@ -61,7 +93,8 @@ class Conv2dExplicitNode(BaseNode):
         "EdgeDetection3x3, Sharpen3x3 and VerticalEdge3x3; set preset to Custom to "
         "author an NxN matrix, which must hold exactly kernel_size x kernel_size "
         "values. The one kernel is applied per channel as a grouped, or depthwise, "
-        "convolution, so the channel count is unchanged."
+        "convolution, so the channel count is unchanged. An integer or bool "
+        "input is converted to float32 first, so the output is float32."
     )
 
     @classmethod
@@ -148,7 +181,16 @@ class Conv2dExplicitNode(BaseNode):
             raw_weights = params.get("weights")
             if raw_weights is None:
                 raise ValueError("preset=Custom requires `weights` to be set (an NxN matrix).")
+            if isinstance(raw_weights, str):
+                raw_weights = _parse_weights_text(raw_weights)
             flat = _flatten(raw_weights)
+            try:
+                flat = [float(v) for v in flat]
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "Conv2dExplicit: `weights` must hold only numbers "
+                    f"(got {raw_weights!r}). Re-fill the kernel grid."
+                ) from None
             expected = k * k
             if len(flat) != expected:
                 raise ValueError(
@@ -180,6 +222,13 @@ class Conv2dExplicitNode(BaseNode):
                 f"got shape {list(tensor.shape)}. Use an Unsqueeze on dim=0 "
                 f"if you have a (C, H, W) tensor."
             )
+
+        # An integer image (uint8 pixels, int64 from TensorCreate) would
+        # otherwise pull the kernel down to its own dtype: Sharpen's 5 still
+        # fits, but every sum wraps mod 256 in uint8 and a 1/9 box blur
+        # truncates to 0 in int64. Convolve in float32 instead.
+        if not tensor.is_floating_point() and not tensor.is_complex():
+            tensor = tensor.to(torch.float32)
 
         c_in = tensor.size(1)
         flat, k = self._resolve_kernel(params)

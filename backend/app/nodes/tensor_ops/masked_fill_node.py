@@ -49,7 +49,9 @@ class MaskedFillNode(BaseNode):
         "Put it before `Softmax`: because $e^{-\\infty} = 0$, a blocked position "
         "gets exactly zero probability and the remaining positions renormalise to "
         "sum to 1. Zeroing the entries after the softmax instead leaves the row no "
-        "longer summing to 1. The tensor must be floating point."
+        "longer summing to 1. Leave at least one position unmasked in each row: "
+        "a row that is all $-\\infty$ softmaxes to NaN in every position. The tensor "
+        "must be floating point."
     )
 
     @classmethod

@@ -32,7 +32,9 @@ class ConcatNode(BaseNode):
 
         tensor_a = inputs["tensor_a"]
         tensor_b = inputs["tensor_b"]
-        dim = params.get("dim", 0)
+        from ...core.param_values import int_param
+
+        dim = int_param(params, "dim", node="Concat", default=0)
 
         output = torch.cat([tensor_a, tensor_b], dim=dim)
 

@@ -10,6 +10,25 @@ from ...core.node_base import (
 )
 
 
+def _tile_images(imgs: Any, np: Any) -> Any:
+    """Lay a batch of (N, H, W) or (N, H, W, C) images out on one grid."""
+    n = imgs.shape[0]
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    ih, iw = imgs.shape[1], imgs.shape[2]
+    pad = 1
+    fill = float(imgs.min())
+    size = (rows * ih + (rows + 1) * pad, cols * iw + (cols + 1) * pad)
+    if imgs.ndim == 4:
+        size = (*size, imgs.shape[-1])
+    grid = np.full(size, fill, dtype=imgs.dtype)
+    for idx in range(n):
+        r, cc = idx // cols, idx % cols
+        y0, x0 = pad + r * (ih + pad), pad + cc * (iw + pad)
+        grid[y0:y0 + ih, x0:x0 + iw] = imgs[idx]
+    return grid
+
+
 class VisualizeNode(BaseNode):
     NODE_NAME = "Visualize"
     CATEGORY = "Utility"
@@ -17,7 +36,7 @@ class VisualizeNode(BaseNode):
     DETAILS = (
         "The plot is rendered with matplotlib. Line and histogram flatten "
         "multi-dimensional data first, heatmap folds a 1D input into a square "
-        "grid, and image tiles a batch of (N, C, H, W) into a grid."
+        "grid, and image tiles a batch of (N, C, H, W) or (N, H, W) into a grid."
     )
 
     @classmethod
@@ -65,7 +84,12 @@ class VisualizeNode(BaseNode):
 
         # Convert to numpy if it is a torch tensor
         if hasattr(data, "detach"):
-            data = data.detach().cpu().numpy()
+            data = data.detach().cpu()
+            # numpy has no bfloat16, and matplotlib clips only float32/64:
+            # widen the half-precision floats before converting.
+            if data.is_floating_point() and data.element_size() < 4:
+                data = data.float()
+            data = data.numpy()
         elif not isinstance(data, np.ndarray):
             data = np.array(data)
 
@@ -102,31 +126,27 @@ class VisualizeNode(BaseNode):
 
         elif plot_type == "image":
             # A batch of images (N,C,H,W): N==1 -> drop batch dim; N>1 -> tile into a grid.
+            # A 3-D (N,H,W) batch of grayscale images (MNIST's layout) tiles
+            # the same way; it is told apart from (C,H,W) and (H,W,C) by
+            # neither end being a channel count.
             if data.ndim == 4:
                 if data.shape[0] == 1:
                     data = data[0]
                 else:
-                    n, c = data.shape[0], data.shape[1]
+                    c = data.shape[1]
                     if c in (1, 3, 4):
                         imgs = np.transpose(data, (0, 2, 3, 1))  # (N,H,W,C)
                         if imgs.shape[-1] == 1:
                             imgs = imgs[..., 0]                  # (N,H,W)
                     else:
                         imgs = data[:, 0]                        # take first channel
-                    cols = int(np.ceil(np.sqrt(n)))
-                    rows = int(np.ceil(n / cols))
-                    ih, iw = imgs.shape[1], imgs.shape[2]
-                    pad = 1
-                    fill = float(imgs.min())
-                    if imgs.ndim == 4:
-                        grid = np.full((rows * ih + (rows + 1) * pad, cols * iw + (cols + 1) * pad, imgs.shape[-1]), fill, dtype=imgs.dtype)
-                    else:
-                        grid = np.full((rows * ih + (rows + 1) * pad, cols * iw + (cols + 1) * pad), fill, dtype=imgs.dtype)
-                    for idx in range(n):
-                        r, cc = idx // cols, idx % cols
-                        y0, x0 = pad + r * (ih + pad), pad + cc * (iw + pad)
-                        grid[y0:y0 + ih, x0:x0 + iw] = imgs[idx]
-                    data = grid
+                    data = _tile_images(imgs, np)
+            elif (
+                data.ndim == 3
+                and data.shape[0] not in (1, 3, 4)
+                and data.shape[2] not in (1, 3, 4)
+            ):
+                data = _tile_images(data, np)
             # Render an image tensor directly: (C,H,W), (H,W,C), or (H,W)
             if data.ndim == 3 and data.shape[0] in (1, 3, 4):
                 # (C,H,W) -> (H,W,C)

@@ -74,7 +74,11 @@ class ScatterPlot2DNode(BaseNode):
         if pts is None:
             raise ValueError("ScatterPlot2D requires a `points` input of shape [N, 2].")
         if hasattr(pts, "detach"):
-            pts = pts.detach().cpu().numpy()
+            pts = pts.detach().cpu()
+            # numpy has no bfloat16.
+            if pts.is_floating_point() and pts.element_size() < 4:
+                pts = pts.float()
+            pts = pts.numpy()
         else:
             pts = np.asarray(pts, dtype=float)
         pts = np.atleast_2d(pts)

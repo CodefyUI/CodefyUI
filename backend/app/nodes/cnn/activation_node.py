@@ -40,7 +40,6 @@ class ActivationNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         import torch
-        import torch.nn as nn
         import torch.nn.functional as F
 
         tensor = inputs["tensor"]
@@ -58,7 +57,9 @@ class ActivationNode(BaseNode):
             "selu": lambda x: F.selu(x),
             "softmax": lambda x: F.softmax(x, dim=-1),
             "hardswish": lambda x: F.hardswish(x),
-            "prelu": lambda x: nn.PReLU()(x),
+            # The untrained PReLU slope, built on the input's own device:
+            # an nn.PReLU() here held a CPU weight that MPS refused.
+            "prelu": lambda x: F.prelu(x, x.new_full((1,), 0.25)),
         }
         act_fn = activations.get(function)
         if act_fn is None:

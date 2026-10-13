@@ -56,20 +56,29 @@ class Conv2dNode(StatefulModuleMixin, BaseNode):
 
     def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
+
+        from ...core.param_values import bool_param, int_param
+
+        def whole(name: str, default: int, minimum: int) -> int:
+            return int_param(params, name, node="Conv2d", default=default,
+                             min_value=minimum)
+
         return nn.Conv2d(
-            in_channels=params.get("in_channels", 1),
-            out_channels=params.get("out_channels", 32),
-            kernel_size=params.get("kernel_size", 3),
-            stride=params.get("stride", 1),
-            padding=params.get("padding", 1),
-            dilation=params.get("dilation", 1),
-            groups=params.get("groups", 1),
-            bias=bool(params.get("bias", True)),
+            in_channels=whole("in_channels", 1, 1),
+            out_channels=whole("out_channels", 32, 1),
+            kernel_size=whole("kernel_size", 3, 1),
+            stride=whole("stride", 1, 1),
+            padding=whole("padding", 1, 0),
+            dilation=whole("dilation", 1, 1),
+            groups=whole("groups", 1, 1),
+            # bool("false") is True; bool_param reads the word.
+            bias=bool_param(params, "bias", node="Conv2d", default=True),
         )
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         conv = self.get_or_build_module(context, params)
+        tensor = self.match_input_dtype(tensor, conv)
         output = conv(tensor)
         result: dict[str, Any] = {"tensor": output}
 

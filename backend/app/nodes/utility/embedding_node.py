@@ -58,8 +58,19 @@ class EmbeddingNode(StatefulModuleMixin, BaseNode):
         return nn.Embedding(**kwargs)
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        import torch
+
         tensor = inputs["tensor"]
         emb = self.get_or_build_module(context, params)
+        if isinstance(tensor, torch.Tensor) and (
+            tensor.is_floating_point() or tensor.is_complex()
+        ):
+            raise ValueError(
+                f"Embedding: the `tensor` input must hold integer token ids, "
+                f"got {str(tensor.dtype).replace('torch.', '')}. Feed it the "
+                f"output of a tokenizer, or convert the values with .long() "
+                f"in a PythonScript."
+            )
         output = emb(tensor)
         result: dict[str, Any] = {"tensor": output}
 

@@ -66,6 +66,9 @@ class MultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
         value = inputs["value"]
 
         mha = self.get_or_build_module(context, params)
+        query = self.match_input_dtype(query, mha, port="query")
+        key = self.match_input_dtype(key, mha, port="key")
+        value = self.match_input_dtype(value, mha, port="value")
         output, weights = mha(query, key, value)
         result: dict[str, Any] = {"output": output, "weights": weights}
 
