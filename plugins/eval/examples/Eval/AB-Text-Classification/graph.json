@@ -1,0 +1,486 @@
+{
+  "name": "A/B text classifier eval",
+  "description": "Two sentiment checkpoints, item by item",
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "Start",
+      "position": {
+        "x": -320,
+        "y": 420
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "data",
+      "type": "eval:Eval-JSONLDataset",
+      "position": {
+        "x": 0,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "path": "eval:samples/sst2-mini-20.jsonl",
+          "input_field": "text",
+          "label_field": "label",
+          "id_field": "id",
+          "limit": 0
+        }
+      }
+    },
+    {
+      "id": "model_a",
+      "type": "eval:Eval-HFModelLoader",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "revision": "874eb28543ea7a7df80b6158bbf772d203efcab6",
+          "task": "auto",
+          "dtype": "float32",
+          "device": "auto",
+          "model_id": "philschmid/tiny-bert-sst2-distilled"
+        }
+      }
+    },
+    {
+      "id": "model_b",
+      "type": "eval:Eval-HFModelLoader",
+      "position": {
+        "x": 0,
+        "y": 860
+      },
+      "data": {
+        "params": {
+          "revision": "41ad6709ec46b414749b37daf49cf5ca1c7dba7c",
+          "task": "auto",
+          "dtype": "float32",
+          "device": "auto",
+          "model_id": "M-FAC/bert-tiny-finetuned-sst2"
+        }
+      }
+    },
+    {
+      "id": "proc_a",
+      "type": "eval:Eval-HFProcessorLoader",
+      "position": {
+        "x": 380,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "model_id": "",
+          "revision": "",
+          "kind": "tokenizer"
+        }
+      }
+    },
+    {
+      "id": "proc_b",
+      "type": "eval:Eval-HFProcessorLoader",
+      "position": {
+        "x": 380,
+        "y": 860
+      },
+      "data": {
+        "params": {
+          "model_id": "",
+          "revision": "",
+          "kind": "tokenizer"
+        }
+      }
+    },
+    {
+      "id": "infer_a",
+      "type": "eval:Eval-BatchInference",
+      "position": {
+        "x": 760,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "task": "auto",
+          "batch_size": 8,
+          "normalize": "strip_lower",
+          "label_map": "",
+          "max_new_tokens": 32,
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "seed": 0,
+          "max_length": 128,
+          "top_k": 2
+        }
+      }
+    },
+    {
+      "id": "infer_b",
+      "type": "eval:Eval-BatchInference",
+      "position": {
+        "x": 760,
+        "y": 860
+      },
+      "data": {
+        "params": {
+          "task": "auto",
+          "batch_size": 8,
+          "normalize": "strip_lower",
+          "label_map": "LABEL_0=negative, LABEL_1=positive",
+          "max_new_tokens": 32,
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "seed": 0,
+          "max_length": 128,
+          "top_k": 2
+        }
+      }
+    },
+    {
+      "id": "em_a",
+      "type": "eval:Eval-ExactMatch",
+      "position": {
+        "x": 1180,
+        "y": -160
+      },
+      "data": {
+        "params": {
+          "metric_name": "exact_match_a",
+          "step": 0
+        }
+      }
+    },
+    {
+      "id": "f1_a",
+      "type": "eval:Eval-F1Score",
+      "position": {
+        "x": 1180,
+        "y": 240
+      },
+      "data": {
+        "params": {
+          "average": "macro",
+          "metric_name": "f1_macro_a",
+          "step": 0
+        }
+      }
+    },
+    {
+      "id": "em_b",
+      "type": "eval:Eval-ExactMatch",
+      "position": {
+        "x": 1180,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "metric_name": "exact_match_b",
+          "step": 0
+        }
+      }
+    },
+    {
+      "id": "f1_b",
+      "type": "eval:Eval-F1Score",
+      "position": {
+        "x": 1180,
+        "y": 1100
+      },
+      "data": {
+        "params": {
+          "average": "macro",
+          "metric_name": "f1_macro_b",
+          "step": 0
+        }
+      }
+    },
+    {
+      "id": "compare",
+      "type": "eval:Eval-CompareRuns",
+      "position": {
+        "x": 1600,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "key_column": "id",
+          "require_same_input": true,
+          "max_rows": 20
+        }
+      }
+    },
+    {
+      "id": "chart",
+      "type": "stats:Stats-ChartView",
+      "position": {
+        "x": 2020,
+        "y": 240
+      },
+      "data": {
+        "params": {
+          "kind": "bar",
+          "title": "A vs B outcomes on 20 items",
+          "columns_filter": "count"
+        }
+      }
+    },
+    {
+      "id": "view",
+      "type": "stats:Stats-TableView",
+      "position": {
+        "x": 2020,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "max_rows": 10,
+          "precision": 2,
+          "title": "Outcomes (count, share of scored items)"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -760,
+        "y": 420
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Two small sentiment classifiers answer the same 20 movie-review sentences, and the graph says, item by item, where they differ. Each run becomes a prediction table: one row per item with its id, the input and its hash, the raw and normalised answer, the label and a status. The metrics score only the rows whose status is ok, and CompareRuns matches the two tables by id, never by row position. The checkpoints are tiny (two layers), so read the result as a demonstration of the pipeline, not as a verdict on either model.\n\n兩個小型情感分類模型回答同樣 20 句影評，這張圖逐筆指出它們哪裡不同。每次推論都變成一張預測表：每筆一列，記錄 id、輸入與其雜湊、原始答案與正規化後的答案、標籤和狀態。指標只計算狀態為 ok 的列，CompareRuns 依 id 對齊兩張表，絕不依列的位置。這兩個模型都很小（兩層），所以請把結果當成流程示範，而不是對任一模型的評價。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -440,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-models",
+      "type": "note",
+      "position": {
+        "x": 0,
+        "y": -480
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The first run needs a download of two checkpoints from Hugging Face, about 18 MB each, and the transformers package, which installing the eval pack brings. The stats pack draws the chart and the table on the right. Each loader is pinned to a commit, so this graph keeps giving the same numbers; set revision to main to follow the latest one. With HF_HUB_OFFLINE=1 the cached snapshots are used and nothing is downloaded.\n\n第一次執行需要從 Hugging Face 下載兩個模型（各約 18 MB），以及安裝 eval 外掛時一併裝上的 transformers 套件；右側的圖表與表格由 stats 外掛繪製。每個載入節點都鎖定一個 commit，所以這張圖每次都得到同樣的數字；把 revision 改成 main 就會跟著最新版本。設定 HF_HUB_OFFLINE=1 時只使用快取，不會下載任何東西。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model_a",
+        "boundOffset": {
+          "x": 0,
+          "y": -480
+        },
+        "noteWidth": 340
+      }
+    },
+    {
+      "id": "note-labels",
+      "type": "note",
+      "position": {
+        "x": 760,
+        "y": 1380
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Model B's config has no label names, so it answers LABEL_0 and LABEL_1. label_map renames them to negative and positive before normalising; the raw_answer column still shows what the model actually said. Without it every answer of B would count as wrong.\n\nB 模型的設定沒有標籤名稱，所以它回答 LABEL_0 與 LABEL_1。label_map 在正規化之前把它們改名為 negative 與 positive；raw_answer 欄仍保留模型原本的回答。少了這一步，B 的每個答案都會被算成錯。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "infer_b",
+        "boundOffset": {
+          "x": 0,
+          "y": 520
+        },
+        "noteWidth": 340
+      }
+    },
+    {
+      "id": "note-compare",
+      "type": "note",
+      "position": {
+        "x": 1600,
+        "y": -20
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A gets all 20 right (exact match 1.0000); B gets 19 (0.9500, macro F1 0.9499). They agree on 19 of 20 items, an agreement of 0.9500: the one difference is s15, which A calls positive and B negative. The heatmap is the agreement matrix, A's answers by row against B's by column; the diff in the Log lists disagreements first.\n\nA 全部 20 筆都對（exact match 1.0000）；B 對 19 筆（0.9500，macro F1 0.9499）。兩者在 20 筆中有 19 筆一致，一致率 0.9500：唯一的差異是 s15，A 判為 positive、B 判為 negative。熱圖是一致性矩陣，列是 A 的答案、欄是 B 的答案；記錄裡的逐筆差異會先列出不一致的項目。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "compare",
+        "boundOffset": {
+          "x": 0,
+          "y": -440
+        },
+        "noteWidth": 340
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "trig-data",
+      "source": "start-1",
+      "target": "data",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "trig-model_a",
+      "source": "start-1",
+      "target": "model_a",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "trig-model_b",
+      "source": "start-1",
+      "target": "model_b",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "model_a.model->proc_a.model",
+      "source": "model_a",
+      "target": "proc_a",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "model_a.model->infer_a.model",
+      "source": "model_a",
+      "target": "infer_a",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "proc_a.processor->infer_a.processor",
+      "source": "proc_a",
+      "target": "infer_a",
+      "sourceHandle": "processor",
+      "targetHandle": "processor"
+    },
+    {
+      "id": "data.dataset->infer_a.dataset",
+      "source": "data",
+      "target": "infer_a",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "infer_a.predictions->em_a.predictions",
+      "source": "infer_a",
+      "target": "em_a",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "infer_a.predictions->f1_a.predictions",
+      "source": "infer_a",
+      "target": "f1_a",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "infer_a.predictions->compare.table_a",
+      "source": "infer_a",
+      "target": "compare",
+      "sourceHandle": "predictions",
+      "targetHandle": "table_a"
+    },
+    {
+      "id": "model_b.model->proc_b.model",
+      "source": "model_b",
+      "target": "proc_b",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "model_b.model->infer_b.model",
+      "source": "model_b",
+      "target": "infer_b",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "proc_b.processor->infer_b.processor",
+      "source": "proc_b",
+      "target": "infer_b",
+      "sourceHandle": "processor",
+      "targetHandle": "processor"
+    },
+    {
+      "id": "data.dataset->infer_b.dataset",
+      "source": "data",
+      "target": "infer_b",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "infer_b.predictions->em_b.predictions",
+      "source": "infer_b",
+      "target": "em_b",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "infer_b.predictions->f1_b.predictions",
+      "source": "infer_b",
+      "target": "f1_b",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "infer_b.predictions->compare.table_b",
+      "source": "infer_b",
+      "target": "compare",
+      "sourceHandle": "predictions",
+      "targetHandle": "table_b"
+    },
+    {
+      "id": "compare.summary_table->chart.table",
+      "source": "compare",
+      "target": "chart",
+      "sourceHandle": "summary_table",
+      "targetHandle": "table"
+    },
+    {
+      "id": "compare.summary_columns->chart.columns",
+      "source": "compare",
+      "target": "chart",
+      "sourceHandle": "summary_columns",
+      "targetHandle": "columns"
+    },
+    {
+      "id": "compare.summary_rows->chart.row_labels",
+      "source": "compare",
+      "target": "chart",
+      "sourceHandle": "summary_rows",
+      "targetHandle": "row_labels"
+    },
+    {
+      "id": "compare.summary_table->view.table",
+      "source": "compare",
+      "target": "view",
+      "sourceHandle": "summary_table",
+      "targetHandle": "table"
+    },
+    {
+      "id": "compare.summary_columns->view.columns",
+      "source": "compare",
+      "target": "view",
+      "sourceHandle": "summary_columns",
+      "targetHandle": "columns"
+    },
+    {
+      "id": "compare.summary_rows->view.row_labels",
+      "source": "compare",
+      "target": "view",
+      "sourceHandle": "summary_rows",
+      "targetHandle": "row_labels"
+    }
+  ]
+}

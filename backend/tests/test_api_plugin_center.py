@@ -240,9 +240,9 @@ async def test_the_catalog_and_the_lockfile_are_merged_once_each(anon_client):
     ids = [entry["id"] for entry in body["entries"]]
 
     assert len(ids) == len(set(ids)), "a plugin was listed twice"
-    assert ids[:5] == ["edu", "foundations", "deep", "stats", "rl"]
+    assert ids[:6] == ["edu", "foundations", "deep", "stats", "rl", "eval"]
     assert ids[-2:] == ["demo-external", "ghost-pack"]
-    assert set(ids[5:-2]) == {"graph-copilot", "self-learning",
+    assert set(ids[6:-2]) == {"graph-copilot", "self-learning",
                               "official-template"}
 
 

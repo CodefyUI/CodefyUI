@@ -62,6 +62,11 @@ _SLOW_NODE_TYPES = {
     # a machine that DOES have the pack would load half a gigabyte of weights
     # inside the fast smoke suite.
     "TextEmbedding",
+    # Loads a Hugging Face checkpoint, which a fresh runner would have to
+    # download and which CI has no transformers to load with.
+    # test_eval_hf_local.py runs the eval pack's A/B example for real behind
+    # CODEFYUI_PACK_NETWORK_TESTS.
+    "eval:Eval-HFModelLoader",
 }
 
 
