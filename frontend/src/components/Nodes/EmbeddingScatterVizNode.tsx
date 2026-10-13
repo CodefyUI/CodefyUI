@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
-import { useTabStore } from '../../store/tabStore';
+import { outputSummaryOf, useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { ScatterPlot } from '../shared/ScatterPlot';
 import { BaseNodeBody } from './BaseNode';
@@ -13,7 +13,7 @@ function EmbeddingScatterVizNode(props: NodeProps<AppNode>) {
   const { t } = useI18n();
   const summaries = useTabStore((s) => {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
-    return tab?.outputSummaries?.[id];
+    return outputSummaryOf(tab, id);
   });
   const openVizModal = useTabStore((s) => s.openVizModal);
 

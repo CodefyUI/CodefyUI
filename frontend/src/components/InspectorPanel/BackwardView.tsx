@@ -117,13 +117,13 @@ export function BackwardView({ runId, nodeId }: Props) {
     if (runInProgress) return;
     let cancelled = false;
     let stopWaiting: (() => void) | null = null;
-    // Inside an open block the card has no run status to go by. A block or
-    // preset card's gradients are its inner nodes' (#559): none is under its
-    // own id, so it is never "not in the run".
+    // Inside an open block the node shows what the run reported for this
+    // copy of it (#559). A block or preset card's gradients are its inner
+    // nodes': none is under its own id, so it is never "not in the run".
     const container = canvasNodeIsContainer(nodeId);
     missingGradientsNote(runId, {
       runNodeId,
-      status: runNodeId === nodeId ? canvasNodeStatus(nodeId) : undefined,
+      status: canvasNodeStatus(nodeId),
       hasOutputs: !container && canvasNodeHasOutputs(nodeId),
     })
       .then((note) => {

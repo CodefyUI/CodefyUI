@@ -143,6 +143,12 @@ export interface LogChartPayload {
 export interface LogEntry {
   timestamp: number;
   nodeId?: string;
+  /**
+   * The run id of the node inside a block or preset card that produced this
+   * entry (`<card>/<node>`, #559). `nodeId` is then its outermost card, the
+   * node the top level draws.
+   */
+  innerNodeId?: string;
   message: string;
   type: 'info' | 'error' | 'success';
   /**
@@ -1513,6 +1519,19 @@ function refreshChangedInstances(
  * three blocks deep. Returns the SAME object when nothing is open, so the
  * persistence cache's identity compare still hits.
  */
+/**
+ * What the last run summarised for canvas node `canvasId` on `tab`'s open
+ * level. A node inside a block is summarised under its run id (#559), so two
+ * copies of one block keep their own values, and a node at the top level
+ * under its own.
+ */
+export function outputSummaryOf(
+  tab: TabState | undefined,
+  canvasId: string,
+): Record<string, OutputSummary> | undefined {
+  return tab?.outputSummaries[runNodePrefix(tab.subgraphStack) + canvasId];
+}
+
 export function flushSubgraphEditing(tab: TabState): TabState {
   // Optional-chained: tests and older persisted records build tab objects
   // without the field, and a save path is the wrong place to throw.

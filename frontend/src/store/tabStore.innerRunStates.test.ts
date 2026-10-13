@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Node } from '@xyflow/react';
 
-import { useTabStore, type TabState } from './tabStore';
+import { outputSummaryOf, useTabStore, type TabState } from './tabStore';
 import { subgraphFrame } from '../test/openBlocks';
 import type { NodeData } from '../types';
 
@@ -55,5 +55,30 @@ describe('a run state for a node inside a block', () => {
 
     expect(tab().innerRunStates).toEqual({ 'blk/m': { executionStatus: 'running', error: undefined } });
     expect(tab().nodes).toBe(nodes);
+  });
+});
+
+describe('what the last run summarised for a node, on the level on screen', () => {
+  const TOP = { out: { type: 'scalar', value: 1 } };
+  const INNER = { out: { type: 'scalar', value: 2 } };
+  const COPY = { out: { type: 'scalar', value: 3 } };
+
+  beforeEach(() => {
+    patchTab({ outputSummaries: { m: TOP, 'blk/m': INNER, 'copy/m': COPY } });
+  });
+
+  it('is the node itself at the top level', () => {
+    expect(outputSummaryOf(tab(), 'm')).toBe(TOP);
+  });
+
+  it('is the open copy of the block inside one, never the other copy (#559)', () => {
+    patchTab({ subgraphStack: [subgraphFrame('blk')] });
+    expect(outputSummaryOf(tab(), 'm')).toBe(INNER);
+    patchTab({ subgraphStack: [subgraphFrame('copy')] });
+    expect(outputSummaryOf(tab(), 'm')).toBe(COPY);
+  });
+
+  it('is nothing for a tab that is not there', () => {
+    expect(outputSummaryOf(undefined, 'm')).toBeUndefined();
   });
 });

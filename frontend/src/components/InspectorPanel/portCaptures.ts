@@ -275,8 +275,9 @@ export function _setRunRecordRetryForTests(retries: number, ms: number): void {
 }
 
 /**
- * Who a read is for. `status` is the card's last run status, given at the TOP
- * level only -- inside an open block the cards never get one. `hasOutputs` is
+ * Who a read is for. `status` is the card's last run status -- inside an open
+ * block, the one the run reported for that copy of the node (#559), which the
+ * open level paints on it. `hasOutputs` is
  * false for a node that declares no data output (Start): the run's list has
  * nothing for it even when it ran.
  */
@@ -313,6 +314,7 @@ export async function missingFromRunNote(
   // (see `followRecordingSetting`).
   if (c.state !== 'unknown' && !c.recorded) {
     if (c.state === 'finished' && subject.status === 'error') return 'inspector.capture.failedInRun';
+    if (c.state === 'finished' && subject.status === 'skipped') return 'inspector.capture.skippedInRun';
     return recordingOffNote(recordOutputsNow());
   }
   if (c.state === 'live') {
@@ -324,6 +326,10 @@ export async function missingFromRunNote(
   }
   if (subject.status === 'error') return 'inspector.capture.failedInRun';
   if (c.state === 'finished' && c.nodes?.has(subject.runNodeId)) return null;
+  // Passed over because a node before it failed: it never ran, so there is
+  // nothing to read, whatever the run's record can tell (#559). Asking would
+  // only earn a 404, and that reads as expired.
+  if (subject.status === 'skipped') return 'inspector.capture.skippedInRun';
   if (!absentFromRecordedList(c, subject)) return null;
   // A bypassed node never runs; it is in the list only for a port something
   // passed through (#559). Nothing did, which is not the same as expiry.
@@ -349,6 +355,8 @@ export async function missingGradientsNote(
   if (subject.status === 'error') return 'inspector.capture.failedInRun';
   if (c.state === 'finished' && !c.gradients) return 'none';
   if (c.state === 'finished' && c.nodes?.has(subject.runNodeId)) return null;
+  // Never ran, so it has no gradients either (#559).
+  if (subject.status === 'skipped') return 'inspector.capture.skippedInRun';
   return absentFromRecordedList(c, subject) ? 'inspector.capture.notInRun' : null;
 }
 
@@ -564,26 +572,45 @@ export type PortMediaMap = Record<string, PortMedia>;
  *
  * Later entries win, so a re-run replaces the previous run's media rather than
  * stacking behind it.
+ *
+ * Keyed by canvas id on the level on screen (#559). A node inside a block
+ * files its media under its run id (`innerNodeId`), so inside an open block
+ * an entry counts only when that id is the open level's prefix plus a node
+ * drawn there: the copy of the block that drew it, never the other one, and
+ * never a top-level node that happens to share an inner node's id.
  */
 export function usePortMedia(): PortMediaMap {
   const logs = useTabStore(
     (s) => s.tabs.find((t) => t.id === s.activeTabId)?.logs ?? NO_LOGS,
   );
+  const prefix = useRunNodePrefix();
   return useMemo(() => {
     const out: PortMediaMap = {};
     for (const entry of logs) {
-      if (!entry.nodeId) continue;
+      const nodeId = canvasIdOnLevel(entry.innerNodeId ?? entry.nodeId, prefix);
+      if (!nodeId) continue;
       // An entry with no `port` predates the named-port contract (or came
       // from the legacy flat image field): it cannot be attributed to a row,
       // and guessing would put one node's media on another node's port.
       if (entry.kind === 'image' && entry.image?.data && entry.image.port) {
-        out[keyOf(entry.nodeId, entry.image.port)] = { kind: 'image', image: entry.image };
+        out[keyOf(nodeId, entry.image.port)] = { kind: 'image', image: entry.image };
       } else if (entry.kind === 'video' && entry.video?.url && entry.video.port) {
-        out[keyOf(entry.nodeId, entry.video.port)] = { kind: 'video', video: entry.video };
+        out[keyOf(nodeId, entry.video.port)] = { kind: 'video', video: entry.video };
       }
     }
     return out;
-  }, [logs]);
+  }, [logs, prefix]);
+}
+
+/**
+ * The canvas id run node `runId` has on the level whose ids take `prefix`
+ * (see {@link runNodePrefix}), or null when it is not drawn there: inside
+ * another block, deeper in, or on another level.
+ */
+export function canvasIdOnLevel(runId: string | undefined, prefix: string): string | null {
+  if (!runId || !runId.startsWith(prefix)) return null;
+  const id = runId.slice(prefix.length);
+  return id && !id.includes('/') ? id : null;
 }
 
 export interface NodePorts {
@@ -666,7 +693,13 @@ export function useInputsEmptyText(nodeId: string): string {
  * the upstream source, whose value the row shows, not the node on screen.
  */
 
-export type CapturePhase = 'pending' | 'running' | 'bypassed' | 'unselected' | 'settled';
+export type CapturePhase =
+  | 'pending'
+  | 'running'
+  | 'bypassed'
+  | 'unselected'
+  | 'skipped'
+  | 'settled';
 
 /**
  * Whether the owner of a port has written its captures.
@@ -676,7 +709,10 @@ export type CapturePhase = 'pending' | 'running' | 'bypassed' | 'unselected' | '
  * node the run has not reached is `pending` rather than `running` — it is
  * queued, and saying it is running would be a claim we cannot make. A node
  * the run bypassed is neither (#559): it will never run, and what passes
- * through it is the upstream node's value, readable once the run is over.
+ * through it is the upstream node's value, readable once the run is over. A
+ * node the run passed over because a node before it failed (`skipped`) will
+ * not run either, and has nothing to read: it says so at once rather than
+ * waiting on the run (#559).
  */
 export function capturePhase(
   status: ExecutionStatus | undefined,
@@ -688,6 +724,7 @@ export function capturePhase(
   // #656: left out because a Switch's param did not pick its branch. It will
   // never run, and nothing passes through it.
   if (status === 'unselected') return 'unselected';
+  if (status === 'skipped') return 'skipped';
   if (status === undefined || status === 'idle') return 'pending';
   return 'settled';
 }
@@ -701,6 +738,7 @@ export function capturePhaseNoteKey(phase: CapturePhase): TranslationKey | null 
   if (phase === 'pending') return 'inspector.nodePending';
   if (phase === 'bypassed') return 'inspector.nodeBypassed';
   if (phase === 'unselected') return 'inspector.nodeUnselected';
+  if (phase === 'skipped') return 'inspector.capture.skippedInRun';
   return null;
 }
 
@@ -748,6 +786,7 @@ const PHASE_CHAR: Record<CapturePhase, string> = {
   running: 'r',
   bypassed: 'b',
   unselected: 'u',
+  skipped: 'k',
   settled: 's',
 };
 const CHAR_PHASE: Record<string, CapturePhase> = {
@@ -755,6 +794,7 @@ const CHAR_PHASE: Record<string, CapturePhase> = {
   r: 'running',
   b: 'bypassed',
   u: 'unselected',
+  k: 'skipped',
   s: 'settled',
 };
 
@@ -885,8 +925,9 @@ export function usePortFetches(
     statusOf: new Map(),
   });
   const runInProgress = useRunInProgress();
+  // Inside an open block too: each node there shows what the run reported
+  // for this copy of it (#559).
   const statusKey = useTabStore((s) => {
-    if (prefix) return '';
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
     return ports
       .map((p) => tab?.nodes.find((n) => n.id === p.nodeId)?.data.executionStatus ?? '')
@@ -921,12 +962,12 @@ export function usePortFetches(
     }
     const asked = askedRef.current;
     const runPorts = toRunPorts(portsRef.current, prefix);
-    if (!prefix) {
-      for (const t of runPorts) {
-        const key = keyOf(t.nodeId, t.port);
-        if (asked.keys.has(key) && asked.statusOf.get(key) !== canvasNodeStatus(t.nodeId)) {
-          asked.keys.delete(key);
-        }
+    // A port's owner by its id on the level on screen, where its status is.
+    const statusOf = (t: PortTarget) => canvasNodeStatus(t.nodeId.slice(prefix.length));
+    for (const t of runPorts) {
+      const key = keyOf(t.nodeId, t.port);
+      if (asked.keys.has(key) && asked.statusOf.get(key) !== statusOf(t)) {
+        asked.keys.delete(key);
       }
     }
     const due = takeDuePorts(runPorts, phasesRef.current, asked.keys);
@@ -946,10 +987,10 @@ export function usePortFetches(
     const stale = (key: string, seq: number) =>
       !aliveRef.current || runIdRef.current !== runId || seqRef.current.get(key) !== seq;
     // Read now, not when the answers land: the index is only whole once the
-    // run is over, and the status is the one this pass was decided on. Inside
-    // an open block there is no status to read: the cards never get one.
+    // run is over, and the status is the one this pass was decided on --
+    // inside an open block, the one the run reported for this copy (#559).
     const runOver = !runInProgressNow();
-    const statuses = due.map((t) => (prefix ? undefined : canvasNodeStatus(t.nodeId)));
+    const statuses = due.map(statusOf);
     due.forEach((t, i) => asked.statusOf.set(keyOf(t.nodeId, t.port), statuses[i]));
 
     void Promise.all(

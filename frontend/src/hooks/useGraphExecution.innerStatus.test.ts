@@ -287,6 +287,68 @@ describe('a run seen from inside a block', () => {
   });
 });
 
+describe('what a node inside a block produced (#559)', () => {
+  const PNG = 'iVBORw0KGgo=';
+  const CHART = { kind: 'bar', labels: ['v'], values: [1] };
+  const VIDEO = { path: 'clip.mp4', url: '/api/media/clip.mp4', format: 'mp4' };
+  const SUMMARY = { out: { type: 'tensor', shape: [2], dtype: 'float32' } };
+
+  it("files its picture, clip and chart under its card naming it, and its summary under its run id", () => {
+    const { card, copy } = graphWithTwoCopies();
+    renderHook(() => useGraphExecution());
+
+    frames(['inner_node_status', {
+      node_id: `${card}/c`, container_id: card, status: 'completed',
+      outputs: [
+        { output_kind: 'image', port: 'out', image: { format: 'png', encoding: 'base64', data: PNG } },
+        { output_kind: 'video', port: 'clip', video: VIDEO },
+        { output_kind: 'chart', port: 'plot', chart: CHART },
+        { output_kind: 'tensor_summary', tensor_summary: SUMMARY },
+        // Never sent (the card relays the line), and never logged if it were.
+        { output_kind: 'text', text: 'from inside' },
+      ],
+    }]);
+
+    expect(tab().logs.map((l) => [l.kind, l.nodeId, l.innerNodeId])).toEqual([
+      ['image', card, `${card}/c`],
+      ['video', card, `${card}/c`],
+      ['chart', card, `${card}/c`],
+    ]);
+    expect(tab().logs[0].image).toEqual({ format: 'png', encoding: 'base64', data: PNG, port: 'out' });
+    expect(tab().outputSummaries[`${card}/c`]).toEqual(SUMMARY);
+    // Not the other copy's, and not a top-level node's.
+    expect(tab().outputSummaries[`${copy}/c`]).toBeUndefined();
+    expect(tab().outputSummaries.c).toBeUndefined();
+  });
+
+  it('files it under the node itself when the frame names no card', () => {
+    const { card } = graphWithTwoCopies();
+    renderHook(() => useGraphExecution());
+
+    frames(['inner_node_status', {
+      node_id: `${card}/c`, status: 'completed',
+      outputs: [{ output_kind: 'chart', chart: CHART }],
+    }]);
+
+    expect(tab().logs.map((l) => [l.nodeId, l.innerNodeId])).toEqual([[`${card}/c`, `${card}/c`]]);
+    expect(tab().outputSummaries[`${card}/c`]).toBeUndefined();
+  });
+
+  it('logs nothing for a frame with no outputs, or outputs that are not a list', () => {
+    const { card } = graphWithTwoCopies();
+    renderHook(() => useGraphExecution());
+
+    frames(
+      ['inner_node_status', { node_id: `${card}/b`, container_id: card, status: 'completed' }],
+      ['inner_node_status', {
+        node_id: `${card}/c`, container_id: card, status: 'completed', outputs: 'nope',
+      }],
+    );
+
+    expect(tab().logs).toEqual([]);
+  });
+});
+
 describe('a bypassed node', () => {
   it('takes the status on its card without a log line', () => {
     graphWithTwoCopies();

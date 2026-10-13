@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
-import { useTabStore } from '../../store/tabStore';
+import { outputSummaryOf, useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { TokenChip } from '../shared/TokenChip';
 import { BaseNodeBody } from './BaseNode';
@@ -14,7 +14,7 @@ function TokenizerVizNode(props: NodeProps<AppNode>) {
   const { t } = useI18n();
   const summaries = useTabStore((s) => {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
-    return tab?.outputSummaries?.[id];
+    return outputSummaryOf(tab, id);
   });
 
   const chips = useMemo(() => {

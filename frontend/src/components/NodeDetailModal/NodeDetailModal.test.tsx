@@ -1610,6 +1610,28 @@ describe('NodeDetailModal — chart outputs (#130)', () => {
     expect(screen.queryByText('Someone else')).toBeNull();
   });
 
+  it('shows, inside an open block, the charts this copy of the node drew (#559)', () => {
+    // A node inside a block files its chart under its card, naming itself
+    // by its run id; the other copy's chart is not this node's.
+    seedTab({
+      nodes: [node('n1')],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      subgraphStack: [subgraphFrame('blk')],
+      logs: [
+        { ...chartLog('blk', { kind: 'bar', title: 'This copy', bars: [] }), innerNodeId: 'blk/n1' },
+        { ...chartLog('copy', { kind: 'bar', title: 'Other copy', bars: [] }), innerNodeId: 'copy/n1' },
+        chartLog('n1', { kind: 'bar', title: 'A top-level node', bars: [] }),
+      ],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+
+    expect(screen.getByText('This copy')).toBeInTheDocument();
+    expect(screen.queryByText('Other copy')).toBeNull();
+    expect(screen.queryByText('A top-level node')).toBeNull();
+  });
+
   it('keeps charts off the Inputs tab', () => {
     seedTab({
       nodes: [node('n1')],

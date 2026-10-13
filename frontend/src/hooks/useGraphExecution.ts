@@ -3,6 +3,7 @@ import type { ExecutionStatus } from '../types';
 import {
   flushSubgraphEditing,
   useTabStore,
+  type LogEntry,
   type RunQueueInfo,
   type TabState,
 } from '../store/tabStore';
@@ -468,11 +469,34 @@ export function useGraphExecution() {
         if (typeof legacy.image === 'string' && legacy.image) {
           imageEntries.push({ image: { format: 'png', encoding: 'base64', data: legacy.image } });
         }
-        for (const entry of imageEntries) {
+        logMedia(
+          { nodeId: data.node_id },
+          imageEntries,
+          ofKind('video'),
+          ofKind('chart'),
+        );
+
+        const summary = firstOf('tensor_summary')?.tensor_summary ?? legacy.output_summary;
+        if (summary) {
+          store.setTabOutputSummary(tabId, data.node_id, summary);
+        }
+      };
+
+      // One log line per picture, clip and chart a node produced, in that
+      // order, filed under `from` -- a node of the top level, or a block's
+      // card with the node inside it that drew it (#559).
+      const logMedia = (
+        from: Pick<LogEntry, 'nodeId' | 'innerNodeId'>,
+        images: any[],
+        videos: any[],
+        charts: any[],
+      ) => {
+        const store = useTabStore.getState();
+        for (const entry of images) {
           const payload = entry.image;
           if (!payload?.data) continue;
           store.addTabLog(tabId, {
-            nodeId: data.node_id,
+            ...from,
             message: '',
             kind: 'image',
             image: {
@@ -488,11 +512,11 @@ export function useGraphExecution() {
         // #310: a video entry is a REFERENCE (path/url/format) to a file the
         // backend wrote under its media dir — never bytes. No legacy
         // fallback — the kind postdates the flat-field era entirely.
-        for (const entry of ofKind('video')) {
+        for (const entry of videos) {
           const payload = entry.video;
           if (!payload?.url || !payload?.format) continue;
           store.addTabLog(tabId, {
-            nodeId: data.node_id,
+            ...from,
             message: '',
             kind: 'video',
             video: { ...payload, ...(entry.port ? { port: entry.port } : {}) },
@@ -502,29 +526,29 @@ export function useGraphExecution() {
 
         // #130: a chart entry carries a spec the client draws itself. No
         // legacy fallback — the kind postdates the flat-field era entirely.
-        for (const entry of ofKind('chart')) {
+        for (const entry of charts) {
           const payload = entry.chart;
           if (!payload?.kind) continue;
           store.addTabLog(tabId, {
-            nodeId: data.node_id,
+            ...from,
             message: '',
             kind: 'chart',
             chart: { ...payload, ...(entry.port ? { port: entry.port } : {}) },
             type: 'info',
           });
         }
-
-        const summary = firstOf('tensor_summary')?.tensor_summary ?? legacy.output_summary;
-        if (summary) {
-          store.setTabOutputSummary(tabId, data.node_id, summary);
-        }
       };
 
       // A node inside a block or preset card (#559), under the id the run
-      // gave it. Its card's own frames already wrote the log line, so this
-      // paints the node and nothing else.
+      // gave it. Its card's own frames already wrote the log line; this
+      // paints the node, and files what it produced: a picture, clip or
+      // chart in the Execution Log under its card, naming the node, and its
+      // port summary under its run id, where an open block reads it.
       const onInnerNodeStatus = (raw: unknown) => {
-        const data = raw as { node_id?: unknown; status?: unknown; error?: unknown };
+        const data = raw as {
+          node_id?: unknown; container_id?: unknown; status?: unknown; error?: unknown;
+          outputs?: unknown;
+        };
         if (typeof data.node_id !== 'string' || typeof data.status !== 'string') return;
         queueTabInnerNodeStatus(
           tabId,
@@ -532,6 +556,22 @@ export function useGraphExecution() {
           data.status as ExecutionStatus,
           typeof data.error === 'string' ? data.error : undefined,
         );
+        const outputs: any[] = Array.isArray(data.outputs) ? data.outputs : [];
+        const ofKind = (kind: string) =>
+          outputs.filter((o) => o && typeof o === 'object' && o.output_kind === kind);
+        logMedia(
+          {
+            nodeId: typeof data.container_id === 'string' ? data.container_id : data.node_id,
+            innerNodeId: data.node_id,
+          },
+          ofKind('image'),
+          ofKind('video'),
+          ofKind('chart'),
+        );
+        const summary = ofKind('tensor_summary')[0]?.tensor_summary;
+        if (summary) {
+          useTabStore.getState().setTabOutputSummary(tabId, data.node_id, summary);
+        }
       };
 
       const onExecutionComplete = (raw: unknown) => {

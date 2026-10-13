@@ -520,6 +520,21 @@ describe('BackwardView — a node the last run has nothing for', () => {
     expect(screen.queryByText('No gradients captured')).toBeNull();
   });
 
+  it('says a node the run passed over never ran, not that its gradients expired (#559)', async () => {
+    mockGetRun.mockResolvedValue({
+      id: 'r1', status: 'failed', options: { record_outputs: true, backward_mode: true },
+    } as unknown as RunInfo);
+    mockList.mockRejectedValue(new RunDataExpiredError('r1'));
+    place('n1', OUT, 'skipped');
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() =>
+      expect(
+        screen.getByText('Skipped: a node before it failed, so it did not run'),
+      ).toBeInTheDocument(),
+    );
+    expect(mockGradIndex).not.toHaveBeenCalled();
+  });
+
   it('shows Start what it always showed: it declares no output, so no list names it', async () => {
     place('start', [{ name: 'trigger', data_type: 'TRIGGER' }]);
     mockList.mockResolvedValue([{ node_id: 'other', port: 'out', type: 'scalar', full_shape: null }]);

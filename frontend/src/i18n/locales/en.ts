@@ -785,6 +785,7 @@ const en = {
   'inspector.capture.notInRun': 'Not in the last run',
   'inspector.capture.bypassedInRun': 'Bypassed in the last run, and nothing passed through it',
   'inspector.capture.unselectedInRun': 'Not selected by a Switch in the last run, so it did not run',
+  'inspector.capture.skippedInRun': 'Skipped: a node before it failed, so it did not run',
   'inspector.capture.failedInRun': 'Failed in the last run',
   'inspector.capture.runHint': 'Run the graph to capture its values',
   'inspector.capture.fromBlock': "From the block's input: {ports}",
