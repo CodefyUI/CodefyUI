@@ -1458,8 +1458,8 @@ class TrainingLoopNode(BaseNode):
                     "Optimizer node instead stores state that never trained."
                 ),
             ),
-            PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch"),
-            PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch (empty if no val_dataloader)"),
+            PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch: the mean of that epoch's per-batch losses, so a short last batch counts as much as a full one"),
+            PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch, the mean of the per-batch losses like losses (empty if no val_dataloader)"),
             PortDefinition(name="metrics", data_type=DataType.ANY, description="Training metrics dict (final_loss, best_epoch, lr_history, etc.)"),
             PortDefinition(
                 name="epoch",
