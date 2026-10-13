@@ -46,6 +46,124 @@ def _check_loss_shapes(outputs: Any, targets: Any, phase: str) -> None:
     )
 
 
+def _float_targets(outputs: Any, targets: Any) -> Any:
+    """Integer or bool targets as floats, for an element-wise loss.
+
+    ``BCEWithLogitsLoss`` and ``MSELoss`` refuse integer targets with "result
+    type Float can't be cast to the desired output type Long", which names
+    neither the loss nor the fix. 0/1 labels from a class-typed TensorDataset
+    are the usual way to get there, and their float value is exactly what
+    the loss means, so they are converted rather than refused.
+    """
+    import torch
+
+    if (isinstance(outputs, torch.Tensor) and isinstance(targets, torch.Tensor)
+            and torch.is_floating_point(outputs)
+            and not torch.is_floating_point(targets)
+            and not torch.is_complex(targets)):
+        return targets.to(torch.promote_types(outputs.dtype, torch.float32))
+    return targets
+
+
+def _class_dim_first(loss_fn: Any, outputs: Any, targets: Any) -> Any:
+    """Per-token logits ``[B, T, V]`` as ``[B, V, T]`` for a class loss.
+
+    ``CrossEntropyLoss`` and ``NLLLoss`` read a 3-D input as ``[N, C, d1]``,
+    class dimension SECOND. A language model (or any per-position head built
+    from Linear layers) puts it LAST. With ``T != V`` torch then fails with
+    "Expected target size", and with ``T == V`` it runs and averages over the
+    wrong axis: 1.6643 where the per-token cross-entropy is 1.6811 in the
+    2026-10-13 audit, with no error.
+
+    The rule: a 3-D output with 2-D integer targets equal to its first two
+    dimensions is read as ``[B, T, V]`` and moved to ``[B, V, T]``, so the
+    loss is the mean over every token, the number LMCrossEntropyLoss gives.
+    A channel-first output (Conv1d, ``[B, C, L]`` against ``[B, L]``) whose
+    targets match only its first and LAST dimensions is left alone. When
+    both readings fit (``T == V == L``) the channel-last one wins, because
+    that is what a Linear head produces.
+    """
+    import torch
+    import torch.nn as nn
+
+    if not (isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
+            and isinstance(outputs, torch.Tensor)
+            and isinstance(targets, torch.Tensor)):
+        return outputs
+    if (outputs.dim() == 3 and targets.dim() == 2
+            and not torch.is_floating_point(targets)
+            and tuple(targets.shape) == tuple(outputs.shape[:2])):
+        return outputs.transpose(1, 2)
+    return outputs
+
+
+def _single_logit(outputs: Any) -> bool:
+    """One logit per example: ``[B]`` or ``[B, 1]``."""
+    import torch
+
+    return isinstance(outputs, torch.Tensor) and (
+        outputs.dim() == 1 or (outputs.dim() == 2 and outputs.shape[1] == 1))
+
+
+def _compute_loss(
+    loss_fn: Any, outputs: Any, targets: Any, phase: str, *, elementwise: bool,
+) -> Any:
+    """``loss_fn`` on one batch, with the checks every phase shares.
+
+    One function for the training batch, the per-epoch validation pass and
+    the ``val_every_steps`` pass, so the three cannot disagree about what a
+    batch's loss is.
+    """
+    import torch
+    import torch.nn as nn
+
+    if (isinstance(loss_fn, nn.modules.loss._Loss)
+            and not isinstance(outputs, torch.Tensor)):
+        raise ValueError(
+            f"TrainingLoop: the model returned a {type(outputs).__name__}, "
+            f"but {type(loss_fn).__name__} needs one tensor of predictions. "
+            "End the model with a layer that outputs a single tensor."
+        )
+    if targets is None:
+        loss = loss_fn(outputs)
+    else:
+        if elementwise:
+            targets = _float_targets(outputs, targets)
+            _check_loss_shapes(outputs, targets, phase)
+        loss = loss_fn(outputs, targets)
+    if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+        raise ValueError(
+            f"TrainingLoop: loss_fn returned a tensor of shape "
+            f"{list(loss.shape)}, one value per element, where training needs "
+            "one number per batch to call backward() on. This is what "
+            "Loss.reduction = none gives; set it to mean (or sum)."
+        )
+    return loss
+
+
+def _check_nll_input(loss_fn: Any, outputs: Any) -> None:
+    """Refuse raw logits fed to ``NLLLoss``.
+
+    ``NLLLoss`` expects log-probabilities, which are never positive. On raw
+    logits it returns minus the target's logit: the reported loss goes
+    negative and training pushes that logit up without bound, with no error
+    anywhere. Checked on the first training batch of a call only, so it costs
+    one host read per run.
+    """
+    import torch
+    import torch.nn as nn
+
+    if not (isinstance(loss_fn, nn.NLLLoss) and isinstance(outputs, torch.Tensor)):
+        return
+    if bool((outputs.detach() > 1e-4).any()):
+        raise ValueError(
+            "TrainingLoop: NLLLoss expects log-probabilities, which are never "
+            "positive, but the model output has positive values, so it is raw "
+            "logits. End the model with LogSoftmax(dim=1), or use "
+            "CrossEntropyLoss, which applies log-softmax itself."
+        )
+
+
 def _coerce_start_epoch(value: Any) -> int:
     """Read an epoch index off the ``start_epoch`` SCALAR port.
 
@@ -1276,8 +1394,10 @@ class TrainingLoopNode(BaseNode):
     be a classification loss (``nn.CrossEntropyLoss`` or ``nn.NLLLoss`` --
     the only two in this repo's loss map whose targets are integer class
     indices against ``[B, C]`` logits, which is the shape ``argmax(dim=1)``
-    assumes). A regression or BCE run therefore never gets a val_accuracy
-    series. ``monitor`` (default ``val_loss``) can point early stopping at
+    assumes) -- or ``nn.BCEWithLogitsLoss`` on a single-output model, scored
+    as binary at logit 0 exactly like ``EvaluateModel``. A regression run or
+    a multi-label BCE run therefore never gets a val_accuracy series.
+    ``monitor`` (default ``val_loss``) can point early stopping at
     it instead; requesting ``val_accuracy`` without either gate above
     holding falls back to ``val_loss`` with a warning rather than
     comparing against a value that was never computed.
@@ -1370,9 +1490,20 @@ class TrainingLoopNode(BaseNode):
                     "Optimizer node instead stores state that never trained."
                 ),
             ),
-            PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch"),
-            PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch (empty if no val_dataloader)"),
+            PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch: the mean of that epoch's per-batch losses, so a short last batch counts as much as a full one"),
+            PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch, the mean of the per-batch losses like losses (empty if no val_dataloader)"),
             PortDefinition(name="metrics", data_type=DataType.ANY, description="Training metrics dict (final_loss, best_epoch, lr_history, etc.)"),
+            PortDefinition(
+                name="epoch",
+                data_type=DataType.SCALAR,
+                description=(
+                    "Complete epochs at the end of this call, counted from "
+                    "the start of the whole run (start_epoch included). Wire "
+                    "it to CheckpointSaver.epoch so the checkpoint resumes "
+                    "where training stopped, early stopping and max_steps "
+                    "included"
+                ),
+            ),
             PortDefinition(
                 name="grad_scaler_state",
                 data_type=DataType.ANY,
@@ -1410,7 +1541,8 @@ class TrainingLoopNode(BaseNode):
                     "Metric early stopping watches. val_loss: lower is "
                     "better (the default). val_accuracy: higher is "
                     "better -- only recorded for a classification loss "
-                    "(CrossEntropyLoss/NLLLoss) with a val_dataloader "
+                    "(CrossEntropyLoss/NLLLoss, or BCEWithLogitsLoss on a "
+                    "single-output model) with a val_dataloader "
                     "wired; falls back to val_loss with a warning when "
                     "neither holds, rather than watching a value that "
                     "was never computed."
@@ -1579,7 +1711,9 @@ class TrainingLoopNode(BaseNode):
                     "(0 = off). Step-milestone snapshots are the raw "
                     "material for studying capability emergence; per-epoch "
                     "checkpointing never fires inside a single-epoch run "
-                    "(#298). Same size warning as checkpoint_every."
+                    "(#298). Each file stores the number of complete epochs, "
+                    "so resuming from one re-runs the epoch it was taken in. "
+                    "Same size warning as checkpoint_every."
                 ),
                 advanced=True,
             ),
@@ -1706,11 +1840,20 @@ class TrainingLoopNode(BaseNode):
         # Every other loss (BCE*, the regression losses) is not
         # argmax-shaped, so val_accuracy is only ever computed, recorded,
         # or monitored by early stopping when this holds. Getting this
-        # wrong in the permissive direction -- e.g. admitting
-        # BCEWithLogitsLoss -- either crashes on a shape mismatch or
+        # wrong in the permissive direction -- e.g. admitting a
+        # multi-label BCEWithLogitsLoss head -- either crashes on a shape
+        # mismatch or
         # silently broadcasts into a meaningless number, which is worse
         # than not shipping the feature at all.
         is_classification_loss = isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
+        # The one BCE case that IS a classifier with a well-defined
+        # prediction: a single logit per example ([B] or [B, 1]), predicted
+        # positive above 0. ``count_correct`` (shared with EvaluateModel)
+        # scores exactly that shape since #733, so a binary classifier
+        # trained here gets the same val_accuracy EvaluateModel reports for
+        # it. Admitted per BATCH by ``_single_logit``: a multi-label head
+        # ([B, C], C > 1) still records none.
+        is_binary_logit_loss = isinstance(loss_fn, nn.BCEWithLogitsLoss)
         check_loss_shapes = _is_elementwise_loss(loss_fn)
         val_dataloader = inputs.get("val_dataloader")
         lr_scheduler = inputs.get("lr_scheduler")
@@ -1925,10 +2068,11 @@ class TrainingLoopNode(BaseNode):
                 )
             elif monitor_is_accuracy and val_dataloader is None:
                 monitor_fallback_reason = "no val_dataloader is wired"
-            elif monitor_is_accuracy and not is_classification_loss:
+            elif monitor_is_accuracy and not (
+                    is_classification_loss or is_binary_logit_loss):
                 monitor_fallback_reason = (
-                    "loss_fn is not a classification loss (CrossEntropyLoss "
-                    "or NLLLoss)"
+                    "loss_fn is not a classification loss (CrossEntropyLoss, "
+                    "NLLLoss, or BCEWithLogitsLoss on a single output)"
                 )
         if monitor_fallback_reason is not None:
             logger.warning(
@@ -1967,6 +2111,9 @@ class TrainingLoopNode(BaseNode):
         # that means "a human pressed Stop and these results are partial",
         # this means "the configured budget was spent and the run is done".
         step_budget_reached = False
+        # Whether this call's first training batch has been through
+        # ``_check_nll_input`` yet.
+        nll_checked = False
 
         def apply_gradients() -> tuple[bool, float | None]:
             """Clip, step, and clear -- one accumulation window's update.
@@ -2054,18 +2201,26 @@ class TrainingLoopNode(BaseNode):
                     optimizer_steps)
             if (val_every_steps and val_dataloader is not None
                     and optimizer_steps % val_every_steps == 0):
-                # A mid-epoch validation pass: eval mode + no_grad consume
-                # no RNG, so the training stream is undisturbed. The result
-                # is its OWN series (val_loss_step, x = optimizer steps)
-                # rather than more points on the per-epoch val_loss curve,
-                # which has a different x-axis.
+                # A mid-epoch validation pass. Its result is its OWN series
+                # (val_loss_step, x = optimizer steps) rather than more
+                # points on the per-epoch val_loss curve, which has a
+                # different x-axis.
+                #
+                # Eval mode and no_grad draw no random numbers, but STARTING
+                # an iteration over a DataLoader does: it takes a base seed
+                # from the global torch RNG when the loader has no generator
+                # of its own. That moved every later Dropout mask and
+                # shuffle, so switching val_every_steps on changed the
+                # trained weights (max |diff| 0.079 on a 2-epoch Dropout
+                # MLP in the audit). ``fork_rng`` puts the CPU RNG back
+                # afterwards; eval-mode layers draw nothing on the device.
                 was_training = model.training
                 model.eval()
                 # ``0.0 + tensor`` is a tensor, so this accumulates on the
                 # device from the first batch on and is read back once.
                 step_val_sum: Any = 0.0
                 step_val_batches = 0
-                with torch.no_grad():
+                with torch.no_grad(), torch.random.fork_rng(devices=[]):
                     for step_batch in val_dataloader:
                         if should_stop():
                             break
@@ -2079,14 +2234,11 @@ class TrainingLoopNode(BaseNode):
                                 if hasattr(step_batch, "to") else step_batch)
                             step_targets = None
                         with policy.autocast():
-                            step_out = model(step_data)
-                            if check_loss_shapes and step_targets is not None:
-                                _check_loss_shapes(
-                                    step_out, step_targets, "validation")
-                            step_loss = (
-                                loss_fn(step_out, step_targets)
-                                if step_targets is not None
-                                else loss_fn(step_out))
+                            step_out = _class_dim_first(
+                                loss_fn, model(step_data), step_targets)
+                            step_loss = _compute_loss(
+                                loss_fn, step_out, step_targets, "validation",
+                                elementwise=check_loss_shapes)
                         step_val_sum = step_val_sum + step_loss.detach().float()
                         step_val_batches += 1
                 if step_val_batches:
@@ -2098,16 +2250,19 @@ class TrainingLoopNode(BaseNode):
                     model.train()
             if (checkpoint_every_steps
                     and optimizer_steps % checkpoint_every_steps == 0):
-                # ``epoch=optimizer_steps`` on purpose: the periodic
-                # filename is stamped ``-e{epoch}``, and step milestones
-                # need DISTINCT files (they are emergence snapshots, not a
-                # rolling latest). The trade is that the checkpoint's
-                # stored epoch field carries the step count — resuming
-                # start_epoch from one of these is not meaningful, and the
-                # param description says so.
+                # Stored ``epoch`` is the number of COMPLETE epochs, the
+                # same convention as the interrupt checkpoint: this one is
+                # taken mid-epoch, so a resume from it re-runs the epoch in
+                # progress from batch 0. The step count names the file
+                # (``-s{step}``). It used to be passed AS the epoch, so
+                # CheckpointLoader.epoch handed a step count to
+                # start_epoch (step 500 of a 4-epoch run resumed at epoch
+                # 500 and trained nothing), and step N and epoch N wrote
+                # the same file.
                 milestone_path = save_periodic_checkpoint(
                     context, model, optimizer,
-                    epoch=optimizer_steps,
+                    epoch=epoch,
+                    step=optimizer_steps,
                     losses=torch.tensor(
                         epoch_losses, dtype=torch.float32)
                     if epoch_losses else None,
@@ -2171,14 +2326,13 @@ class TrainingLoopNode(BaseNode):
                 # is what makes reductions that need float32 (softmax,
                 # cross-entropy) run in float32 rather than in bf16.
                 with policy.autocast():
-                    outputs = model(data)
-
-                    if targets is not None:
-                        if check_loss_shapes:
-                            _check_loss_shapes(outputs, targets, "training")
-                        loss = loss_fn(outputs, targets)
-                    else:
-                        loss = loss_fn(outputs)
+                    outputs = _class_dim_first(loss_fn, model(data), targets)
+                    if not nll_checked:
+                        _check_nll_input(loss_fn, outputs)
+                        nll_checked = True
+                    loss = _compute_loss(
+                        loss_fn, outputs, targets, "training",
+                        elementwise=check_loss_shapes)
 
                 # Divided by the WINDOW size, not by how many micro-batches
                 # this window ended up with. Every micro-batch then
@@ -2310,7 +2464,9 @@ class TrainingLoopNode(BaseNode):
                 val_running_loss: Any = 0.0
                 val_batch_count = 0
                 val_correct: Any = 0
-                val_total = 0
+                # A device tensor once a batch masks ignore_index tokens,
+                # read back once below.
+                val_total: Any = 0
 
                 with torch.no_grad():
                     for batch_index, batch_data in enumerate(val_dataloader):
@@ -2335,14 +2491,11 @@ class TrainingLoopNode(BaseNode):
                         # is not comparable with it -- which is the only
                         # thing anyone ever does with it.
                         with policy.autocast():
-                            outputs = model(data)
-                            if targets is not None:
-                                if check_loss_shapes:
-                                    _check_loss_shapes(
-                                        outputs, targets, "validation")
-                                loss = loss_fn(outputs, targets)
-                            else:
-                                loss = loss_fn(outputs)
+                            outputs = _class_dim_first(
+                                loss_fn, model(data), targets)
+                            loss = _compute_loss(
+                                loss_fn, outputs, targets, "validation",
+                                elementwise=check_loss_shapes)
                         val_running_loss = (
                             val_running_loss + loss.detach().float())
                         val_batch_count += 1
@@ -2365,11 +2518,19 @@ class TrainingLoopNode(BaseNode):
                         # happens to run (or, for a [B, 1] regression head,
                         # a broadcasted comparison that happens NOT to
                         # crash) and a number with no meaning either way.
-                        if is_classification_loss and targets is not None:
+                        scores_accuracy = is_classification_loss or (
+                            is_binary_logit_loss and _single_logit(outputs))
+                        if scores_accuracy and targets is not None:
                             # Shared with EvaluateModel so the two agree on
                             # [N, 1] labels and single-output models.
+                            # ``outputs`` is already class-dim-first here,
+                            # so a [B, T, V] model scores TOKEN accuracy,
+                            # skipping the loss's ignore_index the way the
+                            # loss does.
                             batch_correct, batch_total = count_correct(
-                                outputs, targets, "TrainingLoop")
+                                outputs, targets, "TrainingLoop",
+                                ignore_index=getattr(
+                                    loss_fn, "ignore_index", None))
                             val_correct = val_correct + batch_correct
                             val_total += batch_total
 
@@ -2391,7 +2552,8 @@ class TrainingLoopNode(BaseNode):
 
                 avg_val_loss = float(val_running_loss) / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
-                if is_classification_loss and val_total > 0:
+                val_total = int(val_total)
+                if val_total > 0:
                     avg_val_accuracy = int(val_correct) / val_total
                     val_epoch_accuracies.append(avg_val_accuracy)
 
@@ -2664,6 +2826,7 @@ class TrainingLoopNode(BaseNode):
             "losses": losses_tensor,
             "val_losses": val_losses_tensor,
             "metrics": metrics,
+            "epoch": completed_epochs,
             # None on every fp32 and bf16 run, which is what CheckpointSaver
             # expects to see for "there is no loss scale to store".
             "grad_scaler_state": policy.state_dict(),

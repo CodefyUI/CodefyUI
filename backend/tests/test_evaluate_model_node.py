@@ -368,6 +368,23 @@ def test_a_float64_dataset_evaluates_on_cpu():
     assert out["accuracy"] == pytest.approx(truth)
 
 
+class _TupleOutput(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 3)
+
+    def forward(self, x):
+        return self.linear(x), None
+
+
+def test_a_model_returning_a_tuple_gets_an_error_naming_it():
+    """2026-10-13 pipeline audit: this was "'tuple' object has no attribute
+    'dim'" from inside the accuracy count."""
+    with pytest.raises(ValueError, match="EvaluateModel: the model returned a tuple"):
+        EvaluateModelNode().execute(
+            {"model": _TupleOutput(), "dataset": _dataset()}, {"device": "cpu"})
+
+
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
 def test_a_float64_dataset_evaluates_on_mps():
     """MPS cannot hold float64; the batch must be downcast on the way in

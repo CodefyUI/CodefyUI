@@ -28,8 +28,15 @@ from ...core.node_base import (
 )
 
 
-def count_correct(outputs: Any, labels: Any, node_name: str) -> tuple[Any, int]:
+def count_correct(
+    outputs: Any, labels: Any, node_name: str, *, ignore_index: Any = None,
+) -> tuple[Any, Any]:
     """Return ``(correct, total)`` for one batch of classifier outputs.
+
+    ``outputs`` of shape ``[B, C, T]`` against ``[B, T]`` labels is scored per
+    position (token accuracy). With *ignore_index* set, labels equal to it
+    count neither as correct nor in the total, and ``total`` is then a device
+    tensor like ``correct``; otherwise it is a plain int.
 
     ``outputs`` of shape ``[B, C]`` (C > 1) are scored by argmax over dim 1.
     A single-output model (``[B, 1]`` or ``[B]``) is scored as binary at
@@ -38,6 +45,17 @@ def count_correct(outputs: Any, labels: Any, node_name: str) -> tuple[Any, int]:
     labels are read as ``[B]``. ``correct`` stays a device tensor so the
     caller can accumulate without a host sync per batch.
     """
+    import torch
+
+    if not isinstance(outputs, torch.Tensor):
+        # A model returning ``(logits, aux)`` or ``{"logits": ...}`` used to
+        # fail here with "'tuple' object has no attribute 'dim'".
+        raise ValueError(
+            f"{node_name}: the model returned a {type(outputs).__name__}, but "
+            "accuracy needs one tensor of class scores per batch ([B, C], or "
+            "[B, 1] for a binary classifier). End the model with a layer "
+            "that outputs a single tensor."
+        )
     if outputs.dim() == 1 or (outputs.dim() == 2 and outputs.shape[1] == 1):
         pred = outputs.reshape(-1) > 0
     else:
@@ -53,7 +71,11 @@ def count_correct(outputs: Any, labels: Any, node_name: str) -> tuple[Any, int]:
             "label per example ([N] or [N, 1]) and [B, C] logits, or [B, 1] "
             "for a binary classifier."
         )
-    return (pred.long() == y.long()).sum(), int(y.numel())
+    hits = pred.long() == y.long()
+    if ignore_index is not None:
+        keep = y.long() != int(ignore_index)
+        return (hits & keep).sum(), keep.sum()
+    return hits.sum(), int(y.numel())
 
 
 class EvaluateModelNode(BaseNode):

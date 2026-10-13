@@ -99,6 +99,29 @@ const zhTW: ExampleTranslations = {
     description: '把一個 token 帶過 9 步雜訊',
   },
 
+  // ── Paper reproductions ──
+  'Papers/Dropout-Srivastava-2014': {
+    description: '同一個 MLP 加與不加 dropout 0.5',
+  },
+  'Papers/BatchNorm-Ioffe-2015': {
+    description: 'SGD lr 0.5 下的 MLP，有無 BN',
+  },
+  'Papers/ResNet-Degradation-He-2016': {
+    description: '20 層 MLP：一般與加捷徑',
+  },
+  'Papers/Adam-Kingma-2015': {
+    description: '同一個 MLP 用三種最佳化器訓練',
+  },
+  'Papers/Label-Smoothing-Szegedy-2016': {
+    description: '硬標籤與 label smoothing 0.1',
+  },
+  'Papers/SGDR-Loshchilov-2017': {
+    description: '餘弦重啟與固定學習率',
+  },
+  'Papers/Vanishing-Gradients-Glorot-2010': {
+    description: '深層 sigmoid MLP 與 ReLU 版',
+  },
+
   // ── Reinforcement learning ──
   'RL/RLHF-Reward-and-KL': {
     description: '一個給答案打分，一個不讓策略跑遠',

@@ -449,3 +449,45 @@ def test_no_new_torch_optimizer_knob_arrives_unnoticed():
         "applicability set) or record it above as reviewed-and-declined. Do "
         "NOT start forwarding automatically — see the eps/Adagrad note at "
         "the top of optimizer_node.py.")
+
+
+# ── 2026-10-13 training-pipeline audit: params written as text ──────────
+
+
+@pytest.mark.parametrize("flag", ["false", "False", "0", "off"])
+def test_a_false_string_leaves_amsgrad_and_nesterov_off(flag):
+    """A raw ``bool()`` read turned both variants ON for the text "false"."""
+    adam = OptimizerNode().execute(
+        {"model": _model()}, {"type": "Adam", "amsgrad": flag})["optimizer"]
+    sgd = OptimizerNode().execute(
+        {"model": _model()},
+        {"type": "SGD", "momentum": 0.9, "nesterov": flag})["optimizer"]
+    assert adam.defaults["amsgrad"] is False
+    assert sgd.defaults["nesterov"] is False
+
+
+def test_a_true_string_turns_amsgrad_on():
+    adam = OptimizerNode().execute(
+        {"model": _model()}, {"type": "Adam", "amsgrad": "true"})["optimizer"]
+    assert adam.defaults["amsgrad"] is True
+
+
+def test_numeric_strings_reach_torch_as_numbers():
+    """A string lr used to reach torch as a TypeError naming no param."""
+    sgd = OptimizerNode().execute(
+        {"model": _model()},
+        {"type": "SGD", "lr": "0.05", "momentum": "0.5",
+         "weight_decay": "0.01", "dampening": "0.1"})["optimizer"]
+    assert sgd.defaults["lr"] == 0.05
+    assert sgd.defaults["momentum"] == 0.5
+    assert sgd.defaults["weight_decay"] == 0.01
+    assert sgd.defaults["dampening"] == 0.1
+    adam = OptimizerNode().execute(
+        {"model": _model()}, {"type": "Adam", "eps": "1e-6"})["optimizer"]
+    assert adam.defaults["eps"] == 1e-6
+
+
+def test_a_non_numeric_lr_names_the_param():
+    with pytest.raises(ValueError, match="Optimizer: lr"):
+        OptimizerNode().execute(
+            {"model": _model()}, {"type": "SGD", "lr": "fast"})
