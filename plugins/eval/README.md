@@ -11,8 +11,12 @@ cdui plugin install eval
 Installing the pack also installs `transformers` (its `[python_deps]`,
 `>=5.0,<6`) into the CodefyUI environment. The node modules import without it,
 so the palette never breaks; only the two loaders need it, and they say how to
-get it when it is missing. The pack declares no `[security]` section and its
-sources pass the plugin AST gate at Tier 0.
+get it when it is missing. The pack declares no capability. Its sources pass
+the plugin AST gate at Tier 0 except for one import, `threading` in
+`nodes/_eval_hub.py`: transformers resolves its classes lazily, which is not
+safe when the two loaders of an A/B graph start at once, so the pack resolves
+them once under a lock. Built-in packs skip the gate at install; a fork
+published from GitHub would declare `allowed_modules = ["threading"]`.
 
 ## The pipeline
 

@@ -160,18 +160,34 @@ def test_nodes_that_hand_out_models_or_log_metrics_are_not_cacheable():
 
 # ── the AST gate ─────────────────────────────────────────────────────────────
 
+#: The one module the pack imports beyond Tier 0, and the one file that does.
+#: ``_eval_hub`` needs a ``threading.Lock``: transformers' lazy module is not
+#: safe to resolve from two loaders at once, and the engine runs an A/B
+#: graph's loaders concurrently. Built-in packs skip the gate at install, so
+#: this costs nothing there; a GitHub fork would declare it in
+#: ``[security].allowed_modules``.
+_BEYOND_TIER0 = {"_eval_hub.py": ["threading"]}
+
+
 @pytest.mark.parametrize("source", _pack_sources(), ids=[p.name for p in _pack_sources()])
 def test_every_source_file_passes_the_ast_validator(source):
-    """Built-in packs skip the gate at install; this one passes it anyway,
-    with no ``[security]`` section, so a fork published from GitHub would too."""
+    """Every file passes at Tier 0 except for the one allowance above."""
     validate_python_source(
         source.read_bytes(), source.name,
-        allowed_modules=None, denied_attributes=TIER0_DENIED_ATTRS,
+        allowed_modules=_BEYOND_TIER0.get(source.name), denied_attributes=TIER0_DENIED_ATTRS,
     )
 
 
+def test_the_allowance_is_needed_and_is_only_threading():
+    """Guards the guard: without the allowance the gate refuses the file."""
+    source = _PACK_DIR / "nodes" / "_eval_hub.py"
+    with pytest.raises(plugin_cli.PluginValidationError, match="threading"):
+        validate_python_source(source.read_bytes(), source.name,
+                               denied_attributes=TIER0_DENIED_ATTRS)
+
+
 def test_the_whole_pack_passes_the_directory_gate():
-    plugin_cli.validate_plugin_dir(_PACK_DIR, [])
+    plugin_cli.validate_plugin_dir(_PACK_DIR, ["threading"])
 
 
 # ── the example graph ────────────────────────────────────────────────────────

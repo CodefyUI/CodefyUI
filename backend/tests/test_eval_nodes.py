@@ -23,6 +23,10 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import sys
+import threading
+import time
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -733,10 +737,80 @@ def test_cached_sha_reads_the_snapshot_directory(monkeypatch, tmp_path):
 
 
 def test_the_loader_says_how_to_get_transformers_when_it_is_missing(monkeypatch, tmp_path):
-    import sys
-
     (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     monkeypatch.setitem(sys.modules, "transformers", None)
     with pytest.raises(ValueError, match="cdui plugin install eval"):
         EvalHFModelLoaderNode().execute(
             {}, {"model_id": str(tmp_path), "task": "classification", "device": "cpu"})
+
+
+# ── transformers' lazy module, hit by two loaders at once ───────────────────
+
+_HF_NAMES = ("AutoConfig", "AutoModelForSequenceClassification", "AutoModelForCausalLM",
+             "AutoTokenizer", "AutoProcessor")
+
+
+class _SlowLazyTransformers(types.ModuleType):
+    """A lazy module whose first attribute access is slow and not thread-safe.
+
+    Like transformers' ``_LazyModule``: a missing attribute is imported from
+    inside ``__getattr__``. A second thread asking while the first is still
+    importing sees no attribute -- the failure the first run of the A/B
+    example hit in a fresh server, where the engine starts both
+    Eval-HFModelLoader nodes at once.
+    """
+
+    def __init__(self):
+        super().__init__("transformers")
+        self._importing: set[str] = set()
+        self.resolutions = 0
+
+    def __getattr__(self, name):
+        if name not in _HF_NAMES:
+            raise AttributeError(name)
+        if name in self._importing:
+            raise AttributeError(f"module 'transformers' has no attribute {name!r}")
+        self._importing.add(name)
+        time.sleep(0.05)
+        value = type(name, (), {})
+        setattr(self, name, value)
+        self._importing.discard(name)
+        self.resolutions += 1
+        return value
+
+
+def test_two_loaders_resolving_transformers_at_once_both_get_the_classes(monkeypatch):
+    fake = _SlowLazyTransformers()
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    monkeypatch.setattr(hub, "_CLASSES", {})
+    barrier = threading.Barrier(2)
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def resolve():
+        barrier.wait()
+        try:
+            results.append(hub.hf_classes())
+        except BaseException as exc:  # noqa: BLE001 - collected for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    for name in _HF_NAMES:
+        assert results[0][name] is results[1][name] is fake.__dict__[name]
+    assert fake.resolutions == len(_HF_NAMES)  # each lazy import ran once
+
+
+def test_a_different_transformers_module_is_resolved_afresh(monkeypatch):
+    monkeypatch.setattr(hub, "_CLASSES", {})
+    first, second = _SlowLazyTransformers(), _SlowLazyTransformers()
+    monkeypatch.setitem(sys.modules, "transformers", first)
+    assert hub.hf_classes()["AutoTokenizer"] is first.__dict__["AutoTokenizer"]
+    monkeypatch.setitem(sys.modules, "transformers", second)
+    assert hub.hf_classes()["AutoTokenizer"] is second.__dict__["AutoTokenizer"]

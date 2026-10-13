@@ -33,11 +33,21 @@ and a snapshot that is not already cached is an error that says so.
 that use them, so the node modules import on an install without
 ``transformers`` (the palette scan imports every node module at startup) and
 fail only when a loader actually runs.
+
+**One door into transformers.** ``transformers`` is a lazy module: the first
+``transformers.AutoModelForSequenceClassification`` imports a submodule from
+inside ``__getattr__``, and that is not safe when two threads do it at once.
+The engine runs the two loaders of an A/B graph concurrently, and on the first
+run of a fresh server one of them failed with "module 'transformers' has no
+attribute 'AutoModelForSequenceClassification'". :func:`hf_classes` is
+therefore the only place the pack touches a transformers attribute, and it
+resolves every class it needs once, under a lock.
 """
 
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections import OrderedDict
 from os.path import basename, dirname, join
 from typing import Any
@@ -86,12 +96,36 @@ INSTALL_HINT = (
 )
 
 
-def _transformers() -> Any:
-    try:
-        import transformers
-    except ImportError as exc:
-        raise RuntimeError(INSTALL_HINT) from exc
-    return transformers
+#: Serialises the first resolution of the transformers classes.
+_CLASSES_LOCK = threading.Lock()
+#: The resolved classes, plus the module they came from under ``"module"``.
+_CLASSES: dict[str, Any] = {}
+
+
+def hf_classes() -> dict[str, Any]:
+    """Every transformers class the pack uses, resolved once under a lock.
+
+    Re-resolved only when ``sys.modules["transformers"]`` is a different
+    module object than the one the cache came from (a test swapping in a
+    fake, a reinstall).
+    """
+    with _CLASSES_LOCK:
+        try:
+            import transformers
+        except ImportError as exc:
+            raise RuntimeError(INSTALL_HINT) from exc
+        if _CLASSES.get("module") is not transformers:
+            resolved = {
+                "module": transformers,
+                "AutoConfig": transformers.AutoConfig,
+                "AutoModelForSequenceClassification": transformers.AutoModelForSequenceClassification,
+                "AutoModelForCausalLM": transformers.AutoModelForCausalLM,
+                "AutoTokenizer": transformers.AutoTokenizer,
+                "AutoProcessor": transformers.AutoProcessor,
+            }
+            _CLASSES.clear()
+            _CLASSES.update(resolved)
+        return dict(_CLASSES)
 
 
 def hf_cache_dir() -> str:
@@ -300,7 +334,7 @@ def snapshot_dir(resolved: dict[str, Any]) -> str:
 
 def infer_task(directory: str) -> str:
     """``classification`` or ``generation``, read off the config's architectures."""
-    config = _transformers().AutoConfig.from_pretrained(directory)
+    config = hf_classes()["AutoConfig"].from_pretrained(directory)
     architectures = [str(a) for a in (config.architectures or [])]
     if any(a.endswith("ForSequenceClassification") for a in architectures):
         return "classification"
@@ -321,7 +355,7 @@ def load_model(
     """
     import torch
 
-    transformers = _transformers()
+    classes = hf_classes()
     directory = snapshot_dir(resolved)
     key = (resolved["model_id"], resolved["revision"], task, dtype, device)
     cached = _MODELS.get(key)
@@ -331,9 +365,9 @@ def load_model(
 
     loaded_task = infer_task(directory) if task == "auto" else task
     auto = (
-        transformers.AutoModelForSequenceClassification
+        classes["AutoModelForSequenceClassification"]
         if loaded_task == "classification"
-        else transformers.AutoModelForCausalLM
+        else classes["AutoModelForCausalLM"]
     )
     model = auto.from_pretrained(directory)
     # Cast after the load, never through a from_pretrained keyword: the
@@ -350,8 +384,8 @@ def load_model(
 
 
 def load_processor(resolved: dict[str, Any], *, kind: str) -> Any:
-    transformers = _transformers()
-    auto = transformers.AutoTokenizer if kind == "tokenizer" else transformers.AutoProcessor
+    classes = hf_classes()
+    auto = classes["AutoTokenizer"] if kind == "tokenizer" else classes["AutoProcessor"]
     return auto.from_pretrained(snapshot_dir(resolved))
 
 
