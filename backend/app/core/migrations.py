@@ -7,7 +7,8 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 001/002 are the Stage-2 publish subsystem; 003 is the Run Service store
 (see the naming-decision block above ``MIGRATION_003``); 004 is the sweep
 schema (#140); 005 indexes metrics by producer (#641); 006 records the
-environment that executed each run (#344).
+environment that executed each run (#344); 007 is the durable study
+coordinator (#343).
 """
 
 from __future__ import annotations
@@ -328,8 +329,119 @@ ALTER TABLE exec_runs ADD COLUMN fingerprint_digest TEXT;
 ALTER TABLE exec_runs ADD COLUMN execution_facts TEXT;
 """
 
+# ── Migration 007: durable studies (#343) ──────────────────────────────────
+#
+# A study is a server-owned experiment: N variants x R repetitions, each
+# repetition run as a queued child of the Run Service, coordinated by
+# ``core.study_coordinator`` so it finishes after the browser that submitted
+# it has gone and resumes after a restart. Four tables plus two columns on
+# ``exec_runs``:
+#
+# - ``studies``: one row per study. ``status`` is the study's own state
+#   machine (``study_store.STUDY_STATUSES``), with no CHECK constraint for
+#   the reason ``exec_runs.status`` has none. ``revision`` goes up by one on
+#   every write to the study or to one of its attempts, so a reader can tell
+#   two snapshots apart without diffing them. ``idempotency_key`` is UNIQUE
+#   (NULLs are distinct in SQLite, so an unkeyed submit is unconstrained);
+#   ``request_digest`` is the sha256 of the canonical, SECRET-scrubbed
+#   request, which is how a retry with the same key is told apart from a
+#   key reused for a different study (409).
+# - ``study_variants``: the resolved graph of every variant, SECRET-scrubbed
+#   like ``exec_runs.graph_snapshot``. Stored here rather than read back off
+#   a child run because retention deletes children, and a resume after that
+#   still has to submit the variant.
+# - ``study_attempts``: one row per (variant, repetition, attempt). The
+#   attempt is the unit of recovery: completed attempts are never re-run,
+#   an interrupted one is kept as history and a new attempt row is added.
+#   ``run_id`` is a link that MAY BE DEAD (no FK), for the reason
+#   ``sweeps.variants`` holds its run ids that way: the evidence columns
+#   (objective value, final metrics, timestamps, fingerprint digest) are
+#   copied onto the row when the child ends, so the study stays answerable
+#   after retention has deleted the child.
+# - ``study_events``: the study's audit log, with the same gapless per-owner
+#   cursor ``exec_run_events`` has, so a client replays it after a cursor.
+#
+# ``exec_runs.study_id`` / ``study_attempt_id`` stamp every child with the
+# attempt that submitted it. That stamp is what recovers a child that was
+# submitted when the attempt's own linkage write failed: the coordinator
+# finds the run by ``study_attempt_id`` instead of submitting a second one.
+# The CREATE and the ALTER ship in ONE migration for the reason spelled out
+# above MIGRATION_004 (an ALTER whose REFERENCES target does not exist yet
+# makes every INSERT and DELETE on exec_runs fail).
+MIGRATION_007 = """
+CREATE TABLE studies (
+  id              TEXT PRIMARY KEY,       -- uuid4().hex
+  name            TEXT,                   -- user label. NULL = unnamed
+  status          TEXT NOT NULL,          -- queued|running|cancel_requested|succeeded|failed|cancelled|interrupted
+  revision        INTEGER NOT NULL,       -- +1 on every write to the study or its attempts
+  objective       TEXT NOT NULL,          -- JSON {node_id, metric, direction}. exact, immutable
+  repetitions     INTEGER NOT NULL,       -- scheduled repetitions per variant, >= 1
+  seed            INTEGER NOT NULL,       -- study seed. repetition r runs with (seed + r) mod 2^32
+  options         TEXT NOT NULL,          -- JSON run options copied into every child (no seed)
+  budget          TEXT NOT NULL,          -- JSON {max_runs, max_parallel_runs}
+  resume_policy   TEXT NOT NULL,          -- explicit|auto
+  idempotency_key TEXT UNIQUE,            -- NULL = submitted without one
+  request_digest  TEXT NOT NULL,          -- sha256 of the canonical scrubbed request
+  error           TEXT,                   -- why the study failed. NULL otherwise
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  finished_at     TEXT                    -- NULL while the study can still move
+);
+-- ASC on purpose; see the note above idx_exec_runs_created.
+CREATE INDEX idx_studies_created ON studies(created_at);
+CREATE INDEX idx_studies_status ON studies(status);
+
+CREATE TABLE study_variants (
+  study_id       TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  variant_index  INTEGER NOT NULL,        -- 0-based, the position in the request
+  label          TEXT NOT NULL,           -- unique within the study
+  ops            TEXT,                    -- JSON [{node_id, param, value}] or NULL for a whole graph
+  graph_snapshot TEXT NOT NULL,           -- JSON, SECRET-scrubbed, ops applied
+  PRIMARY KEY (study_id, variant_index)
+);
+
+CREATE TABLE study_attempts (
+  id                 TEXT PRIMARY KEY,    -- uuid4().hex. stamped on the child run
+  study_id           TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  variant_index      INTEGER NOT NULL,
+  repetition         INTEGER NOT NULL,    -- 0-based
+  attempt            INTEGER NOT NULL,    -- 1-based within (variant, repetition)
+  seed               INTEGER NOT NULL,    -- the repetition's seed; every attempt reuses it
+  run_id             TEXT,                -- the child. a link that MAY BE DEAD, no FK
+  status             TEXT NOT NULL,       -- pending|submitting|queued|running|succeeded|failed|cancelled|interrupted|lost
+  error              TEXT,
+  created_at         TEXT NOT NULL,
+  submitted_at       TEXT,
+  started_at         TEXT,                -- copied from the child
+  finished_at        TEXT,                -- copied from the child
+  objective_value    REAL,                -- the objective producer's last point. NULL = none
+  final_metrics      TEXT,                -- JSON {series: last value}, copied from the child
+  fingerprint_digest TEXT,                -- the child's environment (#344)
+  harvested_at       TEXT,                -- NULL until the evidence was copied
+  UNIQUE (study_id, variant_index, repetition, attempt)
+);
+CREATE INDEX idx_study_attempts_run ON study_attempts(run_id);
+
+CREATE TABLE study_events (
+  id       INTEGER PRIMARY KEY,
+  study_id TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  cursor   INTEGER NOT NULL,              -- 1-based, gapless, monotonic within a study
+  type     TEXT NOT NULL,
+  payload  TEXT,                          -- JSON
+  ts       TEXT NOT NULL,
+  UNIQUE (study_id, cursor)
+);
+
+ALTER TABLE exec_runs ADD COLUMN study_id TEXT
+  REFERENCES studies(id) ON DELETE SET NULL;
+ALTER TABLE exec_runs ADD COLUMN study_attempt_id TEXT;
+CREATE INDEX idx_exec_runs_study_attempt ON exec_runs(study_attempt_id)
+  WHERE study_attempt_id IS NOT NULL;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
-                         MIGRATION_004, MIGRATION_005, MIGRATION_006]
+                         MIGRATION_004, MIGRATION_005, MIGRATION_006,
+                         MIGRATION_007]
 
 
 def _is_comment_only(statement: str) -> bool:

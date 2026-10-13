@@ -57,6 +57,7 @@ from .api import (
     routes_plugins,
     routes_presets,
     routes_runs,
+    routes_studies,
     routes_sweeps,
     routes_system,
     ws_execution,
@@ -96,6 +97,8 @@ from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
 from .core.run_store import RunStore
+from .core.study_coordinator import StudyCoordinator
+from .core.study_store import StudyStore
 from .core.sweep_store import SweepStore
 
 logger = logging.getLogger(__name__)
@@ -387,6 +390,14 @@ async def _lifespan_body(app: FastAPI):
     # makes it prunable in the very next call. Both steps log their own
     # counts when they do anything.
     await run_service.recover_interrupted()
+    # Studies (#343) next: their children were just retired as interrupted,
+    # so each study still marked active is reconciled and settled
+    # (interrupted, waiting for an explicit resume, unless its
+    # resume_policy is auto). BEFORE the first prune, so every child's
+    # evidence is on its attempt row before retention can delete the run.
+    study_coordinator = StudyCoordinator(run_service, StudyStore(db))
+    app.state.study_coordinator = study_coordinator
+    await study_coordinator.recover()
     # Then the SECRET sweep (#251): recovery has just made every row terminal,
     # which is the only kind this may rewrite, and pruning has not yet run —
     # so a row that is about to be deleted costs one wasted scrub rather than
@@ -456,6 +467,11 @@ async def _lifespan_body(app: FastAPI):
     app.state.pack_service = None
     app.state.git_service = None
 
+    # Studies stop scheduling first, so a child the run service retires
+    # below is recorded, not replaced by a new submission into a closing
+    # queue (#343). The next boot settles them as interrupted.
+    await study_coordinator.shutdown()
+    app.state.study_coordinator = None
     # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
     # only database work in the process that nobody is awaiting, and
     # `Database.close` would otherwise race a run's final writes (#119).
@@ -629,6 +645,7 @@ app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)
 app.include_router(routes_sweeps.router)
+app.include_router(routes_studies.router)
 app.include_router(routes_packs.router)
 app.include_router(routes_git.router)
 app.include_router(routes_system.router)

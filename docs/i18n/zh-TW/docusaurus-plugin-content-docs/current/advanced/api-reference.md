@@ -75,10 +75,18 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/sweeps` | POST | token | 將參數 sweep 編譯成多個變體 run，全部排入佇列——回傳 `201`、`sweep_id` 與每個變體各一個 `run_id`。 |
 | `/api/sweeps/{sweep_id}` | GET | open | 排名後的比較表——最佳優先的 `variants`、`best`、`counts`，以及存在時的 `objective_warning`；`?format=csv` 可下載。 |
 | `/api/sweeps/{sweep_id}/cancel` | POST | token | 取消每一個排隊中或執行中的變體：`{sweep_id, state, cancelled, already_finished, variants[]}`，依變體索引順序每個一筆。 |
+| `/api/studies` | POST | token | 送出一個 study：以單一明確目標，將各變體各重複數次，作為排隊的 child run。回傳 `201` 與該 study；帶有 `Idempotency-Key` header（或 `idempotency_key`）時，重送相同請求會回傳 `200` 與同一個 study，且不建立任何東西；同一個 key 用於不同請求則回傳 `409`。 |
+| `/api/studies` | GET | open | 由新到舊的清單，附上目前 attempt 依狀態分類的 `counts`；`?status=` 可指定一個狀態，或以 `\|` 分隔的多個狀態，另有 `?limit=`（最多 500）與 `?offset=`。 |
+| `/api/studies/{study_id}` | GET | open | study 的 `status`、`revision`、每個 attempt 及其 `run_id` 與已複製的證據、各變體的 `aggregate`（`count`、`mean`、`std`、`values`）、是否具排名資格、標示完全相同平手的 `rankings`，以及 `last_cursor`。 |
+| `/api/studies/{study_id}/events` | GET | open | `?cursor=` 之後的 study 稽核紀錄；study 仍在進行時，`?wait=` 最多長輪詢 60 秒。回傳 `{study_id, status, revision, events[{cursor, type, payload, ts}], cursor}`。 |
+| `/api/studies/{study_id}/cancel` | POST | token | 停止排程並取消進行中的 child；已完成的 attempt 會保留。已 succeeded 的 study 回傳 `409`。 |
+| `/api/studies/{study_id}/resume` | POST | token | 繼續一個 interrupted、cancelled 或 failed 的 study：已完成的重複會略過，被取消、中斷或遺失的重複會得到新的 attempt。其他狀態回傳 `409`。 |
 
 **Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，以及引擎錯誤政策 `error_mode`、`max_retries`。run 的裝置在有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
 
 **Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`、`direction` 為 `minimize` 或 `maximize`，以及可省略、用來指定以哪個節點的 series 排名的 `node_id`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
+
+**Studies。** `POST /api/studies` 接受 `name`、必要的 `objective`（`node_id`、`metric` 與 `direction` 三者皆必填）、`base_graph`、`variants[{label, graph | ops[{node_id, param, value}]}]`、`repetitions`（1 到 32）、`seed`、`options`（與 sweep 相同，但不可含 `seed`，也不可使用 interactive lane）、`budget`（`max_runs`、`max_parallel_runs`）、`resume_policy`（`explicit` 或 `auto`）以及 `idempotency_key`。study 的 `status` 只會是 `queued`、`running`、`cancel_requested`、`succeeded`、`failed`、`cancelled` 或 `interrupted`；attempt 的狀態則是 `pending`、`submitting`、`queued`、`running`、`succeeded`、`failed`、`cancelled`、`interrupted` 或 `lost`。只有所有排定重複都成功並記錄到目標值的變體才會排名。sweep 表格會以失敗的 run 記錄到的值為它排名；在 study 中，這樣的 run 會讓所屬變體失去排名資格。每個 child 都是一般的 `/api/runs` 列，帶有 `study_id` 與 `study_attempt_id`。種子、排名、取消、繼續與重新啟動政策請見[執行佇列——Studies](/usage/run-queue#studies)。
 
 ### 執行環境 {/* #run-environment */}
 

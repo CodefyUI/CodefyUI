@@ -302,8 +302,11 @@ def test_migration_006_upgrades_a_v5_database(tmp_path, monkeypatch):
     new = Database(tmp_path / "v5.db")
     new.connect()
     try:
+        # Every later migration runs too (007, #343, at the time of
+        # writing), so this pins the full count rather than 6.
         assert new._conn.execute("PRAGMA user_version").fetchone()[0] \
-            == len(MIGRATIONS) == 6
+            == len(MIGRATIONS)
+        assert len(MIGRATIONS) >= 6
         record = asyncio.run(RunStore(new).get_run("legacy"))
         assert record.fingerprint_digest is None
         assert record.execution_facts is None

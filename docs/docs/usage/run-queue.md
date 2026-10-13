@@ -218,6 +218,75 @@ So `cancelling` has no time bound. It ends when the last child reaches a termina
 
 The children are ordinary runs: they appear in the Runs panel list under the sweep's `name` followed by the variant's number as the sweep's table shows it, its `index` plus one (`lr x batch #3`), with the sweep's name cut if the two would pass 64 characters; the children of an unnamed sweep are unnamed. Each row from `GET /api/runs` carries `sweep_id` and `sweep_variant`. Follow one variant with `GET /api/runs/{id}/events` as for any other run. The editor has no list of past sweeps; open one again from a child run's **Open parent sweep**.
 
+## Studies
+
+A **study** is an experiment the server owns from start to finish: a set of graph variants, each run a fixed number of times with a different seed per repetition, ranked on one exact objective. Graph Copilot used to hold this plan in the browser tab that started it, so closing the tab abandoned the study. A study submitted to `POST /api/studies` lives in the server's database: it keeps running after the tab closes, survives a server restart, and resumes without re-running a repetition that already completed. Any client can list studies and follow one by id; nothing ties a study to the tab or plugin that submitted it.
+
+```json
+{
+  "name": "lr study",
+  "objective": {"node_id": "train", "metric": "val_loss", "direction": "minimize"},
+  "base_graph": {"nodes": [ ... ], "edges": [ ... ]},
+  "variants": [
+    {"label": "baseline", "ops": []},
+    {"label": "lr 1e-3", "ops": [{"node_id": "opt", "param": "lr", "value": 0.001}]},
+    {"label": "wide", "graph": {"nodes": [ ... ], "edges": [ ... ]}}
+  ],
+  "repetitions": 3,
+  "seed": 7,
+  "options": {"device": "cuda:0"},
+  "budget": {"max_runs": 12, "max_parallel_runs": 1},
+  "resume_policy": "explicit"
+}
+```
+
+Each variant is either a whole `graph` or a list of `ops` applied to `base_graph` (`[]` is the base graph itself); its `label` is required and unique within the study. An op sets one parameter of one node and is checked exactly as a sweep parameter is: the node must exist once, be a registered node that is not a preset or subgraph instance, and the value must fit the parameter's type, options and bounds. `SECRET` parameters cannot be set by an op. Up to `CODEFYUI_MAX_SWEEP_RUNS` (32) variants and 32 `repetitions` are accepted.
+
+The study, its variants and every attempt are written in one transaction, so a refused request (`400`, or `422` for a body that does not fit the schema) leaves nothing behind. The reply is `201` with the study as `GET /api/studies/{id}` returns it, plus `created: true`. The routes are listed in the [API Reference](../advanced/api-reference#runs-and-sweeps); the `POST`s need the session token, the `GET`s are open.
+
+### Submitting a study
+
+**`objective` names an exact producer.** `node_id`, `metric` and `direction` are all required. A repetition's value is the last point that node logged under that series name (highest `step`, then the last write), which is the rule a sweep with `objective.node_id` uses. There is no name-only form: a ranking that may promote a variant needs one unambiguous number per run.
+
+**Seeds.** Repetition `r` of every variant runs with seed `(seed + r) mod 2^32`. All variants of one repetition share its seed, so a comparison within a repetition is paired, and a retried repetition reuses its seed. Leave `seed` out and the server picks one and records it. `options.seed` is refused because the study owns seeding, and so is `lane: interactive`, because a study's children always queue. Every child is a seeded run, so it executes one node at a time and nothing runs alongside it, as for a seeded sweep.
+
+**Idempotency.** Send an `Idempotency-Key` header (or the body field `idempotency_key`; the two must agree when both are sent). A retry of the same request with the same key returns the same study with `200` and `created: false` and creates no runs, so a client that lost the first reply can safely send it again. The same key with a different request is a `409` naming the existing study. Requests are compared after `SECRET` values are blanked, so a retry that differs only in a secret value counts as the same request.
+
+**Budget.** `budget.max_parallel_runs` (default 1, up to 32) is how many of the study's children may be queued or running at once. Because every child is seeded, children still execute one at a time; a higher value only puts the next ones in the queue ahead of time. `budget.max_runs` (optional) caps the attempts the study may submit in total, retries included; it must be at least `variants x repetitions`. A study that runs out of `max_runs` with repetitions still to run ends `failed`. Limits on per-run time and total active time are not enforced yet.
+
+**Order.** Children are submitted repetition by repetition: every variant's repetition 0, then every variant's repetition 1, and so on. A study that stops part-way has therefore compared every variant on the same seeds. Each child is an ordinary run named `<study name> / <label> / r<n>`, and each row from `GET /api/runs` carries `study_id` and `study_attempt_id`.
+
+### Reading a study
+
+`GET /api/studies/{id}` returns the study's `status`, `revision` (it goes up with every change to the study or its attempts), `counts` of the current attempts by status, and one entry per variant with:
+
+- `repetitions`: for each repetition, its seed and its current attempt.
+- `attempts`: every attempt ever made, with `attempt` (1, 2, ...), `run_id`, `status`, `error`, timestamps, `objective_value`, `final_metrics` and `fingerprint_digest`.
+- `aggregate`: `count`, `mean` and `std` over the current attempts that recorded the objective, and `values`, the raw value of each repetition (`null` where there is none). `std` is the sample standard deviation and is `null` with fewer than two values.
+- `eligible`, `ineligible_reasons`, `rank`, `tie` and `tied_with`.
+
+`rankings` lists the ranked variants best first. A variant is **eligible** only when every scheduled repetition's current attempt succeeded and recorded a finite value for the objective. A repetition that failed is a result and is never retried; it makes its variant ineligible even when it logged a number before failing, and that number is still shown in `values`. This is stricter than the sweep table, which ranks a failed run on the value it reached. Ranks are competition ranks over the eligible means: variants whose means are exactly equal share a rank, are marked `tie: true` and list each other in `tied_with`, and the next rank skips accordingly (1, 1, 3). No run-time tie-break is applied, and the result does not depend on the order variants were listed in.
+
+A study's evidence outlives its children. When a child ends, its objective value, final metrics, start and finish times and environment digest are copied onto its attempt, and retention copies anything not yet copied before it prunes a run. After retention has deleted a study's children, `GET /api/studies/{id}` still returns every value and ranking; only `run_id` points at a run that no longer exists.
+
+`GET /api/studies/{id}/events?cursor=` returns the study's audit log after a cursor: `study_created`, `study_started`, `attempt_submitting`, `attempt_submitted`, `attempt_started`, `attempt_finished`, `attempt_relinked`, `attempt_lost`, `attempt_added`, `study_cancel_requested`, `study_cancelled`, `study_interrupted`, `study_resumed`, `study_failed` and `study_finished` (whose payload carries the final ranking). Cursors are gapless and every payload carries the `revision` the change produced. `?wait=` long-polls up to 60 seconds while the study is active. `GET /api/studies` lists studies newest first; `?status=queued|running|cancel_requested` finds the ones still in flight.
+
+### Cancelling and resuming a study
+
+`POST /api/studies/{id}/cancel` stops scheduling and sends a cooperative cancel to each of the study's queued or running children; `cancelled_runs` lists the runs it reached. The study reads `cancel_requested` until every child has stopped, then `cancelled`. Completed attempts are kept, and attempts that were never submitted stay `pending`. Cancelling a cancelled study again changes nothing; a `succeeded` study cannot be cancelled (`409`).
+
+`POST /api/studies/{id}/resume` continues an `interrupted`, `cancelled` or `failed` study. A repetition whose current attempt succeeded or failed is kept as it is and never run again. A repetition whose current attempt was cancelled, interrupted or lost gets a new attempt record with the next attempt number and the same seed, and the old attempt stays in `attempts` as history. Pending repetitions are then submitted as usual. Resuming any other status is a `409`.
+
+A child cancelled directly with `POST /api/runs/{id}/cancel` makes its study `interrupted`. The study does not retry the run on its own; resume it to run that repetition again.
+
+### Studies across a restart
+
+The run queue does not survive a restart, so the server retires a study's queued and running children as `interrupted` when it starts again (see [When the server stops](#when-the-server-stops)). The study coordinator then reconciles every study that was still active: each child's evidence is copied onto its attempt, a study whose cancel was in progress becomes `cancelled`, and any other unfinished study becomes `interrupted` and waits. Nothing is resubmitted until you call `resume`, unless the study was submitted with `"resume_policy": "auto"`, in which case it resumes itself after the restart.
+
+Each attempt records the run id it is about to use before the child is submitted, and the child carries the attempt's id. If the server stops, or a write fails, between submitting a child and recording that it was submitted, the study finds the child by that stamp and links it back (`attempt_relinked`) instead of submitting a second one. If no child carries the stamp, the submission never created a run; the attempt is marked `lost` and the repetition gets a new attempt.
+
+`SECRET` parameter values are kept only in the memory of the server that received the study, as for any queued run. A study resumed after a restart runs with those values blank.
+
 ## When the server stops
 
 Nothing resumes a queue across a restart: the schedule lives in the server's memory, and a waiting row would otherwise sit forever waiting on a scheduler that no longer exists.
@@ -227,6 +296,8 @@ A graceful shutdown immediately retires every waiting run as `interrupted`, writ
 On Linux and macOS, Ctrl+C on `cdui start --foreground` is not graceful: the `cdui` process kills the server about 0.25 seconds after the Ctrl+C, so executing runs do not get their 5 seconds and waiting runs may not be retired. `cdui stop` does not wait for these steps either: on Windows it force-kills the server's process tree (`taskkill /F /T`), and on Linux and macOS it sends SIGTERM and then SIGKILL about 2 seconds later. Those stops, any other hard kill, or an executing run that outlasts the 5 seconds can leave rows as `queued` or `running`. At the next startup, recovery changes both statuses to `interrupted` and writes the same stop event a graceful shutdown writes, unless the run's event log already ends with a closing event. An editor tab that reconnects, and anything reading `GET /api/runs/{id}/events`, therefore sees the run end. Neither resumes.
 
 Requeue anything you still want by submitting it again.
+
+A study keeps its plan across a restart and runs the repetitions that did not complete once it is resumed; see [Studies across a restart](#studies-across-a-restart).
 
 ## Configuration
 
@@ -251,4 +322,4 @@ Retention runs at startup and after every run ends, keeping the newest `KEEP_LAS
 
 - [Running Graphs](./running-graphs) — what happens inside a single run
 - [CLI Graph Runner](./cli-runner) — executing a graph with no server
-- [API Reference](../advanced/api-reference) — the `/api/runs` endpoints
+- [API Reference](../advanced/api-reference) — the `/api/runs`, `/api/sweeps` and `/api/studies` endpoints
