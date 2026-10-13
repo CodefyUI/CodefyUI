@@ -66,6 +66,7 @@ import { triggerDropConnection } from './triggerDrop';
 import { withoutOccupants } from '../../utils/occupiedInput';
 import type { FinalConnectionState } from '@xyflow/react';
 import { useTabStore } from '../../store/tabStore';
+import { runNodePrefix } from '../../utils/subgraph';
 import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { isAnyModalOpen } from '../../store/modalState';
@@ -892,7 +893,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     (event: React.MouseEvent, edge: Edge) => {
       const sourceId = edge.source;
       const sourceHandle = edge.sourceHandle ?? '';
-      const nodeSummaries = outputSummaries[sourceId];
+      // Inside an open block the run summarised each node under its run id
+      // (#559): the copy of the block that is open, not the other one.
+      const nodeSummaries = outputSummaries[runNodePrefix(activeTab.subgraphStack) + sourceId];
       if (!nodeSummaries || !nodeSummaries[sourceHandle]) {
         setEdgeTooltip(null);
         return;
@@ -910,7 +913,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         targetId: edge.target,
       });
     },
-    [outputSummaries, activeTab.nodes]
+    [outputSummaries, activeTab.nodes, activeTab.subgraphStack]
   );
 
   // Double-click on pane to open quick node search

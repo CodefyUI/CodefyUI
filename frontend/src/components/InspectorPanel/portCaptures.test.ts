@@ -18,6 +18,7 @@ import {
   _setRunRecordRetryForTests,
   canvasNodeIsContainer,
   capturePhase,
+  canvasIdOnLevel,
   capturePhaseNoteKey,
   innerNodeLabel,
   portDataType,
@@ -25,6 +26,7 @@ import {
   resolveSingleNodePorts,
   takeDuePorts,
   usePortFetches,
+  usePortMedia,
   useRunNodeId,
   useRunNodePrefix,
 } from './portCaptures';
@@ -318,7 +320,7 @@ describe('usePortFetches inside an open block', () => {
 // two: nothing to read YET is different from nothing to read.
 
 describe('capturePhase', () => {
-  const TERMINAL: ExecutionStatus[] = ['completed', 'cached', 'error', 'skipped', 'interrupted'];
+  const TERMINAL: ExecutionStatus[] = ['completed', 'cached', 'error', 'interrupted'];
 
   it('is running while the node runs in a run that is in progress', () => {
     expect(capturePhase('running', true)).toBe('running');
@@ -334,12 +336,19 @@ describe('capturePhase', () => {
   });
 
   it('is settled for every status when no run is in progress', () => {
-    const all: (ExecutionStatus | undefined)[] = [undefined, 'idle', 'running', 'bypassed', ...TERMINAL];
+    const all: (ExecutionStatus | undefined)[] = [
+      undefined, 'idle', 'running', 'bypassed', 'skipped', ...TERMINAL,
+    ];
     for (const status of all) expect(capturePhase(status, false)).toBe('settled');
   });
 
   it('is bypassed, never pending, for a node the run will not run (#559)', () => {
     expect(capturePhase('bypassed', true)).toBe('bypassed');
+  });
+
+  it('is skipped, never settled or pending, for a node the run passed over (#559)', () => {
+    // It will never run and has nothing to read: no request, no wait.
+    expect(capturePhase('skipped', true)).toBe('skipped');
   });
 
   it('is unselected, never pending, for a node a Switch left out (#656)', () => {
@@ -379,6 +388,7 @@ describe('capturePhaseNoteKey', () => {
     expect(capturePhaseNoteKey('pending')).toBe('inspector.nodePending');
     expect(capturePhaseNoteKey('bypassed')).toBe('inspector.nodeBypassed');
     expect(capturePhaseNoteKey('unselected')).toBe('inspector.nodeUnselected');
+    expect(capturePhaseNoteKey('skipped')).toBe('inspector.capture.skippedInRun');
     expect(capturePhaseNoteKey('settled')).toBeNull();
   });
 });
@@ -534,6 +544,24 @@ describe('usePortFetches — a node the last run has nothing for', () => {
       ),
     );
     expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('says a node the run passed over never ran, with no request (#559)', async () => {
+    patchActiveTab({ nodes: [nodeAt('added', 'skipped')] });
+    const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+    await waitFor(() =>
+      expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.skippedInRun'),
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('reads a card the run summed up as skipped when the run kept a value for it', async () => {
+    // A preset card whose nodes were cache hits and passed-over ones settles
+    // `skipped` (#260), and its port can still name a value that was kept.
+    patchActiveTab({ nodes: [nodeAt('a', 'skipped')] });
+    const { result } = renderHook(() => usePortFetches('run1', [RAN]));
+    await waitFor(() => expect(result.current[keyOf('a', 'out')]?.data).toBeTruthy());
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'a', 'out');
   });
 
   it('says a node a Switch left out did not run (#656)', async () => {
@@ -756,10 +784,31 @@ describe('usePortFetches — a node the last run has nothing for', () => {
       expect(mockOutput).toHaveBeenCalledTimes(1);
     });
 
-    it('goes by no card status inside an open block: it asks, and the 404 reads as expired', async () => {
-      // Inner cards never get a run status; one they carry is not this run's.
+    it('goes by the status this copy of a block reported inside it (#559)', async () => {
+      // The open level paints each inner node with what the run reported
+      // for it under `blk/added`, so a failure there is said, not asked for.
       enter('blk');
       patchActiveTab({ nodes: [nodeAt('added', 'error')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.failedInRun'),
+      );
+      expect(mockOutput).not.toHaveBeenCalled();
+    });
+
+    it('says a node the run passed over inside a block never ran, with no request', async () => {
+      enter('blk');
+      patchActiveTab({ nodes: [nodeAt('added', 'skipped')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.skippedInRun'),
+      );
+      expect(mockOutput).not.toHaveBeenCalled();
+    });
+
+    it('asks for an inner node that completed, and lets the 404 read as expired', async () => {
+      enter('blk');
+      patchActiveTab({ nodes: [nodeAt('added', 'completed')] });
       const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
       await waitFor(() =>
         expect(result.current[keyOf('added', 'out')]?.errorKey).toBe('inspector.dataExpired'),
@@ -828,6 +877,15 @@ describe('usePortFetches — a node the last run has nothing for', () => {
       unmount();
     });
 
+    it('still says a node the run passed over never ran (#559)', async () => {
+      patchActiveTab({ recordOutputs: false, nodes: [nodeAt('added', 'skipped')] });
+      const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
+      await waitFor(() =>
+        expect(result.current[keyOf('added', 'out')]?.noteKey).toBe('inspector.capture.skippedInRun'),
+      );
+      expect(mockOutput).not.toHaveBeenCalled();
+    });
+
     it('still says a node that failed failed', async () => {
       patchActiveTab({ recordOutputs: false, nodes: [nodeAt('added', 'error')] });
       const { result } = renderHook(() => usePortFetches('run1', [ADDED]));
@@ -836,6 +894,69 @@ describe('usePortFetches — a node the last run has nothing for', () => {
       );
       expect(mockOutput).not.toHaveBeenCalled();
       expect(mockList).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ── What a media port drew, on the level on screen (#559) ────────────────────
+// A node inside a block files its picture under its card, naming itself by
+// its run id; the open level reads it by canvas id, for its own copy only.
+
+describe('canvasIdOnLevel', () => {
+  it('is the run id itself at the top level, for a node drawn there', () => {
+    expect(canvasIdOnLevel('plot', '')).toBe('plot');
+    expect(canvasIdOnLevel('blk/plot', '')).toBeNull();
+  });
+
+  it('is the id after the open level prefix, one level deep only', () => {
+    expect(canvasIdOnLevel('blk/plot', 'blk/')).toBe('plot');
+    expect(canvasIdOnLevel('copy/plot', 'blk/')).toBeNull();
+    expect(canvasIdOnLevel('blk/nest/plot', 'blk/')).toBeNull();
+    expect(canvasIdOnLevel('blk/', 'blk/')).toBeNull();
+    expect(canvasIdOnLevel(undefined, '')).toBeNull();
+  });
+});
+
+describe('usePortMedia', () => {
+  const image = (data: string) => ({ format: 'png', encoding: 'base64', data, port: 'image' });
+
+  function seedLogs(logs: TabState['logs']) {
+    const { tabs, activeTabId } = useTabStore.getState();
+    useTabStore.setState({
+      tabs: tabs.map((t) => (t.id === activeTabId ? { ...t, logs } : t)),
+    });
+  }
+
+  beforeEach(() => {
+    seedLogs([
+      { timestamp: 1, nodeId: 'plot', message: '', type: 'info', kind: 'image', image: image('TOP') },
+      {
+        timestamp: 2, nodeId: 'blk', innerNodeId: 'blk/plot', message: '', type: 'info',
+        kind: 'image', image: image('INNER'),
+      },
+      {
+        timestamp: 3, nodeId: 'copy', innerNodeId: 'copy/plot', message: '', type: 'info',
+        kind: 'image', image: image('COPY'),
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    leaveAll();
+    seedLogs([]);
+  });
+
+  it('reads a top-level node by its own id, and nothing drawn inside a block', () => {
+    const { result } = renderHook(() => usePortMedia());
+    expect(Object.keys(result.current)).toEqual([keyOf('plot', 'image')]);
+    expect(result.current[keyOf('plot', 'image')]).toEqual({ kind: 'image', image: image('TOP') });
+  });
+
+  it('reads, inside an open block, what that copy of the node drew', () => {
+    enter('copy');
+    const { result } = renderHook(() => usePortMedia());
+    expect(result.current).toEqual({
+      [keyOf('plot', 'image')]: { kind: 'image', image: image('COPY') },
     });
   });
 });

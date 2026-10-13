@@ -1,0 +1,49 @@
+{
+  "name": "e2e block plot",
+  "description": "A block whose first node is bypassed and whose second draws a line plot",
+  "nodes": [
+    { "id": "start", "type": "Start", "position": { "x": 0, "y": 0 }, "data": { "params": {} } },
+    {
+      "id": "make",
+      "type": "TensorCreate",
+      "position": { "x": 220, "y": 0 },
+      "data": { "params": { "shape": "8", "fill": "full", "value": 1.5, "requires_grad": false } }
+    },
+    { "id": "blkV", "type": "subgraph:plot-def", "position": { "x": 520, "y": 0 }, "data": { "params": {} } }
+  ],
+  "edges": [
+    { "id": "t1", "source": "start", "target": "make", "sourceHandle": "trigger", "targetHandle": "__trigger", "type": "trigger" },
+    { "id": "in1", "source": "make", "target": "blkV", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data" }
+  ],
+  "presets": [],
+  "segmentGroups": [],
+  "subgraphs": [
+    {
+      "id": "plot-def",
+      "name": "Plotter",
+      "description": "",
+      "nodes": [
+        {
+          "id": "muted",
+          "type": "ScalarMultiply",
+          "position": { "x": 0, "y": 0 },
+          "data": { "params": { "scalar": 2 }, "bypassed": true }
+        },
+        {
+          "id": "plot",
+          "type": "Visualize",
+          "position": { "x": 700, "y": 0 },
+          "data": { "params": { "title": "inside", "plot_type": "line" } }
+        }
+      ],
+      "edges": [
+        { "id": "m2p", "source": "muted", "target": "plot", "sourceHandle": "tensor", "targetHandle": "data" }
+      ],
+      "interface": {
+        "inputs": [{ "port": "tensor", "innerNode": "muted", "innerPort": "tensor", "data_type": "TENSOR" }],
+        "outputs": [],
+        "triggerTargets": []
+      }
+    }
+  ]
+}

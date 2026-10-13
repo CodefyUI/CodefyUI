@@ -506,7 +506,10 @@ async def test_a_run_stores_the_cards_line_for_the_editor_and_a_replay(
             for f in frames if f["node_id"] == "CARD"] == [
         ("running", None),
         ("running", [{"output_kind": "text", "text": "[card] from-card"}]),
-        ("completed", None),
+        # The card's terminal frame summarises its own output port (#559);
+        # the line went out above and is not repeated here.
+        ("completed", [{"output_kind": "tensor_summary", "tensor_summary": {
+            "value": {"type": "string", "value": "from-card"}}}]),
     ]
 
 

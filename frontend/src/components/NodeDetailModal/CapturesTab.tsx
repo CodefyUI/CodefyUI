@@ -3,10 +3,12 @@ import { useI18n } from '../../i18n';
 import type { OutputSummary } from '../../types';
 import { PortGroup, rowKeys } from '../InspectorPanel/PortGroup';
 import {
+  canvasIdOnLevel,
   resolveSingleNodePorts,
   useInputsEmptyText,
   usePortFetches,
   usePortMedia,
+  useRunNodePrefix,
 } from '../InspectorPanel/portCaptures';
 import { getPortColor } from '../../utils';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
@@ -71,12 +73,19 @@ export function CapturesTab({
   const logs = useTabStore(
     (s) => s.tabs.find((t) => t.id === s.activeTabId)?.logs ?? NO_LOGS,
   );
+  // Inside an open block, the charts this copy of the node drew (#559).
+  const prefix = useRunNodePrefix();
   const charts = useMemo(
     () =>
       kind === 'output'
-        ? logs.filter((e) => e.kind === 'chart' && e.nodeId === ctx.nodeId && e.chart?.kind)
+        ? logs.filter(
+            (e) =>
+              e.kind === 'chart' &&
+              canvasIdOnLevel(e.innerNodeId ?? e.nodeId, prefix) === ctx.nodeId &&
+              e.chart?.kind,
+          )
         : [],
-    [kind, logs, ctx.nodeId],
+    [kind, logs, ctx.nodeId, prefix],
   );
 
   const title =

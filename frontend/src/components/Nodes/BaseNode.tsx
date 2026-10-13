@@ -11,7 +11,7 @@ import {
 } from '../../utils';
 import { findDetachableEdge, redirectMouseDownToReconnectAnchor } from '../../utils/reconnect';
 import { useUIStore } from '../../store/uiStore';
-import { useTabStore } from '../../store/tabStore';
+import { outputSummaryOf, useTabStore } from '../../store/tabStore';
 import { SWITCH_OUTPUT, isSwitchNode, switchOutputType } from '../../utils/switchNode';
 import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
@@ -138,7 +138,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const reconnectingHandle = useUIStore((s) => s.reconnectingHandle);
   const nodeOutputs = useTabStore((s) => {
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
-    return tab?.outputSummaries?.[id];
+    return outputSummaryOf(tab, id);
   });
   const [hovered, setHovered] = useState(false);
   const [downloading, setDownloading] = useState(false);

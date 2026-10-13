@@ -691,6 +691,7 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.capture.notInRun': '不在上次執行中',
   'inspector.capture.bypassedInRun': '上次執行中已略過，且沒有值經過它',
   'inspector.capture.unselectedInRun': '上次執行中沒有被 Switch 選到，所以沒有執行',
+  'inspector.capture.skippedInRun': '已跳過：前面的節點失敗，所以它沒有執行',
   'inspector.capture.failedInRun': '上次執行時出錯',
   'inspector.capture.runHint': '執行圖表即可擷取數值',
   'inspector.capture.fromBlock': '從區塊的輸入傳入：{ports}',

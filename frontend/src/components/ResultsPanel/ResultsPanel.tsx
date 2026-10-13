@@ -6,6 +6,7 @@ import { friendlyError } from '../../utils/errorMessages';
 import { LossChart, type ChartSeries } from './LossChart';
 import { RunsPanel } from './RunsPanel';
 import { ChartView } from '../shared/ChartView';
+import { innerNodeLabel } from '../InspectorPanel/portCaptures';
 import { PluginDockPanel, usePluginPanels } from '../PluginPanels/PluginPanels';
 import styles from './ResultsPanel.module.css';
 
@@ -447,6 +448,8 @@ export function ResultsPanel() {
                         }}
                       >
                         {String(entry.nodeId).slice(0, 8)}
+                        {/* The node inside the card that drew it (#559). */}
+                        {entry.innerNodeId && ` › ${innerNodeLabel(entry.nodeId, entry.innerNodeId)}`}
                       </span>
                     )}
                     {entry.kind === 'chart' && entry.chart?.kind ? (

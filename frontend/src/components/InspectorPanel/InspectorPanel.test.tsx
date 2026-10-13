@@ -786,6 +786,7 @@ describe('InspectorPanel — while the graph is running', () => {
   const RUNNING_NOTE = 'Node is running…';
   const PENDING_NOTE = 'Waiting for this node to run…';
   const EXPIRED = /Run data expired/;
+  const SKIPPED_NOTE = 'Skipped: a node before it failed, so it did not run';
 
   /** The node as the engine last reported it. */
   function at(status: ExecutionStatus, n: Node<NodeData>): Node<NodeData> {
@@ -1186,23 +1187,25 @@ describe('InspectorPanel — while the graph is running', () => {
     expect(callsFor('t')).toBe(1);
   });
 
-  it('waits for the run to end before saying a passed-over node has nothing', async () => {
-    // A node the run passed over has no captures. While the run is going a
-    // 404 for it only means "nothing yet", so the row waits instead of
-    // calling it expired, and says what it means once the run is over.
+  it('says at once that a passed-over node never ran, and never calls it expired (#559)', async () => {
+    // A node the run passed over because a node before it failed will not
+    // run and has no captures. It says so while the run goes, with no
+    // request that could only 404, and still says so once the run is over.
     const a = at('skipped', node('a', 'NodeA', { outputs: ['out'] }));
     seedTab({ status: 'running', lastRunId: 'run1', selectedNodeId: 'a', nodes: [a], edges: [] });
     serveFinished(new Set());
     render(<InspectorPanel />);
-    await waitFor(() => expect(mockOutput).toHaveBeenCalled());
-    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(await screen.findByText(SKIPPED_NOTE)).toBeInTheDocument();
     expect(screen.queryByText(RUNNING_NOTE)).toBeNull();
     act(() => {
       useTabStore.setState((st) => ({
         tabs: st.tabs.map((t, i) => (i === 0 ? { ...t, status: 'error' } : t)),
       }));
     });
-    await waitFor(() => expect(screen.getByText(EXPIRED)).toBeInTheDocument());
+    await settle();
+    expect(screen.getByText(SKIPPED_NOTE)).toBeInTheDocument();
+    expect(screen.queryByText(EXPIRED)).toBeNull();
+    expect(mockOutput).not.toHaveBeenCalled();
   });
 });
 

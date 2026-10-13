@@ -506,13 +506,17 @@ async def test_a_run_stores_inner_events_beside_the_unchanged_card_events(
     inner = [e.payload for e in events if e.type == EVENT_INNER_NODE_STATUS]
     cards = [e.payload for e in events if e.type == EVENT_NODE_STATUS]
 
+    bare = [{k: v for k, v in p.items() if k != "outputs"} for p in inner]
     assert {"node_id": "blk/nest/b", "container_id": "blk",
-            "status": "completed"} in inner
+            "status": "completed"} in bare
     assert {"node_id": "blk/nest", "container_id": "blk",
-            "status": "completed"} in inner
-    # No outputs on an inner event: the card's own frames carry them.
+            "status": "completed"} in bare
     assert all(set(p) <= {"node_id", "container_id", "status", "error",
-                          "error_type"} for p in inner)
+                          "error_type", "outputs"} for p in inner)
+    # What an inner node produced rides its own event, never its text: the
+    # card's frames relay every line already (#601).
+    assert not [entry for p in inner for entry in p.get("outputs", ())
+                if entry["output_kind"] == "text"]
     assert not any("/" in p["node_id"] for p in cards)
     # Progress is ONE event: the card's, naming the node inside it.
     progress = [p for p in cards if p["status"] == "progress"]

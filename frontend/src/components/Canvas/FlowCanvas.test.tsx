@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { subgraphFrame } from '../../test/openBlocks';
 import { screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { getViewportForBounds, useReactFlow, useStoreApi, type Node, type Edge } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../../types';
@@ -129,6 +130,7 @@ function setTab(
     edges: Edge[];
     outputSummaries: any;
     lastRunId: string | null;
+    subgraphStack: any[];
   }>,
 ) {
   useTabStore.setState((s) => ({
@@ -722,6 +724,30 @@ describe('click handlers', () => {
       fireEvent.keyDown(document, { key: 'Escape' });
     });
     expect(screen.queryByText('Type')).toBeNull();
+  });
+
+  it('reads, inside an open block, what the run summarised for that copy (#559)', () => {
+    // The run summarised each node inside a block under its run id; the
+    // same canvas id at the top level, or in the other copy, is not this one.
+    setTab({
+      nodes: [node('a', { data: { label: 'A', type: 'Linear', params: {}, definition: makeDef() } }), node('b')],
+      edges: [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out' }],
+      outputSummaries: {
+        a: { out: { type: 'TopLevel' } },
+        'copy/a': { out: { type: 'OtherCopy' } },
+        'blk/a': { out: { type: 'ThisCopy' } },
+      },
+      subgraphStack: [subgraphFrame('blk')],
+    });
+    renderCanvas();
+    act(() =>
+      captured.rf.onEdgeClick({ clientX: 100, clientY: 100 } as any, {
+        id: 'e1', source: 'a', target: 'b', sourceHandle: 'out',
+      }),
+    );
+    expect(screen.getByText('ThisCopy')).toBeTruthy();
+    expect(screen.queryByText('TopLevel')).toBeNull();
+    expect(screen.queryByText('OtherCopy')).toBeNull();
   });
 
   // ── "View stats" (#129) ───────────────────────────────────────────────────

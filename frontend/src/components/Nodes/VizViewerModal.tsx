@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useTabStore } from '../../store/tabStore';
+import { outputSummaryOf, useTabStore } from '../../store/tabStore';
 import { useRunNodeId } from '../InspectorPanel/portCaptures';
 import { HeatmapModal } from '../shared/HeatmapModal';
 import { ScatterModal } from '../shared/ScatterModal';
@@ -33,11 +33,12 @@ function VizViewerModalBody({ nodeId }: { nodeId: string }) {
   const tab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const closeVizModal = useTabStore((s) => s.closeVizModal);
   const node = tab.nodes.find((n) => n.id === nodeId);
-  const summaries = tab.outputSummaries[nodeId];
+  const summaries = outputSummaryOf(tab, nodeId);
   const runId = tab.lastRunId;
   // What the viewer fetches by. Inside an open block the run captured the
-  // node as `<instance>/<inner>` (#621), and the summaries above never arrive
-  // for an inner node, so there the viewer always fetches.
+  // node as `<instance>/<inner>` (#621), and summarised it under that id too
+  // (#559): the summaries above are this copy's, and what they leave out the
+  // viewer fetches by the same id.
   const runNodeId = useRunNodeId(nodeId);
 
   // Rebuilt only when the node, its outputs or the run change: the scatter

@@ -144,8 +144,9 @@ export function usePortStats(
     }
     setStats((prev) => ({ ...prev, ...pending }));
     const runOver = !runInProgressNow();
-    // No status inside an open block: the cards there never get one.
-    const statuses = due.map((p) => (prefix ? undefined : canvasNodeStatus(p.nodeId)));
+    // By the id each owner has on the level on screen: inside an open block,
+    // what the run reported for this copy of it (#559).
+    const statuses = due.map((p) => canvasNodeStatus(p.nodeId.slice(prefix.length)));
 
     void Promise.all(
       due.map(async (p, i) => {

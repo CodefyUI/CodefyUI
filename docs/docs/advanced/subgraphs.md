@@ -98,6 +98,15 @@ error, interrupted or bypassed. A block nested inside the open one shows the
 aggregate of what is inside it. Two copies of one block keep their statuses
 apart, and opening a block after the run shows what its nodes did in that run.
 
+What a node inside a block produces reaches the same places it would at the
+top level. A picture, clip or chart it draws appears in the Execution Log,
+labelled with the instance and the node inside it (`blk › plot`), and on that
+node's Inspector and Node details rows while the block is open, whether or not
+**Record node outputs** is on. The instance node's output edges show the values
+its exposed ports carried. A node that was skipped because a node before it
+failed says so in the Inspector, instead of waiting for the run or reporting
+expired data.
+
 Inner nodes get **namespaced ids** while they run, `<instance>/<node>`, which is
 what you see in the Teaching Inspector and in validation messages. Select an
 instance node and its **Steps** and **Backward** tabs list what the nodes inside

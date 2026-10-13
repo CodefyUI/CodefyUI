@@ -147,6 +147,20 @@ describe('ResultsPanel — log tab basics', () => {
     expect(tab.nodes.find((n) => n.id === 'other')!.selected).toBe(false);
   });
 
+  it('names the node inside a card that drew an entry, and the badge still selects the card (#559)', () => {
+    useTabStore.getState().setNodes([
+      { id: 'blk', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'B', type: 'subgraph:b', params: {} } },
+    ] as any);
+    seedLogs([makeLog({
+      message: '', nodeId: 'blk', innerNodeId: 'blk/nest/plot', kind: 'image',
+      image: { format: 'png', encoding: 'base64', data: 'iVBORw0KGgo=' },
+    })]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText('blk › nest/plot'));
+    const tab = useTabStore.getState().tabs.find((tt) => tt.id === useTabStore.getState().activeTabId)!;
+    expect(tab.selectedNodeId).toBe('blk');
+  });
+
   // #125: one ResultsPanel now serves every canvas tab (only the active tab's
   // surface is mounted, and it is not remounted on a switch), so local state
   // that indexes INTO the active tab's data has to be reset by hand.

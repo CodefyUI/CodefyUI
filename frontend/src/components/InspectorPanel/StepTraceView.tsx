@@ -89,16 +89,16 @@ export function StepTraceView({ runId, nodeId }: Props) {
     let stopWaiting: (() => void) | null = null;
     // A settled node in a run still going is read as before: the run's
     // index is only whole once the run is over. Inside an open block the
-    // card has no run status to go by. A block or preset card records its
-    // steps under the nodes inside it (#559), so the run's list holds none
-    // under its own id: read as a node with no outputs, it is never "not in
-    // the run".
+    // node shows what the run reported for this copy of it. A block or
+    // preset card records its steps under the nodes inside it (#559), so the
+    // run's list holds none under its own id: read as a node with no
+    // outputs, it is never "not in the run".
     const container = canvasNodeIsContainer(nodeId);
     const missing = runInProgressNow()
       ? Promise.resolve(null)
       : missingFromRunNote(runId, {
           runNodeId,
-          status: runNodeId === nodeId ? canvasNodeStatus(nodeId) : undefined,
+          status: canvasNodeStatus(nodeId),
           hasOutputs: !container && canvasNodeHasOutputs(nodeId),
         });
     missing
