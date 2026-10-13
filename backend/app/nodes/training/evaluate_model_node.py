@@ -38,6 +38,17 @@ def count_correct(outputs: Any, labels: Any, node_name: str) -> tuple[Any, int]:
     labels are read as ``[B]``. ``correct`` stays a device tensor so the
     caller can accumulate without a host sync per batch.
     """
+    import torch
+
+    if not isinstance(outputs, torch.Tensor):
+        # A model returning ``(logits, aux)`` or ``{"logits": ...}`` used to
+        # fail here with "'tuple' object has no attribute 'dim'".
+        raise ValueError(
+            f"{node_name}: the model returned a {type(outputs).__name__}, but "
+            "accuracy needs one tensor of class scores per batch ([B, C], or "
+            "[B, 1] for a binary classifier). End the model with a layer "
+            "that outputs a single tensor."
+        )
     if outputs.dim() == 1 or (outputs.dim() == 2 and outputs.shape[1] == 1):
         pred = outputs.reshape(-1) > 0
     else:
