@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ScmHeader } from './ScmHeader';
 import { refSectionIds } from './RefSection';
 import { useI18n } from '../../i18n';
@@ -129,6 +129,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount before the reset: a store write with the panel still mounted is
+  // a render outside act() (#505), and setup.ts's cleanup runs after this hook.
+  cleanup();
   _resetGitStoreForTesting();
   vi.restoreAllMocks();
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { StashesSection } from './StashesSection';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
@@ -94,6 +94,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount before the reset: a store write with the panel still mounted is
+  // a render outside act() (#505), and setup.ts's cleanup runs after this hook.
+  cleanup();
   _resetGitStoreForTesting();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -200,7 +203,9 @@ describe('StashesSection: the rows', () => {
     render(<StashesSection />);
     await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
 
-    useGitStore.setState({ status: status({ stash_count: 2 }) });
+    act(() => {
+      useGitStore.setState({ status: status({ stash_count: 2 }) });
+    });
     // The count on the heading is the proof the render and its effect ran.
     await waitFor(() => expect(within(section()).getByText('2')).toBeTruthy());
     expect(refreshRefs).toHaveBeenCalledTimes(1);
@@ -212,7 +217,9 @@ describe('StashesSection: the rows', () => {
     // section that is at most one poll away.
     land();
     await waitFor(() => expect(within(section()).getAllByRole('listitem')).toHaveLength(1));
-    useGitStore.setState({ stashes: [stash()] });
+    act(() => {
+      useGitStore.setState({ stashes: [stash()] });
+    });
     await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(2));
   });
 
@@ -237,7 +244,9 @@ describe('StashesSection: the rows', () => {
     render(<StashesSection />);
     await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
 
-    useGitStore.setState({ stashes: [stash()] });
+    act(() => {
+      useGitStore.setState({ stashes: [stash()] });
+    });
     await waitFor(() => expect(within(section()).getByText('1')).toBeTruthy());
     expect(refreshRefs).toHaveBeenCalledTimes(1);
   });
