@@ -146,6 +146,45 @@ def test_log_update_ratio_records_positive_values():
     assert all(value > 0 for value, _ in series)
 
 
+def test_grad_norms_port_holds_one_logged_value_per_optimizer_step():
+    ctx = _RecordingContext()
+    result, _ = _train(
+        {"epochs": 2, "log_grad_norm": True, "grad_clip_norm": 0.5,
+         "accumulate_steps": 2}, context=ctx)
+    norms = result["grad_norms"]
+    assert isinstance(norms, torch.Tensor) and norms.ndim == 1
+    assert len(norms) == result["metrics"]["total_steps"] == 4
+    logged = [value for value, _ in _series(ctx, "grad_norm")]
+    assert norms.tolist() == pytest.approx(logged)
+    # Pre-clip: at least one step's norm is above the clip threshold.
+    assert float(norms.max()) > 0.5
+
+
+def test_grad_norms_port_ignores_log_interval_thinning():
+    ctx = _RecordingContext()
+    result, _ = _train(
+        {"epochs": 1, "log_grad_norm": True, "log_interval": 2}, context=ctx)
+    norms = result["grad_norms"]
+    assert len(norms) == result["metrics"]["total_steps"] == 4
+    series = _series(ctx, "grad_norm")
+    assert [step for _, step in series] == [2, 4]
+    assert [norms[1].item(), norms[3].item()] == pytest.approx(
+        [value for value, _ in series])
+
+
+def test_grad_norms_port_is_empty_when_log_grad_norm_is_off():
+    result, _ = _train({"epochs": 1, "grad_clip_norm": 1.0})
+    assert isinstance(result["grad_norms"], torch.Tensor)
+    assert result["grad_norms"].numel() == 0
+
+
+def test_grad_norms_is_a_declared_tensor_output():
+    from app.core.node_base import DataType
+
+    ports = {p.name: p for p in TrainingLoopNode.define_outputs()}
+    assert ports["grad_norms"].data_type == DataType.TENSOR
+
+
 def test_telemetry_off_by_default():
     ctx = _RecordingContext()
     _train({"epochs": 1}, context=ctx)
@@ -181,8 +220,10 @@ def test_checkpoint_every_steps_fires_on_distinct_milestones(monkeypatch):
     calls = []
 
     def fake_periodic(context, model, optimizer, *, epoch, losses=None,
-                      lr_scheduler=None, scaler_state=None, node_id=None):
-        calls.append(epoch)
+                      lr_scheduler=None, scaler_state=None, node_id=None,
+                      step=None):
+        assert epoch == 0  # complete epochs: both land inside epoch 1
+        calls.append(step)
         return None
 
     import app.nodes.training.training_loop_node as tl

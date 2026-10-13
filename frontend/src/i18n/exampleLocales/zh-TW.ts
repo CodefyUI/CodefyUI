@@ -117,6 +117,29 @@ const zhTW: ExampleTranslations = {
     description: '驗證損失回升時就停止訓練',
   },
 
+  // ── Paper reproductions ──
+  'Papers/Dropout-Srivastava-2014': {
+    description: '同一個 MLP 加與不加 dropout 0.5',
+  },
+  'Papers/BatchNorm-Ioffe-2015': {
+    description: 'SGD lr 0.5 下的 MLP，有無 BN',
+  },
+  'Papers/ResNet-Degradation-He-2016': {
+    description: '20 層 MLP：一般與加捷徑',
+  },
+  'Papers/Adam-Kingma-2015': {
+    description: '同一個 MLP 用三種最佳化器訓練',
+  },
+  'Papers/Label-Smoothing-Szegedy-2016': {
+    description: '硬標籤與 label smoothing 0.1',
+  },
+  'Papers/SGDR-Loshchilov-2017': {
+    description: '餘弦重啟與固定學習率',
+  },
+  'Papers/Vanishing-Gradients-Glorot-2010': {
+    description: '深層 sigmoid MLP 與 ReLU 版',
+  },
+
   // ── Reinforcement learning ──
   'RL/RLHF-Reward-and-KL': {
     description: '一個給答案打分，一個不讓策略跑遠',
@@ -126,6 +149,20 @@ const zhTW: ExampleTranslations = {
   },
   'RL/GRPO-Step-GridWorld': {
     description: '每一回合都和同組的回合比較',
+  },
+
+  // ── Paper reproductions -- reinforcement learning ──
+  'Papers/REINFORCE-CartPole': {
+    description: '直接用回報做策略梯度',
+  },
+  'Papers/DQN-CartPole': {
+    description: '從經驗回放學出 Q 值',
+  },
+  'Papers/PPO-CartPole': {
+    description: '裁切比值的策略更新加上 GAE',
+  },
+  'Papers/QLearning-GridWorld': {
+    description: '用 Q 值繞過兩個陷阱走到終點',
   },
 
   // ── Vision-language-action ──

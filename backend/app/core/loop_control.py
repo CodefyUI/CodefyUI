@@ -329,8 +329,14 @@ def save_periodic_checkpoint(
     lr_scheduler: Any = None,
     scaler_state: Any = None,
     node_id: str | None = None,
+    step: int | None = None,
 ) -> str | None:
     """Persist a HEALTHY run's progress on its own schedule (#203). Never raises.
+
+    *epoch* is what the checkpoint stores and ``CheckpointLoader.epoch``
+    hands back, so it is always the number of COMPLETE epochs. *step* is set
+    for an optimizer-step milestone (``checkpoint_every_steps``): it names
+    the file and is recorded in the artifact meta, and leaves *epoch* alone.
 
     Everything else in this stack survives a browser disconnect, a tab
     close, the submitting process exiting, or a cooperative Stop click (see
@@ -410,7 +416,8 @@ def save_periodic_checkpoint(
     # the log instead of only as "training feels slower than it used to".
     started = time.monotonic()
     try:
-        target = periodic_checkpoint_path(run_id, resolved_node_id, epoch=epoch)
+        target = periodic_checkpoint_path(
+            run_id, resolved_node_id, epoch=epoch, step=step)
         write_checkpoint(
             target, model, optimizer, epoch=epoch, losses=losses,
             lr_scheduler=lr_scheduler, scaler_state=scaler_state,
@@ -430,7 +437,8 @@ def save_periodic_checkpoint(
         log_artifact(
             "checkpoint",
             str(target),
-            {"reason": "periodic", "epoch": int(epoch)},
+            {"reason": "periodic", "epoch": int(epoch),
+             **({} if step is None else {"step": int(step)})},
             resolved_node_id,
         )
 

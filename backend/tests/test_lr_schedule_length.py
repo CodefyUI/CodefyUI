@@ -166,10 +166,12 @@ def test_a_short_cosine_really_does_raise_the_lr_back_up():
 
 
 def test_one_cycle_shorter_than_the_run_takes_the_run_down():
-    """The other direction is not silent at all -- it raises mid-run.
+    """The other direction is not silent at all -- torch raises mid-run.
 
     Which is exactly why the advisory is worth emitting BEFORE the epochs
     that reach it, rather than letting a user discover it forty minutes in.
+    TrainingLoop now refuses the run before the first epoch, quoting the
+    "Tried to step" error the run would otherwise have died of.
     """
     with pytest.raises(ValueError, match="Tried to step"):
         _train(_one_cycle(2), epochs=5)
@@ -373,7 +375,8 @@ def test_the_note_reaches_the_server_log_too(caplog):
 
 
 def test_the_warning_is_emitted_before_the_schedule_can_fail_the_run():
-    """Ordering is the point: the crash arrives at epoch 3, the note at 0."""
+    """Ordering is the point: the note comes first, then the refusal that
+    stands in for the crash torch would raise at epoch 3."""
     context = ExecutionContext()
     with pytest.raises(ValueError, match="Tried to step"):
         _train(_one_cycle(2), epochs=5, context=context)
@@ -830,3 +833,62 @@ def test_a_warmup_family_note_reaches_the_run_through_the_loop():
     assert warnings[0].kind == SCHEDULE_WARNING_KIND
     assert "__log__" in res
     assert res["__log__"].startswith(SCHEDULE_NOTE_PREFIX)
+
+
+# ── a OneCycleLR too short for the run is refused before the first epoch ──
+
+
+def _spy_model_forward(monkeypatch):
+    """Count forward passes, so a refusal can be shown to come first."""
+    calls = []
+    original = nn.Linear.forward
+
+    def counting(self, x):
+        calls.append(1)
+        return original(self, x)
+
+    monkeypatch.setattr(nn.Linear, "forward", counting)
+    return calls
+
+
+def test_a_per_step_one_cycle_shorter_than_the_planned_steps_is_refused(monkeypatch):
+    """5 epochs x 2 batches = 10 optimizer steps against total_steps=6."""
+    calls = _spy_model_forward(monkeypatch)
+    with pytest.raises(ValueError) as excinfo:
+        _train(_one_cycle(6), epochs=5, scheduler_step="optimizer_step")
+    message = str(excinfo.value)
+    assert "total_steps=6" in message
+    assert "plans 10 optimizer steps" in message
+    assert "Set LRScheduler.total_steps to 10" in message
+    assert calls == [], "no batch should run before the refusal"
+
+
+def test_the_planned_steps_count_accumulation_and_the_max_steps_cap():
+    # 2 batches per epoch at accumulate_steps=2 is one step per epoch: 5.
+    with pytest.raises(ValueError, match="plans 5 optimizer steps"):
+        _train(_one_cycle(4), epochs=5, scheduler_step="optimizer_step",
+               accumulate_steps=2)
+    res = _train(_one_cycle(5), epochs=5, scheduler_step="optimizer_step",
+                 accumulate_steps=2)
+    assert res["metrics"]["total_steps"] == 5
+    # max_steps caps the plan: 7 steps against total_steps=6 is refused.
+    with pytest.raises(ValueError, match="plans 7 optimizer steps"):
+        _train(_one_cycle(6), epochs=100, scheduler_step="optimizer_step",
+               max_steps=7)
+
+
+def test_an_epoch_mode_one_cycle_shorter_than_the_epochs_is_refused(monkeypatch):
+    calls = _spy_model_forward(monkeypatch)
+    with pytest.raises(ValueError) as excinfo:
+        _train(_one_cycle(2), epochs=5)
+    message = str(excinfo.value)
+    assert "total_steps=2" in message and "plans 5 epochs" in message
+    assert "Set LRScheduler.total_steps to 5" in message
+    assert calls == []
+
+
+def test_an_epoch_mode_run_capped_by_max_steps_is_left_to_the_advisory():
+    """max_steps can end an epoch-mode run before the epochs do, so the
+    number of scheduler steps is not known up front and nothing is refused."""
+    res = _train(_one_cycle(2), epochs=5, max_steps=3)
+    assert res["metrics"]["stopped_at_max_steps"] is True

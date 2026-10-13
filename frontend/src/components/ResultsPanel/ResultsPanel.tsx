@@ -117,6 +117,9 @@ export function ResultsPanel() {
       total: number;
       loss: number;
       valLoss: number | null;
+      // RLTrainingLoop frames: the episode's return and the running mean.
+      episodeReturn: number | null;
+      meanReturn: number | null;
       ts: number;
     }[] = [];
     let config: Record<string, any> | null = null;
@@ -134,6 +137,8 @@ export function ResultsPanel() {
           // Present only when a val_dataloader is wired (TrainingLoop sends
           // it in the same epoch payload as the training loss).
           valLoss: typeof p.val_loss === 'number' ? p.val_loss : null,
+          episodeReturn: typeof p.episode_return === 'number' ? p.episode_return : null,
+          meanReturn: typeof p.mean_return === 'number' ? p.mean_return : null,
           ts: entry.timestamp,
         });
       }
@@ -161,6 +166,11 @@ export function ResultsPanel() {
   }, [hasValLoss, trainingData.epochs]);
 
   const hasTraining = trainingData.epochs.length > 0 || trainingData.config !== null;
+  // RLTrainingLoop reports episodes through the same epoch frames; a frame
+  // carrying mean_return relabels the counter and adds the returns.
+  const lastEpoch = trainingData.epochs[trainingData.epochs.length - 1];
+  const isEpisodic = lastEpoch !== undefined && lastEpoch.meanReturn !== null;
+  const counterLabel = isEpisodic ? t('results.episode') : t('results.epoch');
   const epochRowClass = hasValLoss
     ? `${styles.epochRow} ${styles.epochRowWithVal}`
     : styles.epochRow;
@@ -519,11 +529,27 @@ export function ResultsPanel() {
               {trainingData.epochs.length > 0 && (
                 <div className={styles.trainingSummary}>
                   <div className={styles.summaryItem}>
-                    <span className={styles.summaryLabel}>{t('results.epoch')}</span>
+                    <span className={styles.summaryLabel}>{counterLabel}</span>
                     <span className={styles.summaryValue}>
                       {trainingData.epochs[trainingData.epochs.length - 1].epoch} / {trainingData.epochs[trainingData.epochs.length - 1].total}
                     </span>
                   </div>
+                  {isEpisodic && (
+                    <>
+                      <div className={styles.summaryItem}>
+                        <span className={styles.summaryLabel}>{t('results.episodeReturn')}</span>
+                        <span className={styles.summaryValue}>
+                          {lastEpoch.episodeReturn === null ? '-' : lastEpoch.episodeReturn.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className={styles.summaryItem}>
+                        <span className={styles.summaryLabel}>{t('results.meanReturn')}</span>
+                        <span className={styles.summaryValue}>
+                          {lastEpoch.meanReturn?.toFixed(2)}
+                        </span>
+                      </div>
+                    </>
+                  )}
                   <div className={styles.summaryItem}>
                     <span className={styles.summaryLabel}>{t('results.currentLoss')}</span>
                     <span className={styles.summaryValue}>
@@ -556,7 +582,7 @@ export function ResultsPanel() {
                       losses={trainingData.epochs.map((e) => e.loss)}
                       series={lossSeries}
                       height={Math.max(80, panelHeight - 90)}
-                      xLabel={t('results.epoch')}
+                      xLabel={counterLabel}
                     />
                   ) : (
                     <div className={styles.emptyState}>{t('results.waitingEpoch')}</div>
@@ -609,7 +635,10 @@ export function ResultsPanel() {
                         const last = trainingData.epochs[trainingData.epochs.length - 1];
                         return (
                           <div className={styles.sectionHeader}>
-                            {t('results.epochsHeader', { current: last.epoch, total: last.total })}
+                            {t(isEpisodic ? 'results.episodesHeader' : 'results.epochsHeader', {
+                              current: last.epoch,
+                              total: last.total,
+                            })}
                           </div>
                         );
                       })()}

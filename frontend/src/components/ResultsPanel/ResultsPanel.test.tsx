@@ -358,6 +358,64 @@ describe('ResultsPanel — training tab', () => {
     expect(rows[1].children[2].textContent).toBe('-');
   });
 
+  it('labels an RLTrainingLoop run by episode and shows its return and mean return', () => {
+    seedLogs([
+      makeLog({
+        timestamp: 1000,
+        message: progress({
+          event: 'epoch', epoch: 10, total_epochs: 200, loss: 0.5,
+          losses: [0.5], episode_return: 12, mean_return: 10.5,
+        }),
+      }),
+      makeLog({
+        timestamp: 2000,
+        message: progress({
+          event: 'epoch', epoch: 20, total_epochs: 200, loss: 0.25,
+          losses: [0.5, 0.25], episode_return: 31.5, mean_return: 18.25,
+        }),
+      }),
+    ]);
+    render(<ResultsPanel />);
+    expect(screen.getByText(t('results.episode'))).toBeInTheDocument();
+    expect(screen.queryByText(t('results.epoch'))).not.toBeInTheDocument();
+    expect(screen.getByText('20 / 200')).toBeInTheDocument();
+    expect(screen.getByText(t('results.episodeReturn'))).toBeInTheDocument();
+    expect(screen.getByText('31.50')).toBeInTheDocument();
+    expect(screen.getByText(t('results.meanReturn'))).toBeInTheDocument();
+    expect(screen.getByText('18.25')).toBeInTheDocument();
+    expect(
+      screen.getByText(t('results.episodesHeader', { current: 20, total: 200 })),
+    ).toBeInTheDocument();
+    // The loss curve stays as it is.
+    expect(screen.getByText(t('results.lossCurve'))).toBeInTheDocument();
+    expect(screen.getByTestId('loss-chart').getAttribute('data-len')).toBe('2');
+  });
+
+  it('shows a dash for the return when an episodic frame lacks episode_return', () => {
+    seedLogs([
+      makeLog({
+        message: progress({
+          event: 'epoch', epoch: 1, total_epochs: 5, loss: 0.5, mean_return: 4,
+        }),
+      }),
+    ]);
+    render(<ResultsPanel />);
+    const label = screen.getByText(t('results.episodeReturn'));
+    expect(label.nextElementSibling?.textContent).toBe('-');
+    expect(screen.getByText('4.00')).toBeInTheDocument();
+  });
+
+  it('keeps the epoch labels and shows no returns for a TrainingLoop run', () => {
+    seedTraining();
+    render(<ResultsPanel />);
+    expect(screen.queryByText(t('results.episode'))).not.toBeInTheDocument();
+    expect(screen.queryByText(t('results.episodeReturn'))).not.toBeInTheDocument();
+    expect(screen.queryByText(t('results.meanReturn'))).not.toBeInTheDocument();
+    expect(
+      screen.getByText(t('results.epochsHeader', { current: 3, total: 3 })),
+    ).toBeInTheDocument();
+  });
+
   it('renders the config-only training state: no summary, shows waitingEpoch, disables epoch UI', () => {
     seedLogs([
       makeLog({ message: progress({ event: 'config', config: { lr: 0.1 } }) }),

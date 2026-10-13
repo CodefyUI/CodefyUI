@@ -838,9 +838,10 @@ const zhTW: NodeTranslations = {
       'target_type 為 number 時目標轉成 float32，一維目標會變成 [N, 1]，對齊單一輸出的模型，讓 MSELoss 逐元素比較。' +
       '為 class 時目標轉成給 CrossEntropyLoss 用的 int64 類別索引：標籤依排序編號（全是數字時依數值排序），classes 列出這個順序；' +
       '整數張量則直接視為類別索引。測試集或驗證集請把訓練集 TensorDataset 的 classes 輸出接到本節點的 classes 輸入：' +
-      '這樣即使該切分缺少某個類別，編號仍與訓練集一致；出現訓練集沒有的標籤時會停止執行。特徵與目標的列數必須相同。',
+      '這樣即使該切分缺少某個類別，編號仍與訓練集一致；出現訓練集沒有的標籤時會停止執行。' +
+      '為 token 時目標維持原本形狀並轉成 int64，例如給 LMCrossEntropyLoss 用的 [N, T] 下一個 token 編號；浮點目標會被拒絕。特徵與目標的列數必須相同。',
     params: {
-      target_type: 'number：float32 目標，用於回歸損失。class：int64 類別索引，用於 CrossEntropyLoss。',
+      target_type: 'number：float32 目標，用於回歸損失。class：int64 類別索引，用於 CrossEntropyLoss。token：維持原形狀的 int64 整數目標，例如給 LMCrossEntropyLoss 用的 [N, T] token 編號。',
     },
     inputs: {
       classes: '選填的類別順序，用來為標籤編號：在測試集的節點接上訓練集 TensorDataset 的 classes 輸出。',
@@ -945,7 +946,10 @@ const zhTW: NodeTranslations = {
     description: '交叉熵、MSE、BCE 等 11 種損失函數',
     details:
       '共 11 種 torch 損失函數。只有部分類型接受的選項（label_smoothing、類別權重、ignore_index、' +
-      'pos_weight）只會在適用的類型下出現。',
+      'pos_weight）只會在適用的類型下出現。在 TrainingLoop 裡，CrossEntropyLoss 與 NLLLoss 遇到逐 token 的 ' +
+      'logits [B, T, V] 搭配 [B, T] 類別目標時，會對每個 token 取平均，結果與 LMCrossEntropyLoss 相同：' +
+      '輸出的前兩個維度與目標相符時，類別視為在最後一維。通道在前的輸出 [B, C, L] 搭配 [B, L] 目標，' +
+      '則照 torch 的讀法處理。',
     params: {
       type: '損失函數類型',
       label_smoothing: '把 one-hot 目標變得平滑一些：0 表示硬目標，0.1 是常見的正則化強度',
@@ -965,7 +969,7 @@ const zhTW: NodeTranslations = {
       epochs: '訓練 epoch 數量',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       early_stopping_patience: '監控的指標未改善 N 個 epoch 後停止（0 = 停用）',
-      monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
+      monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss，或單一輸出模型搭配 BCEWithLogitsLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
       checkpoint_every: '每 N 個完整 epoch 存一次檢查點，讓伺服器當機時最多只損失 N 個 epoch，而不是整次執行。與 CheckpointSaver 互相獨立，恢復方式也相同：把 CheckpointLoader.epoch 接到 start_epoch。每個檢查點大小大約是模型加上優化器狀態（常常是模型本身的好幾倍），而且是在訓練執行緒上同步寫入；大模型搭配偏低的 N、跑很長的訓練，執行完之前可能會用掉好幾 GB 磁碟空間，因為執行中的任務目前沒有機制限制這件事（0 = 停用）',
       grad_clip_norm: '最大梯度範數裁剪（0 = 停用）',
       batch_metrics: '同時把每一批的損失記錄成 train_loss_batch 這條序列（預設關閉：每批一列資料量相當可觀）',
@@ -977,9 +981,16 @@ const zhTW: NodeTranslations = {
       log_grad_norm: '每 log_interval 個優化器步記錄一次裁剪前的全域梯度範數（grad_norm 序列；設定 grad_clip_norm 時另記 grad_norm_clipped）— loss 突波與穩定性鑑識的原料（#298）。',
       log_update_ratio: '每 log_interval 個優化器步記錄 ||lr×grad|| / ||weights||（全域近似）為 update_ratio 序列 — 學習率健康度的經典訊號，約 1e-3 是常見的健康量級（#298）。',
       val_every_steps: '每 N 個優化器步在接入的 val_dataloader 上做一次訓練中途驗證，記錄 val_loss_step 序列（0 = 關閉）。epochs=1 + max_steps 的跑法裡，這是取得驗證「曲線」而非單一終點的唯一方式（#298）。',
-      checkpoint_every_steps: '每 N 個優化器步存一個週期檢查點（0 = 關閉）。步數里程碑快照是研究能力湧現的原料；單 epoch 的跑法裡每 epoch 檢查點永遠不會觸發（#298）。檔案大小警告同 checkpoint_every；快照的 epoch 欄位承載的是步數，不適合拿來續訓。',
+      checkpoint_every_steps: '每 N 個優化器步存一個週期檢查點（0 = 關閉）。步數里程碑快照是研究能力湧現的原料；單 epoch 的跑法裡每 epoch 檢查點永遠不會觸發（#298）。每個檔案存的是已完成的 epoch 數，從它續訓會重跑存檔當下那個 epoch。檔案大小警告同 checkpoint_every。',
       deterministic: '要求 PyTorch 使用決定性的運算核心。沒有決定性實作的運算會發出警告，而不會讓執行失敗。',
       tensorboard: '同時把指標寫成 TensorBoard 事件檔，放在這次執行專屬的資料夾裡。用 `tensorboard --logdir <路徑>` 開啟；該路徑會列在這次執行的產出檔案中。',
+    },
+    outputs: {
+      optimizer:
+        '這次執行實際用來訓練的優化器。接到 CheckpointSaver.optimizer，存檔來源就是畫面上看得到的連線（#148）：輸入的優化器可用時就是同一個物件，' +
+        '參數對不上模型時則是重新建立的那一個；這種情況下從 Optimizer 節點接到 CheckpointSaver 會存到從未訓練過的狀態。' +
+        '早停還原最佳權重之後，優化器狀態仍是最後一個 epoch 的。',
+      grad_norms: '這次呼叫每一個優化器步裁剪前的全域梯度範數，一步一個值（不受 log_interval 稀疏化影響）。log_grad_norm 關閉時為空張量。',
     },
   },
   EvaluateModel: {
@@ -1137,7 +1148,7 @@ const zhTW: NodeTranslations = {
     details: '學習率排程與 fp16 損失縮放狀態在對應輸入有接線時也會一併存入。相對路徑會寫到 models 目錄，CheckpointLoader 讀的是同一種格式。',
     params: {
       path: '輸出檢查點檔案路徑',
-      epoch: '要儲存在檢查點中的當前 epoch 數',
+      epoch: '要存進檢查點的 epoch 數：已完成的 epoch 數，CheckpointLoader.epoch 會把它交回 TrainingLoop.start_epoch。有接上 epoch 輸入時以輸入為準，忽略這個參數',
     },
   },
   CheckpointLoader: {
@@ -1363,11 +1374,15 @@ const zhTW: NodeTranslations = {
   Visualize: {
     description: '把資料畫成折線、直方圖、熱圖或影像',
     details:
-      '圖由 matplotlib 繪製。line 與 histogram 會先把多維資料攤平，heatmap 會把一維輸入摺成方形格子，' +
+      '圖由 matplotlib 繪製。line 遇到 K 不超過 12 的二維 [K, N] 輸入時，每一列畫成一條序列並附圖例（series 0 到 series K-1），' +
+      '其他多維資料則和 histogram 一樣先攤平成一條曲線。heatmap 會把一維輸入摺成方形格子，' +
       'image 則把 (N, C, H, W) 或 (N, H, W) 批次排成網格。',
     params: {
       title: '圖表標題',
       plot_type: '要生成的圖表類型',
+    },
+    inputs: {
+      data: '要視覺化的資料（張量、清單或 numpy 陣列）。畫 line 時，K ≤ 12 的 [K, N] 張量每一列各是一條序列。',
     },
   },
 

@@ -1,0 +1,630 @@
+{
+  "name": "Skip connections train deeper",
+  "description": "20-layer MLP, plain vs skip connections",
+  "gallery": {
+    "section": "papers",
+    "order": 3
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "subset",
+      "type": "DatasetSplit",
+      "position": {
+        "x": 360,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "val_fraction": 0.0,
+          "subset": 5000,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 360,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "model-plain",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"fc1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":32}},{\"id\":\"bn1\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act1\",\"type\":\"ReLU\"},{\"id\":\"fc2\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn2\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act2\",\"type\":\"ReLU\"},{\"id\":\"fc3\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn3\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act3\",\"type\":\"ReLU\"},{\"id\":\"fc4\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn4\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act4\",\"type\":\"ReLU\"},{\"id\":\"fc5\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn5\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act5\",\"type\":\"ReLU\"},{\"id\":\"fc6\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn6\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act6\",\"type\":\"ReLU\"},{\"id\":\"fc7\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn7\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act7\",\"type\":\"ReLU\"},{\"id\":\"fc8\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn8\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act8\",\"type\":\"ReLU\"},{\"id\":\"fc9\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn9\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act9\",\"type\":\"ReLU\"},{\"id\":\"fc10\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn10\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act10\",\"type\":\"ReLU\"},{\"id\":\"fc11\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn11\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act11\",\"type\":\"ReLU\"},{\"id\":\"fc12\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn12\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act12\",\"type\":\"ReLU\"},{\"id\":\"fc13\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn13\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act13\",\"type\":\"ReLU\"},{\"id\":\"fc14\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn14\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act14\",\"type\":\"ReLU\"},{\"id\":\"fc15\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn15\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act15\",\"type\":\"ReLU\"},{\"id\":\"fc16\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn16\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act16\",\"type\":\"ReLU\"},{\"id\":\"fc17\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn17\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act17\",\"type\":\"ReLU\"},{\"id\":\"fc18\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn18\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act18\",\"type\":\"ReLU\"},{\"id\":\"fc19\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn19\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act19\",\"type\":\"ReLU\"},{\"id\":\"fc20\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn20\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act20\",\"type\":\"ReLU\"},{\"id\":\"fc21\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"flat\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"flat\",\"target\":\"fc1\"},{\"id\":\"e2\",\"source\":\"fc1\",\"target\":\"bn1\"},{\"id\":\"e3\",\"source\":\"bn1\",\"target\":\"act1\"},{\"id\":\"e4\",\"source\":\"act1\",\"target\":\"fc2\"},{\"id\":\"e5\",\"source\":\"fc2\",\"target\":\"bn2\"},{\"id\":\"e6\",\"source\":\"bn2\",\"target\":\"act2\"},{\"id\":\"e7\",\"source\":\"act2\",\"target\":\"fc3\"},{\"id\":\"e8\",\"source\":\"fc3\",\"target\":\"bn3\"},{\"id\":\"e9\",\"source\":\"bn3\",\"target\":\"act3\"},{\"id\":\"e10\",\"source\":\"act3\",\"target\":\"fc4\"},{\"id\":\"e11\",\"source\":\"fc4\",\"target\":\"bn4\"},{\"id\":\"e12\",\"source\":\"bn4\",\"target\":\"act4\"},{\"id\":\"e13\",\"source\":\"act4\",\"target\":\"fc5\"},{\"id\":\"e14\",\"source\":\"fc5\",\"target\":\"bn5\"},{\"id\":\"e15\",\"source\":\"bn5\",\"target\":\"act5\"},{\"id\":\"e16\",\"source\":\"act5\",\"target\":\"fc6\"},{\"id\":\"e17\",\"source\":\"fc6\",\"target\":\"bn6\"},{\"id\":\"e18\",\"source\":\"bn6\",\"target\":\"act6\"},{\"id\":\"e19\",\"source\":\"act6\",\"target\":\"fc7\"},{\"id\":\"e20\",\"source\":\"fc7\",\"target\":\"bn7\"},{\"id\":\"e21\",\"source\":\"bn7\",\"target\":\"act7\"},{\"id\":\"e22\",\"source\":\"act7\",\"target\":\"fc8\"},{\"id\":\"e23\",\"source\":\"fc8\",\"target\":\"bn8\"},{\"id\":\"e24\",\"source\":\"bn8\",\"target\":\"act8\"},{\"id\":\"e25\",\"source\":\"act8\",\"target\":\"fc9\"},{\"id\":\"e26\",\"source\":\"fc9\",\"target\":\"bn9\"},{\"id\":\"e27\",\"source\":\"bn9\",\"target\":\"act9\"},{\"id\":\"e28\",\"source\":\"act9\",\"target\":\"fc10\"},{\"id\":\"e29\",\"source\":\"fc10\",\"target\":\"bn10\"},{\"id\":\"e30\",\"source\":\"bn10\",\"target\":\"act10\"},{\"id\":\"e31\",\"source\":\"act10\",\"target\":\"fc11\"},{\"id\":\"e32\",\"source\":\"fc11\",\"target\":\"bn11\"},{\"id\":\"e33\",\"source\":\"bn11\",\"target\":\"act11\"},{\"id\":\"e34\",\"source\":\"act11\",\"target\":\"fc12\"},{\"id\":\"e35\",\"source\":\"fc12\",\"target\":\"bn12\"},{\"id\":\"e36\",\"source\":\"bn12\",\"target\":\"act12\"},{\"id\":\"e37\",\"source\":\"act12\",\"target\":\"fc13\"},{\"id\":\"e38\",\"source\":\"fc13\",\"target\":\"bn13\"},{\"id\":\"e39\",\"source\":\"bn13\",\"target\":\"act13\"},{\"id\":\"e40\",\"source\":\"act13\",\"target\":\"fc14\"},{\"id\":\"e41\",\"source\":\"fc14\",\"target\":\"bn14\"},{\"id\":\"e42\",\"source\":\"bn14\",\"target\":\"act14\"},{\"id\":\"e43\",\"source\":\"act14\",\"target\":\"fc15\"},{\"id\":\"e44\",\"source\":\"fc15\",\"target\":\"bn15\"},{\"id\":\"e45\",\"source\":\"bn15\",\"target\":\"act15\"},{\"id\":\"e46\",\"source\":\"act15\",\"target\":\"fc16\"},{\"id\":\"e47\",\"source\":\"fc16\",\"target\":\"bn16\"},{\"id\":\"e48\",\"source\":\"bn16\",\"target\":\"act16\"},{\"id\":\"e49\",\"source\":\"act16\",\"target\":\"fc17\"},{\"id\":\"e50\",\"source\":\"fc17\",\"target\":\"bn17\"},{\"id\":\"e51\",\"source\":\"bn17\",\"target\":\"act17\"},{\"id\":\"e52\",\"source\":\"act17\",\"target\":\"fc18\"},{\"id\":\"e53\",\"source\":\"fc18\",\"target\":\"bn18\"},{\"id\":\"e54\",\"source\":\"bn18\",\"target\":\"act18\"},{\"id\":\"e55\",\"source\":\"act18\",\"target\":\"fc19\"},{\"id\":\"e56\",\"source\":\"fc19\",\"target\":\"bn19\"},{\"id\":\"e57\",\"source\":\"bn19\",\"target\":\"act19\"},{\"id\":\"e58\",\"source\":\"act19\",\"target\":\"fc20\"},{\"id\":\"e59\",\"source\":\"fc20\",\"target\":\"bn20\"},{\"id\":\"e60\",\"source\":\"bn20\",\"target\":\"act20\"},{\"id\":\"e61\",\"source\":\"act20\",\"target\":\"fc21\"},{\"id\":\"eout\",\"source\":\"fc21\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-plain",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.05,
+          "momentum": 0.9
+        }
+      }
+    },
+    {
+      "id": "train-plain",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "epochs": 8,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-train-plain",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-train-plain",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "label": "Plain 20 layers: training accuracy"
+        }
+      }
+    },
+    {
+      "id": "eval-test-plain",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-plain",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "label": "Plain 20 layers: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "viz-plain",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "title": "Plain 20-layer MLP: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "model-residual",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"fc1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":32}},{\"id\":\"bn1\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"act1\",\"type\":\"ReLU\"},{\"id\":\"fc2\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn2\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add2\",\"type\":\"Add\"},{\"id\":\"act2\",\"type\":\"ReLU\"},{\"id\":\"fc3\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn3\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add3\",\"type\":\"Add\"},{\"id\":\"act3\",\"type\":\"ReLU\"},{\"id\":\"fc4\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn4\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add4\",\"type\":\"Add\"},{\"id\":\"act4\",\"type\":\"ReLU\"},{\"id\":\"fc5\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn5\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add5\",\"type\":\"Add\"},{\"id\":\"act5\",\"type\":\"ReLU\"},{\"id\":\"fc6\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn6\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add6\",\"type\":\"Add\"},{\"id\":\"act6\",\"type\":\"ReLU\"},{\"id\":\"fc7\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn7\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add7\",\"type\":\"Add\"},{\"id\":\"act7\",\"type\":\"ReLU\"},{\"id\":\"fc8\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn8\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add8\",\"type\":\"Add\"},{\"id\":\"act8\",\"type\":\"ReLU\"},{\"id\":\"fc9\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn9\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add9\",\"type\":\"Add\"},{\"id\":\"act9\",\"type\":\"ReLU\"},{\"id\":\"fc10\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn10\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add10\",\"type\":\"Add\"},{\"id\":\"act10\",\"type\":\"ReLU\"},{\"id\":\"fc11\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn11\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add11\",\"type\":\"Add\"},{\"id\":\"act11\",\"type\":\"ReLU\"},{\"id\":\"fc12\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn12\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add12\",\"type\":\"Add\"},{\"id\":\"act12\",\"type\":\"ReLU\"},{\"id\":\"fc13\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn13\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add13\",\"type\":\"Add\"},{\"id\":\"act13\",\"type\":\"ReLU\"},{\"id\":\"fc14\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn14\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add14\",\"type\":\"Add\"},{\"id\":\"act14\",\"type\":\"ReLU\"},{\"id\":\"fc15\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn15\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add15\",\"type\":\"Add\"},{\"id\":\"act15\",\"type\":\"ReLU\"},{\"id\":\"fc16\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn16\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add16\",\"type\":\"Add\"},{\"id\":\"act16\",\"type\":\"ReLU\"},{\"id\":\"fc17\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn17\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add17\",\"type\":\"Add\"},{\"id\":\"act17\",\"type\":\"ReLU\"},{\"id\":\"fc18\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn18\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add18\",\"type\":\"Add\"},{\"id\":\"act18\",\"type\":\"ReLU\"},{\"id\":\"fc19\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn19\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add19\",\"type\":\"Add\"},{\"id\":\"act19\",\"type\":\"ReLU\"},{\"id\":\"fc20\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":32}},{\"id\":\"bn20\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"add20\",\"type\":\"Add\"},{\"id\":\"act20\",\"type\":\"ReLU\"},{\"id\":\"fc21\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"flat\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"flat\",\"target\":\"fc1\"},{\"id\":\"e2\",\"source\":\"fc1\",\"target\":\"bn1\"},{\"id\":\"e3\",\"source\":\"bn1\",\"target\":\"act1\"},{\"id\":\"e4\",\"source\":\"act1\",\"target\":\"fc2\"},{\"id\":\"e5\",\"source\":\"fc2\",\"target\":\"bn2\"},{\"id\":\"e6\",\"source\":\"bn2\",\"target\":\"add2\"},{\"id\":\"e7\",\"source\":\"act1\",\"target\":\"add2\"},{\"id\":\"e8\",\"source\":\"add2\",\"target\":\"act2\"},{\"id\":\"e9\",\"source\":\"act2\",\"target\":\"fc3\"},{\"id\":\"e10\",\"source\":\"fc3\",\"target\":\"bn3\"},{\"id\":\"e11\",\"source\":\"bn3\",\"target\":\"add3\"},{\"id\":\"e12\",\"source\":\"act2\",\"target\":\"add3\"},{\"id\":\"e13\",\"source\":\"add3\",\"target\":\"act3\"},{\"id\":\"e14\",\"source\":\"act3\",\"target\":\"fc4\"},{\"id\":\"e15\",\"source\":\"fc4\",\"target\":\"bn4\"},{\"id\":\"e16\",\"source\":\"bn4\",\"target\":\"add4\"},{\"id\":\"e17\",\"source\":\"act3\",\"target\":\"add4\"},{\"id\":\"e18\",\"source\":\"add4\",\"target\":\"act4\"},{\"id\":\"e19\",\"source\":\"act4\",\"target\":\"fc5\"},{\"id\":\"e20\",\"source\":\"fc5\",\"target\":\"bn5\"},{\"id\":\"e21\",\"source\":\"bn5\",\"target\":\"add5\"},{\"id\":\"e22\",\"source\":\"act4\",\"target\":\"add5\"},{\"id\":\"e23\",\"source\":\"add5\",\"target\":\"act5\"},{\"id\":\"e24\",\"source\":\"act5\",\"target\":\"fc6\"},{\"id\":\"e25\",\"source\":\"fc6\",\"target\":\"bn6\"},{\"id\":\"e26\",\"source\":\"bn6\",\"target\":\"add6\"},{\"id\":\"e27\",\"source\":\"act5\",\"target\":\"add6\"},{\"id\":\"e28\",\"source\":\"add6\",\"target\":\"act6\"},{\"id\":\"e29\",\"source\":\"act6\",\"target\":\"fc7\"},{\"id\":\"e30\",\"source\":\"fc7\",\"target\":\"bn7\"},{\"id\":\"e31\",\"source\":\"bn7\",\"target\":\"add7\"},{\"id\":\"e32\",\"source\":\"act6\",\"target\":\"add7\"},{\"id\":\"e33\",\"source\":\"add7\",\"target\":\"act7\"},{\"id\":\"e34\",\"source\":\"act7\",\"target\":\"fc8\"},{\"id\":\"e35\",\"source\":\"fc8\",\"target\":\"bn8\"},{\"id\":\"e36\",\"source\":\"bn8\",\"target\":\"add8\"},{\"id\":\"e37\",\"source\":\"act7\",\"target\":\"add8\"},{\"id\":\"e38\",\"source\":\"add8\",\"target\":\"act8\"},{\"id\":\"e39\",\"source\":\"act8\",\"target\":\"fc9\"},{\"id\":\"e40\",\"source\":\"fc9\",\"target\":\"bn9\"},{\"id\":\"e41\",\"source\":\"bn9\",\"target\":\"add9\"},{\"id\":\"e42\",\"source\":\"act8\",\"target\":\"add9\"},{\"id\":\"e43\",\"source\":\"add9\",\"target\":\"act9\"},{\"id\":\"e44\",\"source\":\"act9\",\"target\":\"fc10\"},{\"id\":\"e45\",\"source\":\"fc10\",\"target\":\"bn10\"},{\"id\":\"e46\",\"source\":\"bn10\",\"target\":\"add10\"},{\"id\":\"e47\",\"source\":\"act9\",\"target\":\"add10\"},{\"id\":\"e48\",\"source\":\"add10\",\"target\":\"act10\"},{\"id\":\"e49\",\"source\":\"act10\",\"target\":\"fc11\"},{\"id\":\"e50\",\"source\":\"fc11\",\"target\":\"bn11\"},{\"id\":\"e51\",\"source\":\"bn11\",\"target\":\"add11\"},{\"id\":\"e52\",\"source\":\"act10\",\"target\":\"add11\"},{\"id\":\"e53\",\"source\":\"add11\",\"target\":\"act11\"},{\"id\":\"e54\",\"source\":\"act11\",\"target\":\"fc12\"},{\"id\":\"e55\",\"source\":\"fc12\",\"target\":\"bn12\"},{\"id\":\"e56\",\"source\":\"bn12\",\"target\":\"add12\"},{\"id\":\"e57\",\"source\":\"act11\",\"target\":\"add12\"},{\"id\":\"e58\",\"source\":\"add12\",\"target\":\"act12\"},{\"id\":\"e59\",\"source\":\"act12\",\"target\":\"fc13\"},{\"id\":\"e60\",\"source\":\"fc13\",\"target\":\"bn13\"},{\"id\":\"e61\",\"source\":\"bn13\",\"target\":\"add13\"},{\"id\":\"e62\",\"source\":\"act12\",\"target\":\"add13\"},{\"id\":\"e63\",\"source\":\"add13\",\"target\":\"act13\"},{\"id\":\"e64\",\"source\":\"act13\",\"target\":\"fc14\"},{\"id\":\"e65\",\"source\":\"fc14\",\"target\":\"bn14\"},{\"id\":\"e66\",\"source\":\"bn14\",\"target\":\"add14\"},{\"id\":\"e67\",\"source\":\"act13\",\"target\":\"add14\"},{\"id\":\"e68\",\"source\":\"add14\",\"target\":\"act14\"},{\"id\":\"e69\",\"source\":\"act14\",\"target\":\"fc15\"},{\"id\":\"e70\",\"source\":\"fc15\",\"target\":\"bn15\"},{\"id\":\"e71\",\"source\":\"bn15\",\"target\":\"add15\"},{\"id\":\"e72\",\"source\":\"act14\",\"target\":\"add15\"},{\"id\":\"e73\",\"source\":\"add15\",\"target\":\"act15\"},{\"id\":\"e74\",\"source\":\"act15\",\"target\":\"fc16\"},{\"id\":\"e75\",\"source\":\"fc16\",\"target\":\"bn16\"},{\"id\":\"e76\",\"source\":\"bn16\",\"target\":\"add16\"},{\"id\":\"e77\",\"source\":\"act15\",\"target\":\"add16\"},{\"id\":\"e78\",\"source\":\"add16\",\"target\":\"act16\"},{\"id\":\"e79\",\"source\":\"act16\",\"target\":\"fc17\"},{\"id\":\"e80\",\"source\":\"fc17\",\"target\":\"bn17\"},{\"id\":\"e81\",\"source\":\"bn17\",\"target\":\"add17\"},{\"id\":\"e82\",\"source\":\"act16\",\"target\":\"add17\"},{\"id\":\"e83\",\"source\":\"add17\",\"target\":\"act17\"},{\"id\":\"e84\",\"source\":\"act17\",\"target\":\"fc18\"},{\"id\":\"e85\",\"source\":\"fc18\",\"target\":\"bn18\"},{\"id\":\"e86\",\"source\":\"bn18\",\"target\":\"add18\"},{\"id\":\"e87\",\"source\":\"act17\",\"target\":\"add18\"},{\"id\":\"e88\",\"source\":\"add18\",\"target\":\"act18\"},{\"id\":\"e89\",\"source\":\"act18\",\"target\":\"fc19\"},{\"id\":\"e90\",\"source\":\"fc19\",\"target\":\"bn19\"},{\"id\":\"e91\",\"source\":\"bn19\",\"target\":\"add19\"},{\"id\":\"e92\",\"source\":\"act18\",\"target\":\"add19\"},{\"id\":\"e93\",\"source\":\"add19\",\"target\":\"act19\"},{\"id\":\"e94\",\"source\":\"act19\",\"target\":\"fc20\"},{\"id\":\"e95\",\"source\":\"fc20\",\"target\":\"bn20\"},{\"id\":\"e96\",\"source\":\"bn20\",\"target\":\"add20\"},{\"id\":\"e97\",\"source\":\"act19\",\"target\":\"add20\"},{\"id\":\"e98\",\"source\":\"add20\",\"target\":\"act20\"},{\"id\":\"e99\",\"source\":\"act20\",\"target\":\"fc21\"},{\"id\":\"eout\",\"source\":\"fc21\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-residual",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.05,
+          "momentum": 0.9
+        }
+      }
+    },
+    {
+      "id": "train-residual",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "epochs": 8,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-train-residual",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-train-residual",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "label": "Residual 20 layers: training accuracy"
+        }
+      }
+    },
+    {
+      "id": "eval-test-residual",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-residual",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "label": "Residual 20 layers: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "viz-residual",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "title": "Residual 20-layer MLP: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "He, Zhang, Ren and Sun, \"Deep Residual Learning for Image Recognition\", CVPR 2016. Claim: a deep plain network is harder to optimise and ends with a higher training error (the degradation problem); identity shortcuts that let each block learn a residual remove the problem. Recipe: two MLPs with 20 hidden layers of width 32 (Linear -> BatchNorm1d -> ReLU) on 5,000 MNIST images, SGD lr 0.05 with momentum 0.9 for 8 epochs; in the residual one each block from the second on adds its input back before the ReLU. Under seed 0 the residual net reaches a training accuracy of 0.95 on an Apple M3 CPU and 0.92 on the Linux CI runner (test 0.91 on the M3); the plain net of the same depth stays well below, at 0.77 on the M3 (test 0.76).\n\nHe、Zhang、Ren 與 Sun，〈Deep Residual Learning for Image Recognition〉，CVPR 2016。論點：很深的一般網路比較難最佳化，最後的訓練誤差反而比較高（退化問題）；加上恆等捷徑、讓每個區塊只學殘差，就能解決這個問題。配方：兩個各有 20 個寬度 32 隱藏層（Linear -> BatchNorm1d -> ReLU）的 MLP，在 5,000 張 MNIST 影像上用 SGD（lr 0.05、momentum 0.9）訓練 8 個 epoch；殘差版從第二個區塊起，每個區塊在 ReLU 之前把自己的輸入加回來。以種子 0 執行，殘差網路的訓練準確率在 Apple M3 CPU 上是 0.95，在 Linux CI 上是 0.92（M3 上測試 0.91）；同樣深度的一般網路明顯落後，M3 上是 0.77（測試 0.76）。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "MNIST ships with the repository under backend/data, so the run reads it from disk. DatasetSplit keeps a fixed 5,000 of the 60,000 training images; its own seed (0) picks them, so every arm trains on the same images through the one DataLoader.\n\nMNIST 隨專案放在 backend/data 底下，執行時直接從磁碟讀取。DatasetSplit 從 60,000 張訓練影像中固定留下 5,000 張，挑哪幾張由它自己的種子（0）決定，所以每一組都透過同一個 DataLoader 在同一批影像上訓練。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "dl-train",
+        "boundOffset": {
+          "x": 320,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-arms",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Each arm has its own SequentialModel node. One model node wired into two TrainingLoops would hand every loop the same weights, and each loop would continue from what the previous one left. The run seed (0, stored in the file) fixes the shuffle order, any dropout masks and each model's initial weights. Every node is seeded from the run seed and its own id, so the arms start from different draws of the same initialisation. With Persist weights between runs on (Settings > Training Behavior), a second Run continues from the trained weights; turn it off to repeat these numbers.\n\n每一組都有自己的 SequentialModel 節點。如果一個模型節點同時接到兩個 TrainingLoop，每個迴圈拿到的是同一份權重，後跑的會接著前一個留下的結果繼續訓練。執行種子（0，存在檔案裡）固定了洗牌順序、dropout 遮罩和每個模型的初始權重。每個節點的種子由執行種子和節點自己的 id 推得，所以各組的初始權重是同一種初始化方式下的不同抽樣。在設定 > 訓練行為中開啟「在多次執行間保留權重」時，第二次執行會從訓練過的權重繼續；關閉它才能重現這些數字。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-plain",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 1400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Open the layer editor on this node; it is in graph mode. Each block is Linear 32->32 -> BatchNorm1d -> Add -> ReLU, and the Add takes a second edge straight from the block's input: that edge is the identity shortcut. The first block (Linear 784->32) has no shortcut because its input and output widths differ. The plain model above has the same 20 blocks with no Add layers.\n\n在這個節點上打開圖層編輯器，它是圖模式。每個區塊是 Linear 32->32 -> BatchNorm1d -> Add -> ReLU，Add 另外有一條邊直接從區塊的輸入接過來，這條邊就是恆等捷徑。第一個區塊（Linear 784->32）的輸入和輸出寬度不同，所以沒有捷徑。上面那個一般模型有同樣的 20 個區塊，只是沒有 Add。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-residual",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-train-acc",
+      "type": "note",
+      "position": {
+        "x": 1320,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Training accuracy is the number to compare: degradation is a failure to fit the training set, which overfitting cannot explain. The plain net's training loss ends at 0.79 and the residual net's at 0.27 after the same 8 epochs.\n\n要比較的是訓練準確率：退化是連訓練集都擬合不好，這無法用過擬合解釋。同樣訓練 8 個 epoch，一般網路的訓練損失停在 0.79，殘差網路是 0.27。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "dl-train",
+        "boundOffset": {
+          "x": 640,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_ds-train",
+      "source": "start",
+      "target": "ds-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_ds-train_dataset_subset_dataset",
+      "source": "ds-train",
+      "target": "subset",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset_train_dl-train_dataset",
+      "source": "subset",
+      "target": "dl-train",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "t_ds-test",
+      "source": "start",
+      "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-plain",
+      "source": "start",
+      "target": "model-plain",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-plain_model_opt-plain_model",
+      "source": "model-plain",
+      "target": "opt-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-plain_model_train-plain_model",
+      "source": "model-plain",
+      "target": "train-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-plain_dataloader",
+      "source": "dl-train",
+      "target": "train-plain",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-plain_optimizer_train-plain_optimizer",
+      "source": "opt-plain",
+      "target": "train-plain",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-plain_loss_fn",
+      "source": "loss",
+      "target": "train-plain",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-plain_model_eval-train-plain_model",
+      "source": "train-plain",
+      "target": "eval-train-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_subset_train_eval-train-plain_dataset",
+      "source": "subset",
+      "target": "eval-train-plain",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-train-plain_accuracy_print-train-plain_value",
+      "source": "eval-train-plain",
+      "target": "print-train-plain",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-plain_model_eval-test-plain_model",
+      "source": "train-plain",
+      "target": "eval-test-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-plain_dataset",
+      "source": "ds-test",
+      "target": "eval-test-plain",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-plain_accuracy_print-test-plain_value",
+      "source": "eval-test-plain",
+      "target": "print-test-plain",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-plain_losses_viz-plain_data",
+      "source": "train-plain",
+      "target": "viz-plain",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "t_model-residual",
+      "source": "start",
+      "target": "model-residual",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-residual_model_opt-residual_model",
+      "source": "model-residual",
+      "target": "opt-residual",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-residual_model_train-residual_model",
+      "source": "model-residual",
+      "target": "train-residual",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-residual_dataloader",
+      "source": "dl-train",
+      "target": "train-residual",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-residual_optimizer_train-residual_optimizer",
+      "source": "opt-residual",
+      "target": "train-residual",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-residual_loss_fn",
+      "source": "loss",
+      "target": "train-residual",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-residual_model_eval-train-residual_model",
+      "source": "train-residual",
+      "target": "eval-train-residual",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_subset_train_eval-train-residual_dataset",
+      "source": "subset",
+      "target": "eval-train-residual",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-train-residual_accuracy_print-train-residual_value",
+      "source": "eval-train-residual",
+      "target": "print-train-residual",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-residual_model_eval-test-residual_model",
+      "source": "train-residual",
+      "target": "eval-test-residual",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-residual_dataset",
+      "source": "ds-test",
+      "target": "eval-test-residual",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-residual_accuracy_print-test-residual_value",
+      "source": "eval-test-residual",
+      "target": "print-test-residual",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-residual_losses_viz-residual_data",
+      "source": "train-residual",
+      "target": "viz-residual",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

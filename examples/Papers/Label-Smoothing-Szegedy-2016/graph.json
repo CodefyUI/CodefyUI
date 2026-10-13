@@ -1,0 +1,757 @@
+{
+  "name": "Label smoothing lowers confidence",
+  "description": "Hard labels vs label smoothing 0.1",
+  "gallery": {
+    "section": "papers",
+    "order": 5
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "subset",
+      "type": "DatasetSplit",
+      "position": {
+        "x": 360,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "val_fraction": 0.0,
+          "subset": 2000,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "test-batch",
+      "type": "DatasetBatch",
+      "position": {
+        "x": 360,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "start_index": 0
+        }
+      }
+    },
+    {
+      "id": "loss-hard",
+      "type": "Loss",
+      "position": {
+        "x": 360,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss",
+          "label_smoothing": 0.0
+        }
+      }
+    },
+    {
+      "id": "model-hard",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"fc1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":512}},{\"id\":\"act1\",\"type\":\"ReLU\"},{\"id\":\"fc2\",\"type\":\"Linear\",\"params\":{\"in_features\":512,\"out_features\":512}},{\"id\":\"act2\",\"type\":\"ReLU\"},{\"id\":\"fc3\",\"type\":\"Linear\",\"params\":{\"in_features\":512,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"flat\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"flat\",\"target\":\"fc1\"},{\"id\":\"e2\",\"source\":\"fc1\",\"target\":\"act1\"},{\"id\":\"e3\",\"source\":\"act1\",\"target\":\"fc2\"},{\"id\":\"e4\",\"source\":\"fc2\",\"target\":\"act2\"},{\"id\":\"e5\",\"source\":\"act2\",\"target\":\"fc3\"},{\"id\":\"eout\",\"source\":\"fc3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-hard",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.001
+        }
+      }
+    },
+    {
+      "id": "train-hard",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "epochs": 20,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-test-hard",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-hard",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "label": "Hard labels: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "infer-hard",
+      "type": "Inference",
+      "position": {
+        "x": 1000,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "softmax-hard",
+      "type": "Softmax",
+      "position": {
+        "x": 1320,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "dim": -1
+        }
+      }
+    },
+    {
+      "id": "confidence-hard",
+      "type": "PythonScript",
+      "position": {
+        "x": 1640,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    \"\"\"Mean of each image's top-class probability: how sure the model is.\"\"\"\n    probs = inputs[\"in1\"]\n    return {\"out1\": float(probs.max(dim=1).values.mean())}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "TENSOR",
+          "output_types": "SCALAR"
+        }
+      }
+    },
+    {
+      "id": "print-confidence-hard",
+      "type": "Print",
+      "position": {
+        "x": 2320,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "label": "Hard labels: mean top-class probability"
+        }
+      }
+    },
+    {
+      "id": "hist-hard",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 240
+      },
+      "data": {
+        "params": {
+          "title": "Hard labels: softmax probabilities on 1,000 test images",
+          "plot_type": "histogram"
+        }
+      }
+    },
+    {
+      "id": "loss-smooth",
+      "type": "Loss",
+      "position": {
+        "x": 360,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss",
+          "label_smoothing": 0.1
+        }
+      }
+    },
+    {
+      "id": "model-smooth",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"fc1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":512}},{\"id\":\"act1\",\"type\":\"ReLU\"},{\"id\":\"fc2\",\"type\":\"Linear\",\"params\":{\"in_features\":512,\"out_features\":512}},{\"id\":\"act2\",\"type\":\"ReLU\"},{\"id\":\"fc3\",\"type\":\"Linear\",\"params\":{\"in_features\":512,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"flat\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"flat\",\"target\":\"fc1\"},{\"id\":\"e2\",\"source\":\"fc1\",\"target\":\"act1\"},{\"id\":\"e3\",\"source\":\"act1\",\"target\":\"fc2\"},{\"id\":\"e4\",\"source\":\"fc2\",\"target\":\"act2\"},{\"id\":\"e5\",\"source\":\"act2\",\"target\":\"fc3\"},{\"id\":\"eout\",\"source\":\"fc3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-smooth",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.001
+        }
+      }
+    },
+    {
+      "id": "train-smooth",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "epochs": 20,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-test-smooth",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-smooth",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "label": "Label smoothing 0.1: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "infer-smooth",
+      "type": "Inference",
+      "position": {
+        "x": 1000,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "softmax-smooth",
+      "type": "Softmax",
+      "position": {
+        "x": 1320,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "dim": -1
+        }
+      }
+    },
+    {
+      "id": "confidence-smooth",
+      "type": "PythonScript",
+      "position": {
+        "x": 1640,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    \"\"\"Mean of each image's top-class probability: how sure the model is.\"\"\"\n    probs = inputs[\"in1\"]\n    return {\"out1\": float(probs.max(dim=1).values.mean())}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "TENSOR",
+          "output_types": "SCALAR"
+        }
+      }
+    },
+    {
+      "id": "print-confidence-smooth",
+      "type": "Print",
+      "position": {
+        "x": 2320,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "label": "Label smoothing 0.1: mean top-class probability"
+        }
+      }
+    },
+    {
+      "id": "hist-smooth",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 1240
+      },
+      "data": {
+        "params": {
+          "title": "Label smoothing 0.1: softmax probabilities on 1,000 test images",
+          "plot_type": "histogram"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Szegedy, Vanhoucke, Ioffe, Shlens and Wojna, \"Rethinking the Inception Architecture for Computer Vision\", CVPR 2016, introduced label smoothing; Müller, Kornblith and Hinton, \"When Does Label Smoothing Help?\", NeurIPS 2019, studied its effect on confidence. Claim: training toward 0.91 for the true class and 0.01 for each other class keeps a model from becoming over-confident and can raise accuracy. Recipe: two 784-512-512-10 MLPs on 2,000 MNIST images, Adam lr 0.001 for 20 epochs, CrossEntropyLoss with label_smoothing 0 and 0.1. Under seed 0 on a CPU test accuracy is 0.92 with hard labels and 0.94 with smoothing, and the mean top-class probability on 1,000 test images drops from 0.96 to 0.80.\n\nSzegedy、Vanhoucke、Ioffe、Shlens 與 Wojna 在〈Rethinking the Inception Architecture for Computer Vision〉（CVPR 2016）提出 label smoothing；Müller、Kornblith 與 Hinton 在〈When Does Label Smoothing Help?〉（NeurIPS 2019）研究它對信心的影響。論點：把正確類別的目標設成 0.91、其他每類 0.01，模型就不會過度自信，準確率也可能提高。配方：兩個 784-512-512-10 MLP，在 2,000 張 MNIST 影像上用 Adam lr 0.001 訓練 20 個 epoch，CrossEntropyLoss 的 label_smoothing 分別是 0 與 0.1。在 CPU 上以種子 0 執行，測試準確率在硬標籤下是 0.92，平滑後是 0.94；在 1,000 張測試影像上，最高類別機率的平均值從 0.96 降到 0.80。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "MNIST ships with the repository under backend/data, so the run reads it from disk. DatasetSplit keeps a fixed 2,000 of the 60,000 training images; its own seed (0) picks them, so every arm trains on the same images through the one DataLoader.\n\nMNIST 隨專案放在 backend/data 底下，執行時直接從磁碟讀取。DatasetSplit 從 60,000 張訓練影像中固定留下 2,000 張，挑哪幾張由它自己的種子（0）決定，所以每一組都透過同一個 DataLoader 在同一批影像上訓練。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "dl-train",
+        "boundOffset": {
+          "x": 320,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-arms",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Each arm has its own SequentialModel node with the same layers. One model node wired into two TrainingLoops would hand every loop the same weights, and each loop would continue from what the previous one left. The run seed (0, stored in the file) fixes the shuffle order, any dropout masks and each model's initial weights. Every node is seeded from the run seed and its own id, so the arms start from different draws of the same initialisation. With Persist weights between runs on (Settings > Training Behavior), a second Run continues from the trained weights; turn it off to repeat these numbers.\n\n每一組都有自己的 SequentialModel 節點，圖層完全相同。如果一個模型節點同時接到兩個 TrainingLoop，每個迴圈拿到的是同一份權重，後跑的會接著前一個留下的結果繼續訓練。執行種子（0，存在檔案裡）固定了洗牌順序、dropout 遮罩和每個模型的初始權重。每個節點的種子由執行種子和節點自己的 id 推得，所以各組的初始權重是同一種初始化方式下的不同抽樣。在設定 > 訓練行為中開啟「在多次執行間保留權重」時，第二次執行會從訓練過的權重繼續；關閉它才能重現這些數字。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-hard",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-confidence",
+      "type": "note",
+      "position": {
+        "x": 1320,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "How confidence is measured: DatasetBatch takes the first 1,000 test images, Inference runs each trained model on them, Softmax turns the outputs into probabilities, and the PythonScript averages each image's largest probability. With hard labels the mean confidence (0.96) is above the accuracy (0.92): the model is over-confident. Smoothing brings it to 0.80, below its accuracy of 0.94. The histograms show the same: hard labels pile the probabilities at 0 and 1, and smoothing keeps them away from both ends.\n\n信心怎麼量：DatasetBatch 取出前 1,000 張測試影像，Inference 讓訓練好的模型跑過這些影像，Softmax 把輸出轉成機率，PythonScript 再把每張影像的最大機率取平均。硬標籤下平均信心（0.96）高於準確率（0.92），模型過度自信。平滑後信心降到 0.80，低於它的準確率 0.94。直方圖呈現同一件事：硬標籤把機率堆在 0 和 1 兩端，平滑後機率離開了這兩端。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "dl-train",
+        "boundOffset": {
+          "x": 640,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-floor",
+      "type": "note",
+      "position": {
+        "x": 360,
+        "y": 2080
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The smoothed run's training loss levels off at 0.52: the lowest cross-entropy against a target of 0.91 and nine 0.01s is that target's own entropy, 0.50. The hard-label run can push its loss to 0.01 by making every training prediction close to 1.\n\n平滑那組的訓練損失停在 0.52：對 0.91 加九個 0.01 這種目標，交叉熵最低只能到目標本身的熵，也就是 0.50。硬標籤那組則能把每個訓練預測推到接近 1，損失壓到 0.01。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loss-smooth",
+        "boundOffset": {
+          "x": 0,
+          "y": 340
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_ds-train",
+      "source": "start",
+      "target": "ds-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_ds-train_dataset_subset_dataset",
+      "source": "ds-train",
+      "target": "subset",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset_train_dl-train_dataset",
+      "source": "subset",
+      "target": "dl-train",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "t_ds-test",
+      "source": "start",
+      "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_ds-test_dataset_test-batch_dataset",
+      "source": "ds-test",
+      "target": "test-batch",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "t_loss-hard",
+      "source": "start",
+      "target": "loss-hard",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-hard",
+      "source": "start",
+      "target": "model-hard",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-hard_model_opt-hard_model",
+      "source": "model-hard",
+      "target": "opt-hard",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-hard_model_train-hard_model",
+      "source": "model-hard",
+      "target": "train-hard",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-hard_dataloader",
+      "source": "dl-train",
+      "target": "train-hard",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-hard_optimizer_train-hard_optimizer",
+      "source": "opt-hard",
+      "target": "train-hard",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss-hard_loss_fn_train-hard_loss_fn",
+      "source": "loss-hard",
+      "target": "train-hard",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-hard_model_eval-test-hard_model",
+      "source": "train-hard",
+      "target": "eval-test-hard",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-hard_dataset",
+      "source": "ds-test",
+      "target": "eval-test-hard",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-hard_accuracy_print-test-hard_value",
+      "source": "eval-test-hard",
+      "target": "print-test-hard",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-hard_model_infer-hard_model",
+      "source": "train-hard",
+      "target": "infer-hard",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_test-batch_images_infer-hard_input",
+      "source": "test-batch",
+      "target": "infer-hard",
+      "sourceHandle": "images",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_infer-hard_output_softmax-hard_tensor",
+      "source": "infer-hard",
+      "target": "softmax-hard",
+      "sourceHandle": "output",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_softmax-hard_tensor_confidence-hard_in1",
+      "source": "softmax-hard",
+      "target": "confidence-hard",
+      "sourceHandle": "tensor",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_confidence-hard_out1_print-confidence-hard_value",
+      "source": "confidence-hard",
+      "target": "print-confidence-hard",
+      "sourceHandle": "out1",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_softmax-hard_tensor_hist-hard_data",
+      "source": "softmax-hard",
+      "target": "hist-hard",
+      "sourceHandle": "tensor",
+      "targetHandle": "data"
+    },
+    {
+      "id": "t_loss-smooth",
+      "source": "start",
+      "target": "loss-smooth",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-smooth",
+      "source": "start",
+      "target": "model-smooth",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-smooth_model_opt-smooth_model",
+      "source": "model-smooth",
+      "target": "opt-smooth",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-smooth_model_train-smooth_model",
+      "source": "model-smooth",
+      "target": "train-smooth",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-smooth_dataloader",
+      "source": "dl-train",
+      "target": "train-smooth",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-smooth_optimizer_train-smooth_optimizer",
+      "source": "opt-smooth",
+      "target": "train-smooth",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss-smooth_loss_fn_train-smooth_loss_fn",
+      "source": "loss-smooth",
+      "target": "train-smooth",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-smooth_model_eval-test-smooth_model",
+      "source": "train-smooth",
+      "target": "eval-test-smooth",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-smooth_dataset",
+      "source": "ds-test",
+      "target": "eval-test-smooth",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-smooth_accuracy_print-test-smooth_value",
+      "source": "eval-test-smooth",
+      "target": "print-test-smooth",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-smooth_model_infer-smooth_model",
+      "source": "train-smooth",
+      "target": "infer-smooth",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_test-batch_images_infer-smooth_input",
+      "source": "test-batch",
+      "target": "infer-smooth",
+      "sourceHandle": "images",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_infer-smooth_output_softmax-smooth_tensor",
+      "source": "infer-smooth",
+      "target": "softmax-smooth",
+      "sourceHandle": "output",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_softmax-smooth_tensor_confidence-smooth_in1",
+      "source": "softmax-smooth",
+      "target": "confidence-smooth",
+      "sourceHandle": "tensor",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_confidence-smooth_out1_print-confidence-smooth_value",
+      "source": "confidence-smooth",
+      "target": "print-confidence-smooth",
+      "sourceHandle": "out1",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_softmax-smooth_tensor_hist-smooth_data",
+      "source": "softmax-smooth",
+      "target": "hist-smooth",
+      "sourceHandle": "tensor",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

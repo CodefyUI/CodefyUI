@@ -20,6 +20,10 @@ families want different things:
   A test split wires the training node's ``classes`` output into its own
   ``classes`` input, so both splits number a class the same way even when
   the test split lacks a class.
+* ``token`` — int64 targets kept at their shape, such as ``[N, T]`` next-token
+  ids for ``LMCrossEntropyLoss`` and TrainingLoop's ``[B, T, V]`` logits.
+  ``class`` would flatten them to ``[N*T]``, and ``number`` would make them
+  float.
 """
 
 from __future__ import annotations
@@ -61,6 +65,30 @@ def _number_targets(targets: Any) -> torch.Tensor:
     if values.ndim == 1:
         values = values.unsqueeze(1)
     return values
+
+
+def _token_targets(targets: Any) -> torch.Tensor:
+    """Integer targets kept at their shape, e.g. ``[N, T]`` token ids."""
+    if not isinstance(targets, torch.Tensor):
+        try:
+            targets = torch.as_tensor(targets)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise ValueError(
+                "TensorDataset: target_type is 'token' but the targets are not "
+                f"integer token ids ({exc})."
+            ) from exc
+    if torch.is_floating_point(targets) or torch.is_complex(targets) or targets.dtype == torch.bool:
+        raise ValueError(
+            f"TensorDataset: target_type is 'token' but the targets are {targets.dtype}; "
+            "token targets must be integer ids (int64). Set target_type to "
+            "'number' for float targets, or cast the targets to integers."
+        )
+    if targets.ndim == 0:
+        raise ValueError(
+            "TensorDataset: target_type is 'token' but the targets are a single "
+            "number; they need one row per sample, such as [N, T] token ids."
+        )
+    return targets.detach().cpu().to(torch.long)
 
 
 def _label_text(value: Any) -> str:
@@ -147,7 +175,9 @@ class TensorDatasetNode(BaseNode):
         "validation split, wire the training TensorDataset's `classes` output "
         "into this node's `classes` input: the split then uses the training "
         "numbering, even when it lacks a class, and a label the training split "
-        "never had stops the run. "
+        "never had stops the run. With `token` the targets stay at their "
+        "shape as int64, such as [N, T] next-token ids for LMCrossEntropyLoss; "
+        "a float target is refused. "
         "Features and targets must have the same number of rows."
     )
 
@@ -190,7 +220,7 @@ class TensorDatasetNode(BaseNode):
             PortDefinition(
                 name="classes",
                 data_type=DataType.LIST,
-                description="Class label for each index (class targets); empty for number targets.",
+                description="Class label for each index (class targets); empty for number and token targets.",
             ),
         ]
 
@@ -201,10 +231,12 @@ class TensorDatasetNode(BaseNode):
                 name="target_type",
                 param_type=ParamType.SELECT,
                 default="number",
-                options=["number", "class"],
+                options=["number", "class", "token"],
                 description=(
                     "number: float32 targets for regression losses. class: "
-                    "int64 class indices for CrossEntropyLoss."
+                    "int64 class indices for CrossEntropyLoss. token: integer "
+                    "targets kept at their shape as int64, such as [N, T] "
+                    "token ids for LMCrossEntropyLoss."
                 ),
             ),
         ]
@@ -227,10 +259,13 @@ class TensorDatasetNode(BaseNode):
         if torch.is_floating_point(features):
             features = features.to(torch.float32)
 
-        if str(params.get("target_type", "number")) == "class":
+        target_type = str(params.get("target_type", "number"))
+        if target_type == "class":
             target_tensor, classes = _class_targets(
                 targets, _given_classes(inputs.get("classes"))
             )
+        elif target_type == "token":
+            target_tensor, classes = _token_targets(targets), []
         else:
             target_tensor, classes = _number_targets(targets), []
 
