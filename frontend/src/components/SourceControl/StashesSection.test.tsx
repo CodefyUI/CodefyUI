@@ -161,6 +161,22 @@ describe('StashesSection: the rows', () => {
     expect(refreshRefs).not.toHaveBeenCalled();
   });
 
+  it('counts the list before any status has answered, and zero before either', () => {
+    // No status yet is not a status of zero: the list is the only count there
+    // is, and with neither read the heading says 0 rather than nothing.
+    useGitStore.setState({
+      status: null,
+      stashes: [stash({ index: 0 }), stash({ index: 1, message: 'older' })],
+    });
+    const view = render(<StashesSection />);
+    expect(within(section()).getByText('2')).toBeTruthy();
+    view.unmount();
+
+    useGitStore.setState({ status: null, stashes: null });
+    render(<StashesSection />);
+    expect(within(section()).getByText('0')).toBeTruthy();
+  });
+
   it('counts from the status once the list has been read too', () => {
     // The status is what the fifteen-second poll refreshes; the list is read
     // when the section opens and after a stash write. A `git stash push` at

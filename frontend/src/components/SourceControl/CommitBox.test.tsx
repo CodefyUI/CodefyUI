@@ -106,6 +106,15 @@ describe('CommitBox: when Commit can be pressed', () => {
     expect(commitButton().getAttribute('title')).toBe('Nothing staged');
   });
 
+  it('counts nothing staged while no status has answered', () => {
+    // The panel can draw before the first status lands (or after a read that
+    // failed): no status is no index to commit, not an error.
+    useGitStore.setState({ status: null });
+    render(<CommitBox />);
+    expect(commitButton()).toHaveAttribute('aria-disabled', 'true');
+    expect(commitButton().getAttribute('title')).toBe('Nothing staged');
+  });
+
   it('does nothing when the refused button is pressed anyway', () => {
     useGitStore.setState({ commitMessage: '' });
     render(<CommitBox />);
