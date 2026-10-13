@@ -57,6 +57,15 @@ class CheckpointSaverNode(BaseNode):
                 optional=True,
             ),
             PortDefinition(
+                name="epoch",
+                data_type=DataType.SCALAR,
+                description=(
+                    "Complete epochs to store. Wire TrainingLoop.epoch here; "
+                    "when wired it replaces the epoch param"
+                ),
+                optional=True,
+            ),
+            PortDefinition(
                 name="grad_scaler_state",
                 data_type=DataType.ANY,
                 description=(
@@ -88,7 +97,12 @@ class CheckpointSaverNode(BaseNode):
                 name="epoch",
                 param_type=ParamType.INT,
                 default=0,
-                description="Current epoch number to store in checkpoint",
+                description=(
+                    "Epoch number to store in the checkpoint: the number of "
+                    "complete epochs, which CheckpointLoader.epoch hands back "
+                    "to TrainingLoop.start_epoch. Ignored when the epoch "
+                    "input is wired"
+                ),
             ),
         ]
 
@@ -96,11 +110,20 @@ class CheckpointSaverNode(BaseNode):
         from ...core.checkpoints import write_checkpoint
 
         model = inputs["model"]
+        # The wired epoch wins. A hand-typed param is right only while the
+        # run trains every epoch it was given: an early stop at epoch 7 of 200
+        # saved "200" and the resume trained nothing, and the default 0
+        # resumed a trained model from epoch 0.
+        epoch = inputs.get("epoch")
+        if epoch is None:
+            epoch = params.get("epoch", 0)
+        if hasattr(epoch, "item"):
+            epoch = epoch.item()
         target = write_checkpoint(
             params.get("path", "checkpoint.pt"),
             model,
             inputs["optimizer"],
-            epoch=params.get("epoch", 0),
+            epoch=int(epoch),
             losses=inputs.get("losses"),
             lr_scheduler=inputs.get("lr_scheduler"),
             scaler_state=inputs.get("grad_scaler_state"),
