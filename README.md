@@ -164,6 +164,7 @@ Pre-built example workflows organized in `examples/`:
 | **RL** | RLHF reward and KL terms |
 | **RNN** | RNN unrolled over three steps |
 | **Transformer** | Mixture of Experts top-k routing |
+| **Papers** | Paper reproductions: one published method per graph, trained end to end on a CPU in minutes, with the paper's number in the overview note |
 | **VLA** | [Train a VLA on PushWorld](examples/VLA/TrainVLA-PushWorld/) (CUDA GPU, about an hour) |
 
 Requirements and descriptions for each: [Examples Gallery](https://docs.codefyui.com/usage/examples-gallery).

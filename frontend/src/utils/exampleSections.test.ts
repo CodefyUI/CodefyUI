@@ -45,6 +45,7 @@ describe('groupExamplesBySection', () => {
         ex({ path: 'Classical/A', section: 'concepts' }),
         ex({ path: 'LLM/A', section: 'llm' }),
         ex({ path: 'LLM/Train', section: 'training' }),
+        ex({ path: 'Papers/A', section: 'papers' }),
         ex({ path: 'Usage_Example/A', section: 'quickstart' }),
       ],
       noPacks,
@@ -52,6 +53,7 @@ describe('groupExamplesBySection', () => {
     expect(sections.map((s) => s.key)).toEqual([
       'quickstart',
       'training',
+      'papers',
       'llm',
       'concepts',
       'architectures',
@@ -61,6 +63,7 @@ describe('groupExamplesBySection', () => {
     expect(sections.map((s) => s.titleKey)).toEqual([
       'examples.section.quickstart',
       'examples.section.training',
+      'examples.section.papers',
       'examples.section.llm',
       'examples.section.concepts',
       'examples.section.architectures',

@@ -392,6 +392,7 @@ const en = {
   // Templates tab and the gallery modal all group by these now (#141).
   'examples.section.quickstart': 'Quick Start',
   'examples.section.training': 'Training',
+  'examples.section.papers': 'Paper Reproductions',
   'examples.section.llm': 'LLM and RAG',
   'examples.section.concepts': 'Concepts',
   'examples.section.architectures': 'Model Architectures',
@@ -401,6 +402,7 @@ const en = {
   'examples.category.Classical': 'Classical',
   'examples.category.Model_Architecture': 'Model Architecture',
   'examples.category.Others': 'Others',
+  'examples.category.Papers': 'Papers',
   'examples.category.Usage_Example': 'Usage Example',
 
   // Context Menu

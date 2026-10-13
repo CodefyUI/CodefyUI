@@ -110,6 +110,7 @@ describe('tokens.css / theme.ts agreement', () => {
     ['RL', '--ex-rl'],
     ['Stats', '--ex-stats'],
     ['VLA', '--ex-vla'],
+    ['Papers', '--ex-papers'],
   ])('example category %s matches %s', (name, token) => {
     expect(EXAMPLE_CATEGORY_COLORS[name]).toBe(cssVar(token));
   });
@@ -125,6 +126,7 @@ describe('tokens.css / theme.ts agreement', () => {
   it.each([
     ['quickstart', '--ex-usage-example'],
     ['training', '--ex-diffusion'],
+    ['papers', '--ex-papers'],
     ['llm', '--ex-llm'],
     ['concepts', '--ex-classical'],
     ['architectures', '--ex-model-architecture'],
@@ -140,6 +142,7 @@ describe('tokens.css / theme.ts agreement', () => {
       'concepts',
       'llm',
       'other',
+      'papers',
       'plugin',
       'quickstart',
       'training',
