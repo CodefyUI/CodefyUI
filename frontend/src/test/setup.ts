@@ -3,6 +3,9 @@ import { afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 
 // Unmount React trees between tests so portals / global listeners don't leak.
+// A test file's own afterEach hooks run BEFORE this one (vitest runs after-
+// hooks in reverse order), so a hook there that resets a store the tree reads
+// calls `cleanup()` first, or the reset renders outside act() (#505).
 afterEach(() => {
   cleanup();
 });
