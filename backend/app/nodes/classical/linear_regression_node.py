@@ -26,7 +26,8 @@ class LinearRegressionNode(BaseNode):
     DETAILS = (
         "sklearn's closed-form OLS, $\\beta = (X^\\top X)^{-1} X^\\top y$, solved by "
         "SVD when X is rank-deficient, so there is no learning rate and no "
-        "iteration. Targets may be one column or several, and with fit_intercept "
+        "iteration. Targets may be one column or several, as a tensor or as a "
+        "list of numbers such as a split's y_train, and with fit_intercept "
         "off the fit passes through the origin."
     )
 
@@ -34,7 +35,14 @@ class LinearRegressionNode(BaseNode):
     def define_inputs(cls) -> list[PortDefinition]:
         return [
             PortDefinition(name="x_train", data_type=DataType.TENSOR, description="Training features [N, F]."),
-            PortDefinition(name="y_train", data_type=DataType.TENSOR, description="Training targets [N] or [N, T]."),
+            # ANY, not TENSOR: a split's y_train is a LIST, and CSVReader's
+            # `number` target arrives as one (#712). LIST -> TENSOR is a type
+            # mismatch, so a TENSOR port refused the plain CSV regression.
+            PortDefinition(
+                name="y_train",
+                data_type=DataType.ANY,
+                description="Training targets: a TENSOR [N] or [N, T], or a LIST of numbers.",
+            ),
             PortDefinition(name="x_query", data_type=DataType.TENSOR, description="Query features [M, F]."),
         ]
 
@@ -76,7 +84,14 @@ class LinearRegressionNode(BaseNode):
         if not isinstance(x_train, torch.Tensor):
             x_train = torch.as_tensor(x_train, dtype=torch.float32)
         if not isinstance(y_train, torch.Tensor):
-            y_train = torch.as_tensor(y_train, dtype=torch.float32)
+            try:
+                y_train = torch.as_tensor(y_train, dtype=torch.float32)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise ValueError(
+                    "LinearRegression: `y_train` must be numbers, such as "
+                    "CSVReader's labels with target_type set to 'number' "
+                    f"({exc})."
+                ) from exc
         if not isinstance(x_query, torch.Tensor):
             x_query = torch.as_tensor(x_query, dtype=torch.float32)
 

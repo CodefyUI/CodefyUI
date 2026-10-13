@@ -8,8 +8,10 @@ runs the path the issue asks for through the real engine:
         → TrainingLoop → Inference → RegressionMetrics
 
 on a generated CSV whose target is a known linear function of its features,
-and checks the numbers against numpy. The node-level tests below pin the
-edges the e2e run does not reach.
+and checks the numbers against numpy. The same path runs with KFoldSplit in
+place of TrainTestSplit, and the classical path CSVReader → TrainTestSplit →
+LinearRegression is validated and fitted with no ColumnSelector between them.
+The node-level tests below pin the edges the e2e run does not reach.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import pytest
 import torch
 
 from app.core.execution_context import ExecutionContext, MetricSignal
-from app.core.graph_engine import execute_graph
+from app.core.graph_engine import execute_graph, validate_graph
 from app.nodes.classical.regression_metrics_node import RegressionMetricsNode
 from app.nodes.data.csv_reader_node import CSVReaderNode
 from app.nodes.data.tensor_dataset_node import TensorDatasetNode
@@ -63,15 +65,23 @@ def _edge(source: str, source_handle: str, target: str, target_handle: str) -> d
             "target": target, "targetHandle": target_handle}
 
 
-def _graph(csv_path: Path) -> tuple[list[dict], list[dict]]:
-    def node(node_id: str, node_type: str, **params) -> dict:
-        return {"id": node_id, "type": node_type, "data": {"params": params}}
+def _node(node_id: str, node_type: str, **params) -> dict:
+    return {"id": node_id, "type": node_type, "data": {"params": params}}
+
+
+def _graph(csv_path: Path, *, kfold: bool = False) -> tuple[list[dict], list[dict]]:
+    """The MLP regression graph. With ``kfold`` the split is KFoldSplit
+    holding out fold 1 of 4, whose held-out ports are x_val and y_val."""
+    node = _node
+    split = (node("split", "KFoldSplit", n_folds=4, fold=1, seed=0) if kfold
+             else node("split", "TrainTestSplit", test_size=0.25, seed=0))
+    x_out, y_out = ("x_val", "y_val") if kfold else ("x_test", "y_test")
 
     nodes = [
         node("start", "Start"),
         node("csv", "CSVReader", path=str(csv_path), target_column="target",
              target_type="number"),
-        node("split", "TrainTestSplit", test_size=0.25, seed=0),
+        split,
         node("train_ds", "TensorDataset", target_type="number"),
         node("test_ds", "TensorDataset", target_type="number"),
         node("train_dl", "DataLoader", batch_size=16, shuffle=True),
@@ -91,8 +101,8 @@ def _graph(csv_path: Path) -> tuple[list[dict], list[dict]]:
         _edge("csv", "labels", "split", "labels"),
         _edge("split", "x_train", "train_ds", "features"),
         _edge("split", "y_train", "train_ds", "targets"),
-        _edge("split", "x_test", "test_ds", "features"),
-        _edge("split", "y_test", "test_ds", "targets"),
+        _edge("split", x_out, "test_ds", "features"),
+        _edge("split", y_out, "test_ds", "targets"),
         _edge("train_ds", "dataset", "train_dl", "dataset"),
         _edge("test_ds", "dataset", "test_dl", "dataset"),
         _edge("model", "model", "opt", "model"),
@@ -102,15 +112,19 @@ def _graph(csv_path: Path) -> tuple[list[dict], list[dict]]:
         _edge("train_dl", "dataloader", "train", "dataloader"),
         _edge("test_dl", "dataloader", "train", "val_dataloader"),
         _edge("train", "model", "predict", "model"),
-        _edge("split", "x_test", "predict", "input"),
+        _edge("split", x_out, "predict", "input"),
         _edge("predict", "output", "metrics", "predictions"),
-        _edge("split", "y_test", "metrics", "targets"),
+        _edge("split", y_out, "metrics", "targets"),
     ]
     return nodes, edges
 
 
-async def test_an_mlp_regressor_trains_on_a_csv_and_its_metrics_match_numpy(tmp_path):
-    nodes, edges = _graph(_write_csv(tmp_path / "linear.csv"))
+@pytest.mark.parametrize("kfold", [False, True], ids=["train_test_split", "kfold_split"])
+async def test_an_mlp_regressor_trains_on_a_csv_and_its_metrics_match_numpy(tmp_path, kfold):
+    nodes, edges = _graph(_write_csv(tmp_path / "linear.csv"), kfold=kfold)
+    # The issue's first failure was a validation error; the run service
+    # validates before it runs, so the graph must pass here too.
+    assert validate_graph(nodes, edges) == []
     logged: dict[tuple[str, str], float] = {}
 
     class _RecordingContext(ExecutionContext):
@@ -126,7 +140,10 @@ async def test_an_mlp_regressor_trains_on_a_csv_and_its_metrics_match_numpy(tmp_
     # ends far below it, and a broadcast [B, 1] vs [B] loss would not.
     assert losses[-1] < 0.1 * losses[0], losses
 
-    y_test = np.asarray(outputs["split"]["y_test"], dtype=np.float64)
+    held_out = "y_val" if kfold else "y_test"
+    y_test = np.asarray(outputs["split"][held_out], dtype=np.float64)
+    # Fold 1 of 4 holds out a quarter of the rows, as test_size 0.25 does.
+    assert len(y_test) == _ROWS // 4
     y_hat = outputs["predict"]["output"].detach().numpy().astype(np.float64).reshape(-1)
     error = y_hat - y_test
     mse = np.mean(error ** 2)
@@ -143,6 +160,57 @@ async def test_an_mlp_regressor_trains_on_a_csv_and_its_metrics_match_numpy(tmp_
     assert logged[("mse", "metrics")] == pytest.approx(mse, rel=1e-9)
     assert logged[("r2", "metrics")] == pytest.approx(r2, rel=1e-9)
     assert ("val_loss", "train") in logged
+
+
+async def test_a_numeric_csv_target_wires_into_linear_regression_without_column_selector(tmp_path):
+    """#712 acceptance 2. On main before this, the split's y_train (LIST)
+    could not reach LinearRegression.y_train (TENSOR): validation refused the
+    graph with ``Type mismatch: TrainTestSplit.y_train (LIST) ->
+    LinearRegression.y_train (TENSOR)``."""
+    from sklearn.linear_model import LinearRegression
+    from sklearn.model_selection import train_test_split
+
+    csv_path = _write_csv(tmp_path / "linear.csv")
+    nodes = [
+        _node("start", "Start"),
+        _node("csv", "CSVReader", path=str(csv_path), target_column="target",
+              target_type="number"),
+        _node("split", "TrainTestSplit", test_size=0.25, seed=0),
+        _node("ols", "LinearRegression"),
+        _node("metrics", "RegressionMetrics"),
+    ]
+    edges = [
+        {"id": "t-csv", "source": "start", "target": "csv",
+         "sourceHandle": "trigger", "type": "trigger"},
+        _edge("csv", "tensor", "split", "features"),
+        _edge("csv", "labels", "split", "labels"),
+        _edge("split", "x_train", "ols", "x_train"),
+        _edge("split", "y_train", "ols", "y_train"),
+        _edge("split", "x_test", "ols", "x_query"),
+        _edge("ols", "predictions", "metrics", "predictions"),
+        _edge("split", "y_test", "metrics", "targets"),
+    ]
+    assert validate_graph(nodes, edges) == []
+
+    outputs = await execute_graph(nodes, edges, context=ExecutionContext(device="cpu"))
+
+    table = np.loadtxt(csv_path, delimiter=",", skiprows=1, dtype=np.float32)
+    x_train, x_test, y_train, y_test = train_test_split(
+        table[:, :3], table[:, 3].tolist(), test_size=0.25, random_state=0)
+    reference = LinearRegression().fit(x_train, y_train)
+    assert outputs["ols"]["coef"].numpy() == pytest.approx(reference.coef_, abs=1e-4)
+    # The known weights come back, and the fit explains nearly all variance.
+    assert outputs["ols"]["coef"].numpy() == pytest.approx(_WEIGHTS, abs=0.05)
+    assert outputs["metrics"]["r2"] > 0.99
+
+
+def test_linear_regression_names_the_fix_for_a_string_target():
+    from app.nodes.classical.linear_regression_node import LinearRegressionNode
+
+    with pytest.raises(ValueError, match="target_type set to 'number'"):
+        LinearRegressionNode().execute(
+            {"x_train": torch.zeros(2, 1), "y_train": ["2.5", "3.0"],
+             "x_query": torch.zeros(1, 1)}, {})
 
 
 # ── the node edges ────────────────────────────────────────────────────────
