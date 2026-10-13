@@ -198,3 +198,36 @@ def test_missing_inputs_are_clear_errors():
 
 def test_output_is_float32():
     assert _run(PRED, TRUE)["matrix"].dtype == torch.float32
+
+
+# ── accuracy over every sample and encoding mismatch (2026-10-13 audit) ─────
+
+def test_accuracy_counts_samples_outside_class_names_like_sklearn():
+    """Dividing the trace by the matrix total reported 1.0 here."""
+    from sklearn.metrics import accuracy_score
+
+    truth = ["a", "a", "a", "b", "c", "c", "c", "c"]
+    pred = ["a", "a", "a", "b", "a", "b", "b", "b"]
+    result = _run(pred, truth, {"class_names": "a,b"})
+    assert result["accuracy"] == pytest.approx(accuracy_score(truth, pred))
+    assert result["accuracy"] == pytest.approx(0.5)
+
+
+def test_the_ignored_sample_case_reports_the_true_accuracy():
+    result = _run(["a", "zzz"], ["a", "a"], {"class_names": "a"})
+    assert result["accuracy"] == pytest.approx(0.5)
+
+
+def test_disjoint_label_encodings_are_reported():
+    """Class indices against class names share no label: every sample counts as wrong."""
+    result = _run(
+        torch.tensor([0, 1, 2, 1]), ["setosa", "versicolor", "virginica", "setosa"]
+    )
+    assert "share no class" in result["__log__"]
+    assert "setosa" in result["__log__"] and "0, 1, 2" in result["__log__"]
+    assert "share no class" in result["chart"]["note"]
+
+
+def test_matching_encodings_add_no_log_line():
+    result = _run(torch.tensor([0, 1]), ["0", "1"])
+    assert "__log__" not in result

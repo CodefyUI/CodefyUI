@@ -15,15 +15,20 @@ typed rather than the thing it forgot to unplug.
 Aggregates follow pandas' ``groupby`` semantics: NaN is skipped, ``count`` is
 the number of *present* values in that column and group (which is why the
 separate ``counts`` output carries the group's row count), and ``std`` is the
-sample std, ddof=1.
+sample std, ddof=1. A row whose group key is missing (NaN in a ``group_by``
+column, ``None`` or NaN in ``keys``) belongs to no group, as with pandas'
+default ``dropna=True``; the node says how many rows it left out.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 from typing import Any
 
 import numpy as np
 
+from app.core.advisories import emit_advisory
 from app.core.node_base import (
     BaseNode,
     DataType,
@@ -35,6 +40,7 @@ from app.core.node_base import (
 from ._stats_core import (
     AGGREGATIONS,
     as_matrix,
+    distinct_number_labels,
     max_of,
     mean_of,
     min_of,
@@ -44,6 +50,28 @@ from ._stats_core import (
     std_of,
     to_tensor,
 )
+
+
+logger = logging.getLogger(__name__)
+
+GROUP_BY_NOTE_PREFIX = "[Stats-GroupByAggregate] "
+NAN_KEY_WARNING_KIND = "stats_group_key_missing"
+
+
+def _is_missing_key(value: Any) -> bool:
+    """pandas drops a ``None`` or NaN group key; every other value is a key."""
+    if value is None:
+        return True
+    return isinstance(value, (float, np.floating)) and math.isnan(value)
+
+
+def _all_numeric(labels: list[str]) -> bool:
+    try:
+        for label in labels:
+            float(label)
+    except ValueError:
+        return False
+    return True
 
 
 def _aggregate(values: np.ndarray, how: str) -> float:
@@ -72,7 +100,7 @@ class StatsGroupByAggregateNode(BaseNode):
         "column leaves the value set. `agg_overrides` takes `column=agg` pairs for "
         "exceptions. NaN is skipped as in pandas, so `count` is the number of "
         "present values, while the separate `counts` output holds each group's row "
-        "count."
+        "count. Rows with a missing group key are left out and counted in the log."
     )
 
     @classmethod
@@ -175,14 +203,31 @@ class StatsGroupByAggregateNode(BaseNode):
         overrides = self._parse_overrides(params.get("agg_overrides", ""), names)
 
         group_by = parse_names(params.get("group_by", ""))
+        skipped = 0
+        rows_kept: list[int] = []
+        keys: list[tuple[Any, ...]] = []
+        order_key: Any = None
         if group_by:
             key_columns = [self._resolve_column(token, names) for token in group_by]
             value_columns = [c for c in range(len(names)) if c not in set(key_columns)]
-            keys = [
-                tuple(float(table[r, c]) for c in key_columns)
-                for r in range(table.shape[0])
+            for r in range(table.shape[0]):
+                key = tuple(float(table[r, c]) for c in key_columns)
+                # NaN != NaN, so a NaN key would open a new group on every
+                # row and make sorted() return an unsorted order.
+                if any(math.isnan(v) for v in key):
+                    skipped += 1
+                    continue
+                keys.append(key)
+                rows_kept.append(r)
+            # Per key column: integers exact, other values with just enough
+            # digits that two different keys never print the same.
+            per_column = [
+                distinct_number_labels([key[i] for key in keys])
+                for i in range(len(key_columns))
             ]
-            labels = ["|".join(f"{v:g}" for v in key) for key in keys]
+            labels = [
+                "|".join(column[n] for column in per_column) for n in range(len(keys))
+            ]
         else:
             raw_keys = inputs.get("keys")
             if not isinstance(raw_keys, (list, tuple)):
@@ -196,9 +241,19 @@ class StatsGroupByAggregateNode(BaseNode):
                     f"{self.NODE_NAME}: `keys` has {len(raw_keys)} entries but the "
                     f"table has {table.shape[0]} rows — they must be aligned."
                 )
-            labels = [str(k) for k in raw_keys]
+            labels = []
+            for r, k in enumerate(raw_keys):
+                if _is_missing_key(k):
+                    skipped += 1
+                    continue
+                labels.append(str(k))
+                rows_kept.append(r)
             keys = [(label,) for label in labels]
             value_columns = list(range(len(names)))
+            # Text keys that are all numbers sort as numbers (2 before 10),
+            # matching the group_by path and pandas.
+            if _all_numeric(labels):
+                order_key = lambda key: (float(key[0]), key[0])  # noqa: E731
 
         if not value_columns:
             raise ValueError(
@@ -211,10 +266,10 @@ class StatsGroupByAggregateNode(BaseNode):
         # numeric order (10 after 2, not before it).
         members: dict[Any, list[int]] = {}
         label_of: dict[Any, str] = {}
-        for row, (key, label) in enumerate(zip(keys, labels)):
+        for row, key, label in zip(rows_kept, keys, labels):
             members.setdefault(key, []).append(row)
             label_of.setdefault(key, label)
-        ordered = sorted(members)
+        ordered = sorted(members, key=order_key)
 
         out = np.empty((len(ordered), len(value_columns)), dtype=np.float64)
         counts = np.empty(len(ordered), dtype=np.float64)
@@ -225,7 +280,7 @@ class StatsGroupByAggregateNode(BaseNode):
                 how = overrides.get(names[column], default_agg)
                 out[r, c] = _aggregate(table[rows, column], how)
 
-        return {
+        result: dict[str, Any] = {
             "table": to_tensor(out),
             "columns": [
                 f"{names[c]} [{overrides.get(names[c], default_agg)}]"
@@ -234,6 +289,16 @@ class StatsGroupByAggregateNode(BaseNode):
             "row_labels": [label_of[key] for key in ordered],
             "counts": to_tensor(counts),
         }
+        if skipped:
+            result["__log__"] = emit_advisory(
+                f"{skipped} of {table.shape[0]} row(s) have a missing group key "
+                "(NaN or None) and belong to no group, as in pandas' groupby.",
+                kind=NAN_KEY_WARNING_KIND,
+                prefix=GROUP_BY_NOTE_PREFIX,
+                context=context,
+                logger=logger,
+            )
+        return result
 
     def _parse_overrides(self, raw: Any, names: list[str]) -> dict[str, str]:
         overrides: dict[str, str] = {}

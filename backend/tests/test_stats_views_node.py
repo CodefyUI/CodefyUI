@@ -257,3 +257,38 @@ def test_an_existing_note_survives_a_conversion():
 def test_every_produced_spec_is_json_safe():
     for kind in ("bar", "line", "scatter"):
         json.dumps(convert_chart(BARS, kind), allow_nan=False)
+
+
+# ── NaN bars, short row labels, precision bounds (2026-10-13 audit) ─────────
+
+def test_a_nan_bar_is_drawn_as_zero_with_a_note():
+    """std of a one-row group is NaN; it used to look like a real zero."""
+    spec = _chart_view(
+        {"kind": "bar"}, table=torch.tensor([[0.7071], [float("nan")]]),
+        row_labels=["x", "y"],
+    )["chart"]
+    assert [b["value"] for b in spec["bars"]] == pytest.approx([0.7071, 0.0], abs=1e-4)
+    assert "1 non-finite value(s) drawn as 0" in spec["note"]
+    json.dumps(spec, allow_nan=False)
+
+
+def test_finite_bars_carry_no_note():
+    spec = _chart_view(
+        {"kind": "bar"}, table=torch.tensor([[1.0], [2.0]]), row_labels=["a", "b"],
+    )["chart"]
+    assert "note" not in spec
+
+
+def test_short_row_labels_do_not_drop_bars():
+    spec = _chart_view(
+        table=torch.tensor([[1.0], [2.0], [3.0]]), row_labels=["a", "b"],
+    )["chart"]
+    assert [(b["label"], b["value"]) for b in spec["bars"]] == [
+        ("a", 1.0), ("b", 2.0), ("2", 3.0),
+    ]
+
+
+@pytest.mark.parametrize("precision", [-1, 13])
+def test_out_of_range_precision_names_the_node_and_param(precision):
+    with pytest.raises(ValueError, match=r"Stats-TableView: `precision` must be 0-12"):
+        _table_view(torch.tensor([[0.5]]), {"precision": precision})

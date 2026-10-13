@@ -209,3 +209,25 @@ def test_missing_table_input_is_a_clear_error():
 
 def test_output_is_float32():
     assert _run(torch.zeros((3, 2)))["matrix"].dtype == torch.float32
+
+
+# ── infinite values and text booleans (2026-10-13 audit) ─────────────────────
+
+@pytest.mark.parametrize("method", ["pearson", "spearman"])
+def test_infinite_values_are_left_out_pairwise_like_pandas(method):
+    x = np.arange(10.0)
+    y = x ** 3
+    y[9] = np.inf
+    z = np.array([3, 1, 4, 1, 5, 9, 2, 6, 5, np.inf])
+    frame = pd.DataFrame({"x": x, "y": y, "z": z})
+    result = _run(torch.tensor(frame.to_numpy()), {"method": method})
+
+    expected = frame.corr(method=method).to_numpy()
+    assert result["matrix"].numpy() == pytest.approx(expected, abs=1e-6)
+    assert "2 infinite value(s) left out pairwise" in result["chart"]["note"]
+
+
+def test_drop_nan_reads_the_text_false_as_off():
+    table = torch.tensor([[1.0, 2.0], [2.0, float("nan")], [3.0, 7.0], [4.0, 8.0]])
+    result = _run(table, {"drop_nan": "false"})
+    assert math.isnan(float(result["matrix"][0, 1]))

@@ -98,9 +98,9 @@ def test_chart_payload_is_json_safe():
     assert "NaN" not in encoded and "Infinity" not in encoded
 
 
-def test_row_labels_read_as_half_open_intervals():
+def test_row_labels_read_as_half_open_intervals_except_the_closed_last_bin():
     labels = _run(torch.tensor([0.0, 1.0]), {"bins": 2})["row_labels"]
-    assert labels == ["[0, 0.5)", "[0.5, 1)"]
+    assert labels == ["[0, 0.5)", "[0.5, 1]"]
 
 
 # ── boundaries ───────────────────────────────────────────────────────────────
@@ -149,3 +149,53 @@ def test_invalid_params_are_rejected(params, message):
 def test_a_2d_tensor_is_flattened():
     result = _run(torch.tensor([[1.0, 2.0], [3.0, 4.0]]), {"bins": 2})
     assert result["table"].numpy()[:, 2].sum() == pytest.approx(4.0)
+
+
+# ── closed last bin, distinct labels, out-of-range values (2026-10-13 audit) ─
+
+def test_the_last_bin_label_is_closed_because_numpy_counts_its_upper_edge():
+    result = _run(torch.tensor([0.0, 0.2, 0.5, 0.5, 1.0]), {"bins": 2})
+    assert result["row_labels"] == ["[0, 0.5)", "[0.5, 1]"]
+    assert result["table"].numpy()[:, 2].tolist() == [2.0, 3.0]
+
+
+def test_narrow_range_labels_stay_distinct():
+    data = torch.tensor([1000.0001, 1000.0002, 1000.0003], dtype=torch.float64)
+    labels = _run(data, {"bins": 3})["row_labels"]
+    assert len(set(labels)) == 3
+    for label in labels:
+        low, high = label[1:-1].split(", ")
+        assert low != high
+
+
+def test_values_outside_a_manual_range_are_reported():
+    result = _run(
+        torch.tensor([-5.0, 0.1, 0.2, 9.0, 10.0]),
+        {"bins": 2, "range_mode": "manual", "range_min": 0.0, "range_max": 1.0},
+    )
+    assert result["table"].numpy()[:, 2].tolist() == [2.0, 0.0]
+    assert "3 of 5 value(s) outside the manual range [0, 1]" in result["chart"]["note"]
+    assert "3 of 5 value(s)" in result["__log__"]
+
+
+def test_no_out_of_range_note_when_every_value_fits():
+    result = _run(
+        torch.tensor([0.0, 0.5, 1.0]),
+        {"bins": 2, "range_mode": "manual", "range_min": 0.0, "range_max": 1.0},
+    )
+    assert "note" not in result["chart"]
+    assert "__log__" not in result
+
+
+@pytest.mark.parametrize(
+    "raw, column",
+    [("false", "count"), ("true", "density"), ("0", "count"), (True, "density")],
+)
+def test_density_reads_text_booleans(raw, column):
+    result = _run(torch.tensor([0.0, 1.0]), {"bins": 2, "density": raw})
+    assert result["columns"][2] == column
+
+
+def test_an_unreadable_density_value_names_the_node_and_param():
+    with pytest.raises(ValueError, match="Stats-Histogram: `density` must be true or false"):
+        _run(torch.tensor([0.0, 1.0]), {"density": "maybe"})

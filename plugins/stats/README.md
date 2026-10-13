@@ -46,6 +46,12 @@ number of *present* (non-NaN) values per column, so the two differ wherever
 there are holes. Output column names carry the aggregate applied — `petal
 length (cm) [mean]`.
 
+A row whose group key is missing (NaN in a `group_by` column, `None` or NaN in
+`keys`) belongs to no group, as with pandas' default `dropna=True`; the Log tab
+says how many rows were left out. Groups sort by key, numerically when every
+key is a number. Numeric keys print exactly when integral (`1234567`) and
+otherwise with just enough digits to tell two keys apart.
+
 | Param | Type | Default | Values |
 |---|---|---|---|
 | `group_by` | string | `""` *(use `keys`)* | comma-separated column names or indices |
@@ -61,6 +67,9 @@ length (cm) [mean]`.
 
 `columns` is `["bin_start", "bin_end", "count"]`, or `"density"` when `density`
 is on. `dropped` counts the non-finite values excluded before binning.
+Row labels read `[start, end)`, except the last bin, which numpy closes:
+`[start, end]`. With a manual range, values outside it are not counted; the
+chart note and the Log tab say how many.
 
 | Param | Type | Default | Values |
 |---|---|---|---|
@@ -104,6 +113,9 @@ is on. `dropped` counts the non-finite values excluded before binning.
 | `drop_nan` | bool | `true` | pairwise-complete, as pandas' `corr` |
 | `title` | string | `Correlation` | |
 
+As in pandas' `corr`, `drop_nan` leaves ±Inf out pairwise along with NaN, so
+one infinite cell does not turn its column NaN; the chart note gives the count.
+
 ### `Stats-ConfusionMatrix`
 
 | | |
@@ -112,8 +124,12 @@ is on. `dropped` counts the non-finite values excluded before binning.
 | **Out** | `matrix` TENSOR `[classes, classes]` · `columns` LIST *(predicted)* · `row_labels` LIST *(true)* · `accuracy` SCALAR · `chart` ANY *(`media=chart`)* |
 
 Each input takes a list of labels, a 1D tensor of class indices, or a 2D
-`[samples, classes]` score matrix (row argmax). `accuracy` is the diagonal's
-share of the **raw counts**, so it does not move when `normalize` does.
+`[samples, classes]` score matrix (row argmax). `accuracy` is the share of
+**all** samples predicted correctly, as sklearn's `accuracy_score`: it does not
+move when `normalize` does, and a sample whose class is left out of
+`class_names` still counts. When the two inputs share no label at all (class
+indices against class names, booleans against 0/1) the chart note and the Log
+tab say so.
 
 | Param | Type | Default | Values |
 |---|---|---|---|
@@ -134,7 +150,7 @@ into a `text` entry, so the table appears in the Results panel.
 | Param | Type | Default | Values |
 |---|---|---|---|
 | `max_rows` | int | `20` | 0–1000; `0` means every row |
-| `precision` | int | `4` | 0–12 |
+| `precision` | int | `4` | 0–12; outside that range is an error |
 | `title` | string | `""` | |
 
 ### `Stats-ChartView`
@@ -146,7 +162,9 @@ into a `text` entry, so the table appears in the Results panel.
 
 Connect either a `chart` payload from another Stats node or a `table`. With
 `kind = auto` a table becomes a bar chart when `row_labels` are present (the
-rows are categories) and a line chart otherwise.
+rows are categories) and a line chart otherwise. A `row_labels` list shorter
+than the table is padded with row indices, so no row is dropped. A NaN or Inf
+value is drawn as a 0-height bar and the chart note says how many.
 
 | Param | Type | Default | Values |
 |---|---|---|---|

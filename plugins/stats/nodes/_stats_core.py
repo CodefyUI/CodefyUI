@@ -243,6 +243,65 @@ def float_param(params: Any, name: str, default: float, *, node: str) -> float:
     return _number_param(params, name, default, node, float)
 
 
+_TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
+_FALSE_WORDS = frozenset({"false", "0", "no", "off", ""})
+
+
+def bool_param(params: Any, name: str, default: bool, *, node: str) -> bool:
+    """Read a BOOL param that may arrive as a real bool or as text.
+
+    ``bool("false")`` is ``True``, so a graph JSON edited by hand (or a CLI
+    override) that spells the value as a string would flip the switch on.
+    Strings are read as the words they are; anything else is an error that
+    names the node and the param.
+    """
+    raw = params.get(name, default)
+    if raw is None:
+        return bool(default)
+    if isinstance(raw, (bool, np.bool_)):
+        return bool(raw)
+    if isinstance(raw, (int, float)) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str):
+        word = raw.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    raise ValueError(
+        f"{node}: `{name}` must be true or false; got {raw!r}."
+    )
+
+
+def distinct_number_labels(
+    values: Sequence[Any], *, start: int = 6, limit: int = 17
+) -> list[str]:
+    """Format numbers so that different values never share a label.
+
+    Integral values print as exact integers (``1234567``, never
+    ``1.23457e+06``). Other values start at ``start`` significant digits, the
+    ``:g`` default, and gain digits only until every distinct value has a
+    distinct label, so labels that were already unambiguous do not change.
+    """
+    floats = [float(v) for v in values]
+    distinct = len(set(f for f in floats if not np.isnan(f))) + (
+        1 if any(np.isnan(f) for f in floats) else 0
+    )
+    labels: list[str] = []
+    for digits in range(start, limit + 1):
+        labels = [number_label(f, digits) for f in floats]
+        if len(set(labels)) >= distinct:
+            break
+    return labels
+
+
+def number_label(value: float, digits: int = 6) -> str:
+    """One numeric label: exact for integers, ``digits`` significant otherwise."""
+    if np.isfinite(value) and float(value).is_integer() and abs(value) < 1e15:
+        return str(int(value))
+    return f"{value:.{digits}g}"
+
+
 def format_percentile(q: float) -> str:
     """pandas' label for a percentile: ``25%``, ``2.5%``, ``99.9%``."""
     text = f"{q:g}"
@@ -326,7 +385,21 @@ def bar_chart(
 ) -> dict[str, Any]:
     """A categorical bar chart: one labelled bar per value."""
     spec = _base("bar", title, x_label, y_label)
-    pairs = list(zip([str(label) for label in labels], [_num(v) for v in values]))
+    raw = list(values)
+    names = [str(label) for label in labels][: len(raw)]
+    # A short label list must not drop bars: zip would stop at the shorter
+    # side. Missing labels become the row index, as format_text_table does.
+    names.extend(str(i) for i in range(len(names), len(raw)))
+    non_finite = 0
+    for v in raw:
+        try:
+            if not np.isfinite(float(v)):
+                non_finite += 1
+        except (TypeError, ValueError):
+            non_finite += 1
+    if non_finite:
+        add_note(spec, f"{non_finite} non-finite value(s) drawn as 0")
+    pairs = list(zip(names, [_num(v) for v in raw]))
     if len(pairs) > MAX_BARS:
         add_note(spec, f"showing the first {MAX_BARS} of {len(pairs)} bars")
         pairs = pairs[:MAX_BARS]
