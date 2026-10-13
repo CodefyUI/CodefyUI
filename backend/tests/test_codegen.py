@@ -1884,10 +1884,18 @@ def test_exported_sequential_model_keeps_the_merge_operand_handles():
     script = generate_python(nodes, edges, name="merge-order")
     _compile_check(script)
 
-    exported = json.loads(_exported_params(script, "model")["layers"])
+    exported_params = _exported_params(script, "model")
+    exported = json.loads(exported_params["layers"])
+    assert exported == layers
     x = torch.tensor([[2.0]])
-    y = build_graph_model(exported)(x)
-    assert torch.allclose(y, torch.relu(x) - torch.sigmoid(x))
+    expected = torch.relu(x) - torch.sigmoid(x)  # a - b = 1.1192, not -1.1192
+    assert torch.allclose(build_graph_model(exported)(x), expected)
+
+    # And through the node class the script's _call() runs, with its params.
+    from app.nodes.utility.sequential_node import SequentialModelNode
+
+    model = SequentialModelNode().execute({}, exported_params)["model"]
+    assert torch.allclose(model(x), expected)
 
 
 # ── transform chains (core#136) ──────────────────────────────────────────

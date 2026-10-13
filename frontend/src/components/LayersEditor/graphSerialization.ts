@@ -425,24 +425,39 @@ export function convertWorkflowForImport(workflow: WorkflowData): WorkflowImport
   // Keep only edges between converted layer nodes. Canvas handles mean
   // nothing here, except the operand port of an order-sensitive merge
   // (tensor_a / tensor_b), which becomes that merge's operand handle.
-  const convertedEdges: GraphSpec['edges'] = workflow.edges
-    .filter((e) => layerNodeIds.has(e.source) && layerNodeIds.has(e.target))
-    .map((e) => {
-      // The filter above keeps only edges between converted nodes, all in typeById.
-      const targetType = typeById.get(e.target)!;
-      const operand = e.targetHandle !== undefined ? CANVAS_OPERAND_PORTS[e.targetHandle] : undefined;
-      const targetHandle =
-        ORDERED_MERGE_TYPES.has(targetType) && operand !== undefined
-          ? mergeOperandHandle(targetType, operand)
-          : null;
-      return {
-        id: e.id,
-        source: e.source,
-        sourceHandle: null,
-        target: e.target,
-        targetHandle,
-      };
+  const convertedEdges: GraphSpec['edges'] = [];
+  const crossAttention = new Set<string>();
+  for (const e of workflow.edges) {
+    if (!layerNodeIds.has(e.source) || !layerNodeIds.has(e.target)) continue;
+    // The guard above keeps only edges between converted nodes, all in typeById.
+    const targetType = typeById.get(e.target)!;
+    // The canvas attention node has query, key and value inputs; the layer
+    // block is self-attention with one input. Three wires from one source
+    // become one; wires from different sources are cross-attention, which
+    // the layer block cannot compute.
+    if (targetType === 'MultiHeadAttention') {
+      const earlier = convertedEdges.find((c) => c.target === e.target);
+      if (earlier) {
+        if (earlier.source !== e.source && !crossAttention.has(e.target)) {
+          crossAttention.add(e.target);
+          issues.push({ level: 'error', key: 'layersEditor.import.issue.crossAttention', params: { node: e.target } });
+        }
+        continue;
+      }
+    }
+    const operand = e.targetHandle !== undefined ? CANVAS_OPERAND_PORTS[e.targetHandle] : undefined;
+    const targetHandle =
+      ORDERED_MERGE_TYPES.has(targetType) && operand !== undefined
+        ? mergeOperandHandle(targetType, operand)
+        : null;
+    convertedEdges.push({
+      id: e.id,
+      source: e.source,
+      sourceHandle: null,
+      target: e.target,
+      targetHandle,
     });
+  }
 
   // Compute in-degree / out-degree
   const inDeg = new Map<string, number>();

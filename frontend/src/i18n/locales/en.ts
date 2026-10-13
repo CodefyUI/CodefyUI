@@ -520,6 +520,8 @@ const en = {
     'LayerNorm "{node}": normalized_shape "{shape}" is not a comma-separated list of integers. Fix it on the canvas, then import again.',
   'layersEditor.import.issue.attentionBatchFirst':
     'MultiHeadAttention "{node}" read (seq, batch, embed) on the canvas. The layer editor\'s attention is batch-first (batch, seq, embed); check the layers that feed it.',
+  'layersEditor.import.issue.crossAttention':
+    'MultiHeadAttention "{node}": query, key and value come from different nodes. The layer editor\'s attention is self-attention with one input; wire all three from one node, or build this part by hand.',
   'layersEditor.import.issue.meanSkipped':
     'Mean "{node}" was not imported: on the canvas it averages one tensor over a dim, and the layer editor\'s Mean averages two or more branches.',
   'layersEditor.searchLayers': 'Search layers...',

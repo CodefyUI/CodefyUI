@@ -204,13 +204,21 @@ def _order_operands(
 ) -> list[tuple[str, str | None, str | None]]:
     """Sort a merge node's incoming edges by their target handle.
 
-    Falls back to the edge-list order unless every incoming edge names a
-    handle, so an old spec (no handles at all) builds exactly as before.
+    A spec with no named handles on this merge (saved before they existed)
+    keeps the edge-list order it always had. A mix of named and unnamed
+    edges has no order anyone can see, so it is an error.
     """
     merge_type, node_id = node["type"], node["id"]
     ranks = [_operand_rank(merge_type, th) for (_src, _sh, th) in edges_in]
-    if not edges_in or any(r is None for r in ranks):
+    if all(r is None for r in ranks):
         return edges_in
+    if any(r is None for r in ranks):
+        named = "a, b" if merge_type == "Subtract" else "in0, in1, ..."
+        raise ValueError(
+            f'{merge_type} layer "{node_id}": some edges go into a labelled input '
+            f"({named}) and some do not, so the operand order is undefined. "
+            "Reconnect each branch to one of the labelled inputs."
+        )
     seen: dict[int, str | None] = {}
     for (_src, _sh, th), rank in zip(edges_in, ranks):
         if rank in seen:

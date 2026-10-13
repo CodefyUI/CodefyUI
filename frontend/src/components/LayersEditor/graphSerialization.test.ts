@@ -1304,6 +1304,44 @@ describe('convertWorkflowForImport param translation', () => {
     expect(detectImportFormat(text).kind).toBe('unknown');
   });
 
+  it('merges the query, key and value wires of a canvas self-attention into one input', () => {
+    const { spec, issues } = convertWorkflowForImport({
+      nodes: [
+        { id: 'emb', type: 'Linear', data: { params: { in_features: 8, out_features: 8 } } },
+        { id: 'att', type: 'MultiHeadAttention', data: { params: { embed_dim: 8, num_heads: 2, batch_first: true } } },
+      ],
+      edges: [
+        { id: 'q', source: 'emb', target: 'att', sourceHandle: 'tensor', targetHandle: 'query' },
+        { id: 'k', source: 'emb', target: 'att', sourceHandle: 'tensor', targetHandle: 'key' },
+        { id: 'v', source: 'emb', target: 'att', sourceHandle: 'tensor', targetHandle: 'value' },
+      ],
+    });
+    expect(issues).toEqual([]);
+    const into = spec.edges.filter((e) => e.target === 'att');
+    expect(into.map((e) => [e.source, e.targetHandle])).toEqual([['emb', null]]);
+    // One wire in is what validateGraph asks of a plain layer.
+    const { nodes, edges } = graphToFlow(JSON.stringify(spec));
+    expect(validateGraph(nodes, edges)).toBeNull();
+  });
+
+  it('refuses a canvas cross-attention, naming the node once', () => {
+    const { issues } = convertWorkflowForImport({
+      nodes: [
+        { id: 'dec', type: 'Linear', data: { params: { in_features: 8, out_features: 8 } } },
+        { id: 'enc', type: 'Linear', data: { params: { in_features: 8, out_features: 8 } } },
+        { id: 'att', type: 'MultiHeadAttention', data: { params: { embed_dim: 8, num_heads: 2, batch_first: true } } },
+      ],
+      edges: [
+        { id: 'q', source: 'dec', target: 'att', targetHandle: 'query' },
+        { id: 'k', source: 'enc', target: 'att', targetHandle: 'key' },
+        { id: 'v', source: 'enc', target: 'att', targetHandle: 'value' },
+      ],
+    });
+    expect(issues).toEqual([{
+      level: 'error', key: 'layersEditor.import.issue.crossAttention', params: { node: 'att' },
+    }]);
+  });
+
   it('carries the canvas operand port of a Concat into its operand handle', () => {
     const { spec } = convertWorkflowForImport({
       nodes: [
@@ -1339,6 +1377,9 @@ describe('merge operand handles', () => {
     expect(mergeInputHandles('Concat', [])).toEqual(['in0', 'in1']);
     expect(mergeInputHandles('Concat', ['in0', 'in1'])).toEqual(['in0', 'in1', 'in2']);
     expect(mergeInputHandles('Stack', ['in3', null])).toEqual(['in0', 'in1', 'in2', 'in3', 'in4']);
+    // Eleven wired operands: the free slot is in11, numbered past in10.
+    const eleven = Array.from({ length: 11 }, (_, i) => `in${i}`);
+    expect(mergeInputHandles('Concat', eleven)).toEqual([...eleven, 'in11']);
   });
 
   it('maps handle ids to operand positions', () => {

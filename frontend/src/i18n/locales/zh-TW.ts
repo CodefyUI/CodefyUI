@@ -433,6 +433,8 @@ const zhTW: Record<TranslationKey, string> = {
     'LayerNorm「{node}」：normalized_shape「{shape}」不是以逗號分隔的整數。請在畫布上修正後再匯入。',
   'layersEditor.import.issue.attentionBatchFirst':
     'MultiHeadAttention「{node}」在畫布上讀取 (seq, batch, embed)。架構編輯器的注意力層以批次為先 (batch, seq, embed)，請檢查輸入它的層。',
+  'layersEditor.import.issue.crossAttention':
+    'MultiHeadAttention「{node}」：query、key、value 來自不同節點。架構編輯器的注意力層是只有一個輸入的自注意力；請三者都從同一個節點連入，或手動建構這一段。',
   'layersEditor.import.issue.meanSkipped':
     'Mean「{node}」未匯入：畫布上的 Mean 是對單一張量沿某維取平均，架構編輯器的 Mean 則是平均兩個以上的分支。',
   'layersEditor.searchLayers': '搜尋層級...',

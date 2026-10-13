@@ -1220,6 +1220,30 @@ describe('LayersEditorModal', () => {
     expect(toasts[0].message).toContain('Add "plus" computes a + 2 * b');
   });
 
+  it('handleFileSelect refuses a canvas cross-attention node', () => {
+    setupOpenModal(validGraphJson());
+    const { container } = render(<LayersEditorModal />);
+    const workflow = JSON.stringify({
+      nodes: [
+        { id: 'dec', type: 'ReLU', data: {} },
+        { id: 'enc', type: 'Tanh', data: {} },
+        { id: 'att', type: 'MultiHeadAttention', data: { params: { embed_dim: 8, num_heads: 2, batch_first: true } } },
+      ],
+      edges: [
+        { id: 'q', source: 'dec', target: 'att', targetHandle: 'query' },
+        { id: 'k', source: 'enc', target: 'att', targetHandle: 'key' },
+        { id: 'v', source: 'enc', target: 'att', targetHandle: 'value' },
+      ],
+    });
+    importText(container, workflow);
+    act(() => vi.advanceTimersByTime(60));
+    expect(screen.getByText('4 layers')).toBeTruthy();
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('error');
+    expect(toasts[0].message).toContain('MultiHeadAttention "att": query, key and value come from different nodes');
+  });
+
   it('handleFileSelect imports with a warning toast when params had to change meaning', () => {
     setupOpenModal(validGraphJson());
     const { container } = render(<LayersEditorModal />);

@@ -601,3 +601,34 @@ def test_two_edges_into_one_merge_handle_name_the_layer():
     spec = _two_branch_merge("Subtract", ("relu", "sig"), {"relu": "a", "sig": "a"})
     with pytest.raises(ValueError, match=r'Subtract layer "m": two edges go into input "a"'):
         build_graph_model(spec)
+
+
+def test_mixed_named_and_unnamed_merge_handles_name_the_layer():
+    spec = _two_branch_merge("Subtract", ("relu", "sig"), {"relu": "a", "sig": None})
+    with pytest.raises(ValueError, match=r'Subtract layer "m": some edges go into a labelled input \(a, b\)'):
+        build_graph_model(spec)
+
+
+def test_concat_with_eleven_inputs_orders_in10_after_in9():
+    """Numeric handle order: a string sort would put in10 between in1 and in2."""
+    branches = [f"b{i}" for i in range(11)]
+    nodes = [{"id": "in", "type": "Input", "ports": [{"id": "p_in", "name": "x"}]}]
+    nodes += [{"id": b, "type": "Linear", "params": {"in_features": 1, "out_features": 1}} for b in branches]
+    nodes += [
+        {"id": "cat", "type": "Concat", "params": {"dim": 1}},
+        {"id": "out", "type": "Output", "ports": [{"id": "p_out", "name": "y"}]},
+    ]
+    edges = [{"id": f"i_{b}", "source": "in", "sourceHandle": "p_in", "target": b} for b in branches]
+    # Listed in reverse, so only the handles can put them back in order.
+    edges += [
+        {"id": f"c_{b}", "source": b, "target": "cat", "targetHandle": f"in{i}"}
+        for i, b in reversed(list(enumerate(branches)))
+    ]
+    edges.append({"id": "o", "source": "cat", "target": "out", "targetHandle": "p_out"})
+    model = build_graph_model(_spec(nodes, edges))
+    with torch.no_grad():
+        for i, b in enumerate(branches):
+            model.layers[b].weight.fill_(float(i))
+            model.layers[b].bias.zero_()
+        y = model(torch.ones(1, 1))
+    assert y.tolist() == [[float(i) for i in range(11)]]
