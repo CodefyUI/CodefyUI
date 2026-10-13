@@ -12,6 +12,7 @@ Educational ("Edu") nodes ship as installable **plugin packs**, organised **by d
 cdui plugin sync                           # install every built-in pack you have not decided about
 cdui plugin install foundations deep rl   # or pick them one by one
 cdui plugin install edu stats              # hands-on labs, descriptive statistics
+cdui plugin install eval                   # evaluation pipelines (brings transformers)
 cdui plugin list
 cdui plugin info deep                      # manifest, lessons covered, node names
 cdui plugin search attention               # query the catalog
@@ -30,8 +31,11 @@ cdui plugin uninstall deep                 # remembered: sync will not re-add it
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
 | `edu` | I1 Data Representation · I2 Classical ML (hands-on labs) | FilterRows, SlidingWindow2D, SentenceEmbedding, Classifier, AdvancedClassifier, FFNLayer, ActivationLayer, TrainAndEvaluate |
 | `stats` | — (any dataset) | Stats-Describe, Stats-GroupByAggregate, Stats-Histogram, Stats-Percentile, Stats-Correlation, Stats-ConfusionMatrix, Stats-TableView, Stats-ChartView |
+| `eval` | — (Hugging Face text models) | Eval-JSONLDataset, Eval-PromptTemplate, Eval-HFModelLoader, Eval-HFProcessorLoader, Eval-BatchInference, Eval-ExactMatch, Eval-F1Score, Eval-TopKAccuracy, Eval-CompareRuns |
 
 `stats` is the odd one out: not a textbook companion but a working reference for third-party pack authors. It is pure numpy + torch, installs at [Tier 0](#security--three-tiers) with **no `[security]` section at all**, and its [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) is the normative write-up of the two contracts a data pack needs — how a table travels between ports, and how a `chart` output is declared and drawn.
+
+`eval` turns an evaluation into a graph: an eval set with item ids and a content hash, a Hugging Face model and tokenizer pinned to the commit they resolved to, a prediction table with one status per item, metrics that skip the items that did not finish, and an A/B comparison matched by item id. Installing it brings `transformers`, the one package its `[python_deps]` names; it declares no capability. Its [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/eval/README.md) documents the prediction-table contract, offline behaviour and the example graph.
 
 Three more official plugins live in their own repositories. They install by the same name the catalog lists them under, and — unlike the packs above — each one is downloaded from GitHub, so installing it is a decision you are asked to confirm.
 

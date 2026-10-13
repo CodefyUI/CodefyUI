@@ -322,6 +322,11 @@ const zhTW: ExampleTranslations = {
     description: '一步 REINFORCE：損失與優勢',
   },
 
+  // ── plugin: eval -- Eval pack ──
+  'plugin:eval/Eval/AB-Text-Classification': {
+    description: '兩個情感分類模型逐筆比較',
+  },
+
   // ── plugin: stats -- Stats teaching pack ──
   'plugin:stats/Stats/Confusion-Matrix-Heatmap': {
     description: '真實對上預測，45 列 iris 資料',

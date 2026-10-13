@@ -20,7 +20,7 @@ A card carries the plugin's name, a status pill (**Installed**, **Disabled**, **
 
 ## Installing a built-in pack
 
-Five packs ship inside this release: `edu`, `foundations`, `deep`, `rl` and `stats`. Find the row and press **Install**. A built-in pack is not a third party, so there is nothing to agree to and nothing else to press.
+Six packs ship inside this release: `edu`, `foundations`, `deep`, `rl`, `stats` and `eval`. Find the row and press **Install**. A built-in pack is not a third party, so there is nothing to agree to and nothing else to press.
 
 When the job ends, the panel re-reads the catalog, the node definitions and the plugin UIs, so the new nodes are in the palette without reloading the page. They are qualified by the pack they came from -- `edu:FilterRows`, `foundations:Edu-KNN` -- so searching the palette for the pack id finds them.
 

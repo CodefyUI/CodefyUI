@@ -2188,6 +2188,205 @@ const zhTW: NodeTranslations = {
       '同一份文字也會從 text 輸出埠傳出。',
   },
 
+  // ── Eval pack (plugin) ──
+  'eval:Eval-BatchInference': {
+    description: '分批讓模型跑完評估集，輸出預測表',
+    details:
+      'classification 取分類模型 logits 的 argmax，並用模型的 id2label 命名；generation 由因果語言模型生成 ' +
+      'max_new_tokens 個 token，可用貪婪解碼，或以 `seed` 為每筆資料各自建立的本地亂數產生器抽樣。每列記錄 id、input、' +
+      'input_hash、raw_answer、正規化後的 answer、label、status（ok、error 或 cancelled）與 error。在批次之間按停止，' +
+      '已完成的列維持 ok，其餘標成 cancelled；某一筆出錯只會把那一筆標成 error，其他照常完成。`label_map` 在正規化前' +
+      '先改名原始答案（LABEL_0=negative）。表格的 meta 記錄兩邊的 revision、實際生效的設定、seed 與資料集的 sha256。',
+    params: {
+      task: 'auto 沿用 Eval-HFModelLoader 記錄的任務。',
+      batch_size: '每批筆數；進度回報與停止檢查都在批次之間。',
+      normalize: '比較前如何正規化原始答案與標籤。',
+      label_map: '先改名原始答案，例如 LABEL_0=negative, LABEL_1=positive。',
+      max_new_tokens: '每筆要生成的 token 數（僅 generation）。',
+      do_sample: '改用抽樣而非貪婪解碼（僅 generation）。',
+      temperature: '抽樣溫度（generation 且開啟 do_sample）。',
+      top_p: 'nucleus 抽樣的機率總量（generation 且開啟 do_sample）。',
+      seed: '抽樣用的種子；每筆資料有自己的產生器。',
+      max_length: '輸入截斷到這麼多個 token（classification）。',
+      top_k: '每列保留幾個排序後的標籤，供 Eval-TopKAccuracy 使用（classification）。',
+    },
+    inputs: {
+      model: '來自 Eval-HFModelLoader 的模型。',
+      processor: '來自 Eval-HFProcessorLoader 的 tokenizer。',
+      dataset: '來自 Eval-JSONLDataset 或 Eval-PromptTemplate 的評估資料集。',
+    },
+    outputs: {
+      predictions: '預測表：每筆一列，含狀態與來源資訊。',
+      answers: 'ok 且有標籤的列的正規化答案，依表格順序。',
+      labels: '同一批列的標籤，與 `answers` 對齊。',
+    },
+  },
+  'eval:Eval-CompareRuns': {
+    description: '依 id 逐筆比較兩張預測表的 A/B 差異',
+    details:
+      '以 `key_column` 對齊，絕不依列的位置。遇到重複的 key、兩邊 key 集合不同、同一個 key 的輸入雜湊不同（要刻意比較兩種' +
+      ' prompt 時請關閉 `require_same_input`），或同一個 key 的標籤不同，都會拒絕並列出最先出問題的幾筆。兩邊都有回答的' +
+      '項目才會比較，其餘仍留在差異表中並保留狀態。輸出逐筆差異、結果表（都對、只有 A 對、只有 B 對、都錯，可接 ' +
+      'Stats-ChartView）、一致率，以及 A 的答案對 B 的答案的一致性矩陣。',
+    params: {
+      key_column: '兩張表對齊用的欄位。',
+      require_same_input: '同一筆在兩次執行的輸入雜湊不同時拒絕比較。',
+      max_rows: '記錄中印出的差異列數，不一致的排在前面；0 代表全部。',
+    },
+    inputs: {
+      table_a: 'A 執行的預測表。',
+      table_b: 'B 執行的預測表。',
+    },
+    outputs: {
+      diff: '逐筆紀錄表：id、answer_a、answer_b、label、agree、a_correct、b_correct 與兩邊狀態。',
+      diff_table: '[items, 3] 的 agree / a_correct / b_correct（1 或 0），未比較的為 NaN。',
+      diff_columns: '`diff_table` 的欄位名稱。',
+      diff_ids: '項目 id，即 `diff_table` 的列標籤。',
+      summary_table: '[4, 2] 都對、只有 A、只有 B、都錯的筆數與比例。',
+      summary_columns: '`summary_table` 的欄位名稱：count、share。',
+      summary_rows: '`summary_table` 的列標籤。',
+      agreement: 'A 與 B 給出相同答案的比較項目比例。',
+      summary: '一致率、各結果筆數、正確率與兩次執行的來源資訊。',
+      chart: '一致性矩陣：列是 A 的答案、欄是 B 的答案。',
+    },
+  },
+  'eval:Eval-ExactMatch': {
+    description: 'ok 列中答案與標籤完全相同的比例',
+    details:
+      '比較正規化後的答案與標籤，等同 sklearn 的 accuracy_score。狀態為 error 或 cancelled 的列、沒有標籤的列都會略過，' +
+      '並計入 `skipped`，不會被算成答錯。數值也會以 `metric_name` 記錄為 run metric。',
+    params: {
+      metric_name: '記錄成 run metric 時的名稱；留空用指標本身的名稱。A、B 兩次執行請取不同名稱。',
+      step: '記錄 run metric 時的 step。',
+    },
+    inputs: {
+      predictions: '來自 Eval-BatchInference 的預測表。',
+    },
+    outputs: {
+      value: '計入列上的指標值。',
+      table: '一列的 [1, 3] 表格：指標值、計入列數、略過列數。',
+      columns: '`table` 的欄位名稱。',
+      row_labels: '這一列量測的執行：model@revision。',
+      metrics: '同一列的紀錄表，meta 記錄產生此指標的節點。',
+    },
+  },
+  'eval:Eval-F1Score': {
+    description: '答案對標籤的 micro 或 macro F1',
+    details:
+      'macro 是在答案或標籤中出現過的每個類別各自算 F1 再平均，少數類別和多數類別一樣重要；micro 把所有判斷合併計算，' +
+      '單一標籤分類時等於 exact match。沒有任何真實或預測樣本的類別記為 0，與 sklearn 的 f1_score 相同。' +
+      '略過 error、cancelled 與沒有標籤的列。',
+    params: {
+      average: 'macro：各類別 F1 的平均。micro：所有判斷合併計算的 F1。',
+      metric_name: '記錄成 run metric 時的名稱；留空用指標本身的名稱。A、B 兩次執行請取不同名稱。',
+      step: '記錄 run metric 時的 step。',
+    },
+    inputs: {
+      predictions: '來自 Eval-BatchInference 的預測表。',
+    },
+    outputs: {
+      value: '計入列上的指標值。',
+      table: '一列的 [1, 3] 表格：指標值、計入列數、略過列數。',
+      columns: '`table` 的欄位名稱。',
+      row_labels: '這一列量測的執行：model@revision。',
+      metrics: '同一列的紀錄表，meta 記錄產生此指標的節點。',
+    },
+  },
+  'eval:Eval-HFModelLoader': {
+    description: 'Hugging Face 模型，鎖定其 commit',
+    details:
+      '`revision`（分支、tag 或 commit，預設 main）會在載入前解析成 commit sha：能連上 Hub 時向 Hub 查詢，否則使用快取中' +
+      '已有的快照，並記錄來源。遵守 HF_HUB_OFFLINE=1：不會下載任何東西，未快取的模型會直接報錯。本機目錄以其中檔案的 ' +
+      'sha256 作為識別。下載存放在 CodefyUI 自己位於使用者資料夾下的快取。`task` 為 auto 時讀取設定中的架構：' +
+      '...ForSequenceClassification 為 classification，因果語言模型為 generation。需要 transformers 套件，安裝此外掛時會一併安裝。',
+    params: {
+      model_id: 'Hugging Face Hub 的 id（org/name）或本機模型目錄。',
+      revision: '分支、tag 或 commit sha，載入前會解析成 commit sha。',
+      task: 'classification（取標籤的 argmax）或 generation（因果語言模型）；auto 讀取設定判斷。',
+      dtype: '權重要轉成的精度；auto 保留 checkpoint 原本的精度。',
+      device: 'auto 跟隨這次執行的裝置。',
+    },
+    outputs: {
+      model: '載入後的模型，處於 eval 模式，並帶著來源資訊。',
+      provenance: 'model_id、要求的與解析出的 revision、解析方式、task、dtype、device。',
+    },
+  },
+  'eval:Eval-HFProcessorLoader': {
+    description: '與模型同一 commit 的 tokenizer',
+    details:
+      '接上 Eval-HFModelLoader 的模型，並把 `model_id` 與 `revision` 留空：processor 就會從模型自己的 repository、' +
+      '在模型解析出的同一個 commit 載入。填入其他 `model_id` 則改載那個 repository，以同樣方式解析。若填入的 `revision` ' +
+      '讓模型自己的 repository 解析到另一個 commit，會被拒絕。`kind` 為 tokenizer 時載入 AutoTokenizer；auto 載入 ' +
+      'AutoProcessor（影像與多模態 processor）。',
+    params: {
+      model_id: '留空則跟隨接上的模型；否則填 Hub id 或本機目錄。',
+      revision: '留空則跟隨接上模型的 commit（或 main）。',
+      kind: 'tokenizer：AutoTokenizer。auto：AutoProcessor。',
+    },
+    inputs: {
+      model: '來自 Eval-HFModelLoader 的模型，跟隨它的 repository 與 commit。',
+    },
+    outputs: {
+      processor: 'tokenizer 或 processor，帶著來源資訊。',
+      provenance: 'processor id、要求的與解析出的 revision，以及解析方式。',
+    },
+  },
+  'eval:Eval-JSONLDataset': {
+    description: '把 JSONL 檔讀成含 id 與內容雜湊的評估集',
+    details:
+      '每行讀一個 JSON 物件。`input_field` 是模型看到的文字，`label_field` 是預期答案（每列可有可無），`id_field` ' +
+      '是穩定的項目 id；檔案沒有 id 時用 `line-N`。重複的 id、空白輸入與格式錯誤的行都會被拒絕並指出行號。資料集帶著自己的' +
+      '識別（路徑、檔案的 sha256 與列數）進入由它產生的每一張預測表。以 `eval:` 開頭的路徑指向此外掛內附的檔案，例如 ' +
+      '`eval:samples/sst2-mini-20.jsonl`。',
+    params: {
+      path: 'JSONL 檔。可選上傳的檔案、相對於後端工作目錄的路徑，或用 `eval:samples/...` 指向此外掛內附的檔案。',
+      input_field: '存放模型輸入文字的欄位。',
+      label_field: '存放預期答案的欄位；沒有這個欄位的列就沒有標籤。',
+      id_field: '存放穩定項目 id 的欄位；缺少時用 line-N。',
+      limit: '只用前 N 筆；0 代表全部。',
+    },
+    outputs: {
+      dataset: '評估資料集：含 id、input、label 的項目，以及檔案的識別資訊。',
+      labels: '每筆項目的標籤，依檔案順序（沒有標籤的為 None）。',
+    },
+  },
+  'eval:Eval-PromptTemplate': {
+    description: '用文字範本改寫每筆評估項目的輸入',
+    details:
+      '`{input}` 是項目目前的輸入；`{name}` 是原始 JSONL 紀錄的該欄位。要輸出大括號本身請寫 `{{` 與 `}}`。' +
+      '套用後的文字取代原本的輸入，範本的文字與 sha256 也會加入資料集的識別。用到標籤欄位的範本會被拒絕：那等於把答案給模型看。',
+    params: {
+      template: '範本文字。{input} 是項目的輸入；{欄位} 是紀錄中的任一欄位。',
+    },
+    inputs: {
+      dataset: '來自 Eval-JSONLDataset 的評估資料集。',
+    },
+    outputs: {
+      dataset: '同樣的項目，輸入換成套用範本後的文字。',
+    },
+  },
+  'eval:Eval-TopKAccuracy': {
+    description: 'ok 列中標籤落在前 k 個答案內的比例',
+    details:
+      '讀取 Eval-BatchInference 在 classification 模式下存在 `topk` 欄的排序候選（最多五個，最可能的在前）。沒有候選的列' +
+      '（generation 的列）會略過，不算答錯。k = 1 時等於 exact match。分數沒有平手時與 sklearn 的 top_k_accuracy_score 一致。',
+    params: {
+      k: '標籤可以落在前幾個答案之內。',
+      metric_name: '記錄成 run metric 時的名稱；留空用指標本身的名稱。A、B 兩次執行請取不同名稱。',
+      step: '記錄 run metric 時的 step。',
+    },
+    inputs: {
+      predictions: '來自 Eval-BatchInference 的預測表。',
+    },
+    outputs: {
+      value: '計入列上的指標值。',
+      table: '一列的 [1, 3] 表格：指標值、計入列數、略過列數。',
+      columns: '`table` 的欄位名稱。',
+      row_labels: '這一列量測的執行：model@revision。',
+      metrics: '同一列的紀錄表，meta 記錄產生此指標的節點。',
+    },
+  },
+
   // ── Custom ──
   AddScalar: {
     description: '將純量值加到張量上（自訂節點範例）',

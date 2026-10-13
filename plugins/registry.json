@@ -36,6 +36,13 @@
       "path": "plugins/rl",
       "chapters": ["C5"]
     },
+    "eval": {
+      "name": "Eval — 評估與推論管線",
+      "description": "Evaluation pipelines as single nodes: Eval-JSONLDataset and Eval-PromptTemplate (評估資料集，含 id 與檔案雜湊), Eval-HFModelLoader and Eval-HFProcessorLoader (鎖定解析出的 commit 的 Hugging Face 模型與 tokenizer), Eval-BatchInference (分批推論成預測表，每筆記錄狀態、可中途停止), Eval-ExactMatch, Eval-F1Score (micro / macro) and Eval-TopKAccuracy, plus Eval-CompareRuns (依 id 對齊的 A/B 逐筆差異與一致率). Installs transformers.",
+      "kind": "builtin",
+      "path": "plugins/eval",
+      "tags": ["evaluation", "inference", "huggingface", "metrics", "a-b-test"]
+    },
     "graph-copilot": {
       "name": "Graph Copilot — Agent Workbench",
       "description": "AI chat assistant that builds and edits node graphs by conversation, runs approved isolated experiments and parameter searches, and keeps portable evidence. Frontend extension; needs an LLM provider (Codex, Ollama, OpenAI or Anthropic).",

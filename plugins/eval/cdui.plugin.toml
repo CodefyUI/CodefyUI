@@ -1,0 +1,18 @@
+[plugin]
+id              = "eval"
+name            = "Eval — 評估與推論管線"
+version         = "0.1.0"
+description     = "Evaluation pipelines as nodes: Eval-JSONLDataset and Eval-PromptTemplate for eval sets with ids and a content hash, Eval-HFModelLoader and Eval-HFProcessorLoader pinned to the commit they resolved to, Eval-BatchInference for a prediction table with per-item status, Eval-ExactMatch / Eval-F1Score / Eval-TopKAccuracy, and Eval-CompareRuns for an item-aligned A/B diff. 評估流程節點：有 id 與雜湊的評估集、鎖定 commit 的 Hugging Face 模型、逐筆狀態的預測表、指標，以及依 id 對齊的 A/B 比較。"
+schema_version  = 1
+requires_codefyui = ">=2.9.0"
+
+[content]
+nodes_dir    = "nodes"
+examples_dir = "examples"
+
+# The Hugging Face nodes load models through transformers, and
+# `cdui plugin install eval` installs it into the CodefyUI environment.
+# 5.x because the backend already requires huggingface_hub >= 1.19, which
+# every transformers 4.x release refuses.
+[python_deps]
+transformers = ">=5.0,<6"
