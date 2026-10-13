@@ -892,7 +892,10 @@ const zhTW: NodeTranslations = {
     description: '交叉熵、MSE、BCE 等 11 種損失函數',
     details:
       '共 11 種 torch 損失函數。只有部分類型接受的選項（label_smoothing、類別權重、ignore_index、' +
-      'pos_weight）只會在適用的類型下出現。',
+      'pos_weight）只會在適用的類型下出現。在 TrainingLoop 裡，CrossEntropyLoss 與 NLLLoss 遇到逐 token 的 ' +
+      'logits [B, T, V] 搭配 [B, T] 類別目標時，會對每個 token 取平均，結果與 LMCrossEntropyLoss 相同：' +
+      '輸出的前兩個維度與目標相符時，類別視為在最後一維。通道在前的輸出 [B, C, L] 搭配 [B, L] 目標，' +
+      '則照 torch 的讀法處理。',
     params: {
       type: '損失函數類型',
       label_smoothing: '把 one-hot 目標變得平滑一些：0 表示硬目標，0.1 是常見的正則化強度',

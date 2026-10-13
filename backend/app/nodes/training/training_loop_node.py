@@ -65,6 +65,38 @@ def _float_targets(outputs: Any, targets: Any) -> Any:
     return targets
 
 
+def _class_dim_first(loss_fn: Any, outputs: Any, targets: Any) -> Any:
+    """Per-token logits ``[B, T, V]`` as ``[B, V, T]`` for a class loss.
+
+    ``CrossEntropyLoss`` and ``NLLLoss`` read a 3-D input as ``[N, C, d1]``,
+    class dimension SECOND. A language model (or any per-position head built
+    from Linear layers) puts it LAST. With ``T != V`` torch then fails with
+    "Expected target size", and with ``T == V`` it runs and averages over the
+    wrong axis: 1.6643 where the per-token cross-entropy is 1.6811 in the
+    2026-10-13 audit, with no error.
+
+    The rule: a 3-D output with 2-D integer targets equal to its first two
+    dimensions is read as ``[B, T, V]`` and moved to ``[B, V, T]``, so the
+    loss is the mean over every token, the number LMCrossEntropyLoss gives.
+    A channel-first output (Conv1d, ``[B, C, L]`` against ``[B, L]``) whose
+    targets match only its first and LAST dimensions is left alone. When
+    both readings fit (``T == V == L``) the channel-last one wins, because
+    that is what a Linear head produces.
+    """
+    import torch
+    import torch.nn as nn
+
+    if not (isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
+            and isinstance(outputs, torch.Tensor)
+            and isinstance(targets, torch.Tensor)):
+        return outputs
+    if (outputs.dim() == 3 and targets.dim() == 2
+            and not torch.is_floating_point(targets)
+            and tuple(targets.shape) == tuple(outputs.shape[:2])):
+        return outputs.transpose(1, 2)
+    return outputs
+
+
 def _single_logit(outputs: Any) -> bool:
     """One logit per example: ``[B]`` or ``[B, 1]``."""
     import torch
@@ -2202,7 +2234,8 @@ class TrainingLoopNode(BaseNode):
                                 if hasattr(step_batch, "to") else step_batch)
                             step_targets = None
                         with policy.autocast():
-                            step_out = model(step_data)
+                            step_out = _class_dim_first(
+                                loss_fn, model(step_data), step_targets)
                             step_loss = _compute_loss(
                                 loss_fn, step_out, step_targets, "validation",
                                 elementwise=check_loss_shapes)
@@ -2293,7 +2326,7 @@ class TrainingLoopNode(BaseNode):
                 # is what makes reductions that need float32 (softmax,
                 # cross-entropy) run in float32 rather than in bf16.
                 with policy.autocast():
-                    outputs = model(data)
+                    outputs = _class_dim_first(loss_fn, model(data), targets)
                     if not nll_checked:
                         _check_nll_input(loss_fn, outputs)
                         nll_checked = True
@@ -2431,7 +2464,9 @@ class TrainingLoopNode(BaseNode):
                 val_running_loss: Any = 0.0
                 val_batch_count = 0
                 val_correct: Any = 0
-                val_total = 0
+                # A device tensor once a batch masks ignore_index tokens,
+                # read back once below.
+                val_total: Any = 0
 
                 with torch.no_grad():
                     for batch_index, batch_data in enumerate(val_dataloader):
@@ -2456,7 +2491,8 @@ class TrainingLoopNode(BaseNode):
                         # is not comparable with it -- which is the only
                         # thing anyone ever does with it.
                         with policy.autocast():
-                            outputs = model(data)
+                            outputs = _class_dim_first(
+                                loss_fn, model(data), targets)
                             loss = _compute_loss(
                                 loss_fn, outputs, targets, "validation",
                                 elementwise=check_loss_shapes)
@@ -2487,8 +2523,14 @@ class TrainingLoopNode(BaseNode):
                         if scores_accuracy and targets is not None:
                             # Shared with EvaluateModel so the two agree on
                             # [N, 1] labels and single-output models.
+                            # ``outputs`` is already class-dim-first here,
+                            # so a [B, T, V] model scores TOKEN accuracy,
+                            # skipping the loss's ignore_index the way the
+                            # loss does.
                             batch_correct, batch_total = count_correct(
-                                outputs, targets, "TrainingLoop")
+                                outputs, targets, "TrainingLoop",
+                                ignore_index=getattr(
+                                    loss_fn, "ignore_index", None))
                             val_correct = val_correct + batch_correct
                             val_total += batch_total
 
@@ -2510,6 +2552,7 @@ class TrainingLoopNode(BaseNode):
 
                 avg_val_loss = float(val_running_loss) / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
+                val_total = int(val_total)
                 if val_total > 0:
                     avg_val_accuracy = int(val_correct) / val_total
                     val_epoch_accuracies.append(avg_val_accuracy)

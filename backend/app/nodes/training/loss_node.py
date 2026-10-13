@@ -64,7 +64,12 @@ class LossNode(BaseNode):
     DETAILS = (
         "Eleven torch losses. The options that only some of them take "
         "(label_smoothing, per-class weight, ignore_index, pos_weight) are shown "
-        "only under the types that accept them."
+        "only under the types that accept them. In TrainingLoop, "
+        "CrossEntropyLoss and NLLLoss on per-token logits [B, T, V] with "
+        "[B, T] class targets average over every token, the same number "
+        "LMCrossEntropyLoss gives: an output whose first two dimensions match "
+        "the targets is read with its classes last. A channel-first output "
+        "[B, C, L] against [B, L] targets is read as torch reads it."
     )
 
     @classmethod

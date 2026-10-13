@@ -335,3 +335,80 @@ def test_training_loop_epoch_output_counts_from_start_epoch():
     }
     out = TrainingLoopNode().execute(inputs, {"device": "cpu", "epochs": 5})
     assert out["epoch"] == 5
+
+
+# ── Loss(CrossEntropyLoss) on per-token logits [B, T, V] ────────────────
+
+
+class _TokenHead(nn.Module):
+    """Embedding + Linear: [B, T] token ids -> [B, T, V] logits."""
+
+    def __init__(self, vocab):
+        super().__init__()
+        self.embed = nn.Embedding(vocab, 8)
+        self.head = nn.Linear(8, vocab)
+
+    def forward(self, x):
+        return self.head(self.embed(x))
+
+
+def _token_run(loss_fn, vocab, seq_len, *, model=None, val=True):
+    g = torch.Generator().manual_seed(0)
+    x = torch.randint(0, vocab, (16, seq_len), generator=g)
+    y = torch.randint(0, vocab, (16, seq_len), generator=g)
+    y[0, :2] = -100  # padding the loss skips
+    if model is None:
+        torch.manual_seed(0)
+        model = _TokenHead(vocab)
+    data = TensorDataset(x, y)
+    return _train(model, data, loss_fn, val=data if val else None,
+                  batch_size=8, epochs=2)
+
+
+@pytest.mark.parametrize("vocab,seq_len", [(5, 5), (7, 5)],
+                         ids=["T==V", "T!=V"])
+def test_cross_entropy_on_token_logits_equals_lm_cross_entropy(vocab, seq_len):
+    """T == V used to run and average over the wrong axis (1.6643 against a
+    per-token 1.6811); T != V failed with "Expected target size"."""
+    from app.nodes.llm.lm_cross_entropy_loss_node import LMCrossEntropyLoss
+
+    via_loss_node = _token_run(
+        LossNode().execute({}, {"type": "CrossEntropyLoss"})["loss_fn"],
+        vocab, seq_len)
+    via_lm = _token_run(LMCrossEntropyLoss(), vocab, seq_len)
+
+    assert via_loss_node["losses"].tolist() == pytest.approx(
+        via_lm["losses"].tolist(), abs=1e-6)
+    assert via_loss_node["val_losses"].tolist() == pytest.approx(
+        via_lm["val_losses"].tolist(), abs=1e-6)
+    for a, b in zip(via_loss_node["model"].state_dict().values(),
+                    via_lm["model"].state_dict().values()):
+        assert torch.allclose(a, b, atol=1e-6)
+
+
+def test_token_logits_get_token_accuracy_skipping_ignore_index():
+    vocab, seq_len = 5, 5
+    out = _token_run(nn.CrossEntropyLoss(), vocab, seq_len)
+    model = out["model"]
+    g = torch.Generator().manual_seed(0)
+    x = torch.randint(0, vocab, (16, seq_len), generator=g)
+    y = torch.randint(0, vocab, (16, seq_len), generator=g)
+    y[0, :2] = -100
+    with torch.no_grad():
+        pred = model(x).argmax(-1)
+    keep = y != -100
+    expected = ((pred == y) & keep).sum().item() / keep.sum().item()
+    assert out["metrics"]["final_val_accuracy"] == pytest.approx(expected)
+
+
+def test_channel_first_conv_output_is_read_as_torch_reads_it():
+    """[B, C, L] against [B, L] (a Conv1d tagger) keeps torch's own layout."""
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(8, 4, 6, generator=g)
+    y = torch.randint(0, 3, (8, 6), generator=g)
+    torch.manual_seed(0)
+    model = nn.Conv1d(4, 3, kernel_size=1)
+    reference = copy.deepcopy(model)
+    out = _train(model, TensorDataset(x, y), nn.CrossEntropyLoss(), lr=0.0)
+    expected = F.cross_entropy(reference(x), y).item()
+    assert out["losses"][0].item() == pytest.approx(expected, abs=1e-6)
