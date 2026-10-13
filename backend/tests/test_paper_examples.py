@@ -92,14 +92,28 @@ def _losses(results: dict, node: str) -> list[float]:
     return [float(x) for x in results[node]["losses"].tolist()]
 
 
-def test_every_paper_graph_is_tested_here():
-    """A new reproduction gets a test of its claim, not only its note rules."""
-    tested = {
-        "Dropout-Srivastava-2014", "BatchNorm-Ioffe-2015", "ResNet-Degradation-He-2016",
-        "Adam-Kingma-2015", "Label-Smoothing-Szegedy-2016", "SGDR-Loshchilov-2017",
-        "Vanishing-Gradients-Glorot-2010",
-    }
-    assert {p.parent.name for p in _PAPERS.glob("*/graph.json")} == tested
+#: The reproductions whose claims this file executes. The RL ones live in
+#: ``test_papers_rl_examples.py`` and the sequence ones in
+#: ``test_paper_sequence_examples.py``; ``test_concept_examples._PAPER_EXAMPLES``
+#: is the registry every file under ``examples/Papers`` must appear in.
+_TESTED_HERE = (
+    "Dropout-Srivastava-2014", "BatchNorm-Ioffe-2015", "ResNet-Degradation-He-2016",
+    "Adam-Kingma-2015", "Label-Smoothing-Szegedy-2016", "SGDR-Loshchilov-2017",
+    "Vanishing-Gradients-Glorot-2010",
+)
+
+
+def test_every_paper_graph_is_registered_and_the_ones_here_exist():
+    """A new reproduction joins the registry, so its note rules run; the
+    seven this file executes are on disk under the names used below."""
+    from tests.test_concept_examples import _PAPER_EXAMPLES
+
+    registered = {key.split("/", 1)[1] for key in _PAPER_EXAMPLES}
+    on_disk = {p.parent.name for p in _PAPERS.glob("*/graph.json")}
+    assert on_disk == registered, (
+        f"unregistered: {sorted(on_disk - registered)}; "
+        f"registered but missing: {sorted(registered - on_disk)}")
+    assert set(_TESTED_HERE) <= on_disk
 
 
 def test_every_arm_trains_its_own_model():
@@ -108,7 +122,8 @@ def test_every_arm_trains_its_own_model():
     The second loop would then continue from the first, and the comparison
     would be between a model and a longer-trained copy of itself.
     """
-    for path in sorted(_PAPERS.glob("*/graph.json")):
+    for name in _TESTED_HERE:
+        path = _PAPERS / name / "graph.json"
         graph = json.loads(path.read_text(encoding="utf-8"))
         trainers_per_model: dict[str, int] = {}
         for edge in graph["edges"]:

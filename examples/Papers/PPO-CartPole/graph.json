@@ -1,0 +1,256 @@
+{
+  "name": "PPO balances CartPole",
+  "description": "Clipped policy updates with GAE",
+  "gallery": {
+    "section": "papers",
+    "order": 23
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "env",
+      "type": "EnvWrapper",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "env_name": "CartPole-v1"
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "PPO",
+      "position": {
+        "x": 40,
+        "y": -20
+      },
+      "data": {
+        "params": {
+          "state_dim": 4,
+          "action_dim": 2,
+          "hidden_dim": 64
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 380,
+        "y": -20
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.001,
+          "weight_decay": 0
+        }
+      }
+    },
+    {
+      "id": "loop",
+      "type": "RLTrainingLoop",
+      "position": {
+        "x": 720,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "gamma": 0.99,
+          "max_steps_per_episode": 0,
+          "target_return": 475,
+          "seed": 0,
+          "device": "cpu",
+          "log_interval": 10,
+          "algorithm": "ppo",
+          "episodes": 1500,
+          "steps_per_update": 512,
+          "ppo_epochs": 10,
+          "minibatch_size": 64,
+          "clip_eps": 0.2,
+          "gae_lambda": 0.95,
+          "value_coef": 0.1,
+          "entropy_coef": 0.01,
+          "grad_clip_norm": 0.5
+        }
+      }
+    },
+    {
+      "id": "print",
+      "type": "Print",
+      "position": {
+        "x": 1080,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "RL training report"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1080,
+        "y": -60
+      },
+      "data": {
+        "params": {
+          "title": "PPO: return per episode",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Schulman et al. (Proximal Policy Optimization Algorithms, arXiv 2017) reuse each batch of experience for several gradient epochs and clip the probability ratio between the new and old policy to [1 - eps, 1 + eps], so no single update moves the policy far. Recipe: CartPole-v1, the PPO actor-critic with two hidden layers of 64, Adam at lr 0.001, 512 steps per rollout, 10 epochs of minibatch 64, clip 0.2, GAE lambda 0.95, value weight 0.1, entropy 0.01, gradient norm clipped at 0.5. With run seed 0 on CPU the graph solves CartPole-v1 at episode 532 in 7.7 s. CartPole-v1 counts as solved when the mean return of the last 20 episodes reaches 475; an episode ends at 500 steps, one point per step.\n\nSchulman 等人（Proximal Policy Optimization Algorithms，arXiv 2017）把每批經驗重複用幾個 epoch，並把新舊策略的機率比值裁切在 [1 - eps, 1 + eps]，讓任何一次更新都不會把策略推得太遠。配方：CartPole-v1、兩層 64 的 PPO actor-critic、Adam lr 0.001、每次 rollout 512 步、10 個 epoch、minibatch 64、clip 0.2、GAE lambda 0.95、value 權重 0.1、熵 0.01、梯度範數裁切在 0.5。run seed 0、CPU 上，這張圖在第 532 回合解出 CartPole-v1，花 7.7 秒。CartPole-v1 的「解出」標準是最近 20 回合的平均回報達到 475；每回合最多 500 步，每撐一步得 1 分。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 280
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The PPO node is an actor-critic: a shared trunk with a policy head (action probabilities) and a value head (the expected return from this state). PPO needs both, so RLTrainingLoop refuses a model with no value head.\n\nPPO 節點是 actor-critic：共用的主幹接一個策略頭（動作機率）和一個價值頭（從這個狀態預期的回報）。PPO 兩個都需要，所以 RLTrainingLoop 不接受沒有價值頭的模型。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 280
+      }
+    },
+    {
+      "id": "note-loop",
+      "type": "note",
+      "position": {
+        "x": 720,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "steps_per_update collects 512 env steps, which may span several episodes. gae_lambda 0.95 blends one-step and Monte Carlo advantage estimates from the critic. ppo_epochs and minibatch_size set how often each step is reused: 10 passes in batches of 64. clip_eps 0.2 bounds the probability ratio. value_coef weighs the critic's loss against the policy's.\n\nsteps_per_update 每次收集 512 個環境步，可能跨好幾個回合。gae_lambda 0.95 把評論家的一步估計和 Monte Carlo 估計混在一起算 advantage。ppo_epochs 和 minibatch_size 決定每一步被重複用幾次：分成 64 一批、跑 10 遍。clip_eps 0.2 限制機率比值。value_coef 是評論家的損失相對於策略損失的權重。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loop",
+        "boundOffset": {
+          "x": 0,
+          "y": 1000
+        },
+        "noteWidth": 320
+      }
+    },
+    {
+      "id": "note-seeds",
+      "type": "note",
+      "position": {
+        "x": 1080,
+        "y": 380
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The plot is the return of every episode. The episode count varies by platform and seed. Returns depend on the seed. Set the run seed in Settings and the loop's seed to the same number and rerun: seed 1 solves it at episode 514; seed 2 solves it at episode 427; seed 3 solves it at episode 397.\n\n圖上是每一回合的回報。解出的回合數會隨平台和 seed 而不同。回報會隨 seed 變動。把設定裡的 run seed 和這個節點的 seed 改成同一個數字再跑一次：seed 1 在第 514 回合解出，seed 2 在第 427 回合解出，seed 3 在第 397 回合解出。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "viz",
+        "boundOffset": {
+          "x": 0,
+          "y": 440
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_env",
+      "source": "start",
+      "target": "env",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_loop_model",
+      "source": "model",
+      "target": "loop",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_env_env_loop_env",
+      "source": "env",
+      "target": "loop",
+      "sourceHandle": "env",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e_opt_optimizer_loop_optimizer",
+      "source": "opt",
+      "target": "loop",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loop_report_print_value",
+      "source": "loop",
+      "target": "print",
+      "sourceHandle": "report",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_loop_episode_returns_viz_data",
+      "source": "loop",
+      "target": "viz",
+      "sourceHandle": "episode_returns",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

@@ -105,6 +105,10 @@ _SLOW_NODE_TYPES = {
     # default, to a hosted provider once someone switches the dropdown), so
     # this entry is what keeps the smoke suite from opening that socket.
     "LLMChat",
+    # Trains an RL agent for hundreds of episodes: the DQN CartPole example
+    # takes about half a minute on a laptop CPU. test_papers_rl_examples.py
+    # executes every graph that uses it and checks the number its note quotes.
+    "RLTrainingLoop",
 }
 
 

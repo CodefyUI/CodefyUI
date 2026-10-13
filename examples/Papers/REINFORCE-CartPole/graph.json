@@ -1,0 +1,252 @@
+{
+  "name": "REINFORCE balances CartPole",
+  "description": "Policy gradient straight from returns",
+  "gallery": {
+    "section": "papers",
+    "order": 21
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "env",
+      "type": "EnvWrapper",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "env_name": "CartPole-v1"
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "DQN",
+      "position": {
+        "x": 40,
+        "y": -20
+      },
+      "data": {
+        "params": {
+          "state_dim": 4,
+          "action_dim": 2,
+          "hidden_dim": 128
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 380,
+        "y": -20
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.002,
+          "weight_decay": 0
+        }
+      }
+    },
+    {
+      "id": "loop",
+      "type": "RLTrainingLoop",
+      "position": {
+        "x": 720,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "gamma": 0.99,
+          "max_steps_per_episode": 0,
+          "target_return": 475,
+          "seed": 0,
+          "device": "cpu",
+          "log_interval": 10,
+          "algorithm": "reinforce",
+          "episodes": 1000,
+          "baseline": "mean",
+          "normalize_returns": true,
+          "episodes_per_update": 1,
+          "entropy_coef": 0.01
+        }
+      }
+    },
+    {
+      "id": "print",
+      "type": "Print",
+      "position": {
+        "x": 1080,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "RL training report"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1080,
+        "y": -60
+      },
+      "data": {
+        "params": {
+          "title": "REINFORCE: return per episode",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Williams (Machine Learning, 1992) introduced REINFORCE: raise the log-probability of every action in proportion to the return that followed it, minus a baseline, and the policy climbs the gradient of its expected return. Recipe: CartPole-v1, an MLP policy with two hidden layers of 128, Adam at lr 0.002, one update per episode, batch-mean baseline, normalised returns, entropy bonus 0.01, gamma 0.99. With run seed 0 on CPU the graph solves CartPole-v1 at episode 280 in 2.0 s on an Apple M3. The episode count depends on the platform's float rounding: episode 280 on an Apple M3 and on the Linux CI runner, 932 on the Windows CI runner; all three reach the 475 target inside the 1000-episode budget. CartPole-v1 counts as solved when the mean return of the last 20 episodes reaches 475; an episode ends at 500 steps, one point per step.\n\nWilliams（Machine Learning，1992）提出 REINFORCE：每個動作的 log 機率依它之後拿到的回報（減掉一個 baseline）往上推，策略就沿著期望回報的梯度爬升。配方：CartPole-v1、兩層 128 的 MLP 策略、Adam lr 0.002、每回合更新一次、以批次平均當 baseline、回報標準化、熵獎勵 0.01、gamma 0.99。run seed 0、CPU 上，這張圖在 Apple M3 上於第 280 回合解出 CartPole-v1，花 2.0 秒。回合數會隨平台的浮點捨入而不同：Apple M3 和 Linux CI 都是第 280 回合，Windows CI 是第 932 回合；三者都在 1000 回合的預算內達到 475。CartPole-v1 的「解出」標準是最近 20 回合的平均回報達到 475；每回合最多 500 步，每撐一步得 1 分。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 280
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The DQN node serves here as a plain MLP: 4 state numbers in (cart position, cart velocity, pole angle, pole angular velocity), one score per action out. REINFORCE reads the two scores as the logits of a softmax policy over push left and push right.\n\n這裡的 DQN 節點只當一般的 MLP 用：輸入 4 個狀態數值（車的位置、車速、桿子角度、桿子角速度），每個動作輸出一個分數。REINFORCE 把這兩個分數當成「往左推」和「往右推」softmax 策略的 logits。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 280
+      }
+    },
+    {
+      "id": "note-loop",
+      "type": "note",
+      "position": {
+        "x": 720,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "baseline mean subtracts the episode's mean return from every step's return, and normalize_returns also divides by their standard deviation, so early steps get pushed up and late steps (just before the pole falls) get pushed down. entropy_coef keeps the policy from turning deterministic too early. target_return 475 stops the run once CartPole counts as solved.\n\nbaseline 選 mean 會把每一步的回報減掉該回合的平均回報，normalize_returns 再除以標準差，所以前面的步驟被往上推，後面（桿子快倒之前）的步驟被往下壓。entropy_coef 讓策略不會太早變成固定動作。target_return 475 讓 CartPole 一解出就停止訓練。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loop",
+        "boundOffset": {
+          "x": 0,
+          "y": 1000
+        },
+        "noteWidth": 320
+      }
+    },
+    {
+      "id": "note-seeds",
+      "type": "note",
+      "position": {
+        "x": 1080,
+        "y": 380
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The plot is the return of every episode; it stops where the last-20 mean reaches 475. Returns depend on the seed. Set the run seed in Settings and the loop's seed to the same number and rerun: seed 1 solves it at episode 292; seed 2 solves it at episode 685; seed 3 solves it at episode 293.\n\n圖上是每一回合的回報，在最近 20 回合平均達到 475 的地方停止。回報會隨 seed 變動。把設定裡的 run seed 和這個節點的 seed 改成同一個數字再跑一次：seed 1 在第 292 回合解出，seed 2 在第 685 回合解出，seed 3 在第 293 回合解出。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "viz",
+        "boundOffset": {
+          "x": 0,
+          "y": 440
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_env",
+      "source": "start",
+      "target": "env",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_loop_model",
+      "source": "model",
+      "target": "loop",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_env_env_loop_env",
+      "source": "env",
+      "target": "loop",
+      "sourceHandle": "env",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e_opt_optimizer_loop_optimizer",
+      "source": "opt",
+      "target": "loop",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loop_report_print_value",
+      "source": "loop",
+      "target": "print",
+      "sourceHandle": "report",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_loop_episode_returns_viz_data",
+      "source": "loop",
+      "target": "viz",
+      "sourceHandle": "episode_returns",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
