@@ -303,7 +303,9 @@ def interrupt_checkpoint_path(
     return settings.MODELS_DIR / INTERRUPT_DIRNAME / name
 
 
-def periodic_checkpoint_path(run_id: str, node_id: str, *, epoch: int) -> Path:
+def periodic_checkpoint_path(
+    run_id: str, node_id: str, *, epoch: int, step: int | None = None,
+) -> Path:
     """Where a periodic (#203) checkpoint for *epoch* goes.
 
     Named like :func:`interrupt_checkpoint_path` minus the batch component:
@@ -313,8 +315,14 @@ def periodic_checkpoint_path(run_id: str, node_id: str, *, epoch: int) -> Path:
     overwritten file per run -- retention (``RunStore.prune``,
     :func:`unlink_checkpoint`) is what bounds the count once a run's row
     ages out, not this function.
+
+    A *step* milestone (``TrainingLoop.checkpoint_every_steps``) is named
+    ``-s{step}`` instead. It used to borrow the ``-e`` stamp by passing the
+    step count as the epoch, so step 4 and epoch 4 wrote the SAME file and
+    the later one replaced the earlier.
     """
-    name = f"{_safe_part(run_id)}-{_safe_part(node_id)}-e{int(epoch)}.pt"
+    stamp = f"e{int(epoch)}" if step is None else f"s{int(step)}"
+    name = f"{_safe_part(run_id)}-{_safe_part(node_id)}-{stamp}.pt"
     return settings.MODELS_DIR / PERIODIC_DIRNAME / name
 
 

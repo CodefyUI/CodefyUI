@@ -8,6 +8,7 @@ a hand-written torch loop on the same model, data and seed.
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import pytest
 import torch
@@ -152,3 +153,49 @@ def test_a_tuple_output_is_named_in_the_error():
     y = torch.randint(0, 3, (16,), generator=torch.Generator().manual_seed(1))
     with pytest.raises(ValueError, match="returned a tuple"):
         _train(_TupleModel(), TensorDataset(x, y), nn.CrossEntropyLoss())
+
+
+# ── checkpoint_every_steps files resume at an epoch ─────────────────────
+
+
+def test_step_checkpoints_store_complete_epochs_and_do_not_collide(
+        tmp_path, monkeypatch):
+    """A step milestone used to store the STEP count as its epoch, so
+    CheckpointLoader.epoch handed 5 to start_epoch for a checkpoint taken in
+    epoch 2 of 4, and step 4 and epoch 4 wrote the same ``-e4.pt`` file."""
+    from app.config import settings
+    from app.core.execution_context import ExecutionContext
+    from app.nodes.io.checkpoint_node import CheckpointLoaderNode
+
+    models = tmp_path / "data" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    x = _features(48)
+    y = torch.randint(0, 3, (48,), generator=torch.Generator().manual_seed(1))
+    ctx = ExecutionContext(signals_recorded=True, device="cpu")
+    torch.manual_seed(0)
+    model = nn.Linear(4, 3)
+    # 3 batches of 16 per epoch: step 4 is inside epoch 2, step 12 ends
+    # epoch 4, and checkpoint_every=4 also writes at epoch 4.
+    _train(model, TensorDataset(x, y), nn.CrossEntropyLoss(), context=ctx,
+           batch_size=16, epochs=4, checkpoint_every=4,
+           checkpoint_every_steps=4)
+
+    signals, _ = ctx.outbox.drain()
+    written = {
+        Path(s.path).name: s.meta for s in signals
+        if getattr(s, "kind", None) == "checkpoint"
+    }
+    names = sorted(written)
+    assert len(names) == 4, names  # s4, s8, s12, e4: nothing overwritten
+    by_step = {meta.get("step"): meta["epoch"] for meta in written.values()}
+    assert by_step == {4: 1, 8: 2, 12: 3, None: 4}
+
+    for name, meta in written.items():
+        restored = nn.Linear(4, 3)
+        loaded = CheckpointLoaderNode().execute(
+            {"model": restored,
+             "optimizer": torch.optim.SGD(restored.parameters(), lr=0.1)},
+            {"path": str(models / "periodic" / name), "device": "cpu"})
+        assert loaded["epoch"] == meta["epoch"]

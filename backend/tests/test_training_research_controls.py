@@ -181,8 +181,10 @@ def test_checkpoint_every_steps_fires_on_distinct_milestones(monkeypatch):
     calls = []
 
     def fake_periodic(context, model, optimizer, *, epoch, losses=None,
-                      lr_scheduler=None, scaler_state=None, node_id=None):
-        calls.append(epoch)
+                      lr_scheduler=None, scaler_state=None, node_id=None,
+                      step=None):
+        assert epoch == 0  # complete epochs: both land inside epoch 1
+        calls.append(step)
         return None
 
     import app.nodes.training.training_loop_node as tl

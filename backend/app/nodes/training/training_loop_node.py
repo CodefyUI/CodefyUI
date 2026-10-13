@@ -1657,7 +1657,9 @@ class TrainingLoopNode(BaseNode):
                     "(0 = off). Step-milestone snapshots are the raw "
                     "material for studying capability emergence; per-epoch "
                     "checkpointing never fires inside a single-epoch run "
-                    "(#298). Same size warning as checkpoint_every."
+                    "(#298). Each file stores the number of complete epochs, "
+                    "so resuming from one re-runs the epoch it was taken in. "
+                    "Same size warning as checkpoint_every."
                 ),
                 advanced=True,
             ),
@@ -2175,16 +2177,19 @@ class TrainingLoopNode(BaseNode):
                     model.train()
             if (checkpoint_every_steps
                     and optimizer_steps % checkpoint_every_steps == 0):
-                # ``epoch=optimizer_steps`` on purpose: the periodic
-                # filename is stamped ``-e{epoch}``, and step milestones
-                # need DISTINCT files (they are emergence snapshots, not a
-                # rolling latest). The trade is that the checkpoint's
-                # stored epoch field carries the step count — resuming
-                # start_epoch from one of these is not meaningful, and the
-                # param description says so.
+                # Stored ``epoch`` is the number of COMPLETE epochs, the
+                # same convention as the interrupt checkpoint: this one is
+                # taken mid-epoch, so a resume from it re-runs the epoch in
+                # progress from batch 0. The step count names the file
+                # (``-s{step}``). It used to be passed AS the epoch, so
+                # CheckpointLoader.epoch handed a step count to
+                # start_epoch (step 500 of a 4-epoch run resumed at epoch
+                # 500 and trained nothing), and step N and epoch N wrote
+                # the same file.
                 milestone_path = save_periodic_checkpoint(
                     context, model, optimizer,
-                    epoch=optimizer_steps,
+                    epoch=epoch,
+                    step=optimizer_steps,
                     losses=torch.tensor(
                         epoch_losses, dtype=torch.float32)
                     if epoch_losses else None,
