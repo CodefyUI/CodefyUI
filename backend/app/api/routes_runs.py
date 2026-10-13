@@ -7,7 +7,7 @@ and metrics from another.
 
     POST   /api/runs                     submit  -> {run_id, status}
     GET    /api/runs                     list (newest first, + queue position)
-    GET    /api/runs/{id}                one row + last event cursor
+    GET    /api/runs/{id}                one row + last event cursor + environment
     DELETE /api/runs/{id}                drop a FINISHED run and its children
     POST   /api/runs/{id}/cancel         cooperative stop
     GET    /api/runs/{id}/events         replay after a cursor, optional long poll
@@ -335,13 +335,20 @@ async def list_runs(
 
 @router.get("/{run_id}")
 async def get_run(run_id: str, request: Request):
-    """One row plus ``last_cursor`` — where an event follower should start."""
+    """One row plus ``last_cursor`` — where an event follower should start.
+
+    Also ``fingerprint``: the environment document ``fingerprint_digest``
+    names (#344), or null for a run that has not started or started before
+    the server recorded one. Only here, not on the list: a list row carries
+    the digest and the small ``execution_facts``, and a poll of fifty rows
+    must not ship fifty copies of the same few kilobytes.
+    """
     service = _get_service(request)
     record = await _require_run(service, run_id)
     positions = await _queue_positions(service, [record])
     finals = await service.store.latest_metrics([record.id])
     producers = await service.store.metric_producers_by_run([record.id])
-    return _run_payload(
+    payload = _run_payload(
         record,
         queue_position=positions.get(record.id),
         active=service.is_active(run_id),
@@ -349,6 +356,10 @@ async def get_run(run_id: str, request: Request):
         final_metrics=finals.get(record.id),
         metric_producers=producers.get(record.id),
     )
+    payload["fingerprint"] = (
+        None if record.fingerprint_digest is None
+        else await service.store.get_fingerprint(record.fingerprint_digest))
+    return payload
 
 
 @router.delete("/{run_id}")

@@ -1135,6 +1135,10 @@ const en = {
   'runs.detail.error': 'Error',
   'runs.detail.seed': 'Seed',
   'runs.detail.deterministic': 'Deterministic',
+  'runs.detail.requestedDevice': 'Requested: {device}',
+  'runs.detail.environment': 'Env',
+  'runs.detail.environmentTitle':
+    'Environment fingerprint (sha256) of the server that started this run: {digest}',
   'runs.detail.close': 'Close detail',
   'runs.nodeStatus.running': 'running',
   'runs.nodeStatus.completed': 'completed',

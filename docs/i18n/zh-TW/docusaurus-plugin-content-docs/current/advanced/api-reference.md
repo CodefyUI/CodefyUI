@@ -29,6 +29,8 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/health` | GET | open | 健康探測，包含 `status`、`version`、`boot_id`（用來讓 client 偵測伺服器重新啟動的行程識別碼）、`nodes_loaded`、`presets_loaded`、`caches`（各記憶體內 store 目前使用的位元組與上限；請參閱[訓練記憶體](./training-memory)），以及伺服器以 `--project` 執行時的 `project`（專案目錄絕對路徑）。 |
 | `/api/auth/bootstrap` | GET | open | 對任何 Host 獲准的請求回傳 `{"token": "..."}`——前端取得 session token 的方式。 |
 | `/api/system/devices` | GET | open | 可用於執行圖表的運算裝置：最佳可用的 `default`，加上一份能區分 NVIDIA CUDA、AMD ROCm 與 Apple MPS 的具名 `devices` 清單。支援編輯器的裝置選擇器。 |
+| `/api/system/fingerprint` | GET | open | 此伺服器目前的環境指紋與摘要：`{fingerprint, digest}`。見[執行環境](#run-environment)。 |
+| `/api/system/fingerprints/{digest}` | GET | open | 依摘要取回某個 run 記錄過的指紋；沒有 run 記錄過時回傳 404。run 刪除後仍可查詢。 |
 
 ## 節點與預設組合 {/* #nodes-and-presets */}
 
@@ -63,8 +65,8 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
 | `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。 |
-| `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`active`、`final_metrics` 與 `metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）；response 也包含未分頁的 `total`。 |
-| `/api/runs/{run_id}` | GET | open | 回傳單一 run 與 `last_cursor`，client 會從這個位置開始輪詢事件。 |
+| `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`active`、`final_metrics`、`fingerprint_digest`、`execution_facts` 與 `metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）；response 也包含未分頁的 `total`。 |
+| `/api/runs/{run_id}` | GET | open | 回傳單一 run 與 `last_cursor`（client 從這個位置開始輪詢事件），以及 `fingerprint`：其 `fingerprint_digest` 所指的環境文件（run 開始前為 `null`）。 |
 | `/api/runs/{run_id}` | DELETE | token | 刪除已完成的 run 及其事件、metrics、artifact 列與擷取的輸出；還在佇列或執行中則回傳 409。artifact 檔案會留在磁碟上。 |
 | `/api/runs/{run_id}/cancel` | POST | token | 協作式停止——`{run_id, status, cancelled}`；若 run 早已結束，`cancelled: false`（仍為 200）。 |
 | `/api/runs/{run_id}/events` | GET | open | 回傳 `?cursor=` 之後的事件；`?wait=` 最多長輪詢 60 秒，`?limit=` 上限為 2000。回傳 `{run_id, status, active, events[{cursor, type, payload, ts}], cursor}`。頁面可能少於 `limit` 筆；下一個 request 應使用回傳的 `cursor`。 |
@@ -77,6 +79,31 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 **Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，以及引擎錯誤政策 `error_mode`、`max_retries`。run 的裝置在有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
 
 **Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`、`direction` 為 `minimize` 或 `maximize`，以及可省略、用來指定以哪個節點的 series 排名的 `node_id`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
+
+### 執行環境 {/* #run-environment */}
+
+run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際執行時的資訊。
+
+- **送出時：**`options`（裝置、種子、決定性等，請求未指定的部分由圖的 `settings` 補上），以及 `git_commit`、`git_dirty` 與 `plugin_pins`（使用者專案的 commit 與 lockfile 中啟用的外掛）。這些描述的是請求與專案，不是執行它的 CodefyUI 程式碼。
+- **開始執行時：**`fingerprint_digest` 與 `execution_facts`，在 run 離開佇列、開始執行時寫入。因此在佇列中等待期間伺服器更新過的 run，記錄的是實際執行它的環境，而送出時的欄位維持原值。
+
+`GET /api/system/fingerprint` 回傳伺服器目前的指紋文件，`schema_version` 為 1。每份文件都包含所有鍵，無法讀取的資訊為 `null`：
+
+| 鍵 | 內容 |
+| --- | --- |
+| `codefyui` | `version`、`commit`、`dirty` 與 `commit_source`：伺服器從 checkout 執行時為 `git`，只有 `frontend/dist/build-info.json` 記有 commit 時為 `build-info`，否則為 `null`。每個伺服器行程只讀取一次，因為執行的是啟動時載入的程式碼。 |
+| `python`、`platform` | Python 版本與實作；作業系統、核心版本、機器架構與 macOS 版本。 |
+| `libraries`、`torch_build` | 已安裝的 `torch`、`torchvision`、`numpy` 與 `mlx` 版本；torch 的建置 commit，以及 CUDA、HIP 與 cuDNN 版本。 |
+| `accelerators`、`devices` | CUDA、ROCm、MPS 與 MLX 是否可用、每張 CUDA 卡的名稱與 compute capability、`pynvml` 能讀到時的 NVIDIA 驅動程式版本；伺服器的預設裝置與提供的裝置清單。 |
+| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision` 與 `revision_kind`。從儲存庫安裝的套件記錄其 commit（`git-sha`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`。連結的本機套件沒有不可變的 revision，兩者皆為 `null`，路徑也不會記錄。 |
+| `custom_nodes`、`optional_packages` | 每個啟用的自訂節點檔案的 sha256；每個 Package Center pip 套件的已安裝版本（未安裝為 `null`）。 |
+| `env` | 一份固定清單中、會影響數值或裝置選擇的環境變數值，例如 `CUBLAS_WORKSPACE_CONFIG`、`CUDA_VISIBLE_DEVICES` 與 `ONEDNN_MAX_CPU_ISA`。不讀取其他環境變數。 |
+
+文件中不含主機名稱、使用者名稱、家目錄路徑或機密。`digest` 是文件正規化 JSON（鍵排序、無空白、UTF-8）的 sha256，涵蓋所有鍵：相同環境得到相同摘要，任何一項記錄的資訊改變都會得到不同摘要。每份不同的文件只儲存一次；保留策略與 `DELETE /api/runs/{run_id}` 都不會刪除它，因此 run 刪除後，`/api/system/fingerprints/{digest}` 仍能查到該摘要。
+
+`execution_facts` 把請求與實際結果並列。`requested` 包含儲存的選項中的 `device`、`seed` 與 `deterministic`，以及圖中的 `graph_settings_device` 與 `graph_settings_seed`。`resolved` 包含排程器解析出的裝置（例如 `auto` 會變成 `mps:0`）、交給引擎的種子與決定性旗標，以及 `numerics`：run 開始時 torch 的預設 dtype、float32 矩陣乘法精度、TF32 與 cuDNN benchmark 開關，以及執行緒數。目前沒有 run 層級的精度選項；混合精度是訓練節點的參數，記錄在圖快照中。具有自己 `device` 參數的節點可以為該節點覆寫 run 的裝置。
+
+摘要與種子相同，並不保證數值完全相同。非決定性的 kernel 與執行緒排程仍可能改變結果，相同種子在不同硬體或函式庫版本上也可能得到不同數值。摘要只回答兩個環境是否相同。
 
 ## 執行輸出與狀態 {/* #execution-outputs-and-state */}
 

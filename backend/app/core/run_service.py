@@ -149,6 +149,7 @@ from .device_utils import (
     graph_settings_seed,
     resolve_device,
 )
+from .env_fingerprint import collect_fingerprint, execution_facts
 from .execution_context import (
     ArtifactSignal,
     CancellationError,
@@ -1983,7 +1984,7 @@ class RunService:
             # still reported as `queued` rather than as a `running` run
             # emitting nothing — the status stays true while it waits.
             async with run_exclusion().for_seed(options.get("seed")):
-                if not await self._begin(active):
+                if not await self._begin(active, graph, options):
                     return
                 status, error = await self._execute(active, graph, options,
                                                     session)
@@ -2046,15 +2047,28 @@ class RunService:
         restore_graph_secrets(snapshot, self._run_secrets.get(active.run_id))
         return snapshot
 
-    async def _begin(self, active: _ActiveRun) -> bool:
+    async def _begin(
+        self, active: _ActiveRun, graph: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> bool:
         """Claim the row and announce the run. False means "do not run".
 
         The only way this fails is the row not existing any more — deleted
         out from under a submission — in which case there is nothing left to
         write events or a status to.
+
+        This is also where the run's environment is recorded (#344): HERE,
+        at execution start, rather than at submit, because a queued run can
+        wait hours and the server can be updated in between -- the record
+        must name the environment that actually executes it. Collecting it
+        never fails the run; a failure is logged and leaves the columns
+        NULL, which reads as "not recorded" rather than as a wrong answer.
         """
+        fingerprint, facts = await self._environment_record(
+            active, graph, options)
         started = await self.store.mark_running(
-            active.run_id, queue_key=active.context.device)
+            active.run_id, queue_key=active.context.device,
+            fingerprint=fingerprint, execution_facts=facts)
         if not started:
             logger.warning("run %s vanished before it could start",
                            active.run_id)
@@ -2062,6 +2076,28 @@ class RunService:
         await self._emit(active.run_id, EVENT_RUN_STARTED,
                          {"run_id": active.run_id})
         return True
+
+    @staticmethod
+    async def _environment_record(
+        active: _ActiveRun, graph: dict[str, Any] | None,
+        options: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """``(fingerprint, execution_facts)`` for a run about to start.
+
+        The fingerprint is blocking (a lockfile read, package metadata,
+        git once per process), so it goes to a thread like
+        ``RunProvenance.capture`` does.
+        """
+        try:
+            fingerprint = await asyncio.to_thread(collect_fingerprint)
+            facts = execution_facts(
+                options=options or {}, graph=graph,
+                resolved_device=active.context.device)
+            return fingerprint, facts
+        except Exception:
+            logger.warning("run %s: could not record its environment",
+                           active.run_id, exc_info=True)
+            return None, None
 
     async def _execute(
         self, active: _ActiveRun, graph: dict[str, Any],

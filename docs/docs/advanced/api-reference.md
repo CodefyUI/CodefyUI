@@ -29,6 +29,8 @@ The Host guard runs before all other checks on every request, including the SPA 
 | `/api/health` | GET | open | Health probe with `status`, `version`, `boot_id` (a process identifier that lets clients detect a server restart), `nodes_loaded`, `presets_loaded`, `caches` (current bytes in each in-memory store and its budget; see [Training Memory](./training-memory)), and `project` (the absolute project directory) when the server runs with `--project`. |
 | `/api/auth/bootstrap` | GET | open | `{"token": "..."}` for any allowed-Host request — how the frontend gets the session token. |
 | `/api/system/devices` | GET | open | Compute devices for graph execution: the best-available `default` plus a labelled `devices` list that tells NVIDIA CUDA, AMD ROCm and Apple MPS apart. Backs the editor's device selector. |
+| `/api/system/fingerprint` | GET | open | This server's environment fingerprint and its digest: `{fingerprint, digest}`. See [Run environment](#run-environment). |
+| `/api/system/fingerprints/{digest}` | GET | open | A fingerprint some run recorded, by its digest; 404 when no run recorded it. Keeps resolving after the runs are deleted. |
 
 ## Nodes and presets
 
@@ -63,8 +65,8 @@ The Host guard runs before all other checks on every request, including the SPA 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/api/runs` | POST | token | Submit a run to the queue and return immediately: `{run_id, status: "running" \| "queued"}`. |
-| `/api/runs` | GET | open | Newest-first list; `?status=` repeats, `?limit=` has a maximum of 500, and `?offset=` selects the starting row. Every row includes `queue_position`, `active`, `final_metrics`, and `metric_producers` (`{name: [node ids]}`, `null` for a run-level series); the response also includes the unpaged `total`. |
-| `/api/runs/{run_id}` | GET | open | Return one run and `last_cursor`, which clients use to start event polling. |
+| `/api/runs` | GET | open | Newest-first list; `?status=` repeats, `?limit=` has a maximum of 500, and `?offset=` selects the starting row. Every row includes `queue_position`, `active`, `final_metrics`, `fingerprint_digest`, `execution_facts`, and `metric_producers` (`{name: [node ids]}`, `null` for a run-level series); the response also includes the unpaged `total`. |
+| `/api/runs/{run_id}` | GET | open | Return one run and `last_cursor`, which clients use to start event polling, plus `fingerprint`: the environment document its `fingerprint_digest` names (`null` before the run starts). |
 | `/api/runs/{run_id}` | DELETE | token | Drop a finished run with its events, metrics, artifact rows and captured outputs; 409 while it is queued or running. Artifact files stay on disk. |
 | `/api/runs/{run_id}/cancel` | POST | token | Cooperative stop — `{run_id, status, cancelled}`; `cancelled: false` (still 200) for a run that had already finished. |
 | `/api/runs/{run_id}/events` | GET | open | Events after `?cursor=`; `?wait=` long-polls for up to 60 s, and `?limit=` accepts up to 2000. Returns `{run_id, status, active, events[{cursor, type, payload, ts}], cursor}`. A page can contain fewer than `limit` events; use the returned `cursor` for the next request. |
@@ -77,6 +79,31 @@ The Host guard runs before all other checks on every request, including the SPA 
 **Runs API.** `POST /api/runs` accepts `{"graph": {...}, "options": {...}, "name": "..."}`. The graph uses the saved-graph JSON format (`nodes`, `edges`, and optional `presets`, `subgraphs` and `settings`). The endpoint returns 422 when the body is not JSON or has no `graph` object, 400 for an invalid graph (for example empty `nodes` or a bad `settings.device`) or option, and 503 when the run service is unavailable or an `interactive`-lane submission exceeds the limit. Option keys are a closed set: `device`, `seed`, `deterministic`, `record_outputs`, `lane`, the canvas flags `verbose`, `graph_id`, `weights_persistent`, `backward_mode`, `auto_backward`, and the engine error policy `error_mode`, `max_retries`. The run's device is `options.device` when given, else the graph's `settings.device` (see [the graph settings object](/advanced/device-backends#the-graph-settings-object)), else `cpu`. A run's `status` is one of `queued`, `running`, `succeeded`, `failed`, `cancelled`, or `interrupted`. Two limits apply to `/events`: a payload over `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` (128 KB) is stored with its outputs replaced by an elision marker, and a response ends once it exceeds `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` (4 MB). See [Run Queue](/usage/run-queue) for queue order, lanes, retention, and `cdui run`.
 
 **Sweeps.** `POST /api/sweeps` accepts `base_graph`, a `sweep_spec` (`method` `grid` or `random`, `seed`, `samples`, and `params[{node_id, param, values | range}]`), a required `objective` (`metric`, `direction` `minimize` or `maximize`, and an optional `node_id` naming the node whose series ranks the sweep), the same `options`, a `name`, and `seed_variants`. It creates at most `CODEFYUI_MAX_SWEEP_RUNS` (32) variants. Each variant is an ordinary `/api/runs` row whose `/events` endpoint can be followed separately. See [Run Queue — Sweeps](/usage/run-queue#sweeps) for the specification, validation errors, and cancellation behavior.
+
+### Run environment
+
+A run records two things about how it was submitted, and since #344 two about where it executed.
+
+- **At submission:** `options` (device, seed, determinism and the rest, after the graph's `settings` fill in what the request left out), and `git_commit`, `git_dirty` and `plugin_pins` (the user's project commit and the enabled plugins in the lockfile). These describe the request and the project, not the CodefyUI code that runs it.
+- **At execution start:** `fingerprint_digest` and `execution_facts`, written when the run leaves the queue and begins. A queued run that waited through a server update therefore records the environment that actually executed it, while its submission fields still say what they said.
+
+`GET /api/system/fingerprint` returns the fingerprint document for the server as it is now, with `schema_version` 1. Every key is present in every document, and a fact that cannot be read is `null`:
+
+| Key | Contents |
+| --- | --- |
+| `codefyui` | `version`, `commit`, `dirty` and `commit_source`: `git` when the server runs from a checkout, `build-info` when only `frontend/dist/build-info.json` names a commit, else `null`. Read once per server process, because the code that runs is the code that was loaded at startup. |
+| `python`, `platform` | Python version and implementation; operating system, kernel release, machine and macOS version. |
+| `libraries`, `torch_build` | Installed `torch`, `torchvision`, `numpy` and `mlx` versions; torch's build commit, CUDA, HIP and cuDNN versions. |
+| `accelerators`, `devices` | CUDA, ROCm, MPS and MLX availability, each CUDA card's name and compute capability, the NVIDIA driver version when `pynvml` can read it; the server's default device and the devices it offers. |
+| `plugins` | Each enabled pack: `source_kind`, `source`, `ref`, `version`, `revision` and `revision_kind`. A pack installed from a repository has its commit (`git-sha`). A builtin pack ships inside the checkout, so its revision is the CodefyUI commit (`codefyui-commit`) and its source is `plugins/<id>`. A linked local pack has no immutable revision, so both are `null` and its path is withheld. |
+| `custom_nodes`, `optional_packages` | The sha256 of each enabled custom node file; the installed version of each Package Center pip distribution (`null` when not installed). |
+| `env` | The values of a fixed list of variables that change numerics or device selection, such as `CUBLAS_WORKSPACE_CONFIG`, `CUDA_VISIBLE_DEVICES` and `ONEDNN_MAX_CPU_ISA`. No other environment variable is read. |
+
+The document carries no hostname, username, home-directory path or secret. The `digest` is the sha256 of the document's canonical JSON (sorted keys, no whitespace, UTF-8) and covers every key, so the same environment gives the same digest and a change to any recorded fact gives a different one. Each distinct document is stored once; retention and `DELETE /api/runs/{run_id}` leave it in place, so `/api/system/fingerprints/{digest}` still resolves a digest after its runs are gone.
+
+`execution_facts` sets the request next to what the run got. `requested` holds `device`, `seed` and `deterministic` from the stored options, plus `graph_settings_device` and `graph_settings_seed` from the graph. `resolved` holds the device the scheduler resolved (`auto` becomes, for example, `mps:0`), the seed and determinism flag handed to the engine, and `numerics`: torch's default dtype, float32 matmul precision, TF32 and cuDNN benchmark switches, and thread count when the run started. There is no run-level precision option; mixed precision is a parameter of the training nodes and is recorded in the graph snapshot. A node with its own `device` parameter can override the run's device for that node.
+
+A matching digest and seed do not guarantee identical numbers. Nondeterministic kernels and thread scheduling can still change results, and the same seed on different hardware or library versions can produce different values. The digest tells you whether the two environments are the same.
 
 ## Execution outputs and state
 

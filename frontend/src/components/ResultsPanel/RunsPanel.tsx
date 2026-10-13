@@ -107,6 +107,22 @@ export function runDevice(run: RunSummary): string {
   return typeof requested === 'string' && requested ? requested : '-';
 }
 
+/**
+ * The device the run ASKED for, when the scheduler gave it a different
+ * one (`auto` became `mps:0`, `cuda` on a box without CUDA became `cpu`).
+ * `null` when there is nothing to explain: not started yet, or the same
+ * string, or no run at all.
+ */
+export function requestedDeviceNote(run: RunSummary | null): string | null {
+  if (!run?.queue_key) return null;
+  const requested = run.options?.device;
+  if (typeof requested !== 'string' || !requested) return null;
+  return requested === run.queue_key ? null : requested;
+}
+
+/** How many hex characters of an environment digest the header shows. */
+export const DIGEST_SHORT_LENGTH = 12;
+
 function StatusChip({ run }: { run: RunSummary }) {
   const { t } = useI18n();
   return (
@@ -219,6 +235,10 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
   // Shown next to the seed because the two together are what "reproducible"
   // means: the seed fixes what was drawn, this fixes how it was combined.
   const deterministic = run?.options?.deterministic === true;
+  // #344: the environment that executed the run. Short in the header, the
+  // whole digest on hover -- it is what a reader compares across runs.
+  const digest = run?.fingerprint_digest ?? null;
+  const requestedDevice = requestedDeviceNote(run);
 
   return (
     <div className={styles.detail} data-testid="run-detail">
@@ -227,7 +247,18 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
           {run?.name || t('runs.unnamed')}
         </span>
         {run && <StatusChip run={run} />}
-        {run && <span className={styles.detailMeta}>{runDevice(run)}</span>}
+        {run && (
+          <span
+            className={styles.detailMeta}
+            title={
+              requestedDevice
+                ? t('runs.detail.requestedDevice', { device: requestedDevice })
+                : undefined
+            }
+          >
+            {runDevice(run)}
+          </span>
+        )}
         {typeof seed === 'number' && (
           <span className={styles.detailMeta}>
             {t('runs.detail.seed')} {seed}
@@ -236,6 +267,15 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
         {deterministic && (
           <span className={styles.detailMeta}>
             {t('runs.detail.deterministic')}
+          </span>
+        )}
+        {digest && (
+          <span
+            className={styles.detailMeta}
+            data-testid="run-env-digest"
+            title={t('runs.detail.environmentTitle', { digest })}
+          >
+            {t('runs.detail.environment')} {digest.slice(0, DIGEST_SHORT_LENGTH)}
           </span>
         )}
         <button
