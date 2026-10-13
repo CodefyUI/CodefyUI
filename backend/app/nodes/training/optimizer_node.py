@@ -8,7 +8,7 @@ from ...core.node_base import (
     PortDefinition,
     is_param_visible,
 )
-from ...core.param_values import parse_float_sequence
+from ...core.param_values import bool_param, float_param, parse_float_sequence
 
 #: The select vocabulary, and the source of every ``visible_when`` list
 #: below. Kept as a module constant so the per-algorithm sets can be read
@@ -200,8 +200,15 @@ class OptimizerNode(BaseNode):
 
         model = inputs["model"]
         opt_type = params.get("type", "Adam")
-        lr = params.get("lr", 0.001)
-        weight_decay = params.get("weight_decay", 0.0)
+        # Through the typed readers rather than ``params.get``: a value
+        # written as text by a hand-built graph or a script ("0.01",
+        # "false") must mean what it says. ``bool("false")`` is True, so a
+        # raw read turned amsgrad and nesterov ON for "false", and a string
+        # lr reached torch as a TypeError naming no parameter.
+        lr = float_param(params, "lr", node="Optimizer", default=0.001,
+                         min_value=0.0)
+        weight_decay = float_param(params, "weight_decay", node="Optimizer",
+                                   default=0.0, min_value=0.0)
 
         optimizer_map = {
             "Adam": optim.Adam,
@@ -237,7 +244,8 @@ class OptimizerNode(BaseNode):
         # Each block: apply where the algorithm has the knob, complain where
         # it does not and the user changed it, stay silent where it does not
         # and they did not.
-        momentum = float(params.get("momentum", 0.0) or 0.0)
+        momentum = float_param(params, "momentum", node="Optimizer",
+                               default=0.0, min_value=0.0)
         if opt_type in _MOMENTUM_TYPES:
             kwargs["momentum"] = momentum
         elif momentum:
@@ -251,21 +259,22 @@ class OptimizerNode(BaseNode):
         elif betas is not None and betas != (0.9, 0.999):
             _reject_inapplicable(opt_type, "betas", betas, params)
 
-        eps = params.get("eps", DEFAULT_EPS)
-        eps = DEFAULT_EPS if eps is None else float(eps)
+        eps = float_param(params, "eps", node="Optimizer",
+                          default=DEFAULT_EPS, min_value=0.0)
         if opt_type in _EPS_TYPES:
             kwargs["eps"] = eps
         elif eps != DEFAULT_EPS:
             _reject_inapplicable(opt_type, "eps", eps, params)
 
-        amsgrad = bool(params.get("amsgrad", False))
+        amsgrad = bool_param(params, "amsgrad", node="Optimizer", default=False)
         if opt_type in _AMSGRAD_TYPES:
             kwargs["amsgrad"] = amsgrad
         elif amsgrad:
             _reject_inapplicable(opt_type, "amsgrad", amsgrad, params)
 
-        nesterov = bool(params.get("nesterov", False))
-        dampening = float(params.get("dampening", 0.0) or 0.0)
+        nesterov = bool_param(params, "nesterov", node="Optimizer", default=False)
+        dampening = float_param(params, "dampening", node="Optimizer",
+                                default=0.0, min_value=0.0)
         if opt_type in _SGD_ONLY:
             kwargs["nesterov"] = nesterov
             kwargs["dampening"] = dampening
