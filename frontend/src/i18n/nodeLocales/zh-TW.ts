@@ -1084,7 +1084,7 @@ const zhTW: NodeTranslations = {
     details: '學習率排程與 fp16 損失縮放狀態在對應輸入有接線時也會一併存入。相對路徑會寫到 models 目錄，CheckpointLoader 讀的是同一種格式。',
     params: {
       path: '輸出檢查點檔案路徑',
-      epoch: '要儲存在檢查點中的當前 epoch 數',
+      epoch: '要存進檢查點的 epoch 數：已完成的 epoch 數，CheckpointLoader.epoch 會把它交回 TrainingLoop.start_epoch。有接上 epoch 輸入時以輸入為準，忽略這個參數',
     },
   },
   CheckpointLoader: {

@@ -264,3 +264,74 @@ def test_multi_label_bce_still_records_no_val_accuracy():
                  context=ctx)
     assert out["metrics"]["final_val_accuracy"] is None
     assert not [n for n, _, _ in ctx.metrics if n == "val_accuracy"]
+
+
+# ── the epoch a checkpoint stores comes from the run ────────────────────
+
+
+def test_an_early_stopped_run_saves_and_resumes_at_its_real_epoch(
+        tmp_path, monkeypatch):
+    """CheckpointSaver.epoch was a hand-typed param only. A run that early
+    stopped at epoch 4 of 30 saved whatever was typed (the shipped examples
+    type the full epoch count), and the resume then trained nothing."""
+    from app.config import settings
+    from app.nodes.io.checkpoint_node import (
+        CheckpointLoaderNode,
+        CheckpointSaverNode,
+    )
+
+    models = tmp_path / "data" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    x = _features(24)
+    y = torch.randint(0, 3, (24,), generator=torch.Generator().manual_seed(1))
+    val_x = _features(40, seed=9)
+    val_y = torch.randint(0, 3, (40,), generator=torch.Generator().manual_seed(2))
+    torch.manual_seed(0)
+    model = nn.Linear(4, 3)
+    out = _train(model, TensorDataset(x, y), nn.CrossEntropyLoss(), lr=1.0,
+                 val=TensorDataset(val_x, val_y), epochs=30,
+                 early_stopping_patience=2)
+    assert out["metrics"]["stopped_early"]
+    assert out["epoch"] == out["metrics"]["last_epoch"] < 30
+
+    saved = CheckpointSaverNode().execute(
+        {"model": out["model"], "optimizer": out["optimizer"],
+         "epoch": out["epoch"]},
+        {"path": "audit.pt", "epoch": 30})
+    restored = nn.Linear(4, 3)
+    loaded = CheckpointLoaderNode().execute(
+        {"model": restored,
+         "optimizer": torch.optim.SGD(restored.parameters(), lr=1.0)},
+        {"path": saved["path"], "device": "cpu"})
+    assert loaded["epoch"] == out["epoch"]
+
+
+def test_checkpoint_saver_keeps_the_param_when_the_input_is_not_wired(
+        tmp_path, monkeypatch):
+    from app.config import settings
+    from app.nodes.io.checkpoint_node import CheckpointSaverNode
+
+    models = tmp_path / "data" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+    model = nn.Linear(4, 3)
+    saved = CheckpointSaverNode().execute(
+        {"model": model,
+         "optimizer": torch.optim.SGD(model.parameters(), lr=0.1)},
+        {"path": "audit.pt", "epoch": 7})
+    assert torch.load(saved["path"], weights_only=True)["epoch"] == 7
+
+
+def test_training_loop_epoch_output_counts_from_start_epoch():
+    x = _features(16)
+    y = torch.randint(0, 3, (16,), generator=torch.Generator().manual_seed(1))
+    model = nn.Linear(4, 3)
+    inputs = {
+        "model": model, "dataloader": DataLoader(TensorDataset(x, y), batch_size=8),
+        "optimizer": torch.optim.SGD(model.parameters(), lr=0.1),
+        "loss_fn": nn.CrossEntropyLoss(), "start_epoch": 3,
+    }
+    out = TrainingLoopNode().execute(inputs, {"device": "cpu", "epochs": 5})
+    assert out["epoch"] == 5

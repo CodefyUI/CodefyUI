@@ -1462,6 +1462,17 @@ class TrainingLoopNode(BaseNode):
             PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch (empty if no val_dataloader)"),
             PortDefinition(name="metrics", data_type=DataType.ANY, description="Training metrics dict (final_loss, best_epoch, lr_history, etc.)"),
             PortDefinition(
+                name="epoch",
+                data_type=DataType.SCALAR,
+                description=(
+                    "Complete epochs at the end of this call, counted from "
+                    "the start of the whole run (start_epoch included). Wire "
+                    "it to CheckpointSaver.epoch so the checkpoint resumes "
+                    "where training stopped, early stopping and max_steps "
+                    "included"
+                ),
+            ),
+            PortDefinition(
                 name="grad_scaler_state",
                 data_type=DataType.ANY,
                 description=(
@@ -2772,6 +2783,7 @@ class TrainingLoopNode(BaseNode):
             "losses": losses_tensor,
             "val_losses": val_losses_tensor,
             "metrics": metrics,
+            "epoch": completed_epochs,
             # None on every fp32 and bf16 run, which is what CheckpointSaver
             # expects to see for "there is no loss scale to store".
             "grad_scaler_state": policy.state_dict(),
