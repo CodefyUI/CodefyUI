@@ -413,6 +413,7 @@ def attach_transform(
     pipeline: Any,
     context: Any = None,
     label: str = "",
+    notes: list[str] | None = None,
 ) -> Any:
     """Install *pipeline* on a copy of *dataset*, seeded when asked for.
 
@@ -434,19 +435,47 @@ def attach_transform(
     honour it sets one in ``__init__`` (to ``None`` when unwired), so its
     ABSENCE is a reliable negative and worth a warning. A silently ignored
     resize is an annoyance; a silently ignored augmentation chain
-    invalidates the experiment, which is why this is not left quiet.
+    invalidates the experiment, which is why this is not left quiet. The
+    warning goes to the run log through *context*; the line for the
+    canvas Log tab is appended to *notes* when the caller passes a list.
+
+    A ``Subset`` (``DatasetSplit``'s outputs) never reads ``transform``:
+    its ``__getitem__`` indexes the dataset it wraps. The pipeline goes on
+    a copy of that wrapped dataset instead, and the result is a copy of the
+    ``Subset`` over the copy with the same indices, nested Subsets
+    included. The source dataset and the sibling split stay untransformed.
     """
     if pipeline is None:
         return dataset
     node_id = label or getattr(context, "current_node_id", "") or "transform"
+    return _install(dataset, seed_pipeline(pipeline, context, node_id), context, notes)
+
+
+def _install(dataset: Any, pipeline: Any, context: Any, notes: list[str] | None) -> Any:
+    """Copy *dataset* with *pipeline* installed where its samples are read."""
+    from torch.utils.data import Subset
+
+    if isinstance(dataset, Subset):
+        wrapper = copy.copy(dataset)
+        wrapper.dataset = _install(dataset.dataset, pipeline, context, notes)
+        return wrapper
     if not hasattr(dataset, "transform"):
-        logger.warning(
-            "%s has no 'transform' attribute, so the pipeline installed on "
-            "it will not be applied to any sample -- this dataset builds its "
-            "own tensors. Any augmentation wired here has no effect.",
-            type(dataset).__name__)
+        from ....core.advisories import emit_advisory
+
+        line = emit_advisory(
+            f"Transform: {type(dataset).__name__} has no 'transform' attribute, "
+            f"so the pipeline installed on it is not applied to any sample; "
+            f"this dataset builds its own tensors and any augmentation wired "
+            f"here has no effect.",
+            kind="transform_ignored",
+            prefix="[WARN] ",
+            context=context,
+            logger=logger,
+        )
+        if notes is not None:
+            notes.append(line)
     transformed = copy.copy(dataset)
-    transformed.transform = seed_pipeline(pipeline, context, node_id)
+    transformed.transform = pipeline
     return transformed
 
 

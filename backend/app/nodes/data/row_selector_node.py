@@ -22,6 +22,14 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+from .column_selector_node import parse_indices
+
+
+def _label_text(value: Any) -> str:
+    """A row label as stripped text; integral floats read as '1', not '1.0'."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
 class RowSelectorNode(BaseNode):
@@ -29,8 +37,11 @@ class RowSelectorNode(BaseNode):
     CATEGORY = "Data"
     DESCRIPTION = "Pick rows from a 2D tensor, by index or name"
     DETAILS = (
-        "Selecting by name needs the `labels` input wired, and `names` wins when "
-        "`indices` is also set. Filtering by a condition such as score > 80 is "
+        "Selecting by name needs the `labels` input wired, with one label per "
+        "row of the tensor, and `names` wins when `indices` is also set. A name "
+        "selects every row with that label, so names=cat on labels [cat, dog, "
+        "cat] gives two rows; several names give their rows in the order the "
+        "names are listed. Filtering by a condition such as score > 80 is "
         "FilterRows, in the EDU pack."
     )
 
@@ -74,8 +85,8 @@ class RowSelectorNode(BaseNode):
                 param_type=ParamType.STRING,
                 default="",
                 description=(
-                    "Comma-separated row names. Takes precedence over `indices` and needs the "
-                    "`labels` input connected."
+                    "Comma-separated row names; each selects every row with that label. "
+                    "Takes precedence over `indices` and needs the `labels` input connected."
                 ),
             ),
         ]
@@ -98,22 +109,35 @@ class RowSelectorNode(BaseNode):
         names_param = str(params.get("names", "")).strip()
         if names_param:
             labels_in = inputs.get("labels")
-            if not labels_in:
+            if isinstance(labels_in, torch.Tensor):
+                labels_in = labels_in.reshape(-1).tolist()
+            if labels_in is None or len(labels_in) == 0:
                 raise ValueError(
                     "RowSelector: `names` is set but no `labels` input is connected — "
                     "either connect a list of row labels or use `indices` instead."
                 )
-            labels_list = [str(c) for c in labels_in]
+            labels_list = [_label_text(c) for c in labels_in]
+            if len(labels_list) != n_rows:
+                # Names are looked up in this list and used as indices into
+                # the tensor: a list describing another tensor picks the
+                # wrong rows, or runs past the end.
+                raise ValueError(
+                    f"RowSelector: the `labels` input has {len(labels_list)} labels "
+                    f"but the tensor has {n_rows} rows, so the labels cannot say "
+                    f"which row is which. Wire the label list that describes "
+                    f"this tensor, or select by `indices`."
+                )
             requested = [c.strip() for c in names_param.split(",") if c.strip()]
             missing = [c for c in requested if c not in labels_list]
             if missing:
                 raise ValueError(
                     f"RowSelector: names {missing} not in labels input {labels_list}"
                 )
-            indices = [labels_list.index(c) for c in requested]
+            # Every row carrying a requested label, grouped by name in the
+            # order the names are given, rows in table order within a name.
+            indices = [i for c in requested for i, label in enumerate(labels_list) if label == c]
         else:
-            idx_param = str(params.get("indices", "")).strip()
-            indices = [int(i) for i in idx_param.split(",") if i.strip()] if idx_param else []
+            indices = parse_indices(params.get("indices", ""), "RowSelector")
             for i in indices:
                 if i < 0 or i >= n_rows:
                     raise ValueError(

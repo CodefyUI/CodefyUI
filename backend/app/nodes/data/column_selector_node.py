@@ -25,6 +25,29 @@ from ...core.node_base import (
 )
 
 
+def parse_indices(raw: Any, node: str) -> list[int]:
+    """Comma-separated whole numbers from the ``indices`` param.
+
+    ``int('a')`` or ``int('1.0')`` raises a message naming neither the node
+    nor the param, so each piece is checked here and the bad one quoted.
+    """
+    text = str(raw if raw is not None else "").strip()
+    indices: list[int] = []
+    for piece in text.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            indices.append(int(piece))
+        except ValueError:
+            raise ValueError(
+                f"{node}: indices has {piece!r}, which is not a whole number. "
+                f"Write positions as comma-separated whole numbers, for "
+                f"example '0,2,3'."
+            ) from None
+    return indices
+
+
 class ColumnSelectorNode(BaseNode):
     NODE_NAME = "ColumnSelector"
     CATEGORY = "Data"
@@ -122,8 +145,7 @@ class ColumnSelectorNode(BaseNode):
                 )
             indices = [cols_list.index(c) for c in requested]
         else:
-            idx_param = str(params.get("indices", "")).strip()
-            indices = [int(i) for i in idx_param.split(",") if i.strip()] if idx_param else []
+            indices = parse_indices(params.get("indices", ""), "ColumnSelector")
             for i in indices:
                 if i < 0 or i >= n_cols:
                     raise ValueError(

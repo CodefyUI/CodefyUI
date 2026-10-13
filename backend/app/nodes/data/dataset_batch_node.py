@@ -63,7 +63,11 @@ class DatasetBatchNode(BaseNode):
                 name="start_index",
                 param_type=ParamType.INT,
                 default=0,
-                description="Index of the first sample to take. Change it to look at other samples.",
+                description=(
+                    "Index of the first sample to take. Change it to look at other "
+                    "samples. A batch that runs past the last sample wraps to the "
+                    "start: start 8, batch 4 on 10 samples takes 8, 9, 0, 1."
+                ),
                 min_value=0,
             ),
         ]

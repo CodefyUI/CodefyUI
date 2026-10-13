@@ -556,7 +556,8 @@ const zhTW: NodeTranslations = {
     description: '從「一個類別一個資料夾」的結構載入自己的影像',
     details:
       '標籤依資料夾名稱的字母順序決定，classes 輸出也照同一順序列出。split 決定要讀 path 底下哪個子目錄；類別資料夾直接放在 ' +
-      'path 之下時選「(none)」。',
+      'path 之下時選「(none)」。類別清單是 path 底下所有分割資料夾（train、val、valid、validation、test）中類別資料夾的排序聯集，' +
+      '所以某個分割缺少某個類別時，每個類別的編號仍與訓練集相同；執行紀錄會列出缺少的資料夾。',
     params: {
       path: '放置各個分割的資料夾。相對路徑會相對於同時放著 models/ 與 images/ 的資料目錄。',
       split: '要載入的子資料夾。如果類別資料夾直接放在 path 底下、沒有分割這一層，選「(none)」；這時沒有分割可以區分兩個 transform 埠，所以接了哪一個就用哪一個，兩個都接時以 train_transform 為準。',
@@ -571,7 +572,7 @@ const zhTW: NodeTranslations = {
     params: {
       kind: 'circles 同心圓（線性不可分）；moons 雙交錯半月；blobs 等向高斯群聚（線性可分）；classification 通用 sklearn make_classification。',
       n_samples: '要生成的樣本總數。',
-      noise: '加在點上的高斯噪聲（僅 circles/moons/classification 用得到）。',
+      noise: 'circles/moons：加在點上的高斯噪聲標準差。blobs：群集的分散程度（cluster_std = 5 × noise，至少 0.1）。classification：隨機翻轉標籤的比例（sklearn 的 flip_y）。',
       factor: 'circles 內外圈半徑比，介於 0 與 1 之間。其他 kind 會忽略。',
       centers: 'blob 群聚的中心數（只在 kind=blobs 時使用）。',
       seed: '可重現用的隨機種子。',
@@ -614,7 +615,8 @@ const zhTW: NodeTranslations = {
     description: '下載 Kaggle 資料集為 ImageFolder',
     details:
       '需要網路連線與 Kaggle 憑證：環境變數 KAGGLE_USERNAME 與 KAGGLE_KEY，或放在 ~/.kaggle 的 ' +
-      'kaggle.json。類別資料夾不在下載內容的根目錄時，用 subdir 指到真正的起點。',
+      'kaggle.json。類別資料夾不在下載內容的根目錄時，用 subdir 指到真正的起點。' +
+      '資料夾裡只有分割資料夾（train、val、test）時會停止執行並要求設定 subdir，否則這些分割會被當成類別。',
     params: {
       dataset_slug: 'Kaggle dataset 的 owner/slug（例：puneet6060/intel-image-classification）',
       subdir: '下載後資料夾內，包含 class 子資料夾的相對路徑',
@@ -639,7 +641,8 @@ const zhTW: NodeTranslations = {
     details:
       '把變換鏈接到 transform 之後，下面三個參數就會被忽略。這個節點是給本身沒有 transform 輸入埠的資料集用的，例如 ' +
       'HuggingFaceDataset、KaggleDataset 與自訂資料集；Dataset 與 ImageFolderDataset ' +
-      '自己就能接變換鏈。SyntheticShapes 與 SyntheticSegmentation 會忽略裝上去的流程。',
+      '自己就能接變換鏈。接在 DatasetSplit 的輸出上時，流程只套用在那一份切分。' +
+      'SyntheticShapes 與 SyntheticSegmentation 會忽略裝上去的流程，執行紀錄會提示這一點。',
     params: {
       resize: '調整大小維度（0 表示不調整）。接上變換鏈時會被忽略。',
       normalize: '套用正規化（mean=0.5, std=0.5）。接上變換鏈時會被忽略；資料集統計值的預設組合在 NormalizeTransform。',
@@ -691,7 +694,7 @@ const zhTW: NodeTranslations = {
     params: {
       degrees: '旋轉範圍的半寬（度）。設 15 表示每個樣本最多往任一邊轉 15 度。',
       expand: '放大輸出畫布，避免角落被裁掉。這會改變影像尺寸，所以下游任何假設固定形狀的節點後面都要再接一個縮放。',
-      fill: '旋轉後空出來的角落要填什麼值。0 是黑色。',
+      fill: '旋轉後空出來的角落要填什麼值，單位取決於這一步在鏈中的位置。在 ToTensor 之前影像是 0-255，數值會取整數（255 是白色，0.5 變成 0）；在 ToTensor 之後是 0-1（1.0 是白色）。兩種情況下 0 都是黑色。',
     },
   },
   ColorJitter: {
@@ -730,7 +733,8 @@ const zhTW: NodeTranslations = {
       '數值欄位組成 [N, F] 的 float32 張量；include_columns 會再縮小這個範圍，沒設定時非數值欄位一律捨棄。' +
       'target_column 指定的欄位變成字串標籤列表，target_type 設為 number 時則變成浮點數列表；有列缺少目標值時會停止執行並列出資料列編號，開啟 ' +
       'drop_missing_target 則改為捨棄這些列。整數標籤顯示為 \'1\' 而非 \'1.0\'。number 目標中有非數字的值時會停止執行並列出資料列編號。' +
-      '特徵欄位中的 NaN 會保留，並記錄警告。' +
+      '特徵欄位中的 NaN 會保留，並記錄警告。沒設定 include_columns 時，標題空白的欄位（存檔時寫入的列索引，或每列結尾多一個逗號產生的空欄）' +
+      '會被略過，含有任何文字格（例如 \'?\' 或 \'1,000\'）的欄位也會被略過，兩者都會在警告中列出。' +
       '檔案沒有標題列時關掉 skip_header，欄位會依序命名為 0、1、2。',
     params: {
       path: 'CSV 檔案路徑（絕對路徑或相對於後端工作目錄）。',
@@ -755,7 +759,8 @@ const zhTW: NodeTranslations = {
       'zscore = $(x-\\mu)/\\sigma$、minmax = $(x-\\min)/(\\max-\\min)$、unit_norm = ' +
       '$x/\\|x\\|_2$。axis=0 逐欄計算，axis=1 逐列計算。整欄數值相同時除以 1 而不是 0，結果為 0 而非 NaN。' +
       'stats 接上另一個 Normalize 的統計量時，直接套用、不重新計算：把訓練集的 stats 接到測試集的 Normalize。' +
-      '此時正規化方法依 stats 而定，mode 不起作用。',
+      '此時正規化方法依 stats 而定，mode 不起作用。逐列統計量（axis 1）只屬於計算它的那些列，' +
+      '所以 axis 1 時接上的 stats 只決定正規化方法，每一列都用自己的統計量正規化。兩個節點的 axis 必須相同。',
     params: {
       mode: '正規化方法。',
       axis: '計算統計量的軸。0 = 逐欄，1 = 逐列。',
@@ -778,9 +783,13 @@ const zhTW: NodeTranslations = {
       '包裝 torch.utils.data.TensorDataset，讓 DataLoader 與 TrainingLoop 能用張量訓練，例如 CSVReader → TrainTestSplit 的輸出。' +
       'target_type 為 number 時目標轉成 float32，一維目標會變成 [N, 1]，對齊單一輸出的模型，讓 MSELoss 逐元素比較。' +
       '為 class 時目標轉成給 CrossEntropyLoss 用的 int64 類別索引：標籤依排序編號（全是數字時依數值排序），classes 列出這個順序；' +
-      '整數張量則直接視為類別索引。特徵與目標的列數必須相同。',
+      '整數張量則直接視為類別索引。測試集或驗證集請把訓練集 TensorDataset 的 classes 輸出接到本節點的 classes 輸入：' +
+      '這樣即使該切分缺少某個類別，編號仍與訓練集一致；出現訓練集沒有的標籤時會停止執行。特徵與目標的列數必須相同。',
     params: {
       target_type: 'number：float32 目標，用於回歸損失。class：int64 類別索引，用於 CrossEntropyLoss。',
+    },
+    inputs: {
+      classes: '選填的類別順序，用來為標籤編號：在測試集的節點接上訓練集 TensorDataset 的 classes 輸出。',
     },
   },
   TrainTestSplit: {
@@ -789,7 +798,7 @@ const zhTW: NodeTranslations = {
       '切分本身呼叫的是 sklearn.model_selection.train_test_split。開啟 stratify ' +
       '會讓兩邊維持相同的類別比例，標籤不平衡時尤其重要。',
     params: {
-      test_size: '保留作為測試集的樣本比例，必須介於 (0, 1)。',
+      test_size: '保留作為測試集的樣本比例，必須大於 0 且小於 1（0 或 1 會讓其中一邊是空的）。',
       seed: '隨機洗牌的種子，方便可重現。',
       stratify: '是否在兩邊保留每個類別的比例（分層抽樣）。',
     },
@@ -801,7 +810,7 @@ const zhTW: NodeTranslations = {
       'start_index 超過資料集長度時會繞回開頭。',
     params: {
       batch_size: '一次取幾筆樣本（決定輸出的 N）。',
-      start_index: '從資料集的第幾筆開始取（方便換不同樣本觀察）。',
+      start_index: '從資料集的第幾筆開始取（方便換不同樣本觀察）。批次超過最後一筆時會繞回開頭：10 筆資料、start 8、batch 4 會取 8、9、0、1。',
     },
     inputs: {
       dataset: '來源資料集（例如 Dataset 節點輸出的 MNIST）。',
@@ -814,11 +823,12 @@ const zhTW: NodeTranslations = {
   RowSelector: {
     description: '從 2D 張量中挑出指定的列，依位置或名稱',
     details:
-      '用名稱挑選時必須連上 labels 輸入；indices 與 names 同時設定時以 names 為準。要依條件（例如分數 > 80）' +
-      '篩選，請用 EDU 套件裡的 FilterRows。',
+      '用名稱挑選時必須連上 labels 輸入，張量的每一列對應一個標籤；indices 與 names 同時設定時以 names 為準。' +
+      '一個名稱會選出所有帶有該標籤的列，例如 labels 為 [cat, dog, cat] 時 names=cat 得到兩列；多個名稱時依名稱列出的順序輸出。' +
+      '要依條件（例如分數 > 80）篩選，請用 EDU 套件裡的 FilterRows。',
     params: {
       indices: '逗號分隔的列索引，例如 \'0,2,3\'。當 `names` 留空時使用。',
-      names: '逗號分隔的列名稱。設定時優先於 `indices`，且需要連上 `labels` 輸入。',
+      names: '逗號分隔的列名稱，每個名稱選出所有帶有該標籤的列。設定時優先於 `indices`，且需要連上 `labels` 輸入。',
     },
     inputs: {
       tensor: '輸入的 2D tensor [rows, cols]。',

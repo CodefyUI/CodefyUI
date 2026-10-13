@@ -69,7 +69,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 
 這個退回機制刻意只有單向。測試分割永遠不會拿到帶增強的鏈，因為一個被隨機扭曲過的測試集，每看一次量到的都是不同的東西。唯一的例外是 **ImageFolderDataset** 的 `(none)` 分割，因為那裡根本沒有分割可以退回；詳見下方說明。
 
-至於沒有變換輸入的資料集 — **HuggingFaceDataset**、**KaggleDataset**，或你自己寫的 — 請改把鏈接到 **Transform** 節點的 `transform` 輸入。一旦那個輸入接上了，該節點的三個參數就會被忽略。
+至於沒有變換輸入的資料集 — **HuggingFaceDataset**、**KaggleDataset**，或你自己寫的 — 請改把鏈接到 **Transform** 節點的 `transform` 輸入。一旦那個輸入接上了，該節點的三個參數就會被忽略。**Transform** 也可以接在 **DatasetSplit** 的輸出上：鏈只套用在那一份切分，所以 `train` 輸出可以接擴增鏈，`val` 接一般的鏈。
 
 ### CIFAR-10 的標準配方 {/* #the-cifar-10-recipe */}
 
@@ -106,7 +106,7 @@ my-dataset/
 - `path` — 放置各個分割的資料夾。相對路徑會相對於同時放著 `models/` 與 `images/` 的資料目錄；絕對路徑則照用。
 - `split` — 要載入哪個子資料夾。如果類別資料夾直接放在 `path` 底下、沒有分割這一層，就選 `(none)`。選 `(none)` 時沒有分割可以用來區分那兩個變換輸入，所以哪一個有接上就用哪一個；兩個都接上時，以 `train_transform` 為準。
 
-標籤由資料夾名稱依字母順序決定，所以在任何機器上 `cat` 都是 0、`dog` 都是 1。這個節點另外輸出一個依標籤順序排列的 `classes` 列表。
+標籤由資料夾名稱依字母順序決定，所以在任何機器上 `cat` 都是 0、`dog` 都是 1。這個節點另外輸出一個依標籤順序排列的 `classes` 列表。類別清單是 `path` 底下所有分割資料夾（`train`、`val`、`valid`、`validation`、`test`）中類別資料夾的聯集，所以缺少某個類別的 `val` 資料夾，其他類別的編號仍與 `train` 相同；執行紀錄會列出缺少的資料夾。
 
 ### 其他形式的資料 {/* #anything-else */}
 

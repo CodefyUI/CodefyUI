@@ -67,7 +67,10 @@ class ImageFolderDatasetNode(BaseNode):
         "Labels follow the folder names in alphabetical order, and the `classes` "
         "output lists them in that same order. `split` picks which sub-directory "
         "of `path` to read; choose '(none)' when the class folders sit directly "
-        "under `path`."
+        "under `path`. The class list is the sorted union of the class folders "
+        "in every split folder under `path` (train, val, valid, validation, "
+        "test), so a split missing a class still gives each class the index "
+        "the training split uses; the run log names the missing folders."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds an aggregate
@@ -92,11 +95,14 @@ class ImageFolderDatasetNode(BaseNode):
 
         try:
             root = cls._resolve_root(params)
+            if root is None:
+                return None
+            split = str(params.get("split", "train") or "train")
+            # The class numbering also reads the sibling splits' folders.
+            classes = tuple(_class_union(root.parent, split)) if split != "(none)" else ()
         except Exception:
             return None
-        if root is None:
-            return None
-        return directory_fingerprint(root)
+        return (directory_fingerprint(root), classes)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -176,7 +182,6 @@ class ImageFolderDatasetNode(BaseNode):
         context: Any = None,
     ) -> dict[str, Any]:
         from torchvision import transforms
-        from torchvision.datasets import ImageFolder
 
         raw_path = str(params.get("path", "") or "").strip()
         if not raw_path:
@@ -207,12 +212,53 @@ class ImageFolderDatasetNode(BaseNode):
             transforms.ToTensor(),
         ])
 
-        dataset = ImageFolder(str(root),
-                              transform=seeded_for_node(transform, context))
+        result: dict[str, Any] = {}
+        classes = class_dirs
+        if split != "(none)":
+            classes = _class_union(base, split)
+            missing = [c for c in classes if c not in class_dirs]
+            if missing:
+                from ...core.advisories import emit_advisory
+
+                result["__log__"] = emit_advisory(
+                    f"ImageFolderDataset: '{root}' has no folder for class(es) "
+                    f"{missing}, which other split folders under '{base}' have. "
+                    f"The classes are numbered over every split ({classes}), so "
+                    f"each class keeps the index the training split gives it.",
+                    kind="image_folder_missing_class",
+                    prefix="[WARN] ",
+                    context=context,
+                )
+
+        from ._class_list_image_folder import ClassListImageFolder
+
+        dataset = ClassListImageFolder(
+            str(root), classes, transform=seeded_for_node(transform, context))
 
         _verify_sample_images(dataset.samples)
 
-        return {"dataset": dataset, "classes": list(dataset.classes)}
+        result.update({"dataset": dataset, "classes": list(dataset.classes)})
+        return result
+
+
+def _class_dirs(directory: Path) -> list[str]:
+    return sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
+
+
+def _class_union(base: Path, split: str) -> list[str]:
+    """Sorted union of the class folders in *split* and its sibling splits.
+
+    A val or test folder often lacks a rare class. Numbering only the folders
+    it has would shift every later class down by one, so a model trained
+    with ``cherry = 2`` would be scored against ``cherry = 1`` with no
+    error. Siblings are the directories of *base* named like a split
+    (:data:`COMMON_SPLITS`); anything else under *base* is left alone.
+    """
+    names = set(_class_dirs(base / split))
+    for entry in base.iterdir():
+        if entry.is_dir() and entry.name != split and entry.name in COMMON_SPLITS:
+            names.update(_class_dirs(entry))
+    return sorted(names)
 
 
 #: How many images :func:`_verify_sample_images` opens. Enough to catch a

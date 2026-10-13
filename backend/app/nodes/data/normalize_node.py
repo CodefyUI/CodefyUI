@@ -44,7 +44,10 @@ class NormalizeNode(BaseNode):
         "NaN. With `stats` wired from another Normalize, those statistics are "
         "applied as-is and nothing is fitted: wire the training split's stats "
         "into the Normalize of the test split. The recipe then follows the stats "
-        "and `mode` is ignored."
+        "and `mode` is ignored. Per-row statistics (axis 1) belong to the rows "
+        "they came from, so with axis 1 the wired stats only choose the recipe "
+        "and each incoming row is normalised with its own statistics. Both "
+        "nodes must use the same axis."
     )
 
     @classmethod
@@ -120,14 +123,30 @@ class NormalizeNode(BaseNode):
         x = x.float()
 
         mode = str(params.get("mode", "zscore"))
-        axis = int(params.get("axis", 0))
+        try:
+            axis = int(params.get("axis", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Normalize: axis must be a whole number, got {params.get('axis')!r}."
+            ) from exc
+        if x.dim() == 0 or not -x.dim() <= axis < x.dim():
+            raise ValueError(
+                f"Normalize: axis={axis} is out of range for a {x.dim()}-D tensor "
+                f"of shape {tuple(x.shape)}. Use 0 for per-column statistics or "
+                f"1 for per-row."
+            )
 
         fitted = inputs.get("stats")
         if fitted is not None:
             return self._apply(x, fitted, axis)
 
-        stats: dict[str, list[float]] = {}
+        out, stats = self._fit(x, mode, axis)
+        return {"tensor": out, "stats": stats}
 
+    @staticmethod
+    def _fit(x: torch.Tensor, mode: str, axis: int) -> tuple[torch.Tensor, dict[str, Any]]:
+        """Fit *mode*'s statistics along *axis* and apply them."""
+        stats: dict[str, Any]
         if mode == "zscore":
             mean = x.mean(dim=axis, keepdim=True)
             std = x.std(dim=axis, unbiased=False, keepdim=True)
@@ -149,9 +168,15 @@ class NormalizeNode(BaseNode):
             out = x / safe_norms
             stats = {"norm": norms.squeeze().tolist()}
         else:
-            raise ValueError(f"Unknown Normalize mode: {mode!r}")
-
-        return {"tensor": out, "stats": stats}
+            raise ValueError(
+                f"Normalize: unknown mode {mode!r}; use zscore, minmax or unit_norm."
+            )
+        # Recorded so a Normalize that applies these stats can tell per-row
+        # statistics from per-column ones (axis 0, reusable on other rows).
+        # Axis 0 stays implicit, so its stats dict is the one it always was.
+        if axis % x.dim() != 0:
+            stats["axis"] = axis
+        return out, stats
 
     @staticmethod
     def _apply(x: torch.Tensor, stats: Any, axis: int) -> dict[str, Any]:
@@ -161,11 +186,34 @@ class NormalizeNode(BaseNode):
                 f"Normalize: the `stats` input must be the stats dict of another "
                 f"Normalize, got {type(stats).__name__}."
             )
+        fitted_axis = stats.get("axis", 0)
+        if int(fitted_axis) % x.dim() != axis % x.dim():
+            raise ValueError(
+                f"Normalize: the `stats` input was fitted with axis={fitted_axis}, "
+                f"but this node has axis={axis}. Set both Normalize nodes to the "
+                f"same axis."
+            )
+        if axis % x.dim() != 0:
+            # Per-row statistics describe the rows they were fitted on, so
+            # training row i's mean has nothing to say about test row i. The
+            # recipe carries over; the statistics are recomputed on these rows.
+            if "mean" in stats and "std" in stats:
+                recipe = "zscore"
+            elif "min" in stats and "max" in stats:
+                recipe = "minmax"
+            elif "norm" in stats:
+                recipe = "unit_norm"
+            else:
+                raise ValueError(
+                    f"Normalize: the `stats` input has keys {sorted(stats)}; expected "
+                    f"mean/std, min/max or norm from another Normalize."
+                )
+            out, own = NormalizeNode._fit(x, recipe, axis)
+            return {"tensor": out, "stats": own}
+
         # Statistics were reduced along `axis` with keepdim and then squeezed;
         # restore the keepdim shape so they broadcast against `x`.
         shape = list(x.shape)
-        if not -len(shape) <= axis < len(shape):
-            raise ValueError(f"Normalize: axis={axis} is out of range for a {x.dim()}-D tensor.")
         shape[axis] = 1
 
         def stat(key: str) -> torch.Tensor:

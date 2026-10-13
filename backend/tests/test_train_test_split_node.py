@@ -102,3 +102,17 @@ def test_works_with_tensor_labels():
     y = torch.tensor([0, 1] * 10)
     res = _run(x, y, test_size=0.25, seed=42)
     assert len(res["y_train"]) + len(res["y_test"]) == 20
+
+
+# ── 2026-10-13 audit: declared bounds match the accepted interval ──
+
+
+def test_the_declared_test_size_bounds_exclude_zero_and_one():
+    param = {p.name: p for p in TrainTestSplitNode.define_params()}["test_size"]
+    assert 0 < param.min_value and param.max_value < 1
+
+
+@pytest.mark.parametrize("bad", [0, 1, 0.0, 1.0, "x"])
+def test_an_edge_test_size_says_why(bad):
+    with pytest.raises(ValueError, match=r"TrainTestSplit: test_size must be a fraction above 0 and below 1"):
+        _run(torch.zeros(10, 2), ["a"] * 10, test_size=bad)

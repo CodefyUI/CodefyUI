@@ -13,6 +13,7 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+from .image_folder_dataset_node import COMMON_SPLITS
 
 
 def _kaggle_credentials_present() -> bool:
@@ -32,7 +33,9 @@ class KaggleDatasetNode(BaseNode):
         "Needs network access and Kaggle credentials — KAGGLE_USERNAME and "
         "KAGGLE_KEY in the environment, or a kaggle.json in ~/.kaggle. Set "
         "`subdir` when the class folders sit deeper than the root of the "
-        "downloaded dataset."
+        "downloaded dataset. A folder holding only split folders (train, "
+        "val, test) stops the run and asks for `subdir`, since the splits "
+        "would otherwise be read as the classes."
     )
 
     # Hits the network, the kagglehub cache on disk, and KAGGLE_* credentials
@@ -131,6 +134,16 @@ class KaggleDatasetNode(BaseNode):
                 f"Path '{root}' does not contain class subdirectories. "
                 f"Set 'subdir' to point at the folder that holds your "
                 f"per-class subfolders. Found at this path: {found}"
+            )
+        if all(entry in COMMON_SPLITS for entry in class_dirs):
+            # train/ and test/ read as two classes named after the splits:
+            # every image would be labelled by the split it sits in.
+            splits = sorted(class_dirs)
+            raise RuntimeError(
+                f"KaggleDataset: '{root}' holds only the split folders {splits}, "
+                f"which would be read as the classes. Set subdir "
+                f"to one of {splits} (joined to any subdir already set) to load "
+                f"that split's class folders."
             )
 
         return {"dataset": ImageFolder(root, transform=T.ToTensor())}

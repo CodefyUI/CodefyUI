@@ -97,3 +97,12 @@ def test_header_whitespace_does_not_hide_a_column():
     out = ColumnSelectorNode().execute(
         {"tensor": x, "columns": ["a", " b "]}, {"names": "b"})
     assert out["tensor"].tolist() == [[2.0], [4.0]]
+
+
+# ── 2026-10-13 audit: indices that are not whole numbers ──
+
+
+@pytest.mark.parametrize("bad", ["a", "1.0", "0,x"])
+def test_indices_that_are_not_whole_numbers_name_the_node_and_value(bad):
+    with pytest.raises(ValueError, match=r"ColumnSelector: indices has '(a|1\.0|x)'"):
+        _run(torch.zeros(2, 3), indices=bad)

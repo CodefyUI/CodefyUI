@@ -94,7 +94,12 @@ class SyntheticDatasetNode(BaseNode):
                 param_type=ParamType.FLOAT,
                 default=0.1,
                 min_value=0.0,
-                description="Gaussian noise added to the points (circles/moons/classification only).",
+                description=(
+                    "circles/moons: standard deviation of the Gaussian noise on "
+                    "the points. blobs: cluster spread (cluster_std = 5 x noise, "
+                    "at least 0.1). classification: fraction of labels flipped "
+                    "at random (sklearn's flip_y)."
+                ),
             ),
             ParamDefinition(
                 name="factor",

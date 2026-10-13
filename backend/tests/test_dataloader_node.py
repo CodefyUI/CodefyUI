@@ -360,3 +360,18 @@ def test_a_seeded_multi_worker_loader_iterates_and_seeds_its_workers():
         assert values == _predicted_draws(21, "loader-1", worker_id,
                                           len(values)), (
             f"worker {worker_id} did not draw from its derived seed")
+
+
+# ── 2026-10-13 audit: a BOOL param stored as text ──
+
+
+@pytest.mark.parametrize("text", ["false", "False", "0", "no"])
+def test_shuffle_written_as_false_text_keeps_the_order(text):
+    ds = TensorDataset(torch.arange(10))
+    loader = DataLoaderNode().execute({"dataset": ds}, {"batch_size": 10, "shuffle": text})["dataloader"]
+    assert next(iter(loader))[0].tolist() == list(range(10))
+
+
+def test_a_shuffle_value_that_is_not_true_or_false_names_the_param():
+    with pytest.raises(ValueError, match=r"DataLoader: shuffle must be true or false"):
+        DataLoaderNode().execute({"dataset": TensorDataset(torch.arange(4))}, {"batch_size": 2, "shuffle": "maybe"})

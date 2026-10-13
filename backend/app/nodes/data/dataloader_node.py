@@ -9,6 +9,29 @@ from ...core.seeding import make_worker_init_fn
 #: single-process loader in the gallery.
 DEFAULT_PREFETCH_FACTOR = 2
 
+_TRUE = {"true", "1", "yes", "on"}
+_FALSE = {"false", "0", "no", "off", ""}
+
+
+def _flag(params: dict[str, Any], name: str, default: bool) -> bool:
+    """A BOOL param as a bool; a string such as "false" reads as False.
+
+    ``bool("false")`` is True, so a graph written by hand or by a script
+    that stores the param as text would shuffle with shuffle "false".
+    """
+    value = params.get(name, default)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in _TRUE | _FALSE:
+        return value.strip().lower() in _TRUE
+    raise ValueError(
+        f"DataLoader: {name} must be true or false, got {value!r}."
+    )
+
 
 class DataLoaderNode(BaseNode):
     NODE_NAME = "DataLoader"
@@ -102,7 +125,7 @@ class DataLoaderNode(BaseNode):
 
         dataset = inputs["dataset"]
         batch_size = params.get("batch_size", 32)
-        shuffle = params.get("shuffle", True)
+        shuffle = _flag(params, "shuffle", True)
         num_workers = int(params.get("num_workers", 0) or 0)
 
         kwargs: dict[str, Any] = {
@@ -110,8 +133,8 @@ class DataLoaderNode(BaseNode):
             "batch_size": batch_size,
             "shuffle": shuffle,
             "num_workers": num_workers,
-            "pin_memory": bool(params.get("pin_memory", False)),
-            "drop_last": bool(params.get("drop_last", False)),
+            "pin_memory": _flag(params, "pin_memory", False),
+            "drop_last": _flag(params, "drop_last", False),
         }
 
         # Both of these are illegal at num_workers == 0 (torch raises), and
@@ -121,12 +144,11 @@ class DataLoaderNode(BaseNode):
         # for, because that one is a real misconfiguration: the user wanted
         # workers kept alive and there are none.
         if num_workers > 0:
-            kwargs["persistent_workers"] = bool(
-                params.get("persistent_workers", False))
+            kwargs["persistent_workers"] = _flag(params, "persistent_workers", False)
             prefetch = params.get("prefetch_factor", DEFAULT_PREFETCH_FACTOR)
             kwargs["prefetch_factor"] = int(
                 DEFAULT_PREFETCH_FACTOR if prefetch is None else prefetch)
-        elif params.get("persistent_workers"):
+        elif _flag(params, "persistent_workers", False):
             raise ValueError(
                 "persistent_workers requires num_workers > 0; set "
                 "num_workers or turn persistent_workers off.")

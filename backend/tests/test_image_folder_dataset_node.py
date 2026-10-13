@@ -396,3 +396,58 @@ def test_the_check_costs_a_bounded_number_of_opens(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(Image, "open", _counting_open)
     _run({"path": str(root), "split": "(none)"})
     assert 0 < len(opened) <= node_module.VERIFY_SAMPLE_SIZE
+
+
+# ── 2026-10-13 audit: a split missing a class folder ──
+
+
+@pytest.fixture()
+def gappy(tmp_path: Path) -> Path:
+    root = tmp_path / "fruit"
+    for cls in ("apple", "banana", "cherry"):
+        _write_images(root / "train" / cls, 2)
+    for cls in ("apple", "cherry"):
+        _write_images(root / "val" / cls, 1)
+    return root
+
+
+def test_a_split_missing_a_class_keeps_the_training_indices(gappy: Path):
+    train = _run({"path": str(gappy), "split": "train"})
+    val = _run({"path": str(gappy), "split": "val"})
+    assert val["classes"] == train["classes"] == ["apple", "banana", "cherry"]
+    cherry = [label for path, label in val["dataset"].samples if "cherry" in path]
+    assert cherry == [train["dataset"].class_to_idx["cherry"]] == [2]
+    assert len(val["dataset"]) == 2
+
+
+def test_a_missing_class_folder_is_named_in_the_run_log(gappy: Path):
+    val = _run({"path": str(gappy), "split": "val"})
+    assert "banana" in val["__log__"]
+
+
+def test_a_complete_tree_logs_nothing(tree: Path):
+    assert "__log__" not in _run({"path": str(tree), "split": "val"})
+
+
+def test_a_class_only_in_val_is_numbered_in_train_too(tmp_path: Path):
+    root = tmp_path / "x"
+    _write_images(root / "train" / "b", 1)
+    _write_images(root / "val" / "a", 1)
+    _write_images(root / "val" / "b", 1)
+    train = _run({"path": str(root), "split": "train"})
+    assert train["classes"] == ["a", "b"]
+    assert [label for _, label in train["dataset"].samples] == [1]
+
+
+def test_the_none_split_reads_only_its_own_folders(tree: Path):
+    # Under '(none)' the folders of `path` are the classes themselves.
+    res = _run({"path": str(tree / "train"), "split": "(none)"})
+    assert res["classes"] == ["cat", "dog"]
+
+
+def test_a_dataset_with_a_missing_class_pickles_for_worker_processes(gappy: Path):
+    import pickle
+
+    val = _run({"path": str(gappy), "split": "val"})["dataset"]
+    clone = pickle.loads(pickle.dumps(val))
+    assert clone.classes == ["apple", "banana", "cherry"]
