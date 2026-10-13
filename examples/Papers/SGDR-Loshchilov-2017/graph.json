@@ -1,0 +1,649 @@
+{
+  "name": "Cosine warm restarts (SGDR)",
+  "description": "Cosine restarts vs a constant LR",
+  "gallery": {
+    "section": "papers",
+    "order": 6
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "subset",
+      "type": "DatasetSplit",
+      "position": {
+        "x": 360,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "val_fraction": 0.0,
+          "subset": 5000,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 360,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "model-constant",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"fc1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":256}},{\"id\":\"act1\",\"type\":\"ReLU\"},{\"id\":\"fc2\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":256}},{\"id\":\"act2\",\"type\":\"ReLU\"},{\"id\":\"fc3\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"flat\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"flat\",\"target\":\"fc1\"},{\"id\":\"e2\",\"source\":\"fc1\",\"target\":\"act1\"},{\"id\":\"e3\",\"source\":\"act1\",\"target\":\"fc2\"},{\"id\":\"e4\",\"source\":\"fc2\",\"target\":\"act2\"},{\"id\":\"e5\",\"source\":\"act2\",\"target\":\"fc3\"},{\"id\":\"eout\",\"source\":\"fc3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-constant",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.05,
+          "momentum": 0.9
+        }
+      }
+    },
+    {
+      "id": "train-constant",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "epochs": 14,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-test-constant",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-constant",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "label": "Constant lr 0.05: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "print-loss-constant",
+      "type": "Print",
+      "position": {
+        "x": 1000,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "label": "Constant lr 0.05: training loss per epoch"
+        }
+      }
+    },
+    {
+      "id": "viz-constant",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "title": "Constant lr 0.05: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "model-sgdr",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"fc1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":256}},{\"id\":\"act1\",\"type\":\"ReLU\"},{\"id\":\"fc2\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":256}},{\"id\":\"act2\",\"type\":\"ReLU\"},{\"id\":\"fc3\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"flat\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"flat\",\"target\":\"fc1\"},{\"id\":\"e2\",\"source\":\"fc1\",\"target\":\"act1\"},{\"id\":\"e3\",\"source\":\"act1\",\"target\":\"fc2\"},{\"id\":\"e4\",\"source\":\"fc2\",\"target\":\"act2\"},{\"id\":\"e5\",\"source\":\"act2\",\"target\":\"fc3\"},{\"id\":\"eout\",\"source\":\"fc3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-sgdr",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.05,
+          "momentum": 0.9
+        }
+      }
+    },
+    {
+      "id": "train-sgdr",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "epochs": 14,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "sched-sgdr",
+      "type": "LRScheduler",
+      "position": {
+        "x": 360,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "type": "CosineAnnealingWarmRestarts",
+          "T_max": 2,
+          "T_mult": 2,
+          "eta_min": 0.0
+        }
+      }
+    },
+    {
+      "id": "eval-test-sgdr",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-sgdr",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "label": "SGDR: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "print-loss-sgdr",
+      "type": "Print",
+      "position": {
+        "x": 1000,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "label": "SGDR: training loss per epoch"
+        }
+      }
+    },
+    {
+      "id": "viz-sgdr",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "title": "SGDR: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "lr-history",
+      "type": "PythonScript",
+      "position": {
+        "x": 1320,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    \"\"\"The learning rate each epoch trained with, as a tensor Visualize can plot.\"\"\"\n    import torch\n    return {\"out1\": torch.tensor(inputs[\"in1\"][\"lr_history\"])}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "ANY",
+          "output_types": "TENSOR"
+        }
+      }
+    },
+    {
+      "id": "viz-lr",
+      "type": "Visualize",
+      "position": {
+        "x": 2060,
+        "y": 1740
+      },
+      "data": {
+        "params": {
+          "title": "SGDR: learning rate per epoch (T_0 2, T_mult 2)",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Loshchilov and Hutter, \"SGDR: Stochastic Gradient Descent with Warm Restarts\", ICLR 2017. Claim: decaying the learning rate along a cosine and periodically restarting it at its maximum reaches a good model in fewer epochs than a fixed rate, and the end of each cycle is a usable model. Recipe: two 784-256-256-10 MLPs on 5,000 MNIST images, SGD lr 0.05 with momentum 0.9 for 14 epochs; one keeps lr 0.05, the other runs CosineAnnealingWarmRestarts with T_0 2 and T_mult 2, so cycles of 2, 4 and 8 epochs end at epochs 2, 6 and 14. Under seed 0 on a CPU the final training loss is 0.015 with restarts and 0.13 at a constant rate; test accuracy is 0.95 and 0.94.\n\nLoshchilov 與 Hutter，〈SGDR: Stochastic Gradient Descent with Warm Restarts〉，ICLR 2017。論點：讓學習率沿著餘弦曲線下降，並定期重新拉回最大值，比固定學習率用更少 epoch 得到好模型，而且每個週期結束時的模型都能拿來用。配方：兩個 784-256-256-10 MLP，在 5,000 張 MNIST 影像上用 SGD（lr 0.05、momentum 0.9）訓練 14 個 epoch；一個維持 lr 0.05，另一個用 CosineAnnealingWarmRestarts，T_0 為 2、T_mult 為 2，所以長度 2、4、8 個 epoch 的週期分別在第 2、6、14 個 epoch 結束。在 CPU 上以種子 0 執行，加上重啟的最終訓練損失是 0.015，固定學習率是 0.13；測試準確率分別是 0.95 與 0.94。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "MNIST ships with the repository under backend/data, so the run reads it from disk. DatasetSplit keeps a fixed 5,000 of the 60,000 training images; its own seed (0) picks them, so every arm trains on the same images through the one DataLoader.\n\nMNIST 隨專案放在 backend/data 底下，執行時直接從磁碟讀取。DatasetSplit 從 60,000 張訓練影像中固定留下 5,000 張，挑哪幾張由它自己的種子（0）決定，所以每一組都透過同一個 DataLoader 在同一批影像上訓練。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "dl-train",
+        "boundOffset": {
+          "x": 320,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-arms",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Each arm has its own SequentialModel node with the same layers. One model node wired into two TrainingLoops would hand every loop the same weights, and each loop would continue from what the previous one left. The run seed (0, stored in the file) fixes the shuffle order, any dropout masks and each model's initial weights. Every node is seeded from the run seed and its own id, so the arms start from different draws of the same initialisation. With Persist weights between runs on (Settings > Training Behavior), a second Run continues from the trained weights; turn it off to repeat these numbers.\n\n每一組都有自己的 SequentialModel 節點，圖層完全相同。如果一個模型節點同時接到兩個 TrainingLoop，每個迴圈拿到的是同一份權重，後跑的會接著前一個留下的結果繼續訓練。執行種子（0，存在檔案裡）固定了洗牌順序、dropout 遮罩和每個模型的初始權重。每個節點的種子由執行種子和節點自己的 id 推得，所以各組的初始權重是同一種初始化方式下的不同抽樣。在設定 > 訓練行為中開啟「在多次執行間保留權重」時，第二次執行會從訓練過的權重繼續；關閉它才能重現這些數字。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-constant",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-schedule",
+      "type": "note",
+      "position": {
+        "x": 360,
+        "y": 2080
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "LRScheduler uses its T_max field as T_0, the length of the first cycle. It steps once per epoch (TrainingLoop's scheduler_step is epoch), so the plot shows the rate each epoch started with: 0.05, 0.025, back to 0.05 at epoch 3, again at epoch 7, and down to 0.0019 in epoch 14. Right after the restart at epoch 7 the training loss rises from 0.10 to 0.18, then falls below where it was.\n\nLRScheduler 把 T_max 欄位當作 T_0，也就是第一個週期的長度。它每個 epoch 走一步（TrainingLoop 的 scheduler_step 是 epoch），所以圖上是每個 epoch 開始時的學習率：0.05、0.025，第 3 個 epoch 回到 0.05，第 7 個 epoch 再回去一次，第 14 個 epoch 降到 0.0019。第 7 個 epoch 重啟之後，訓練損失從 0.10 升到 0.18，接著再降到比之前更低。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "sched-sgdr",
+        "boundOffset": {
+          "x": 0,
+          "y": 340
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-lr-plot",
+      "type": "note",
+      "position": {
+        "x": 1960,
+        "y": 1400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "TrainingLoop's metrics output is a dict, and its lr_history entry is a list with one learning rate per epoch. Visualize plots tensors, so the PythonScript takes that list out of the dict and returns it as a tensor. The Runs panel charts the same values as each run's lr series.\n\nTrainingLoop 的 metrics 輸出是一個 dict，其中 lr_history 是每個 epoch 一個學習率的串列。Visualize 畫的是張量，所以由 PythonScript 從 dict 取出這個串列，轉成張量再輸出。執行任務面板也會把同樣的數值畫成每次執行的 lr 序列。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "viz-sgdr",
+        "boundOffset": {
+          "x": 320,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_ds-train",
+      "source": "start",
+      "target": "ds-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_ds-train_dataset_subset_dataset",
+      "source": "ds-train",
+      "target": "subset",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset_train_dl-train_dataset",
+      "source": "subset",
+      "target": "dl-train",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "t_ds-test",
+      "source": "start",
+      "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-constant",
+      "source": "start",
+      "target": "model-constant",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-constant_model_opt-constant_model",
+      "source": "model-constant",
+      "target": "opt-constant",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-constant_model_train-constant_model",
+      "source": "model-constant",
+      "target": "train-constant",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-constant_dataloader",
+      "source": "dl-train",
+      "target": "train-constant",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-constant_optimizer_train-constant_optimizer",
+      "source": "opt-constant",
+      "target": "train-constant",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-constant_loss_fn",
+      "source": "loss",
+      "target": "train-constant",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-constant_model_eval-test-constant_model",
+      "source": "train-constant",
+      "target": "eval-test-constant",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-constant_dataset",
+      "source": "ds-test",
+      "target": "eval-test-constant",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-constant_accuracy_print-test-constant_value",
+      "source": "eval-test-constant",
+      "target": "print-test-constant",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-constant_losses_print-loss-constant_value",
+      "source": "train-constant",
+      "target": "print-loss-constant",
+      "sourceHandle": "losses",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-constant_losses_viz-constant_data",
+      "source": "train-constant",
+      "target": "viz-constant",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "t_model-sgdr",
+      "source": "start",
+      "target": "model-sgdr",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-sgdr_model_opt-sgdr_model",
+      "source": "model-sgdr",
+      "target": "opt-sgdr",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-sgdr_model_train-sgdr_model",
+      "source": "model-sgdr",
+      "target": "train-sgdr",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-sgdr_dataloader",
+      "source": "dl-train",
+      "target": "train-sgdr",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-sgdr_optimizer_train-sgdr_optimizer",
+      "source": "opt-sgdr",
+      "target": "train-sgdr",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-sgdr_loss_fn",
+      "source": "loss",
+      "target": "train-sgdr",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_opt-sgdr_optimizer_sched-sgdr_optimizer",
+      "source": "opt-sgdr",
+      "target": "sched-sgdr",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_sched-sgdr_scheduler_train-sgdr_lr_scheduler",
+      "source": "sched-sgdr",
+      "target": "train-sgdr",
+      "sourceHandle": "scheduler",
+      "targetHandle": "lr_scheduler"
+    },
+    {
+      "id": "e_train-sgdr_model_eval-test-sgdr_model",
+      "source": "train-sgdr",
+      "target": "eval-test-sgdr",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-sgdr_dataset",
+      "source": "ds-test",
+      "target": "eval-test-sgdr",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-sgdr_accuracy_print-test-sgdr_value",
+      "source": "eval-test-sgdr",
+      "target": "print-test-sgdr",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-sgdr_losses_print-loss-sgdr_value",
+      "source": "train-sgdr",
+      "target": "print-loss-sgdr",
+      "sourceHandle": "losses",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-sgdr_losses_viz-sgdr_data",
+      "source": "train-sgdr",
+      "target": "viz-sgdr",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_train-sgdr_metrics_lr-history_in1",
+      "source": "train-sgdr",
+      "target": "lr-history",
+      "sourceHandle": "metrics",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_lr-history_out1_viz-lr_data",
+      "source": "lr-history",
+      "target": "viz-lr",
+      "sourceHandle": "out1",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

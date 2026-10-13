@@ -53,6 +53,22 @@ _CONCEPT_EXAMPLES = (
     "RL/GRPO-Step-GridWorld",
 )
 
+#: Every example the gallery files under ``papers``, by its API path. They
+#: follow the same note rules as the concept examples; the numbers their
+#: notes quote are pinned in ``test_paper_examples.py``, which runs them.
+_PAPER_EXAMPLES = (
+    "Papers/Dropout-Srivastava-2014",
+    "Papers/BatchNorm-Ioffe-2015",
+    "Papers/ResNet-Degradation-He-2016",
+    "Papers/Adam-Kingma-2015",
+    "Papers/Label-Smoothing-Szegedy-2016",
+    "Papers/SGDR-Loshchilov-2017",
+    "Papers/Vanishing-Gradients-Glorot-2010",
+)
+
+#: The examples the note rules below hold over.
+_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES
+
 
 def _graph(key: str) -> dict:
     return json.loads(
@@ -390,7 +406,7 @@ def _notes(graph: dict) -> list[dict]:
     return [n for n in graph["nodes"] if is_note_node(n)]
 
 
-@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES)
+@pytest.mark.parametrize("key", _NOTED_EXAMPLES)
 def test_every_concept_example_opens_with_an_overview_note(key: str):
     graph = _graph(key)
     notes = _notes(graph)
@@ -405,7 +421,7 @@ def test_every_concept_example_opens_with_an_overview_note(key: str):
     assert overview[0]["data"]["boundToNodeId"] == entry[0]["id"]
 
 
-@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES)
+@pytest.mark.parametrize("key", _NOTED_EXAMPLES)
 def test_every_concept_note_sits_where_its_binding_says(key: str):
     graph = _graph(key)
     by_id = _nodes_by_id(graph)
@@ -425,7 +441,7 @@ def test_every_concept_note_sits_where_its_binding_says(key: str):
         assert data["noteWidth"] > 0
 
 
-@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES)
+@pytest.mark.parametrize("key", _NOTED_EXAMPLES)
 def test_every_concept_note_is_written_in_both_languages(key: str):
     """English paragraph, blank line, the same thing in Chinese.
 
