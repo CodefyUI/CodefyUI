@@ -79,3 +79,57 @@ def test_handles_numpy_array():
 def test_handles_python_list():
     res = _run([1, 2, 3, 4, 5], plot_type="line")
     assert "image" in res
+
+
+# ── line: a [K, N] tensor draws K series ──────────────────────────────────
+
+
+@pytest.fixture
+def saved_figures(monkeypatch):
+    """The line count and legend text of every figure the node saves."""
+    from matplotlib.figure import Figure
+
+    seen: list[dict] = []
+    original = Figure.savefig
+
+    def spy(self, *args, **kwargs):
+        ax = self.axes[0]
+        legend = ax.get_legend()
+        seen.append({
+            "lines": [line.get_ydata().tolist() for line in ax.get_lines()],
+            "legend": [t.get_text() for t in legend.get_texts()] if legend else [],
+        })
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", spy)
+    return seen
+
+
+def test_line_draws_one_series_per_row_with_a_legend(saved_figures):
+    data = torch.tensor([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0], [0.0, 0.0, 1.0]])
+    res = _run(data, plot_type="line")
+    assert base64.b64decode(res["image"])[:4] == b"\x89PNG"
+    assert "__log__" not in res
+    (fig,) = saved_figures
+    assert fig["legend"] == ["series 0", "series 1", "series 2"]
+    assert fig["lines"] == data.tolist()
+
+
+def test_line_of_a_1d_tensor_is_unchanged(saved_figures):
+    _run(torch.tensor([1.0, 2.0, 3.0]), plot_type="line")
+    (fig,) = saved_figures
+    assert fig["lines"] == [[1.0, 2.0, 3.0]] and fig["legend"] == []
+
+
+def test_line_of_an_n_by_1_tensor_draws_one_series(saved_figures):
+    _run(torch.tensor([[1.0], [2.0], [3.0], [4.0]]), plot_type="line")
+    (fig,) = saved_figures
+    assert fig["lines"] == [[1.0, 2.0, 3.0, 4.0]] and fig["legend"] == []
+
+
+def test_line_with_too_many_rows_flattens_and_says_so(saved_figures):
+    data = torch.arange(13 * 2, dtype=torch.float32).reshape(13, 2)
+    res = _run(data, plot_type="line")
+    (fig,) = saved_figures
+    assert fig["lines"] == [data.flatten().tolist()] and fig["legend"] == []
+    assert "13" in res["__log__"] and "flattened" in res["__log__"]

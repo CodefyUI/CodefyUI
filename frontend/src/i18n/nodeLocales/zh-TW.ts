@@ -838,9 +838,10 @@ const zhTW: NodeTranslations = {
       'target_type 為 number 時目標轉成 float32，一維目標會變成 [N, 1]，對齊單一輸出的模型，讓 MSELoss 逐元素比較。' +
       '為 class 時目標轉成給 CrossEntropyLoss 用的 int64 類別索引：標籤依排序編號（全是數字時依數值排序），classes 列出這個順序；' +
       '整數張量則直接視為類別索引。測試集或驗證集請把訓練集 TensorDataset 的 classes 輸出接到本節點的 classes 輸入：' +
-      '這樣即使該切分缺少某個類別，編號仍與訓練集一致；出現訓練集沒有的標籤時會停止執行。特徵與目標的列數必須相同。',
+      '這樣即使該切分缺少某個類別，編號仍與訓練集一致；出現訓練集沒有的標籤時會停止執行。' +
+      '為 token 時目標維持原本形狀並轉成 int64，例如給 LMCrossEntropyLoss 用的 [N, T] 下一個 token 編號；浮點目標會被拒絕。特徵與目標的列數必須相同。',
     params: {
-      target_type: 'number：float32 目標，用於回歸損失。class：int64 類別索引，用於 CrossEntropyLoss。',
+      target_type: 'number：float32 目標，用於回歸損失。class：int64 類別索引，用於 CrossEntropyLoss。token：維持原形狀的 int64 整數目標，例如給 LMCrossEntropyLoss 用的 [N, T] token 編號。',
     },
     inputs: {
       classes: '選填的類別順序，用來為標籤編號：在測試集的節點接上訓練集 TensorDataset 的 classes 輸出。',
@@ -983,6 +984,13 @@ const zhTW: NodeTranslations = {
       checkpoint_every_steps: '每 N 個優化器步存一個週期檢查點（0 = 關閉）。步數里程碑快照是研究能力湧現的原料；單 epoch 的跑法裡每 epoch 檢查點永遠不會觸發（#298）。每個檔案存的是已完成的 epoch 數，從它續訓會重跑存檔當下那個 epoch。檔案大小警告同 checkpoint_every。',
       deterministic: '要求 PyTorch 使用決定性的運算核心。沒有決定性實作的運算會發出警告，而不會讓執行失敗。',
       tensorboard: '同時把指標寫成 TensorBoard 事件檔，放在這次執行專屬的資料夾裡。用 `tensorboard --logdir <路徑>` 開啟；該路徑會列在這次執行的產出檔案中。',
+    },
+    outputs: {
+      optimizer:
+        '這次執行實際用來訓練的優化器。接到 CheckpointSaver.optimizer，存檔來源就是畫面上看得到的連線（#148）：輸入的優化器可用時就是同一個物件，' +
+        '參數對不上模型時則是重新建立的那一個；這種情況下從 Optimizer 節點接到 CheckpointSaver 會存到從未訓練過的狀態。' +
+        '早停還原最佳權重之後，優化器狀態仍是最後一個 epoch 的。',
+      grad_norms: '這次呼叫每一個優化器步裁剪前的全域梯度範數，一步一個值（不受 log_interval 稀疏化影響）。log_grad_norm 關閉時為空張量。',
     },
   },
   EvaluateModel: {
@@ -1366,11 +1374,15 @@ const zhTW: NodeTranslations = {
   Visualize: {
     description: '把資料畫成折線、直方圖、熱圖或影像',
     details:
-      '圖由 matplotlib 繪製。line 與 histogram 會先把多維資料攤平，heatmap 會把一維輸入摺成方形格子，' +
+      '圖由 matplotlib 繪製。line 遇到 K 不超過 12 的二維 [K, N] 輸入時，每一列畫成一條序列並附圖例（series 0 到 series K-1），' +
+      '其他多維資料則和 histogram 一樣先攤平成一條曲線。heatmap 會把一維輸入摺成方形格子，' +
       'image 則把 (N, C, H, W) 或 (N, H, W) 批次排成網格。',
     params: {
       title: '圖表標題',
       plot_type: '要生成的圖表類型',
+    },
+    inputs: {
+      data: '要視覺化的資料（張量、清單或 numpy 陣列）。畫 line 時，K ≤ 12 的 [K, N] 張量每一列各是一條序列。',
     },
   },
 

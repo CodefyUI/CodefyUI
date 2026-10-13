@@ -10,6 +10,12 @@ from ...core.node_base import (
 )
 
 
+#: The most rows a 2-D ``[K, N]`` line input may have to be drawn as K
+#: separate series. Past it a legend stops being readable, so the data is
+#: flattened into one curve as before, with a note in the log.
+MAX_LINE_SERIES = 12
+
+
 def _tile_images(imgs: Any, np: Any) -> Any:
     """Lay a batch of (N, H, W) or (N, H, W, C) images out on one grid."""
     n = imgs.shape[0]
@@ -34,15 +40,25 @@ class VisualizeNode(BaseNode):
     CATEGORY = "Utility"
     DESCRIPTION = "Plot data as a line, histogram, heatmap or image"
     DETAILS = (
-        "The plot is rendered with matplotlib. Line and histogram flatten "
-        "multi-dimensional data first, heatmap folds a 1D input into a square "
+        "The plot is rendered with matplotlib. Line draws a 2-D [K, N] input "
+        f"as K series with a legend when K is at most {MAX_LINE_SERIES} "
+        "(series 0 to series K-1, one per row), and flattens anything else "
+        "into one curve, as histogram does. Heatmap folds a 1D input into a square "
         "grid, and image tiles a batch of (N, C, H, W) or (N, H, W) into a grid."
     )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="data", data_type=DataType.ANY, description="Data to visualize (tensor, list, or numpy array)"),
+            PortDefinition(
+                name="data",
+                data_type=DataType.ANY,
+                description=(
+                    "Data to visualize (tensor, list, or numpy array). For a "
+                    f"line plot, each row of a [K, N] tensor with K <= "
+                    f"{MAX_LINE_SERIES} is its own series"
+                ),
+            ),
         ]
 
     @classmethod
@@ -94,14 +110,27 @@ class VisualizeNode(BaseNode):
             data = np.array(data)
 
         fig, ax = plt.subplots(figsize=(8, 6))
+        log_lines: list[str] = []
 
         if plot_type == "line":
-            if data.ndim == 1:
+            rows = data.shape[0] if data.ndim == 2 else 0
+            if data.ndim == 2 and 1 < rows <= MAX_LINE_SERIES and data.shape[1] > 1:
+                # [K, N]: one series per row, e.g. stacked loss curves.
+                for k in range(rows):
+                    ax.plot(data[k], label=f"series {k}")
+                ax.legend()
+            elif data.ndim == 1:
                 ax.plot(data)
             else:
-                # Plot each row or flatten for multi-dim
-                flat = data.flatten()
-                ax.plot(flat)
+                # [N, 1], [1, N] and everything else flatten to one curve.
+                if data.ndim == 2 and rows > MAX_LINE_SERIES and data.shape[1] > 1:
+                    log_lines.append(
+                        f"Visualize: a [{rows}, {data.shape[1]}] tensor has more "
+                        f"than {MAX_LINE_SERIES} rows, so it is drawn as one "
+                        f"flattened curve; pass at most {MAX_LINE_SERIES} rows "
+                        f"to draw one series per row."
+                    )
+                ax.plot(data.flatten())
             ax.set_xlabel("Index")
             ax.set_ylabel("Value")
 
@@ -173,4 +202,7 @@ class VisualizeNode(BaseNode):
         buf.seek(0)
         image_base64 = base64.b64encode(buf.read()).decode("utf-8")
 
-        return {"image": image_base64}
+        result: dict[str, Any] = {"image": image_base64}
+        if log_lines:
+            result["__log__"] = "\n".join(log_lines)
+        return result
