@@ -46,6 +46,84 @@ def _check_loss_shapes(outputs: Any, targets: Any, phase: str) -> None:
     )
 
 
+def _float_targets(outputs: Any, targets: Any) -> Any:
+    """Integer or bool targets as floats, for an element-wise loss.
+
+    ``BCEWithLogitsLoss`` and ``MSELoss`` refuse integer targets with "result
+    type Float can't be cast to the desired output type Long", which names
+    neither the loss nor the fix. 0/1 labels from a class-typed TensorDataset
+    are the usual way to get there, and their float value is exactly what
+    the loss means, so they are converted rather than refused.
+    """
+    import torch
+
+    if (isinstance(outputs, torch.Tensor) and isinstance(targets, torch.Tensor)
+            and torch.is_floating_point(outputs)
+            and not torch.is_floating_point(targets)
+            and not torch.is_complex(targets)):
+        return targets.to(torch.promote_types(outputs.dtype, torch.float32))
+    return targets
+
+
+def _compute_loss(
+    loss_fn: Any, outputs: Any, targets: Any, phase: str, *, elementwise: bool,
+) -> Any:
+    """``loss_fn`` on one batch, with the checks every phase shares.
+
+    One function for the training batch, the per-epoch validation pass and
+    the ``val_every_steps`` pass, so the three cannot disagree about what a
+    batch's loss is.
+    """
+    import torch
+    import torch.nn as nn
+
+    if (isinstance(loss_fn, nn.modules.loss._Loss)
+            and not isinstance(outputs, torch.Tensor)):
+        raise ValueError(
+            f"TrainingLoop: the model returned a {type(outputs).__name__}, "
+            f"but {type(loss_fn).__name__} needs one tensor of predictions. "
+            "End the model with a layer that outputs a single tensor."
+        )
+    if targets is None:
+        loss = loss_fn(outputs)
+    else:
+        if elementwise:
+            targets = _float_targets(outputs, targets)
+            _check_loss_shapes(outputs, targets, phase)
+        loss = loss_fn(outputs, targets)
+    if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+        raise ValueError(
+            f"TrainingLoop: loss_fn returned a tensor of shape "
+            f"{list(loss.shape)}, one value per element, where training needs "
+            "one number per batch to call backward() on. This is what "
+            "Loss.reduction = none gives; set it to mean (or sum)."
+        )
+    return loss
+
+
+def _check_nll_input(loss_fn: Any, outputs: Any) -> None:
+    """Refuse raw logits fed to ``NLLLoss``.
+
+    ``NLLLoss`` expects log-probabilities, which are never positive. On raw
+    logits it returns minus the target's logit: the reported loss goes
+    negative and training pushes that logit up without bound, with no error
+    anywhere. Checked on the first training batch of a call only, so it costs
+    one host read per run.
+    """
+    import torch
+    import torch.nn as nn
+
+    if not (isinstance(loss_fn, nn.NLLLoss) and isinstance(outputs, torch.Tensor)):
+        return
+    if bool((outputs.detach() > 1e-4).any()):
+        raise ValueError(
+            "TrainingLoop: NLLLoss expects log-probabilities, which are never "
+            "positive, but the model output has positive values, so it is raw "
+            "logits. End the model with LogSoftmax(dim=1), or use "
+            "CrossEntropyLoss, which applies log-softmax itself."
+        )
+
+
 def _coerce_start_epoch(value: Any) -> int:
     """Read an epoch index off the ``start_epoch`` SCALAR port.
 
@@ -1967,6 +2045,9 @@ class TrainingLoopNode(BaseNode):
         # that means "a human pressed Stop and these results are partial",
         # this means "the configured budget was spent and the run is done".
         step_budget_reached = False
+        # Whether this call's first training batch has been through
+        # ``_check_nll_input`` yet.
+        nll_checked = False
 
         def apply_gradients() -> tuple[bool, float | None]:
             """Clip, step, and clear -- one accumulation window's update.
@@ -2080,13 +2161,9 @@ class TrainingLoopNode(BaseNode):
                             step_targets = None
                         with policy.autocast():
                             step_out = model(step_data)
-                            if check_loss_shapes and step_targets is not None:
-                                _check_loss_shapes(
-                                    step_out, step_targets, "validation")
-                            step_loss = (
-                                loss_fn(step_out, step_targets)
-                                if step_targets is not None
-                                else loss_fn(step_out))
+                            step_loss = _compute_loss(
+                                loss_fn, step_out, step_targets, "validation",
+                                elementwise=check_loss_shapes)
                         step_val_sum = step_val_sum + step_loss.detach().float()
                         step_val_batches += 1
                 if step_val_batches:
@@ -2172,13 +2249,12 @@ class TrainingLoopNode(BaseNode):
                 # cross-entropy) run in float32 rather than in bf16.
                 with policy.autocast():
                     outputs = model(data)
-
-                    if targets is not None:
-                        if check_loss_shapes:
-                            _check_loss_shapes(outputs, targets, "training")
-                        loss = loss_fn(outputs, targets)
-                    else:
-                        loss = loss_fn(outputs)
+                    if not nll_checked:
+                        _check_nll_input(loss_fn, outputs)
+                        nll_checked = True
+                    loss = _compute_loss(
+                        loss_fn, outputs, targets, "training",
+                        elementwise=check_loss_shapes)
 
                 # Divided by the WINDOW size, not by how many micro-batches
                 # this window ended up with. Every micro-batch then
@@ -2336,13 +2412,9 @@ class TrainingLoopNode(BaseNode):
                         # thing anyone ever does with it.
                         with policy.autocast():
                             outputs = model(data)
-                            if targets is not None:
-                                if check_loss_shapes:
-                                    _check_loss_shapes(
-                                        outputs, targets, "validation")
-                                loss = loss_fn(outputs, targets)
-                            else:
-                                loss = loss_fn(outputs)
+                            loss = _compute_loss(
+                                loss_fn, outputs, targets, "validation",
+                                elementwise=check_loss_shapes)
                         val_running_loss = (
                             val_running_loss + loss.detach().float())
                         val_batch_count += 1
