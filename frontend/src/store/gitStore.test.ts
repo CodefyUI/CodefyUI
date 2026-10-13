@@ -935,6 +935,22 @@ describe('reference sections', () => {
     expect(git().branches?.current).toBe('newer');
   });
 
+  it('drops an older remote list after a newer one has answered', async () => {
+    // The header reads the list on its own as well as the section, so two
+    // reads of it in flight at once is the ordinary case, not a race.
+    const slow = deferred<RemoteInfo[]>();
+    api.getGitRemotes.mockReturnValueOnce(slow.promise);
+    const stale = git().refreshRefs('remotes');
+
+    api.getGitRemotes.mockResolvedValueOnce(remotes('upstream'));
+    await git().refreshRefs('remotes');
+    expect(git().remotes?.map((one) => one.name)).toEqual(['upstream']);
+
+    slow.resolve(remotes('origin'));
+    await stale;
+    expect(git().remotes?.map((one) => one.name)).toEqual(['upstream']);
+  });
+
   it('keeps a refused list read out of the error line and inside its own section', async () => {
     // The poll refreshes every open section, so a transient failure here used
     // to overwrite the sentence describing the user's own last action. It goes

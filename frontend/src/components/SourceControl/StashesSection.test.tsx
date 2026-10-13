@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { StashesSection } from './StashesSection';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
@@ -94,6 +94,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount before the reset: a store write with the panel still mounted is
+  // a render outside act() (#505), and setup.ts's cleanup runs after this hook.
+  cleanup();
   _resetGitStoreForTesting();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -158,6 +161,22 @@ describe('StashesSection: the rows', () => {
     expect(refreshRefs).not.toHaveBeenCalled();
   });
 
+  it('counts the list before any status has answered, and zero before either', () => {
+    // No status yet is not a status of zero: the list is the only count there
+    // is, and with neither read the heading says 0 rather than nothing.
+    useGitStore.setState({
+      status: null,
+      stashes: [stash({ index: 0 }), stash({ index: 1, message: 'older' })],
+    });
+    const view = render(<StashesSection />);
+    expect(within(section()).getByText('2')).toBeTruthy();
+    view.unmount();
+
+    useGitStore.setState({ status: null, stashes: null });
+    render(<StashesSection />);
+    expect(within(section()).getByText('0')).toBeTruthy();
+  });
+
   it('counts from the status once the list has been read too', () => {
     // The status is what the fifteen-second poll refreshes; the list is read
     // when the section opens and after a stash write. A `git stash push` at
@@ -200,7 +219,9 @@ describe('StashesSection: the rows', () => {
     render(<StashesSection />);
     await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
 
-    useGitStore.setState({ status: status({ stash_count: 2 }) });
+    act(() => {
+      useGitStore.setState({ status: status({ stash_count: 2 }) });
+    });
     // The count on the heading is the proof the render and its effect ran.
     await waitFor(() => expect(within(section()).getByText('2')).toBeTruthy());
     expect(refreshRefs).toHaveBeenCalledTimes(1);
@@ -212,7 +233,9 @@ describe('StashesSection: the rows', () => {
     // section that is at most one poll away.
     land();
     await waitFor(() => expect(within(section()).getAllByRole('listitem')).toHaveLength(1));
-    useGitStore.setState({ stashes: [stash()] });
+    act(() => {
+      useGitStore.setState({ stashes: [stash()] });
+    });
     await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(2));
   });
 
@@ -237,7 +260,9 @@ describe('StashesSection: the rows', () => {
     render(<StashesSection />);
     await waitFor(() => expect(refreshRefs).toHaveBeenCalledTimes(1));
 
-    useGitStore.setState({ stashes: [stash()] });
+    act(() => {
+      useGitStore.setState({ stashes: [stash()] });
+    });
     await waitFor(() => expect(within(section()).getByText('1')).toBeTruthy());
     expect(refreshRefs).toHaveBeenCalledTimes(1);
   });

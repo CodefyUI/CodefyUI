@@ -390,10 +390,12 @@ describe('PresetConfigModal', () => {
     expect(screen.getByDisplayValue('10')).toBeTruthy();
 
     // Switch the modal to node B; the effect re-seeds local params.
-    useTabStore.setState({
-      tabs: useTabStore.getState().tabs.map((t) =>
-        t.id === tabId ? { ...t, presetModalNodeId: 'B' } : t,
-      ),
+    act(() => {
+      useTabStore.setState({
+        tabs: useTabStore.getState().tabs.map((t) =>
+          t.id === tabId ? { ...t, presetModalNodeId: 'B' } : t,
+        ),
+      });
     });
     rerender(<PresetConfigModal />);
     expect(screen.getByDisplayValue('20')).toBeTruthy();

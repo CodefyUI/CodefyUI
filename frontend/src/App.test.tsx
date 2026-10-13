@@ -318,7 +318,9 @@ describe('App', () => {
     expect(
       document.documentElement.style.getPropertyValue('--font-scale'),
     ).toBe('1');
-    useUIStore.setState({ fontSize: 'large' });
+    act(() => {
+      useUIStore.setState({ fontSize: 'large' });
+    });
     rerender(<App />);
     expect(
       document.documentElement.style.getPropertyValue('--font-scale'),

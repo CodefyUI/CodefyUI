@@ -70,6 +70,7 @@ import { flushTabNodeUpdates, queueTabNodeStatus } from '../../store/nodeUpdateQ
 import { useUIStore } from '../../store/uiStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
+import { settle } from '../../test/utils';
 
 const mockOutput = vi.mocked(fetchOutput);
 const mockStepIndex = vi.mocked(fetchStepIndex);
@@ -1672,6 +1673,10 @@ describe('NodeDetailModal — chart outputs (#130)', () => {
 // 4000 chars where a plot is ~35 000, and can only `repr` a dict. The rows
 // read from the same node_status stream the log does, which is also why they
 // survive Record outputs being off.
+//
+// The Outputs tab reads the run's captures as it opens; a case that asserts
+// straight after the click lets those reads land (`settle`) before it ends,
+// so their state updates happen inside act() (#505).
 
 describe('NodeDetailModal — media outputs', () => {
   const PNG =
@@ -1717,7 +1722,7 @@ describe('NodeDetailModal — media outputs', () => {
     expect(screen.queryByText('iVBORw0KGgoTRUNCATEDAT4000CHARS')).toBeNull();
   });
 
-  it('shows the picture with Record outputs off, when nothing was captured', () => {
+  it('shows the picture with Record outputs off, when nothing was captured', async () => {
     seedTab({
       nodes: [node('n1', { definition: outputsDef(['image']) })],
       nodeDetailNodeId: 'n1',
@@ -1727,10 +1732,11 @@ describe('NodeDetailModal — media outputs', () => {
     });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    await settle();
     expect(screen.getByAltText('image')).toBeInTheDocument();
   });
 
-  it('shows only the picture belonging to the node being inspected', () => {
+  it('shows only the picture belonging to the node being inspected', async () => {
     seedTab({
       nodes: [
         node('n1', { definition: outputsDef(['image']) }),
@@ -1742,12 +1748,13 @@ describe('NodeDetailModal — media outputs', () => {
     });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    await settle();
     const img = screen.getByAltText('image') as HTMLImageElement;
     expect(img.src).toContain(PNG);
     expect(img.src).not.toContain(OTHER_PNG);
   });
 
-  it('shows the latest picture logged for the port, not the first', () => {
+  it('shows the latest picture logged for the port, not the first', async () => {
     seedTab({
       nodes: [node('n1', { definition: outputsDef(['image']) })],
       nodeDetailNodeId: 'n1',
@@ -1756,6 +1763,7 @@ describe('NodeDetailModal — media outputs', () => {
     });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    await settle();
     expect(screen.getAllByAltText('image')).toHaveLength(1);
     expect((screen.getByAltText('image') as HTMLImageElement).src).toContain(PNG);
   });
@@ -1776,7 +1784,7 @@ describe('NodeDetailModal — media outputs', () => {
     );
   });
 
-  it('draws the same picture in the side Inspector as in the modal', () => {
+  it('draws the same picture in the side Inspector as in the modal', async () => {
     seedTab({
       nodes: [node('n1', { definition: outputsDef(['image']) })],
       selectedNodeId: 'n1',
@@ -1791,6 +1799,7 @@ describe('NodeDetailModal — media outputs', () => {
       </>,
     );
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    await settle();
     const srcs = screen
       .getAllByAltText('image')
       .map((el) => (el as HTMLImageElement).src);
@@ -1846,7 +1855,7 @@ describe('NodeDetailModal — media outputs', () => {
     expect(screen.queryByText(/'path': 'clip.mp4'/)).toBeNull();
   });
 
-  it('shows a gif clip as an image, since browsers refuse it as a video source', () => {
+  it('shows a gif clip as an image, since browsers refuse it as a video source', async () => {
     seedTab({
       nodes: [node('n1', { definition: outputsDef(['video']) })],
       nodeDetailNodeId: 'n1',
@@ -1855,13 +1864,14 @@ describe('NodeDetailModal — media outputs', () => {
     });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    await settle();
     expect((screen.getByAltText('video') as HTMLImageElement).getAttribute('src')).toBe(
       '/api/media/clip.gif',
     );
     expect(document.querySelector('video')).toBeNull();
   });
 
-  it('draws a clip and a preview picture side by side on the same node', () => {
+  it('draws a clip and a preview picture side by side on the same node', async () => {
     seedTab({
       nodes: [node('n1', { definition: outputsDef(['video', 'preview']) })],
       nodeDetailNodeId: 'n1',
@@ -1870,6 +1880,7 @@ describe('NodeDetailModal — media outputs', () => {
     });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    await settle();
     expect(screen.getByLabelText('video')).toBeInTheDocument();
     expect((screen.getByAltText('preview') as HTMLImageElement).src).toContain(PNG);
   });

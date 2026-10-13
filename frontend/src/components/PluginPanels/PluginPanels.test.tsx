@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StrictMode, useState } from 'react';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, act } from '@testing-library/react';
 import { useI18n } from '../../i18n';
 import {
   _clearPluginPanels, registerPluginPanel, removePluginPanel,
@@ -22,6 +22,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount first: this hook runs before setup.ts's cleanup, and a store
+  // write with the tree still mounted is a render outside act() (#505).
+  cleanup();
   _clearPluginPanels();
   vi.restoreAllMocks();
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ReactElement } from 'react';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import { SidebarRail } from './SidebarRail';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -125,7 +125,9 @@ describe('SidebarRail', () => {
   it('drops the active highlight (but not the selection) while collapsed', () => {
     const { rerender } = render(<SidebarRail />);
     const activeClass = tab('Nodes').className;
-    useUIStore.setState({ sidebarCollapsed: true });
+    act(() => {
+      useUIStore.setState({ sidebarCollapsed: true });
+    });
     rerender(<SidebarRail />);
     expect(tab('Nodes').className).not.toBe(activeClass);
     expect(tab('Nodes').getAttribute('aria-selected')).toBe('true');
@@ -147,7 +149,9 @@ describe('SidebarRail', () => {
     expect(tab('Nodes').getAttribute('aria-controls')).toBeNull();
 
     // Collapsed: no panel at all, so no tab claims one.
-    useUIStore.setState({ sidebarCollapsed: true });
+    act(() => {
+      useUIStore.setState({ sidebarCollapsed: true });
+    });
     rerender(<SidebarRail />);
     for (const label of TAB_LABELS) {
       expect(tab(label).getAttribute('aria-controls')).toBeNull();

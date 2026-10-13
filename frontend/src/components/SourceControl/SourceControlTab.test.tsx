@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { SourceControlTab } from './SourceControlTab';
+import { renderSettled } from '../../test/utils';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
 import type { BranchInfo, FileKind, GitFile, GitStatus, RepoInfo } from '../../api/git';
@@ -109,6 +110,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount before the reset: a store write with the panel still mounted is
+  // a render outside act() (#505), and setup.ts's cleanup runs after this hook.
+  cleanup();
   _resetGitStoreForTesting();
   useGitStore.setState({ attach: realAttach, detach: realDetach });
   vi.restoreAllMocks();
@@ -189,6 +193,9 @@ describe('SourceControlTab: one screen per repository state', () => {
   });
 });
 
+// On a ready repository with no remote list yet, the header reads one as it
+// mounts (the mocked `getGitRemotes`). `renderSettled` lets that read land
+// inside act(), so the store write it ends in is not an update outside it.
 describe('SourceControlTab: the ready panel', () => {
   beforeEach(() => {
     useGitStore.setState({
@@ -202,29 +209,29 @@ describe('SourceControlTab: the ready panel', () => {
     });
   });
 
-  it('draws the commit box and the two standing groups', () => {
-    render(<SourceControlTab />);
+  it('draws the commit box and the two standing groups', async () => {
+    await renderSettled(<SourceControlTab />);
     expect(screen.getByRole('button', { name: 'Commit' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Staged Changes' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Changes' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Merge Changes' })).toBeNull();
   });
 
-  it('puts unstaged and untracked files in one Changes group', () => {
-    render(<SourceControlTab />);
+  it('puts unstaged and untracked files in one Changes group', async () => {
+    await renderSettled(<SourceControlTab />);
     const changes = screen.getByRole('region', { name: 'Changes' });
     expect(changes.textContent).toContain('train.py');
     expect(changes.textContent).toContain('notes.txt');
   });
 
-  it('adds the Merge group while a conflict exists, and says so once', () => {
+  it('adds the Merge group while a conflict exists, and says so once', async () => {
     useGitStore.setState({
       status: status({
         conflicted: [file('src/train.py', 'conflict')],
         merge_in_progress: true,
       }),
     });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     const group = screen.getByRole('region', { name: 'Merge Changes' });
     // The group carries the banner; the tab drew a second copy of that
     // sentence a few pixels above it until this one had a heading of its own.
@@ -238,48 +245,48 @@ describe('SourceControlTab: the ready panel', () => {
     expect(within(group).queryByRole('button', { name: /Discard/ })).toBeNull();
   });
 
-  it('keeps the Merge group on a merge with nothing left to resolve', () => {
+  it('keeps the Merge group on a merge with nothing left to resolve', async () => {
     // Settling every file as "mine" changes no file, so the tree is clean and
     // the conflict list is empty -- and Abort Merge is one of the only two
     // ways out of MERGE_HEAD from there.
     useGitStore.setState({ status: status({ merge_in_progress: true }) });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(screen.getByText('No changes')).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Merge Changes' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Abort Merge' })).toBeTruthy();
   });
 
-  it('hides layout files from Changes only while the filter is on', () => {
+  it('hides layout files from Changes only while the filter is on', async () => {
     useGitStore.setState({
       hideLayout: true,
       status: status({
         unstaged: [file('graphs/a.graph.json'), file('layout/a.layout.json')],
       }),
     });
-    const view = render(<SourceControlTab />);
+    const view = await renderSettled(<SourceControlTab />);
     expect(screen.getByText('a.graph.json')).toBeTruthy();
     expect(screen.queryByText('a.layout.json')).toBeNull();
 
     view.unmount();
     useGitStore.setState({ hideLayout: false });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(screen.getByText('a.layout.json')).toBeTruthy();
   });
 
-  it('says so plainly when there is nothing to commit', () => {
+  it('says so plainly when there is nothing to commit', async () => {
     useGitStore.setState({ status: status() });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(screen.getByText('No changes')).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Changes' })).toBeNull();
   });
 
-  it('shows the commit identity form only when the store opens it', () => {
-    const view = render(<SourceControlTab />);
+  it('shows the commit identity form only when the store opens it', async () => {
+    const view = await renderSettled(<SourceControlTab />);
     expect(screen.queryByText('Commit identity')).toBeNull();
     view.unmount();
 
     useGitStore.setState({ identityFormOpen: true });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(screen.getByText('Commit identity')).toBeTruthy();
   });
 });
@@ -291,10 +298,10 @@ describe('SourceControlTab: the four repository sections', () => {
 
   const section = (name: string) => screen.getByRole('region', { name });
 
-  it('draws all four, collapsed, on a repository with nothing to commit', () => {
+  it('draws all four, collapsed, on a repository with nothing to commit', async () => {
     // A clean tree is not an empty panel: branches, remotes, stashes and the
     // history are there whether or not anything has been edited.
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(screen.getByText('No changes')).toBeTruthy();
     for (const name of ['Branches', 'Remotes', 'Stashes', 'History']) {
       expect(section(name)).toBeTruthy();
@@ -304,10 +311,10 @@ describe('SourceControlTab: the four repository sections', () => {
     }
   });
 
-  it('draws the history last, under the three one-line lists', () => {
+  it('draws the history last, under the three one-line lists', async () => {
     // A page of thirty commits with a file list open inside it would push
     // every other section off the panel.
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     const names = screen
       .getAllByRole('region')
       .map((one) => one.getAttribute('data-section'))
@@ -315,7 +322,7 @@ describe('SourceControlTab: the four repository sections', () => {
     expect(names).toEqual(['branches', 'remotes', 'stashes', 'history']);
   });
 
-  it('counts what each list holds', () => {
+  it('counts what each list holds', async () => {
     useGitStore.setState({
       branches: {
         current: 'main',
@@ -327,7 +334,7 @@ describe('SourceControlTab: the four repository sections', () => {
       stashes: [],
       status: status({ stash_count: 4 }),
     });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(within(section('Branches')).getByText('2')).toBeTruthy();
     expect(within(section('Remotes')).getByText('1')).toBeTruthy();
     // The STATUS wins for the stashes: it is the half the poll keeps fresh,
@@ -337,16 +344,16 @@ describe('SourceControlTab: the four repository sections', () => {
     expect(within(section('Stashes')).getByText('4')).toBeTruthy();
   });
 
-  it('counts stashes from the status until the list has been read', () => {
+  it('counts stashes from the status until the list has been read', async () => {
     useGitStore.setState({ stashes: null, status: status({ stash_count: 4 }) });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     expect(within(section('Stashes')).getByText('4')).toBeTruthy();
   });
 
-  it('opens one through the store, which is what remembers it', () => {
+  it('opens one through the store, which is what remembers it', async () => {
     const setSectionOpen = vi.fn();
     useGitStore.setState({ setSectionOpen });
-    render(<SourceControlTab />);
+    await renderSettled(<SourceControlTab />);
     fireEvent.click(screen.getByRole('button', { name: 'Remotes' }));
     expect(setSectionOpen).toHaveBeenCalledWith('remotes', true);
   });

@@ -35,6 +35,7 @@ import {
 import { getRun, type RunInfo } from '../../api/rest';
 import { StatsTab, formatStat } from './StatsTab';
 import type { NodeDetailTabContext } from './tabs';
+import { renderSettled } from '../../test/utils';
 
 const mockStats = vi.mocked(fetchPortStats);
 const mockList = vi.mocked(listRunOutputs);
@@ -392,7 +393,7 @@ describe('StatsTab', () => {
   });
 
   it('warns when recording is off', async () => {
-    render(<StatsTab ctx={ctx({ recordOutputs: false })} />);
+    await renderSettled(<StatsTab ctx={ctx({ recordOutputs: false })} />);
     expect(
       screen.getByText(
         'Record node outputs is off — turn it on in Settings and re-run to capture values',
@@ -527,7 +528,7 @@ describe('StatsTab', () => {
   });
 
   it('tells the user when a node has no connected inputs', async () => {
-    render(<StatsTab ctx={ctx({ edges: [] })} />);
+    await renderSettled(<StatsTab ctx={ctx({ edges: [] })} />);
     expect(screen.getByText('No inputs connected')).toBeInTheDocument();
   });
 });
@@ -570,6 +571,9 @@ describe('StatsTab — while the graph is running', () => {
   }
 
   afterEach(() => {
+    // Unmount first: this hook runs before setup.ts's cleanup, and a store
+    // write with the tree still mounted is a render outside act() (#505).
+    cleanup();
     const tab = useTabStore.getState().tabs[0];
     useTabStore.setState({ tabs: [{ ...tab, status: 'idle', lastRunId: null, nodes: [] }] });
   });

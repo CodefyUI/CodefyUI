@@ -11,6 +11,7 @@ import {
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import type { NodeDefinition, PresetDefinition } from '../../types';
+import { renderSettled, settle } from '../../test/utils';
 
 // The default panel width in px at jsdom's root font size (none, so 16px):
 // 13.5rem × 16px + 57px.
@@ -138,8 +139,8 @@ afterEach(() => {
 });
 
 describe('NodePalette (sidebar shell)', () => {
-  it('opens on the Nodes tab, with the node library behaving as before', () => {
-    render(<NodePalette />);
+  it('opens on the Nodes tab, with the node library behaving as before', async () => {
+    await renderSettled(<NodePalette />);
     expect(screen.getByText('Nodes')).toBeTruthy();
     expect(screen.getByPlaceholderText('Search nodes...')).toBeTruthy();
     expect(screen.getByText('Conv2d')).toBeTruthy();
@@ -190,9 +191,10 @@ describe('NodePalette (sidebar shell)', () => {
     expect(screen.getByText('Conv2d')).toBeTruthy();
   });
 
-  it('mounts the Source Control panel when the fifth tab is opened', () => {
+  it('mounts the Source Control panel when the fifth tab is opened', async () => {
     render(<NodePalette />);
     fireEvent.click(screen.getByRole('tab', { name: 'Source Control' }));
+    await settle();
     expect(panel()?.id).toBe('sidebar-panel-git');
     expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-git');
     // The panel's own heading; the rail button beside it is an icon with no
@@ -201,10 +203,11 @@ describe('NodePalette (sidebar shell)', () => {
     expect(screen.queryByText('Conv2d')).toBeNull();
   });
 
-  it('a tab is only fetched when it is opened', () => {
+  it('a tab is only fetched when it is opened', async () => {
     render(<NodePalette />);
     expect(mockedRest.listExamples).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: 'Templates' }));
+    await settle();
     expect(mockedRest.listExamples).toHaveBeenCalledTimes(1);
   });
 

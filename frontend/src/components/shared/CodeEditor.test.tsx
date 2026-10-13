@@ -104,8 +104,11 @@ describe('CodeEditor', () => {
     expect(handle.destroy).toHaveBeenCalled();
   });
 
-  it('passes read-only through and keeps the fallback read-only too', () => {
+  it('passes read-only through and keeps the fallback read-only too', async () => {
     render(<CodeEditor value="x = 1" onChange={() => {}} ariaLabel="code" readOnly />);
     expect((screen.getByLabelText('code') as HTMLTextAreaElement).readOnly).toBe(true);
+    // Waiting for the editor to mount is also what lands its update in act().
+    await waitFor(() => expect(lastOptions).not.toBeNull());
+    expect(lastOptions!.readOnly).toBe(true);
   });
 });

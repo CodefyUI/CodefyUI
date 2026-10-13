@@ -1053,7 +1053,9 @@ describe('useGraphExecution - execute', () => {
     expect(payload.changed_nodes).toEqual(['n1']);
     expect(payload.record_outputs).toBe(true);
 
-    useTabStore.setState({ getSerializedGraph: realSerialize } as any);
+    act(() => {
+      useTabStore.setState({ getSerializedGraph: realSerialize } as any);
+    });
   });
 
   it('passes graph-embedded presets to validation and the execute message (#84)', async () => {
@@ -1086,7 +1088,9 @@ describe('useGraphExecution - execute', () => {
     );
     expect(ws.send.mock.calls[0][0].presets).toEqual(presets);
 
-    useTabStore.setState({ getSerializedGraph: realSerialize } as any);
+    act(() => {
+      useTabStore.setState({ getSerializedGraph: realSerialize } as any);
+    });
   });
 
   it('omits changed_nodes when nothing is dirty', async () => {

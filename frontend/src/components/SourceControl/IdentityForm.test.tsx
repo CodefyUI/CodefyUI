@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { IdentityForm } from './IdentityForm';
 import { useI18n } from '../../i18n';
 import { _resetGitStoreForTesting, useGitStore } from '../../store/gitStore';
@@ -31,6 +31,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount before the reset: a store write with the panel still mounted is
+  // a render outside act() (#505), and setup.ts's cleanup runs after this hook.
+  cleanup();
   _resetGitStoreForTesting();
   vi.restoreAllMocks();
 });
@@ -48,13 +51,15 @@ describe('IdentityForm', () => {
 
   it('fills in from the identity the store reads, and says where each half came from', async () => {
     render(<IdentityForm />);
-    useGitStore.setState({
-      identity: identity({
-        name: 'Ada',
-        email: 'ada@example.com',
-        name_scope: 'global',
-        email_scope: 'local',
-      }),
+    act(() => {
+      useGitStore.setState({
+        identity: identity({
+          name: 'Ada',
+          email: 'ada@example.com',
+          name_scope: 'global',
+          email_scope: 'local',
+        }),
+      });
     });
     await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
     expect(emailBox()).toHaveValue('ada@example.com');
@@ -64,8 +69,10 @@ describe('IdentityForm', () => {
 
   it('reads a system-wide value as a global one', async () => {
     render(<IdentityForm />);
-    useGitStore.setState({
-      identity: identity({ name: 'Ada', name_scope: 'system' }),
+    act(() => {
+      useGitStore.setState({
+        identity: identity({ name: 'Ada', name_scope: 'system' }),
+      });
     });
     await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
     expect(screen.getAllByText('from global git config')).toHaveLength(1);
@@ -142,13 +149,15 @@ describe('IdentityForm', () => {
 
   it('describes each field with the scope it would be written at', async () => {
     render(<IdentityForm />);
-    useGitStore.setState({
-      identity: identity({
-        name: 'Ada',
-        email: 'ada@example.com',
-        name_scope: 'global',
-        email_scope: 'local',
-      }),
+    act(() => {
+      useGitStore.setState({
+        identity: identity({
+          name: 'Ada',
+          email: 'ada@example.com',
+          name_scope: 'global',
+          email_scope: 'local',
+        }),
+      });
     });
     await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
     // A reader who hears only the label and the value never learns which
@@ -169,13 +178,15 @@ describe('IdentityForm: what a save is allowed to write', () => {
   /** The form with the identity the config read answered, already seeded. */
   async function opened() {
     render(<IdentityForm />);
-    useGitStore.setState({
-      identity: identity({
-        name: 'Ada',
-        email: 'ada@example.com',
-        name_scope: 'global',
-        email_scope: 'global',
-      }),
+    act(() => {
+      useGitStore.setState({
+        identity: identity({
+          name: 'Ada',
+          email: 'ada@example.com',
+          name_scope: 'global',
+          email_scope: 'global',
+        }),
+      });
     });
     await waitFor(() => expect(nameBox()).toHaveValue('Ada'));
   }

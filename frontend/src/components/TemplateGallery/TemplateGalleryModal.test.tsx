@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { TemplateGalleryModal } from './TemplateGalleryModal';
 import { useDialogStore } from '../../store/dialogStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
@@ -81,6 +81,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount first: this hook runs before setup.ts's cleanup, and a store
+  // write with the tree still mounted is a render outside act() (#505).
+  cleanup();
   useUIStore.setState({
     templateGalleryOpen: false,
     shortcutsModalOpen: false,

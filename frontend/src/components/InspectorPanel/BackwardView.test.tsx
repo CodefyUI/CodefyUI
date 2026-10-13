@@ -438,7 +438,12 @@ describe('BackwardView — while the run is still going', () => {
     });
   }
 
-  afterEach(() => setRunStatus('idle'));
+  afterEach(() => {
+    // Unmount first: this hook runs before setup.ts's cleanup, and a store
+    // write with the tree still mounted is a render outside act() (#505).
+    cleanup();
+    setRunStatus('idle');
+  });
 
   it('says the graph is running instead of claiming nothing was captured', async () => {
     mockGradIndex.mockResolvedValue([]);
