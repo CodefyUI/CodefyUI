@@ -2137,18 +2137,26 @@ class TrainingLoopNode(BaseNode):
                     optimizer_steps)
             if (val_every_steps and val_dataloader is not None
                     and optimizer_steps % val_every_steps == 0):
-                # A mid-epoch validation pass: eval mode + no_grad consume
-                # no RNG, so the training stream is undisturbed. The result
-                # is its OWN series (val_loss_step, x = optimizer steps)
-                # rather than more points on the per-epoch val_loss curve,
-                # which has a different x-axis.
+                # A mid-epoch validation pass. Its result is its OWN series
+                # (val_loss_step, x = optimizer steps) rather than more
+                # points on the per-epoch val_loss curve, which has a
+                # different x-axis.
+                #
+                # Eval mode and no_grad draw no random numbers, but STARTING
+                # an iteration over a DataLoader does: it takes a base seed
+                # from the global torch RNG when the loader has no generator
+                # of its own. That moved every later Dropout mask and
+                # shuffle, so switching val_every_steps on changed the
+                # trained weights (max |diff| 0.079 on a 2-epoch Dropout
+                # MLP in the audit). ``fork_rng`` puts the CPU RNG back
+                # afterwards; eval-mode layers draw nothing on the device.
                 was_training = model.training
                 model.eval()
                 # ``0.0 + tensor`` is a tensor, so this accumulates on the
                 # device from the first batch on and is read back once.
                 step_val_sum: Any = 0.0
                 step_val_batches = 0
-                with torch.no_grad():
+                with torch.no_grad(), torch.random.fork_rng(devices=[]):
                     for step_batch in val_dataloader:
                         if should_stop():
                             break

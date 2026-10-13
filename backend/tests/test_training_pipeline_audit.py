@@ -199,3 +199,30 @@ def test_step_checkpoints_store_complete_epochs_and_do_not_collide(
              "optimizer": torch.optim.SGD(restored.parameters(), lr=0.1)},
             {"path": str(models / "periodic" / name), "device": "cpu"})
         assert loaded["epoch"] == meta["epoch"]
+
+
+# ── val_every_steps does not change what training does ──────────────────
+
+
+def _dropout_run(val_every_steps):
+    x = _features(48)
+    y = torch.randint(0, 3, (48,), generator=torch.Generator().manual_seed(1))
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 16), nn.ReLU(), nn.Dropout(0.5),
+                          nn.Linear(16, 3))
+    torch.manual_seed(3)
+    out = _train(model, TensorDataset(x, y), nn.CrossEntropyLoss(),
+                 val=TensorDataset(x[:20], y[:20]), batch_size=16, epochs=2,
+                 val_every_steps=val_every_steps, context=_RecordingContext())
+    return model, out
+
+
+def test_val_every_steps_leaves_the_trained_weights_unchanged():
+    """Starting each mid-step validation pass drew a base seed from the
+    global RNG, which moved every later Dropout mask."""
+    with_steps, out_steps = _dropout_run(1)
+    without, out_plain = _dropout_run(0)
+    for a, b in zip(with_steps.state_dict().values(),
+                    without.state_dict().values()):
+        assert torch.equal(a, b)
+    assert out_steps["losses"].tolist() == out_plain["losses"].tolist()
