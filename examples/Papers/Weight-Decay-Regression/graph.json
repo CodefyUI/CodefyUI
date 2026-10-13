@@ -21,7 +21,7 @@
       "id": "gen",
       "type": "PythonScript",
       "position": {
-        "x": 40,
+        "x": -93,
         "y": -300
       },
       "data": {
@@ -38,7 +38,7 @@
       "id": "ds",
       "type": "TensorDataset",
       "position": {
-        "x": 360,
+        "x": 587,
         "y": -300
       },
       "data": {
@@ -51,8 +51,8 @@
       "id": "dl",
       "type": "DataLoader",
       "position": {
-        "x": 360,
-        "y": -40
+        "x": 829,
+        "y": -300
       },
       "data": {
         "params": {
@@ -65,8 +65,8 @@
       "id": "loss",
       "type": "Loss",
       "position": {
-        "x": 360,
-        "y": 300
+        "x": -93,
+        "y": 373
       },
       "data": {
         "params": {
@@ -78,8 +78,8 @@
       "id": "model-plain",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": -300
+        "x": -93,
+        "y": 172
       },
       "data": {
         "params": {
@@ -91,8 +91,8 @@
       "id": "opt-plain",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": -40
+        "x": 587,
+        "y": 19
       },
       "data": {
         "params": {
@@ -106,7 +106,7 @@
       "id": "train-plain",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
+        "x": 1069,
         "y": -300
       },
       "data": {
@@ -120,7 +120,7 @@
       "id": "infer-plain",
       "type": "Inference",
       "position": {
-        "x": 1320,
+        "x": 1334,
         "y": -300
       },
       "data": {
@@ -131,8 +131,8 @@
       "id": "mse-plain",
       "type": "RegressionMetrics",
       "position": {
-        "x": 1320,
-        "y": -40
+        "x": 1574,
+        "y": -300
       },
       "data": {
         "params": {}
@@ -142,8 +142,8 @@
       "id": "print-plain",
       "type": "Print",
       "position": {
-        "x": 1320,
-        "y": 220
+        "x": 2216,
+        "y": -47
       },
       "data": {
         "params": {
@@ -155,8 +155,8 @@
       "id": "model-decay",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": 480
+        "x": -93,
+        "y": 551
       },
       "data": {
         "params": {
@@ -168,8 +168,8 @@
       "id": "opt-decay",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": 740
+        "x": 587,
+        "y": 278
       },
       "data": {
         "params": {
@@ -183,8 +183,8 @@
       "id": "train-decay",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
-        "y": 480
+        "x": 1069,
+        "y": 415
       },
       "data": {
         "params": {
@@ -197,8 +197,8 @@
       "id": "infer-decay",
       "type": "Inference",
       "position": {
-        "x": 1320,
-        "y": 480
+        "x": 1334,
+        "y": -34
       },
       "data": {
         "params": {}
@@ -208,8 +208,8 @@
       "id": "mse-decay",
       "type": "RegressionMetrics",
       "position": {
-        "x": 1320,
-        "y": 740
+        "x": 1574,
+        "y": 531
       },
       "data": {
         "params": {}
@@ -219,8 +219,8 @@
       "id": "print-decay",
       "type": "Print",
       "position": {
-        "x": 1320,
-        "y": 1000
+        "x": 2216,
+        "y": 173
       },
       "data": {
         "params": {
@@ -232,8 +232,8 @@
       "id": "fits",
       "type": "PythonScript",
       "position": {
-        "x": 1640,
-        "y": 100
+        "x": 1574,
+        "y": -10
       },
       "data": {
         "params": {
@@ -249,8 +249,8 @@
       "id": "chart",
       "type": "ScatterPlot2D",
       "position": {
-        "x": 1960,
-        "y": 100
+        "x": 2216,
+        "y": -300
       },
       "data": {
         "params": {
@@ -267,7 +267,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "Krogh and Hertz, \"A simple weight decay can improve generalization\" (NeurIPS 1992): penalising large weights keeps a network from spending its capacity on the noise in a small training set, so it predicts new inputs better. Recipe: 20 noisy samples of sin(3x), an MLP 1-128-128-1 with Tanh, MSE, AdamW at lr 0.01 for 1000 full-batch epochs, trained twice with weight_decay 0 and 0.5, then tested against the clean curve on 200 grid points. With seed 0 on a CPU the undecayed net fits the training points to MSE 0.0012 and scores 0.269 on the grid; with decay it stays at 0.056 on the training points and scores 0.033.\n\nKrogh 與 Hertz，〈A simple weight decay can improve generalization〉（NeurIPS 1992）：懲罰過大的權重，網路就不會把能力花在小訓練集的雜訊上，對新輸入的預測也更準。配方：sin(3x) 的 20 個帶雜訊樣本，MLP 1-128-128-1 搭配 Tanh，MSE，AdamW、lr 0.01，整批訓練 1000 個 epoch，weight_decay 分別設 0 和 0.5 各訓練一次，再在 200 個格點上和乾淨的曲線比對。seed 0、用 CPU 跑，沒有衰減的網路把訓練點擬合到 MSE 0.0012，在格點上得到 0.269；有衰減的在訓練點上停在 0.056，格點上得到 0.033。",
+        "noteContent": "Krogh and Hertz, \"A simple weight decay can improve generalization\" (NeurIPS 1992): penalising large weights keeps a network from spending its capacity on the noise in a small training set, so it predicts new inputs better. Recipe: 20 noisy samples of sin(3x), an MLP 1-128-128-1 with Tanh, MSE, AdamW at lr 0.01 for 1000 full-batch epochs, trained twice with weight_decay 0 and 0.5, then tested against the clean curve on 200 grid points. With seed 0 on a CPU the undecayed net fits the training points to an MSE of about 0.001 to 0.003 (0.0012 on an Apple M3, 0.003 on the Linux CI runner) and scores 0.269 on the grid; with decay it stays at 0.056 on the training points and scores 0.033.\n\nKrogh 與 Hertz，〈A simple weight decay can improve generalization〉（NeurIPS 1992）：懲罰過大的權重，網路就不會把能力花在小訓練集的雜訊上，對新輸入的預測也更準。配方：sin(3x) 的 20 個帶雜訊樣本，MLP 1-128-128-1 搭配 Tanh，MSE，AdamW、lr 0.01，整批訓練 1000 個 epoch，weight_decay 分別設 0 和 0.5 各訓練一次，再在 200 個格點上和乾淨的曲線比對。seed 0、用 CPU 跑，沒有衰減的網路把訓練點擬合到 MSE 約 0.001 到 0.003（Apple M3 上 0.0012，Linux CI 機器上 0.003），在格點上得到 0.269；有衰減的在訓練點上停在 0.056，格點上得到 0.033。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start",
         "boundOffset": {
@@ -281,8 +281,8 @@
       "id": "note-data",
       "type": "note",
       "position": {
-        "x": 40,
-        "y": 140
+        "x": -93,
+        "y": 752
       },
       "data": {
         "noteKind": "text",
@@ -291,7 +291,7 @@
         "boundToNodeId": "gen",
         "boundOffset": {
           "x": 0,
-          "y": 440
+          "y": 1052
         },
         "noteWidth": 300
       }
@@ -300,8 +300,8 @@
       "id": "note-models",
       "type": "note",
       "position": {
-        "x": 360,
-        "y": 640
+        "x": -93,
+        "y": 1042
       },
       "data": {
         "noteKind": "text",
@@ -310,7 +310,7 @@
         "boundToNodeId": "loss",
         "boundOffset": {
           "x": 0,
-          "y": 340
+          "y": 669
         },
         "noteWidth": 300
       }
@@ -319,8 +319,8 @@
       "id": "note-chart",
       "type": "note",
       "position": {
-        "x": 1960,
-        "y": 520
+        "x": 2216,
+        "y": 393
       },
       "data": {
         "noteKind": "text",
@@ -329,7 +329,7 @@
         "boundToNodeId": "chart",
         "boundOffset": {
           "x": 0,
-          "y": 420
+          "y": 693
         },
         "noteWidth": 320
       }

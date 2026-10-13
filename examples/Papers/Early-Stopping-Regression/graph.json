@@ -21,7 +21,7 @@
       "id": "gen",
       "type": "PythonScript",
       "position": {
-        "x": 40,
+        "x": -93,
         "y": -300
       },
       "data": {
@@ -38,7 +38,7 @@
       "id": "ds",
       "type": "TensorDataset",
       "position": {
-        "x": 360,
+        "x": 602,
         "y": -300
       },
       "data": {
@@ -51,8 +51,8 @@
       "id": "dl",
       "type": "DataLoader",
       "position": {
-        "x": 360,
-        "y": -40
+        "x": 844,
+        "y": -300
       },
       "data": {
         "params": {
@@ -65,8 +65,8 @@
       "id": "ds-val",
       "type": "TensorDataset",
       "position": {
-        "x": 360,
-        "y": 300
+        "x": 602,
+        "y": 278
       },
       "data": {
         "params": {
@@ -78,8 +78,8 @@
       "id": "dl-val",
       "type": "DataLoader",
       "position": {
-        "x": 360,
-        "y": 560
+        "x": 844,
+        "y": -22
       },
       "data": {
         "params": {
@@ -92,8 +92,8 @@
       "id": "loss",
       "type": "Loss",
       "position": {
-        "x": 360,
-        "y": 900
+        "x": -93,
+        "y": 640
       },
       "data": {
         "params": {
@@ -105,8 +105,8 @@
       "id": "model-full",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": -300
+        "x": -93,
+        "y": 238
       },
       "data": {
         "params": {
@@ -118,8 +118,8 @@
       "id": "opt-full",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": -40
+        "x": 602,
+        "y": 19
       },
       "data": {
         "params": {
@@ -132,7 +132,7 @@
       "id": "train-full",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
+        "x": 1084,
         "y": -300
       },
       "data": {
@@ -146,7 +146,7 @@
       "id": "infer-full",
       "type": "Inference",
       "position": {
-        "x": 1320,
+        "x": 1364,
         "y": -300
       },
       "data": {
@@ -157,8 +157,8 @@
       "id": "mse-full",
       "type": "RegressionMetrics",
       "position": {
-        "x": 1320,
-        "y": -40
+        "x": 2044,
+        "y": -300
       },
       "data": {
         "params": {}
@@ -168,8 +168,8 @@
       "id": "print-full",
       "type": "Print",
       "position": {
-        "x": 1320,
-        "y": 220
+        "x": 2444,
+        "y": -300
       },
       "data": {
         "params": {
@@ -181,8 +181,8 @@
       "id": "model-early",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": 480
+        "x": -93,
+        "y": 439
       },
       "data": {
         "params": {
@@ -194,8 +194,8 @@
       "id": "opt-early",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": 740
+        "x": 602,
+        "y": 597
       },
       "data": {
         "params": {
@@ -208,8 +208,8 @@
       "id": "train-early",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
-        "y": 480
+        "x": 1084,
+        "y": 415
       },
       "data": {
         "params": {
@@ -224,8 +224,8 @@
       "id": "infer-early",
       "type": "Inference",
       "position": {
-        "x": 1320,
-        "y": 480
+        "x": 1364,
+        "y": 506
       },
       "data": {
         "params": {}
@@ -235,8 +235,8 @@
       "id": "mse-early",
       "type": "RegressionMetrics",
       "position": {
-        "x": 1320,
-        "y": 740
+        "x": 2044,
+        "y": 463
       },
       "data": {
         "params": {}
@@ -246,8 +246,8 @@
       "id": "print-early",
       "type": "Print",
       "position": {
-        "x": 1320,
-        "y": 1000
+        "x": 2444,
+        "y": -80
       },
       "data": {
         "params": {
@@ -259,8 +259,8 @@
       "id": "curves",
       "type": "PythonScript",
       "position": {
-        "x": 1640,
-        "y": 100
+        "x": 1364,
+        "y": -34
       },
       "data": {
         "params": {
@@ -276,8 +276,8 @@
       "id": "chart",
       "type": "ScatterPlot2D",
       "position": {
-        "x": 1960,
-        "y": 100
+        "x": 2044,
+        "y": -10
       },
       "data": {
         "params": {
@@ -289,8 +289,8 @@
       "id": "print-best",
       "type": "Print",
       "position": {
-        "x": 1640,
-        "y": 560
+        "x": 2044,
+        "y": 243
       },
       "data": {
         "params": {
@@ -302,8 +302,8 @@
       "id": "print-ran",
       "type": "Print",
       "position": {
-        "x": 1640,
-        "y": 760
+        "x": 2044,
+        "y": 753
       },
       "data": {
         "params": {
@@ -334,8 +334,8 @@
       "id": "note-data",
       "type": "note",
       "position": {
-        "x": 40,
-        "y": 140
+        "x": -93,
+        "y": 818
       },
       "data": {
         "noteKind": "text",
@@ -344,7 +344,7 @@
         "boundToNodeId": "gen",
         "boundOffset": {
           "x": 0,
-          "y": 440
+          "y": 1118
         },
         "noteWidth": 300
       }
@@ -353,8 +353,8 @@
       "id": "note-stop",
       "type": "note",
       "position": {
-        "x": 360,
-        "y": 1240
+        "x": -93,
+        "y": 1129
       },
       "data": {
         "noteKind": "text",
@@ -363,7 +363,7 @@
         "boundToNodeId": "loss",
         "boundOffset": {
           "x": 0,
-          "y": 340
+          "y": 489
         },
         "noteWidth": 300
       }
@@ -372,8 +372,8 @@
       "id": "note-chart",
       "type": "note",
       "position": {
-        "x": 1960,
-        "y": 520
+        "x": 2044,
+        "y": 973
       },
       "data": {
         "noteKind": "text",
@@ -382,7 +382,7 @@
         "boundToNodeId": "chart",
         "boundOffset": {
           "x": 0,
-          "y": 420
+          "y": 983
         },
         "noteWidth": 320
       }

@@ -21,7 +21,7 @@
       "id": "seq-train",
       "type": "SyntheticSequence",
       "position": {
-        "x": 40,
+        "x": -93,
         "y": -300
       },
       "data": {
@@ -39,8 +39,8 @@
       "id": "seq-test",
       "type": "SyntheticSequence",
       "position": {
-        "x": 40,
-        "y": 140
+        "x": -93,
+        "y": 407
       },
       "data": {
         "params": {
@@ -57,7 +57,7 @@
       "id": "dl-train",
       "type": "DataLoader",
       "position": {
-        "x": 360,
+        "x": 287,
         "y": -300
       },
       "data": {
@@ -71,8 +71,8 @@
       "id": "loss",
       "type": "Loss",
       "position": {
-        "x": 360,
-        "y": 60
+        "x": -93,
+        "y": 210
       },
       "data": {
         "params": {
@@ -84,8 +84,8 @@
       "id": "model-plain",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": -300
+        "x": -93,
+        "y": 9
       },
       "data": {
         "params": {
@@ -97,8 +97,8 @@
       "id": "opt-plain",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": -40
+        "x": 287,
+        "y": -22
       },
       "data": {
         "params": {
@@ -111,7 +111,7 @@
       "id": "train-plain",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
+        "x": 667,
         "y": -300
       },
       "data": {
@@ -127,7 +127,7 @@
       "id": "eval-plain",
       "type": "EvaluateModel",
       "position": {
-        "x": 1320,
+        "x": 1047,
         "y": -300
       },
       "data": {
@@ -140,8 +140,8 @@
       "id": "print-plain",
       "type": "Print",
       "position": {
-        "x": 1320,
-        "y": 40
+        "x": 1704,
+        "y": -300
       },
       "data": {
         "params": {
@@ -153,8 +153,8 @@
       "id": "model-clip",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": 480
+        "x": -93,
+        "y": 716
       },
       "data": {
         "params": {
@@ -166,8 +166,8 @@
       "id": "opt-clip",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": 740
+        "x": 287,
+        "y": 256
       },
       "data": {
         "params": {
@@ -180,8 +180,8 @@
       "id": "train-clip",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
-        "y": 480
+        "x": 667,
+        "y": 435
       },
       "data": {
         "params": {
@@ -196,8 +196,8 @@
       "id": "eval-clip",
       "type": "EvaluateModel",
       "position": {
-        "x": 1320,
-        "y": 480
+        "x": 1047,
+        "y": 458
       },
       "data": {
         "params": {
@@ -209,8 +209,8 @@
       "id": "print-clip",
       "type": "Print",
       "position": {
-        "x": 1320,
-        "y": 820
+        "x": 1704,
+        "y": 173
       },
       "data": {
         "params": {
@@ -222,8 +222,8 @@
       "id": "curves",
       "type": "PythonScript",
       "position": {
-        "x": 1640,
-        "y": 100
+        "x": 1047,
+        "y": 18
       },
       "data": {
         "params": {
@@ -239,8 +239,8 @@
       "id": "chart",
       "type": "ScatterPlot2D",
       "position": {
-        "x": 1960,
-        "y": 100
+        "x": 1704,
+        "y": -80
       },
       "data": {
         "params": {
@@ -257,7 +257,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "Pascanu, Mikolov and Bengio, \"On the difficulty of training recurrent neural networks\" (ICML 2013): a recurrent net's gradient can explode, one huge step undoes the training so far, and rescaling the gradient whenever its norm passes a threshold fixes it. Recipe: a plain tanh RNN (hidden 64) learns to recall the first of 30 tokens, SGD at lr 0.1, 25 epochs, trained twice from the same graph, once with TrainingLoop's grad_clip_norm at 0 and once at 1.0. With seed 0 on a CPU the unclipped run ends at 0.11 test accuracy, about chance, and the clipped run reaches 0.89.\n\nPascanu、Mikolov 與 Bengio，〈On the difficulty of training recurrent neural networks〉（ICML 2013）：遞迴網路的梯度可能爆炸，一次過大的更新就會毀掉前面的訓練；只要在梯度範數超過門檻時把它縮小，就能解決。配方：一個普通的 tanh RNN（hidden 64）學著記住 30 個 token 中的第一個，SGD、lr 0.1、25 個 epoch，同一張圖訓練兩次，TrainingLoop 的 grad_clip_norm 一次設 0、一次設 1.0。seed 0、用 CPU 跑，沒裁剪的那次測試準確率停在 0.11，大約是亂猜；有裁剪的那次達到 0.89。",
+        "noteContent": "Pascanu, Mikolov and Bengio, \"On the difficulty of training recurrent neural networks\" (ICML 2013): a recurrent net's gradient can explode, one huge step undoes the training so far, and rescaling the gradient whenever its norm passes a threshold fixes it. Recipe: a plain tanh RNN (hidden 64) learns to recall the first of 30 tokens, SGD at lr 0.1, 25 epochs, trained twice from the same graph, once with TrainingLoop's grad_clip_norm at 0 and once at 1.0. With seed 0 the clipped run reaches 0.89 test accuracy on an Apple M3 and 1.0 on the Linux CI runner; the unclipped net stays at chance on both (0.11 on the M3).\n\nPascanu、Mikolov 與 Bengio，〈On the difficulty of training recurrent neural networks〉（ICML 2013）：遞迴網路的梯度可能爆炸，一次過大的更新就會毀掉前面的訓練；只要在梯度範數超過門檻時把它縮小，就能解決。配方：一個普通的 tanh RNN（hidden 64）學著記住 30 個 token 中的第一個，SGD、lr 0.1、25 個 epoch，同一張圖訓練兩次，TrainingLoop 的 grad_clip_norm 一次設 0、一次設 1.0。seed 0 時，有裁剪的那次測試準確率在 Apple M3 上是 0.89，在 Linux CI 機器上是 1.0；沒裁剪的那次在兩者上都停在亂猜的水準（M3 上是 0.11）。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "start",
         "boundOffset": {
@@ -271,8 +271,8 @@
       "id": "note-task",
       "type": "note",
       "position": {
-        "x": 40,
-        "y": 560
+        "x": -93,
+        "y": 917
       },
       "data": {
         "noteKind": "text",
@@ -281,7 +281,7 @@
         "boundToNodeId": "seq-test",
         "boundOffset": {
           "x": 0,
-          "y": 420
+          "y": 510
         },
         "noteWidth": 300
       }
@@ -290,8 +290,8 @@
       "id": "note-models",
       "type": "note",
       "position": {
-        "x": 360,
-        "y": 740
+        "x": 287,
+        "y": 534
       },
       "data": {
         "noteKind": "text",
@@ -299,8 +299,8 @@
         "noteColor": "#3d3d1a",
         "boundToNodeId": "opt-clip",
         "boundOffset": {
-          "x": -320,
-          "y": 0
+          "x": 0,
+          "y": 278
         },
         "noteWidth": 300
       }
@@ -309,17 +309,17 @@
       "id": "note-clip",
       "type": "note",
       "position": {
-        "x": 1000,
-        "y": 1200
+        "x": 667,
+        "y": 1170
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "grad_clip_norm 1.0 rescales any gradient whose norm is above 1 down to 1 before the step. log_grad_norm records the norm before clipping, so open the Runs panel, pick this run and read grad_norm under Metrics: both runs see spikes far above the typical norm of about 1. In the unclipped run a spike of 117 sends the loss back up to chance level, and it never recovers.\n\ngrad_clip_norm 1.0 會在更新前把範數超過 1 的梯度縮回 1。log_grad_norm 記錄的是裁剪前的範數，打開「執行任務」面板、選這次執行，在「指標」看 grad_norm：兩次訓練都有遠高於平常（大約 1）的尖峰。沒裁剪的那次遇到一個 117 的尖峰，損失就跳回亂猜的水準，之後再也沒回來。",
+        "noteContent": "grad_clip_norm 1.0 rescales any gradient whose norm is above 1 down to 1 before the step. log_grad_norm records the norm before clipping, so open the Runs panel, pick this run and read grad_norm under Metrics: both runs see spikes far above the typical norm of about 1. In the unclipped run one spike (norm 117 on an Apple M3; other CPUs round their way to a different one) sends the loss back up to chance level, and it never recovers.\n\ngrad_clip_norm 1.0 會在更新前把範數超過 1 的梯度縮回 1。log_grad_norm 記錄的是裁剪前的範數，打開「執行任務」面板、選這次執行，在「指標」看 grad_norm：兩次訓練都有遠高於平常（大約 1）的尖峰。沒裁剪的那次遇到一個尖峰（Apple M3 上範數是 117，其他 CPU 的捨入會得到不同的值），損失就跳回亂猜的水準，之後再也沒回來。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "train-clip",
         "boundOffset": {
           "x": 0,
-          "y": 720
+          "y": 735
         },
         "noteWidth": 300
       }
@@ -328,17 +328,17 @@
       "id": "note-chart",
       "type": "note",
       "position": {
-        "x": 1960,
-        "y": 520
+        "x": 1704,
+        "y": 393
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "Training loss per epoch for both runs. Chance level for 10 classes is ln 10, about 2.30. The clipped run leaves that plateau around epoch 16; the unclipped one jumps back to it after its spike.\n\n兩次訓練每個 epoch 的訓練損失。10 類亂猜的損失是 ln 10，約 2.30。有裁剪的那次大約在第 16 個 epoch 離開這個平台；沒裁剪的那次在尖峰後又跳回平台。",
+        "noteContent": "Training loss per epoch for both runs. Chance level for 10 classes is ln 10, about 2.30. The clipped run leaves that plateau partway through training (around epoch 16 on an Apple M3); the unclipped one jumps back to it after its spike.\n\n兩次訓練每個 epoch 的訓練損失。10 類亂猜的損失是 ln 10，約 2.30。有裁剪的那次在訓練途中離開這個平台（Apple M3 上大約在第 16 個 epoch）；沒裁剪的那次在尖峰後又跳回平台。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "chart",
         "boundOffset": {
           "x": 0,
-          "y": 420
+          "y": 473
         },
         "noteWidth": 320
       }

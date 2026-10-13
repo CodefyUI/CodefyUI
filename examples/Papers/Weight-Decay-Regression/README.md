@@ -21,7 +21,7 @@ Measured with `backend/run_graph.py` on an Apple M3 CPU, torch 2.11, run seed 0 
 
 | | weight_decay 0 | weight_decay 0.5 |
 |---|---|---|
-| Final training MSE | 0.0012 | 0.056 |
+| Final training MSE | 0.0012 (0.003 on the Linux CI runner) | 0.056 |
 | Test MSE against the clean curve | 0.269 | 0.033 |
 
 Whole graph: 1.4 s. Over run seeds 0 to 2 the decayed net scored 0.033 to 0.042 and the undecayed one 0.14 to 0.27.

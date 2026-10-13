@@ -21,7 +21,7 @@
       "id": "gen",
       "type": "PythonScript",
       "position": {
-        "x": 40,
+        "x": -93,
         "y": -300
       },
       "data": {
@@ -38,7 +38,7 @@
       "id": "ds",
       "type": "TensorDataset",
       "position": {
-        "x": 360,
+        "x": 534,
         "y": -300
       },
       "data": {
@@ -51,8 +51,8 @@
       "id": "dl",
       "type": "DataLoader",
       "position": {
-        "x": 360,
-        "y": -40
+        "x": 828,
+        "y": -300
       },
       "data": {
         "params": {
@@ -65,8 +65,8 @@
       "id": "model",
       "type": "SequentialModel",
       "position": {
-        "x": 680,
-        "y": -300
+        "x": -93,
+        "y": 205
       },
       "data": {
         "params": {
@@ -78,8 +78,8 @@
       "id": "opt",
       "type": "Optimizer",
       "position": {
-        "x": 680,
-        "y": -40
+        "x": 534,
+        "y": 19
       },
       "data": {
         "params": {
@@ -92,8 +92,8 @@
       "id": "loss",
       "type": "Loss",
       "position": {
-        "x": 680,
-        "y": 420
+        "x": -93,
+        "y": 406
       },
       "data": {
         "params": {
@@ -105,7 +105,7 @@
       "id": "train",
       "type": "TrainingLoop",
       "position": {
-        "x": 1000,
+        "x": 1090,
         "y": -300
       },
       "data": {
@@ -119,7 +119,7 @@
       "id": "infer",
       "type": "Inference",
       "position": {
-        "x": 1320,
+        "x": 1355,
         "y": -300
       },
       "data": {
@@ -130,7 +130,7 @@
       "id": "metrics",
       "type": "RegressionMetrics",
       "position": {
-        "x": 1640,
+        "x": 1595,
         "y": -300
       },
       "data": {
@@ -141,7 +141,7 @@
       "id": "print-r2",
       "type": "Print",
       "position": {
-        "x": 1960,
+        "x": 2290,
         "y": -300
       },
       "data": {
@@ -154,8 +154,8 @@
       "id": "baseline",
       "type": "RegressionMetrics",
       "position": {
-        "x": 1640,
-        "y": 140
+        "x": 534,
+        "y": 278
       },
       "data": {
         "params": {}
@@ -165,8 +165,8 @@
       "id": "print-base",
       "type": "Print",
       "position": {
-        "x": 1960,
-        "y": 140
+        "x": 828,
+        "y": -22
       },
       "data": {
         "params": {
@@ -178,8 +178,8 @@
       "id": "plot",
       "type": "PythonScript",
       "position": {
-        "x": 1320,
-        "y": 460
+        "x": 1595,
+        "y": -10
       },
       "data": {
         "params": {
@@ -195,8 +195,8 @@
       "id": "chart",
       "type": "ScatterPlot2D",
       "position": {
-        "x": 1640,
-        "y": 460
+        "x": 2290,
+        "y": -80
       },
       "data": {
         "params": {
@@ -227,8 +227,8 @@
       "id": "note-data",
       "type": "note",
       "position": {
-        "x": 40,
-        "y": 140
+        "x": -93,
+        "y": 584
       },
       "data": {
         "noteKind": "text",
@@ -237,7 +237,7 @@
         "boundToNodeId": "gen",
         "boundOffset": {
           "x": 0,
-          "y": 440
+          "y": 884
         },
         "noteWidth": 300
       }
@@ -246,8 +246,8 @@
       "id": "note-model",
       "type": "note",
       "position": {
-        "x": 680,
-        "y": 760
+        "x": -93,
+        "y": 874
       },
       "data": {
         "noteKind": "text",
@@ -256,7 +256,7 @@
         "boundToNodeId": "loss",
         "boundOffset": {
           "x": 0,
-          "y": 340
+          "y": 468
         },
         "noteWidth": 300
       }
