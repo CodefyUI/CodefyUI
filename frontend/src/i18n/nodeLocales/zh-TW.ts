@@ -1915,7 +1915,8 @@ const zhTW: NodeTranslations = {
     details:
       '`kind` 可選 SVM（kernel 為 rbf、linear 或 poly）、Decision Tree（`max_depth`，0 ' +
       '代表不限）或 Random Forest（`n_estimators`），三者都來自 scikit-learn。`model` 輸出可接到 ' +
-      'DecisionBoundary，SVM 的 model 還帶著支持向量座標。',
+      'DecisionBoundary，SVM 的 model 還帶著支持向量座標。決策樹與隨機森林固定使用 random_state=0，' +
+      '所以改變執行的 seed 不會改變它們。',
   },
   'edu:Classifier': {
     description: '以 KNN、線性或邏輯斯分類 x_query',
@@ -1960,7 +1961,8 @@ const zhTW: NodeTranslations = {
   'foundations:Edu-ColumnStats': {
     description: '每欄的平均、標準差、最小值、最大值與列數',
     details:
-      '標準差預設是母體標準差（除以 N）；勾選 unbiased 改成除以 N−1 的樣本標準差。開啟「顯示內部步驟」後，還會記錄每個中間步驟：' +
+      '標準差預設是母體標準差（除以 N）；勾選 unbiased 改成除以 N−1 的樣本標準差（只有一列時為 NaN）。' +
+      'float64 與整數表格以 float64 計算。開啟「顯示內部步驟」後，還會記錄每個中間步驟：' +
       '欄總和、除以列數、平方差、開根號，檢視器就能看到每個統計量是怎麼算出來的。',
   },
   'foundations:Edu-FFN': {
@@ -1973,13 +1975,13 @@ const zhTW: NodeTranslations = {
     description: '由最近的 k 個訓練點多數決，輸出預測標籤',
     details:
       '距離對每個訓練點逐一計算，成本隨 N_train × N_query 成長；資料量大時改用有樹狀索引的 KNN 節點。度量可選 ' +
-      'euclidean、manhattan 或 cosine（1 − cos），k 會被限制在訓練集大小內。另外會輸出每筆查詢的前 k ' +
-      '個距離與鄰居索引。',
+      'euclidean、manhattan 或 cosine（1 − cos），k 會被限制在訓練集大小內。投票平手時，取平手標籤中' +
+      '最近一票所屬的標籤（scikit-learn 則取最小的標籤）。另外會輸出每筆查詢的前 k 個距離與鄰居索引。',
   },
   'foundations:Edu-LinearRegression': {
     description: '以封閉解或梯度下降擬合 $y=Xw+b$',
     details:
-      'closed_form 解正規方程 $w = (X^T X + \\lambda I)^{-1} X^T y$，矩陣奇異時退回最小平方求解；' +
+      'closed_form 解正規方程 $w = (X^T X + \\lambda I)^{-1} X^T y$，欄位共線時退回最小範數的最小平方解；' +
       'gradient_descent 用 lr 跑 epochs 次迭代。兩種解法都最小化 ' +
       '$\\lVert Xw + b - y \\rVert^2 + \\lambda \\lVert w \\rVert^2$（即 sklearn `Ridge(alpha=λ)`），' +
       'λ = regularization，只懲罰權重；梯度下降用的是同一損失除以列數，最小值點相同。',
@@ -1987,14 +1989,15 @@ const zhTW: NodeTranslations = {
   'foundations:Edu-LogisticRegression': {
     description: '以梯度下降訓練 softmax，輸出標籤與機率',
     details:
-      '損失函數是交叉熵，regularization 對權重（不含 bias）加上 L2 衰減。二元問題走同一條兩欄 softmax，等價於 ' +
-      'sigmoid 形式。預測標籤是字串，取自排序後的訓練標籤集合；classes 輸出對應 weights 的欄位順序。',
+      '損失函數是各列交叉熵的平均加上 $\\lambda \\lVert W \\rVert^2$，λ = regularization，只懲罰權重、不含 bias；' +
+      '兩類時等同 sklearn `LogisticRegression(C=1/(λN))`。二元問題走同一條兩欄 softmax，等價於 sigmoid 形式。' +
+      '預測標籤是字串；classes 輸出對應 weights 的欄位順序，標籤全是數字時依數值排序。',
   },
   'foundations:Edu-TokenEmbedding': {
     description: '以固定種子的向量表，把 token 列表轉成向量',
     details:
       '輸入可以是 tokens（字串）或 token_ids（整數）。hash 用穩定雜湊把任何 token 映到某一列；ordinal ' +
-      '依首次出現順序配號，並從 vocab 輸出對照。向量表隨機、由 seed 固定且不會被訓練；需要可學習的查表請用 Utility 的 ' +
+      '依首次出現順序配號，並從 vocab 輸出對照；vocab_size 至少要等於不重複 token 的數量。向量表隨機、由 seed 固定且不會被訓練；需要可學習的查表請用 Utility 的 ' +
       'Embedding 節點。',
   },
   'rl:Edu-PolicyGradient': {

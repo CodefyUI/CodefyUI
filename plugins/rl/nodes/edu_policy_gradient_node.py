@@ -5,7 +5,8 @@ black-box trainer, expose the four pieces of one policy-gradient step:
 
     1. probs       = softmax(logits / T)
     2. action_probs= probs gathered at the actions taken
-    3. log_probs   = log(action_probs)
+    3. log_probs   = log(action_probs), computed as log_softmax(logits / T)
+                     at the action so it stays exact when a prob underflows
     4. advantages  = rewards − baseline           (mean baseline by default)
     5. loss        = − mean(log_probs · advantages)
 
@@ -125,40 +126,49 @@ class EduPolicyGradientNode(BaseNode):
         rewards = inputs.get("rewards")
         if logits is None or actions is None or rewards is None:
             raise ValueError(
-                "EduPolicyGradient requires `logits`, `actions`, and `rewards` inputs."
+                "Edu-PolicyGradient requires `logits`, `actions`, and `rewards` inputs."
             )
 
         if not isinstance(logits, torch.Tensor):
             logits = torch.as_tensor(logits, dtype=torch.float32)
         if not isinstance(actions, torch.Tensor):
-            actions = torch.as_tensor(actions, dtype=torch.long)
+            actions = torch.as_tensor(actions)
         if not isinstance(rewards, torch.Tensor):
             rewards = torch.as_tensor(rewards, dtype=torch.float32)
         logits = logits.float()
+        # A fractional action is a wiring mistake (probs or rewards on the
+        # `actions` port); .long() would truncate it to a plausible index.
+        if actions.is_floating_point() and bool((actions != actions.round()).any()):
+            raise ValueError(
+                "Edu-PolicyGradient: `actions` must be whole-number action indices; got "
+                f"{actions.flatten()[:5].tolist()}. Connect the sampled actions, not "
+                "probabilities or rewards."
+            )
         actions = actions.long()
         rewards = rewards.float()
 
         if logits.ndim != 2:
             raise ValueError(
-                f"EduPolicyGradient expects logits of shape [B, A]; got {tuple(logits.shape)}."
+                f"Edu-PolicyGradient expects logits of shape [B, A]; got {tuple(logits.shape)}."
             )
         batch, num_actions = logits.shape
         if actions.shape != (batch,):
             raise ValueError(
-                f"actions must have shape [{batch}]; got {tuple(actions.shape)}."
+                f"Edu-PolicyGradient: `actions` must have shape [{batch}]; got {tuple(actions.shape)}."
             )
         if rewards.shape != (batch,):
             raise ValueError(
-                f"rewards must have shape [{batch}]; got {tuple(rewards.shape)}."
+                f"Edu-PolicyGradient: `rewards` must have shape [{batch}]; got {tuple(rewards.shape)}."
             )
         if (actions < 0).any() or (actions >= num_actions).any():
             raise ValueError(
-                f"actions out of range [0, {num_actions}). Got min={int(actions.min())}, max={int(actions.max())}."
+                f"Edu-PolicyGradient: `actions` out of range [0, {num_actions}). "
+                f"Got min={int(actions.min())}, max={int(actions.max())}."
             )
 
         temperature = float(params.get("temperature", 1.0))
         if temperature <= 0:
-            raise ValueError("temperature must be positive.")
+            raise ValueError("Edu-PolicyGradient: `temperature` must be positive.")
         baseline_mode = str(params.get("baseline", "mean"))
 
         verbose = context is not None and getattr(context, "verbose", False)
@@ -182,7 +192,10 @@ class EduPolicyGradientNode(BaseNode):
                 actions=actions, action_probs=action_probs,
             )
 
-        log_probs = action_probs.clamp_min(1e-12).log()
+        # log_softmax, not log(softmax): softmax underflows to 0 once a logit
+        # gap passes ~100 (T=0.01 with logits [0, 1] is a gap of 100), and the
+        # old clamp pinned log_prob at -27.63 with a zero gradient.
+        log_probs = F.log_softmax(scaled, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
         if recorder is not None:
             recorder.record("log", "log of the action probability.", log_probs=log_probs)
 

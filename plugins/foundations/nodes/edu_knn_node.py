@@ -35,6 +35,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.step_trace import StepRecorder
+from app.nodes.classical._labels import class_labels, label_strings
 
 
 class EduKNNNode(BaseNode):
@@ -45,8 +46,9 @@ class EduKNNNode(BaseNode):
         "Distances are computed against every training point, so cost grows with "
         "N_train x N_query — the KNN node indexes with a tree for larger data. "
         "Metric is euclidean, manhattan or cosine (1 - cos), and k is clamped to "
-        "the training-set size. It also outputs the top-k distances and the "
-        "neighbour indices per query."
+        "the training-set size. A tied vote goes to the tied label whose first "
+        "vote is nearest (scikit-learn picks the smallest label instead). It also "
+        "outputs the top-k distances and the neighbour indices per query."
     )
 
     @classmethod
@@ -136,7 +138,7 @@ class EduKNNNode(BaseNode):
         x_query = inputs.get("x_query")
         if x_train is None or y_train is None or x_query is None:
             raise ValueError(
-                "EduKNN requires `x_train`, `y_train`, and `x_query` inputs."
+                "Edu-KNN requires `x_train`, `y_train`, and `x_query` inputs."
             )
 
         if not isinstance(x_train, torch.Tensor):
@@ -145,11 +147,25 @@ class EduKNNNode(BaseNode):
             x_query = torch.as_tensor(x_query, dtype=torch.float32)
         x_train = x_train.float()
         x_query = x_query.float()
-        y_train_list = list(y_train)
+        if x_train.dim() != 2 or x_query.dim() != 2:
+            raise ValueError(
+                f"Edu-KNN: `x_train` and `x_query` must be [rows, features]; got "
+                f"{tuple(x_train.shape)} and {tuple(x_query.shape)}. For a single "
+                "feature, make it one column ([N, 1])."
+            )
+        if x_query.shape[1] != x_train.shape[1]:
+            raise ValueError(
+                f"Edu-KNN: `x_query` has {x_query.shape[1]} features but `x_train` has "
+                f"{x_train.shape[1]}; feed both the same columns."
+            )
+        # A label tensor (an [N, 1] column included) reads as one label per
+        # row; raw, its items would vote as the strings "tensor(0)".
+        y_train_list = class_labels(y_train, "Edu-KNN y_train")
+        vote_labels = label_strings(y_train, "Edu-KNN y_train")
 
         if x_train.shape[0] != len(y_train_list):
             raise ValueError(
-                f"EduKNN: x_train and y_train length mismatch — "
+                f"Edu-KNN: x_train and y_train length mismatch — "
                 f"{x_train.shape[0]} rows vs {len(y_train_list)} labels."
             )
 
@@ -169,7 +185,9 @@ class EduKNNNode(BaseNode):
             t_norm = torch.nn.functional.normalize(x_train, dim=-1, eps=1e-12)
             distances = 1.0 - q_norm @ t_norm.T
         else:
-            raise ValueError(f"EduKNN: unknown metric {metric!r}")
+            raise ValueError(
+                f"Edu-KNN: unknown `metric` {metric!r}. Choose euclidean, manhattan or cosine."
+            )
 
         # Top-k smallest distances (= nearest neighbours)
         topk_d, topk_idx = torch.topk(distances, k=k, dim=1, largest=False)
@@ -180,7 +198,7 @@ class EduKNNNode(BaseNode):
         for i in range(x_query.shape[0]):
             idx_row = topk_idx[i].tolist()
             neighbor_indices.append(idx_row)
-            votes = Counter(str(y_train_list[j]) for j in idx_row)
+            votes = Counter(vote_labels[j] for j in idx_row)
             # Counter.most_common is deterministic given Python's dict order;
             # ties resolved by first-seen.
             predictions.append(votes.most_common(1)[0][0])

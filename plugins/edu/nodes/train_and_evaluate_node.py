@@ -26,6 +26,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 
+from ._labels import read_labels
 from ._layer_seed import seed_new_layer
 
 
@@ -41,9 +42,12 @@ class _FittedNet:
         import torch
 
         self.net.eval()
+        # The net was trained on the run's device (MPS/CUDA when chosen);
+        # DecisionBoundary hands over a CPU grid.
+        device = next(self.net.parameters()).device
         with torch.no_grad():
-            logits = self.net(torch.as_tensor(np.asarray(x, dtype="float32")))
-            idx = logits.argmax(dim=1).tolist()
+            feats = torch.as_tensor(np.asarray(x, dtype="float32"), device=device)
+            idx = self.net(feats).argmax(dim=1).cpu().tolist()
         return [self.classes[int(i)] for i in idx]
 
 
@@ -129,14 +133,25 @@ class TrainAndEvaluateNode(BaseNode):
         x_train = x_train.float()
         x_query = x_query.float()
 
-        labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
-        labels = [str(label) for label in labels]
-        classes = sorted(set(labels))
-        idx = {c: i for i, c in enumerate(classes)}
+        labels, classes, label_idx = read_labels(y_train, "TrainAndEvaluate")
+        if x_train.dim() != 2 or x_query.dim() != 2:
+            raise ValueError(
+                f"TrainAndEvaluate: `x_train` and `x_query` must be [rows, features]; got "
+                f"{tuple(x_train.shape)} and {tuple(x_query.shape)}."
+            )
+        if x_train.shape[0] != len(labels):
+            raise ValueError(
+                f"TrainAndEvaluate: features and labels length mismatch — "
+                f"{x_train.shape[0]} rows vs {len(labels)} labels."
+            )
+        if x_query.shape[1] != x_train.shape[1]:
+            raise ValueError(
+                f"TrainAndEvaluate: `x_query` has {x_query.shape[1]} features but "
+                f"`x_train` has {x_train.shape[1]}; feed both the same columns."
+            )
         # On the device x_train arrived on -- the engine aligns what comes in
         # over a wire, but a tensor this node builds itself is invisible to it.
-        y_idx = torch.tensor(
-            [idx[label] for label in labels], dtype=torch.long, device=x_train.device)
+        y_idx = torch.tensor(label_idx, dtype=torch.long, device=x_train.device)
 
         # 把隱藏堆疊接上一個輸出層（壓到類別數）。輸入維度從堆疊最後一個 Linear 推得。
         # A copy is trained, never the stack itself: that is the upstream
@@ -144,12 +159,21 @@ class TrainAndEvaluateNode(BaseNode):
         # wired to as well.
         modules = copy.deepcopy(list(net_in.children()))
         last_out = None
+        first_in = None
         for m in modules:
             if isinstance(m, nn.Linear):
+                if first_in is None:
+                    first_in = m.in_features
                 last_out = m.out_features
         if last_out is None:
             raise ValueError(
                 "TrainAndEvaluate: the stacked model has no Linear layer — add at least one FFNLayer."
+            )
+        if first_in != x_train.shape[1]:
+            raise ValueError(
+                f"TrainAndEvaluate: `x_train` has {x_train.shape[1]} features but the first "
+                f"FFNLayer expects in_features={first_in}; set that FFNLayer's "
+                f"`in_features` to {x_train.shape[1]}."
             )
         modules.append(seed_new_layer(nn.Linear(last_out, len(classes)), context))
         # FFNLayer builds its Linears with no device handling at all, so the

@@ -30,6 +30,8 @@ from app.core.node_base import (
 )
 from app.core.step_trace import StepRecorder
 
+from ._params import param_bool
+
 
 class EduColumnStatsNode(BaseNode):
     NODE_NAME = "Edu-ColumnStats"
@@ -37,7 +39,8 @@ class EduColumnStatsNode(BaseNode):
     DESCRIPTION = "Per-column mean, std, min, max and row count"
     DETAILS = (
         "The standard deviation is the population std by default; set `unbiased` "
-        "to divide by N-1 for the sample std instead. With Verbose internals on it "
+        "to divide by N-1 for the sample std instead (NaN for a single row). "
+        "float64 and integer tables are computed in float64. With Verbose internals on it "
         "also records each intermediate step — column sum, divide by the row "
         "count, squared deviations, then the square root — so the Inspector can "
         "show where each statistic came from."
@@ -59,7 +62,7 @@ class EduColumnStatsNode(BaseNode):
             PortDefinition(name="means", data_type=DataType.TENSOR,
                            description="Per-column mean, shape [columns]."),
             PortDefinition(name="stds", data_type=DataType.TENSOR,
-                           description="Per-column population std, shape [columns]."),
+                           description="Per-column std (population, or sample when unbiased), shape [columns]."),
             PortDefinition(name="mins", data_type=DataType.TENSOR,
                            description="Per-column min, shape [columns]."),
             PortDefinition(name="maxs", data_type=DataType.TENSOR,
@@ -93,18 +96,24 @@ class EduColumnStatsNode(BaseNode):
     ) -> dict[str, Any]:
         x = inputs.get("table")
         if x is None:
-            raise ValueError("EduColumnStats requires a `table` input.")
+            raise ValueError("Edu-ColumnStats requires a `table` input.")
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(x, dtype=torch.float32)
-        x = x.float()
+        # float64 and integer tables are summed in float64: float32 loses the
+        # digits a std of large values lives in (1e7+1, 1e7+2, 1e7+3 gave
+        # 1.29 where 0.82 is true). MPS has no float64, so float32 there.
+        if x.dtype == torch.float64 or not (x.is_floating_point() or x.dtype == torch.bool):
+            x = x.to(torch.float32 if x.device.type == "mps" else torch.float64)
+        else:
+            x = x.float()
         if x.ndim != 2:
             raise ValueError(
-                f"EduColumnStats expects a 2D [rows, columns] tensor; got shape {tuple(x.shape)}."
+                f"Edu-ColumnStats expects a 2D [rows, columns] tensor; got shape {tuple(x.shape)}."
             )
         if x.shape[0] == 0:
-            raise ValueError("EduColumnStats: table has zero rows.")
+            raise ValueError("Edu-ColumnStats: table has zero rows.")
 
-        unbiased = bool(params.get("unbiased", False))
+        unbiased = param_bool(params, "unbiased", False, "Edu-ColumnStats")
         verbose = context is not None and getattr(context, "verbose", False)
         recorder = StepRecorder() if verbose else None
 
@@ -133,8 +142,13 @@ class EduColumnStatsNode(BaseNode):
             recorder.record("deviations", "x − μ for every entry.", deviations=deviations)
 
         squared = deviations * deviations
-        denom = (n_rows - 1.0) if unbiased and n_rows > 1.0 else n_rows
-        variances = squared.sum(dim=0) / denom
+        # The sample std of a single row is undefined (0/0): NaN, as pandas
+        # and numpy give, rather than a confident 0.
+        denom = (n_rows - 1.0) if unbiased else n_rows
+        if denom > 0:
+            variances = squared.sum(dim=0) / denom
+        else:
+            variances = torch.full_like(col_sum, float("nan"))
         stds = variances.sqrt()
         if recorder is not None:
             recorder.record(

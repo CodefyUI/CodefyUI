@@ -43,6 +43,8 @@ from app.core.node_base import (
 from app.core.stateful_module import StatefulModuleMixin
 from app.core.step_trace import StepRecorder
 
+from ._params import param_bool
+
 
 class _SelfAttentionProjections(nn.Module):
     """Three W_q / W_k / W_v linear projections, seeded for reproducibility."""
@@ -180,7 +182,7 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
                 f"EduSelfAttention: input last dim {x.shape[-1]} does not match embed_dim={embed_dim}."
             )
 
-        causal = bool(params.get("causal", False))
+        causal = param_bool(params, "causal", False, "Edu-SelfAttention")
         temperature = max(1e-6, float(params.get("temperature", 1.0)))
 
         # Normalise to batch-first [B, seq, D] so we can use a single matmul path.

@@ -56,6 +56,28 @@ def _stable_hash(s: str, mod: int) -> int:
     return h % mod
 
 
+def _token_id(value: Any) -> int:
+    """An integer token id; a fractional value is refused, never floored."""
+    if isinstance(value, torch.Tensor):
+        value = value.item()
+    if isinstance(value, bool):
+        raise ValueError(f"Edu-TokenEmbedding: `token_ids` holds {value!r}; ids are whole numbers.")
+    if isinstance(value, int):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Edu-TokenEmbedding: `token_ids` holds {value!r}; ids are whole numbers."
+        ) from None
+    if not number.is_integer():
+        raise ValueError(
+            f"Edu-TokenEmbedding: `token_ids` holds {value!r}; ids are whole numbers. "
+            "Connect Tokenizer's ids, or the `tokens` input for strings."
+        )
+    return int(number)
+
+
 class EduTokenEmbeddingNode(BaseNode):
     NODE_NAME = "Edu-TokenEmbedding"
     CATEGORY = "LLM"
@@ -63,7 +85,8 @@ class EduTokenEmbeddingNode(BaseNode):
     DETAILS = (
         "Takes `tokens` (strings) or `token_ids` (ints). `hash` maps any token to "
         "a row by a stable hash; `ordinal` assigns rows in first-appearance order "
-        "and reports the assignment on `vocab`. The table is random, fixed by "
+        "and reports the assignment on `vocab`; it needs `vocab_size` of at least "
+        "the number of unique tokens. The table is random, fixed by "
         "`seed` and never trained — the Utility Embedding node has a learnable "
         "one."
     )
@@ -146,7 +169,7 @@ class EduTokenEmbeddingNode(BaseNode):
         tokens = inputs.get("tokens")
         token_ids = inputs.get("token_ids")
         if tokens is None and token_ids is None:
-            raise ValueError("EduTokenEmbedding requires either `tokens` or `token_ids` input.")
+            raise ValueError("Edu-TokenEmbedding requires either `tokens` or `token_ids` input.")
 
         embed_dim = max(1, int(params.get("embed_dim", 8)))
         vocab_size = max(1, int(params.get("vocab_size", 32)))
@@ -180,12 +203,24 @@ class EduTokenEmbeddingNode(BaseNode):
                 if label in ordinal_map:
                     row = ordinal_map[label]
                 else:
-                    row = len(ordinal_map) % vocab_size
+                    row = len(ordinal_map)
+                    if row >= vocab_size:
+                        # Wrapping around would give two distinct tokens one
+                        # vector while `vocab` still lists both.
+                        n_unique = len(dict.fromkeys(lab for lab, _ in self._normalise_seq(tokens, token_ids)))
+                        raise ValueError(
+                            f"Edu-TokenEmbedding: ordinal mode needs one row per unique "
+                            f"token, but the input has {n_unique} unique tokens and "
+                            f"vocab_size is {vocab_size}. Raise `vocab_size` to at least "
+                            f"{n_unique}, or use mode=hash."
+                        )
                     ordinal_map[label] = row
                     vocab_out.append(label)
                 ids.append(row)
             else:
-                raise ValueError(f"Unknown EduTokenEmbedding mode: {mode!r}")
+                raise ValueError(
+                    f"Edu-TokenEmbedding: unknown `mode` {mode!r}. Choose hash or ordinal."
+                )
 
         if not ids:
             embeddings = torch.zeros((0, embed_dim), dtype=torch.float32)
@@ -228,9 +263,14 @@ class EduTokenEmbeddingNode(BaseNode):
         if tokens is not None and token_ids is not None:
             t_list = list(tokens)
             i_list = list(token_ids)
-            n = min(len(t_list), len(i_list))
-            for i in range(n):
-                yield str(t_list[i]), int(i_list[i])
+            if len(t_list) != len(i_list):
+                raise ValueError(
+                    f"Edu-TokenEmbedding: `tokens` has {len(t_list)} entries but "
+                    f"`token_ids` has {len(i_list)}; connect lists of the same length, "
+                    "or only one of the two."
+                )
+            for t, i in zip(t_list, i_list):
+                yield str(t), _token_id(i)
             return
         if tokens is not None:
             for t in tokens:
@@ -238,4 +278,5 @@ class EduTokenEmbeddingNode(BaseNode):
             return
         # token_ids only — synthesize a label from the id.
         for i in token_ids or []:
-            yield f"<id:{int(i)}>", int(i)
+            tid = _token_id(i)
+            yield f"<id:{tid}>", tid

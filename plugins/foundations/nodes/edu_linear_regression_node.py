@@ -43,8 +43,8 @@ class EduLinearRegressionNode(BaseNode):
     DESCRIPTION = "Fits $y=Xw+b$ by closed form or gradient descent"
     DETAILS = (
         "`closed_form` solves the normal equation $w = (X^T X + \\lambda I)^{-1} "
-        "X^T y$, falling back to a least-squares solve when the matrix is "
-        "singular; `gradient_descent` runs `epochs` steps at `lr`. "
+        "X^T y$, falling back to the minimum-norm least-squares solution when "
+        "columns are collinear; `gradient_descent` runs `epochs` steps at `lr`. "
         "Both modes minimise $\\lVert Xw + b - y \\rVert^2 + \\lambda \\lVert w "
         "\\rVert^2$ (sklearn `Ridge(alpha=λ)`), with λ = `regularization` on the "
         "weights only; gradient descent steps on that loss divided by the row "
@@ -110,7 +110,7 @@ class EduLinearRegressionNode(BaseNode):
         x_query = inputs.get("x_query")
         if x_train is None or y_train is None or x_query is None:
             raise ValueError(
-                "EduLinearRegression requires `x_train`, `y_train`, `x_query` inputs."
+                "Edu-LinearRegression requires `x_train`, `y_train`, `x_query` inputs."
             )
 
         if not isinstance(x_train, torch.Tensor):
@@ -120,13 +120,25 @@ class EduLinearRegressionNode(BaseNode):
         if not isinstance(x_query, torch.Tensor):
             x_query = torch.as_tensor(x_query, dtype=torch.float32)
         x_train = x_train.float()
-        y_train = y_train.float().squeeze()
+        # reshape, not squeeze: one training row must stay a [1] target.
+        y_train = y_train.float().reshape(-1)
         x_query = x_query.float()
+        if x_train.dim() != 2 or x_query.dim() != 2:
+            raise ValueError(
+                f"Edu-LinearRegression: `x_train` and `x_query` must be [rows, features]; "
+                f"got {tuple(x_train.shape)} and {tuple(x_query.shape)}. For a single "
+                "feature, make it one column ([N, 1])."
+            )
 
         if x_train.shape[0] != y_train.shape[0]:
             raise ValueError(
-                f"EduLinearRegression: features and targets length mismatch — "
+                f"Edu-LinearRegression: features and targets length mismatch — "
                 f"{x_train.shape[0]} rows vs {y_train.shape[0]} labels."
+            )
+        if x_query.shape[1] != x_train.shape[1]:
+            raise ValueError(
+                f"Edu-LinearRegression: `x_query` has {x_query.shape[1]} features but "
+                f"`x_train` has {x_train.shape[1]}; feed both the same columns."
             )
 
         method = str(params.get("method", "closed_form"))
@@ -135,23 +147,33 @@ class EduLinearRegressionNode(BaseNode):
         n_features = x_train.shape[1]
         if method == "closed_form":
             # Augment with bias column.
-            ones = torch.ones(x_train.shape[0], 1)
+            ones = torch.ones(x_train.shape[0], 1, device=x_train.device)
             X_aug = torch.cat([x_train, ones], dim=1)
             # Ridge-aware: λ on weights only, not the bias term — standard convention.
-            reg = lam * torch.eye(n_features + 1)
+            reg = lam * torch.eye(n_features + 1, device=x_train.device)
             reg[-1, -1] = 0.0  # don't regularise bias
-            try:
-                theta = torch.linalg.solve(X_aug.T @ X_aug + reg, X_aug.T @ y_train)
-            except torch.linalg.LinAlgError:
-                # Fallback: use lstsq when the matrix is singular.
-                theta = torch.linalg.lstsq(X_aug.T @ X_aug + reg, X_aug.T @ y_train).solution
+            gram = X_aug.T @ X_aug + reg
+            # In float32, solve() rarely raises on a singular XᵀX (duplicated
+            # or collinear columns); it returns arbitrary weights instead. Test
+            # the rank of X itself and take the minimum-norm least-squares
+            # solution, as sklearn does, when it falls short.
+            rank_deficient = lam == 0 and int(
+                torch.linalg.matrix_rank(X_aug.detach().cpu())
+            ) < n_features + 1
+            if rank_deficient:
+                theta = torch.linalg.pinv(X_aug) @ y_train
+            else:
+                try:
+                    theta = torch.linalg.solve(gram, X_aug.T @ y_train)
+                except torch.linalg.LinAlgError:
+                    theta = torch.linalg.pinv(gram) @ (X_aug.T @ y_train)
             weights = theta[:n_features]
             bias = theta[n_features]
         elif method == "gradient_descent":
             lr = float(params.get("lr", 0.01))
             epochs = max(1, int(params.get("epochs", 100)))
-            weights = torch.zeros(n_features)
-            bias = torch.zeros(())
+            weights = torch.zeros(n_features, device=x_train.device)
+            bias = torch.zeros((), device=x_train.device)
             n = x_train.shape[0]
             for _ in range(epochs):
                 preds = x_train @ weights + bias
@@ -162,8 +184,17 @@ class EduLinearRegressionNode(BaseNode):
                 grad_b = (2 / n) * err.sum()
                 weights = weights - lr * grad_w
                 bias = bias - lr * grad_b
+            if not (torch.isfinite(weights).all() and torch.isfinite(bias)):
+                raise ValueError(
+                    f"Edu-LinearRegression: gradient descent diverged (weights became "
+                    f"inf/NaN) at `lr`={lr:g}. Lower `lr`, or scale the features to a "
+                    "similar range (e.g. with a Normalize node) first."
+                )
         else:
-            raise ValueError(f"EduLinearRegression: unknown method {method!r}")
+            raise ValueError(
+                f"Edu-LinearRegression: unknown `method` {method!r}. Choose closed_form "
+                "or gradient_descent."
+            )
 
         predictions = x_query @ weights + bias
 

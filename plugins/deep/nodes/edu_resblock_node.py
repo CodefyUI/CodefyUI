@@ -179,6 +179,12 @@ class EduResBlockNode(StatefulModuleMixin, BaseNode):
                 raise ValueError(
                     f"EduResBlock: time_emb last dim {time_emb.shape[-1]} doesn't match time_emb_dim={time_emb_dim}."
                 )
+            if time_emb.ndim != 2 or time_emb.shape[0] not in (1, x.shape[0]):
+                raise ValueError(
+                    f"EduResBlock: `time_emb` must be [1, {time_emb_dim}] or "
+                    f"[{x.shape[0]}, {time_emb_dim}] (one row per image in `x`); got "
+                    f"{tuple(time_emb.shape)}."
+                )
 
         module = self.get_or_build_module(context, params)
         out = module(x, time_emb)

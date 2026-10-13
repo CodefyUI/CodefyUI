@@ -41,6 +41,8 @@ _OPS = {
     "!=": lambda c, t: c != t,
 }
 
+_INT_DTYPES = (torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8)
+
 
 class EduFilterRowsNode(BaseNode):
     NODE_NAME = "FilterRows"
@@ -134,7 +136,10 @@ class EduFilterRowsNode(BaseNode):
             raise ValueError("FilterRows requires a `table` input.")
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(x, dtype=torch.float32)
-        x = x.float()
+        # The table keeps its own dtype: a float64 or int64 column rounded to
+        # float32 compares 80.000001 as 80.0 and 16777217 as 16777216.
+        if not (x.is_floating_point() or x.dtype in _INT_DTYPES):
+            x = x.float()
         if x.ndim != 2:
             raise ValueError(
                 f"FilterRows expects a 2D [rows, columns] tensor; got shape {tuple(x.shape)}."
@@ -168,9 +173,20 @@ class EduFilterRowsNode(BaseNode):
             raise ValueError(
                 f"FilterRows: unknown op {op!r}. Choose one of {list(_OPS)}."
             )
-        threshold = float(params.get("threshold", 0.0))
+        raw_threshold = params.get("threshold", 0.0)
+        try:
+            threshold = float(raw_threshold)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"FilterRows: `threshold` must be a number, got {raw_threshold!r}."
+            ) from None
 
         column = x[:, col_idx]
+        # Compare in the column's own precision. A Python float against an
+        # integer tensor would be compared in float32, so integers go to
+        # float64 (float32 on MPS, which has no float64).
+        if not column.is_floating_point():
+            column = column.to(torch.float32 if column.device.type == "mps" else torch.float64)
         mask = _OPS[op](column, threshold)
         filtered = x[mask]
         count = int(mask.sum().item())
