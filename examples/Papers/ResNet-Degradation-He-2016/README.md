@@ -24,6 +24,8 @@ CPU (Apple M3), torch 2.11, run seed 0. The graph executes in about 3.8 s.
 | Plain, 20 layers | 0.77 | 0.76 | 0.79 |
 | Residual, 20 layers | 0.95 | 0.91 | 0.27 |
 
+A 20-layer net of width 32 is sensitive to the CPU's rounding: the same graph and seed reach a residual training accuracy of 0.92 on the Linux CI runner (torch 2.14), and the plain net stays well below it there too. The test checks the claim (residual at least 0.88, and at least 0.10 above plain) rather than the M3 value.
+
 `backend/tests/test_paper_examples.py` runs this graph and checks these numbers.
 
 ## Scale

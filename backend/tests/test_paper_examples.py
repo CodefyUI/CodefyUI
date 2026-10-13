@@ -9,11 +9,14 @@ the graph's notes, and asserts the paper's claim on the result.
 
 Tolerances. A seeded CPU run is reproducible on one machine, but CI runs
 other CPUs, another BLAS and a newer torch, and a few hundred SGD steps
-amplify the last-bit differences. So each quoted number is checked against
-a band about as wide as the spread the same graph showed over five other
-run seeds on the authoring machine (narrow for the stable quantities, wide
-for the plain nets that sit on a plateau), and every claim is asserted as
-an inequality with a margin that held under all of those seeds.
+amplify the last-bit differences. A number from a stable regime (a net
+that trains smoothly, or the schedule) is checked against a band about as
+wide as the spread the graph showed over five other run seeds. A number
+from a regime a different CPU can move further than that (a 20-layer
+narrow net, the no-BatchNorm net at lr 0.5, the stalled sigmoid net) is
+checked only as the claim: an inequality with a margin that held under
+all of those seeds and on CI. The 20-layer residual net is the measured
+case: 0.95 training accuracy on an Apple M3, 0.92 on the Linux runner.
 
 The graphs all read MNIST, which the repository ships under
 ``backend/data``, so nothing here downloads. The seven together run in
@@ -141,11 +144,12 @@ def test_batchnorm_trains_at_a_rate_the_plain_net_cannot_use():
     r, _ = _run(name)
     bn, plain = _losses(r, "train-bn"), _losses(r, "train-plain")
 
-    assert bn[0] == pytest.approx(0.43, abs=0.06)
-    assert 0.08 < bn[-1] < 0.15, bn
-    assert _acc(r, "eval-test-bn") == pytest.approx(0.90, abs=0.05)
-    assert plain[-1] == pytest.approx(2.11, abs=0.2)
-    assert _acc(r, "eval-test-plain") < 0.35
+    assert bn[0] < 0.6 and bn[-1] < 0.2, bn
+    assert _acc(r, "eval-test-bn") >= 0.85
+    # lr 0.5 without BatchNorm is chaotic, so only the claim is pinned:
+    # the plain net is still far from trained after the same 3 epochs.
+    assert plain[-1] > 1.5, plain
+    assert _acc(r, "eval-test-plain") < 0.5
     assert plain[-1] > 10 * bn[-1]
 
 
@@ -153,18 +157,21 @@ def test_batchnorm_trains_at_a_rate_the_plain_net_cannot_use():
 
 def test_the_plain_deep_net_fits_its_training_set_worse_than_the_residual_one():
     name = "ResNet-Degradation-He-2016"
-    _quoted(name, "training accuracy of 0.95 (test 0.91)", "reaches 0.77 (test 0.76)",
-            "ends at 0.79", "at 0.27")
+    _quoted(name, "training accuracy of 0.95 on an Apple M3", "0.92 on the Linux CI runner",
+            "at 0.77 on the M3 (test 0.76)", "ends at 0.79", "at 0.27")
     r, _ = _run(name)
     res_train, plain_train = _acc(r, "eval-train-residual"), _acc(r, "eval-train-plain")
+    res_test, plain_test = _acc(r, "eval-test-residual"), _acc(r, "eval-test-plain")
+    res_loss, plain_loss = _losses(r, "train-residual")[-1], _losses(r, "train-plain")[-1]
+    measured = (res_train, plain_train, res_test, plain_test, res_loss, plain_loss)
 
-    assert res_train == pytest.approx(0.95, abs=0.03)
-    assert _acc(r, "eval-test-residual") == pytest.approx(0.91, abs=0.03)
-    assert 0.55 < plain_train < 0.85, plain_train
-    assert 0.55 < _acc(r, "eval-test-plain") < 0.85
-    assert res_train >= plain_train + 0.1
-    assert 0.6 < _losses(r, "train-plain")[-1] < 1.1
-    assert 0.2 < _losses(r, "train-residual")[-1] < 0.4
+    # A 20-layer net of width 32 moves with the CPU's rounding (0.95 on the
+    # M3, 0.92 on the Linux runner), so the claim is pinned, not the value.
+    assert res_train >= 0.88, measured
+    assert res_train >= plain_train + 0.10, measured
+    assert plain_train < 0.85, measured
+    assert res_test >= 0.85 and res_test >= plain_test + 0.08, measured
+    assert res_loss < 0.45 and plain_loss > 1.8 * res_loss, measured
 
 
 def test_the_residual_model_uses_the_layer_editor_add_merge():
@@ -263,12 +270,12 @@ def test_the_deep_sigmoid_net_stalls_with_a_small_gradient():
     sig, relu = _losses(r, "train-sigmoid"), _losses(r, "train-relu")
     gn_sig, gn_relu = late_grad_norm("train-sigmoid"), late_grad_norm("train-relu")
 
-    assert sig[0] == pytest.approx(2.35, abs=0.03)
-    assert sig[-1] == pytest.approx(2.30, abs=0.01)
+    measured = (sig[0], sig[-1], gn_sig, relu[0], relu[-1], gn_relu)
+    # The stalled sigmoid net is pinned as the claim: its loss stays on the
+    # plateau of a uniform guess (ln 10 = 2.30) with a small gradient.
+    assert sig[-1] > 2.25 and sig[0] - sig[-1] < 0.15, measured
     assert _acc(r, "eval-test-sigmoid") < 0.2
-    assert gn_sig == pytest.approx(0.21, abs=0.05)
-    assert relu[0] == pytest.approx(1.66, abs=0.3)
-    assert 0.12 < relu[-1] < 0.35, relu
-    assert _acc(r, "eval-test-relu") == pytest.approx(0.91, abs=0.04)
-    assert 0.9 < gn_relu < 1.9, gn_relu
-    assert gn_relu > 3 * gn_sig
+    assert gn_sig < 0.35, measured
+    assert relu[-1] < 0.4 and relu[0] - relu[-1] > 1.0, measured
+    assert _acc(r, "eval-test-relu") >= 0.85
+    assert gn_relu > 3 * gn_sig, measured
