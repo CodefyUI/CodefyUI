@@ -20,6 +20,7 @@ import type {
   PluginCatalogEntry,
 } from '../../api/rest';
 import { pluginEntry } from '../../test/pluginEntry';
+import { settle } from '../../test/utils';
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
@@ -536,9 +537,13 @@ describe('CustomTab', () => {
     render(<CustomTab />);
     await screen.findByText('No plugins installed');
     const refresh = vi.fn().mockResolvedValue(undefined);
-    usePluginStore.setState({ refresh });
+    act(() => {
+      usePluginStore.setState({ refresh });
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    // Refresh also re-reads the file list and the pack catalog: let both land.
+    await settle();
 
     expect(refresh).toHaveBeenCalledTimes(1);
   });

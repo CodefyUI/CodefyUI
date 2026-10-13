@@ -1050,7 +1050,9 @@ describe('TabBar', () => {
         expect(removeTab).toHaveBeenLastCalledWith(ids[1]);
         expect(useTabStore.getState().tabs.map((t) => t.id)).toEqual([ids[2]]);
       } finally {
-        useTabStore.setState({ removeTab: realRemoveTab });
+        act(() => {
+          useTabStore.setState({ removeTab: realRemoveTab });
+        });
       }
     });
 

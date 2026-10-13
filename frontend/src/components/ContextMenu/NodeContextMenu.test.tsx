@@ -237,7 +237,10 @@ describe('useNoteContextMenuItems', () => {
     );
     const items = result.current;
     expect(items[0].label).toBe('Bind to Nearest Node');
-    items[0].action();
+    // The action writes the tab store the mounted hook reads.
+    act(() => {
+      items[0].action();
+    });
     expect(bindSpy).toHaveBeenCalledWith(noteId);
   });
 
@@ -258,7 +261,9 @@ describe('useNoteContextMenuItems', () => {
     );
     const items = result.current;
     expect(items[0].label).toBe('Unbind Note');
-    items[0].action();
+    act(() => {
+      items[0].action();
+    });
     expect(unbindSpy).toHaveBeenCalledWith(noteId);
   });
 
@@ -290,7 +295,9 @@ describe('useNoteContextMenuItems', () => {
     expect(yellow.color).toBe('#999');
 
     // Selecting a color forwards to updateNoteData.
-    yellow.action();
+    act(() => {
+      yellow.action();
+    });
     expect(updateSpy).toHaveBeenCalledWith(noteId, { noteColor: '#3d3d1a' });
 
     // The "Change Color" header is a no-op action (exercise it for coverage).
@@ -380,7 +387,9 @@ describe('useNodeContextMenuItems — bypass', () => {
       'Bypass',
       'Delete',
     ]);
-    result.current[3].action();
+    act(() => {
+      result.current[3].action();
+    });
     expect(spy).toHaveBeenCalledWith('n1');
   });
 
@@ -395,7 +404,7 @@ describe('useNodeContextMenuItems — bypass', () => {
   it('omits the entry for node kinds bypass does not apply to', () => {
     for (const type of ['noteNode', 'start', 'presetNode']) {
       seedNode('n1', { type });
-      const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+      const { result, unmount } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
       expect(result.current.map((i) => i.label)).toEqual([
         'Open details',
         'Rename',
@@ -405,6 +414,8 @@ describe('useNodeContextMenuItems — bypass', () => {
       // Duplicate keeps the divider that would otherwise sit under Bypass, so
       // Delete stays visually separated either way.
       expect(result.current[2].dividerAfter).toBe(true);
+      // Gone before the next seed writes the store it reads.
+      unmount();
     }
   });
 
@@ -415,13 +426,14 @@ describe('useNodeContextMenuItems — bypass', () => {
     // the run cannot honour, which the backend refuses outright.
     for (const graphType of ['GraphInput', 'GraphOutput']) {
       seedNode('n1', { data: { label: 'n1', type: graphType, params: {} } });
-      const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+      const { result, unmount } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
       expect(result.current.map((i) => i.label)).toEqual([
         'Open details',
         'Rename',
         'Duplicate',
         'Delete',
       ]);
+      unmount();
     }
   });
 });
@@ -460,11 +472,13 @@ describe('subgraph context menu entries', () => {
       'Collapse to subgraph',
     );
 
-    store.setNodes(
-      useTabStore.getState().getActiveTab().nodes.map((n) => ({
-        ...n, selected: true,
-      })),
-    );
+    act(() => {
+      store.setNodes(
+        useTabStore.getState().getActiveTab().nodes.map((n) => ({
+          ...n, selected: true,
+        })),
+      );
+    });
     const many = renderHook(() => useNodeContextMenuItems('a', callbacks));
     expect(many.result.current.map((i) => i.label)).toContain(
       'Collapse to subgraph',
@@ -504,7 +518,9 @@ describe('subgraph context menu entries', () => {
     const collapse = result.current.find(
       (i) => i.label === 'Collapse to subgraph',
     )!;
-    collapse.action();
+    act(() => {
+      collapse.action();
+    });
 
     const toasts = useToastStore.getState().toasts;
     expect(toasts).toHaveLength(1);

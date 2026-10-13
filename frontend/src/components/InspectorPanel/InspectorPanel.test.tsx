@@ -24,6 +24,7 @@ import type {
   SegmentGroup,
 } from '../../types';
 import type { Node, Edge } from '@xyflow/react';
+import { renderSettled } from '../../test/utils';
 
 vi.mock('../../api/executionOutputs', async () => {
   const actual = await vi.importActual<typeof import('../../api/executionOutputs')>(
@@ -409,7 +410,7 @@ describe('InspectorPanel — single node mode', () => {
   it('clicks the Forward tab handler explicitly', async () => {
     const n = node('a', 'NodeA', { outputs: ['out'] });
     seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     // move away then click Forward to fire its onClick handler
     fireEvent.click(screen.getByRole('tab', { name: 'Backward' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Forward' }));
@@ -432,7 +433,7 @@ describe('InspectorPanel — single node mode', () => {
         edge('e2', 's2', 'a', { sourceHandle: 'q' }), // 2 inputs
       ],
     });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     expect(screen.getByText('Inputs (2)')).toBeInTheDocument();
     expect(screen.getByText('Outputs (1)')).toBeInTheDocument();
     expect(screen.getByText('S1.p')).toBeInTheDocument();
@@ -444,7 +445,7 @@ describe('InspectorPanel — single node mode', () => {
   it('renders the inputs empty state when outputs outnumber absent inputs', async () => {
     const n = node('a', 'NodeA', { outputs: ['o1', 'o2'] }); // 2 outputs, 0 inputs
     seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     expect(screen.getByText('Inputs (0)')).toBeInTheDocument();
     expect(screen.getByText('No inputs connected')).toBeInTheDocument();
     expect(screen.getByText('Outputs (2)')).toBeInTheDocument();
@@ -461,7 +462,9 @@ describe('InspectorPanel — single node mode', () => {
     expect(screen.getByRole('tab', { name: 'Steps' })).toHaveAttribute('aria-selected', 'true');
     // change selection in the store and rerender
     const n2 = node('b', 'NodeB', { outputs: ['out'] });
-    seedTab({ lastRunId: 'run1', selectedNodeId: 'b', nodes: [n2], edges: [] });
+    act(() => {
+      seedTab({ lastRunId: 'run1', selectedNodeId: 'b', nodes: [n2], edges: [] });
+    });
     rerender(<InspectorPanel />);
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Forward' })).toHaveAttribute(
@@ -614,7 +617,7 @@ describe('InspectorPanel — segment mode', () => {
         edge('e4', 'ext', 'h', { sourceHandle: null, targetHandle: 'z' }),
       ],
     });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     // only one unique input surfaces
     expect(screen.getByText('Segment inputs (1)')).toBeInTheDocument();
   });
@@ -638,7 +641,7 @@ describe('InspectorPanel — segment mode', () => {
         edge('e1', 'ext', 'headnode123', { sourceHandle: 'feed', targetHandle: 'q' }),
       ],
     });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     // displayName uses label '' (falsy → '' is used as targetLabel via ?? only on null/undef;
     // label is '' which is defined, so targetLabel is '' → "→ .q")
     expect(screen.getByText(/→ \.q/)).toBeInTheDocument();
@@ -717,7 +720,7 @@ describe('InspectorPanel — segment mode', () => {
     await waitFor(() => expect(container.textContent).toContain('…'));
   });
 
-  it('skips a segment input edge whose data.type is trigger (data present)', () => {
+  it('skips a segment input edge whose data.type is trigger (data present)', async () => {
     const head = node('h', 'Head');
     const tail = node('t', 'Tail', { outputs: ['out'] });
     const ext = node('ext', 'Ext');
@@ -731,7 +734,7 @@ describe('InspectorPanel — segment mode', () => {
         edge('e1', 'ext', 'h', { sourceHandle: 'feed', targetHandle: 'x', data: { type: 'trigger' } }),
       ],
     });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     // trigger input filtered → zero inputs
     expect(screen.getByText('Segment inputs (0)')).toBeInTheDocument();
   });
@@ -753,7 +756,7 @@ describe('InspectorPanel — segment mode', () => {
         edge('e2', 'ext', 'midnode123', { sourceHandle: 'feed', targetHandle: null }),
       ],
     });
-    render(<InspectorPanel />);
+    await renderSettled(<InspectorPanel />);
     // displayName: "→ {midnod}." (sliced id + empty targetHandle)
     expect(screen.getByText(/→ midnod\./)).toBeInTheDocument();
   });

@@ -74,8 +74,9 @@ describe('WelcomeScreen', () => {
     vi.restoreAllMocks();
   });
 
-  it('greets with the product name, a tagline and the ways in', () => {
+  it('greets with the product name, a tagline and the ways in', async () => {
     render(<WelcomeScreen />);
+    await examplesSettled();
     expect(screen.getByText('CodefyUI')).toBeInTheDocument();
     expect(
       screen.getByText('Build deep learning models by dragging nodes onto a canvas.'),
@@ -130,8 +131,9 @@ describe('WelcomeScreen', () => {
     expect(mockedImport).not.toHaveBeenCalled();
   });
 
-  it('opens a blank graph, which is what takes the workspace out of this state', () => {
+  it('opens a blank graph, which is what takes the workspace out of this state', async () => {
     render(<WelcomeScreen />);
+    await examplesSettled();
     fireEvent.click(screen.getByText('New blank graph'));
     const { tabs, activeTabId } = useTabStore.getState();
     expect(tabs).toHaveLength(1);
@@ -139,9 +141,10 @@ describe('WelcomeScreen', () => {
     expect(activeTabId).toBe(tabs[0].id);
   });
 
-  it('opens the full gallery modal from the secondary button', () => {
+  it('opens the full gallery modal from the secondary button', async () => {
     useUIStore.setState({ templateGalleryOpen: false });
     render(<WelcomeScreen />);
+    await examplesSettled();
     fireEvent.click(screen.getByText('Browse all templates'));
     expect(useUIStore.getState().templateGalleryOpen).toBe(true);
   });

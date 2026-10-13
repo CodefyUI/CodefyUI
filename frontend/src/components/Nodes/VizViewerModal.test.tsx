@@ -89,7 +89,9 @@ describe('VizViewerModal', () => {
     const { rerender } = render(<VizViewerModal />);
     expect(dialog()).toBeNull();
 
-    seed({ nodes: [tabNode('plain', 'baseNode')], vizModalNodeId: 'plain' });
+    act(() => {
+      seed({ nodes: [tabNode('plain', 'baseNode')], vizModalNodeId: 'plain' });
+    });
     rerender(<VizViewerModal />);
     expect(dialog()).toBeNull();
   });
