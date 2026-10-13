@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act, createEvent } from '@testing-library/react';
-import { RunsPanel, formatDuration, formatStarted, runDevice } from './RunsPanel';
+import {
+  DIGEST_SHORT_LENGTH,
+  RunsPanel,
+  formatDuration,
+  formatStarted,
+  requestedDeviceNote,
+  runDevice,
+} from './RunsPanel';
 import styles from './RunsPanel.module.css';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
@@ -486,6 +493,39 @@ describe('RunsPanel — detail view', () => {
     expect(
       within(screen.getByTestId('run-detail')).queryByText(t('runs.detail.deterministic')),
     ).toBeNull();
+  });
+
+  // #344: the environment that executed the run, short in the header and
+  // whole on hover; absent for a run that has not recorded one.
+  it('shows the environment digest short, with the whole digest on hover', async () => {
+    const digest = 'ab'.repeat(32);
+    const recorded = { ...liveRun, fingerprint_digest: digest };
+    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
+    await renderPanel([recorded]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    const chip = screen.getByTestId('run-env-digest');
+    expect(chip.textContent).toBe(
+      `${t('runs.detail.environment')} ${digest.slice(0, DIGEST_SHORT_LENGTH)}`,
+    );
+    expect(chip.getAttribute('title')).toBe(t('runs.detail.environmentTitle', { digest }));
+  });
+
+  it('shows no environment digest for a run that recorded none', async () => {
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    expect(screen.queryByTestId('run-env-digest')).toBeNull();
+  });
+
+  it('names the requested device on the resolved one when they differ', async () => {
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    const device = within(screen.getByTestId('run-detail')).getByText('cuda:0');
+    expect(device.getAttribute('title')).toBe(
+      t('runs.detail.requestedDevice', { device: 'cuda' }),
+    );
   });
 
   it('shows the deterministic marker beside the seed when it was requested', async () => {
@@ -1103,5 +1143,18 @@ describe('RunsPanel helpers', () => {
     expect(runDevice(makeRun({ id: 'a', queue_key: null, options: { device: 'cpu' } })))
       .toBe('cpu');
     expect(runDevice(makeRun({ id: 'a', queue_key: null, options: {} }))).toBe('-');
+  });
+
+  it('notes the requested device only when the scheduler resolved another', () => {
+    expect(requestedDeviceNote(makeRun({ id: 'a', queue_key: 'mps:0', options: { device: 'auto' } })))
+      .toBe('auto');
+    expect(requestedDeviceNote(makeRun({ id: 'a', queue_key: 'cpu', options: { device: 'cpu' } })))
+      .toBeNull();
+    expect(requestedDeviceNote(makeRun({ id: 'a', queue_key: null, options: { device: 'auto' } })))
+      .toBeNull();
+    expect(requestedDeviceNote(makeRun({ id: 'a', queue_key: 'cpu', options: {} }))).toBeNull();
+    expect(requestedDeviceNote(makeRun({ id: 'a', queue_key: 'cpu', options: { device: '' } })))
+      .toBeNull();
+    expect(requestedDeviceNote(null)).toBeNull();
   });
 });

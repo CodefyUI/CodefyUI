@@ -2,8 +2,8 @@
 
 Storage only. No scheduling, no engine calls, no HTTP: this module owns the
 ``exec_runs`` / ``exec_run_metrics`` / ``exec_run_events`` /
-``exec_run_artifacts`` tables created by ``migrations.MIGRATION_003`` and
-nothing else. The naming decision behind the ``exec_`` prefix (there is an
+``exec_run_artifacts`` tables created by ``migrations.MIGRATION_003``, plus
+``exec_run_fingerprints`` (``MIGRATION_006``, #344), and nothing else. The naming decision behind the ``exec_`` prefix (there is an
 unrelated, already-shipped ``runs`` table for published-app invocations)
 lives in the comment block above ``MIGRATION_003``.
 
@@ -50,6 +50,7 @@ migrated one over a comment.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -106,7 +107,8 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
-    "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant"
+    "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant, "
+    "fingerprint_digest, execution_facts"
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
@@ -317,6 +319,17 @@ class RunRecord:
     #: Runs panel group a sweep's children without a new endpoint.
     sweep_id: str | None = None
     sweep_variant: int | None = None
+    #: The environment that STARTED the run (#344), as the sha256 of its
+    #: canonical fingerprint (``core.env_fingerprint``); the document itself
+    #: is in ``exec_run_fingerprints`` (``RunStore.get_fingerprint``). Unlike
+    #: ``git_commit`` / ``plugin_pins``, which describe the submission, this
+    #: is written by ``mark_running``. None until then, and for runs that
+    #: started before MIGRATION_006.
+    fingerprint_digest: str | None = None
+    #: Submitted intent next to what the run resolved -- see
+    #: ``env_fingerprint.execution_facts``. Same lifecycle as the digest.
+    #: Small, so it rides on every list row; the fingerprint does not.
+    execution_facts: dict[str, Any] | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
@@ -342,6 +355,8 @@ class RunRecord:
             plugin_pins=_loads(row["plugin_pins"]),
             sweep_id=row["sweep_id"],
             sweep_variant=row["sweep_variant"],
+            fingerprint_digest=row["fingerprint_digest"],
+            execution_facts=_loads(row["execution_facts"]),
         )
 
 
@@ -705,6 +720,8 @@ class RunStore:
 
     async def mark_running(
         self, run_id: str, *, queue_key: str | None = None,
+        fingerprint: dict[str, Any] | None = None,
+        execution_facts: dict[str, Any] | None = None,
     ) -> bool:
         """Move a run to ``running``. False when no such run exists.
 
@@ -712,18 +729,70 @@ class RunStore:
         retried run — must not erase when the work actually began. A
         *queue_key* of None likewise leaves any previously resolved device
         in place.
+
+        *fingerprint* is the environment executing the run (#344). Its
+        digest is computed HERE, from the same canonical bytes that are
+        stored, so the row's ``fingerprint_digest`` and the document it
+        names cannot disagree. The document goes into the content-addressed
+        ``exec_run_fingerprints`` table (``INSERT OR IGNORE``: the first run
+        in an environment writes it, every later one just points at it), in
+        the same transaction as the status change. None for either argument
+        leaves the stored value alone, like *queue_key*; a re-mark that does
+        pass them records the environment that started the run most
+        recently, which is the one that executes it.
         """
         stamp = utc_now_iso()
+        digest: str | None = None
+        canonical: str | None = None
+        schema_version: int | None = None
+        if fingerprint is not None:
+            from .env_fingerprint import SCHEMA_VERSION, canonical_json
+
+            raw = canonical_json(fingerprint)
+            canonical = raw.decode("utf-8")
+            digest = hashlib.sha256(raw).hexdigest()
+            version = fingerprint.get("schema_version")
+            schema_version = version if isinstance(version, int) \
+                else SCHEMA_VERSION
+        facts = None if execution_facts is None else _dumps(execution_facts)
 
         def _update(conn: sqlite3.Connection) -> int:
-            return conn.execute(
-                "UPDATE exec_runs SET status = ?, "
-                "started_at = COALESCE(started_at, ?), "
-                "queue_key = COALESCE(?, queue_key) WHERE id = ?",
-                (STATUS_RUNNING, stamp, queue_key, run_id),
-            ).rowcount
+            with transaction(conn):
+                if digest is not None:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO exec_run_fingerprints "
+                        "(digest, schema_version, fingerprint, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (digest, schema_version, canonical, stamp),
+                    )
+                return conn.execute(
+                    "UPDATE exec_runs SET status = ?, "
+                    "started_at = COALESCE(started_at, ?), "
+                    "queue_key = COALESCE(?, queue_key), "
+                    "fingerprint_digest = COALESCE(?, fingerprint_digest), "
+                    "execution_facts = COALESCE(?, execution_facts) "
+                    "WHERE id = ?",
+                    (STATUS_RUNNING, stamp, queue_key, digest, facts, run_id),
+                ).rowcount
 
         return await self.db.run(_update) > 0
+
+    async def get_fingerprint(self, digest: str) -> dict[str, Any] | None:
+        """The environment document a ``fingerprint_digest`` names, or None.
+
+        Independent of any run: retention and ``delete_run`` leave this
+        table alone, so a digest copied out of a run (into a report, a
+        sweep's notes) still resolves after the run is gone.
+        """
+        def _select(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT fingerprint FROM exec_run_fingerprints "
+                "WHERE digest = ?", (digest,),
+            ).fetchone()
+            return None if row is None else row["fingerprint"]
+
+        raw = await self.db.run(_select)
+        return None if raw is None else json.loads(raw)
 
     async def mark_finished(
         self,

@@ -168,6 +168,21 @@ export interface RunSummary {
   git_dirty: boolean | null;
   plugin_pins: Record<string, unknown> | null;
   /**
+   * sha256 of the environment that STARTED the run (#344): the canonical
+   * JSON of `GET /api/system/fingerprint`'s document as it stood then.
+   * `null` until the run starts, and for runs from before the server
+   * recorded it. Optional because the plugin contract's `RunSummary` does
+   * not carry it (yet); the server always sends it.
+   */
+  fingerprint_digest?: string | null;
+  /**
+   * What the run asked for next to what it got: `requested.device` /
+   * `seed` / `deterministic` (+ the graph's own settings) and
+   * `resolved.device` / `seed` / `deterministic` / `numerics`. Same
+   * lifecycle as `fingerprint_digest`.
+   */
+  execution_facts?: Record<string, unknown> | null;
+  /**
    * 1-based place in this run's OWN device queue (#123).
    *
    * `null` is a real answer, not zero: the run is not queued, or the queue

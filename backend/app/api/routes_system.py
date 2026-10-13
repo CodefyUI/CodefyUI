@@ -1,9 +1,15 @@
 """System / environment introspection endpoints (compute devices, etc.)."""
-from fastapi import APIRouter
+import asyncio
+import re
+
+from fastapi import APIRouter, HTTPException, Request
 
 from ..core.device_utils import describe_accelerator
+from ..core.env_fingerprint import collect_with_digest
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 @router.get("/devices")
@@ -16,3 +22,40 @@ async def list_devices() -> dict:
     graph toolbar, node params) renders this one list.
     """
     return describe_accelerator()
+
+
+@router.get("/fingerprint")
+async def get_fingerprint() -> dict:
+    """This server's environment fingerprint and its digest (#344).
+
+    ``{"fingerprint": {...}, "digest": "<sha256 hex>"}``. The document is
+    ``core.env_fingerprint.collect_fingerprint`` (versioned by its
+    ``schema_version``); the digest is the sha256 of its canonical JSON and
+    covers every key. It is the same document a run records when it starts,
+    so comparing this digest with a run's ``fingerprint_digest`` answers
+    "would a run started now execute in the same environment". No
+    hostname, username or local path is included.
+    """
+    fingerprint, digest = await asyncio.to_thread(collect_with_digest)
+    return {"fingerprint": fingerprint, "digest": digest}
+
+
+@router.get("/fingerprints/{digest}")
+async def get_recorded_fingerprint(digest: str, request: Request) -> dict:
+    """A fingerprint some run recorded, by its digest. 404 when unknown.
+
+    Resolves a ``fingerprint_digest`` after its runs are gone: the stored
+    documents are content-addressed and retention does not prune them.
+    """
+    if _DIGEST.match(digest) is None:
+        raise HTTPException(status_code=404,
+                            detail=f"no recorded fingerprint '{digest}'")
+    service = getattr(request.app.state, "run_service", None)
+    if service is None:
+        raise HTTPException(status_code=503,
+                            detail="run service not initialised")
+    fingerprint = await service.store.get_fingerprint(digest)
+    if fingerprint is None:
+        raise HTTPException(status_code=404,
+                            detail=f"no recorded fingerprint '{digest}'")
+    return {"fingerprint": fingerprint, "digest": digest}

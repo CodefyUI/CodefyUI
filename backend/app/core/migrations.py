@@ -6,7 +6,8 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 
 001/002 are the Stage-2 publish subsystem; 003 is the Run Service store
 (see the naming-decision block above ``MIGRATION_003``); 004 is the sweep
-schema (#140); 005 indexes metrics by producer (#641).
+schema (#140); 005 indexes metrics by producer (#641); 006 records the
+environment that executed each run (#344).
 """
 
 from __future__ import annotations
@@ -298,8 +299,37 @@ CREATE INDEX idx_exec_run_metrics_producer
   ON exec_run_metrics(run_id, name, node_id, step);
 """
 
+# ── Migration 006: the environment that executed a run (#344) ─────────────
+#
+# ``git_commit`` / ``plugin_pins`` describe the user's project at SUBMISSION.
+# These describe the CodefyUI process that STARTED the run, written by
+# ``RunStore.mark_running``:
+#
+# - ``exec_run_fingerprints`` is content-addressed: one row per distinct
+#   environment, keyed by the sha256 of its canonical JSON
+#   (``core.env_fingerprint``). A server runs thousands of runs in one
+#   environment; storing the same few kilobytes on every row would be
+#   waste, and a digest alone could not explain a mismatch. Nothing
+#   references it by foreign key and retention does not prune it, so a
+#   digest stays resolvable after its runs are deleted.
+# - ``exec_runs.fingerprint_digest`` points into it. NULL = the run never
+#   started, or started before this migration.
+# - ``exec_runs.execution_facts`` is small per-run JSON: what was requested
+#   next to what was resolved (device, seed, determinism, torch numerics
+#   switches). NULL on the same terms.
+MIGRATION_006 = """
+CREATE TABLE exec_run_fingerprints (
+  digest         TEXT PRIMARY KEY,       -- sha256 hex of the canonical JSON
+  schema_version INTEGER NOT NULL,
+  fingerprint    TEXT NOT NULL,          -- JSON, canonical form
+  created_at     TEXT NOT NULL           -- first time this environment ran
+);
+ALTER TABLE exec_runs ADD COLUMN fingerprint_digest TEXT;
+ALTER TABLE exec_runs ADD COLUMN execution_facts TEXT;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
-                         MIGRATION_004, MIGRATION_005]
+                         MIGRATION_004, MIGRATION_005, MIGRATION_006]
 
 
 def _is_comment_only(statement: str) -> bool:
