@@ -98,6 +98,24 @@ const zhTW: ExampleTranslations = {
   'RNN/LSTM-Recall-First-Token': {
     description: '把一個 token 帶過 9 步雜訊',
   },
+  'Papers/Gradient-Clipping-RNN': {
+    description: '裁剪梯度後 RNN 就學得會',
+  },
+  'Papers/Autoencoder-MNIST-2D': {
+    description: '每個數字壓成 2 個數，和 PCA 對照',
+  },
+  'Papers/LSTM-Forecast-Sine': {
+    description: '預測波形的下一個值',
+  },
+  'Papers/Transformer-Sort': {
+    description: '用自注意力排序 10 個數字',
+  },
+  'Papers/Weight-Decay-Regression': {
+    description: '同一個網路，有無權重衰減',
+  },
+  'Papers/Early-Stopping-Regression': {
+    description: '驗證損失回升時就停止訓練',
+  },
 
   // ── Reinforcement learning ──
   'RL/RLHF-Reward-and-KL': {

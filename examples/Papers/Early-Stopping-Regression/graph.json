@@ -1,0 +1,669 @@
+{
+  "name": "Early stopping on validation loss",
+  "description": "Stop when validation loss turns up",
+  "gallery": {
+    "section": "papers",
+    "order": 16
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "gen",
+      "type": "PythonScript",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # 20 noisy samples of sin(3x) to train on, 20 more to validate on, and a\n    # dense grid of 200 points with the clean curve to test against.\n    g = torch.Generator().manual_seed(0)\n    def draw(n):\n        x = torch.rand(n, 1, generator=g) * 2 - 1\n        return x, torch.sin(3 * x) + 0.3 * torch.randn(n, 1, generator=g)\n    x_train, y_train = draw(20)\n    x_val, y_val = draw(20)\n    grid = torch.linspace(-1, 1, 200).unsqueeze(1)\n    return {\"out1\": x_train, \"out2\": y_train, \"out3\": x_val, \"out4\": y_val,\n            \"out5\": grid, \"out6\": torch.sin(3 * grid)}\n",
+          "input_ports": 1,
+          "output_ports": 6,
+          "input_types": "TENSOR",
+          "output_types": "TENSOR,TENSOR,TENSOR,TENSOR,TENSOR,TENSOR"
+        }
+      }
+    },
+    {
+      "id": "ds",
+      "type": "TensorDataset",
+      "position": {
+        "x": 360,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "target_type": "number"
+        }
+      }
+    },
+    {
+      "id": "dl",
+      "type": "DataLoader",
+      "position": {
+        "x": 360,
+        "y": -40
+      },
+      "data": {
+        "params": {
+          "batch_size": 20,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "ds-val",
+      "type": "TensorDataset",
+      "position": {
+        "x": 360,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "target_type": "number"
+        }
+      }
+    },
+    {
+      "id": "dl-val",
+      "type": "DataLoader",
+      "position": {
+        "x": 360,
+        "y": 560
+      },
+      "data": {
+        "params": {
+          "batch_size": 20,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 360,
+        "y": 900
+      },
+      "data": {
+        "params": {
+          "type": "MSELoss"
+        }
+      }
+    },
+    {
+      "id": "model-full",
+      "type": "SequentialModel",
+      "position": {
+        "x": 680,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Linear\",\"params\":{\"in_features\":1,\"out_features\":128}},{\"id\":\"l1\",\"type\":\"Tanh\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":128}},{\"id\":\"l3\",\"type\":\"Tanh\"},{\"id\":\"l4\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":1}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"eout\",\"source\":\"l4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-full",
+      "type": "Optimizer",
+      "position": {
+        "x": 680,
+        "y": -40
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "train-full",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1000,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "epochs": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer-full",
+      "type": "Inference",
+      "position": {
+        "x": 1320,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "mse-full",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1320,
+        "y": -40
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-full",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 220
+      },
+      "data": {
+        "params": {
+          "label": "Test MSE, all 1000 epochs"
+        }
+      }
+    },
+    {
+      "id": "model-early",
+      "type": "SequentialModel",
+      "position": {
+        "x": 680,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Linear\",\"params\":{\"in_features\":1,\"out_features\":128}},{\"id\":\"l1\",\"type\":\"Tanh\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":128}},{\"id\":\"l3\",\"type\":\"Tanh\"},{\"id\":\"l4\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":1}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"eout\",\"source\":\"l4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-early",
+      "type": "Optimizer",
+      "position": {
+        "x": 680,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "train-early",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1000,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "epochs": 1000,
+          "device": "auto",
+          "early_stopping_patience": 100,
+          "monitor": "val_loss"
+        }
+      }
+    },
+    {
+      "id": "infer-early",
+      "type": "Inference",
+      "position": {
+        "x": 1320,
+        "y": 480
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "mse-early",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1320,
+        "y": 740
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-early",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 1000
+      },
+      "data": {
+        "params": {
+          "label": "Test MSE, early stopping"
+        }
+      }
+    },
+    {
+      "id": "curves",
+      "type": "PythonScript",
+      "position": {
+        "x": 1640,
+        "y": 100
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Validation loss per epoch for both runs, and where the early-stopped\n    # run found its best epoch.\n    points, labels = [], []\n    for name, losses in ((\"trained to epoch 1000\", inputs[\"in1\"]),\n                         (\"early stopping\", inputs[\"in2\"])):\n        for epoch, value in enumerate(losses.tolist(), start=1):\n            points.append([epoch, value])\n            labels.append(name)\n    metrics = inputs[\"in3\"]\n    return {\"out1\": torch.tensor(points), \"out2\": labels,\n            \"out3\": metrics[\"best_epoch\"], \"out4\": metrics[\"total_epochs_run\"]}\n",
+          "input_ports": 3,
+          "output_ports": 4,
+          "input_types": "TENSOR,TENSOR,ANY",
+          "output_types": "TENSOR,LIST,SCALAR,SCALAR"
+        }
+      }
+    },
+    {
+      "id": "chart",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 1960,
+        "y": 100
+      },
+      "data": {
+        "params": {
+          "title": "Validation loss per epoch"
+        }
+      }
+    },
+    {
+      "id": "print-best",
+      "type": "Print",
+      "position": {
+        "x": 1640,
+        "y": 560
+      },
+      "data": {
+        "params": {
+          "label": "Best epoch (restored)"
+        }
+      }
+    },
+    {
+      "id": "print-ran",
+      "type": "Print",
+      "position": {
+        "x": 1640,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "label": "Epochs run before stopping"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Prechelt, \"Early stopping, but when?\" (Neural Networks: Tricks of the Trade, 1998): watch the loss on held-out validation data, stop once it has not improved for a while, and keep the weights from its best epoch; that model generalises better than the one trained to the end. Recipe: 20 noisy training samples of sin(3x) and 20 validation samples, an MLP 1-128-128-1 with Tanh, MSE, Adam at lr 0.01, up to 1000 full-batch epochs, trained twice: to the end, and with early_stopping_patience 100 on val_loss. With seed 0 on a CPU the second run stops after epoch 221, restores epoch 121, and scores test MSE 0.033 on the clean curve against 0.095 for the run trained to epoch 1000.\n\nPrechelt，〈Early stopping, but when?〉（Neural Networks: Tricks of the Trade，1998）：盯著保留的驗證資料上的損失，一段時間沒有進步就停止，並保留最佳 epoch 的權重；這個模型的泛化比訓練到最後的更好。配方：sin(3x) 的 20 個帶雜訊訓練樣本與 20 個驗證樣本，MLP 1-128-128-1 搭配 Tanh，MSE，Adam、lr 0.01，最多整批訓練 1000 個 epoch，訓練兩次：一次跑到最後，一次在 val_loss 上設 early_stopping_patience 100。seed 0、用 CPU 跑，第二次在第 221 個 epoch 後停止、還原第 121 個 epoch 的權重，在乾淨曲線上的測試 MSE 是 0.033，訓練到第 1000 個 epoch 的那次是 0.095。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 140
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Three draws from one generator: 20 points to train on, 20 to validate on (out3, out4), and the clean sin(3x) on a 200-point grid to test against (out5, out6). The validation set decides when to stop; the test grid is only read at the end.\n\n從同一個產生器抽三組：20 個訓練點、20 個驗證點（out3、out4），以及 200 個格點上乾淨的 sin(3x) 作為測試（out5、out6）。驗證集決定何時停止；測試格點只在最後才讀。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 0,
+          "y": 440
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-stop",
+      "type": "note",
+      "position": {
+        "x": 360,
+        "y": 1240
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Both trainers get the validation loader. Only the lower one sets early_stopping_patience 100 (monitor val_loss): after 100 epochs with no new best it stops and loads back the best epoch's weights before passing the model on. The two rows use separate SequentialModel nodes with the same layers, since one model node feeding two trainers would share its weights.\n\n兩個訓練器都接上驗證資料。只有下面那個設 early_stopping_patience 100（monitor val_loss）：連續 100 個 epoch 沒有新的最佳值就停止，並在把模型往下傳之前載回最佳 epoch 的權重。兩列用的是圖層相同的兩個 SequentialModel 節點，因為一個模型節點接到兩個訓練器時會共用權重。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loss",
+        "boundOffset": {
+          "x": 0,
+          "y": 340
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-chart",
+      "type": "note",
+      "position": {
+        "x": 1960,
+        "y": 520
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Validation loss falls over the first epochs, reaches its lowest point between epoch 50 and 125 in these two runs, then climbs as the net starts fitting the training noise. The early-stopped curve ends where the patience ran out.\n\n驗證損失在一開始下降，這兩次訓練的最低點落在第 50 到 125 個 epoch 之間，之後隨著網路開始擬合訓練雜訊而上升。提早停止的那條曲線在耐心用完的地方結束。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "chart",
+        "boundOffset": {
+          "x": 0,
+          "y": 420
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_gen",
+      "source": "start",
+      "target": "gen",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-full",
+      "source": "start",
+      "target": "model-full",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-early",
+      "source": "start",
+      "target": "model-early",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_gen_out1_ds_features",
+      "source": "gen",
+      "target": "ds",
+      "sourceHandle": "out1",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_gen_out2_ds_targets",
+      "source": "gen",
+      "target": "ds",
+      "sourceHandle": "out2",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_gen_out3_ds-val_features",
+      "source": "gen",
+      "target": "ds-val",
+      "sourceHandle": "out3",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_gen_out4_ds-val_targets",
+      "source": "gen",
+      "target": "ds-val",
+      "sourceHandle": "out4",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_ds_dataset_dl_dataset",
+      "source": "ds",
+      "target": "dl",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_ds-val_dataset_dl-val_dataset",
+      "source": "ds-val",
+      "target": "dl-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model-full_model_opt-full_model",
+      "source": "model-full",
+      "target": "opt-full",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-full_model_train-full_model",
+      "source": "model-full",
+      "target": "train-full",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train-full_dataloader",
+      "source": "dl",
+      "target": "train-full",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_dl-val_dataloader_train-full_val_dataloader",
+      "source": "dl-val",
+      "target": "train-full",
+      "sourceHandle": "dataloader",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e_opt-full_optimizer_train-full_optimizer",
+      "source": "opt-full",
+      "target": "train-full",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-full_loss_fn",
+      "source": "loss",
+      "target": "train-full",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-full_model_infer-full_model",
+      "source": "train-full",
+      "target": "infer-full",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_infer-full_output_mse-full_predictions",
+      "source": "infer-full",
+      "target": "mse-full",
+      "sourceHandle": "output",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_mse-full_mse_print-full_value",
+      "source": "mse-full",
+      "target": "print-full",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_model-early_model_opt-early_model",
+      "source": "model-early",
+      "target": "opt-early",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-early_model_train-early_model",
+      "source": "model-early",
+      "target": "train-early",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train-early_dataloader",
+      "source": "dl",
+      "target": "train-early",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_dl-val_dataloader_train-early_val_dataloader",
+      "source": "dl-val",
+      "target": "train-early",
+      "sourceHandle": "dataloader",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e_opt-early_optimizer_train-early_optimizer",
+      "source": "opt-early",
+      "target": "train-early",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-early_loss_fn",
+      "source": "loss",
+      "target": "train-early",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-early_model_infer-early_model",
+      "source": "train-early",
+      "target": "infer-early",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_infer-early_output_mse-early_predictions",
+      "source": "infer-early",
+      "target": "mse-early",
+      "sourceHandle": "output",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_mse-early_mse_print-early_value",
+      "source": "mse-early",
+      "target": "print-early",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_gen_out5_infer-full_input",
+      "source": "gen",
+      "target": "infer-full",
+      "sourceHandle": "out5",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_gen_out6_mse-full_targets",
+      "source": "gen",
+      "target": "mse-full",
+      "sourceHandle": "out6",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_gen_out5_infer-early_input",
+      "source": "gen",
+      "target": "infer-early",
+      "sourceHandle": "out5",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_gen_out6_mse-early_targets",
+      "source": "gen",
+      "target": "mse-early",
+      "sourceHandle": "out6",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_train-full_val_losses_curves_in1",
+      "source": "train-full",
+      "target": "curves",
+      "sourceHandle": "val_losses",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_train-early_val_losses_curves_in2",
+      "source": "train-early",
+      "target": "curves",
+      "sourceHandle": "val_losses",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_train-early_metrics_curves_in3",
+      "source": "train-early",
+      "target": "curves",
+      "sourceHandle": "metrics",
+      "targetHandle": "in3"
+    },
+    {
+      "id": "e_curves_out1_chart_points",
+      "source": "curves",
+      "target": "chart",
+      "sourceHandle": "out1",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_curves_out2_chart_labels",
+      "source": "curves",
+      "target": "chart",
+      "sourceHandle": "out2",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_curves_out3_print-best_value",
+      "source": "curves",
+      "target": "print-best",
+      "sourceHandle": "out3",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_curves_out4_print-ran_value",
+      "source": "curves",
+      "target": "print-ran",
+      "sourceHandle": "out4",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
