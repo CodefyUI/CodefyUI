@@ -912,7 +912,7 @@ const zhTW: NodeTranslations = {
       epochs: '訓練 epoch 數量',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       early_stopping_patience: '監控的指標未改善 N 個 epoch 後停止（0 = 停用）',
-      monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
+      monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss，或單一輸出模型搭配 BCEWithLogitsLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
       checkpoint_every: '每 N 個完整 epoch 存一次檢查點，讓伺服器當機時最多只損失 N 個 epoch，而不是整次執行。與 CheckpointSaver 互相獨立，恢復方式也相同：把 CheckpointLoader.epoch 接到 start_epoch。每個檢查點大小大約是模型加上優化器狀態（常常是模型本身的好幾倍），而且是在訓練執行緒上同步寫入；大模型搭配偏低的 N、跑很長的訓練，執行完之前可能會用掉好幾 GB 磁碟空間，因為執行中的任務目前沒有機制限制這件事（0 = 停用）',
       grad_clip_norm: '最大梯度範數裁剪（0 = 停用）',
       batch_metrics: '同時把每一批的損失記錄成 train_loss_batch 這條序列（預設關閉：每批一列資料量相當可觀）',

@@ -65,6 +65,14 @@ def _float_targets(outputs: Any, targets: Any) -> Any:
     return targets
 
 
+def _single_logit(outputs: Any) -> bool:
+    """One logit per example: ``[B]`` or ``[B, 1]``."""
+    import torch
+
+    return isinstance(outputs, torch.Tensor) and (
+        outputs.dim() == 1 or (outputs.dim() == 2 and outputs.shape[1] == 1))
+
+
 def _compute_loss(
     loss_fn: Any, outputs: Any, targets: Any, phase: str, *, elementwise: bool,
 ) -> Any:
@@ -1354,8 +1362,10 @@ class TrainingLoopNode(BaseNode):
     be a classification loss (``nn.CrossEntropyLoss`` or ``nn.NLLLoss`` --
     the only two in this repo's loss map whose targets are integer class
     indices against ``[B, C]`` logits, which is the shape ``argmax(dim=1)``
-    assumes). A regression or BCE run therefore never gets a val_accuracy
-    series. ``monitor`` (default ``val_loss``) can point early stopping at
+    assumes) -- or ``nn.BCEWithLogitsLoss`` on a single-output model, scored
+    as binary at logit 0 exactly like ``EvaluateModel``. A regression run or
+    a multi-label BCE run therefore never gets a val_accuracy series.
+    ``monitor`` (default ``val_loss``) can point early stopping at
     it instead; requesting ``val_accuracy`` without either gate above
     holding falls back to ``val_loss`` with a warning rather than
     comparing against a value that was never computed.
@@ -1488,7 +1498,8 @@ class TrainingLoopNode(BaseNode):
                     "Metric early stopping watches. val_loss: lower is "
                     "better (the default). val_accuracy: higher is "
                     "better -- only recorded for a classification loss "
-                    "(CrossEntropyLoss/NLLLoss) with a val_dataloader "
+                    "(CrossEntropyLoss/NLLLoss, or BCEWithLogitsLoss on a "
+                    "single-output model) with a val_dataloader "
                     "wired; falls back to val_loss with a warning when "
                     "neither holds, rather than watching a value that "
                     "was never computed."
@@ -1786,11 +1797,20 @@ class TrainingLoopNode(BaseNode):
         # Every other loss (BCE*, the regression losses) is not
         # argmax-shaped, so val_accuracy is only ever computed, recorded,
         # or monitored by early stopping when this holds. Getting this
-        # wrong in the permissive direction -- e.g. admitting
-        # BCEWithLogitsLoss -- either crashes on a shape mismatch or
+        # wrong in the permissive direction -- e.g. admitting a
+        # multi-label BCEWithLogitsLoss head -- either crashes on a shape
+        # mismatch or
         # silently broadcasts into a meaningless number, which is worse
         # than not shipping the feature at all.
         is_classification_loss = isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
+        # The one BCE case that IS a classifier with a well-defined
+        # prediction: a single logit per example ([B] or [B, 1]), predicted
+        # positive above 0. ``count_correct`` (shared with EvaluateModel)
+        # scores exactly that shape since #733, so a binary classifier
+        # trained here gets the same val_accuracy EvaluateModel reports for
+        # it. Admitted per BATCH by ``_single_logit``: a multi-label head
+        # ([B, C], C > 1) still records none.
+        is_binary_logit_loss = isinstance(loss_fn, nn.BCEWithLogitsLoss)
         check_loss_shapes = _is_elementwise_loss(loss_fn)
         val_dataloader = inputs.get("val_dataloader")
         lr_scheduler = inputs.get("lr_scheduler")
@@ -2005,10 +2025,11 @@ class TrainingLoopNode(BaseNode):
                 )
             elif monitor_is_accuracy and val_dataloader is None:
                 monitor_fallback_reason = "no val_dataloader is wired"
-            elif monitor_is_accuracy and not is_classification_loss:
+            elif monitor_is_accuracy and not (
+                    is_classification_loss or is_binary_logit_loss):
                 monitor_fallback_reason = (
-                    "loss_fn is not a classification loss (CrossEntropyLoss "
-                    "or NLLLoss)"
+                    "loss_fn is not a classification loss (CrossEntropyLoss, "
+                    "NLLLoss, or BCEWithLogitsLoss on a single output)"
                 )
         if monitor_fallback_reason is not None:
             logger.warning(
@@ -2450,7 +2471,9 @@ class TrainingLoopNode(BaseNode):
                         # happens to run (or, for a [B, 1] regression head,
                         # a broadcasted comparison that happens NOT to
                         # crash) and a number with no meaning either way.
-                        if is_classification_loss and targets is not None:
+                        scores_accuracy = is_classification_loss or (
+                            is_binary_logit_loss and _single_logit(outputs))
+                        if scores_accuracy and targets is not None:
                             # Shared with EvaluateModel so the two agree on
                             # [N, 1] labels and single-output models.
                             batch_correct, batch_total = count_correct(
@@ -2476,7 +2499,7 @@ class TrainingLoopNode(BaseNode):
 
                 avg_val_loss = float(val_running_loss) / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
-                if is_classification_loss and val_total > 0:
+                if val_total > 0:
                     avg_val_accuracy = int(val_correct) / val_total
                     val_epoch_accuracies.append(avg_val_accuracy)
 

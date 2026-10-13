@@ -226,3 +226,41 @@ def test_val_every_steps_leaves_the_trained_weights_unchanged():
                     without.state_dict().values()):
         assert torch.equal(a, b)
     assert out_steps["losses"].tolist() == out_plain["losses"].tolist()
+
+
+# ── val_accuracy for a single-logit binary classifier ───────────────────
+
+
+def test_single_logit_bce_records_the_accuracy_evaluate_model_reports():
+    """Before: no val_accuracy at all for BCEWithLogitsLoss, and
+    monitor=val_accuracy fell back to val_loss, although EvaluateModel
+    scores the same [B, 1] model as binary at logit 0."""
+    from app.nodes.training.evaluate_model_node import EvaluateModelNode
+
+    x = _features(40)
+    labels = (x[:, 0] + 0.3 * x[:, 1] > 0).float().unsqueeze(1)
+    val = TensorDataset(x[:24], labels[:24])
+    torch.manual_seed(0)
+    model = nn.Linear(4, 1)
+    ctx = _RecordingContext()
+    out = _train(model, TensorDataset(x, labels), nn.BCEWithLogitsLoss(),
+                 val=val, epochs=3, early_stopping_patience=5,
+                 monitor="val_accuracy", context=ctx)
+
+    assert out["metrics"]["monitor"] == "val_accuracy"
+    recorded = [v for name, v, _ in ctx.metrics if name == "val_accuracy"]
+    assert len(recorded) == 3
+    evaluated = EvaluateModelNode().execute(
+        {"model": out["model"], "dataset": val}, {"device": "cpu"})
+    assert out["metrics"]["final_val_accuracy"] == evaluated["accuracy"]
+
+
+def test_multi_label_bce_still_records_no_val_accuracy():
+    x = _features(16)
+    labels = (x[:, :3] > 0).float()
+    ctx = _RecordingContext()
+    out = _train(nn.Linear(4, 3), TensorDataset(x, labels),
+                 nn.BCEWithLogitsLoss(), val=TensorDataset(x, labels),
+                 context=ctx)
+    assert out["metrics"]["final_val_accuracy"] is None
+    assert not [n for n, _, _ in ctx.metrics if n == "val_accuracy"]
