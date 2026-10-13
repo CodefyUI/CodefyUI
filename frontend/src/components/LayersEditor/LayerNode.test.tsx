@@ -40,6 +40,27 @@ describe('LayerNode', () => {
     expect(container.querySelectorAll('.react-flow__handle').length).toBe(2);
   });
 
+  it('labels the two operand handles of a Subtract a and b', () => {
+    const { container } = renderLayer(makeData({ layerType: 'Subtract', isMerge: true }));
+    const targets = container.querySelectorAll('.react-flow__handle.target');
+    expect([...targets].map((h) => h.getAttribute('data-handleid'))).toEqual(['a', 'b']);
+    expect(screen.getByTestId('operand-label-a').textContent).toBe('a');
+    expect(screen.getByTestId('operand-label-b').textContent).toBe('b');
+  });
+
+  it('gives an unwired Concat two labelled operand handles', () => {
+    const { container } = renderLayer(makeData({ layerType: 'Concat', isMerge: true, params: { dim: 1 } }));
+    const targets = container.querySelectorAll('.react-flow__handle.target');
+    expect([...targets].map((h) => h.getAttribute('data-handleid'))).toEqual(['in0', 'in1']);
+    expect(screen.getByTestId('operand-label-in1').textContent).toBe('in1');
+  });
+
+  it('keeps one unnamed target handle on an order-free merge', () => {
+    const { container } = renderLayer(makeData({ layerType: 'Add', isMerge: true }));
+    expect(container.querySelectorAll('.react-flow__handle.target').length).toBe(1);
+    expect(screen.queryByTestId(/operand-label/)).toBeNull();
+  });
+
   it('does not render params preview when there are no params', () => {
     renderLayer(makeData({ params: {} }));
     // No "more" hint and no param rows.

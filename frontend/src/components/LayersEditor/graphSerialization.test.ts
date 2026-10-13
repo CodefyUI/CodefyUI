@@ -5,6 +5,11 @@ import {
   isMergeType,
   detectImportFormat,
   convertWorkflowToGraphSpec,
+  convertWorkflowForImport,
+  isOrderedMergeType,
+  mergeInputHandles,
+  mergeOperandHandle,
+  mergeOperandIndex,
   flowToGraphJson,
   graphToFlow,
   layerNodeCount,
@@ -1174,5 +1179,272 @@ describe('validateGraph', () => {
       key: 'layersEditor.validation.cannotReachOutput',
       params: { layer: 'Dropout' },
     });
+  });
+});
+
+// ── canvas -> layer-editor param translation (2026-10-13 audit) ─────────────
+
+describe('convertWorkflowForImport param translation', () => {
+  /** Import one canvas node and return its translated params plus the issues. */
+  function importOne(type: string, params: Record<string, any>) {
+    const { spec, issues } = convertWorkflowForImport({
+      nodes: [{ id: 'n1', type, data: { params } }],
+      edges: [],
+    });
+    return { node: spec.nodes.find((n) => n.id === 'n1'), issues };
+  }
+
+  it('drops Embedding padding_idx = -1, the canvas spelling of "no padding"', () => {
+    // nn.Embedding reads -1 as the last row, which it zeroes and never trains.
+    const { node, issues } = importOne('Embedding', { num_embeddings: 10000, embedding_dim: 256, padding_idx: -1 });
+    expect(node?.params).toEqual({ num_embeddings: 10000, embedding_dim: 256 });
+    expect(issues).toEqual([]);
+  });
+
+  it('keeps a real Embedding padding_idx', () => {
+    const { node } = importOne('Embedding', { num_embeddings: 10, embedding_dim: 4, padding_idx: 0 });
+    expect(node?.params?.padding_idx).toBe(0);
+  });
+
+  it('strips the batch entry from a Reshape shape', () => {
+    // Canvas '-1,784' on (4,1,28,28) gives (4,784); the layer Reshape keeps
+    // the batch dim, so the same result is spelled '784'.
+    const { node, issues } = importOne('Reshape', { shape: '-1,784' });
+    expect(node?.params).toEqual({ shape: '784' });
+    expect(issues).toEqual([]);
+  });
+
+  it('warns when the dropped Reshape batch entry was a fixed number', () => {
+    const { node, issues } = importOne('Reshape', { shape: '32, 64, 7, 7' });
+    expect(node?.params).toEqual({ shape: '64,7,7' });
+    expect(issues).toEqual([{
+      level: 'warning', key: 'layersEditor.import.issue.reshapeBatchDropped',
+      params: { node: 'n1', shape: '32, 64, 7, 7', batch: 32 },
+    }]);
+  });
+
+  it('refuses a Reshape shape with no batch entry to drop', () => {
+    const { node, issues } = importOne('Reshape', { shape: '784' });
+    expect(node).toBeUndefined();
+    expect(issues).toEqual([{
+      level: 'error', key: 'layersEditor.import.issue.reshapeNoBatch',
+      params: { node: 'n1', shape: '784' },
+    }]);
+  });
+
+  it('refuses an Add whose alpha is not 1', () => {
+    // Canvas a + 2*b gives [7,7] for a=[1,1], b=[3,3]; the merge Add gives [4,4].
+    const { node, issues } = importOne('Add', { alpha: 2 });
+    expect(node).toBeUndefined();
+    expect(issues).toEqual([{
+      level: 'error', key: 'layersEditor.import.issue.addAlpha', params: { node: 'n1', alpha: '2' },
+    }]);
+  });
+
+  it('imports an Add with alpha 1 and drops the param the merge does not read', () => {
+    const { node, issues } = importOne('Add', { alpha: 1.0 });
+    expect(node?.type).toBe('Add');
+    expect(node?.params).toBeUndefined();
+    expect(issues).toEqual([]);
+  });
+
+  it('parses the LayerNorm shape string into an int or a list', () => {
+    expect(importOne('LayerNorm', { normalized_shape: '512', eps: 1e-5 }).node?.params)
+      .toEqual({ normalized_shape: 512, eps: 1e-5 });
+    expect(importOne('LayerNorm', { normalized_shape: '4, 8' }).node?.params)
+      .toEqual({ normalized_shape: [4, 8] });
+  });
+
+  it('refuses a LayerNorm shape that is not a list of integers', () => {
+    for (const shape of ['abc', '', null]) {
+      const { node, issues } = importOne('LayerNorm', { normalized_shape: shape });
+      expect(node).toBeUndefined();
+      expect(issues[0]).toMatchObject({ level: 'error', key: 'layersEditor.import.issue.layerNormShape' });
+    }
+  });
+
+  it('keeps a LayerNorm shape that is already an integer', () => {
+    expect(importOne('LayerNorm', { normalized_shape: 64 }).node?.params).toEqual({ normalized_shape: 64 });
+  });
+
+  it('refuses a Reshape with no shape at all', () => {
+    const { node, issues } = importOne('Reshape', {});
+    expect(node).toBeUndefined();
+    expect(issues[0]).toMatchObject({ level: 'error', params: { node: 'n1', shape: '' } });
+  });
+
+  it('maps AdaptiveAvgPool2d output_height / output_width to output_size', () => {
+    expect(importOne('AdaptiveAvgPool2d', { output_height: 1, output_width: 1 }).node?.params)
+      .toEqual({ output_size: 1 });
+    expect(importOne('AdaptiveAvgPool2d', { output_height: 2, output_width: 3 }).node?.params)
+      .toEqual({ output_size: [2, 3] });
+    // A canvas node saved without the params gets the canvas defaults, 1 x 1.
+    expect(importOne('AdaptiveAvgPool2d', {}).node?.params).toEqual({ output_size: 1 });
+  });
+
+  it('drops MultiHeadAttention batch_first and warns when the canvas node was sequence-first', () => {
+    const seqFirst = importOne('MultiHeadAttention', { embed_dim: 512, num_heads: 8, batch_first: false });
+    expect(seqFirst.node?.params).toEqual({ embed_dim: 512, num_heads: 8 });
+    expect(seqFirst.issues).toEqual([{
+      level: 'warning', key: 'layersEditor.import.issue.attentionBatchFirst', params: { node: 'n1' },
+    }]);
+    const batchFirst = importOne('MultiHeadAttention', { embed_dim: 8, num_heads: 2, batch_first: true });
+    expect(batchFirst.node?.params).toEqual({ embed_dim: 8, num_heads: 2 });
+    expect(batchFirst.issues).toEqual([]);
+  });
+
+  it('does not import a canvas Mean, a one-tensor reduction, as the merge Mean', () => {
+    const { node, issues } = importOne('Mean', { dim: '-1', keepdim: false });
+    expect(node).toBeUndefined();
+    expect(issues).toEqual([{
+      level: 'warning', key: 'layersEditor.import.issue.meanSkipped', params: { node: 'n1' },
+    }]);
+    // A file whose only layer is a Mean is not a layer workflow at all.
+    const text = JSON.stringify({ nodes: [{ id: 'm', type: 'Mean' }], edges: [] });
+    expect(detectImportFormat(text).kind).toBe('unknown');
+  });
+
+  it('merges the query, key and value wires of a canvas self-attention into one input', () => {
+    const { spec, issues } = convertWorkflowForImport({
+      nodes: [
+        { id: 'emb', type: 'Linear', data: { params: { in_features: 8, out_features: 8 } } },
+        { id: 'att', type: 'MultiHeadAttention', data: { params: { embed_dim: 8, num_heads: 2, batch_first: true } } },
+      ],
+      edges: [
+        { id: 'q', source: 'emb', target: 'att', sourceHandle: 'tensor', targetHandle: 'query' },
+        { id: 'k', source: 'emb', target: 'att', sourceHandle: 'tensor', targetHandle: 'key' },
+        { id: 'v', source: 'emb', target: 'att', sourceHandle: 'tensor', targetHandle: 'value' },
+      ],
+    });
+    expect(issues).toEqual([]);
+    const into = spec.edges.filter((e) => e.target === 'att');
+    expect(into.map((e) => [e.source, e.targetHandle])).toEqual([['emb', null]]);
+    // One wire in is what validateGraph asks of a plain layer.
+    const { nodes, edges } = graphToFlow(JSON.stringify(spec));
+    expect(validateGraph(nodes, edges)).toBeNull();
+  });
+
+  it('refuses a canvas cross-attention, naming the node once', () => {
+    const { issues } = convertWorkflowForImport({
+      nodes: [
+        { id: 'dec', type: 'Linear', data: { params: { in_features: 8, out_features: 8 } } },
+        { id: 'enc', type: 'Linear', data: { params: { in_features: 8, out_features: 8 } } },
+        { id: 'att', type: 'MultiHeadAttention', data: { params: { embed_dim: 8, num_heads: 2, batch_first: true } } },
+      ],
+      edges: [
+        { id: 'q', source: 'dec', target: 'att', targetHandle: 'query' },
+        { id: 'k', source: 'enc', target: 'att', targetHandle: 'key' },
+        { id: 'v', source: 'enc', target: 'att', targetHandle: 'value' },
+      ],
+    });
+    expect(issues).toEqual([{
+      level: 'error', key: 'layersEditor.import.issue.crossAttention', params: { node: 'att' },
+    }]);
+  });
+
+  it('carries the canvas operand port of a Concat into its operand handle', () => {
+    const { spec } = convertWorkflowForImport({
+      nodes: [
+        { id: 'up', type: 'ReLU' },
+        { id: 'skip', type: 'Tanh' },
+        { id: 'cat', type: 'Concat', data: { params: { dim: 1 } } },
+      ],
+      // Drawn tensor_b first: edge order must not decide the operand order.
+      edges: [
+        { id: 'e2', source: 'skip', target: 'cat', sourceHandle: 'tensor', targetHandle: 'tensor_b' },
+        { id: 'e1', source: 'up', target: 'cat', sourceHandle: 'tensor', targetHandle: 'tensor_a' },
+      ],
+    });
+    const handleOf = (id: string) => spec.edges.find((e) => e.id === id)?.targetHandle;
+    expect(handleOf('e1')).toBe('in0');
+    expect(handleOf('e2')).toBe('in1');
+  });
+});
+
+// ── operand handles of order-sensitive merges ───────────────────────────────
+
+describe('merge operand handles', () => {
+  it('names the operands of Subtract, Concat and Stack only', () => {
+    expect(isOrderedMergeType('Subtract')).toBe(true);
+    expect(isOrderedMergeType('Concat')).toBe(true);
+    expect(isOrderedMergeType('Stack')).toBe(true);
+    for (const t of ['Add', 'Multiply', 'Mean', 'Linear']) expect(isOrderedMergeType(t)).toBe(false);
+    expect(mergeInputHandles('Add', [])).toEqual([]);
+  });
+
+  it('gives Subtract a and b, and Concat one free handle past the last wired one', () => {
+    expect(mergeInputHandles('Subtract', [])).toEqual(['a', 'b']);
+    expect(mergeInputHandles('Concat', [])).toEqual(['in0', 'in1']);
+    expect(mergeInputHandles('Concat', ['in0', 'in1'])).toEqual(['in0', 'in1', 'in2']);
+    expect(mergeInputHandles('Stack', ['in3', null])).toEqual(['in0', 'in1', 'in2', 'in3', 'in4']);
+    // Eleven wired operands: the free slot is in11, numbered past in10.
+    const eleven = Array.from({ length: 11 }, (_, i) => `in${i}`);
+    expect(mergeInputHandles('Concat', eleven)).toEqual([...eleven, 'in11']);
+  });
+
+  it('maps handle ids to operand positions', () => {
+    expect(mergeOperandIndex('Subtract', 'a')).toBe(0);
+    expect(mergeOperandIndex('Subtract', 'b')).toBe(1);
+    expect(mergeOperandIndex('Subtract', 'in0')).toBeNull();
+    expect(mergeOperandIndex('Concat', 'in12')).toBe(12);
+    expect(mergeOperandIndex('Concat', 'x')).toBeNull();
+    expect(mergeOperandIndex('Concat', undefined)).toBeNull();
+    expect(mergeOperandHandle('Subtract', 1)).toBe('b');
+    expect(mergeOperandHandle('Concat', 2)).toBe('in2');
+  });
+
+  it('serialises the operand handle of each merge edge', () => {
+    const nodes = [
+      flowNode('r', { layerType: 'ReLU' }),
+      flowNode('s', { layerType: 'Sigmoid' }),
+      flowNode('sub', { layerType: 'Subtract', isMerge: true }),
+    ];
+    const edges: Edge[] = [
+      { id: 'e1', source: 's', target: 'sub', targetHandle: 'b' },
+      { id: 'e2', source: 'r', target: 'sub', targetHandle: 'a' },
+    ];
+    const spec = JSON.parse(flowToGraphJson(nodes, edges)) as GraphSpec;
+    expect(spec.edges.map((e) => [e.id, e.targetHandle])).toEqual([['e1', 'b'], ['e2', 'a']]);
+  });
+
+  it('gives an old spec\'s merge edges handles in edge-list order, the order the backend used', () => {
+    const spec: GraphSpec = {
+      version: 2,
+      nodes: [
+        { id: 'r', type: 'ReLU', position: { x: 0, y: 10 } },
+        { id: 's', type: 'Sigmoid', position: { x: 0, y: 20 } },
+        { id: 'sub', type: 'Subtract', position: { x: 0, y: 30 } },
+        { id: 'cat', type: 'Concat', params: { dim: 1 }, position: { x: 0, y: 40 } },
+      ],
+      edges: [
+        { id: 'e1', source: 's', target: 'sub' },
+        { id: 'e2', source: 'r', target: 'sub' },
+        { id: 'e3', source: 'r', target: 'cat' },
+        { id: 'e4', source: 's', target: 'cat' },
+      ],
+    };
+    const { edges } = graphToFlow(JSON.stringify(spec));
+    const handleOf = (id: string) => edges.find((e) => e.id === id)?.targetHandle;
+    expect(handleOf('e1')).toBe('a');
+    expect(handleOf('e2')).toBe('b');
+    expect(handleOf('e3')).toBe('in0');
+    expect(handleOf('e4')).toBe('in1');
+  });
+
+  it('leaves a merge whose edges already name handles as it is', () => {
+    const spec: GraphSpec = {
+      version: 2,
+      nodes: [
+        { id: 'r', type: 'ReLU', position: { x: 0, y: 10 } },
+        { id: 's', type: 'Sigmoid', position: { x: 0, y: 20 } },
+        { id: 'sub', type: 'Subtract', position: { x: 0, y: 30 } },
+      ],
+      edges: [
+        { id: 'e1', source: 's', target: 'sub', targetHandle: 'b' },
+        { id: 'e2', source: 'r', target: 'sub', targetHandle: 'a' },
+      ],
+    };
+    const { edges } = graphToFlow(JSON.stringify(spec));
+    expect(edges.map((e) => e.targetHandle)).toEqual(['b', 'a']);
   });
 });

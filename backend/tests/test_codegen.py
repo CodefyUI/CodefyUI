@@ -1844,6 +1844,60 @@ async def test_advanced_params_survive_a_real_graph_save_and_load(
         assert restored[node_id]["data"]["params"] == expected["data"]["params"], node_id
 
 
+def test_exported_sequential_model_keeps_the_merge_operand_handles():
+    """A Subtract's operand order lives in its edges' target handles.
+
+    The script bakes the layers spec as a string literal and the real
+    SequentialModel node builds it, so the handles have to survive the
+    export for the script to subtract in the order the editor shows.
+    """
+    import torch
+
+    from app.core.codegen import generate_python
+    from app.nodes.utility.graph_model import build_graph_model
+
+    layers = {
+        "version": 2,
+        "nodes": [
+            {"id": "in", "type": "Input", "ports": [{"id": "p_in", "name": "x"}]},
+            {"id": "relu", "type": "ReLU"},
+            {"id": "sig", "type": "Sigmoid"},
+            {"id": "sub", "type": "Subtract"},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_out", "name": "y"}]},
+        ],
+        "edges": [
+            {"id": "e1", "source": "in", "sourceHandle": "p_in", "target": "relu"},
+            {"id": "e2", "source": "in", "sourceHandle": "p_in", "target": "sig"},
+            # Drawn sigmoid-first; the handles say relu is the minuend.
+            {"id": "e3", "source": "sig", "target": "sub", "targetHandle": "b"},
+            {"id": "e4", "source": "relu", "target": "sub", "targetHandle": "a"},
+            {"id": "e5", "source": "sub", "target": "out", "targetHandle": "p_out"},
+        ],
+    }
+    nodes = [
+        {"id": "start", "type": "Start", "data": {"params": {}}},
+        {"id": "model", "type": "SequentialModel",
+         "data": {"params": {"layers": json.dumps(layers)}}},
+    ]
+    edges = [{"id": "t1", "source": "start", "target": "model",
+              "sourceHandle": "trigger", "type": "trigger"}]
+    script = generate_python(nodes, edges, name="merge-order")
+    _compile_check(script)
+
+    exported_params = _exported_params(script, "model")
+    exported = json.loads(exported_params["layers"])
+    assert exported == layers
+    x = torch.tensor([[2.0]])
+    expected = torch.relu(x) - torch.sigmoid(x)  # a - b = 1.1192, not -1.1192
+    assert torch.allclose(build_graph_model(exported)(x), expected)
+
+    # And through the node class the script's _call() runs, with its params.
+    from app.nodes.utility.sequential_node import SequentialModelNode
+
+    model = SequentialModelNode().execute({}, exported_params)["model"]
+    assert torch.allclose(model(x), expected)
+
+
 # ── transform chains (core#136) ──────────────────────────────────────────
 
 

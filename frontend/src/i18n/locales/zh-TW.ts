@@ -422,6 +422,21 @@ const zhTW: Record<TranslationKey, string> = {
   'layersEditor.import.fail': '匯入失敗：{error}',
   'layersEditor.import.selectModel': '選擇要匯入的 SequentialModel',
   'layersEditor.import.noContent': '此檔案沒有層級或 SequentialModel 節點。',
+  'layersEditor.import.warnings': '已匯入，但有以下調整：{warnings}',
+  'layersEditor.import.issue.reshapeNoBatch':
+    'Reshape「{node}」：shape「{shape}」開頭需要批次維度（例如 -1,784）。架構編輯器會保留批次維度，只取其後的維度。',
+  'layersEditor.import.issue.reshapeBatchDropped':
+    'Reshape「{node}」：「{shape}」的第一個值（{batch}）視為批次大小並已移除；此層沿用輸入的批次大小。',
+  'layersEditor.import.issue.addAlpha':
+    'Add「{node}」計算 a + {alpha} * b，架構編輯器的 Add 沒有 alpha。請在畫布上把 alpha 設為 1，或先縮放該分支。',
+  'layersEditor.import.issue.layerNormShape':
+    'LayerNorm「{node}」：normalized_shape「{shape}」不是以逗號分隔的整數。請在畫布上修正後再匯入。',
+  'layersEditor.import.issue.attentionBatchFirst':
+    'MultiHeadAttention「{node}」在畫布上讀取 (seq, batch, embed)。架構編輯器的注意力層以批次為先 (batch, seq, embed)，請檢查輸入它的層。',
+  'layersEditor.import.issue.crossAttention':
+    'MultiHeadAttention「{node}」：query、key、value 來自不同節點。架構編輯器的注意力層是只有一個輸入的自注意力；請三者都從同一個節點連入，或手動建構這一段。',
+  'layersEditor.import.issue.meanSkipped':
+    'Mean「{node}」未匯入：畫布上的 Mean 是對單一張量沿某維取平均，架構編輯器的 Mean 則是平均兩個以上的分支。',
   'layersEditor.searchLayers': '搜尋層級...',
   'layersEditor.snapOn': '吸附 ON',
   'layersEditor.snapOff': '吸附 OFF',

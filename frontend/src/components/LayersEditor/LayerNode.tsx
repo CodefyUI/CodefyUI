@@ -1,12 +1,29 @@
-import { memo } from 'react';
-import { Handle, Node, Position } from '@xyflow/react';
+import { Fragment, memo } from 'react';
+import { Handle, Node, Position, useNodeConnections } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import { useI18n } from '../../i18n';
 import { mixColor, NODE_HEADER_TINT, SURFACE_RAISED } from '../../styles/theme';
+import { mergeInputHandles } from './graphSerialization';
 import type { LayerNodeData } from './graphSerialization';
 
-function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) {
+const TARGET_HANDLE_STYLE = {
+  background: 'var(--border-strong)',
+  width: 'var(--handle-size)',
+  height: 'var(--handle-size)',
+  border: '2px solid var(--surface-raised)',
+  top: 'calc(var(--handle-size) / -2)',
+} as const;
+
+function LayerNodeComponent({ id, data, selected }: NodeProps<Node<LayerNodeData>>) {
   const { t } = useI18n();
+  // Order-sensitive merges (Subtract, Concat, Stack) get one labelled
+  // handle per operand, so the card shows which branch comes first. The
+  // backend takes the operands in handle order.
+  const connections = useNodeConnections({ id, handleType: 'target' });
+  const operandHandles = mergeInputHandles(
+    data.layerType,
+    connections.map((c) => c.targetHandle),
+  );
   const paramEntries = Object.entries(data.params);
   const hasParams = paramEntries.length > 0;
   const color = data.color;
@@ -25,6 +42,7 @@ function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
         border: `2px solid ${selected ? '#fff' : color}`,
         borderRadius: 8,
         minWidth: 140,
+        position: 'relative',
         fontSize: '0.8125rem',
         color: 'var(--text-primary)',
         boxShadow: selected
@@ -89,17 +107,39 @@ function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
       )}
 
       {/* Handles */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{
-          background: 'var(--border-strong)',
-          width: 'var(--handle-size)',
-          height: 'var(--handle-size)',
-          border: '2px solid var(--surface-raised)',
-          top: 'calc(var(--handle-size) / -2)',
-        }}
-      />
+      {operandHandles.length === 0 ? (
+        <Handle type="target" position={Position.Top} style={TARGET_HANDLE_STYLE} />
+      ) : (
+        operandHandles.map((handleId, i) => {
+          const left = `${((i + 1) / (operandHandles.length + 1)) * 100}%`;
+          return (
+            <Fragment key={handleId}>
+              <Handle
+                type="target"
+                id={handleId}
+                position={Position.Top}
+                style={{ ...TARGET_HANDLE_STYLE, left }}
+              />
+              <span
+                data-testid={`operand-label-${handleId}`}
+                style={{
+                  position: 'absolute',
+                  left,
+                  bottom: 'calc(100% + var(--handle-size) / 2 + 2px)',
+                  transform: 'translateX(-50%)',
+                  fontSize: '0.625rem',
+                  fontFamily: 'monospace',
+                  color: 'var(--text-secondary)',
+                  pointerEvents: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {handleId}
+              </span>
+            </Fragment>
+          );
+        })
+      )}
       <Handle
         type="source"
         position={Position.Bottom}

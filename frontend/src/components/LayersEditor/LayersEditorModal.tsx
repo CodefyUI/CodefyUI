@@ -43,7 +43,7 @@ import {
   colorForType,
   autoLayoutLayers,
   detectImportFormat,
-  convertWorkflowToGraphSpec,
+  convertWorkflowForImport,
   type LayerNodeData as GraphLayerNodeData,
   type PortDef,
   type SequentialModelEntry,
@@ -666,7 +666,13 @@ function LayersFlowInner({
   const onConnect = useCallback(
     (params: Connection) => {
       setEdges((eds) => [
-        ...eds,
+        // A named target handle holds one branch: a new wire into a merge
+        // operand (Subtract a/b, Concat/Stack in0, in1, ...) replaces the
+        // old one. Output ports never get here twice (isValidConnection),
+        // and plain layers have no handle id.
+        ...(params.targetHandle
+          ? eds.filter((e) => !(e.target === params.target && e.targetHandle === params.targetHandle))
+          : eds),
         {
           id: generateId(),
           source: params.source,
@@ -824,7 +830,13 @@ function LayersFlowInner({
             break;
 
           case 'workflow-layers': {
-            const spec = convertWorkflowToGraphSpec(detection.workflowData);
+            const { spec, issues } = convertWorkflowForImport(detection.workflowData);
+            const describe = (level: 'error' | 'warning') =>
+              issues.filter((i) => i.level === level).map((i) => t(i.key, i.params)).join(' ');
+            // A canvas node the layer editor cannot express stops the import:
+            // loading the rest would build a model that computes something else.
+            const refusals = describe('error');
+            if (refusals) throw new Error(refusals);
             const json = JSON.stringify(spec);
             const { nodes: newNodes, edges: newEdges } = graphToFlow(json);
             // convertWorkflowToGraphSpec always wraps the result in Input + Output
@@ -836,6 +848,10 @@ function LayersFlowInner({
             setEdges(newEdges);
             setSelectedNodeId(null);
             setTimeout(() => fitView({ padding: 0.3 }), 50);
+            const warnings = describe('warning');
+            if (warnings) {
+              useToastStore.getState().addToast(t('layersEditor.import.warnings', { warnings }), 'warning');
+            }
             break;
           }
 

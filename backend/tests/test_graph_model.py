@@ -521,3 +521,114 @@ def test_dropout2d_zeroes_whole_channels():
     for channel in per_channel.reshape(-1, 25):
         assert torch.all(channel == 0) or torch.allclose(channel, torch.full((25,), 2.0))
     assert (per_channel.sum(-1) == 0).any()
+
+
+# ── operand order of Subtract / Concat / Stack follows the target handle ──
+
+
+def _two_branch_merge(merge_type, edge_order, handles, params=None):
+    """relu(x) and sigmoid(x) into one merge; edges listed in *edge_order*.
+
+    *handles* maps the branch id to the merge input it is wired to (None for
+    an old spec without handles).
+    """
+    branch_edges = {
+        b: {"id": f"e_{b}", "source": b, "sourceHandle": None, "target": "m",
+            "targetHandle": handles[b]}
+        for b in ("relu", "sig")
+    }
+    return _spec(
+        nodes=[
+            {"id": "in", "type": "Input", "ports": [{"id": "p_in", "name": "x"}]},
+            {"id": "relu", "type": "ReLU"},
+            {"id": "sig", "type": "Sigmoid"},
+            {"id": "m", "type": merge_type, "params": params or {}},
+            {"id": "out", "type": "Output", "ports": [{"id": "p_out", "name": "y"}]},
+        ],
+        edges=[
+            {"id": "e1", "source": "in", "sourceHandle": "p_in", "target": "relu"},
+            {"id": "e2", "source": "in", "sourceHandle": "p_in", "target": "sig"},
+            *[branch_edges[b] for b in edge_order],
+            {"id": "e9", "source": "m", "target": "out", "targetHandle": "p_out"},
+        ],
+    )
+
+
+@pytest.mark.parametrize("edge_order", [("relu", "sig"), ("sig", "relu")])
+def test_subtract_takes_operands_in_handle_order_whatever_the_edge_order(edge_order):
+    x = torch.tensor([[2.0]])
+    expected = torch.relu(x) - torch.sigmoid(x)  # 1.1192
+    spec = _two_branch_merge("Subtract", edge_order, {"relu": "a", "sig": "b"})
+    assert torch.allclose(build_graph_model(spec)(x), expected)
+
+
+def test_subtract_handles_swapped_swap_the_sign():
+    x = torch.tensor([[2.0]])
+    spec = _two_branch_merge("Subtract", ("relu", "sig"), {"relu": "b", "sig": "a"})
+    assert torch.allclose(build_graph_model(spec)(x), torch.sigmoid(x) - torch.relu(x))
+
+
+@pytest.mark.parametrize("merge_type", ["Concat", "Stack"])
+@pytest.mark.parametrize("edge_order", [("relu", "sig"), ("sig", "relu")])
+def test_concat_and_stack_take_operands_in_handle_order(merge_type, edge_order):
+    x = torch.randn(2, 3)
+    spec = _two_branch_merge(
+        merge_type, edge_order, {"relu": "in1", "sig": "in0"}, params={"dim": 1},
+    )
+    op = torch.cat if merge_type == "Concat" else torch.stack
+    assert torch.allclose(build_graph_model(spec)(x), op([torch.sigmoid(x), torch.relu(x)], dim=1))
+
+
+def test_indexed_handles_order_numerically_past_nine():
+    """in10 comes after in2, which a string sort would get wrong."""
+    from app.nodes.utility.graph_model import _order_operands
+
+    edges_in = [("c", None, "in10"), ("a", None, "in0"), ("b", None, "in2")]
+    ordered = _order_operands({"id": "cat", "type": "Concat"}, edges_in)
+    assert [src for src, _sh, _th in ordered] == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("edge_order", [("relu", "sig"), ("sig", "relu")])
+def test_old_spec_without_handles_keeps_edge_list_order(edge_order):
+    """Saved models from before the handles existed build as they always did."""
+    x = torch.tensor([[2.0]])
+    spec = _two_branch_merge("Subtract", edge_order, {"relu": None, "sig": None})
+    first, second = (torch.relu, torch.sigmoid) if edge_order[0] == "relu" else (torch.sigmoid, torch.relu)
+    assert torch.allclose(build_graph_model(spec)(x), first(x) - second(x))
+
+
+def test_two_edges_into_one_merge_handle_name_the_layer():
+    spec = _two_branch_merge("Subtract", ("relu", "sig"), {"relu": "a", "sig": "a"})
+    with pytest.raises(ValueError, match=r'Subtract layer "m": two edges go into input "a"'):
+        build_graph_model(spec)
+
+
+def test_mixed_named_and_unnamed_merge_handles_name_the_layer():
+    spec = _two_branch_merge("Subtract", ("relu", "sig"), {"relu": "a", "sig": None})
+    with pytest.raises(ValueError, match=r'Subtract layer "m": some edges go into a labelled input \(a, b\)'):
+        build_graph_model(spec)
+
+
+def test_concat_with_eleven_inputs_orders_in10_after_in9():
+    """Numeric handle order: a string sort would put in10 between in1 and in2."""
+    branches = [f"b{i}" for i in range(11)]
+    nodes = [{"id": "in", "type": "Input", "ports": [{"id": "p_in", "name": "x"}]}]
+    nodes += [{"id": b, "type": "Linear", "params": {"in_features": 1, "out_features": 1}} for b in branches]
+    nodes += [
+        {"id": "cat", "type": "Concat", "params": {"dim": 1}},
+        {"id": "out", "type": "Output", "ports": [{"id": "p_out", "name": "y"}]},
+    ]
+    edges = [{"id": f"i_{b}", "source": "in", "sourceHandle": "p_in", "target": b} for b in branches]
+    # Listed in reverse, so only the handles can put them back in order.
+    edges += [
+        {"id": f"c_{b}", "source": b, "target": "cat", "targetHandle": f"in{i}"}
+        for i, b in reversed(list(enumerate(branches)))
+    ]
+    edges.append({"id": "o", "source": "cat", "target": "out", "targetHandle": "p_out"})
+    model = build_graph_model(_spec(nodes, edges))
+    with torch.no_grad():
+        for i, b in enumerate(branches):
+            model.layers[b].weight.fill_(float(i))
+            model.layers[b].bias.zero_()
+        y = model(torch.ones(1, 1))
+    assert y.tolist() == [[float(i) for i in range(11)]]
