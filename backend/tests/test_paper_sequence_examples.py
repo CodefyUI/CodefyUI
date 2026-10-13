@@ -107,7 +107,12 @@ def test_gradient_clipping_trains_the_rnn_that_explodes_without_it():
     assert raw and applied
     assert max(applied) <= 1.0 + 1e-4
     median = sorted(raw)[len(raw) // 2]
-    assert max(raw) > 8 * median, "the unclipped run should show a spike"
+    # The spike is the claim: a pre-clip norm far above the clip threshold
+    # of 1.0 and well above the run's typical step. Eight seeds on an M3
+    # gave 11x to 52x the median and a largest norm of 134; the Windows CI
+    # runner gave 7.8x and 56, so the bands sit well below both.
+    assert max(raw) > 20.0, "the unclipped run should show a spike"
+    assert max(raw) > 4 * median, "the spike should stand out from the typical step"
 
 
 # ── 12: autoencoder vs PCA ────────────────────────────────────────────────
