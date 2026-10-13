@@ -9,25 +9,40 @@ Claim: a recurrent network's gradient can explode, a single huge update throws a
 | | |
 |---|---|
 | Data | `SyntheticSequence` `recall_first`, seq_len 30, 10 classes + 10 distractor tokens; 6000 training sequences (seed 0), 500 test sequences (seed 1) |
-| Model | Embedding (20 -> 16), RNN (tanh, hidden 64), SelectIndex (last step), Linear (64 -> 10); two `SequentialModel` nodes with the same layers |
-| Optimizer | SGD, lr 0.1, batch size 32 |
+| Model | Embedding (20 -> 16), RNN (tanh, hidden 256), SelectIndex (last step), Linear (256 -> 10); two `SequentialModel` nodes with the same layers |
+| Optimizer | SGD, lr 0.2, batch size 64 |
 | Epochs | 25 per run |
 | Difference | `TrainingLoop.grad_clip_norm` 0 against 1.0; `log_grad_norm` on for both |
 | Seed | 0 |
 
 ## Measured
 
-Measured with `backend/run_graph.py` on an Apple M3 CPU, torch 2.11, run seed 0 (the graph's `settings.seed`).
+Measured with `backend/run_graph.py` on an Apple M3 CPU, torch 2.11.
+
+Run seed 0 (the graph's `settings.seed`):
 
 | | No clipping | Clip at 1.0 |
 |---|---|---|
-| Test accuracy (chance 0.10) | 0.106 | 0.886 (1.0 on the Linux CI runner) |
-| Final training loss | 2.305 | 0.147 |
-| Largest pre-clip gradient norm | 117 | 459 |
+| Test accuracy (chance 0.10) | 0.150 | 1.000 |
+| Final training loss (guessing: 2.30) | 6.06 | 0.000 |
+| Largest pre-clip gradient norm | 134 | 40 |
 
-The unclipped run's loss was creeping down from ln 10 (2.30) when a gradient of norm 117 late in epoch 13 knocked it back up to 2.35 in epoch 14; it never recovered. The clipped run saw even larger raw gradients, but every applied step was capped at norm 1, and its loss left the plateau at epoch 16. The `grad_norm` and `grad_norm_clipped` series are in the Runs panel under Metrics. Whole graph: 11.0 s.
+Both runs creep along the ln 10 plateau for about 9 epochs. From epoch 10 a burst of large gradients (the largest, of norm 134, in epoch 11) throws the unclipped run's loss to 5.4, and it stays above the level of guessing to the end. The clipped run leaves the plateau around epoch 11 and reaches a loss near 0. The `grad_norm` and `grad_norm_clipped` series are in the Runs panel under Metrics. Whole graph: about 15 s.
 
-This run sits near the edge of divergence, so float rounding on another CPU moves its numbers: on the Linux CI runner the clipped net reaches 1.0, and the unclipped net stays at chance on both. Over run seeds 0 to 4 on the M3 the clipped run reached 0.71 to 0.91 and the unclipped one 0.08 to 0.50, so the gap holds beyond seed 0.
+Run seeds 0 to 7, same graph:
+
+| Seed | No clipping: accuracy | No clipping: final loss | Clip at 1.0: accuracy |
+|---|---|---|---|
+| 0 | 0.150 | 6.06 | 1.000 |
+| 1 | 0.334 | 7.46 | 1.000 |
+| 2 | 0.318 | 4.33 | 1.000 |
+| 3 | 0.324 | 3.98 | 1.000 |
+| 4 | 0.172 | 6.24 | 1.000 |
+| 5 | 0.354 | 3.62 | 1.000 |
+| 6 | 0.246 | 5.31 | 0.912 |
+| 7 | 0.100 | 11.65 | 1.000 |
+
+The unclipped net's loss ends far above guessing on every seed, while its accuracy varies (0.10 to 0.35): a diverged network is wildly overconfident, which the loss punishes and the argmax does not. The run sits close to divergence by design, so float rounding on another CPU moves the individual numbers; the test pins the bands (clipped at least 0.85, unclipped loss above 3.0 and accuracy at most 0.45).
 
 ## Scale
 

@@ -85,13 +85,20 @@ def test_gradient_clipping_trains_the_rnn_that_explodes_without_it():
     note = _overview(graph)
     plain, clipped = res["eval-plain"]["accuracy"], res["eval-clip"]["accuracy"]
 
-    # The claim: same RNN, same data, only grad_clip_norm differs. This run
-    # sits near the edge of divergence, so another CPU's float rounding moves
-    # its numbers (clipped: 0.886 on an Apple M3, 1.0 on the Linux CI
-    # runner). The bands below are the claim; the note quotes both values.
-    assert clipped >= 0.8, clipped
-    assert plain <= 0.3, "the unclipped RNN should stay near chance (0.10)"
-    assert "0.89 test accuracy on an Apple M3 and 1.0 on the Linux CI runner" in note
+    # The claim: same RNN, same data, only grad_clip_norm differs. The recipe
+    # (hidden 256, SGD lr 0.2, batch 64) puts the unclipped run past the edge:
+    # over run seeds 0 to 7 on an Apple M3 its final loss is 3.6 to 11.7, far
+    # above guessing (ln 10 = 2.30), and its accuracy 0.10 to 0.35, while the
+    # clipped run scores 0.91 to 1.00. Float rounding on another CPU moves the
+    # single numbers, so these are bands with margin around that spread.
+    plain_loss = res["train-plain"]["losses"].tolist()[-1]
+    assert clipped >= 0.85, clipped
+    assert plain_loss > 3.0, f"the unclipped RNN should end diverged: {plain_loss}"
+    assert plain <= 0.45, plain
+    assert clipped - plain >= 0.5, (plain, clipped)
+    assert res["train-clip"]["losses"].tolist()[-1] < 0.5
+    assert "clipped run reaches 1.00 test accuracy" in note
+    assert "0.91 to 1.00" in note and "loss of 3.6 or more" in note
 
     # log_grad_norm put the pre-clip norm in the run's metrics, and the
     # clipped run's applied norm never passed the threshold.
@@ -100,12 +107,7 @@ def test_gradient_clipping_trains_the_rnn_that_explodes_without_it():
     assert raw and applied
     assert max(applied) <= 1.0 + 1e-4
     median = sorted(raw)[len(raw) // 2]
-    assert max(raw) > 20 * median, "the unclipped run should show a spike"
-
-    # note-chart: the clipped loss leaves the ln 10 plateau, and the unclipped
-    # one ends back on it.
-    assert res["train-clip"]["losses"].tolist()[-1] < 1.0
-    assert res["train-plain"]["losses"].tolist()[-1] > 2.2
+    assert max(raw) > 8 * median, "the unclipped run should show a spike"
 
 
 # ── 12: autoencoder vs PCA ────────────────────────────────────────────────
