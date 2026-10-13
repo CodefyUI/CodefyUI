@@ -318,8 +318,8 @@
       "id": "viz-lr",
       "type": "Visualize",
       "position": {
-        "x": 1640,
-        "y": 1880
+        "x": 2060,
+        "y": 1740
       },
       "data": {
         "params": {
