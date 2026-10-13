@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, act, within } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, act, within } from '@testing-library/react';
 import { ResultsPanel } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
@@ -921,7 +921,12 @@ describe('ResultsPanel — legacy magic prefixes (deprecated, #117)', () => {
 // ── plugin dock tabs (#132) ──────────────────────────────────────────────
 
 describe('plugin panels in the dock', () => {
-  afterEach(() => _clearPluginPanels());
+  afterEach(() => {
+    // Unmount first: this hook runs before setup.ts's cleanup, and a store
+    // write with the tree still mounted is a render outside act() (#505).
+    cleanup();
+    _clearPluginPanels();
+  });
 
   function seedPanel(title = 'Sweeps') {
     const el = registerPluginPanel('sweeps', { id: 'main', title });

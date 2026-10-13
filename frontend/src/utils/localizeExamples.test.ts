@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { cleanup, renderHook } from '@testing-library/react';
 import { useI18n } from '../i18n';
 import zhTWExamples from '../i18n/exampleLocales/zh-TW';
 import {
@@ -28,6 +28,9 @@ function localized(partial: Partial<LocalizedExample> & { path: string }): Local
 }
 
 afterEach(() => {
+  // Unmount first: this hook runs before setup.ts's cleanup, and a store
+  // write with the tree still mounted is a render outside act() (#505).
+  cleanup();
   useI18n.setState({ locale: 'en' });
 });
 
