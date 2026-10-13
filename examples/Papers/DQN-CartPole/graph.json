@@ -182,7 +182,7 @@
       },
       "data": {
         "noteKind": "text",
-        "noteContent": "The plot is the return of every episode. DQN takes longer per episode than the other two because it takes one gradient step per env step. Returns depend on the seed. Set the run seed in Settings and the loop's seed to the same number and rerun: seed 1 solves it at episode 707; seed 2 solves it at episode 578; seed 3 solves it at episode 610.\n\n圖上是每一回合的回報。DQN 每個環境步都做一次梯度更新，所以每回合比另外兩個方法慢。回報會隨 seed 變動。把設定裡的 run seed 和這個節點的 seed 改成同一個數字再跑一次：seed 1 在第 707 回合解出，seed 2 在第 578 回合解出，seed 3 在第 610 回合解出。",
+        "noteContent": "The plot is the return of every episode. DQN takes longer per episode than the other two because it takes one gradient step per env step. The episode count varies by platform and seed. Returns depend on the seed. Set the run seed in Settings and the loop's seed to the same number and rerun: seed 1 solves it at episode 707; seed 2 solves it at episode 578; seed 3 solves it at episode 610.\n\n圖上是每一回合的回報。DQN 每個環境步都做一次梯度更新，所以每回合比另外兩個方法慢。解出的回合數會隨平台和 seed 而不同。回報會隨 seed 變動。把設定裡的 run seed 和這個節點的 seed 改成同一個數字再跑一次：seed 1 在第 707 回合解出，seed 2 在第 578 回合解出，seed 3 在第 610 回合解出。",
         "noteColor": "#3d3d1a",
         "boundToNodeId": "viz",
         "boundOffset": {
