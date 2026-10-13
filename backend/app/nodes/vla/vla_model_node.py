@@ -264,9 +264,17 @@ class VLAModule(nn.Module):
     # -- inference face --------------------------------------------------
 
     @torch.no_grad()
-    def predict_action(self, image: torch.Tensor,
-                       tokens: torch.Tensor) -> torch.Tensor:
-        """(B, 3, S, S) + (B, L) -> (B, chunk, action_dim)."""
+    def predict_action(self, image: torch.Tensor, tokens: torch.Tensor,
+                       generator: torch.Generator | None = None,
+                       ) -> torch.Tensor:
+        """(B, 3, S, S) + (B, L) -> (B, chunk, action_dim).
+
+        *generator* (a CPU ``torch.Generator``) supplies the flow head's
+        starting noise, drawn on the CPU and then moved, so a caller's seed
+        fixes the result without touching the process-wide RNG and gives
+        the same noise on every device. ``None`` draws from the global RNG.
+        The regression head draws nothing and ignores it.
+        """
         was_training = self.training
         self.eval()
         try:
@@ -276,9 +284,13 @@ class VLAModule(nn.Module):
                 queries = self.queries.expand(batch, -1, -1) + self.query_pos
                 return self._expert_pass(queries, context)
             steps = max(1, int(self.flow_steps))
-            x = torch.randn(
-                batch, self.chunk, self.action_dim, device=image.device,
-                dtype=self.queries.dtype)
+            shape = (batch, self.chunk, self.action_dim)
+            if generator is not None:
+                x = torch.randn(shape, generator=generator,
+                                dtype=self.queries.dtype).to(image.device)
+            else:
+                x = torch.randn(shape, device=image.device,
+                                dtype=self.queries.dtype)
             dt = 1.0 / steps
             for index in range(steps):
                 t = torch.full((batch,), index * dt, device=image.device)
@@ -288,6 +300,79 @@ class VLAModule(nn.Module):
             return x
         finally:
             self.train(was_training)
+
+
+def _init_layer(layer: nn.Module, generator: torch.Generator,
+                done: set[int]) -> None:
+    """torch's default init for one leaf layer, drawn from *generator*."""
+    if isinstance(layer, (nn.Linear, nn.Conv2d)):
+        # ``reset_parameters`` of both: kaiming_uniform_(a=sqrt(5)) on the
+        # weight, then U(-1/sqrt(fan_in), 1/sqrt(fan_in)) on the bias.
+        nn.init.kaiming_uniform_(layer.weight, a=math.sqrt(5),
+                                 generator=generator)
+        done.add(id(layer.weight))
+        if layer.bias is not None:
+            fan_in = layer.weight[0].numel()
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(layer.bias, -bound, bound, generator=generator)
+            done.add(id(layer.bias))
+    elif isinstance(layer, nn.Embedding):
+        nn.init.normal_(layer.weight, generator=generator)
+        done.add(id(layer.weight))
+    elif isinstance(layer, nn.MultiheadAttention):
+        # The constructor builds ``out_proj`` (a Linear) first and only then
+        # runs ``_reset_parameters``: xavier on the packed in-projection,
+        # zeros on both biases.
+        _init_layer(layer.out_proj, generator, done)
+        nn.init.xavier_uniform_(layer.in_proj_weight, generator=generator)
+        nn.init.zeros_(layer.in_proj_bias)
+        nn.init.zeros_(layer.out_proj.bias)
+        done.update({id(layer.in_proj_weight), id(layer.in_proj_bias)})
+    elif isinstance(layer, nn.LayerNorm):
+        nn.init.ones_(layer.weight)
+        nn.init.zeros_(layer.bias)
+        done.update({id(layer.weight), id(layer.bias)})
+    else:
+        for child in layer.children():
+            _init_layer(child, generator, done)
+
+
+def seeded_vla_init(module: VLAModule, seed: int) -> VLAModule:
+    """Re-initialise every parameter of *module* from *seed* alone.
+
+    Draws from a LOCAL ``torch.Generator`` in the constructor's own order,
+    so the weights match what ``torch.manual_seed(seed)`` followed by the
+    constructor gave, without reading or writing the process-wide RNG that
+    concurrently executing nodes share. CPU modules only; move after.
+    """
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    done: set[int] = set()
+
+    def positional(param: nn.Parameter) -> None:
+        nn.init.normal_(param, 0.0, 0.02, generator=generator)
+        done.add(id(param))
+
+    with torch.no_grad():
+        _init_layer(module.stem, generator, done)
+        positional(module.vision_pos)
+        _init_layer(module.text_embedding, generator, done)
+        positional(module.text_pos)
+        _init_layer(module.trunk, generator, done)
+        _init_layer(module.trunk_norm, generator, done)
+        _init_layer(module.action_in, generator, done)
+        positional(module.queries)
+        positional(module.query_pos)
+        _init_layer(module.time_mlp, generator, done)
+        _init_layer(module.expert, generator, done)
+        _init_layer(module.head, generator, done)
+    missed = [name for name, param in module.named_parameters()
+              if id(param) not in done]
+    if missed:  # pragma: no cover - guards a future layer type
+        raise ValueError(
+            f"VLAModel: seeded init does not cover {missed}; extend "
+            f"seeded_vla_init so the seed param keeps its promise.")
+    return module
 
 
 class VLABehaviorLoss(nn.Module):
@@ -569,8 +654,13 @@ class VLAModelNode(StatefulModuleMixin, BaseNode):
             raise ValueError(
                 f"d_model ({config['d_model']}) must divide evenly by "
                 f"n_heads ({config['n_heads']})")
-        torch.manual_seed(max(0, int(params.get("seed", 0) or 0)))
-        return VLAModule(**config)
+        # The constructor draws from the process-wide RNG; every value it
+        # drew is then overwritten from a LOCAL generator, so two VLAModels
+        # built concurrently in one level still get the weights their own
+        # seed promises (see ``seeded_linear_init`` for the same pattern).
+        module = VLAModule(**config)
+        return seeded_vla_init(
+            module, max(0, int(params.get("seed", 0) or 0)))
 
     def execute(
         self,

@@ -133,6 +133,12 @@ class CosineSimilarityNode(BaseNode):
                 f"Embedding dimension mismatch: queries D={Q.shape[1]}, keys D={K.shape[1]}"
             )
 
+        if labels and len(labels) != K.shape[0]:
+            raise ValueError(
+                f"CosineSimilarity: `key_labels` has {len(labels)} label(s) for "
+                f"{K.shape[0]} key(s); it needs one label per key row. Wire the "
+                "labels output of the same node that produced `keys`.")
+
         top_k = max(1, int(params.get("top_k", 5)))
         excludes = {
             w.strip().lower()
@@ -166,12 +172,16 @@ class CosineSimilarityNode(BaseNode):
 
         # Build per-query top-k while honouring exclude_self_words.
         sim_for_topk = sim.clone()
+        excluded_keys = 0
         if excludes and labels:
             for j, label in enumerate(labels):
                 if label.lower() in excludes:
                     sim_for_topk[:, j] = -float("inf")
+                    excluded_keys += 1
 
-        effective_k = min(top_k, K.shape[0])
+        # Excluded keys never reach the result: a top_k larger than the keys
+        # left over used to fill the tail with the excluded words at -inf.
+        effective_k = min(top_k, K.shape[0] - excluded_keys)
         top_indices: list[list[int]] = []
         top_labels: list[list[str]] = []
         if Q.shape[0] > 0 and effective_k > 0:

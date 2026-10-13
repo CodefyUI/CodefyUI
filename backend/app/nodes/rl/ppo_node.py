@@ -1,5 +1,6 @@
 from typing import Any
 
+from ._sizes import positive_int
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 
@@ -36,18 +37,18 @@ class PPONode(BaseNode):
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
         return [
-            ParamDefinition(name="state_dim", param_type=ParamType.INT, default=4, description="Dimension of the state space"),
-            ParamDefinition(name="action_dim", param_type=ParamType.INT, default=2, description="Dimension of the action space"),
-            ParamDefinition(name="hidden_dim", param_type=ParamType.INT, default=64, description="Hidden layer dimension"),
+            ParamDefinition(name="state_dim", param_type=ParamType.INT, default=4, min_value=1, description="Dimension of the state space"),
+            ParamDefinition(name="action_dim", param_type=ParamType.INT, default=2, min_value=1, description="Dimension of the action space"),
+            ParamDefinition(name="hidden_dim", param_type=ParamType.INT, default=64, min_value=1, description="Hidden layer dimension"),
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         import torch
         import torch.nn as nn
 
-        state_dim = params.get("state_dim", 4)
-        action_dim = params.get("action_dim", 2)
-        hidden_dim = params.get("hidden_dim", 64)
+        state_dim = positive_int(params, "state_dim", 4, "PPO")
+        action_dim = positive_int(params, "action_dim", 2, "PPO")
+        hidden_dim = positive_int(params, "hidden_dim", 64, "PPO")
 
         class ActorCritic(nn.Module):
             def __init__(self) -> None:

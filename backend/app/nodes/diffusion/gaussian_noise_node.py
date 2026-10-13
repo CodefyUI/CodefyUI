@@ -118,7 +118,13 @@ class GaussianNoiseNode(BaseNode):
             shape = _parse_shape(str(params.get("shape", "")))
 
         mean = float(params.get("mean", 0.0))
-        std = max(0.0, float(params.get("std", 1.0)))
+        std = float(params.get("std", 1.0))
+        if not std >= 0.0:
+            # A negative (or NaN) std used to be clamped to 0, returning a
+            # tensor of `mean` that looks like a successful draw.
+            raise ValueError(
+                f"GaussianNoise: std must be >= 0, got {std}. Use a positive "
+                "std, or 0 for a constant tensor of `mean`.")
         seed = int(params.get("seed", 42))
 
         # Use a local generator so we don't touch the global RNG state — the

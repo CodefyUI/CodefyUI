@@ -34,8 +34,9 @@ class KLDivergenceNode(BaseNode):
     DETAILS = (
         "reduction aggregates the per-sample KL, the sum over the last axis: "
         "batchmean (the RLHF default) and mean both average it over samples, sum "
-        "adds it up and none returns one value per sample. A 1-D input is one "
-        "sample. "
+        "adds it up and none returns one value per sample, shaped like the "
+        "input without its last axis ([B, T, V] gives [B, T]). A 1-D input is "
+        "one sample. "
         "KL is not symmetric: p is the policy and q the frozen reference it is "
         "held near."
     )
@@ -100,6 +101,10 @@ class KLDivergenceNode(BaseNode):
 
         kind = str(params.get("input_kind", "probs"))
         reduction = str(params.get("reduction", "batchmean"))
+        if kind not in ("probs", "logits"):
+            raise ValueError(
+                f"KLDivergence: input_kind must be 'probs' or 'logits', got "
+                f"{kind!r}.")
 
         # F.kl_div expects target = p (probs) and input = log q.
         if kind == "logits":
@@ -112,10 +117,12 @@ class KLDivergenceNode(BaseNode):
 
         # KL(p || q) = Σ p_i (log p_i − log q_i). F.kl_div with log_target=False
         # computes target * (log target − input) per element; summing the last
-        # axis gives one KL per sample. A 1-D input is a single sample, and any
-        # leading axes are flattened into the sample axis.
+        # axis gives one KL per sample, keeping the leading axes ([B, T, V]
+        # gives [B, T]). A 1-D input is a single sample, returned as shape (1,).
         kl_elem = F.kl_div(log_q, p_probs, reduction="none", log_target=False)
-        per_sample = kl_elem.sum(dim=-1).reshape(-1)
+        per_sample = kl_elem.sum(dim=-1)
+        if per_sample.dim() == 0:
+            per_sample = per_sample.reshape(1)
 
         if reduction == "none":
             kl = per_sample

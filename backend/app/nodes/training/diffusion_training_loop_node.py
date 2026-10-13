@@ -77,7 +77,7 @@ class DiffusionTrainingLoopNode(BaseNode):
                 description=DEVICE_PARAM_DESCRIPTION,
                 advanced=True,
             ),
-            ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="Random seed (sets the timestep and the noise drawn at each step)."),
+            ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="Random seed (sets the batch order and the timestep and noise drawn at each step)."),
         ]
 
     def execute(
@@ -124,12 +124,19 @@ class DiffusionTrainingLoopNode(BaseNode):
         # availability guard and on to an unvalidated ``.to()``. Via
         # ``node_target_device`` since the param grew an 'auto', so that this
         # node and the engine's input alignment read the pin the same way.
-        from ...core.device_utils import node_target_device
+        from ...core.device_utils import node_target_device, to_device
 
         device = node_target_device(params, context, self)
         seed = int(params.get("seed", 0))
 
-        torch.manual_seed(seed)
+        # A LOCAL generator for the shuffle, the timesteps and the noise. The
+        # process-wide RNG is shared with every node running beside this one
+        # in an unseeded run, so reseeding it here let a second loop on the
+        # same level draw from the stream mid-epoch and neither run matched
+        # its own seed. CPU generator on every device: the draws happen on
+        # the CPU and move, so a seed gives the same draws on CPU and MPS.
+        generator = torch.Generator()
+        generator.manual_seed(seed)
         if schedule == "cosine":
             betas = _cosine_betas(T)
         else:
@@ -140,7 +147,8 @@ class DiffusionTrainingLoopNode(BaseNode):
         record_schedule(model, T, schedule, beta_start, beta_end)
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                            generator=generator)
 
         should_stop = stop_checker(context)
         throttle = ProgressThrottle(progress_callback)
@@ -167,10 +175,13 @@ class DiffusionTrainingLoopNode(BaseNode):
                     stopped_at = {"phase": "train", "batch": batch_index}
                     break
                 x0 = batch[0] if isinstance(batch, (list, tuple)) else batch
-                x0 = x0.to(device).float()
+                # Cast on the host, then move: a float64 dataset cannot be
+                # moved to MPS first (MPS has no float64).
+                x0 = to_device(x0.float(), device)
                 b = x0.shape[0]
-                t = torch.randint(0, T, (b,), device=device)
-                eps = torch.randn_like(x0)
+                t = torch.randint(0, T, (b,), generator=generator).to(device)
+                eps = torch.randn(tuple(x0.shape), generator=generator,
+                                  dtype=x0.dtype).to(device)
                 ab = alpha_bars[t].view(b, *([1] * (x0.dim() - 1)))
                 x_t = torch.sqrt(ab) * x0 + torch.sqrt(1.0 - ab) * eps
                 eps_hat = model(x_t, t)

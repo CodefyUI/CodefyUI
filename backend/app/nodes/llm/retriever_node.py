@@ -68,8 +68,8 @@ TOP_K_DEFAULT = 3
 TOP_K_MIN = 1
 TOP_K_MAX = 50
 
-#: ``min_score``'s bounds: the cosine range. A dot-metric index can score
-#: outside it, and a floor of 1.0 there is simply a strict one.
+#: ``min_score``'s bounds for a COSINE index: the cosine range. A dot-metric
+#: index scores outside it, so its floor is used exactly as given.
 MIN_SCORE_DEFAULT = 0.0
 MIN_SCORE_MIN = -1.0
 MIN_SCORE_MAX = 1.0
@@ -138,8 +138,12 @@ def _top_k(params: dict[str, Any]) -> int:
     return max(TOP_K_MIN, min(TOP_K_MAX, value))
 
 
-def _min_score(params: dict[str, Any]) -> float:
-    """The score floor, clamped to the cosine range. See :func:`_top_k`.
+def _min_score(params: dict[str, Any], metric: str) -> float:
+    """The score floor; clamped to the cosine range for a cosine index.
+
+    See :func:`_top_k`. A dot index scores on an open scale (2.1 and -2.0
+    are ordinary dot scores), so clamping its floor to [-1, 1] silently
+    dropped hits that cleared the floor the learner typed.
 
     0.0 -- the default -- is not a floor at all but the absence of one; see
     :func:`_below_floor`.
@@ -153,6 +157,8 @@ def _min_score(params: dict[str, Any]) -> float:
         raise ValueError(
             f"Retriever: min_score must be a number, got {raw!r}."
         ) from exc
+    if metric != "cosine":
+        return value
     return max(MIN_SCORE_MIN, min(MIN_SCORE_MAX, value))
 
 
@@ -284,12 +290,10 @@ class RetrieverNode(BaseNode):
                 name="min_score",
                 param_type=ParamType.FLOAT,
                 default=MIN_SCORE_DEFAULT,
-                min_value=MIN_SCORE_MIN,
-                max_value=MIN_SCORE_MAX,
                 description=(
-                    "Drop hits scoring below this (cosine range -1..1). 0 "
-                    "keeps everything; 0.3-0.5 is a sensible floor for "
-                    "e5/MiniLM"
+                    "Drop hits scoring below this (cosine range -1..1; a "
+                    "dot index takes any value). 0 keeps everything; "
+                    "0.3-0.5 is a sensible floor for e5/MiniLM"
                 ),
             ),
         ]
@@ -305,7 +309,7 @@ class RetrieverNode(BaseNode):
         index = _check_index(inputs.get("index"))
         query = inputs.get("query")
         top_k = _top_k(params)
-        min_score = _min_score(params)
+        min_score = _min_score(params, index.metric)
 
         # Coercion, the dimension check and the metric all live in the index
         # (see ``_vector_index``), so this node never has an opinion about

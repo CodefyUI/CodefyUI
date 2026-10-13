@@ -37,8 +37,10 @@ class AttentionMaskNode(BaseNode):
     DETAILS = (
         "causal blocks strictly future positions, the GPT-style decoder pattern; "
         "padding blocks every column whose token equals pad_token. Sequence length "
-        "comes from the tokens list, or from dim 0 of the tensor input. Downstream "
-        "attention consumes it as scores.masked_fill(mask, -inf)."
+        "comes from the tokens list, or from dim 0 of the tensor input, so the "
+        "tensor must be sequence-first ([seq] or [seq, d]); a batch-first "
+        "[B, seq, d] tensor gives a [B, B] mask, so select one sequence first. "
+        "Downstream attention consumes it as scores.masked_fill(mask, -inf)."
     )
 
     @classmethod
@@ -47,7 +49,11 @@ class AttentionMaskNode(BaseNode):
             PortDefinition(
                 name="tensor",
                 data_type=DataType.TENSOR,
-                description="Sequence tensor — seq length is taken from dim 0. Optional if `tokens` is connected.",
+                description=(
+                    "Sequence-first tensor [seq] or [seq, d]: the seq length is taken from dim 0, "
+                    "so a batch-first [B, seq, d] tensor gives a [B, B] mask. Optional if "
+                    "`tokens` is connected."
+                ),
                 optional=True,
             ),
             PortDefinition(

@@ -95,8 +95,10 @@ def test_node_metadata():
     assert params["top_k"].max_value == 50
     assert params["min_score"].param_type == ParamType.FLOAT
     assert params["min_score"].default == 0.0
-    assert params["min_score"].min_value == -1.0
-    assert params["min_score"].max_value == 1.0
+    # No widget bounds: a dot-metric index scores outside [-1, 1], so the
+    # node clamps the floor itself, and only for a cosine index.
+    assert params["min_score"].min_value is None
+    assert params["min_score"].max_value is None
 
 
 def test_returns_top_k_best_first_with_sources():
@@ -395,3 +397,26 @@ def test_log_lists_source_and_chunk_index():
                 top_k=1)
     assert bare["sources"] == ["?"]
     assert bare["__log__"] == "[1.00] ?"
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_a_dot_index_keeps_a_floor_outside_the_cosine_range():
+    # The floor used to be clamped to [-1, 1] for every metric, so -10 on a
+    # dot index became -1 and dropped a hit scoring -2.
+    vectors = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 0.0]])
+    chunks = ["east", "north", "northeast", "west"]
+    index = build_index(vectors, chunks, [{"source": "s"}] * 4, metric="dot")
+    res = _run(inputs={"query": torch.tensor([[2.0, 0.1]]), "index": index},
+               top_k=4, min_score=-10.0)
+    assert res["contexts"] == ["northeast", "east", "north", "west"]
+
+
+def test_a_dot_index_floor_above_one_is_used_as_given():
+    vectors = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 0.0]])
+    chunks = ["east", "north", "northeast", "west"]
+    index = build_index(vectors, chunks, [{"source": "s"}] * 4, metric="dot")
+    res = _run(inputs={"query": torch.tensor([[2.0, 0.1]]), "index": index},
+               top_k=4, min_score=2.05)
+    assert res["contexts"] == ["northeast"]

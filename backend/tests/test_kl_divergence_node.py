@@ -125,3 +125,28 @@ def test_leading_axes_are_flattened_into_samples_for_the_mean():
     q = torch.tensor([[_Q, [0.5, 0.5]], [[0.5, 0.5], _Q]])
     expected = (_KL_PQ + math.log(2.0) + 0.0 + _KL_PQ) / 4
     assert float(_run(p, q)["kl"]) == pytest.approx(expected, abs=1e-5)
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_reduction_none_keeps_the_leading_axes():
+    p = torch.softmax(torch.randn(2, 3, 5), dim=-1)
+    q = torch.softmax(torch.randn(2, 3, 5), dim=-1)
+    kl = _run(p, q, reduction="none")["kl"]
+    assert kl.shape == (2, 3)
+    expected = (p * (p.log() - q.log())).sum(-1)
+    assert torch.allclose(kl, expected, atol=1e-6)
+    # batchmean still averages over every sample.
+    assert _run(p, q)["kl"].item() == pytest.approx(expected.mean().item(), abs=1e-6)
+
+
+def test_a_1d_input_is_one_sample():
+    p = torch.tensor([0.5, 0.5])
+    assert _run(p, p, reduction="none")["kl"].shape == (1,)
+
+
+def test_an_unknown_input_kind_is_refused():
+    p = torch.tensor([0.5, 0.5])
+    with pytest.raises(ValueError, match="KLDivergence: input_kind"):
+        _run(p, p, input_kind="log_probs")

@@ -86,3 +86,17 @@ def test_empty_shape_string_raises():
 def test_dtype_is_float32():
     res = _run()
     assert res["noise"].dtype == torch.float32
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_a_negative_std_is_refused():
+    # Used to clamp to 0 and return a tensor of `mean` as if it were noise.
+    with pytest.raises(ValueError, match="GaussianNoise: std must be >= 0"):
+        _run(std=-1.0)
+
+
+def test_a_zero_std_is_a_constant_tensor():
+    out = _run(std=0.0, mean=2.0)["noise"]
+    assert torch.equal(out, torch.full_like(out, 2.0))

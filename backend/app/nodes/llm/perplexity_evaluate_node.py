@@ -372,6 +372,24 @@ class PerplexityEvaluateNode(BaseNode):
         finally:
             model.train(was_training)
 
+        if stopped_at_batch is None and batches_done == 0:
+            raise ValueError(
+                "PerplexityEvaluate: the dataset produced no batch, so there "
+                "is no perplexity to report. Wire a non-empty "
+                "LMTokenizedDataset (the text may be shorter than one block).")
+        if stopped_at_batch is None and token_count == 0:
+            # Batches ran (or the set was empty) and no token was scored:
+            # every label was the ignore_index. Reporting perplexity 1.0 --
+            # the best possible score -- and filing it as a metric would rank
+            # a mis-masked dataset first in a sweep, so refuse instead. A run
+            # STOPPED before scoring anything keeps its 0-token result below.
+            raise ValueError(
+                f"PerplexityEvaluate: no token was scored over "
+                f"{batches_done:,} batch(es) -- every label in them "
+                f"equals the ignore_index {DEFAULT_IGNORE_INDEX} (0 tokens "
+                f"scored), so there is no perplexity to report. Check the "
+                f"dataset's labels: a causal-LM dataset labels each position "
+                f"with the next token id.")
         val_loss = loss_sum / token_count if token_count else 0.0
         perplexity = _safe_exp(val_loss)
         note = (

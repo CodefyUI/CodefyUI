@@ -470,3 +470,22 @@ def test_an_astronomical_loss_reports_infinite_perplexity_rather_than_raising():
     res = _run(Diverged(), dataset, batch_size=2, precision="fp32")
     assert res["val_loss"] > 709
     assert res["perplexity"] == float("inf")
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_a_dataset_whose_every_label_is_ignored_is_refused():
+    # Zero scored tokens used to report val_loss 0.0 and perplexity 1.0, the
+    # best possible score, and log it as a metric.
+    dataset = _blocks(3)
+    dataset.labels[:] = -100
+    context = RecordingContext()
+    with pytest.raises(ValueError, match="ignore_index -100"):
+        _run(TinyLM(), dataset, batch_size=2, precision="fp32", context=context)
+    assert context.metrics == []
+
+
+def test_an_empty_dataset_is_refused():
+    with pytest.raises(ValueError, match="PerplexityEvaluate: the dataset produced no batch"):
+        _run(TinyLM(), _blocks(0), batch_size=2, precision="fp32")

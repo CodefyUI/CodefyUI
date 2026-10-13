@@ -44,6 +44,32 @@ from ...core.node_base import (
 )
 
 
+_TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+_FALSE_STRINGS = frozenset({"false", "0", "no", "off", ""})
+
+
+def _parse_bool(raw: Any, name: str) -> bool:
+    """A BOOL param read the way its author meant it.
+
+    ``bool("false")`` is True, so a hand-edited graph or a CLI ``--param``
+    that spelled the value as a string used to switch the option ON.
+    """
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in _TRUE_STRINGS:
+            return True
+        if lowered in _FALSE_STRINGS:
+            return False
+    raise ValueError(
+        f"GroupRelativeAdvantage: {name} must be true or false, got {raw!r}.")
+
+
 class GroupRelativeAdvantageNode(BaseNode):
     NODE_NAME = "GroupRelativeAdvantage"
     CATEGORY = "RL"
@@ -115,8 +141,9 @@ class GroupRelativeAdvantageNode(BaseNode):
                 param_type=ParamType.BOOL,
                 default=False,
                 description=(
-                    "Also divide by the group standard deviation. Off by default so the "
-                    "numbers still match a hand calculation."
+                    "Also divide by the group's population standard deviation (divides by "
+                    "n, unbiased=False). Off by default so the numbers still match a hand "
+                    "calculation."
                 ),
             ),
         ]
@@ -152,7 +179,7 @@ class GroupRelativeAdvantageNode(BaseNode):
                     f"has {rewards.shape[0]} -- they index the same samples."
                 )
 
-        normalize = bool(params.get("normalize", False))
+        normalize = _parse_bool(params.get("normalize", False), "normalize")
         baseline = torch.zeros_like(rewards)
         advantages = torch.zeros_like(rewards)
 
@@ -163,9 +190,10 @@ class GroupRelativeAdvantageNode(BaseNode):
             baseline[mask] = mean
             adv = group - mean
             if normalize:
-                # Unbiased std needs 2+ samples, and a constant group has std 0;
-                # either way there is nothing to scale by, so leave it alone
-                # rather than dividing by an epsilon and inventing signal.
+                # Population std (unbiased=False): a one-sample group and a
+                # constant group both have std 0, so there is nothing to scale
+                # by; leave it alone rather than dividing by an epsilon and
+                # inventing signal.
                 std = group.std(unbiased=False)
                 if std > 1e-8:
                     adv = adv / std

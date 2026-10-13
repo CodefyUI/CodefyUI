@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from app.nodes.rl.dqn_node import DQNNode
@@ -43,3 +44,24 @@ def test_hidden_dim_affects_param_count():
     n_small = sum(p.numel() for p in res_small["model"].parameters())
     n_large = sum(p.numel() for p in res_large["model"].parameters())
     assert n_large > n_small
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+
+def test_string_sizes_are_coerced():
+    res = DQNNode().execute({}, {"state_dim": "4", "action_dim": "2", "hidden_dim": "8"})
+    assert res["model"](torch.zeros(1, 4)).shape == (1, 2)
+
+
+@pytest.mark.parametrize("name", ["state_dim", "action_dim", "hidden_dim"])
+@pytest.mark.parametrize("value", [0, -3, "four", 2.5])
+def test_bad_sizes_are_node_named_errors(name, value):
+    params = {"state_dim": 4, "action_dim": 2, "hidden_dim": 8, name: value}
+    with pytest.raises(ValueError, match=f"DQN: {name} must be"):
+        DQNNode().execute({}, params)
+
+
+def test_sizes_declare_a_minimum_of_one():
+    assert all(p.min_value == 1 for p in DQNNode.define_params())

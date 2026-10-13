@@ -77,3 +77,37 @@ def test_dtype_preserved():
     x = torch.zeros(1, 3, 4, 4, dtype=torch.float32)
     res = _run(x)
     assert res["tensor"].dtype == torch.float32
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_bilinear_on_one_spatial_axis_is_linear():
+    # F.interpolate raises NotImplementedError for "bilinear" on [N, C, L].
+    x = torch.tensor([[[0.0, 1.0, 2.0, 3.0]]])
+    out = _run(x, mode="bilinear")["tensor"]
+    expected = torch.nn.functional.interpolate(
+        x, scale_factor=2.0, mode="linear", align_corners=False)
+    assert torch.equal(out, expected)
+
+
+def test_bilinear_on_three_spatial_axes_is_trilinear():
+    x = torch.rand(1, 1, 2, 2, 2)
+    out = _run(x, mode="bilinear")["tensor"]
+    expected = torch.nn.functional.interpolate(
+        x, scale_factor=2.0, mode="trilinear", align_corners=False)
+    assert torch.equal(out, expected)
+
+
+def test_bilinear_4d_numbers_are_unchanged():
+    x = torch.rand(2, 3, 4, 4)
+    out = _run(x, mode="bilinear")["tensor"]
+    expected = torch.nn.functional.interpolate(
+        x, scale_factor=2.0, mode="bilinear", align_corners=False)
+    assert torch.equal(out, expected)
+
+
+@pytest.mark.parametrize("shape", [(4, 4), (1, 1, 1, 1, 2, 2)])
+def test_an_unsupported_rank_is_a_node_named_error(shape):
+    with pytest.raises(ValueError, match="Upsample: the tensor input must be"):
+        _run(torch.zeros(*shape))

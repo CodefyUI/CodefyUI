@@ -330,3 +330,114 @@ def test_training_loop_trains_a_vla_on_nested_batches(head):
         torch.isfinite(torch.as_tensor(float(value))) for value in losses)
     assert out["val_losses"], "the nested val pass must produce a loss"
     assert not torch.equal(model.head.weight.detach(), before)
+
+
+# ── seeds that hold beside other nodes (2026-10-13 audit) ───────────────
+
+
+def _no_global_reseed(monkeypatch):
+    """Make any reseed of the process-wide RNG fail the test.
+
+    An unseeded run executes a level's nodes concurrently, so a node that
+    reseeds the shared generator rewinds the stream under its neighbours,
+    and two of them take turns drawing from it.
+    """
+    def refuse(*args, **kwargs):
+        raise AssertionError("reseeded the process-wide RNG")
+
+    monkeypatch.setattr(torch, "manual_seed", refuse)
+
+
+def test_seeded_init_matches_the_old_draw_order_bit_for_bit():
+    # The weights a seed gave before the local generator are unchanged, so
+    # every number quoted off a VLAModel still holds.
+    from app.nodes.vla.vla_model_node import _resolve_config
+
+    for overrides in ({}, {"vision_stem": "patchify", "patch_size": 8},
+                      {"head_type": "regression", "seed": 3}):
+        params = {**TINY, **overrides}
+        torch.manual_seed(params["seed"])
+        reference = VLAModule(**_resolve_config(params))
+        built = VLAModelNode().build_module(params)
+        for (name, ref), got in zip(reference.state_dict().items(),
+                                    built.state_dict().values()):
+            assert torch.equal(ref, got), name
+
+
+def test_build_never_reseeds_the_global_rng(monkeypatch):
+    _no_global_reseed(monkeypatch)
+    first = VLAModelNode().build_module(dict(TINY))
+    torch.rand(1000)  # a neighbour drawing from the shared stream
+    second = VLAModelNode().build_module(dict(TINY))
+    for a, b in zip(first.parameters(), second.parameters()):
+        assert torch.equal(a, b)
+
+
+def test_two_seeded_vla_models_on_one_level_of_an_unseeded_run_match():
+    import asyncio
+
+    from app.core.graph_engine import execute_graph
+    from app.core.runtime import initialize_runtime
+
+    initialize_runtime()
+    nodes = [{"id": "start", "type": "Start", "data": {"params": {}}}]
+    nodes += [{"id": x, "type": "VLAModel", "data": {"params": dict(TINY)}}
+              for x in "ab"]
+    edges = [{"id": "t" + x, "source": "start", "target": x,
+              "sourceHandle": "trigger", "type": "trigger"} for x in "ab"]
+    context = ExecutionContext(
+        graph_id="vla-race", weights_persistent=False,
+        node_state_store=NodeStateStore(), device="cpu", seed=None)
+    out = asyncio.run(execute_graph(nodes, edges, context=context))
+    for a, b in zip(out["a"]["model"].parameters(),
+                    out["b"]["model"].parameters()):
+        assert torch.equal(a, b)
+
+
+def test_rollout_seed_fixes_the_flow_heads_sampling_noise():
+    model = _build(head_type="flow_matching")["model"]
+    params = {"episodes": 2, "execute_k": 2, "max_steps": 12,
+              "record_episodes": 2, "seed": 5, "device": "cpu"}
+    torch.manual_seed(123)
+    first = VLARolloutNode().execute(
+        {"model": model, "env": _factory()}, params)
+    torch.manual_seed(456)
+    second = VLARolloutNode().execute(
+        {"model": model, "env": _factory()}, params)
+    assert torch.equal(first["frames"], second["frames"])
+    assert first["report"] == second["report"]
+
+
+def test_predict_action_draws_flow_noise_from_the_given_generator():
+    model = _build(head_type="flow_matching")["model"]
+    image, tokens, _ = _batch(batch_size=2)
+    torch.manual_seed(1)
+    a = model.predict_action(
+        image, tokens, generator=torch.Generator().manual_seed(9))
+    torch.manual_seed(2)
+    b = model.predict_action(
+        image, tokens, generator=torch.Generator().manual_seed(9))
+    assert torch.equal(a, b)
+
+
+def test_action_eval_uses_a_local_generator(monkeypatch):
+    model = _build()["model"]
+    holdout = _tiny_demos()["holdout"]
+    params = {"max_samples": 16, "batch_size": 8, "seed": 3, "device": "cpu"}
+    # The number the node reported while it reseeded the global RNG: the
+    # local CPU generator walks the same stream, so it is unchanged.
+    torch.manual_seed(3)
+    images = torch.stack([holdout[i][0][0] for i in range(16)])
+    tokens = torch.stack([holdout[i][0][1] for i in range(16)])
+    targets = torch.stack([holdout[i][1] for i in range(16)])
+    expected = 0.0
+    for start in (0, 8):
+        predicted = model.predict_action(
+            images[start:start + 8], tokens[start:start + 8])
+        expected += float((predicted - targets[start:start + 8]).pow(2).sum())
+    expected /= 16 * targets[0].numel()
+
+    _no_global_reseed(monkeypatch)
+    result = VLAActionEvalNode().execute(
+        {"model": model, "dataset": holdout}, params)
+    assert result["action_mse"] == pytest.approx(expected, rel=1e-6)

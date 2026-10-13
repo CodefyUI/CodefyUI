@@ -186,7 +186,8 @@ class VLARolloutNode(BaseNode):
                 min_value=0,
                 description=(
                     "Evaluation seed. Episode seeds run from an offset "
-                    "stream disjoint from PushWorldDemos' defaults."
+                    "stream disjoint from PushWorldDemos' defaults; the "
+                    "same seed also fixes the flow head's sampling noise."
                 ),
                 advanced=True,
             ),
@@ -263,6 +264,13 @@ class VLARolloutNode(BaseNode):
                         f"{episode.target_colors[episode.goal_target]} target")
                 tokens = encode_instruction(
                     instruction, max_text_len).unsqueeze(0).to(device)
+                # One local generator per episode, seeded like the episode
+                # itself, so the flow head's sampling noise follows `seed`
+                # and an episode's actions do not depend on how many
+                # episodes ran before it or on other nodes' draws.
+                noise_generator = torch.Generator()
+                noise_generator.manual_seed(
+                    seed + _ROLLOUT_SEED_OFFSET + index)
 
                 episode_frames: list[torch.Tensor] = []
                 done = False
@@ -272,7 +280,8 @@ class VLARolloutNode(BaseNode):
                         episode_frames.append(
                             (frame.clamp(0, 1) * 255).round().to(torch.uint8))
                     observation = frame.unsqueeze(0).to(device)
-                    chunk = model.predict_action(observation, tokens)[0]
+                    chunk = model.predict_action(
+                        observation, tokens, generator=noise_generator)[0]
                     for k in range(min(execute_k, chunk.shape[0])):
                         done = episode.step(chunk[k].float().cpu())
                         if done:

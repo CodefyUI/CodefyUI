@@ -82,7 +82,7 @@ class VLAActionEvalNode(BaseNode):
                 default=2048,
                 min_value=1,
                 max_value=100000,
-                description="Evaluate at most this many samples (0 caps nothing)",
+                description="Evaluate at most this many samples",
             ),
             ParamDefinition(
                 name="batch_size",
@@ -150,7 +150,10 @@ class VLAActionEvalNode(BaseNode):
         target_count = (
             min(len(dataset), max_samples) if max_samples else len(dataset))
 
-        torch.manual_seed(seed)
+        # A local generator: reseeding the process-wide RNG here would
+        # rewind the stream under any node running beside this one.
+        generator = torch.Generator()
+        generator.manual_seed(seed)
         error_sum = 0.0
         evaluated = 0
         stopped = False
@@ -166,7 +169,8 @@ class VLAActionEvalNode(BaseNode):
                 images = images[:take].to(device)
                 tokens = tokens[:take].to(device)
                 expert = targets[:take].to(device)
-                predicted = model.predict_action(images, tokens)
+                predicted = model.predict_action(
+                    images, tokens, generator=generator)
                 error_sum += float(
                     (predicted.float() - expert.float()).pow(2).sum())
                 evaluated += take
