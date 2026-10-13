@@ -25,6 +25,8 @@ from app.core.node_base import (
 )
 from app.core.step_trace import StepRecorder
 
+from ._params import param_bool
+
 
 class EduPatchifyNode(BaseNode):
     NODE_NAME = "Edu-Patchify"
@@ -110,7 +112,7 @@ class EduPatchifyNode(BaseNode):
 
         B, C, H, W = x.shape
         patch_size = int(params.get("patch_size", 8))
-        flatten = bool(params.get("flatten", True))
+        flatten = param_bool(params, "flatten", True, "Edu-Patchify")
         if patch_size <= 0:
             raise ValueError("patch_size must be positive.")
         if H % patch_size != 0 or W % patch_size != 0:

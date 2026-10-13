@@ -29,6 +29,8 @@ from app.core.node_base import (
     PortDefinition,
 )
 
+from ._labels import read_labels
+
 
 class _FittedClassifier:
     """包住已訓練的分類器，提供統一的 ``predict(X) -> 標籤list``。
@@ -47,10 +49,11 @@ class _FittedClassifier:
 
         feats = np.asarray(x, dtype=float)
         if self.kind == "linear":
-            scores = np.atleast_2d(self.estimator.predict(feats))
-            idx = scores.argmax(axis=1)
-            return [self.classes[int(i)] for i in idx]
-        return [str(p) for p in self.estimator.predict(feats)]
+            idx = np.atleast_2d(self.estimator.predict(feats)).argmax(axis=1)
+        else:
+            # Fitted on class positions, so a prediction is an index into classes.
+            idx = self.estimator.predict(feats)
+        return [self.classes[int(i)] for i in idx]
 
 
 class ClassifierNode(BaseNode):
@@ -129,39 +132,55 @@ class ClassifierNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
-        labels = [str(label) for label in labels]
+        labels, classes, y_idx = read_labels(y_train, "Classifier")
+        if x_train_np.ndim != 2 or x_query_np.ndim != 2:
+            raise ValueError(
+                f"Classifier: `x_train` and `x_query` must be [rows, features]; got "
+                f"{tuple(x_train_np.shape)} and {tuple(x_query_np.shape)}."
+            )
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"Classifier: features and labels length mismatch — "
                 f"{x_train_np.shape[0]} rows vs {len(labels)} labels."
             )
+        if x_query_np.shape[1] != x_train_np.shape[1]:
+            raise ValueError(
+                f"Classifier: `x_query` has {x_query_np.shape[1]} features but `x_train` "
+                f"has {x_train_np.shape[1]}; feed both the same columns."
+            )
 
         kind = str(params.get("kind", "knn"))
-        classes = sorted(set(labels))
+        # Every estimator is fitted on class positions (0..C-1) so its class
+        # order is `classes`, which sorts numeric labels by value.
+        y_fit = np.asarray(y_idx, dtype=np.int64)
 
         if kind == "knn":
             from sklearn.neighbors import KNeighborsClassifier
 
-            k = max(1, min(int(params.get("n_neighbors", 5)), len(labels)))
+            raw_k = params.get("n_neighbors", 5)
+            try:
+                k = int(raw_k)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Classifier: `n_neighbors` must be a whole number, got {raw_k!r}."
+                ) from None
+            k = max(1, min(k, len(labels)))
             est = KNeighborsClassifier(n_neighbors=k)
-            est.fit(x_train_np, labels)
-            predictions = [str(p) for p in est.predict(x_query_np)]
+            est.fit(x_train_np, y_fit)
+            predictions = [classes[int(p)] for p in est.predict(x_query_np)]
             proba = est.predict_proba(x_query_np)
         elif kind == "logistic":
             from sklearn.linear_model import LogisticRegression
 
             est = LogisticRegression(max_iter=1000)
-            est.fit(x_train_np, labels)
-            predictions = [str(p) for p in est.predict(x_query_np)]
+            est.fit(x_train_np, y_fit)
+            predictions = [classes[int(p)] for p in est.predict(x_query_np)]
             proba = est.predict_proba(x_query_np)
         elif kind == "linear":
             from sklearn.linear_model import LinearRegression
 
             one_hot = np.zeros((len(labels), len(classes)), dtype=np.float32)
-            idx = {c: i for i, c in enumerate(classes)}
-            for r, lab in enumerate(labels):
-                one_hot[r, idx[lab]] = 1.0
+            one_hot[np.arange(len(labels)), y_fit] = 1.0
             est = LinearRegression()
             est.fit(x_train_np, one_hot)
             proba = np.atleast_2d(est.predict(x_query_np))

@@ -223,6 +223,12 @@ class EduCrossAttentionNode(StatefulModuleMixin, BaseNode):
                 "EduCrossAttention: query and context must both be 2D or both be 3D, "
                 f"got query.shape={tuple(q_in.shape)}, context.shape={tuple(c_in.shape)}."
             )
+        if q_bf.shape[0] != c_bf.shape[0]:
+            raise ValueError(
+                f"EduCrossAttention: query has batch size {q_bf.shape[0]} but context has "
+                f"{c_bf.shape[0]}; 3D inputs are [seq, batch, embed_dim] and need the "
+                "same batch size."
+            )
         B = q_bf.shape[0]
         Q_seq = q_bf.shape[1]
         K_seq = c_bf.shape[1]

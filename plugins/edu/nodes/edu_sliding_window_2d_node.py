@@ -144,17 +144,21 @@ class EduSlidingWindow2DNode(BaseNode):
             k = max(MIN_KERNEL_SIZE, min(MAX_KERNEL_SIZE, k))
             raw_weights = params.get("weights")
             if raw_weights is None:
-                raise ValueError("preset=Custom requires `weights` to be set (an NxN matrix).")
+                raise ValueError(
+                    "SlidingWindow2D: preset=Custom requires `weights` to be set (an NxN matrix)."
+                )
             flat = _flatten(raw_weights)
             if len(flat) != k * k:
                 raise ValueError(
-                    f"`weights` has {len(flat)} elements but kernel_size={k} expects {k * k} "
+                    f"SlidingWindow2D: `weights` has {len(flat)} elements but kernel_size={k} expects {k * k} "
                     f"({k}x{k}). Adjust kernel_size or re-fill the grid."
                 )
             return flat, k
         kernel = PRESETS_3X3.get(preset)
         if kernel is None:
-            raise ValueError(f"Unknown preset: {preset!r}. Choose one of {PRESET_OPTIONS}.")
+            raise ValueError(
+                f"SlidingWindow2D: unknown preset {preset!r}. Choose one of {PRESET_OPTIONS}."
+            )
         return _flatten(kernel), 3
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
@@ -180,6 +184,12 @@ class EduSlidingWindow2DNode(BaseNode):
         c = image.size(0)
         flat, k = self._resolve_kernel(params)
         padding = max(0, int(params.get("padding", 0) or 0))
+        h, w = image.shape[-2:]
+        if h + 2 * padding < k or w + 2 * padding < k:
+            raise ValueError(
+                f"SlidingWindow2D: the {k}x{k} kernel does not fit a {h}x{w} image with "
+                f"padding={padding}; raise `padding` or use a smaller kernel."
+            )
 
         kernel = torch.tensor(flat, dtype=image.dtype, device=image.device).reshape(1, 1, k, k)
         weight = kernel.expand(c, 1, k, k).contiguous()  # depthwise：每通道同一個 kernel

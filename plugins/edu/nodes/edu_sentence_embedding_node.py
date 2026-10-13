@@ -127,7 +127,11 @@ class EduSentenceEmbeddingNode(BaseNode):
         text = str(raw)
 
         model_label = str(params.get("model", _DEFAULT_MODEL))
-        repo = _MODELS.get(model_label, _MODELS[_DEFAULT_MODEL])
+        if model_label not in _MODELS:
+            raise ValueError(
+                f"SentenceEmbedding: unknown `model` {model_label!r}. Choose one of {list(_MODELS)}."
+            )
+        repo = _MODELS[model_label]
 
         key = (repo, text)
         cached = _EMBED_CACHE.get(key)
@@ -139,4 +143,7 @@ class EduSentenceEmbeddingNode(BaseNode):
             vec = torch.as_tensor(arr, dtype=torch.float32).reshape(-1)
             _EMBED_CACHE[key] = vec
 
-        return {"embedding": vec}
+        # A copy: the cached tensor outlives this run, and a downstream node
+        # that edits its input in place would otherwise corrupt every later
+        # result for the same text.
+        return {"embedding": vec.clone()}

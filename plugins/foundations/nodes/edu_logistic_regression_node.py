@@ -5,9 +5,11 @@ The natural multi-class generalisation of binary logistic regression:
     logits[i, c] = X[i] @ W[:, c] + b[c]
     P(class=c | x_i) = exp(logits[i, c]) / Σ_k exp(logits[i, k])
 
-Loss is cross-entropy with optional L2 weight decay on W (not on b):
+Loss is the mean cross-entropy with optional L2 weight decay on W (not on b):
 
-    L = − Σ_i log P(y_i | x_i) + λ ||W||_F²
+    L = − (1/N) Σ_i log P(y_i | x_i) + λ ||W||_F²
+
+For a binary problem that is sklearn's ``LogisticRegression(C=1/(λ·N))``.
 
 Gradient descent updates W and b together; for binary problems this
 collapses to two-column softmax which is mathematically equivalent to
@@ -19,7 +21,8 @@ Outputs:
 - ``probabilities`` — full softmax distribution per query, [M, C].
 - ``weights`` — [F, C].
 - ``bias`` — [C].
-- ``classes`` — the unique labels in fit order; column k of weights
+- ``classes`` — the unique labels, sorted by value when every label is a
+  number (so 2 comes before 10) and as text otherwise; column k of weights
   corresponds to ``classes[k]``.
 """
 
@@ -37,6 +40,17 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.step_trace import StepRecorder
+from app.nodes.classical._labels import label_strings
+
+
+def _sorted_classes(labels: list[str]) -> list[str]:
+    """Distinct labels, by value when all are numbers, as text otherwise."""
+    distinct = set(labels)
+    try:
+        values = {lab: float(lab) for lab in distinct}
+    except ValueError:
+        return sorted(distinct)
+    return sorted(distinct, key=lambda lab: (values[lab], lab))
 
 
 class EduLogisticRegressionNode(BaseNode):
@@ -44,11 +58,13 @@ class EduLogisticRegressionNode(BaseNode):
     CATEGORY = "Classical"
     DESCRIPTION = "Softmax by gradient descent: labels and probabilities"
     DETAILS = (
-        "Loss is cross-entropy, and `regularization` adds L2 weight decay on the "
-        "weights but not the bias. Binary problems run through the same two-column "
-        "softmax, which is equivalent to the sigmoid form. Predicted labels come "
-        "back as strings from the sorted training vocabulary, and the `classes` "
-        "output gives the column order of `weights`."
+        "Loss is the mean cross-entropy over the rows plus "
+        "$\\lambda \\lVert W \\rVert^2$, with λ = `regularization` on the weights "
+        "but not the bias; for two classes that is sklearn "
+        "`LogisticRegression(C=1/(λN))`. Binary problems run through the same "
+        "two-column softmax, which is equivalent to the sigmoid form. Predicted "
+        "labels come back as strings; `classes` gives the column order of "
+        "`weights`, sorted by value when every label is a number."
     )
 
     @classmethod
@@ -95,7 +111,7 @@ class EduLogisticRegressionNode(BaseNode):
         x_query = inputs.get("x_query")
         if x_train is None or y_train is None or x_query is None:
             raise ValueError(
-                "EduLogisticRegression requires `x_train`, `y_train`, `x_query` inputs."
+                "Edu-LogisticRegression requires `x_train`, `y_train`, `x_query` inputs."
             )
 
         if not isinstance(x_train, torch.Tensor):
@@ -104,23 +120,35 @@ class EduLogisticRegressionNode(BaseNode):
             x_query = torch.as_tensor(x_query, dtype=torch.float32)
         x_train = x_train.float()
         x_query = x_query.float()
-        labels = list(y_train) if not isinstance(y_train, torch.Tensor) else y_train.tolist()
-        labels = [str(v) for v in labels]
+        if x_train.dim() != 2 or x_query.dim() != 2:
+            raise ValueError(
+                f"Edu-LogisticRegression: `x_train` and `x_query` must be [rows, features]; "
+                f"got {tuple(x_train.shape)} and {tuple(x_query.shape)}. For a single "
+                "feature, make it one column ([N, 1])."
+            )
+        if x_query.shape[1] != x_train.shape[1]:
+            raise ValueError(
+                f"Edu-LogisticRegression: `x_query` has {x_query.shape[1]} features but "
+                f"`x_train` has {x_train.shape[1]}; feed both the same columns."
+            )
+        # One string per row; an [N, 1] label column reads as N labels.
+        labels = label_strings(y_train, "Edu-LogisticRegression y_train")
 
         if x_train.shape[0] != len(labels):
             raise ValueError(
-                f"EduLogisticRegression: features/labels length mismatch — "
+                f"Edu-LogisticRegression: features/labels length mismatch — "
                 f"{x_train.shape[0]} rows vs {len(labels)} labels."
             )
 
         # Build a class index from the unique labels.
-        classes = sorted(set(labels))
+        classes = _sorted_classes(labels)
         if len(classes) < 2:
             raise ValueError(
-                f"EduLogisticRegression: need at least 2 classes, got {classes!r}."
+                f"Edu-LogisticRegression: `y_train` needs at least 2 classes, got {classes!r}."
             )
         class_to_idx = {c: i for i, c in enumerate(classes)}
-        y_idx = torch.tensor([class_to_idx[v] for v in labels], dtype=torch.long)
+        y_idx = torch.tensor(
+            [class_to_idx[v] for v in labels], dtype=torch.long, device=x_train.device)
 
         n_features = x_train.shape[1]
         n_classes = len(classes)
@@ -128,8 +156,8 @@ class EduLogisticRegressionNode(BaseNode):
         epochs = max(1, int(params.get("epochs", 200)))
         lam = float(params.get("regularization", 0.0))
 
-        weights = torch.zeros(n_features, n_classes)
-        bias = torch.zeros(n_classes)
+        weights = torch.zeros(n_features, n_classes, device=x_train.device)
+        bias = torch.zeros(n_classes, device=x_train.device)
         n = x_train.shape[0]
 
         for _ in range(epochs):

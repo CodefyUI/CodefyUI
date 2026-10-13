@@ -94,3 +94,31 @@ def test_rejects_temperature_zero():
 def test_missing_input_raises():
     with pytest.raises(ValueError, match="requires"):
         EduPolicyGradientNode().execute({"logits": torch.zeros(1, 2)}, {})
+
+
+# --- 2026-10-13 audit: exact log-probs at low temperature ---
+
+
+@pytest.mark.parametrize("temperature, gap, expected", [(0.01, 1.0, -100.0), (1.0, 120.0, -120.0)])
+def test_log_prob_stays_exact_when_the_softmax_underflows(temperature, gap, expected):
+    """T=0.01 on logits [0, 1] is a gap of 100; softmax underflows to 0 there.
+
+    log(softmax) clamped at 1e-12 gave -27.63 and a zero gradient.
+    """
+    logits = torch.tensor([[0.0, gap]], requires_grad=True)
+    res = _run(logits, torch.tensor([0]), torch.tensor([1.0]),
+               baseline="none", temperature=temperature)
+    assert float(res["log_probs"].detach()[0]) == pytest.approx(expected, rel=1e-5)
+    res["loss"].backward()
+    scale = 1.0 / temperature
+    assert logits.grad.tolist() == [pytest.approx([-scale, scale], rel=1e-4)]
+
+
+def test_fractional_actions_are_refused_with_the_node_name():
+    with pytest.raises(ValueError, match="Edu-PolicyGradient: `actions`"):
+        _run(torch.zeros(2, 2), [1.7, 0.2], torch.tensor([1.0, 1.0]))
+
+
+def test_integral_float_actions_still_work():
+    res = _run(torch.zeros(2, 2), torch.tensor([1.0, 0.0]), torch.tensor([1.0, 0.0]))
+    assert res["log_probs"].shape == (2,)

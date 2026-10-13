@@ -39,6 +39,8 @@ from app.core.node_base import (
 from app.core.stateful_module import StatefulModuleMixin
 from app.core.step_trace import StepRecorder
 
+from ._params import param_bool
+
 
 class _MultiHeadProjections(nn.Module):
     """Q/K/V/O linear projections, all heads packed into the embed_dim slot."""
@@ -190,7 +192,7 @@ class EduMultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
                 f"EduMultiHeadAttention: input last dim {x.shape[-1]} does not match embed_dim={embed_dim}."
             )
 
-        causal = bool(params.get("causal", False))
+        causal = param_bool(params, "causal", False, "Edu-MultiHeadAttention")
 
         # Normalise to [B, seq, D].
         if x.ndim == 2:

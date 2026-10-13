@@ -82,7 +82,7 @@ def test_empty_input_returns_empty_tensor():
 
 
 def test_unknown_mode_raises():
-    with pytest.raises(ValueError, match="Unknown"):
+    with pytest.raises(ValueError, match="unknown `mode`"):
         _run(tokens=["a"], mode="not-a-mode")
 
 

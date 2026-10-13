@@ -39,11 +39,13 @@ class _EduFFNModule(nn.Module):
     def __init__(self, embed_dim: int, hidden_dim: int, activation: str, seed: int) -> None:
         super().__init__()
         # Local generator so we don't perturb the global RNG; gives reproducible
-        # weights across runs with the same seed.
+        # weights across runs with the same seed. skip_init builds the layers
+        # without nn.Linear's default init, which would draw from the global
+        # RNG and shift every random node that runs after this one.
         gen = torch.Generator()
         gen.manual_seed(int(seed))
-        self.fc1 = nn.Linear(embed_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, embed_dim)
+        self.fc1 = nn.utils.skip_init(nn.Linear, embed_dim, hidden_dim)
+        self.fc2 = nn.utils.skip_init(nn.Linear, hidden_dim, embed_dim)
         with torch.no_grad():
             for layer in (self.fc1, self.fc2):
                 layer.weight.copy_(
@@ -59,7 +61,9 @@ class _EduFFNModule(nn.Module):
         elif self.activation_name == "gelu":
             a = F.gelu(h)
         else:
-            raise ValueError(f"Unknown EduFFN activation: {self.activation_name!r}")
+            raise ValueError(
+                f"Edu-FFN: unknown `activation` {self.activation_name!r}. Choose relu or gelu."
+            )
         out = self.fc2(a)
         return out, a
 

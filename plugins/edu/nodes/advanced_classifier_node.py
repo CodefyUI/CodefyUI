@@ -30,6 +30,8 @@ from app.core.node_base import (
     PortDefinition,
 )
 
+from ._labels import read_labels
+
 
 class _FittedAdvanced:
     """包住已訓練的進階分類器，統一 ``predict(X) -> 標籤list``，並在 SVM 時帶出支持向量。"""
@@ -44,7 +46,8 @@ class _FittedAdvanced:
     def predict(self, x: Any) -> list[str]:
         import numpy as np
 
-        return [str(p) for p in self.estimator.predict(np.asarray(x, dtype=float))]
+        # Fitted on class positions, so a prediction is an index into classes.
+        return [self.classes[int(i)] for i in self.estimator.predict(np.asarray(x, dtype=float))]
 
 
 class AdvancedClassifierNode(BaseNode):
@@ -55,7 +58,9 @@ class AdvancedClassifierNode(BaseNode):
         "`kind` selects SVM (with an rbf, linear or poly kernel), Decision Tree "
         "(`max_depth`, 0 means unlimited) or Random Forest (`n_estimators`); all "
         "three come from scikit-learn. The `model` output feeds DecisionBoundary, "
-        "and for an SVM it also carries the support vector coordinates."
+        "and for an SVM it also carries the support vector coordinates. The tree "
+        "and the forest always use random_state=0, so changing the run seed does "
+        "not change them."
     )
 
     # #254: hands out the fitted estimator as a live `model`. Nothing mutates
@@ -136,21 +141,33 @@ class AdvancedClassifierNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
-        labels = [str(label) for label in labels]
+        labels, classes, y_idx = read_labels(y_train, "AdvancedClassifier")
+        if x_train_np.ndim != 2 or x_query_np.ndim != 2:
+            raise ValueError(
+                f"AdvancedClassifier: `x_train` and `x_query` must be [rows, features]; "
+                f"got {tuple(x_train_np.shape)} and {tuple(x_query_np.shape)}."
+            )
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"AdvancedClassifier: features and labels length mismatch — "
                 f"{x_train_np.shape[0]} rows vs {len(labels)} labels."
             )
+        if x_query_np.shape[1] != x_train_np.shape[1]:
+            raise ValueError(
+                f"AdvancedClassifier: `x_query` has {x_query_np.shape[1]} features but "
+                f"`x_train` has {x_train_np.shape[1]}; feed both the same columns."
+            )
 
         kind = str(params.get("kind", "SVM"))
-        classes = sorted(set(labels))
 
         if kind == "SVM":
             from sklearn.svm import SVC
 
             kernel = str(params.get("kernel", "rbf"))
+            if kernel not in ("rbf", "linear", "poly"):
+                raise ValueError(
+                    f"AdvancedClassifier: unknown `kernel` {kernel!r}. Choose rbf / linear / poly."
+                )
             est = SVC(kernel=kernel)
         elif kind == "Decision Tree":
             from sklearn.tree import DecisionTreeClassifier
@@ -167,8 +184,10 @@ class AdvancedClassifierNode(BaseNode):
                 f"AdvancedClassifier: unknown kind {kind!r}. Choose 'SVM' / 'Decision Tree' / 'Random Forest'."
             )
 
-        est.fit(x_train_np, labels)
-        predictions = [str(p) for p in est.predict(x_query_np)]
+        # Fitted on class positions (0..C-1) so the estimator's class order is
+        # `classes`, which sorts numeric labels by value.
+        est.fit(x_train_np, y_idx)
+        predictions = [classes[int(p)] for p in est.predict(x_query_np)]
         model = _FittedAdvanced(est, classes)
 
         return {
