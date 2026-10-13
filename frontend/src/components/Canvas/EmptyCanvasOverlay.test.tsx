@@ -198,6 +198,7 @@ describe('EmptyCanvasOverlay', () => {
       ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris', section: 'concepts' }),
       ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Analogy', section: 'llm' }),
       ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT', section: 'training' }),
+      ex({ name: 'Dropout', category: 'Papers', path: 'Papers/Dropout', section: 'papers' }),
       ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN', section: 'quickstart' }),
     ]);
     renderOverlay();
@@ -207,6 +208,7 @@ describe('EmptyCanvasOverlay', () => {
     const positions = [
       'Quick Start',
       'Training',
+      'Paper Reproductions',
       'LLM and RAG',
       'Concepts',
       'Model Architectures',
@@ -222,6 +224,7 @@ describe('EmptyCanvasOverlay', () => {
     expect(cardNames()).toEqual([
       'Train CNN',
       'Train GPT',
+      'Dropout',
       'Analogy',
       'Iris',
       'ResNet Arch',

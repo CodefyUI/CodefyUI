@@ -14,6 +14,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 |---------|----------|
 | **快速開始** | 最先跑的三個：**Train CNN on MNIST**、**Inference CNN on MNIST**，以及 **Call a graph over HTTP**（graph-as-a-function 示範）。 |
 | **訓練** | 從頭訓練出一個模型的圖：**Train a CNN on beans**（資料集來自 Hugging Face Hub）、**Train ResNet on CIFAR10**、**Train a Transformer on MNIST**、實測過的 **ResNet-18 CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Pretrain an LM on TinyStories**、**Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中 — 以及三個用產生的資料、在 CPU 上一分鐘內訓練完的範例：**LSTM remembers the first token**、**Segment shapes pixel by pixel** 與 **Train a DDPM on blobs**。 |
+| **論文復現** | 一張圖復現一篇論文的方法，用的節點和其他範例相同，在 CPU 上幾分鐘內就能從頭訓練完。總覽註記會寫明論文、配方，以及這張圖預期達到的數字。 |
 | **LLM 與 RAG** | **Word embedding analogy**、**Sentence similarity in zh-TW**，以及兩個檢索範例 **Fully local RAG** 與 **RAG with a chat API**。 |
 | **觀念** | 一張圖講一個觀念，小到可以從頭看到尾：兩個 Iris 管線、**RNN unrolled over three steps**、**Mixture of Experts top-k routing**、三個 diffusion 範例（**Forward diffusion on a digit**、**Toy reverse diffusion sampling**、**Mini U-Net node**），**RLHF reward and KL terms**、**Six classifiers on two moons**、**Causal attention from scratch**、**Reward hacking via a shortcut**，以及 **One GRPO step on rollouts**。 |
 | **模型架構** | 15 個經典架構導覽，再依模型家族分成 CNN、RNN、Transformer、Diffusion、RL 五組。 |
@@ -22,7 +23,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 
 列出範例的四個地方都用這一套分組：空白畫布上的 overlay、沒有開啟分頁時顯示的[歡迎畫面](./tabs-persistence#the-welcome-screen)、**範例圖庫**，以及側邊欄的**範例**分頁。
 
-在磁碟上，範例依主題資料夾分組：`Classical/`、`Diffusion/`、`LLM/`、`Model_Architecture/`、`RL/`、`RNN/`、`Transformer/`、`Usage_Example/` 與 `VLA/`。資料夾不等於區塊 — 見[新增範例](#adding-an-example)。
+在磁碟上，範例依主題資料夾分組：`Classical/`、`Diffusion/`、`LLM/`、`Model_Architecture/`、`Papers/`、`RL/`、`RNN/`、`Transformer/`、`Usage_Example/` 與 `VLA/`。資料夾不等於區塊 — 見[新增範例](#adding-an-example)。
 
 所有列出的範例都可以離線直接執行，以下是例外。卡片不會寫這些：卡片只有一行，說的是這張圖在做什麼。範例執行前需要準備什麼，寫在它畫布上的[註記](./canvas-basics#notes)裡，貼在相關的節點旁邊 — 那裡才有空間說下載多大、套件包從哪裡來 — 也寫在下面這份清單裡：
 
@@ -80,7 +81,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 }
 ```
 
-`section` 只能是 `quickstart`、`training`、`llm`、`concepts` 與 `architectures` 其中之一。`family` 是**模型架構**區塊裡的小標題：上面那五個家族照列出的順序排在前面，其他字串接在後面依字母排序。只要範例有寫 `family`，卡片上的標籤也會改成顯示它，而不是分類名稱；如果卡片上方的小標題已經是同一個字，卡片就不再放標籤。`order` 在同一區塊（模型架構則是同一個家族）內由小到大排序，沒有寫 `order` 的範例排在有寫的後面。清單讀不懂的欄位只有那一個欄位會變成空值，而不是讓整個範例集掛掉：不認識的 `section` 會讓內建範例落到**其他**區塊，不是整數的 `order` 則只是讓它排在有寫 `order` 的範例後面。外掛提供的範例不管宣告什麼，都會列在它自己的套件包底下。
+`section` 只能是 `quickstart`、`training`、`papers`、`llm`、`concepts` 與 `architectures` 其中之一。`family` 是**模型架構**區塊裡的小標題：上面那五個家族照列出的順序排在前面，其他字串接在後面依字母排序。只要範例有寫 `family`，卡片上的標籤也會改成顯示它，而不是分類名稱；如果卡片上方的小標題已經是同一個字，卡片就不再放標籤。`order` 在同一區塊（模型架構則是同一個家族）內由小到大排序，沒有寫 `order` 的範例排在有寫的後面。清單讀不懂的欄位只有那一個欄位會變成空值，而不是讓整個範例集掛掉：不認識的 `section` 會讓內建範例落到**其他**區塊，不是整數的 `order` 則只是讓它排在有寫 `order` 的範例後面。外掛提供的範例不管宣告什麼，都會列在它自己的套件包底下。
 
 範例所在的資料夾不等於它的區塊。資料夾是路徑，而這份文件、翻譯表與 `run_graph.py` 的參數指的都是路徑，所以重新分組範例集時，磁碟上的東西不會動。
 

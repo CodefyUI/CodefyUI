@@ -335,6 +335,7 @@ export const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
   RL: '#f16663',
   Stats: '#a286d3',
   VLA: '#a9c94f',
+  Papers: '#c08457',
 };
 
 export const EXAMPLE_CATEGORY_FALLBACK = '#ff9800';
@@ -351,6 +352,7 @@ export const EXAMPLE_CATEGORY_FALLBACK = '#ff9800';
 export const EXAMPLE_SECTION_COLORS: Record<string, string> = {
   quickstart: '#4caf50',
   training: '#ef6292',
+  papers: '#c08457',
   llm: '#c279ce',
   concepts: '#26a69a',
   architectures: '#2397f3',

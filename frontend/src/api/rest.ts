@@ -1091,7 +1091,7 @@ export interface ExampleSummary {
   source?: string;
   /**
    * Where the example sits in the gallery, from the optional `gallery` block
-   * in its `graph.json` (#141). `section` is one of the five an example may
+   * in its `graph.json` (#141). `section` is one of the six an example may
    * declare, `family` sub-groups the architectures, and `order` sorts inside
    * a group. The backend degrades anything it does not recognise to null, so
    * a third-party pack cannot break the list; `utils/exampleSections` does

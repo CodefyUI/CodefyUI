@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/examples", tags=["examples"])
 #: ``null``, which puts the example in "other" rather than inventing a
 #: heading no locale has a title for.
 GALLERY_SECTIONS = frozenset(
-    {"quickstart", "training", "llm", "concepts", "architectures"})
+    {"quickstart", "training", "papers", "llm", "concepts", "architectures"})
 
 
 def _as_list(value) -> list:

@@ -20,6 +20,7 @@ import type { TranslationKey } from '../i18n';
 export type ExampleSectionKey =
   | 'quickstart'
   | 'training'
+  | 'papers'
   | 'llm'
   | 'concepts'
   | 'architectures'
@@ -52,6 +53,7 @@ export interface ExampleGroup<T> {
 const SECTION_TITLE_KEYS: Record<ExampleSectionKey, TranslationKey> = {
   quickstart: 'examples.section.quickstart',
   training: 'examples.section.training',
+  papers: 'examples.section.papers',
   llm: 'examples.section.llm',
   concepts: 'examples.section.concepts',
   architectures: 'examples.section.architectures',
@@ -62,6 +64,7 @@ const SECTION_TITLE_KEYS: Record<ExampleSectionKey, TranslationKey> = {
 const SECTION_ORDER: ExampleSectionKey[] = [
   'quickstart',
   'training',
+  'papers',
   'llm',
   'concepts',
   'architectures',
@@ -75,6 +78,7 @@ const SECTION_ORDER: ExampleSectionKey[] = [
 const DECLARABLE_SECTIONS: ExampleSectionKey[] = [
   'quickstart',
   'training',
+  'papers',
   'llm',
   'concepts',
   'architectures',
@@ -232,6 +236,7 @@ const EXAMPLE_CATEGORY_KEYS: Record<string, TranslationKey> = {
   Classical: 'examples.category.Classical',
   Model_Architecture: 'examples.category.Model_Architecture',
   Others: 'examples.category.Others',
+  Papers: 'examples.category.Papers',
   Usage_Example: 'examples.category.Usage_Example',
 };
 

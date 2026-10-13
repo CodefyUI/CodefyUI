@@ -320,6 +320,7 @@ const zhTW: Record<TranslationKey, string> = {
   // 現在都用這一組分區（#141）。
   'examples.section.quickstart': '快速開始',
   'examples.section.training': '訓練',
+  'examples.section.papers': '論文復現',
   'examples.section.llm': 'LLM 與 RAG',
   'examples.section.concepts': '觀念',
   'examples.section.architectures': '模型架構',
@@ -328,6 +329,7 @@ const zhTW: Record<TranslationKey, string> = {
   'examples.category.Classical': '傳統機器學習',
   'examples.category.Model_Architecture': '模型架構',
   'examples.category.Others': '其他',
+  'examples.category.Papers': '論文',
   'examples.category.Usage_Example': '使用範例',
 
   // Context Menu

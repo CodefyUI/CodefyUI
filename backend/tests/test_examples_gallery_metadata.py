@@ -321,10 +321,15 @@ def _shipped_gallery() -> dict[str, dict]:
     }
 
 
-def test_the_section_vocabulary_is_the_five_the_contract_names():
-    """Widening it is a frontend change too, so it cannot happen quietly."""
+def test_the_section_vocabulary_is_the_six_the_contract_names():
+    """Widening it is a frontend change too, so it cannot happen quietly.
+
+    ``papers`` holds the paper reproductions: one published method per
+    graph, with the paper's number quoted in the overview note.
+    """
     assert GALLERY_SECTIONS == frozenset(
-        {"quickstart", "training", "llm", "concepts", "architectures"})
+        {"quickstart", "training", "papers", "llm", "concepts",
+         "architectures"})
 
 
 def test_every_builtin_declares_the_section_the_table_gives_it():
