@@ -23,7 +23,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 
-from ._labels import class_labels
+from ._labels import encode_labels
 
 
 class DecisionTreeClassifierNode(BaseNode):
@@ -105,8 +105,7 @@ class DecisionTreeClassifierNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = class_labels(y_train, "DecisionTreeClassifier y_train")
-        labels = [str(v) for v in labels]
+        labels, class_names = encode_labels(y_train, "DecisionTreeClassifier y_train")
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"DecisionTreeClassifier: features and labels length mismatch — "
@@ -126,11 +125,12 @@ class DecisionTreeClassifierNode(BaseNode):
         clf.fit(x_train_np, labels)
 
         preds = clf.predict(x_query_np).tolist()
-        classes = [str(c) for c in clf.classes_.tolist()]
-        tree_text = export_text(clf)
+        classes = [class_names[c] for c in clf.classes_.tolist()]
+        # Class names, or the rules would print the integer codes it was fit on.
+        tree_text = export_text(clf, class_names=classes)
 
         return {
-            "predictions": [str(p) for p in preds],
+            "predictions": [class_names[p] for p in preds],
             "feature_importances": torch.from_numpy(clf.feature_importances_).float(),
             "tree_text": tree_text,
             "classes": classes,

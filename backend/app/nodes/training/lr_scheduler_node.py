@@ -104,6 +104,7 @@ class LRSchedulerNode(BaseNode):
                 name="step_size",
                 param_type=ParamType.INT,
                 default=10,
+                min_value=1,
                 description=(
                     "StepLR: how long between each LR drop. MultiStepLR with "
                     "blank milestones: drops at 1x, 2x, 3x and 4x this value. "
@@ -119,6 +120,7 @@ class LRSchedulerNode(BaseNode):
                 name="gamma",
                 param_type=ParamType.FLOAT,
                 default=0.1,
+                min_value=0.0,
                 description=(
                     "Decay factor for StepLR, MultiStepLR and ExponentialLR. "
                     "ReduceLROnPlateau reuses it as its `factor`."
@@ -128,6 +130,7 @@ class LRSchedulerNode(BaseNode):
                 name="T_max",
                 param_type=ParamType.INT,
                 default=50,
+                min_value=1,
                 description=(
                     "CosineAnnealingLR: length of one cosine cycle. The unit "
                     "follows TrainingLoop.scheduler_step (#308): at the "
@@ -214,7 +217,7 @@ class LRSchedulerNode(BaseNode):
                 description="ReduceLROnPlateau: the LR never drops below this.",
                 visible_when={"type": ["ReduceLROnPlateau"]},
             ),
-            ParamDefinition(name="max_lr", param_type=ParamType.FLOAT, default=0.01, description="Max learning rate for OneCycleLR"),
+            ParamDefinition(name="max_lr", param_type=ParamType.FLOAT, default=0.01, min_value=0.0, description="Max learning rate for OneCycleLR"),
             ParamDefinition(
                 name="pct_start",
                 param_type=ParamType.FLOAT,
@@ -231,6 +234,7 @@ class LRSchedulerNode(BaseNode):
                 name="total_steps",
                 param_type=ParamType.INT,
                 default=1000,
+                min_value=1,
                 description=(
                     "OneCycleLR: length of the one-cycle schedule. The "
                     "warmup_* families use it as their TOTAL length too "

@@ -279,3 +279,103 @@ def test_step_is_clamped_to_its_own_declared_min_value_of_0():
         {"step": -5}, context=ctx)
     steps = [step for name, _, step in ctx.metrics if name == "eval_accuracy"]
     assert steps == [0]
+
+
+# ── 2026-10-13 audit: single-output models, [N, 1] labels, float64 ──────
+# A one-logit binary classifier went through argmax(dim=1), which is 0 for
+# every row, and [N, 1] labels broadcast against [N] predictions: the audit
+# measured accuracy 101.0 (20200 correct of 200) on a model whose true
+# accuracy was 0.99, and 0.575 (the share of 0 labels) where the truth was
+# 0.325.
+
+
+def _binary_case():
+    torch.manual_seed(0)
+    x = torch.randn(40, 4)
+    y = (x[:, 0] > 0).float()
+    model = nn.Linear(4, 1)
+    with torch.no_grad():
+        truth = ((model(x).squeeze(1) > 0).float() == y).float().mean().item()
+    return model, x, y, truth
+
+
+@pytest.mark.parametrize("label_shape", ["flat", "column"])
+def test_a_single_logit_model_is_scored_as_binary_at_zero(label_shape):
+    model, x, y, truth = _binary_case()
+    labels = y if label_shape == "flat" else y.view(-1, 1)
+    out = EvaluateModelNode().execute(
+        {"model": model, "dataset": TensorDataset(x, labels)},
+        {"device": "cpu", "batch_size": 8})
+    assert out["total"] == 40
+    assert out["accuracy"] == pytest.approx(truth)
+    assert 0.0 <= out["accuracy"] <= 1.0
+
+
+def test_a_flat_output_model_is_scored_as_binary_too():
+    model, x, y, truth = _binary_case()
+
+    class _Flat(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, batch):
+            return self.inner(batch).squeeze(1)
+
+    out = EvaluateModelNode().execute(
+        {"model": _Flat(model), "dataset": TensorDataset(x, y)},
+        {"device": "cpu", "batch_size": 8})
+    assert out["accuracy"] == pytest.approx(truth)
+
+
+def test_column_labels_score_a_multiclass_model_like_flat_ones():
+    torch.manual_seed(0)
+    x = torch.randn(40, 4)
+    y = torch.randint(0, 3, (40,))
+    model = nn.Linear(4, 3)
+    flat = EvaluateModelNode().execute(
+        {"model": model, "dataset": TensorDataset(x, y)},
+        {"device": "cpu", "batch_size": 7})
+    column = EvaluateModelNode().execute(
+        {"model": model, "dataset": TensorDataset(x, y.view(-1, 1))},
+        {"device": "cpu", "batch_size": 7})
+    with torch.no_grad():
+        truth = (model(x).argmax(1) == y).float().mean().item()
+    assert flat["accuracy"] == pytest.approx(truth)
+    assert column == flat
+
+
+def test_labels_that_do_not_fit_the_predictions_are_refused():
+    torch.manual_seed(0)
+    x = torch.randn(8, 4)
+    y = torch.randint(0, 3, (8, 2))
+    with pytest.raises(ValueError, match=r"EvaluateModel: the model output has shape \[8, 3\]"):
+        EvaluateModelNode().execute(
+            {"model": nn.Linear(4, 3), "dataset": TensorDataset(x, y)},
+            {"device": "cpu", "batch_size": 8})
+
+
+def test_a_float64_dataset_evaluates_on_cpu():
+    torch.manual_seed(0)
+    x = torch.randn(16, 4, dtype=torch.float64)
+    y = torch.randint(0, 3, (16,))
+    model = nn.Linear(4, 3).double()
+    out = EvaluateModelNode().execute(
+        {"model": model, "dataset": TensorDataset(x, y)},
+        {"device": "cpu", "batch_size": 8})
+    with torch.no_grad():
+        truth = (model(x).argmax(1) == y).float().mean().item()
+    assert out["accuracy"] == pytest.approx(truth)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs MPS")
+def test_a_float64_dataset_evaluates_on_mps():
+    """MPS cannot hold float64; the batch must be downcast on the way in
+    (``to_device``), as TrainingLoop already does."""
+    torch.manual_seed(0)
+    x = torch.randn(16, 4, dtype=torch.float64)
+    y = torch.randint(0, 3, (16,))
+    out = EvaluateModelNode().execute(
+        {"model": nn.Linear(4, 3), "dataset": TensorDataset(x, y)},
+        {"device": "mps", "batch_size": 8})
+    assert out["total"] == 16

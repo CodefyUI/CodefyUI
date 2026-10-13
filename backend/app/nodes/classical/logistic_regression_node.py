@@ -26,7 +26,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 
-from ._labels import class_labels
+from ._labels import encode_labels
 
 
 def _penalty_kwargs(penalty: str, C: float, sklearn_version: str) -> dict[str, Any]:
@@ -137,14 +137,13 @@ class LogisticRegressionNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = class_labels(y_train, "LogisticRegression y_train")
-        labels = [str(v) for v in labels]
+        labels, class_names = encode_labels(y_train, "LogisticRegression y_train")
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"LogisticRegression: features and labels length mismatch — "
                 f"{x_train_np.shape[0]} rows vs {len(labels)} labels."
             )
-        if len(set(labels)) < 2:
+        if len(class_names) < 2:
             raise ValueError("LogisticRegression: need at least 2 classes in y_train.")
 
         C = float(params.get("C", 1.0))
@@ -173,10 +172,10 @@ class LogisticRegressionNode(BaseNode):
 
         preds = model.predict(x_query_np).tolist()
         proba = model.predict_proba(x_query_np)
-        classes = [str(c) for c in model.classes_.tolist()]
+        classes = [class_names[c] for c in model.classes_.tolist()]
 
         return {
-            "predictions": [str(p) for p in preds],
+            "predictions": [class_names[p] for p in preds],
             "probabilities": torch.from_numpy(proba).float(),
             "classes": classes,
             "coef": torch.from_numpy(model.coef_).float(),

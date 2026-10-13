@@ -245,3 +245,71 @@ def test_a_body_run_without_a_context_still_works(probe_body):
     result = _map(None)
     assert result["results"] == ["a"]
     assert [call["node_id"] for call in probe_body.seen] == [None, None]
+
+
+# ── Map is not served from the cache ────────────────────────────────────
+# The cache key for Map is its params plus upstream keys. The body preset
+# can be edited between runs under the same name, and body nodes can log
+# metrics, so a hit returned stale results and skipped the body's side
+# effects. Found by the 2026-10-13 audit: three runs against one cache ran
+# the body once and kept the old preset's output after an edit.
+
+_LIST_SOURCE_TYPE = "_MapCacheListSource"
+
+
+class _ListSourceNode(BaseNode):
+    """A cacheable source, so the only thing that can stop a Map hit is
+    Map's own flag (a non-cacheable upstream would also disable it)."""
+
+    NODE_NAME = _LIST_SOURCE_TYPE
+    CATEGORY = "Testing"
+    cacheable = True
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return []
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="items", data_type=DataType.LIST,
+                               description="items")]
+
+    @classmethod
+    def define_params(cls) -> list:
+        return []
+
+    def execute(self, inputs, params, progress_callback=None, *,
+                context: Any = None) -> dict[str, Any]:
+        return {"items": ["a", "b"]}
+
+
+def test_map_is_not_cacheable():
+    assert MapNode.cacheable is False
+
+
+def test_a_second_run_with_one_cache_reinvokes_the_body(probe_body):
+    import asyncio
+
+    from app.core.cache import ExecutionCache
+    from app.core.graph_engine import execute_graph
+
+    node_registry._nodes[_LIST_SOURCE_TYPE] = _ListSourceNode
+    nodes = [
+        {"id": "start", "type": "Start", "data": {"params": {}}},
+        {"id": "src", "type": _LIST_SOURCE_TYPE, "data": {"params": {}}},
+        {"id": "map", "type": "Map",
+         "data": {"params": {"subgraph": PRESET_NAME}}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "type": "trigger"},
+        {"id": "e", "source": "src", "target": "map",
+         "sourceHandle": "items", "targetHandle": "items"},
+    ]
+    cache = ExecutionCache()
+    for _ in range(2):
+        out = asyncio.run(execute_graph(
+            nodes, edges, cache=cache, context=ExecutionContext()))
+        assert out["map"]["results"] == ["a", "b"]
+    # Two body nodes x two items x two runs.
+    assert len(probe_body.seen) == 8

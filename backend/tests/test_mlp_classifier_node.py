@@ -55,3 +55,10 @@ def test_invalid_hidden_sizes_raises():
             {"x_train": x, "y_train": y, "x_query": x},
             {"hidden_sizes": "", "max_iter": 10},
         )
+
+
+def test_learning_rate_init_must_be_positive():
+    """0 passed validation and then failed inside scikit-learn (audit
+    2026-10-13); the declared minimum now makes validation refuse it."""
+    params = {p.name: p for p in MLPClassifierNode.define_params()}
+    assert params["learning_rate_init"].min_value > 0

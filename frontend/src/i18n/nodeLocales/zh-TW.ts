@@ -20,8 +20,9 @@ const zhTW: NodeTranslations = {
     description: '比對預測值與真實值，輸出 MSE、MAE 與 R²',
     details:
       'MSE 是均方誤差，MAE 是平均絕對誤差，R² 是 1 - SS_res / SS_tot，其中 SS_tot 是目標值相對其平均的離散程度：' +
-      '1 代表完全擬合，0 代表和直接預測平均值一樣，低於 0 則更差。預測值與目標值會攤平，所以 [N] 與 [N, 1] 逐元素比較；' +
-      '兩者的數值個數必須相同。所有目標值都相同時 R² 為 NaN。三個數值也會記錄為 run metric mse、mae 與 r2，讓 sweep 可以依此排序。',
+      '1 代表完全擬合，0 代表和直接預測平均值一樣，低於 0 則更差。[N] 與 [N, 1] 逐元素比較。' +
+      '有多個輸出時（預測值與目標值都是相同形狀的 [N, T]），R² 會逐欄計算後取平均，讓尺度不同的輸出權重相同；MSE 與 MAE 則對所有數值取平均。' +
+      '某一欄的目標值全部相同時 R² 為 NaN。三個數值也會記錄為 run metric mse、mae 與 r2，讓 sweep 可以依此排序。',
   },
   DecisionTreeClassifier: {
     description: '遞迴切分特徵，輸出學到的規則',
@@ -917,7 +918,8 @@ const zhTW: NodeTranslations = {
   EvaluateModel: {
     description: '分類模型在資料集上的準確率，附答對數與總數',
     details:
-      '以批次跑完整個資料集，對每筆取 argmax 與標籤比對。準確率同時會以 eval_accuracy 指標記在指定的 step 上，' +
+      '以批次跑完整個資料集，對每筆取 argmax 與標籤比對。單一輸出的模型（[B, 1] 或 [B]，例如用 BCEWithLogitsLoss 訓練的）視為二元分類：logit 大於 0 預測為類別 1。標籤可以是 [N] 或 [N, 1]。' +
+      '準確率同時會以 eval_accuracy 指標記在指定的 step 上，' +
       '同一張圖有兩顆 EvaluateModel 就要設不同的 step，否則會蓋掉彼此的點。',
     params: {
       batch_size: '評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。',

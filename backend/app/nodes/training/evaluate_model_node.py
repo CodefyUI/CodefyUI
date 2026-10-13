@@ -14,7 +14,11 @@ from __future__ import annotations
 from typing import Any
 
 from ...core.amp import PRECISIONS
-from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
+from ...core.device_utils import (
+    DEVICE_PARAM_DESCRIPTION,
+    DEVICE_PARAM_OPTIONS,
+    to_device,
+)
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -24,13 +28,43 @@ from ...core.node_base import (
 )
 
 
+def count_correct(outputs: Any, labels: Any, node_name: str) -> tuple[Any, int]:
+    """Return ``(correct, total)`` for one batch of classifier outputs.
+
+    ``outputs`` of shape ``[B, C]`` (C > 1) are scored by argmax over dim 1.
+    A single-output model (``[B, 1]`` or ``[B]``) is scored as binary at
+    logit 0, the ``BCEWithLogitsLoss`` convention: argmax over one column is
+    always 0, so that path would report the share of 0 labels. ``[B, 1]``
+    labels are read as ``[B]``. ``correct`` stays a device tensor so the
+    caller can accumulate without a host sync per batch.
+    """
+    if outputs.dim() == 1 or (outputs.dim() == 2 and outputs.shape[1] == 1):
+        pred = outputs.reshape(-1) > 0
+    else:
+        pred = outputs.argmax(dim=1)
+    y = labels
+    if y.dim() == 2 and y.shape[1] == 1:
+        y = y.reshape(-1)
+    if pred.shape != y.shape:
+        raise ValueError(
+            f"{node_name}: the model output has shape {list(outputs.shape)}, "
+            f"which gives predictions of shape {list(pred.shape)}, but the "
+            f"labels have shape {list(labels.shape)}. Give a classifier one "
+            "label per example ([N] or [N, 1]) and [B, C] logits, or [B, 1] "
+            "for a binary classifier."
+        )
+    return (pred.long() == y.long()).sum(), int(y.numel())
+
+
 class EvaluateModelNode(BaseNode):
     NODE_NAME = "EvaluateModel"
     CATEGORY = "Training"
     DESCRIPTION = "Classifier accuracy on a dataset, with correct/total"
     DETAILS = (
         "Runs the whole dataset through the model in batches and compares each "
-        "example's argmax against its label. The accuracy is also logged as the "
+        "example's argmax against its label. A single-output model ([B, 1] "
+        "or [B], as trained with BCEWithLogitsLoss) is scored as binary: a "
+        "logit above 0 predicts class 1. Labels may be [N] or [N, 1]. The accuracy is also logged as the "
         "eval_accuracy metric at the given step, so two EvaluateModel nodes in one "
         "graph need different step values or they overwrite each other's point."
     )
@@ -192,13 +226,16 @@ class EvaluateModelNode(BaseNode):
                     stopped_at_batch = batch_index
                     break
                 x, y = batch[0], batch[1]
-                x = x.to(device)
-                y = torch.as_tensor(y).to(device)
+                # ``to_device`` rather than ``.to``: it downcasts float64 on
+                # MPS, which cannot hold it (same helper as TrainingLoop).
+                x = to_device(x, device)
+                y = to_device(torch.as_tensor(y), device)
                 with policy.autocast():
                     logits = model(x)
-                pred = logits.argmax(dim=1)
-                correct = correct + (pred == y).sum()
-                total += int(y.numel())
+                batch_correct, batch_total = count_correct(
+                    logits, y, "EvaluateModel")
+                correct = correct + batch_correct
+                total += batch_total
                 throttle.emit(lambda: {
                     "event": EVENT_BATCH,
                     "batch": batch_index + 1,

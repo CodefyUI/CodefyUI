@@ -21,6 +21,13 @@ class MapNode(BaseNode):
         "between items and returns what finished."
     )
 
+    # The output depends on more than the cache key can see: the body is a
+    # saved preset that can be edited between runs under the same name, and
+    # body nodes may log metrics or write files, which a cache hit would
+    # skip. Fingerprinting the preset would fix the first and not the
+    # second, so Map always runs.
+    cacheable = False
+
     # `items` is a whole collection consumed one element at a time. Aligning
     # the port would copy every element onto the device before the first body
     # node runs -- peak residency goes from one item to all of them, which is
