@@ -1,0 +1,257 @@
+{
+  "name": "DQN balances CartPole",
+  "description": "Q-values learned from a replay buffer",
+  "gallery": {
+    "section": "papers",
+    "order": 22
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "env",
+      "type": "EnvWrapper",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "env_name": "CartPole-v1"
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "DQN",
+      "position": {
+        "x": 40,
+        "y": -20
+      },
+      "data": {
+        "params": {
+          "state_dim": 4,
+          "action_dim": 2,
+          "hidden_dim": 128
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 380,
+        "y": -20
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.0005,
+          "weight_decay": 0
+        }
+      }
+    },
+    {
+      "id": "loop",
+      "type": "RLTrainingLoop",
+      "position": {
+        "x": 720,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "gamma": 0.99,
+          "max_steps_per_episode": 0,
+          "target_return": 475,
+          "seed": 0,
+          "device": "cpu",
+          "log_interval": 10,
+          "algorithm": "dqn",
+          "episodes": 1000,
+          "replay_size": 50000,
+          "batch_size": 64,
+          "epsilon_start": 1.0,
+          "epsilon_end": 0.05,
+          "epsilon_decay_episodes": 200,
+          "target_update_every": 500,
+          "learning_starts": 1000,
+          "double_dqn": true,
+          "grad_clip_norm": 10
+        }
+      }
+    },
+    {
+      "id": "print",
+      "type": "Print",
+      "position": {
+        "x": 1080,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "RL training report"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1080,
+        "y": -60
+      },
+      "data": {
+        "params": {
+          "title": "DQN: return per episode",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Mnih et al. (Playing Atari with Deep Reinforcement Learning, NIPS Deep Learning Workshop 2013; Nature 2015 for the target network) trained a network to predict the value Q(s, a) of each action, sampling past transitions from a replay buffer and regressing toward r + gamma max Q of a frozen copy. Recipe: CartPole-v1, an MLP with two hidden layers of 128, Adam at lr 0.0005, replay 50000, batch 64, epsilon 1.0 to 0.05 over 200 episodes, target copy every 500 steps, Double DQN, gradient norm clipped at 10. With run seed 0 on CPU the graph solves CartPole-v1 at episode 514 in 26.6 s. CartPole-v1 counts as solved when the mean return of the last 20 episodes reaches 475; an episode ends at 500 steps, one point per step.\n\nMnih 等人（Playing Atari with Deep Reinforcement Learning，NIPS Deep Learning Workshop 2013；target network 出自 2015 年的 Nature 論文）訓練一個網路預測每個動作的價值 Q(s, a)：從 replay buffer 抽出過去的轉移，往凍結副本算出的 r + gamma max Q 回歸。配方：CartPole-v1、兩層 128 的 MLP、Adam lr 0.0005、replay 50000、batch 64、epsilon 在 200 回合內從 1.0 降到 0.05、每 500 步複製一次 target、Double DQN、梯度範數裁切在 10。run seed 0、CPU 上，這張圖在第 514 回合解出 CartPole-v1，花 26.6 秒。CartPole-v1 的「解出」標準是最近 20 回合的平均回報達到 475；每回合最多 500 步，每撐一步得 1 分。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 280
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The DQN node outputs one Q-value per action: the return the network expects after pushing left or right from this state. The agent picks the larger one, or a random action with probability epsilon.\n\nDQN 節點對每個動作輸出一個 Q 值：從這個狀態往左推或往右推之後，網路預期能拿到的回報。agent 選比較大的那個，或以 epsilon 的機率隨機選一個動作。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 280
+      }
+    },
+    {
+      "id": "note-loop",
+      "type": "note",
+      "position": {
+        "x": 720,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "learning_starts fills the buffer with 1000 random steps before the first update. target_update_every refreshes the frozen copy every 500 env steps; double_dqn lets the online network choose the next action and the copy score it, which curbs overestimation. A CartPole return grows to 500, so the targets grow too and a single bad batch can produce a huge gradient; grad_clip_norm 10 caps each step as a safeguard against the divergence DQN is prone to. With grad_clip_norm 0 and a 100-episode epsilon decay, seeds 0 to 3 of this graph still solve CartPole, at episodes 572, 546, 487 and 514.\n\nlearning_starts 先用 1000 步隨機動作填 buffer，之後才開始更新。target_update_every 每 500 個環境步更新一次凍結副本；double_dqn 讓線上網路選下一個動作、由副本打分，可以壓住高估。CartPole 的回報會長到 500，目標值跟著變大，一個壞 batch 就可能產生很大的梯度；grad_clip_norm 10 限制每一步的大小，防止 DQN 常見的發散。把 grad_clip_norm 設成 0、epsilon 改成 100 回合衰減時，這張圖的 seed 0 到 3 仍然分別在第 572、546、487 和 514 回合解出。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loop",
+        "boundOffset": {
+          "x": 0,
+          "y": 1000
+        },
+        "noteWidth": 320
+      }
+    },
+    {
+      "id": "note-seeds",
+      "type": "note",
+      "position": {
+        "x": 1080,
+        "y": 380
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The plot is the return of every episode. DQN takes longer per episode than the other two because it takes one gradient step per env step. Returns depend on the seed. Set the run seed in Settings and the loop's seed to the same number and rerun: seed 1 solves it at episode 707; seed 2 solves it at episode 578; seed 3 solves it at episode 610.\n\n圖上是每一回合的回報。DQN 每個環境步都做一次梯度更新，所以每回合比另外兩個方法慢。回報會隨 seed 變動。把設定裡的 run seed 和這個節點的 seed 改成同一個數字再跑一次：seed 1 在第 707 回合解出，seed 2 在第 578 回合解出，seed 3 在第 610 回合解出。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "viz",
+        "boundOffset": {
+          "x": 0,
+          "y": 440
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_env",
+      "source": "start",
+      "target": "env",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_loop_model",
+      "source": "model",
+      "target": "loop",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_env_env_loop_env",
+      "source": "env",
+      "target": "loop",
+      "sourceHandle": "env",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e_opt_optimizer_loop_optimizer",
+      "source": "opt",
+      "target": "loop",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loop_report_print_value",
+      "source": "loop",
+      "target": "print",
+      "sourceHandle": "report",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_loop_episode_returns_viz_data",
+      "source": "loop",
+      "target": "viz",
+      "sourceHandle": "episode_returns",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

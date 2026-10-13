@@ -110,6 +110,20 @@ const zhTW: ExampleTranslations = {
     description: '每一回合都和同組的回合比較',
   },
 
+  // ── Paper reproductions -- reinforcement learning ──
+  'Papers/REINFORCE-CartPole': {
+    description: '直接用回報做策略梯度',
+  },
+  'Papers/DQN-CartPole': {
+    description: '從經驗回放學出 Q 值',
+  },
+  'Papers/PPO-CartPole': {
+    description: '裁切比值的策略更新加上 GAE',
+  },
+  'Papers/QLearning-GridWorld': {
+    description: '用 Q 值繞過兩個陷阱走到終點',
+  },
+
   // ── Vision-language-action ──
   'VLA/TrainVLA-PushWorld': {
     description: '該推哪一顆冰球，由指令決定',

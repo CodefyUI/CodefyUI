@@ -1,0 +1,351 @@
+{
+  "name": "Q-learning crosses a trap grid",
+  "description": "Q-values steer around two traps",
+  "gallery": {
+    "section": "papers",
+    "order": 24
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "env",
+      "type": "GridWorldEnv",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "size": 4,
+          "traps": "1,1; 2,3",
+          "step_reward": 0.0,
+          "goal_reward": 1.0,
+          "trap_reward": -1.0,
+          "max_steps": 30
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "DQN",
+      "position": {
+        "x": 40,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "state_dim": 16,
+          "action_dim": 4,
+          "hidden_dim": 32
+        }
+      }
+    },
+    {
+      "id": "print-layout",
+      "type": "Print",
+      "position": {
+        "x": 380,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Grid (S start, G goal, X trap)"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 380,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.001,
+          "weight_decay": 0
+        }
+      }
+    },
+    {
+      "id": "loop",
+      "type": "RLTrainingLoop",
+      "position": {
+        "x": 720,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "algorithm": "dqn",
+          "episodes": 300,
+          "gamma": 0.9,
+          "max_steps_per_episode": 0,
+          "target_return": 0,
+          "seed": 0,
+          "device": "cpu",
+          "log_interval": 10,
+          "replay_size": 50000,
+          "batch_size": 64,
+          "epsilon_start": 1.0,
+          "epsilon_end": 0.05,
+          "epsilon_decay_episodes": 100,
+          "target_update_every": 100,
+          "learning_starts": 200,
+          "double_dqn": true,
+          "grad_clip_norm": 0
+        }
+      }
+    },
+    {
+      "id": "rollout",
+      "type": "PolicyRollout",
+      "position": {
+        "x": 1080,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "episodes": 10,
+          "temperature": 0.01,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "print-report",
+      "type": "Print",
+      "position": {
+        "x": 1440,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "RL training report"
+        }
+      }
+    },
+    {
+      "id": "print-success",
+      "type": "Print",
+      "position": {
+        "x": 1440,
+        "y": -60
+      },
+      "data": {
+        "params": {
+          "label": "Success rate after training"
+        }
+      }
+    },
+    {
+      "id": "print-rollout",
+      "type": "Print",
+      "position": {
+        "x": 1440,
+        "y": 180
+      },
+      "data": {
+        "params": {
+          "label": "Rollouts of the trained policy"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1080,
+        "y": 360
+      },
+      "data": {
+        "params": {
+          "title": "Q-learning: return per episode",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Watkins (PhD thesis, Cambridge 1989) introduced Q-learning: learn the value Q(s, a) of each action from r + gamma max Q(s', a'), and act greedily on it. This graph runs it on the 4x4 gridworld of Sutton and Barto's textbook, with a small network in place of the table (the DQN recipe of Mnih et al. 2013). The agent starts top-left; the goal bottom-right pays 1, the traps at (1,1) and (2,3) pay -1, every other step pays 0. Recipe: DQN hidden 32, Adam at lr 0.001, gamma 0.9, 300 episodes, epsilon 1.0 to 0.05 over 100 episodes. With run seed 0 on CPU training takes 0.8 s, and the trained policy reaches the goal in 10 of 10 rollouts, each in 6 steps, the shortest path.\n\nWatkins（劍橋大學博士論文，1989）提出 Q-learning：用 r + gamma max Q(s', a') 學每個動作的價值 Q(s, a)，再依它選最好的動作。這張圖在 Sutton 與 Barto 教科書裡的 4x4 網格世界上執行，用小網路取代表格（Mnih 等人 2013 年的 DQN 做法）。agent 從左上角出發；右下角的終點給 1 分，(1,1) 和 (2,3) 的陷阱給 -1 分，其他步給 0 分。配方：DQN hidden 32、Adam lr 0.001、gamma 0.9、300 回合、epsilon 在 100 回合內從 1.0 降到 0.05。run seed 0、CPU 上訓練花 0.8 秒，訓練後的策略在 10 次 rollout 中 10 次抵達終點，每次都走 6 步，也就是最短路徑。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 560
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The observation is a one-hot vector of the 16 cells, so state_dim is 16; the 4 outputs are the Q-values of up, right, down and left.\n\n觀測值是 16 格的 one-hot 向量，所以 state_dim 是 16；4 個輸出分別是上、右、下、左的 Q 值。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 280
+      }
+    },
+    {
+      "id": "note-loop",
+      "type": "note",
+      "position": {
+        "x": 720,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "gamma 0.9 makes a goal reached sooner worth more (0.9 per extra step), which is what teaches the shortest path; with gamma 0.99 the same run still reaches the goal but wanders. The reward is sparse, so learning_starts 200 and a 100-episode epsilon decay give the replay buffer enough episodes that end at the goal. Over seeds 1 to 3 the rollouts reach the goal every time, in 6 steps.\n\ngamma 0.9 讓越早抵達終點越值錢（每多一步乘 0.9），策略就是這樣學到最短路徑；gamma 改成 0.99 時同樣能抵達終點，但會繞路。獎勵很稀疏，所以 learning_starts 200 和 100 回合的 epsilon 衰減讓 replay buffer 先收集到足夠多抵達終點的回合。seed 1 到 3 的 rollout 每次都走 6 步抵達終點。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loop",
+        "boundOffset": {
+          "x": 0,
+          "y": 1000
+        },
+        "noteWidth": 320
+      }
+    },
+    {
+      "id": "note-rollout",
+      "type": "note",
+      "position": {
+        "x": 1080,
+        "y": -580
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "PolicyRollout plays the trained network 10 times at temperature 0.01, close to always taking the best action. success_rate is the share that reached the goal.\n\nPolicyRollout 用訓練好的網路玩 10 次，temperature 0.01 幾乎總是選最好的動作。success_rate 是抵達終點的比例。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "rollout",
+        "boundOffset": {
+          "x": 0,
+          "y": -280
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_env",
+      "source": "start",
+      "target": "env",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_env_layout_print-layout_value",
+      "source": "env",
+      "target": "print-layout",
+      "sourceHandle": "layout",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_loop_model",
+      "source": "model",
+      "target": "loop",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_env_env_loop_env",
+      "source": "env",
+      "target": "loop",
+      "sourceHandle": "env",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e_opt_optimizer_loop_optimizer",
+      "source": "opt",
+      "target": "loop",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loop_model_rollout_model",
+      "source": "loop",
+      "target": "rollout",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_env_env_rollout_env",
+      "source": "env",
+      "target": "rollout",
+      "sourceHandle": "env",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e_loop_report_print-report_value",
+      "source": "loop",
+      "target": "print-report",
+      "sourceHandle": "report",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_rollout_success_rate_print-success_value",
+      "source": "rollout",
+      "target": "print-success",
+      "sourceHandle": "success_rate",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_rollout_report_print-rollout_value",
+      "source": "rollout",
+      "target": "print-rollout",
+      "sourceHandle": "report",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_loop_episode_returns_viz_data",
+      "source": "loop",
+      "target": "viz",
+      "sourceHandle": "episode_returns",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

@@ -53,6 +53,16 @@ _CONCEPT_EXAMPLES = (
     "RL/GRPO-Step-GridWorld",
 )
 
+#: The paper reproductions (gallery section ``papers``). They follow the same
+#: note rules; what each one claims is executed in its own test file
+#: (``test_papers_rl_examples.py`` for the RL ones).
+_PAPER_EXAMPLES = (
+    "Papers/REINFORCE-CartPole",
+    "Papers/DQN-CartPole",
+    "Papers/PPO-CartPole",
+    "Papers/QLearning-GridWorld",
+)
+
 
 def _graph(key: str) -> dict:
     return json.loads(
@@ -390,7 +400,7 @@ def _notes(graph: dict) -> list[dict]:
     return [n for n in graph["nodes"] if is_note_node(n)]
 
 
-@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES)
+@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES + _PAPER_EXAMPLES)
 def test_every_concept_example_opens_with_an_overview_note(key: str):
     graph = _graph(key)
     notes = _notes(graph)
@@ -405,7 +415,7 @@ def test_every_concept_example_opens_with_an_overview_note(key: str):
     assert overview[0]["data"]["boundToNodeId"] == entry[0]["id"]
 
 
-@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES)
+@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES + _PAPER_EXAMPLES)
 def test_every_concept_note_sits_where_its_binding_says(key: str):
     graph = _graph(key)
     by_id = _nodes_by_id(graph)
@@ -425,7 +435,7 @@ def test_every_concept_note_sits_where_its_binding_says(key: str):
         assert data["noteWidth"] > 0
 
 
-@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES)
+@pytest.mark.parametrize("key", _CONCEPT_EXAMPLES + _PAPER_EXAMPLES)
 def test_every_concept_note_is_written_in_both_languages(key: str):
     """English paragraph, blank line, the same thing in Chinese.
 
