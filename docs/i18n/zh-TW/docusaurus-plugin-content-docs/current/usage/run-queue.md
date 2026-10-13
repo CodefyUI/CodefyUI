@@ -186,6 +186,8 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **可以掃描什麼：** 已註冊節點上的 int、float、bool、string 與 select 參數。不支援 preset 實例的內部參數、subgraph 實例的參數、`SECRET` 參數（選中的值會以明文存入 sweep 資料列），也不支援在圖中出現兩次的 node id。
 
+**交叉驗證就是掃描折。** `KFoldSplit` 會把 `fold` 參數指定的那一折留作驗證集，所以用 `{"node_id": "<KFoldSplit 的 id>", "param": "fold", "values": [0, 1, 2, 3, 4]}` 做 grid 掃描（`n_folds` 為 5 時），每一折都會各跑一次，每個變體記錄自己的指標，例如 `RegressionMetrics` 的 `r2`。各變體目標值的平均就是交叉驗證分數；sweep 會為各折排序，但不會替你取平均。折的切法只取決於 `KFoldSplit` 的 `n_folds`、`shuffle` 與 `seed`，與執行的種子無關，所以 `seed_variants` 不會改變每個變體留作驗證的資料列。
+
 | 變數 | 預設 | 上限 |
 | --- | --- | --- |
 | `CODEFYUI_MAX_SWEEP_RUNS` | `32` | 單一 sweep 的 variant 數 — grid 大小或 `samples` |

@@ -52,7 +52,8 @@ const zhTW: NodeTranslations = {
     description: '以最小平方法擬合，預測查詢目標並輸出係數與截距',
     details:
       'sklearn 的封閉解最小平方法 $\\beta = (X^\\top X)^{-1} X^\\top y$，X 秩不足時改用 SVD 求解，' +
-      '不需要學習率也不需要迭代。目標值可以是單欄或多欄；關掉 fit_intercept 時迴歸會通過原點。',
+      '不需要學習率也不需要迭代。目標值可以是單欄或多欄，可以是張量，也可以是數字列表，例如切分後的 y_train；' +
+      '關掉 fit_intercept 時迴歸會通過原點。',
     params: {
       fit_intercept: '若為 False，迴歸直線會通過原點（不擬合截距）。',
     },
@@ -856,6 +857,31 @@ const zhTW: NodeTranslations = {
       test_size: '保留作為測試集的樣本比例，必須大於 0 且小於 1（0 或 1 會讓其中一邊是空的）。',
       seed: '隨機洗牌的種子，方便可重現。',
       stratify: '是否在兩邊保留每個類別的比例（分層抽樣）。',
+    },
+  },
+  KFoldSplit: {
+    description: '把 k 折切分中的一折留作驗證集',
+    details:
+      'sklearn.model_selection.KFold 把資料列切成 `n_folds` 折；第 `fold` 折（從 0 起算）成為 x_val/y_val，其餘各折成為 x_train/y_train。' +
+      '交叉驗證就是把 `fold` 從 0 掃描到 n_folds - 1，並依記錄的指標排序，例如 RegressionMetrics 的 `r2` 或 Accuracy 的 `accuracy`；' +
+      '各變體的平均值就是交叉驗證分數。折的切法只取決於 n_folds、shuffle 與 seed，與執行的種子無關，所以每個變體切出的折都相同。' +
+      '關掉 `shuffle` 時，每一折是依資料列順序連續的一段。`stratify` 改用 StratifiedKFold，讓每一折維持各類別的比例，需要類別標籤。',
+    params: {
+      n_folds: '折數，至少 2，且不能超過資料列數。',
+      fold: '留作驗證集的那一折，從 0 到 n_folds - 1。把它掃描過這個範圍就是交叉驗證。',
+      shuffle: '切折之前先打亂資料列。關閉時每一折是連續的一段。',
+      seed: '打亂用的種子。同一個種子得到同樣的折。',
+      stratify: '讓每一折維持各類別的比例（StratifiedKFold），需要類別標籤。',
+    },
+    inputs: {
+      features: '特徵張量 [N, F]。',
+      labels: '每個樣本的標籤或目標值（LIST 或張量）。',
+    },
+    outputs: {
+      x_train: '`fold` 以外各折的特徵。',
+      y_train: '`fold` 以外各折的標籤。',
+      x_val: '第 `fold` 折的特徵。',
+      y_val: '第 `fold` 折的標籤。',
     },
   },
   DatasetBatch: {

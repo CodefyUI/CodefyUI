@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: 節點參考
-description: 所有內建節點 — 157 個節點涵蓋 16 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
+description: 所有內建節點 — 158 個節點涵蓋 16 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
 ---
 
 # 節點參考
 
-CodefyUI 內建 **157 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
+CodefyUI 內建 **158 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
 
 :::tip
 此表反映目前版本，但後端才是權威來源。請查看即時節點面板或 `GET /api/nodes`，確認目前安裝可用的節點。雙擊畫布可搜尋節點。
@@ -18,7 +18,7 @@ CodefyUI 內建 **157 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 | **RNN** | LSTM、GRU、RNNCell | 3 |
 | **Transformer** | MultiHeadAttention、TransformerEncoder、TransformerDecoder、MoELayer | 4 |
 | **RL** | DQN、PPO、EnvWrapper、RewardModel、KLDivergence、PolicyRollout、PPOClipObjective、GroupRelativeAdvantage、Discount、GridWorldEnv、PreferenceDataset、BradleyTerryLoss、BradleyTerryTrain、RLTrainingLoop | 14 |
-| **資料 (Data)** | Dataset、ImageFolderDataset、DataLoader、DatasetBatch、Transform、HuggingFaceDataset、KaggleDataset、TensorInput、TextInput、CSVReader、ColumnSelector、RowSelector、Normalize、SyntheticDataset、SyntheticShapes、SyntheticSegmentation、SyntheticSequence、TrainTestSplit、DatasetSplit、ResizeTransform、ToTensorTransform、NormalizeTransform、RandomCrop、RandomHorizontalFlip、RandomRotation、ColorJitter、RandAugment、ComposeTransform、TensorDataset | 29 |
+| **資料 (Data)** | Dataset、ImageFolderDataset、DataLoader、DatasetBatch、Transform、HuggingFaceDataset、KaggleDataset、TensorInput、TextInput、CSVReader、ColumnSelector、RowSelector、Normalize、SyntheticDataset、SyntheticShapes、SyntheticSegmentation、SyntheticSequence、TrainTestSplit、KFoldSplit、DatasetSplit、ResizeTransform、ToTensorTransform、NormalizeTransform、RandomCrop、RandomHorizontalFlip、RandomRotation、ColorJitter、RandAugment、ComposeTransform、TensorDataset | 30 |
 | **資料流 (Data Flow)** | Map、Reduce、Switch | 3 |
 | **訓練 (Training)** | Optimizer、Loss、TrainingLoop、EvaluateModel、LRScheduler、SequentialModel、BackwardOnce | 7 |
 | **IO** | ImageReader、ImageWriter、ImageBatchReader、FileReader、CheckpointSaver、CheckpointLoader、ModelLoader、ModelSaver、Inference、GraphInput、GraphOutput、VideoLoad、VideoWrite | 13 |
@@ -37,7 +37,7 @@ CodefyUI 內建 **157 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 - **`TensorInput`**（資料）— 提供內嵌格狀編輯器，用來輸入明確的張量值。[教學檢視器](./teaching-inspector)範例會以此節點作為輸入。
 - **變換鏈**（資料）— 九個節點會組成 `transforms.Compose`：`ResizeTransform` 將圖片縮放為正方形；`ToTensorTransform` 將 PIL 圖片轉為 `[0, 1]` 張量；`NormalizeTransform` 套用逐通道正規化並提供預設組合；`RandomCrop`、`RandomHorizontalFlip`、`RandomRotation`、`ColorJitter` 與 `RandAugment` 套用資料增強；`ComposeTransform` 則合併兩條分別建構的鏈。參數與順序規則請參閱[資料與資料增強](./data-augmentation)。
 - **`ImageFolderDataset`**（資料）— 依 torchvision `ImageFolder` 預期的目錄結構，從每個類別各自的目錄載入圖片。
-- **表格資料訓練路徑**（資料、傳統機器學習）— `CSVReader` → `TrainTestSplit` → `TensorDataset` → `DataLoader` → `TrainingLoop` 可以用 CSV 訓練神經網路。回歸目標請把 `CSVReader` 的 `target_type` 設為 `number`，目標就會以浮點數列表輸出。`TensorDataset` 把特徵與目標配對：`number` 產生 float32 目標，一維目標會變成 `[N, 1]`，對齊單一輸出的模型；`class` 產生給 `CrossEntropyLoss` 用的 int64 類別索引；測試集的 `TensorDataset` 要把訓練集那一個的 `classes` 輸出接到自己的 `classes` 輸入，即使測試集缺少某個類別，兩邊的類別編號仍然一致；`token` 讓整數目標維持原本形狀並轉成 int64，例如給 `LMCrossEntropyLoss` 用的 `[N, T]` 下一個 token 編號。`RegressionMetrics` 比較預測值與真實值，輸出 MSE、MAE 與 R²，並和 `Accuracy` 記錄 `accuracy` 一樣，把它們記錄為 run metric。
+- **表格資料訓練路徑**（資料、傳統機器學習）— `CSVReader` → `TrainTestSplit` → `TensorDataset` → `DataLoader` → `TrainingLoop` 可以用 CSV 訓練神經網路。回歸目標請把 `CSVReader` 的 `target_type` 設為 `number`，目標就會以浮點數列表輸出。`TensorDataset` 把特徵與目標配對：`number` 產生 float32 目標，一維目標會變成 `[N, 1]`，對齊單一輸出的模型；`class` 產生給 `CrossEntropyLoss` 用的 int64 類別索引；測試集的 `TensorDataset` 要把訓練集那一個的 `classes` 輸出接到自己的 `classes` 輸入，即使測試集缺少某個類別，兩邊的類別編號仍然一致；`token` 讓整數目標維持原本形狀並轉成 int64，例如給 `LMCrossEntropyLoss` 用的 `[N, T]` 下一個 token 編號。`RegressionMetrics` 比較預測值與真實值，輸出 MSE、MAE 與 R²，並和 `Accuracy` 記錄 `accuracy` 一樣，把它們記錄為 run metric。`KFoldSplit` 的輸入與 `TrainTestSplit` 相同，會把 k 折切分（sklearn 的 `KFold`，開啟 `stratify` 時為 `StratifiedKFold`）中的一折留作 `x_val` 與 `y_val`；用[掃描](./run-queue#sweeps)把 `fold` 參數從 0 跑到 `n_folds` - 1，就是 k 折交叉驗證。`LinearRegression` 可以直接接收切分後的 `y_train` 列表，所以 CSV 回歸不需要 `ColumnSelector`。
 - **`TrainingLoop`**（訓練）— 執行訓練，並將即時 loss 圖表傳至結果面板。它的選項與記錄的指標序列列在[訓練迴圈與 loss 圖表](./running-graphs#training-loops-and-loss-charts)。其**進階**區段包含記憶體控制項 `precision` 與 `accumulate_steps`；請參閱[訓練記憶體](/advanced/training-memory)。
 - **`SequentialModel`**（訓練）— 以單一節點表示層堆疊。雙擊節點可開啟**模型架構**編輯器。編輯器提供依類別分組且可搜尋的層級面板，以及用來連接各層的畫布。架構必須恰好包含一個 `Input` 節點與一個 `Output` 節點，合併層則提供連接埠清單編輯器。控制項包括**吸附 ON/OFF**、由上至下的**自動排列**、JSON **匯入**與**匯出**，以及**套用**。驗證會拒絕循環。**匯出**會把架構下載為 `model_architecture.json`。**匯入**可讀取這種檔案或畫布圖的 `.json`：檔案中的層節點會轉成 `Input` → 各層 → `Output` 的鏈；若沒有層節點，則載入其中的 `SequentialModel`（有多個時，會以**選擇要匯入的 SequentialModel**詢問要匯入哪一個）。其他檔案會失敗並顯示**匯入失敗：此檔案沒有層級或 SequentialModel 節點。** 參數在層級中意義不同的畫布節點會在匯入時轉換：`Reshape` 的形狀去掉 batch 項、`Embedding` 的 `padding_idx` 為 -1 時移除，`LayerNorm`、`AdaptiveAvgPool2d` 與 `MultiHeadAttention` 的參數會改寫。自注意力節點的 query、key、value 三條連線會合併成它唯一的輸入。層級編輯器無法表示的節點（`alpha` 不為 1 的 `Add`、交叉注意力節點、沒有 batch 項的 `Reshape`）會中止匯入，並以訊息指出是哪個節點；畫布上的 `Mean` 是對單一張量取平均，匯入時會略過並顯示警告。匯入只會取代編輯器目前顯示的內容；點擊**套用**後節點才會變更。`Subtract`、`Concat` 與 `Stack` 的結果取決於運算元順序，因此卡片上每個運算元各有一個標示的輸入（`Subtract` 為 `a` / `b`，`Concat` 與 `Stack` 為 `in0`、`in1`、...），運算元依此順序取用。在這些標示出現前儲存的架構，沿用當初連線的順序，編輯器開啟時也會依該順序標示。
 - **`EmbeddingScatter`**（LLM）— 使用 PCA 或 t-SNE 將嵌入向量投影至 2D，並顯示可縮放的散佈圖。

@@ -186,6 +186,8 @@ Each entry in `params` addresses one parameter of one node by the node's id and 
 
 **What can be swept:** int, float, bool, string and select parameters on registered nodes. Not a preset instance's inner parameters, not a subgraph instance's parameters, not a `SECRET` parameter (the chosen values are stored in the clear on the sweep row), and not a node id that appears twice in the graph.
 
+**Cross-validation is a sweep over a fold.** `KFoldSplit` holds out the fold its `fold` param names, so a grid sweep with `{"node_id": "<KFoldSplit id>", "param": "fold", "values": [0, 1, 2, 3, 4]}` (for `n_folds` 5) runs each fold once, and each variant records its own metric, such as `r2` from `RegressionMetrics`. The mean of the variants' objective values is the cross-validation score; the sweep ranks the folds but does not average them. The folds depend only on `KFoldSplit`'s `n_folds`, `shuffle` and `seed`, never on the run seed, so `seed_variants` does not change which rows each variant holds out.
+
 | Variable | Default | Bounds |
 | --- | --- | --- |
 | `CODEFYUI_MAX_SWEEP_RUNS` | `32` | Variants in one sweep — the grid size, or `samples` |

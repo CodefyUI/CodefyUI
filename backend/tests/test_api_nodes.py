@@ -551,6 +551,9 @@ TRANSLATED_NODES = (
     "RandomRotation",
     "ResizeTransform",
     "ToTensorTransform",
+    # #712: pinned from birth; its `fold` param is what a cross-validation
+    # sweep turns, so it must not arrive in English.
+    "KFoldSplit",
     # #693: these ten wrote their port and param descriptions in Chinese in
     # the backend. The English is there now, and the Chinese moved here.
     "Argmax",
@@ -569,7 +572,7 @@ TRANSLATED_NODES = (
 #: same reason as ``TRANSLATED_NODES``: #693 moved their Chinese port texts
 #: into the zh-TW catalog, and a port added later in English would otherwise
 #: go unnoticed.
-PORT_TRANSLATED_NODES = TRANSLATED_NODES[-10:]
+PORT_TRANSLATED_NODES = TRANSLATED_NODES[-10:] + ("KFoldSplit",)
 
 #: Built-in nodes with no zh-TW block at all. PRE-EXISTING debt, all of it
 #: older than core#136 -- listed rather than fixed because translating
