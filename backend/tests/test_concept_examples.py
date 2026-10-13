@@ -56,7 +56,8 @@ _CONCEPT_EXAMPLES = (
 #: Every example the gallery files under ``papers``, by its API path. They
 #: follow the same note rules as the concept examples; what each one claims
 #: is executed in its own test file (``test_paper_examples.py`` for the
-#: optimisation ones, ``test_papers_rl_examples.py`` for the RL ones).
+#: optimisation ones, ``test_paper_sequence_examples.py`` for the sequence
+#: and regression ones, ``test_papers_rl_examples.py`` for the RL ones).
 _PAPER_EXAMPLES = (
     "Papers/Dropout-Srivastava-2014",
     "Papers/BatchNorm-Ioffe-2015",
@@ -65,6 +66,12 @@ _PAPER_EXAMPLES = (
     "Papers/Label-Smoothing-Szegedy-2016",
     "Papers/SGDR-Loshchilov-2017",
     "Papers/Vanishing-Gradients-Glorot-2010",
+    "Papers/Gradient-Clipping-RNN",
+    "Papers/Autoencoder-MNIST-2D",
+    "Papers/LSTM-Forecast-Sine",
+    "Papers/Transformer-Sort",
+    "Papers/Weight-Decay-Regression",
+    "Papers/Early-Stopping-Regression",
     "Papers/REINFORCE-CartPole",
     "Papers/DQN-CartPole",
     "Papers/PPO-CartPole",

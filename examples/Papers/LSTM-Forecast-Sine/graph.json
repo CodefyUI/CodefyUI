@@ -1,0 +1,431 @@
+{
+  "name": "LSTM forecasts a noisy wave",
+  "description": "Predict the next value of a wave",
+  "gallery": {
+    "section": "papers",
+    "order": 13
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "gen",
+      "type": "PythonScript",
+      "position": {
+        "x": -93,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # 2000 steps of a two-sine wave plus Gaussian noise (std 0.15),\n    # cut into windows of 30 values, each labelled with the value after it.\n    g = torch.Generator().manual_seed(0)\n    t = torch.arange(2000, dtype=torch.float32)\n    series = (torch.sin(2 * 3.14159 * t / 50)\n              + 0.5 * torch.sin(2 * 3.14159 * t / 13)\n              + 0.15 * torch.randn(2000, generator=g))\n    win = 30\n    x = torch.stack([series[i:i + win] for i in range(len(series) - win)])\n    y = series[win:]\n    cut = int(0.7 * len(y))  # train on the first 70% of time, test on the rest\n    x = x.unsqueeze(-1)       # [N, 30, 1]: 30 steps of 1 feature for the LSTM\n    return {\"out1\": x[:cut], \"out2\": y[:cut], \"out3\": x[cut:], \"out4\": y[cut:],\n            \"out5\": x[cut:, -1, 0]}  # persistence baseline: repeat the last value\n",
+          "input_ports": 1,
+          "output_ports": 5,
+          "input_types": "TENSOR",
+          "output_types": "TENSOR,TENSOR,TENSOR,TENSOR,TENSOR"
+        }
+      }
+    },
+    {
+      "id": "ds",
+      "type": "TensorDataset",
+      "position": {
+        "x": 534,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "target_type": "number"
+        }
+      }
+    },
+    {
+      "id": "dl",
+      "type": "DataLoader",
+      "position": {
+        "x": 828,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 32,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": 205
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"LSTM\",\"params\":{\"input_size\":1,\"hidden_size\":32}},{\"id\":\"l1\",\"type\":\"SelectIndex\",\"params\":{\"dim\":1,\"index\":-1}},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":1}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"eout\",\"source\":\"l2\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 534,
+        "y": 19
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.005
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": -93,
+        "y": 406
+      },
+      "data": {
+        "params": {
+          "type": "MSELoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1090,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "epochs": 20,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "type": "Inference",
+      "position": {
+        "x": 1355,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "metrics",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1595,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-r2",
+      "type": "Print",
+      "position": {
+        "x": 2290,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "LSTM R² on held-out windows"
+        }
+      }
+    },
+    {
+      "id": "baseline",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 534,
+        "y": 278
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-base",
+      "type": "Print",
+      "position": {
+        "x": 828,
+        "y": -22
+      },
+      "data": {
+        "params": {
+          "label": "Repeat-the-last-value R²"
+        }
+      }
+    },
+    {
+      "id": "plot",
+      "type": "PythonScript",
+      "position": {
+        "x": 1595,
+        "y": -10
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # The first 150 held-out steps: the noisy truth and the LSTM's forecast.\n    pred, truth = inputs[\"in1\"].reshape(-1)[:150], inputs[\"in2\"].reshape(-1)[:150]\n    steps = torch.arange(150, dtype=torch.float32)\n    points = torch.cat([torch.stack([steps, truth], 1), torch.stack([steps, pred], 1)])\n    return {\"out1\": points, \"out2\": [\"truth\"] * 150 + [\"LSTM forecast\"] * 150}\n",
+          "input_ports": 2,
+          "output_ports": 2,
+          "input_types": "TENSOR,TENSOR",
+          "output_types": "TENSOR,LIST"
+        }
+      }
+    },
+    {
+      "id": "chart",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 2290,
+        "y": -80
+      },
+      "data": {
+        "params": {
+          "title": "First 150 held-out steps"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Hochreiter and Schmidhuber, \"Long short-term memory\" (Neural Computation, 1997): gated memory cells let a recurrent net carry information across many steps, which is what forecasting a signal from its recent past needs. Recipe: a noisy sum of two sines cut into windows of 30 values, LSTM (hidden 32) then Linear to the next value, MSE, Adam at lr 0.005, 20 epochs on the first 70% of the series, tested on the last 30%. With seed 0 on a CPU the LSTM reaches R² 0.95 on the held-out windows, against 0.87 for repeating the last value; the noise alone caps R² near 0.97.\n\nHochreiter 與 Schmidhuber，〈Long short-term memory〉（Neural Computation，1997）：有閘門的記憶單元讓遞迴網路能把資訊帶過很多步，這正是用最近的過去預測訊號所需要的。配方：兩個正弦波相加再加雜訊，切成 30 個值一段的窗口，LSTM（hidden 32）接 Linear 預測下一個值，MSE，Adam、lr 0.005，在序列前 70% 上訓練 20 個 epoch，用後 30% 測試。seed 0、用 CPU 跑，LSTM 在保留的窗口上達到 R² 0.95，直接重複最後一個值只有 0.87；光是雜訊就讓 R² 最多只能到 0.97 左右。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 584
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The split is by time: the test windows all come after the training ones, so the model forecasts a stretch of the wave it never saw. out5 is the persistence baseline, the last value of each test window.\n\n切分依時間：測試窗口全都在訓練窗口之後，所以模型預測的是它沒看過的那段波形。out5 是持續性基準，也就是每個測試窗口的最後一個值。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 0,
+          "y": 884
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 874
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Layer editor: LSTM (input 1, hidden 32) reads the 30 steps, SelectIndex keeps the last step's output, Linear maps 32 numbers to the forecast.\n\n圖層編輯器：LSTM（input 1、hidden 32）讀入 30 步，SelectIndex 留下最後一步的輸出，Linear 把 32 個數字對應成預測值。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loss",
+        "boundOffset": {
+          "x": 0,
+          "y": 468
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_gen",
+      "source": "start",
+      "target": "gen",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_gen_out1_ds_features",
+      "source": "gen",
+      "target": "ds",
+      "sourceHandle": "out1",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_gen_out2_ds_targets",
+      "source": "gen",
+      "target": "ds",
+      "sourceHandle": "out2",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_ds_dataset_dl_dataset",
+      "source": "ds",
+      "target": "dl",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train_dataloader",
+      "source": "dl",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_model_infer_model",
+      "source": "train",
+      "target": "infer",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_gen_out3_infer_input",
+      "source": "gen",
+      "target": "infer",
+      "sourceHandle": "out3",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_infer_output_metrics_predictions",
+      "source": "infer",
+      "target": "metrics",
+      "sourceHandle": "output",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_gen_out4_metrics_targets",
+      "source": "gen",
+      "target": "metrics",
+      "sourceHandle": "out4",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_metrics_r2_print-r2_value",
+      "source": "metrics",
+      "target": "print-r2",
+      "sourceHandle": "r2",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_gen_out5_baseline_predictions",
+      "source": "gen",
+      "target": "baseline",
+      "sourceHandle": "out5",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_gen_out4_baseline_targets",
+      "source": "gen",
+      "target": "baseline",
+      "sourceHandle": "out4",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_baseline_r2_print-base_value",
+      "source": "baseline",
+      "target": "print-base",
+      "sourceHandle": "r2",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_infer_output_plot_in1",
+      "source": "infer",
+      "target": "plot",
+      "sourceHandle": "output",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_gen_out4_plot_in2",
+      "source": "gen",
+      "target": "plot",
+      "sourceHandle": "out4",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_plot_out1_chart_points",
+      "source": "plot",
+      "target": "chart",
+      "sourceHandle": "out1",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_plot_out2_chart_labels",
+      "source": "plot",
+      "target": "chart",
+      "sourceHandle": "out2",
+      "targetHandle": "labels"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

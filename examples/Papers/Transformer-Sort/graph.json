@@ -1,0 +1,371 @@
+{
+  "name": "Transformer learns to sort",
+  "description": "Sort 10 digits with self-attention",
+  "gallery": {
+    "section": "papers",
+    "order": 14
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "gen",
+      "type": "PythonScript",
+      "position": {
+        "x": -93,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Sequences of 10 digits (0-9) and the same digits in sorted order.\n    g = torch.Generator().manual_seed(0)\n    def make(n):\n        x = torch.randint(0, 10, (n, 10), generator=g)\n        return x, torch.sort(x, dim=1).values\n    x_train, y_train = make(5000)\n    x_test, y_test = make(1000)  # fresh sequences the model never saw\n    return {\"out1\": Pairs(x_train, y_train), \"out2\": x_test, \"out3\": y_test}\n\n\nclass Pairs:\n    \"\"\"(sequence, sorted sequence) pairs, both int64 token ids [10].\n\n    A dataset is anything with __len__ and __getitem__, so DataLoader takes\n    this directly. TensorDataset would turn the [N, 10] targets into float\n    numbers or flatten them as class labels, and the loss needs integer ids.\n    \"\"\"\n\n    def __init__(self, x, y):\n        self.x, self.y = x, y\n\n    def __len__(self):\n        return len(self.x)\n\n    def __getitem__(self, i):\n        return self.x[i], self.y[i]\n",
+          "input_ports": 1,
+          "output_ports": 3,
+          "input_types": "TENSOR",
+          "output_types": "DATASET,TENSOR,TENSOR"
+        }
+      }
+    },
+    {
+      "id": "dl",
+      "type": "DataLoader",
+      "position": {
+        "x": 564,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": 139
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Embedding\",\"params\":{\"num_embeddings\":10,\"embedding_dim\":64}},{\"id\":\"l1\",\"type\":\"PositionalEncoding\",\"params\":{\"d_model\":64}},{\"id\":\"l2\",\"type\":\"TransformerEncoder\",\"params\":{\"d_model\":64,\"nhead\":4,\"num_layers\":2,\"dim_feedforward\":128}},{\"id\":\"l3\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"eout\",\"source\":\"l3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 564,
+        "y": -22
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.001
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "LMCrossEntropyLoss",
+      "position": {
+        "x": -93,
+        "y": 340
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 804,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "epochs": 20,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "type": "Inference",
+      "position": {
+        "x": 1069,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "argmax",
+      "type": "Argmax",
+      "position": {
+        "x": 1309,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "dim": -1
+        }
+      }
+    },
+    {
+      "id": "score",
+      "type": "PythonScript",
+      "position": {
+        "x": 1581,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    pred, truth, x = inputs[\"in1\"], inputs[\"in2\"], inputs[\"in3\"]\n    for i in range(3):\n        print(\"input \", x[i].tolist())\n        print(\"output\", pred[i].tolist())\n    token_acc = float((pred == truth).float().mean())\n    exact = float((pred == truth).all(dim=1).float().mean())\n    return {\"out1\": exact, \"out2\": token_acc}\n",
+          "input_ports": 3,
+          "output_ports": 2,
+          "input_types": "TENSOR,TENSOR,TENSOR",
+          "output_types": "SCALAR,SCALAR"
+        }
+      }
+    },
+    {
+      "id": "print-exact",
+      "type": "Print",
+      "position": {
+        "x": 2186,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Sequences sorted exactly right"
+        }
+      }
+    },
+    {
+      "id": "print-token",
+      "type": "Print",
+      "position": {
+        "x": 2186,
+        "y": -80
+      },
+      "data": {
+        "params": {
+          "label": "Positions right"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Vaswani et al., \"Attention is all you need\" (NeurIPS 2017): self-attention lets every position read every other one in a single step, with no recurrence. Sorting is a clean test of that, since each output slot depends on the whole input. Recipe: 5000 random sequences of 10 digits and their sorted versions, Embedding, sinusoidal PositionalEncoding, a 2-layer TransformerEncoder (d_model 64, 4 heads), a Linear head over the 10 digits, LMCrossEntropyLoss, Adam at lr 0.001, 20 epochs. With seed 0 on a CPU it sorts 1000 fresh sequences with exact-match accuracy 1.00 and per-position accuracy 1.000.\n\nVaswani 等人，〈Attention is all you need〉（NeurIPS 2017）：自注意力讓每個位置一步就能讀到其他所有位置，不需要遞迴。排序很適合檢驗這一點，因為每個輸出位置都取決於整個輸入。配方：5000 條隨機的 10 位數字序列和排序後的版本，Embedding、正弦 PositionalEncoding、2 層 TransformerEncoder（d_model 64、4 個 head），Linear 輸出 10 個數字的分數，LMCrossEntropyLoss，Adam、lr 0.001，20 個 epoch。seed 0、用 CPU 跑，在 1000 條沒看過的新序列上，整條完全排對的比例是 1.00，逐位置的準確率是 1.000。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 537
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The script returns a small dataset object: each item is a sequence and its sorted version, both integer token ids of length 10. TensorDataset cannot carry those targets, since it stores number targets as floats and class targets as one label per row.\n\n腳本回傳一個小型 dataset 物件：每筆資料是一條序列和它排序後的版本，都是長度 10 的整數 token id。TensorDataset 裝不下這種目標，因為它把數值目標存成浮點數，把類別目標當成每列一個標籤。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 0,
+          "y": 837
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 869
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Layer editor: Embedding (10 digits -> 64), PositionalEncoding, TransformerEncoder (2 layers, 4 heads, feed-forward 128), Linear (64 -> 10). The output is one score per digit at every position, [batch, 10, 10], and LMCrossEntropyLoss scores all 10 positions at once.\n\n圖層編輯器：Embedding（10 個數字 -> 64）、PositionalEncoding、TransformerEncoder（2 層、4 個 head、前饋 128）、Linear（64 -> 10）。輸出是每個位置對每個數字的分數，形狀 [batch, 10, 10]，LMCrossEntropyLoss 一次評分全部 10 個位置。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 730
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-score",
+      "type": "note",
+      "position": {
+        "x": 1581,
+        "y": 174
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Argmax picks the digit at each position. The script compares whole sequences and single positions, and prints three inputs with their outputs to the Log tab.\n\nArgmax 選出每個位置的數字。腳本比對整條序列和單一位置，並把三組輸入與輸出印到 Log 分頁。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "score",
+        "boundOffset": {
+          "x": 0,
+          "y": 474
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_gen",
+      "source": "start",
+      "target": "gen",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_gen_out1_dl_dataset",
+      "source": "gen",
+      "target": "dl",
+      "sourceHandle": "out1",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train_dataloader",
+      "source": "dl",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_model_infer_model",
+      "source": "train",
+      "target": "infer",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_gen_out2_infer_input",
+      "source": "gen",
+      "target": "infer",
+      "sourceHandle": "out2",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_infer_output_argmax_tensor",
+      "source": "infer",
+      "target": "argmax",
+      "sourceHandle": "output",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_argmax_tensor_score_in1",
+      "source": "argmax",
+      "target": "score",
+      "sourceHandle": "tensor",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_gen_out3_score_in2",
+      "source": "gen",
+      "target": "score",
+      "sourceHandle": "out3",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_gen_out2_score_in3",
+      "source": "gen",
+      "target": "score",
+      "sourceHandle": "out2",
+      "targetHandle": "in3"
+    },
+    {
+      "id": "e_score_out1_print-exact_value",
+      "source": "score",
+      "target": "print-exact",
+      "sourceHandle": "out1",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_score_out2_print-token_value",
+      "source": "score",
+      "target": "print-token",
+      "sourceHandle": "out2",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

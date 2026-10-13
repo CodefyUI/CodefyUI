@@ -1,0 +1,750 @@
+{
+  "name": "Autoencoder squeezes digits to 2-D",
+  "description": "Two numbers per digit, set beside PCA",
+  "gallery": {
+    "section": "papers",
+    "order": 12
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "mnist-train",
+      "type": "Dataset",
+      "position": {
+        "x": -93,
+        "y": 79
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "mnist-test",
+      "type": "Dataset",
+      "position": {
+        "x": -93,
+        "y": 372
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "batch-train",
+      "type": "DatasetBatch",
+      "position": {
+        "x": 287,
+        "y": -41
+      },
+      "data": {
+        "params": {
+          "batch_size": 10000,
+          "start_index": 0
+        }
+      }
+    },
+    {
+      "id": "batch-test",
+      "type": "DatasetBatch",
+      "position": {
+        "x": 287,
+        "y": 231
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "start_index": 0
+        }
+      }
+    },
+    {
+      "id": "flat-train",
+      "type": "PythonScript",
+      "position": {
+        "x": 527,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    images = inputs[\"in1\"]\n    # Dataset's default transform maps pixels to [-1, 1]. The decoder ends\n    # in a Sigmoid, so map back to [0, 1], then flatten 28x28 to 784.\n    x = (images * 0.5 + 0.5).reshape(images.shape[0], -1)\n    return {\"out1\": x}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "TENSOR",
+          "output_types": "TENSOR"
+        }
+      }
+    },
+    {
+      "id": "flat-test",
+      "type": "PythonScript",
+      "position": {
+        "x": 527,
+        "y": 74
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    images = inputs[\"in1\"]\n    # Dataset's default transform maps pixels to [-1, 1]. The decoder ends\n    # in a Sigmoid, so map back to [0, 1], then flatten 28x28 to 784.\n    x = (images * 0.5 + 0.5).reshape(images.shape[0], -1)\n    return {\"out1\": x}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "TENSOR",
+          "output_types": "TENSOR"
+        }
+      }
+    },
+    {
+      "id": "pairs",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1207,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "target_type": "number"
+        }
+      }
+    },
+    {
+      "id": "dl",
+      "type": "DataLoader",
+      "position": {
+        "x": 1864,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 128,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":256}},{\"id\":\"l1\",\"type\":\"ReLU\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":2}},{\"id\":\"l3\",\"type\":\"Linear\",\"params\":{\"in_features\":2,\"out_features\":256}},{\"id\":\"l4\",\"type\":\"ReLU\"},{\"id\":\"l5\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":784}},{\"id\":\"l6\",\"type\":\"Sigmoid\"},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"eout\",\"source\":\"l6\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 287,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.002
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": -93,
+        "y": -99
+      },
+      "data": {
+        "params": {
+          "type": "MSELoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2159,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "epochs": 40,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "type": "Inference",
+      "position": {
+        "x": 2424,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "encode",
+      "type": "PythonScript",
+      "position": {
+        "x": 2664,
+        "y": 431
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef knn_accuracy(codes, labels, k=5):\n    # Leave-one-out k-nearest-neighbour accuracy in the code space: how\n    # often a digit's 5 nearest codes mostly carry its own label.\n    d = torch.cdist(codes, codes)\n    d.fill_diagonal_(float(\"inf\"))\n    nearest = d.topk(k, largest=False).indices\n    vote = torch.mode(labels[nearest], dim=1).values\n    return float((vote == labels).float().mean())\n\n\ndef run(inputs, params):\n    model, x, labels = inputs[\"in1\"], inputs[\"in2\"], inputs[\"in3\"]\n    # The encoder half of the trained model: layers l0..l2 of the layer\n    # editor (Linear 784->256, ReLU, Linear 256->2).\n    h = x\n    with torch.no_grad():\n        for name in [\"l0\", \"l1\", \"l2\"]:\n            h = model.layers[name](h)\n    return {\"out1\": h, \"out2\": [int(v) for v in labels.tolist()],\n            \"out3\": knn_accuracy(h, labels)}\n",
+          "input_ports": 3,
+          "output_ports": 3,
+          "input_types": "MODEL,TENSOR,TENSOR",
+          "output_types": "TENSOR,LIST,SCALAR"
+        }
+      }
+    },
+    {
+      "id": "pca",
+      "type": "PythonScript",
+      "position": {
+        "x": 1207,
+        "y": 19
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef knn_accuracy(codes, labels, k=5):\n    # Leave-one-out k-nearest-neighbour accuracy in the code space: how\n    # often a digit's 5 nearest codes mostly carry its own label.\n    d = torch.cdist(codes, codes)\n    d.fill_diagonal_(float(\"inf\"))\n    nearest = d.topk(k, largest=False).indices\n    vote = torch.mode(labels[nearest], dim=1).values\n    return float((vote == labels).float().mean())\n\n\ndef run(inputs, params):\n    x_train, x_test, labels = inputs[\"in1\"], inputs[\"in2\"], inputs[\"in3\"]\n    # PCA, the linear method the paper compares against: the 2 directions\n    # of largest variance in the training images.\n    mean = x_train.mean(dim=0)\n    centred = x_train - mean\n    u, _, _ = torch.svd(centred.T @ centred)  # eigenvectors of the covariance\n    basis = u[:, :2]\n    codes = (x_test - mean) @ basis\n    recon = codes @ basis.T + mean\n    return {\"out1\": codes, \"out2\": [int(v) for v in labels.tolist()],\n            \"out3\": recon, \"out4\": knn_accuracy(codes, labels)}\n",
+          "input_ports": 3,
+          "output_ports": 4,
+          "input_types": "TENSOR,TENSOR,TENSOR",
+          "output_types": "TENSOR,LIST,TENSOR,SCALAR"
+        }
+      }
+    },
+    {
+      "id": "mse-ae",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 2664,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-mse-ae",
+      "type": "Print",
+      "position": {
+        "x": 3336,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Autoencoder reconstruction MSE"
+        }
+      }
+    },
+    {
+      "id": "mse-pca",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1864,
+        "y": 198
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-mse-pca",
+      "type": "Print",
+      "position": {
+        "x": 2159,
+        "y": 415
+      },
+      "data": {
+        "params": {
+          "label": "PCA reconstruction MSE"
+        }
+      }
+    },
+    {
+      "id": "print-knn-ae",
+      "type": "Print",
+      "position": {
+        "x": 3336,
+        "y": 159
+      },
+      "data": {
+        "params": {
+          "label": "5-NN accuracy on autoencoder codes (chance = 0.10)"
+        }
+      }
+    },
+    {
+      "id": "scatter-ae",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 3336,
+        "y": 379
+      },
+      "data": {
+        "params": {
+          "title": "Autoencoder: 2-D codes of 1000 test digits"
+        }
+      }
+    },
+    {
+      "id": "print-knn-pca",
+      "type": "Print",
+      "position": {
+        "x": 1864,
+        "y": -22
+      },
+      "data": {
+        "params": {
+          "label": "5-NN accuracy on PCA codes (chance = 0.10)"
+        }
+      }
+    },
+    {
+      "id": "scatter-pca",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 1864,
+        "y": 488
+      },
+      "data": {
+        "params": {
+          "title": "PCA: 2-D codes of the same digits"
+        }
+      }
+    },
+    {
+      "id": "grid",
+      "type": "PythonScript",
+      "position": {
+        "x": 2664,
+        "y": -10
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Row 1: eight test digits. Row 2: the autoencoder's reconstructions.\n    # Row 3: PCA's. Each from only 2 numbers.\n    # One picture, 3 rows of 8 digits: [3 * 28, 8 * 28].\n    rows = []\n    for images in (inputs[\"in1\"], inputs[\"in2\"], inputs[\"in3\"]):\n        digits = images[:8].clamp(0, 1).reshape(8, 28, 28)\n        rows.append(torch.cat(list(digits), dim=1))\n    return {\"out1\": torch.cat(rows, dim=0)}\n",
+          "input_ports": 3,
+          "output_ports": 1,
+          "input_types": "TENSOR,TENSOR,TENSOR",
+          "output_types": "TENSOR"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 3336,
+        "y": -80
+      },
+      "data": {
+        "params": {
+          "title": "Test digits / autoencoder / PCA",
+          "plot_type": "image"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Hinton and Salakhutdinov, \"Reducing the dimensionality of data with neural networks\" (Science, 2006): a deep autoencoder squeezes each image through a few numbers and rebuilds it, and its codes keep more of the data than PCA with the same number of components. Recipe: 10,000 MNIST digits (they ship with the repo), 784-256-2-256-784 with a Sigmoid output, MSE, Adam at lr 0.002, 40 epochs, then 1000 test digits through both methods. With seed 0 on a CPU the autoencoder rebuilds them at MSE 0.0438 against PCA's 0.0547, and a 5-nearest-neighbour vote in the 2-D code space names the digit right 0.59 of the time against 0.45 for PCA.\n\nHinton 與 Salakhutdinov，〈Reducing the dimensionality of data with neural networks〉（Science，2006）：深層自編碼器把每張圖壓成幾個數字再重建回來，它的編碼保留的資訊比同樣維度的 PCA 更多。配方：10,000 張 MNIST 數字（隨 repo 附帶），784-256-2-256-784，輸出接 Sigmoid，MSE，Adam、lr 0.002，40 個 epoch，再把 1000 張測試數字分別送進兩種方法。seed 0、用 CPU 跑，自編碼器的重建 MSE 是 0.0438，PCA 是 0.0547；在 2 維編碼空間用最近 5 個鄰居投票判斷數字，自編碼器答對的比例是 0.59，PCA 是 0.45。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 665
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "DatasetBatch takes the first 10,000 training and 1000 test images in one tensor each. The script after it undoes Dataset's default [-1, 1] scaling and flattens every image to 784 values. TensorDataset pairs the images with themselves: the target of an autoencoder is its input.\n\nDatasetBatch 一次取出前 10,000 張訓練圖和 1000 張測試圖，各成一個張量。後面的腳本把 Dataset 預設的 [-1, 1] 縮放還原，並把每張圖攤平成 784 個值。TensorDataset 讓圖片和自己配對：自編碼器的目標就是它的輸入。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "mnist-test",
+        "boundOffset": {
+          "x": 0,
+          "y": 293
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 1018
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Layer editor: Linear 784 -> 256, ReLU, Linear 256 -> 2 (the code), Linear 2 -> 256, ReLU, Linear 256 -> 784, Sigmoid. The paper used 784-1000-500-250-2 with layer-wise RBM pretraining; this one is shallower and trains end to end with Adam.\n\n圖層編輯器：Linear 784 -> 256、ReLU、Linear 256 -> 2（編碼）、Linear 2 -> 256、ReLU、Linear 256 -> 784、Sigmoid。論文用的是 784-1000-500-250-2，並逐層以 RBM 預訓練；這裡淺一些，用 Adam 從頭端到端訓練。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 1318
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-codes",
+      "type": "note",
+      "position": {
+        "x": 3336,
+        "y": 632
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The encoder half is layers l0 to l2 of the trained model. Each test digit becomes 2 numbers, plotted coloured by its label. The 5-NN score counts how often a digit's 5 nearest codes mostly carry its own label.\n\n編碼器是訓練好的模型中第 l0 到 l2 層。每張測試數字變成 2 個數字，依標籤上色畫出來。5-NN 分數計算一張數字最近的 5 個編碼多數和它同標籤的比例。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "scatter-ae",
+        "boundOffset": {
+          "x": 0,
+          "y": 253
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-pca",
+      "type": "note",
+      "position": {
+        "x": 1207,
+        "y": 559
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The baseline: PCA fitted on the same 10,000 training images, keeping the 2 directions of largest variance. Same digits, same 2 numbers each, same scores.\n\n基準：在同樣 10,000 張訓練圖上擬合 PCA，保留變異最大的 2 個方向。同樣的數字、同樣每張 2 個數、同樣的評分。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "pca",
+        "boundOffset": {
+          "x": 0,
+          "y": 540
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_mnist-train",
+      "source": "start",
+      "target": "mnist-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_mnist-test",
+      "source": "start",
+      "target": "mnist-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_mnist-train_dataset_batch-train_dataset",
+      "source": "mnist-train",
+      "target": "batch-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_mnist-test_dataset_batch-test_dataset",
+      "source": "mnist-test",
+      "target": "batch-test",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_batch-train_images_flat-train_in1",
+      "source": "batch-train",
+      "target": "flat-train",
+      "sourceHandle": "images",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_batch-test_images_flat-test_in1",
+      "source": "batch-test",
+      "target": "flat-test",
+      "sourceHandle": "images",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_flat-train_out1_pairs_features",
+      "source": "flat-train",
+      "target": "pairs",
+      "sourceHandle": "out1",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_flat-train_out1_pairs_targets",
+      "source": "flat-train",
+      "target": "pairs",
+      "sourceHandle": "out1",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_pairs_dataset_dl_dataset",
+      "source": "pairs",
+      "target": "dl",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train_dataloader",
+      "source": "dl",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_model_infer_model",
+      "source": "train",
+      "target": "infer",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_flat-test_out1_infer_input",
+      "source": "flat-test",
+      "target": "infer",
+      "sourceHandle": "out1",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_infer_output_mse-ae_predictions",
+      "source": "infer",
+      "target": "mse-ae",
+      "sourceHandle": "output",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_flat-test_out1_mse-ae_targets",
+      "source": "flat-test",
+      "target": "mse-ae",
+      "sourceHandle": "out1",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_mse-ae_mse_print-mse-ae_value",
+      "source": "mse-ae",
+      "target": "print-mse-ae",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_infer_model_encode_in1",
+      "source": "infer",
+      "target": "encode",
+      "sourceHandle": "model",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_flat-test_out1_encode_in2",
+      "source": "flat-test",
+      "target": "encode",
+      "sourceHandle": "out1",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_batch-test_labels_encode_in3",
+      "source": "batch-test",
+      "target": "encode",
+      "sourceHandle": "labels",
+      "targetHandle": "in3"
+    },
+    {
+      "id": "e_encode_out1_scatter-ae_points",
+      "source": "encode",
+      "target": "scatter-ae",
+      "sourceHandle": "out1",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_encode_out2_scatter-ae_labels",
+      "source": "encode",
+      "target": "scatter-ae",
+      "sourceHandle": "out2",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_encode_out3_print-knn-ae_value",
+      "source": "encode",
+      "target": "print-knn-ae",
+      "sourceHandle": "out3",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_flat-train_out1_pca_in1",
+      "source": "flat-train",
+      "target": "pca",
+      "sourceHandle": "out1",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_flat-test_out1_pca_in2",
+      "source": "flat-test",
+      "target": "pca",
+      "sourceHandle": "out1",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_batch-test_labels_pca_in3",
+      "source": "batch-test",
+      "target": "pca",
+      "sourceHandle": "labels",
+      "targetHandle": "in3"
+    },
+    {
+      "id": "e_pca_out1_scatter-pca_points",
+      "source": "pca",
+      "target": "scatter-pca",
+      "sourceHandle": "out1",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_pca_out2_scatter-pca_labels",
+      "source": "pca",
+      "target": "scatter-pca",
+      "sourceHandle": "out2",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_pca_out3_mse-pca_predictions",
+      "source": "pca",
+      "target": "mse-pca",
+      "sourceHandle": "out3",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_flat-test_out1_mse-pca_targets",
+      "source": "flat-test",
+      "target": "mse-pca",
+      "sourceHandle": "out1",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_mse-pca_mse_print-mse-pca_value",
+      "source": "mse-pca",
+      "target": "print-mse-pca",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_pca_out4_print-knn-pca_value",
+      "source": "pca",
+      "target": "print-knn-pca",
+      "sourceHandle": "out4",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_flat-test_out1_grid_in1",
+      "source": "flat-test",
+      "target": "grid",
+      "sourceHandle": "out1",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_infer_output_grid_in2",
+      "source": "infer",
+      "target": "grid",
+      "sourceHandle": "output",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_pca_out3_grid_in3",
+      "source": "pca",
+      "target": "grid",
+      "sourceHandle": "out3",
+      "targetHandle": "in3"
+    },
+    {
+      "id": "e_grid_out1_viz_data",
+      "source": "grid",
+      "target": "viz",
+      "sourceHandle": "out1",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

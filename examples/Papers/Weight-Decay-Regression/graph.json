@@ -1,0 +1,581 @@
+{
+  "name": "Weight decay smooths the fit",
+  "description": "Same net, with and without decay",
+  "gallery": {
+    "section": "papers",
+    "order": 15
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "gen",
+      "type": "PythonScript",
+      "position": {
+        "x": -93,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # 20 noisy samples of sin(3x) on [-1, 1] to train on, and a dense grid\n    # of 200 points with the clean curve to test against.\n    g = torch.Generator().manual_seed(0)\n    x = torch.rand(20, 1, generator=g) * 2 - 1\n    y = torch.sin(3 * x) + 0.3 * torch.randn(20, 1, generator=g)\n    grid = torch.linspace(-1, 1, 200).unsqueeze(1)\n    return {\"out1\": x, \"out2\": y, \"out3\": grid, \"out4\": torch.sin(3 * grid)}\n",
+          "input_ports": 1,
+          "output_ports": 4,
+          "input_types": "TENSOR",
+          "output_types": "TENSOR,TENSOR,TENSOR,TENSOR"
+        }
+      }
+    },
+    {
+      "id": "ds",
+      "type": "TensorDataset",
+      "position": {
+        "x": 587,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "target_type": "number"
+        }
+      }
+    },
+    {
+      "id": "dl",
+      "type": "DataLoader",
+      "position": {
+        "x": 829,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 20,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": -93,
+        "y": 373
+      },
+      "data": {
+        "params": {
+          "type": "MSELoss"
+        }
+      }
+    },
+    {
+      "id": "model-plain",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": 172
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Linear\",\"params\":{\"in_features\":1,\"out_features\":128}},{\"id\":\"l1\",\"type\":\"Tanh\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":128}},{\"id\":\"l3\",\"type\":\"Tanh\"},{\"id\":\"l4\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":1}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"eout\",\"source\":\"l4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-plain",
+      "type": "Optimizer",
+      "position": {
+        "x": 587,
+        "y": 19
+      },
+      "data": {
+        "params": {
+          "type": "AdamW",
+          "lr": 0.01,
+          "weight_decay": 0.0
+        }
+      }
+    },
+    {
+      "id": "train-plain",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1069,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "epochs": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer-plain",
+      "type": "Inference",
+      "position": {
+        "x": 1334,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "mse-plain",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1574,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-plain",
+      "type": "Print",
+      "position": {
+        "x": 2216,
+        "y": -47
+      },
+      "data": {
+        "params": {
+          "label": "Test MSE, weight_decay 0"
+        }
+      }
+    },
+    {
+      "id": "model-decay",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": 551
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Linear\",\"params\":{\"in_features\":1,\"out_features\":128}},{\"id\":\"l1\",\"type\":\"Tanh\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":128}},{\"id\":\"l3\",\"type\":\"Tanh\"},{\"id\":\"l4\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":1}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"eout\",\"source\":\"l4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-decay",
+      "type": "Optimizer",
+      "position": {
+        "x": 587,
+        "y": 278
+      },
+      "data": {
+        "params": {
+          "type": "AdamW",
+          "lr": 0.01,
+          "weight_decay": 0.5
+        }
+      }
+    },
+    {
+      "id": "train-decay",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1069,
+        "y": 415
+      },
+      "data": {
+        "params": {
+          "epochs": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer-decay",
+      "type": "Inference",
+      "position": {
+        "x": 1334,
+        "y": -34
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "mse-decay",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1574,
+        "y": 531
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-decay",
+      "type": "Print",
+      "position": {
+        "x": 2216,
+        "y": 173
+      },
+      "data": {
+        "params": {
+          "label": "Test MSE, weight_decay 0.5"
+        }
+      }
+    },
+    {
+      "id": "fits",
+      "type": "PythonScript",
+      "position": {
+        "x": 1574,
+        "y": -10
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # One chart: the training points, the clean curve, and both fits.\n    x, y = inputs[\"in1\"].reshape(-1), inputs[\"in2\"].reshape(-1)\n    grid = torch.linspace(-1, 1, 200)\n    series = [(\"training data\", x, y), (\"clean sin(3x)\", grid, inputs[\"in3\"].reshape(-1)),\n              (\"weight_decay 0\", grid, inputs[\"in4\"].reshape(-1)),\n              (\"weight_decay 0.5\", grid, inputs[\"in5\"].reshape(-1))]\n    points, labels = [], []\n    for name, xs, ys in series:\n        points.append(torch.stack([xs, ys], 1))\n        labels += [name] * len(xs)\n    return {\"out1\": torch.cat(points), \"out2\": labels}\n",
+          "input_ports": 5,
+          "output_ports": 2,
+          "input_types": "TENSOR,TENSOR,TENSOR,TENSOR,TENSOR",
+          "output_types": "TENSOR,LIST"
+        }
+      }
+    },
+    {
+      "id": "chart",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 2216,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "title": "Training data, clean curve and both fits"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Krogh and Hertz, \"A simple weight decay can improve generalization\" (NeurIPS 1992): penalising large weights keeps a network from spending its capacity on the noise in a small training set, so it predicts new inputs better. Recipe: 20 noisy samples of sin(3x), an MLP 1-128-128-1 with Tanh, MSE, AdamW at lr 0.01 for 1000 full-batch epochs, trained twice with weight_decay 0 and 0.5, then tested against the clean curve on 200 grid points. With seed 0 on a CPU the undecayed net fits the training points to an MSE of about 0.001 to 0.003 (0.0012 on an Apple M3, 0.003 on the Linux CI runner) and scores 0.269 on the grid; with decay it stays at 0.056 on the training points and scores 0.033.\n\nKrogh 與 Hertz，〈A simple weight decay can improve generalization〉（NeurIPS 1992）：懲罰過大的權重，網路就不會把能力花在小訓練集的雜訊上，對新輸入的預測也更準。配方：sin(3x) 的 20 個帶雜訊樣本，MLP 1-128-128-1 搭配 Tanh，MSE，AdamW、lr 0.01，整批訓練 1000 個 epoch，weight_decay 分別設 0 和 0.5 各訓練一次，再在 200 個格點上和乾淨的曲線比對。seed 0、用 CPU 跑，沒有衰減的網路把訓練點擬合到 MSE 約 0.001 到 0.003（Apple M3 上 0.0012，Linux CI 機器上 0.003），在格點上得到 0.269；有衰減的在訓練點上停在 0.056，格點上得到 0.033。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 752
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "out1 and out2 are the 20 training points, with noise of std 0.3. out3 and out4 are the test grid and the clean sin(3x) on it, so the test MSE measures how close each fit is to the curve the noise hides.\n\nout1 和 out2 是 20 個訓練點，雜訊標準差 0.3。out3 和 out4 是測試格點和格點上乾淨的 sin(3x)，所以測試 MSE 量的是擬合結果離雜訊背後那條曲線有多近。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "gen",
+        "boundOffset": {
+          "x": 0,
+          "y": 1052
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-models",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 1042
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Two SequentialModel nodes with the same layers, because one model node wired into two trainers hands both the same weights. The only other difference between the rows is weight_decay on the Optimizer.\n\n兩個 SequentialModel 節點的圖層相同，因為一個模型節點接到兩個訓練器時，兩者拿到的是同一份權重。兩列之間另一個差別只有 Optimizer 的 weight_decay。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "loss",
+        "boundOffset": {
+          "x": 0,
+          "y": 669
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-chart",
+      "type": "note",
+      "position": {
+        "x": 2216,
+        "y": 393
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The undecayed fit bends through the training points one by one; the decayed one follows the smooth curve underneath them.\n\n沒有衰減的擬合曲線一個一個穿過訓練點；有衰減的則沿著它們底下那條平滑的曲線走。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "chart",
+        "boundOffset": {
+          "x": 0,
+          "y": 693
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_gen",
+      "source": "start",
+      "target": "gen",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-plain",
+      "source": "start",
+      "target": "model-plain",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-decay",
+      "source": "start",
+      "target": "model-decay",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_gen_out1_ds_features",
+      "source": "gen",
+      "target": "ds",
+      "sourceHandle": "out1",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_gen_out2_ds_targets",
+      "source": "gen",
+      "target": "ds",
+      "sourceHandle": "out2",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_ds_dataset_dl_dataset",
+      "source": "ds",
+      "target": "dl",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model-plain_model_opt-plain_model",
+      "source": "model-plain",
+      "target": "opt-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-plain_model_train-plain_model",
+      "source": "model-plain",
+      "target": "train-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train-plain_dataloader",
+      "source": "dl",
+      "target": "train-plain",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-plain_optimizer_train-plain_optimizer",
+      "source": "opt-plain",
+      "target": "train-plain",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-plain_loss_fn",
+      "source": "loss",
+      "target": "train-plain",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-plain_model_infer-plain_model",
+      "source": "train-plain",
+      "target": "infer-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_infer-plain_output_mse-plain_predictions",
+      "source": "infer-plain",
+      "target": "mse-plain",
+      "sourceHandle": "output",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_mse-plain_mse_print-plain_value",
+      "source": "mse-plain",
+      "target": "print-plain",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_model-decay_model_opt-decay_model",
+      "source": "model-decay",
+      "target": "opt-decay",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-decay_model_train-decay_model",
+      "source": "model-decay",
+      "target": "train-decay",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl_dataloader_train-decay_dataloader",
+      "source": "dl",
+      "target": "train-decay",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-decay_optimizer_train-decay_optimizer",
+      "source": "opt-decay",
+      "target": "train-decay",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-decay_loss_fn",
+      "source": "loss",
+      "target": "train-decay",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-decay_model_infer-decay_model",
+      "source": "train-decay",
+      "target": "infer-decay",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_infer-decay_output_mse-decay_predictions",
+      "source": "infer-decay",
+      "target": "mse-decay",
+      "sourceHandle": "output",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_mse-decay_mse_print-decay_value",
+      "source": "mse-decay",
+      "target": "print-decay",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_gen_out3_infer-plain_input",
+      "source": "gen",
+      "target": "infer-plain",
+      "sourceHandle": "out3",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_gen_out4_mse-plain_targets",
+      "source": "gen",
+      "target": "mse-plain",
+      "sourceHandle": "out4",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_gen_out3_infer-decay_input",
+      "source": "gen",
+      "target": "infer-decay",
+      "sourceHandle": "out3",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_gen_out4_mse-decay_targets",
+      "source": "gen",
+      "target": "mse-decay",
+      "sourceHandle": "out4",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_gen_out1_fits_in1",
+      "source": "gen",
+      "target": "fits",
+      "sourceHandle": "out1",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_gen_out2_fits_in2",
+      "source": "gen",
+      "target": "fits",
+      "sourceHandle": "out2",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_gen_out4_fits_in3",
+      "source": "gen",
+      "target": "fits",
+      "sourceHandle": "out4",
+      "targetHandle": "in3"
+    },
+    {
+      "id": "e_infer-plain_output_fits_in4",
+      "source": "infer-plain",
+      "target": "fits",
+      "sourceHandle": "output",
+      "targetHandle": "in4"
+    },
+    {
+      "id": "e_infer-decay_output_fits_in5",
+      "source": "infer-decay",
+      "target": "fits",
+      "sourceHandle": "output",
+      "targetHandle": "in5"
+    },
+    {
+      "id": "e_fits_out1_chart_points",
+      "source": "fits",
+      "target": "chart",
+      "sourceHandle": "out1",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_fits_out2_chart_labels",
+      "source": "fits",
+      "target": "chart",
+      "sourceHandle": "out2",
+      "targetHandle": "labels"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

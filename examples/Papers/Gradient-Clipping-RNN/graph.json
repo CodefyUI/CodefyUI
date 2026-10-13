@@ -1,0 +1,534 @@
+{
+  "name": "Gradient clipping rescues an RNN",
+  "description": "Clip the gradient and the RNN learns",
+  "gallery": {
+    "section": "papers",
+    "order": 11
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "seq-train",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": -93,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "n_samples": 6000,
+          "seed": 0,
+          "kind": "recall_first",
+          "seq_len": 30,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "seq-test",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": -93,
+        "y": 407
+      },
+      "data": {
+        "params": {
+          "n_samples": 500,
+          "seed": 1,
+          "kind": "recall_first",
+          "seq_len": 30,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 287,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": -93,
+        "y": 210
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "model-plain",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": 9
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Embedding\",\"params\":{\"num_embeddings\":20,\"embedding_dim\":16}},{\"id\":\"l1\",\"type\":\"RNN\",\"params\":{\"input_size\":16,\"hidden_size\":256}},{\"id\":\"l2\",\"type\":\"SelectIndex\",\"params\":{\"dim\":1,\"index\":-1}},{\"id\":\"l3\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"eout\",\"source\":\"l3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-plain",
+      "type": "Optimizer",
+      "position": {
+        "x": 287,
+        "y": -22
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.2
+        }
+      }
+    },
+    {
+      "id": "train-plain",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 667,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "epochs": 25,
+          "device": "auto",
+          "grad_clip_norm": 0.0,
+          "log_grad_norm": true
+        }
+      }
+    },
+    {
+      "id": "eval-plain",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1047,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 500
+        }
+      }
+    },
+    {
+      "id": "print-plain",
+      "type": "Print",
+      "position": {
+        "x": 1704,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy, no clipping (chance = 0.10)"
+        }
+      }
+    },
+    {
+      "id": "model-clip",
+      "type": "SequentialModel",
+      "position": {
+        "x": -93,
+        "y": 716
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Embedding\",\"params\":{\"num_embeddings\":20,\"embedding_dim\":16}},{\"id\":\"l1\",\"type\":\"RNN\",\"params\":{\"input_size\":16,\"hidden_size\":256}},{\"id\":\"l2\",\"type\":\"SelectIndex\",\"params\":{\"dim\":1,\"index\":-1}},{\"id\":\"l3\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"eout\",\"source\":\"l3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-clip",
+      "type": "Optimizer",
+      "position": {
+        "x": 287,
+        "y": 256
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.2
+        }
+      }
+    },
+    {
+      "id": "train-clip",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 667,
+        "y": 435
+      },
+      "data": {
+        "params": {
+          "epochs": 25,
+          "device": "auto",
+          "grad_clip_norm": 1.0,
+          "log_grad_norm": true
+        }
+      }
+    },
+    {
+      "id": "eval-clip",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1047,
+        "y": 458
+      },
+      "data": {
+        "params": {
+          "batch_size": 500
+        }
+      }
+    },
+    {
+      "id": "print-clip",
+      "type": "Print",
+      "position": {
+        "x": 1704,
+        "y": 173
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy, clipped at 1.0 (chance = 0.10)"
+        }
+      }
+    },
+    {
+      "id": "curves",
+      "type": "PythonScript",
+      "position": {
+        "x": 1047,
+        "y": 18
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Both training-loss curves on one chart: (epoch, loss) points, one\n    # label per run.\n    points, labels = [], []\n    for name, losses in ((\"no clipping\", inputs[\"in1\"]), (\"clip at 1.0\", inputs[\"in2\"])):\n        for epoch, value in enumerate(losses.tolist(), start=1):\n            points.append([epoch, value])\n            labels.append(name)\n    return {\"out1\": torch.tensor(points), \"out2\": labels}\n",
+          "input_ports": 2,
+          "output_ports": 2,
+          "input_types": "TENSOR,TENSOR",
+          "output_types": "TENSOR,LIST"
+        }
+      }
+    },
+    {
+      "id": "chart",
+      "type": "ScatterPlot2D",
+      "position": {
+        "x": 1704,
+        "y": -80
+      },
+      "data": {
+        "params": {
+          "title": "Training loss per epoch"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Pascanu, Mikolov and Bengio, \"On the difficulty of training recurrent neural networks\" (ICML 2013): a recurrent net's gradient can explode, one huge step undoes the training so far, and rescaling the gradient whenever its norm passes a threshold fixes it. Recipe: a plain tanh RNN (hidden 256) learns to recall the first of 30 tokens, SGD at lr 0.2, batch 64, 25 epochs, trained twice from the same graph, once with TrainingLoop's grad_clip_norm at 0 and once at 1.0. With seed 0 on an Apple M3 the clipped run reaches 1.00 test accuracy; the unclipped run's loss blows up to 6.1, far above the 2.30 of guessing, and its accuracy ends at 0.15. Over run seeds 0 to 7 the clipped run scores 0.91 to 1.00, and the unclipped one ends with a loss of 3.6 or more and an accuracy between 0.10 and 0.35.\n\nPascanu、Mikolov 與 Bengio，〈On the difficulty of training recurrent neural networks〉（ICML 2013）：遞迴網路的梯度可能爆炸，一次過大的更新就會毀掉前面的訓練；只要在梯度範數超過門檻時把它縮小，就能解決。配方：一個普通的 tanh RNN（hidden 256）學著記住 30 個 token 中的第一個，SGD、lr 0.2、batch 64、25 個 epoch，同一張圖訓練兩次，TrainingLoop 的 grad_clip_norm 一次設 0、一次設 1.0。seed 0、在 Apple M3 上，有裁剪的那次測試準確率達到 1.00；沒裁剪的那次損失爆到 6.1，遠高於亂猜的 2.30，準確率停在 0.15。run seed 0 到 7 之間，有裁剪的那次都在 0.91 到 1.00；沒裁剪的那次最後損失都在 3.6 以上，準確率介於 0.10 和 0.35。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-task",
+      "type": "note",
+      "position": {
+        "x": -93,
+        "y": 917
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The task from \"LSTM remembers the first token\", stretched to seq_len 30: the answer is the first token and 29 random distractors follow it. The test set comes from seed 1, so the model never trained on it.\n\n任務和「LSTM remembers the first token」相同，但 seq_len 拉長到 30：答案是第一個 token，後面接著 29 個隨機干擾。測試集用 seed 1 產生，模型沒訓練過。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "seq-test",
+        "boundOffset": {
+          "x": 0,
+          "y": 510
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-models",
+      "type": "note",
+      "position": {
+        "x": 287,
+        "y": 534
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Two SequentialModel nodes with the same layers (Embedding, RNN, SelectIndex, Linear), because one model node wired into two trainers hands both the same weights, and the second would continue the first one's training. Each node draws its own initial weights from the run seed.\n\n兩個 SequentialModel 節點的圖層完全相同（Embedding、RNN、SelectIndex、Linear）。一個模型節點同時接到兩個訓練器時，兩者拿到的是同一份權重，第二個會接著第一個的結果繼續訓練。每個節點的初始權重都由 run seed 各自產生。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "opt-clip",
+        "boundOffset": {
+          "x": 0,
+          "y": 278
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-clip",
+      "type": "note",
+      "position": {
+        "x": 667,
+        "y": 1170
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "grad_clip_norm 1.0 rescales any gradient whose norm is above 1 down to 1 before the step. log_grad_norm records the norm before clipping, so open the Runs panel, pick this run and read grad_norm under Metrics: both runs see spikes far above the typical norm of about 1. In the unclipped run a burst of spikes from epoch 10 on (the largest has norm 134 on an Apple M3) throws the loss from 2.29 to 5.4, and it never comes back below the level of guessing.\n\ngrad_clip_norm 1.0 會在更新前把範數超過 1 的梯度縮回 1。log_grad_norm 記錄的是裁剪前的範數，打開「執行任務」面板、選這次執行，在「指標」看 grad_norm：兩次訓練都有遠高於平常（大約 1）的尖峰。沒裁剪的那次從第 10 個 epoch 起接連遇到尖峰（Apple M3 上最大的範數是 134），損失從 2.29 跳到 5.4，之後再也沒回到亂猜的水準以下。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "train-clip",
+        "boundOffset": {
+          "x": 0,
+          "y": 735
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-chart",
+      "type": "note",
+      "position": {
+        "x": 1704,
+        "y": 393
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Training loss per epoch for both runs. Guessing among 10 classes costs ln 10, about 2.30. The clipped run leaves that plateau partway through training (around epoch 11 on an Apple M3) and falls close to 0; the unclipped one jumps above it after its spike and stays there.\n\n兩次訓練每個 epoch 的訓練損失。10 類亂猜的損失是 ln 10，約 2.30。有裁剪的那次在訓練途中離開這個平台（Apple M3 上大約在第 11 個 epoch），一路降到接近 0；沒裁剪的那次在尖峰後跳到平台之上，之後一直停在那裡。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "chart",
+        "boundOffset": {
+          "x": 0,
+          "y": 473
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_seq-train",
+      "source": "start",
+      "target": "seq-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_seq-test",
+      "source": "start",
+      "target": "seq-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-plain",
+      "source": "start",
+      "target": "model-plain",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model-clip",
+      "source": "start",
+      "target": "model-clip",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_seq-train_dataset_dl-train_dataset",
+      "source": "seq-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model-plain_model_opt-plain_model",
+      "source": "model-plain",
+      "target": "opt-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-plain_model_train-plain_model",
+      "source": "model-plain",
+      "target": "train-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-plain_dataloader",
+      "source": "dl-train",
+      "target": "train-plain",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-plain_optimizer_train-plain_optimizer",
+      "source": "opt-plain",
+      "target": "train-plain",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-plain_loss_fn",
+      "source": "loss",
+      "target": "train-plain",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-plain_model_eval-plain_model",
+      "source": "train-plain",
+      "target": "eval-plain",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_seq-test_dataset_eval-plain_dataset",
+      "source": "seq-test",
+      "target": "eval-plain",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-plain_accuracy_print-plain_value",
+      "source": "eval-plain",
+      "target": "print-plain",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_model-clip_model_opt-clip_model",
+      "source": "model-clip",
+      "target": "opt-clip",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-clip_model_train-clip_model",
+      "source": "model-clip",
+      "target": "train-clip",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-clip_dataloader",
+      "source": "dl-train",
+      "target": "train-clip",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-clip_optimizer_train-clip_optimizer",
+      "source": "opt-clip",
+      "target": "train-clip",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-clip_loss_fn",
+      "source": "loss",
+      "target": "train-clip",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-clip_model_eval-clip_model",
+      "source": "train-clip",
+      "target": "eval-clip",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_seq-test_dataset_eval-clip_dataset",
+      "source": "seq-test",
+      "target": "eval-clip",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-clip_accuracy_print-clip_value",
+      "source": "eval-clip",
+      "target": "print-clip",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-plain_losses_curves_in1",
+      "source": "train-plain",
+      "target": "curves",
+      "sourceHandle": "losses",
+      "targetHandle": "in1"
+    },
+    {
+      "id": "e_train-clip_losses_curves_in2",
+      "source": "train-clip",
+      "target": "curves",
+      "sourceHandle": "losses",
+      "targetHandle": "in2"
+    },
+    {
+      "id": "e_curves_out1_chart_points",
+      "source": "curves",
+      "target": "chart",
+      "sourceHandle": "out1",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e_curves_out2_chart_labels",
+      "source": "curves",
+      "target": "chart",
+      "sourceHandle": "out2",
+      "targetHandle": "labels"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
