@@ -465,6 +465,60 @@ const zhTW: NodeTranslations = {
       seed: '抽樣的隨機種子，確保可重現。',
     },
   },
+  RLTrainingLoop: {
+    description: '訓練智能體：REINFORCE、DQN、PPO',
+    details:
+      '反覆執行「在環境中行動、更新網路」共 episodes 個回合，或在最近 20 個回合的平均回報達到 target_return 時提早結束。' +
+      'REINFORCE 每個回合做一次策略梯度更新；DQN 每走一步就從 replay buffer 抽樣更新一次，並使用 target network；' +
+      'PPO 每收集 steps_per_update 步，就以 GAE 優勢最佳化 clipped objective。REINFORCE 與 DQN 需要每個動作輸出一個分數的模型' +
+      '（DQN 或 SequentialModel）；PPO 需要回傳 (policy, value) 的 actor-critic，例如 PPO 節點的模型。env 可用 GridWorldEnv，' +
+      '或 EnvWrapper 產生、動作空間為離散的 Gymnasium 環境。所有隨機性都來自 seed，所以相同權重重跑會得到相同結果。' +
+      '訓練時即時更新 loss 曲線，mean_return（達標後再加上 solved_at_episode）會記錄為 run metric，讓 sweep 可以依此排序。',
+    inputs: {
+      model: '智能體。REINFORCE 與 DQN 用每個動作的 Q 值或 logits；PPO 用 (policy, value)。',
+      env: 'GridWorldEnv 或 EnvWrapper 產生的環境（離散動作）。',
+      optimizer: '最佳化模型參數的 optimizer（使用它的學習率）。',
+    },
+    outputs: {
+      model: '訓練後的模型。',
+      episode_returns: '[episodes] 每個回合未折扣的總回報。',
+      losses: '每次更新一個 loss：REINFORCE 每次策略梯度更新、DQN 每個梯度步、PPO 每次 rollout（其 minibatch 的平均）。',
+      metrics:
+        'Dict：episodes、env_steps、updates、mean_return_last_20、best_return、solved_at_episode（未達標為 None）、wall_time。',
+      report: '這次訓練的簡短摘要。',
+    },
+    params: {
+      algorithm: 'reinforce（Williams 1992）、dqn（Mnih 等 2013）或 ppo（Schulman 等 2017）。',
+      episodes: '訓練預算，以完整回合數計。',
+      gamma: '折扣因子。',
+      max_steps_per_episode: '回合超過這個步數就截斷。0 表示沿用環境自己的上限。',
+      target_return: '最近 20 個回合的平均回報達到這個值就停止。0 表示不提早停止。CartPole-v1 以 475 算是解出。',
+      seed: '決定環境重設、動作抽樣、replay 與 minibatch 抽樣的隨機種子。',
+      grad_clip_norm: '每次更新前裁剪梯度範數。0 表示不裁剪。',
+      device:
+        "這個節點使用的裝置。保持 'auto' 就沿用圖的裝置（工具列指定的，或圖沒有指定時用設定裡的）。" +
+        '一張圖只在一個裝置上執行；若有部分工作需要不同裝置，請拆成兩張圖。一次只走一步的小型策略網路通常在 cpu 上最快。',
+      log_interval: '每 N 個回合回報一次進度並記錄 metric。',
+      baseline: '從回報中減去的基準：none，或這次更新那一批回合的平均回報。',
+      normalize_returns: '減去這一批回報的平均值後，再除以它們的標準差。',
+      episodes_per_update: '每次策略梯度更新使用幾個回合。多個回合讓梯度更穩定，在獎勵只出現在最後時也讓基準更公平。',
+      steps_per_update: '每次 PPO rollout 收集的環境步數。',
+      ppo_epochs: '每份 rollout 要走過幾遍。',
+      minibatch_size: '每個 PPO 梯度步使用的步數。',
+      clip_eps: 'ratio 的裁剪範圍 ε。',
+      gae_lambda: 'GAE 的 λ：1 是 Monte Carlo 回報，0 是一步 TD。',
+      value_coef: 'value loss 的權重。',
+      entropy_coef: 'entropy 獎勵的權重，讓策略持續探索。',
+      replay_size: 'replay buffer 的容量（轉移筆數）。',
+      batch_size: '每個梯度步使用的轉移筆數。',
+      epsilon_start: '第一個回合的探索率。',
+      epsilon_end: '衰減結束後的探索率。',
+      epsilon_decay_episodes: 'epsilon 在這麼多個回合內線性降到 epsilon_end。',
+      target_update_every: '每 N 個環境步把模型複製到 target network。',
+      learning_starts: '第一次更新前要先收集多少環境步的經驗。',
+      double_dqn: '用模型挑下一個動作，再用 target network 評分（Double DQN）。',
+    },
+  },
   Discount: {
     description: '折扣回報 G_t = r_t + γ·G_{t+1}',
     details:
