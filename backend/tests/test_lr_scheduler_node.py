@@ -252,3 +252,32 @@ def test_exported_python_carries_the_new_params():
     assert got == _reference(
         lambda o: torch.optim.lr_scheduler.ReduceLROnPlateau(
             o, factor=0.5, patience=2, min_lr=0.01), 8, metric=1.0)
+
+
+# ── 2026-10-13 audit: lengths below 1 are refused by validation ─────────
+# step_size=0 or T_max=0 passed validate_graph and then raised
+# ZeroDivisionError after a whole epoch of training.
+
+
+@pytest.mark.parametrize("name,minimum", [
+    ("step_size", 1), ("T_max", 1), ("total_steps", 1),
+    ("gamma", 0.0), ("max_lr", 0.0),
+])
+def test_lengths_and_factors_declare_a_lower_bound(name, minimum):
+    params = {p.name: p for p in LRSchedulerNode.define_params()}
+    assert params[name].min_value == minimum
+
+
+@pytest.mark.parametrize("params", [
+    {"type": "StepLR", "step_size": 0},
+    {"type": "CosineAnnealingLR", "T_max": 0},
+    {"type": "OneCycleLR", "total_steps": 0},
+])
+def test_validation_refuses_a_zero_length(params):
+    from app.core.graph_engine import validate_graph
+
+    errors = validate_graph(
+        [{"id": "n", "type": "LRScheduler", "data": {"params": params}}], [])
+    name = next(k for k in params if k != "type")
+    assert any(f"Parameter '{name}'" in e and "below minimum 1" in e
+               for e in errors), errors

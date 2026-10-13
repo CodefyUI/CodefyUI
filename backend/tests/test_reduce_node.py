@@ -71,3 +71,35 @@ def test_non_list_input_raises():
 def test_mixed_string_for_numeric_op_raises():
     with pytest.raises(ValueError, match="numeric"):
         _run(["not", "numbers"], operation="sum")
+
+
+# ── 2026-10-13 audit ────────────────────────────────────────────────────
+
+
+def test_mean_of_integer_tensors_is_a_float():
+    """torch.mean refuses integer dtypes; argmax outputs and correct counts
+    are integer tensors, and Python ints already worked."""
+    res = _run([torch.tensor(1), torch.tensor(2)], operation="mean")
+    assert res["result"].is_floating_point()
+    assert torch.isclose(res["result"], torch.tensor(1.5))
+
+
+def test_sum_of_integer_tensors_stays_integer():
+    res = _run([torch.tensor(1), torch.tensor(2)], operation="sum")
+    assert res["result"].dtype == torch.int64
+    assert int(res["result"]) == 3
+
+
+def test_mismatched_item_shapes_name_the_node_and_the_shapes():
+    with pytest.raises(ValueError, match=r"Reduce 'mean': the items cannot be combined \(shapes \[\[2\], \[3\]\]"):
+        _run([torch.zeros(2), torch.zeros(3)], operation="mean")
+
+
+def test_dim_given_as_text_is_read_as_a_number():
+    res = _run([torch.zeros(2, 1), torch.zeros(2, 2)], operation="concat", dim="1")
+    assert res["result"].shape == (2, 3)
+
+
+def test_a_dim_that_is_not_a_number_is_refused():
+    with pytest.raises(ValueError, match="Reduce: `dim` must be a whole number"):
+        _run([torch.zeros(2)], operation="stack", dim="x")

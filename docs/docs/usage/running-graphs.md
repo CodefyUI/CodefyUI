@@ -30,7 +30,7 @@ Every value the loop records is also stored with the run as a named series. A ru
 
 | Series | Recorded | Step axis |
 | --- | --- | --- |
-| `train_loss`, `lr` | Every epoch. | Epoch number; a run resumed through `start_epoch` continues the numbering. |
+| `train_loss`, `lr` | Every epoch. `lr` is the learning rate the epoch started with, also when `scheduler_step` is `optimizer_step`. | Epoch number; a run resumed through `start_epoch` continues the numbering. |
 | `val_loss` | Every epoch, when `val_dataloader` is wired. | Epoch |
 | `val_accuracy` | Every epoch, when `val_dataloader` is wired and `loss_fn` is `CrossEntropyLoss` or `NLLLoss`. | Epoch |
 | `patience_counter`, `best_epoch` | Every epoch, when early stopping is on. | Epoch |
@@ -81,7 +81,7 @@ Some nodes still opt out of caching entirely with `cacheable = False`, for four 
 
 **The node might have a side effect and only its author knows.** `PythonScript` runs code you type on the canvas. `code` is a cache-keyed parameter, so an *edited* script re-runs — but an unedited script over unchanged inputs is exactly where a hit happens, and a script can mutate an input tensor or model in place, change process-global `torch`/`numpy` state, or use whatever an `ANY`-typed input port handed it. None of that is visible to the node's type or to any check on its source, so it opts out unconditionally. See [the PythonScript node](../advanced/python-script-node.md#caching).
 
-The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every node that owns weights (`SequentialModel`, `DiffusionUNet`, and every layer node: `Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
+The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every node that owns weights (`SequentialModel`, `DiffusionUNet`, and every layer node: `Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds. `Map` always runs as well: its body is a saved preset that can be edited between runs under the same name, and the body's nodes may log metrics or write files, which a cache hit would skip.
 
 For nodes that own weights, **Settings → Training Behavior → Persist weights between runs** controls subsequent runs independently of output caching. It is off by default, so every run initialises a new model, the way an exported Python script always does. Turned on, a run keeps the weights it trained and the next run continues from them, and the **Execution Log** says so after each successful run. **Reset all weights now** discards stored weights, so the next run initialises a new model. `SequentialModel` reports which action it took in the **Execution Log** on every run.
 

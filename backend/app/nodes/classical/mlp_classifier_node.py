@@ -25,7 +25,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 
-from ._labels import class_labels
+from ._labels import encode_labels
 
 
 class MLPClassifierNode(BaseNode):
@@ -88,7 +88,7 @@ class MLPClassifierNode(BaseNode):
                 name="learning_rate_init",
                 param_type=ParamType.FLOAT,
                 default=0.01,
-                min_value=0.0,
+                min_value=1e-6,
                 description="Initial learning rate for Adam.",
             ),
             ParamDefinition(
@@ -123,8 +123,7 @@ class MLPClassifierNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = class_labels(y_train, "MLPClassifier y_train")
-        labels = [str(v) for v in labels]
+        labels, class_names = encode_labels(y_train, "MLPClassifier y_train")
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"MLPClassifier: features and labels length mismatch — "
@@ -152,11 +151,11 @@ class MLPClassifierNode(BaseNode):
         clf.fit(x_train_np, labels)
         preds = clf.predict(x_query_np).tolist()
         probs = torch.from_numpy(clf.predict_proba(x_query_np)).float()
-        classes = [str(c) for c in clf.classes_.tolist()]
+        classes = [class_names[c] for c in clf.classes_.tolist()]
         train_loss = float(clf.loss_)
 
         return {
-            "predictions": [str(p) for p in preds],
+            "predictions": [class_names[p] for p in preds],
             "probabilities": probs,
             "classes": classes,
             "train_loss": train_loss,

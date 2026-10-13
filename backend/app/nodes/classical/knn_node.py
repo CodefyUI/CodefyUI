@@ -28,7 +28,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 
-from ._labels import class_labels
+from ._labels import encode_labels
 
 
 class KNNNode(BaseNode):
@@ -103,7 +103,7 @@ class KNNNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = class_labels(y_train, "KNN y_train")
+        labels, class_names = encode_labels(y_train, "KNN y_train")
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"KNN: features and labels length mismatch — "
@@ -122,10 +122,10 @@ class KNNNode(BaseNode):
         clf.fit(x_train_np, labels)
         preds = clf.predict(x_query_np).tolist()
         proba = clf.predict_proba(x_query_np)
-        classes = [str(c) for c in clf.classes_.tolist()]
+        classes = [class_names[c] for c in clf.classes_.tolist()]
 
         return {
-            "predictions": [str(p) for p in preds],
+            "predictions": [class_names[p] for p in preds],
             "probabilities": torch.from_numpy(proba).float(),
             "classes": classes,
         }

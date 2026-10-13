@@ -22,7 +22,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 
-from ._labels import class_labels
+from ._labels import encode_labels
 
 
 class RandomForestClassifierNode(BaseNode):
@@ -103,8 +103,7 @@ class RandomForestClassifierNode(BaseNode):
         x_train_np = x_train.detach().cpu().float().numpy()
         x_query_np = x_query.detach().cpu().float().numpy()
 
-        labels = class_labels(y_train, "RandomForestClassifier y_train")
-        labels = [str(label) for label in labels]
+        labels, class_names = encode_labels(y_train, "RandomForestClassifier y_train")
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"RandomForestClassifier: features and labels length mismatch — "
@@ -121,9 +120,9 @@ class RandomForestClassifierNode(BaseNode):
             random_state=seed,
         )
         clf.fit(x_train_np, labels)
-        predictions = [str(p) for p in clf.predict(x_query_np)]
+        predictions = [class_names[p] for p in clf.predict(x_query_np).tolist()]
         proba = clf.predict_proba(x_query_np)
-        classes = [str(c) for c in clf.classes_.tolist()]
+        classes = [class_names[c] for c in clf.classes_.tolist()]
 
         return {
             "predictions": predictions,

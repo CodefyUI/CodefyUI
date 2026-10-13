@@ -6,8 +6,44 @@ from ...core.advisories import emit_advisory, join_notes
 from ...core.amp import PRECISIONS
 from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from .evaluate_model_node import count_correct
 
 logger = logging.getLogger(__name__)
+
+
+def _is_elementwise_loss(loss_fn: Any) -> bool:
+    """True for losses that compare outputs and targets element by element.
+
+    These broadcast silently when the two shapes differ (``[B, 1]`` against
+    ``[B]`` becomes ``[B, B]``), so the reported loss and the gradients are
+    wrong with only a torch UserWarning in the server log. CrossEntropyLoss
+    and NLLLoss are left out: ``[B, C]`` logits against ``[B]`` class indices
+    is their correct shape.
+    """
+    import torch.nn as nn
+
+    return isinstance(loss_fn, (
+        nn.MSELoss, nn.L1Loss, nn.SmoothL1Loss, nn.HuberLoss,
+        nn.BCELoss, nn.BCEWithLogitsLoss,
+    ))
+
+
+def _check_loss_shapes(outputs: Any, targets: Any, phase: str) -> None:
+    """Refuse an element-wise loss on outputs and targets of different shape."""
+    import torch
+
+    if not (isinstance(outputs, torch.Tensor) and isinstance(targets, torch.Tensor)):
+        return
+    if outputs.shape == targets.shape:
+        return
+    raise ValueError(
+        f"TrainingLoop: the model output has shape {list(outputs.shape)} but "
+        f"the {phase} targets have shape {list(targets.shape)}. loss_fn "
+        "compares them element by element and would broadcast the two into "
+        "a different shape, so the loss would be wrong. Make the shapes "
+        "match: TensorDataset with target_type=number gives [N, 1] targets "
+        "for a one-output model, or add an Unsqueeze/Squeeze to the model."
+    )
 
 
 def _coerce_start_epoch(value: Any) -> int:
@@ -1675,6 +1711,7 @@ class TrainingLoopNode(BaseNode):
         # silently broadcasts into a meaningless number, which is worse
         # than not shipping the feature at all.
         is_classification_loss = isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
+        check_loss_shapes = _is_elementwise_loss(loss_fn)
         val_dataloader = inputs.get("val_dataloader")
         lr_scheduler = inputs.get("lr_scheduler")
         start_epoch = _coerce_start_epoch(inputs.get("start_epoch"))
@@ -2043,6 +2080,9 @@ class TrainingLoopNode(BaseNode):
                             step_targets = None
                         with policy.autocast():
                             step_out = model(step_data)
+                            if check_loss_shapes and step_targets is not None:
+                                _check_loss_shapes(
+                                    step_out, step_targets, "validation")
                             step_loss = (
                                 loss_fn(step_out, step_targets)
                                 if step_targets is not None
@@ -2088,6 +2128,13 @@ class TrainingLoopNode(BaseNode):
         for epoch in range(start_epoch, epochs):
             # ── Training phase ──
             model.train()
+            # The LR this epoch trains with, read before any step. With
+            # ``scheduler_step=optimizer_step`` the scheduler moves the LR
+            # inside the epoch, so a read at the end would record the NEXT
+            # epoch's starting LR. In per-epoch mode the scheduler steps
+            # after validation, so the start-of-epoch value is the same
+            # number an end-of-epoch read gave.
+            current_lr = optimizer.param_groups[0].get("lr", 0)
             # A DEVICE-side accumulator (``0.0 + tensor`` is a tensor). The
             # per-batch loss is never read back to the host unless a metric
             # point or a progress frame is actually due -- see the note at
@@ -2127,6 +2174,8 @@ class TrainingLoopNode(BaseNode):
                     outputs = model(data)
 
                     if targets is not None:
+                        if check_loss_shapes:
+                            _check_loss_shapes(outputs, targets, "training")
                         loss = loss_fn(outputs, targets)
                     else:
                         loss = loss_fn(outputs)
@@ -2249,7 +2298,6 @@ class TrainingLoopNode(BaseNode):
             avg_train_loss = float(running_loss) / max(batch_count, 1)
             epoch_losses.append(avg_train_loss)
 
-            current_lr = optimizer.param_groups[0].get("lr", 0)
             lr_history.append(current_lr)
 
             # ── Validation phase ──
@@ -2289,6 +2337,9 @@ class TrainingLoopNode(BaseNode):
                         with policy.autocast():
                             outputs = model(data)
                             if targets is not None:
+                                if check_loss_shapes:
+                                    _check_loss_shapes(
+                                        outputs, targets, "validation")
                                 loss = loss_fn(outputs, targets)
                             else:
                                 loss = loss_fn(outputs)
@@ -2298,7 +2349,7 @@ class TrainingLoopNode(BaseNode):
 
                         # Accuracy from this SAME forward pass -- no second
                         # model call. Same argmax-vs-label comparison as
-                        # EvaluateModel (evaluate_model_node.py:163-165),
+                        # EvaluateModel (``count_correct``),
                         # deliberately at whatever precision ``outputs`` was
                         # already produced at (the policy above) rather than
                         # forced to fp32: the val_loss next to it is not
@@ -2315,9 +2366,12 @@ class TrainingLoopNode(BaseNode):
                         # a broadcasted comparison that happens NOT to
                         # crash) and a number with no meaning either way.
                         if is_classification_loss and targets is not None:
-                            pred = outputs.argmax(dim=1)
-                            val_correct = val_correct + (pred == targets).sum()
-                            val_total += int(targets.numel())
+                            # Shared with EvaluateModel so the two agree on
+                            # [N, 1] labels and single-output models.
+                            batch_correct, batch_total = count_correct(
+                                outputs, targets, "TrainingLoop")
+                            val_correct = val_correct + batch_correct
+                            val_total += batch_total
 
                         throttle.emit(lambda: {
                             "event": EVENT_BATCH,

@@ -30,7 +30,7 @@ description: 執行如何運作 — WebSocket 串流、結果面板、即時 los
 
 | 序列 | 記錄時機 | 步數軸 |
 | --- | --- | --- |
-| `train_loss`、`lr` | 每個 epoch。 | epoch 編號；透過 `start_epoch` 接續的 run 會延續編號。 |
+| `train_loss`、`lr` | 每個 epoch。`lr` 是該 epoch 開始時的學習率，`scheduler_step` 為 `optimizer_step` 時也是如此。 | epoch 編號；透過 `start_epoch` 接續的 run 會延續編號。 |
 | `val_loss` | 每個 epoch，需接上 `val_dataloader`。 | epoch |
 | `val_accuracy` | 每個 epoch，需接上 `val_dataloader`，且 `loss_fn` 為 `CrossEntropyLoss` 或 `NLLLoss`。 | epoch |
 | `patience_counter`、`best_epoch` | 每個 epoch，需開啟 early stopping。 | epoch |
@@ -81,7 +81,7 @@ CodefyUI 會追蹤 **dirty** 節點。當你變更一個節點的參數或輸入
 
 **節點可能有只有作者知道的副作用。** `PythonScript` 會執行畫布中輸入的程式碼。`code` 參數會納入快取 key，因此修改腳本後會重新執行；但腳本和輸入都未變更時會命中快取。腳本可能就地修改輸入 tensor 或 model、變更行程全域的 `torch`／`numpy` 狀態，或使用 `ANY` 型別輸入埠提供的任意物件。節點類型與原始碼檢查都無法完整描述這些行為，因此 `PythonScript` 一律停用快取。詳見 [PythonScript 節點](../advanced/python-script-node.md#caching)。
 
-相同設定也適用於其他輸出無法由快取 key 完整描述的節點，包括 `GaussianNoise`、`DDPMSampler`、`BackwardOnce`、`DiffusionTrainingLoop`，以及所有擁有權重的節點（`SequentialModel`、`DiffusionUNet` 和每個 layer 節點，例如 `Linear`、`Conv2d`、`LSTM`）。這些節點的參數會隨訓練改變。
+相同設定也適用於其他輸出無法由快取 key 完整描述的節點，包括 `GaussianNoise`、`DDPMSampler`、`BackwardOnce`、`DiffusionTrainingLoop`，以及所有擁有權重的節點（`SequentialModel`、`DiffusionUNet` 和每個 layer 節點，例如 `Linear`、`Conv2d`、`LSTM`）。這些節點的參數會隨訓練改變。`Map` 也每次都會重新執行：它的主體是已儲存的 preset，同一個名稱在兩次執行之間可能被修改，而且主體中的節點可能記錄指標或寫入檔案，快取命中會略過這些動作。
 
 對於擁有權重的節點，**設定 → 訓練行為 → 在多次執行間保留權重**會決定後續 run 如何處理權重，不受輸出快取影響。這項設定預設關閉，因此每個 run 都會初始化新的模型，和匯出的 Python 檔一樣。開啟後，run 會保留訓練出的權重，下一個 run 從那裡繼續，每次 run 成功後**執行紀錄**也會註明這一點。**立即重置所有權重**會捨棄儲存的權重，讓下一個 run 初始化新的模型。`SequentialModel` 每次 run 都會在**執行紀錄**中回報採取的動作。
 

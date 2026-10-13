@@ -24,17 +24,27 @@ from ...core.node_base import (
 )
 
 
-def _as_column(values: Any, name: str) -> torch.Tensor:
+def _as_matrix(values: Any, name: str) -> torch.Tensor:
+    """Return ``values`` as a float64 ``[N, T]`` matrix (T = 1 for one output).
+
+    ``[N]`` and ``[N, 1]`` both become ``[N, 1]``; trailing dims beyond the
+    first are flattened into the output axis.
+    """
     if isinstance(values, torch.Tensor):
         tensor = values.detach().cpu()
     else:
         try:
-            tensor = torch.tensor([float(v) for v in values], dtype=torch.float64)
-        except (TypeError, ValueError) as exc:
+            tensor = torch.tensor(values, dtype=torch.float64)
+        except (TypeError, ValueError, RuntimeError) as exc:
             raise ValueError(
                 f"RegressionMetrics: `{name}` must be numbers ({exc})."
             ) from exc
-    return tensor.to(torch.float64).reshape(-1)
+    tensor = tensor.to(torch.float64)
+    if tensor.dim() == 0:
+        tensor = tensor.reshape(1)
+    if tensor.dim() == 1:
+        return tensor.reshape(-1, 1)
+    return tensor.reshape(tensor.shape[0], -1)
 
 
 class RegressionMetricsNode(BaseNode):
@@ -45,9 +55,11 @@ class RegressionMetricsNode(BaseNode):
         "MSE is the mean squared error, MAE the mean absolute error, and R² is "
         "1 - SS_res / SS_tot, where SS_tot is the spread of the targets around "
         "their mean: 1 is a perfect fit, 0 is no better than predicting the "
-        "mean, and below 0 is worse. Predictions and targets are flattened, so "
-        "[N] and [N, 1] compare element by element; they must hold the same "
-        "number of values. R² is NaN when every target is the same. The three "
+        "mean, and below 0 is worse. [N] and [N, 1] compare element by element. "
+        "With several outputs ([N, T] predictions and targets of the same "
+        "shape), R² is computed per output column and averaged, so outputs on "
+        "different scales count equally; MSE and MAE average over every value. "
+        "R² is NaN when every target in a column is the same. The three "
         "values are also recorded as the run metrics `mse`, `mae` and `r2`, so "
         "a sweep can rank by them."
     )
@@ -64,7 +76,7 @@ class RegressionMetricsNode(BaseNode):
             PortDefinition(
                 name="predictions",
                 data_type=DataType.TENSOR,
-                description="Predicted values, [N] or [N, 1].",
+                description="Predicted values, [N], [N, 1] or [N, T].",
             ),
             PortDefinition(
                 name="targets",
@@ -97,12 +109,19 @@ class RegressionMetricsNode(BaseNode):
         targets = inputs.get("targets")
         if preds is None or targets is None:
             raise ValueError("RegressionMetrics requires `predictions` and `targets` inputs.")
-        y_hat = _as_column(preds, "predictions")
-        y = _as_column(targets, "targets")
+        y_hat = _as_matrix(preds, "predictions")
+        y = _as_matrix(targets, "targets")
         if y_hat.numel() != y.numel():
             raise ValueError(
                 f"RegressionMetrics: {y_hat.numel()} predictions vs "
                 f"{y.numel()} targets; they must be the same length."
+            )
+        if y_hat.shape != y.shape:
+            raise ValueError(
+                f"RegressionMetrics: `predictions` has shape {list(y_hat.shape)} "
+                f"but `targets` has shape {list(y.shape)}. Give both one row per "
+                "sample and one column per output, e.g. [N] or [N, 1] for a "
+                "single output and [N, T] for T outputs."
             )
         if y.numel() == 0:
             raise ValueError("RegressionMetrics: no values to compare.")
@@ -110,9 +129,16 @@ class RegressionMetricsNode(BaseNode):
         error = y_hat - y
         mse = float((error ** 2).mean())
         mae = float(error.abs().mean())
-        ss_tot = float(((y - y.mean()) ** 2).sum())
-        ss_res = float((error ** 2).sum())
-        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+        # R² per output column, then the unweighted mean (sklearn's
+        # ``multioutput="uniform_average"``). Pooling every column into one
+        # SS_tot would let the spread *between* columns of different scales
+        # count as explained variance.
+        ss_tot = ((y - y.mean(dim=0, keepdim=True)) ** 2).sum(dim=0)
+        ss_res = (error ** 2).sum(dim=0)
+        if bool((ss_tot > 0).all()):
+            r2 = float((1.0 - ss_res / ss_tot).mean())
+        else:
+            r2 = float("nan")
 
         if context is not None:
             context.log_metric("mse", mse, 0)

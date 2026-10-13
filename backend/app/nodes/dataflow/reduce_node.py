@@ -54,7 +54,12 @@ class ReduceNode(BaseNode):
             raise ValueError("Reduce received an empty list")
 
         op = params.get("operation", "mean")
-        dim = params.get("dim", 0)
+        try:
+            dim = int(params.get("dim", 0))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Reduce: `dim` must be a whole number, got {params.get('dim')!r}."
+            ) from None
         count = float(len(items))
 
         if op == "first":
@@ -83,18 +88,36 @@ class ReduceNode(BaseNode):
                     f"Reduce '{op}' requires numeric/tensor items, got {type(item).__name__}"
                 )
 
+        def _combine(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return fn(tensors, *args, **kwargs)
+            except (RuntimeError, IndexError) as exc:
+                shapes = [list(t.shape) for t in tensors]
+                raise ValueError(
+                    f"Reduce '{op}': the items cannot be combined (shapes "
+                    f"{shapes}, dim={dim}). sum, mean, min, max and stack need "
+                    "every item to have the same shape; concat needs them to "
+                    f"match except along dim. ({exc})"
+                ) from exc
+
         if op == "sum":
-            result = torch.stack(tensors).sum(dim=0)
+            result = _combine(torch.stack).sum(dim=0)
         elif op == "mean":
-            result = torch.stack(tensors).mean(dim=0)
+            stacked = _combine(torch.stack)
+            # torch.mean is defined for floating types only; an integer
+            # tensor (e.g. class labels) raises "could not infer output
+            # dtype". The mean of integers is a float, as with Python ints.
+            if not (stacked.is_floating_point() or stacked.is_complex()):
+                stacked = stacked.to(torch.float32)
+            result = stacked.mean(dim=0)
         elif op == "min":
-            result = torch.stack(tensors).min(dim=0).values
+            result = _combine(torch.stack).min(dim=0).values
         elif op == "max":
-            result = torch.stack(tensors).max(dim=0).values
+            result = _combine(torch.stack).max(dim=0).values
         elif op == "concat":
-            result = torch.cat(tensors, dim=dim)
+            result = _combine(torch.cat, dim=dim)
         elif op == "stack":
-            result = torch.stack(tensors, dim=dim)
+            result = _combine(torch.stack, dim=dim)
         else:
             raise ValueError(f"Unknown reduce operation: {op}")
 

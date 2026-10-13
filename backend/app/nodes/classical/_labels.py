@@ -61,9 +61,41 @@ def label_strings(value: Any, where: str) -> list[str]:
     return out
 
 
+def class_order(names: Any) -> list[str]:
+    """The distinct label strings in column order.
+
+    Numeric order when every label parses as a number, so 12 integer classes
+    run 0, 1, 2, ..., 11 (the order TensorDataset already uses); text order
+    otherwise. Sorting the strings directly would put '10' before '2'.
+    """
+    distinct = set(names)
+    try:
+        return sorted(distinct, key=lambda text: (float(text), text))
+    except ValueError:
+        return sorted(distinct)
+
+
+def encode_labels(value: Any, where: str) -> tuple[list[int], list[str]]:
+    """``(codes, classes)``: each row's index into ``classes``.
+
+    Every classifier fits on the codes and maps sklearn's ``classes_`` and
+    predictions back through ``classes``, so the ``probabilities`` columns
+    follow :func:`class_order` on every node. The label strings are
+    ``str()`` of :func:`class_labels`, the form predictions are returned in.
+    """
+    names = [str(v) for v in class_labels(value, where)]
+    classes = class_order(names)
+    index = {name: i for i, name in enumerate(classes)}
+    return [index[name] for name in names], classes
+
+
 def _canonical(v: Any) -> Any:
     if isinstance(v, list) and len(v) == 1:
         v = v[0]
+    # bool before the numeric cases: True must read as 1, or predictions
+    # [True, False] never match labels [1, 0] once both are strings.
+    if isinstance(v, bool):
+        return int(v)
     if isinstance(v, float) and v.is_integer():
         return int(v)
     if hasattr(v, "item") and not isinstance(v, (str, bytes)):  # numpy scalar
