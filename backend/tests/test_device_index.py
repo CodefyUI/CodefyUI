@@ -378,4 +378,4 @@ def test_every_device_param_offers_the_indexed_forms(four_cards):
         device_param = next(p for p in definition.params if p.name == "device")
         assert "cuda:2" in device_param.options, name
         checked += 1
-    assert checked == 12, "expected the twelve device-aware nodes"
+    assert checked == 13, "expected the thirteen device-aware nodes"

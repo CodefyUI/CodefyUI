@@ -294,7 +294,8 @@ class RLTrainingLoopNode(BaseNode):
         "that returns (policy, value), such as the PPO node's. The env is "
         "GridWorldEnv or a Gymnasium env from EnvWrapper with discrete "
         "actions. All randomness comes from seed, so a rerun with the same "
-        "weights repeats. The live loss chart follows the run, and "
+        "weights repeats. Small policies acting one step at a time usually "
+        "run fastest on cpu. The live loss chart follows the run, and "
         "mean_return (plus solved_at_episode once reached) is recorded as a "
         "run metric, so a sweep can rank by it."
     )
@@ -369,9 +370,7 @@ class RLTrainingLoopNode(BaseNode):
             ParamDefinition(
                 name="device", param_type=ParamType.SELECT, default="auto",
                 options=list(DEVICE_PARAM_OPTIONS),
-                description=DEVICE_PARAM_DESCRIPTION + (
-                    " Small policies acting one step at a time usually run "
-                    "fastest on cpu."),
+                description=DEVICE_PARAM_DESCRIPTION,
                 advanced=True),
             ParamDefinition(
                 name="log_interval", param_type=ParamType.INT, default=1, min_value=1,

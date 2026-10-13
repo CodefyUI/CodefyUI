@@ -473,6 +473,7 @@ const zhTW: NodeTranslations = {
       'PPO 每收集 steps_per_update 步，就以 GAE 優勢最佳化 clipped objective。REINFORCE 與 DQN 需要每個動作輸出一個分數的模型' +
       '（DQN 或 SequentialModel）；PPO 需要回傳 (policy, value) 的 actor-critic，例如 PPO 節點的模型。env 可用 GridWorldEnv，' +
       '或 EnvWrapper 產生、動作空間為離散的 Gymnasium 環境。所有隨機性都來自 seed，所以相同權重重跑會得到相同結果。' +
+      '一次只走一步的小型策略網路通常在 cpu 上最快。' +
       '訓練時即時更新 loss 曲線，mean_return（達標後再加上 solved_at_episode）會記錄為 run metric，讓 sweep 可以依此排序。',
     inputs: {
       model: '智能體。REINFORCE 與 DQN 用每個動作的 Q 值或 logits；PPO 用 (policy, value)。',
@@ -495,9 +496,7 @@ const zhTW: NodeTranslations = {
       target_return: '最近 20 個回合的平均回報達到這個值就停止。0 表示不提早停止。CartPole-v1 以 475 算是解出。',
       seed: '決定環境重設、動作抽樣、replay 與 minibatch 抽樣的隨機種子。',
       grad_clip_norm: '每次更新前裁剪梯度範數。0 表示不裁剪。',
-      device:
-        "這個節點使用的裝置。保持 'auto' 就沿用圖的裝置（工具列指定的，或圖沒有指定時用設定裡的）。" +
-        '一張圖只在一個裝置上執行；若有部分工作需要不同裝置，請拆成兩張圖。一次只走一步的小型策略網路通常在 cpu 上最快。',
+      device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
       log_interval: '每 N 個回合回報一次進度並記錄 metric。',
       baseline: '從回報中減去的基準：none，或這次更新那一批回合的平均回報。',
       normalize_returns: '減去這一批回報的平均值後，再除以它們的標準差。',
