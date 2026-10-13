@@ -105,3 +105,12 @@ def test_resolution_not_divisible_by_downsample_raises():
     t = torch.tensor([0])
     with pytest.raises((RuntimeError, ValueError)):
         model(x, t)
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+@pytest.mark.parametrize("dim", [33, 3])
+def test_an_odd_time_emb_dim_is_a_node_named_error(dim):
+    with pytest.raises(ValueError, match="DiffusionUNet: time_emb_dim must be an even"):
+        _run(time_emb_dim=dim)

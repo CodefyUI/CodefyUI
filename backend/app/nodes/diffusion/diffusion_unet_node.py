@@ -73,6 +73,12 @@ class _DiffusionUNetModule(nn.Module):
     ) -> None:
         super().__init__()
 
+        if time_emb_dim < 2 or time_emb_dim % 2:
+            raise ValueError(
+                f"DiffusionUNet: time_emb_dim must be an even number >= 2 (sin "
+                f"and cos each take half of it), got {time_emb_dim}. Set it to "
+                f"{max(2, time_emb_dim + 1 if time_emb_dim % 2 else 2)}, for example."
+            )
         if any((base_channels * m) % num_groups for m in channel_mult):
             raise ValueError(
                 f"DiffusionUNet: num_groups={num_groups} must divide every base*mult — "

@@ -331,3 +331,36 @@ def test_a_state_dim_mismatch_names_both_sizes():
     model = DQNNode().execute({}, {"state_dim": 4, "action_dim": 4})["model"]
     with pytest.raises(ValueError, match="16 features but the model expects 4"):
         _run(model=model)
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+class _MetricContext:
+    def __init__(self):
+        self.metrics = {}
+
+    def log_metric(self, name, value, step, node_id=None):
+        self.metrics[name] = value
+
+
+def test_an_env_without_outcomes_has_no_success_rate():
+    # A Gymnasium episode ends at terminated/truncated, never at "goal", so
+    # the old count reported 0.0 for every run and logged it as a metric.
+    context = _MetricContext()
+    out = PolicyRolloutNode().execute(
+        {"model": _cartpole_policy(), "env": _GymApiEnv(end_after=3)},
+        {"episodes": 2, "temperature": 1.0, "seed": 0}, context=context)
+    assert out["success_rate"] is None
+    assert "success_rate" not in context.metrics
+    assert context.metrics["mean_return"] == 3.0
+    assert "success_rate: n/a" in out["report"]
+
+
+def test_gridworld_still_reports_and_logs_its_success_rate():
+    context = _MetricContext()
+    out = PolicyRolloutNode().execute(
+        {"model": _policy(), "env": _env()},
+        {"episodes": 2, "temperature": 1.0, "seed": 0}, context=context)
+    assert isinstance(out["success_rate"], float)
+    assert context.metrics["success_rate"] == out["success_rate"]

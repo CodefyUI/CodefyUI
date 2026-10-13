@@ -411,7 +411,7 @@ const zhTW: NodeTranslations = {
     description: 'KL(p || q)，輸入可為機率或 logits',
     details:
       'reduction 聚合每個樣本的 KL（最後一軸的總和）：預設 batchmean 與 mean 都是對樣本取平均，sum 加總，' +
-      'none 每個樣本給一個值。1-D 輸入視為一個樣本。KL 不對稱：' +
+      'none 每個樣本給一個值，形狀是輸入去掉最後一軸（[B, T, V] 得到 [B, T]）。1-D 輸入視為一個樣本。KL 不對稱：' +
       'p 是策略，q 是被拉近的那個凍結參考策略。',
     params: {
       input_kind: 'p、q 是已經算好的機率，還是尚未經過 softmax 的 logits。',
@@ -453,7 +453,8 @@ const zhTW: NodeTranslations = {
       'episode_ids，以及文字報告和第一個回合的逐步表格。env 只需要提供 reset() 與 step(action)：' +
       'GridWorldEnv 的，或 EnvWrapper 產生的 Gymnasium 環境（觀測會轉成浮點張量，terminated 或 ' +
       'truncated 時回合結束）。成功率與平均回合回報也會記錄為 run metric：success_rate 與 mean_return，' +
-      '讓 sweep 可以依此排序。',
+      '讓 sweep 可以依此排序。env 若不回報回合結果（Gymnasium 環境沒有終點），就沒有成功率：' +
+      '該輸出為空、報告會註明，只記錄 mean_return。',
     params: {
       episodes: '要走幾個回合。設成 1 看單一軌跡；設成 K 就是 GRPO 的一組樣本。',
       temperature: '抽樣溫度。低 = 偏向利用（每次都挑機率最高的動作）、高 = 偏向探索。',
@@ -486,7 +487,7 @@ const zhTW: NodeTranslations = {
       '一組樣本分數全部相同時優勢全為 0，這一組學不到東西。expand_index（PolicyRollout 的 episode_ids）' +
       '把優勢攤回它涵蓋的每一步，normalize 則再除以該組的標準差。',
     params: {
-      normalize: '是否再除以組內標準差。預設關閉，這樣算出來的數字還能跟手算對得起來。',
+      normalize: '是否再除以組內的母體標準差（除以 n，unbiased=False）。預設關閉，這樣算出來的數字還能跟手算對得起來。',
     },
   },
   PreferenceDataset: {
@@ -1431,7 +1432,8 @@ const zhTW: NodeTranslations = {
     description: '布林遮罩 [seq, seq]，True 表示被擋',
     details:
       'causal 擋掉嚴格在未來的位置，也就是 GPT 式 decoder 的樣式；padding 擋掉 token 等於 pad_token ' +
-      '的整欄。序列長度取自 tokens 清單，或 tensor 輸入的第 0 維。下游的注意力節點以 ' +
+      '的整欄。序列長度取自 tokens 清單，或 tensor 輸入的第 0 維，所以 tensor 必須是序列在前' +
+      '（[seq] 或 [seq, d]）；batch 在前的 [B, seq, d] 會得到 [B, B] 的遮罩，請先取出單一序列。下游的注意力節點以 ' +
       'scores.masked_fill(mask, -inf) 使用它。',
     params: {
       mode: 'causal：擋掉嚴格未來的位置（decoder 風格）。padding：擋掉值與 pad_token 相同的欄位。',
@@ -1641,7 +1643,7 @@ const zhTW: NodeTranslations = {
       '留意分數：最高分只有 0.3 左右，通常代表語料裡沒有答案。問題向量必須來自與索引相同的嵌入模型。',
     params: {
       top_k: '要撈回幾塊。',
-      min_score: '低於這個分數的結果會被丟掉（cosine 的範圍是 -1 到 1）。0 表示全部保留；用 e5/MiniLM 時 0.3 到 0.5 是合理的門檻。',
+      min_score: '低於這個分數的結果會被丟掉（cosine 的範圍是 -1 到 1；dot 索引可用任意值）。0 表示全部保留；用 e5/MiniLM 時 0.3 到 0.5 是合理的門檻。',
     },
   },
   PromptBuilder: {
@@ -1719,9 +1721,12 @@ const zhTW: NodeTranslations = {
     description: '依倍率縮放空間維度，沒有可學習權重',
     details:
       '縮放由 F.interpolate 完成：mode 可選 nearest、bilinear 或 area，scale_factor 預設 ' +
-      '2.0，小於 1 時會改為縮小。若需要可學習的上採樣核，請改用 ConvTranspose2d。',
+      '2.0，小於 1 時會改為縮小。前兩軸是 batch 與 channel：[N, C, L]、[N, C, H, W] 或 ' +
+      '[N, C, D, H, W]，bilinear 會沿每個空間軸混合（一軸時為 linear、三軸時為 trilinear）。' +
+      '單張影像 (C, H, W) 要先加上 batch 軸（Unsqueeze dim 0），否則 channel 會被當成 batch。' +
+      '若需要可學習的上採樣核，請改用 ConvTranspose2d。',
     params: {
-      mode: '插值方式。nearest=直接複製像素、bilinear=雙線性平滑、area=平均（適合做 downsample）。',
+      mode: '插值方式。nearest=直接複製像素、bilinear=雙線性平滑（1 或 3 個空間軸時為 linear 或 trilinear）、area=平均（適合做 downsample）。',
       scale_factor: '空間維度的縮放倍數。2.0 放大兩倍、0.5 縮成一半。',
     },
   },
@@ -1770,7 +1775,7 @@ const zhTW: NodeTranslations = {
       beta_start: 'linear 排程起始 beta（要和 DDPMSampler 一致）。',
       beta_end: 'linear 排程結束 beta（要和 DDPMSampler 一致）。',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
-      seed: '亂數種子（決定每步挑的時間步與加的雜訊）。',
+      seed: '亂數種子（決定批次順序，以及每步挑的時間步與加的雜訊）。',
     },
     inputs: {
       model: '會去雜訊的 U-Net（如 DiffusionUNet），forward 吃 (x, t) 吐預測雜訊。',
@@ -1847,7 +1852,7 @@ const zhTW: NodeTranslations = {
       max_steps: '單回合步數預算（覆蓋 env 設定）。學到的策略比腳本專家慢，預算太緊會把控制誤差記成逾時',
       instruction_mode: 'normal：回合真實指令。swapped：改講干擾 puck 的顏色——語言接地消融。只看畫面的策略兩者同分；讀語言的策略在 swapped 下崩潰',
       record_episodes: '錄進 frames 的前 N 個回合（0 = 不錄）',
-      seed: '評估種子（回合種子取自與 PushWorldDemos 預設不相交的偏移流）',
+      seed: '評估種子（回合種子取自與 PushWorldDemos 預設不相交的偏移流；同一種子也固定 flow head 的取樣噪聲）',
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
   },

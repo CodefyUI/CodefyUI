@@ -94,7 +94,15 @@ class PPOClipObjectiveNode(BaseNode):
             PortDefinition(name="ratio", data_type=DataType.TENSOR, description="[N] the ratio actually used."),
             PortDefinition(name="was_clipped", data_type=DataType.TENSOR, description="[N] 1 where the clipped branch won, 0 where it did not."),
             PortDefinition(name="loss", data_type=DataType.TENSOR, description="Scalar -mean(objective): maximise the objective by minimising this."),
-            PortDefinition(name="clip_fraction", data_type=DataType.SCALAR, description="Fraction of samples that were truncated -- a standard PPO health metric."),
+            PortDefinition(
+                name="clip_fraction",
+                data_type=DataType.SCALAR,
+                description=(
+                    "Fraction of samples where the clipped branch decided the min (was_clipped). "
+                    "SB3 and TRL log a looser clip_fraction, |ratio - 1| > epsilon, which also "
+                    "counts samples whose unclipped term was already the smaller one."
+                ),
+            ),
         ]
 
     @classmethod

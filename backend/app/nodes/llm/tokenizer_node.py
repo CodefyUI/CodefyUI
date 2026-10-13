@@ -202,13 +202,32 @@ class TokenizerNode(BaseNode):
         # ``disallowed_special=()`` allows special-token literals to be encoded
         # as plain text instead of raising — necessary for arbitrary user input.
         ids = list(enc.encode(text, disallowed_special=()))
-        tokens = [enc.decode([i]) for i in ids]
+        # tiktoken is byte-level BPE: a token may hold part of a multi-byte
+        # UTF-8 character (most CJK characters span three bytes over two
+        # tokens). Decoding each id on its own turned such a token into
+        # U+FFFD and the offsets, a running sum of those lengths, drifted
+        # off the text. Work on the token's bytes instead: show the bytes
+        # that do not form a whole character as <0xE6>, and map byte
+        # positions back to character positions. A token that holds part
+        # of a character gets that whole character's span, so two tokens
+        # sharing one character report overlapping offsets (the HF
+        # convention for byte-level tokenizers).
+        char_at = _byte_to_char_table(text)
+        last = len(char_at) - 1
+        tokens: list[str] = []
         offsets: list[tuple[int, int]] = []
         cursor = 0
-        for tok in tokens:
-            tok_len = len(tok)
-            offsets.append((cursor, cursor + tok_len))
-            cursor += tok_len
+        for token_id in ids:
+            raw = enc.decode_single_token_bytes(token_id)
+            tokens.append(_display_token_bytes(raw))
+            start = min(cursor, last)
+            end = min(cursor + len(raw), last)
+            char_start = char_at[start][0]
+            # The end is exclusive: a token ending inside a character
+            # extends to the end of that character.
+            char_end = char_at[end][0] if char_at[end][1] else char_at[end][0] + 1
+            offsets.append((char_start, char_end))
+            cursor += len(raw)
         return tokens, ids, offsets
 
     @staticmethod
@@ -220,3 +239,24 @@ class TokenizerNode(BaseNode):
         ids = list(encoding.ids)
         offsets = [(int(s), int(e)) for s, e in encoding.offsets]
         return tokens, ids, offsets
+
+
+def _byte_to_char_table(text: str) -> list[tuple[int, bool]]:
+    """For each UTF-8 byte position of *text* (and the end), the index of the
+    character it falls in and whether it is that character's first byte."""
+    table: list[tuple[int, bool]] = []
+    for index, char in enumerate(text):
+        width = len(char.encode("utf-8", errors="surrogatepass"))
+        table.append((index, True))
+        table.extend((index, False) for _ in range(width - 1))
+    table.append((len(text), True))
+    return table
+
+
+def _display_token_bytes(raw: bytes) -> str:
+    """A token's bytes as text, with bytes that are not part of a complete
+    UTF-8 character shown as ``<0xE6>``."""
+    decoded = raw.decode("utf-8", errors="surrogateescape")
+    return "".join(
+        f"<0x{ord(ch) - 0xDC00:02X}>" if 0xDC80 <= ord(ch) <= 0xDCFF else ch
+        for ch in decoded)

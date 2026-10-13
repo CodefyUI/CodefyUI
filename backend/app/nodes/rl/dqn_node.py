@@ -1,5 +1,6 @@
 from typing import Any
 
+from ._sizes import positive_int
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 
@@ -46,18 +47,18 @@ class DQNNode(BaseNode):
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
         return [
-            ParamDefinition(name="state_dim", param_type=ParamType.INT, default=4, description="Dimension of the state space"),
-            ParamDefinition(name="action_dim", param_type=ParamType.INT, default=2, description="Dimension of the action space"),
-            ParamDefinition(name="hidden_dim", param_type=ParamType.INT, default=128, description="Hidden layer dimension"),
+            ParamDefinition(name="state_dim", param_type=ParamType.INT, default=4, min_value=1, description="Dimension of the state space"),
+            ParamDefinition(name="action_dim", param_type=ParamType.INT, default=2, min_value=1, description="Dimension of the action space"),
+            ParamDefinition(name="hidden_dim", param_type=ParamType.INT, default=128, min_value=1, description="Hidden layer dimension"),
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         import torch
         import torch.nn as nn
 
-        state_dim = params.get("state_dim", 4)
-        action_dim = params.get("action_dim", 2)
-        hidden_dim = params.get("hidden_dim", 128)
+        state_dim = positive_int(params, "state_dim", 4, "DQN")
+        action_dim = positive_int(params, "action_dim", 2, "DQN")
+        hidden_dim = positive_int(params, "hidden_dim", 128, "DQN")
 
         model = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),

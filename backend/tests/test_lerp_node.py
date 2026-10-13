@@ -105,3 +105,35 @@ def test_shape_mismatch_via_broadcast_works_for_compatible_dims():
 def test_missing_input_raises():
     with pytest.raises(ValueError, match="requires"):
         LerpNode().execute({"tensor_a": torch.zeros(1)}, {"alpha": 0.5})
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_integer_inputs_are_interpolated_in_float():
+    # alpha used to be cast to tensor_a's dtype: int64 truncated 0.5 to 0
+    # and the node returned tensor_b.
+    out = _run(torch.tensor([0, 4]), torch.tensor([8, 8]), alpha=None)["tensor"]
+    assert out.dtype == torch.float32
+    assert out.tolist() == [4.0, 6.0]
+
+
+def test_uint8_inputs_keep_the_fractional_blend():
+    out = LerpNode().execute(
+        {"tensor_a": torch.tensor([0, 100, 200], dtype=torch.uint8),
+         "tensor_b": torch.tensor([255, 255, 255], dtype=torch.uint8)},
+        {"alpha": 0.75})["tensor"]
+    assert out.tolist() == pytest.approx([63.75, 138.75, 213.75])
+
+
+def test_float16_inputs_keep_their_dtype():
+    a = torch.tensor([0.0, 2.0], dtype=torch.float16)
+    out = _run(a, a + 2)["tensor"]
+    assert out.dtype == torch.float16
+
+
+def test_a_missing_alpha_param_is_a_node_named_error():
+    with pytest.raises(ValueError, match="Lerp: the `alpha` param"):
+        LerpNode().execute(
+            {"tensor_a": torch.zeros(2), "tensor_b": torch.ones(2)},
+            {"alpha": None})

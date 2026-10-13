@@ -152,3 +152,26 @@ def test_expanded_advantages_still_sum_to_zero_when_groups_are_balanced():
 def test_ids_that_share_an_integer_part_are_separate_groups():
     out = _run([1.0, 2.0, 10.0, 20.0], group_ids=[0.0, 0.0, 0.5, 0.5])
     assert out["advantages"].tolist() == pytest.approx([-0.5, 0.5, -5.0, 5.0])
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+@pytest.mark.parametrize("raw", ["false", "False", "0", "no", "off", "", 0, None])
+def test_a_false_spelled_as_a_string_is_false(raw):
+    # bool("false") is True, so a hand-edited graph normalized anyway.
+    out = _run([1.0, 0.0, 0.0], normalize=raw)["advantages"]
+    assert out.tolist() == pytest.approx([2 / 3, -1 / 3, -1 / 3])
+
+
+@pytest.mark.parametrize("raw", ["true", "1", "yes", 1, True])
+def test_a_true_spelled_as_a_string_is_true(raw):
+    out = _run([1.0, 0.0, 0.0], normalize=raw)["advantages"]
+    std = torch.tensor([1.0, 0.0, 0.0]).std(unbiased=False)
+    assert out.tolist() == pytest.approx(
+        [(2 / 3) / float(std), (-1 / 3) / float(std), (-1 / 3) / float(std)])
+
+
+def test_an_unreadable_normalize_is_refused():
+    with pytest.raises(ValueError, match="GroupRelativeAdvantage: normalize"):
+        _run([1.0, 0.0], normalize="maybe")

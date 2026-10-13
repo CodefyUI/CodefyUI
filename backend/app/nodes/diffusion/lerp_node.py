@@ -97,11 +97,30 @@ class LerpNode(BaseNode):
         if not isinstance(b, torch.Tensor):
             b = torch.as_tensor(b, dtype=torch.float32)
 
+        # Interpolation is a float operation. Integer or bool inputs are
+        # promoted to float32 first: an int64 `tensor_a` used to cast alpha
+        # to its own dtype, truncating 0.5 to 0 and returning `tensor_b`.
+        # Floating inputs keep their own dtype (float16 stays float16).
+        dtype = torch.promote_types(a.dtype, b.dtype)
+        if not (dtype.is_floating_point or dtype.is_complex):
+            dtype = torch.promote_types(dtype, torch.float32)
+        a = a.to(dtype)
+        b = b.to(dtype)
+
         alpha_in = inputs.get("alpha")
         if alpha_in is not None:
             alpha = alpha_in if isinstance(alpha_in, torch.Tensor) else torch.as_tensor(alpha_in, dtype=torch.float32)
+            if not (alpha.dtype.is_floating_point or alpha.dtype.is_complex):
+                alpha = alpha.to(dtype)
         else:
-            alpha = torch.as_tensor(float(params.get("alpha", 0.5)), dtype=a.dtype)
+            raw = params.get("alpha", 0.5)
+            try:
+                alpha_value = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Lerp: the `alpha` param must be a number (got {raw!r}); "
+                    "set it, or connect the `alpha` input.") from None
+            alpha = torch.as_tensor(alpha_value, dtype=dtype)
 
         out = alpha * a + (1.0 - alpha) * b
         return {"tensor": out}

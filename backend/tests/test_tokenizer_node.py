@@ -107,3 +107,36 @@ def test_step_trace_emitted_when_verbose():
     assert "__steps__" in res
     step_names = [s.name for s in res["__steps__"]]
     assert step_names == ["input_text", "tokenize"]
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_cjk_offsets_point_at_the_right_characters():
+    # cl100k splits most CJK characters over two or three byte tokens. Each
+    # id used to be decoded alone (U+FFFD) and the offsets summed those
+    # lengths, so '器' pointed at '習' and the last span ran past the end.
+    text = "機器學習很有趣 ok"
+    res = _run("cl100k_base", text)
+    offsets = res["offsets"]
+    assert offsets[-1][1] == len(text)
+    assert all(0 <= s <= e <= len(text) for s, e in offsets)
+    # Every token's span covers the characters its bytes come from.
+    assert "\ufffd" not in "".join(res["tokens"])
+    whole = [(tok, text[s:e]) for tok, (s, e) in zip(res["tokens"], offsets)
+             if not tok.startswith("<0x")]
+    assert ("器", "器") in whole
+    assert (" ok", " ok") in whole
+
+
+def test_partial_utf8_tokens_are_shown_as_bytes():
+    res = _run("cl100k_base", "機")
+    assert "".join(res["tokens"]) == "<0xE6><0xA9><0x9F>"
+    assert res["offsets"] == [[0, 1], [0, 1], [0, 1]]
+
+
+def test_latin_accents_and_emoji_keep_exact_offsets():
+    text = "café 🙂 done"
+    res = _run("cl100k_base", text)
+    assert "".join(res["tokens"]) == text
+    assert "".join(text[s:e] for s, e in res["offsets"]) == text

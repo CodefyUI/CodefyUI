@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from app.nodes.rl.ppo_node import PPONode
@@ -40,3 +41,25 @@ def test_with_state_emits_action_probs():
     assert res["action"].shape == (1, 2)
     # Probs sum to 1
     assert torch.isclose(res["action"].sum(), torch.tensor(1.0))
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+
+def test_string_sizes_are_coerced():
+    res = PPONode().execute({}, {"state_dim": "4", "action_dim": "3", "hidden_dim": "8"})
+    probs, value = res["model"](torch.zeros(1, 4))
+    assert probs.shape == (1, 3) and value.shape == (1, 1)
+
+
+@pytest.mark.parametrize("name", ["state_dim", "action_dim", "hidden_dim"])
+@pytest.mark.parametrize("value", [0, -1, "x"])
+def test_bad_sizes_are_node_named_errors(name, value):
+    params = {"state_dim": 4, "action_dim": 2, "hidden_dim": 8, name: value}
+    with pytest.raises(ValueError, match=f"PPO: {name} must be"):
+        PPONode().execute({}, params)
+
+
+def test_sizes_declare_a_minimum_of_one():
+    assert all(p.min_value == 1 for p in PPONode.define_params())

@@ -99,11 +99,13 @@ def _reset(env: Any):
 
 
 def _step(env: Any, action: int, outcome: str):
-    """``env.step(action)`` as ``(obs, reward, done, outcome)``, for either API.
+    """``env.step(action)`` as ``(obs, reward, done, outcome, named)``.
 
-    *outcome* is the previous step's, kept when the env does not name one.
-    GridWorld names it in ``info["outcome"]``; a Gymnasium episode that
-    ends without one ends at ``terminated`` or ``truncated``.
+    For either API. *outcome* is the previous step's, kept when the env
+    does not name one. GridWorld names it in ``info["outcome"]``; a
+    Gymnasium episode that ends without one ends at ``terminated`` or
+    ``truncated``. *named* says whether this step's ``info`` carried an
+    ``outcome``: only such an env can say whether an episode reached a goal.
     """
     out = env.step(action)
     if not isinstance(out, tuple) or len(out) not in (4, 5):
@@ -119,9 +121,10 @@ def _step(env: Any, action: int, outcome: str):
     else:
         obs, reward, done, info = out
         done = bool(done)
-    if isinstance(info, dict):
-        outcome = info.get("outcome", outcome)
-    return _as_observation(obs, "step()"), float(reward), done, outcome
+    named = isinstance(info, dict) and "outcome" in info
+    if named:
+        outcome = info["outcome"]
+    return _as_observation(obs, "step()"), float(reward), done, outcome, named
 
 
 def _check_state_dim(model: Any, obs: Any) -> None:
@@ -161,7 +164,10 @@ class PolicyRolloutNode(BaseNode):
         "EnvWrapper (its observations become float tensors and an episode "
         "ends when it is terminated or truncated). The success rate and the "
         "mean episode return are also recorded as the run metrics "
-        "`success_rate` and `mean_return`, so a sweep can rank by them."
+        "`success_rate` and `mean_return`, so a sweep can rank by them. An env "
+        "that names no outcome (a Gymnasium env has no goal) has no success "
+        "rate: the output is empty, the report says so and only mean_return "
+        "is recorded."
     )
 
     #: Rolls a stochastic policy through a stateful env; a cached batch would
@@ -189,20 +195,35 @@ class PolicyRolloutNode(BaseNode):
             PortDefinition(name="states", data_type=DataType.TENSOR, description="[N, state_dim] observation at each step."),
             PortDefinition(name="actions", data_type=DataType.TENSOR, description="[N] action taken at each step (int64)."),
             PortDefinition(name="rewards", data_type=DataType.TENSOR, description="[N] reward received at each step."),
-            PortDefinition(name="logits", data_type=DataType.TENSOR, description="[N, action_dim] the policy's scores at each state."),
+            PortDefinition(
+                name="logits",
+                data_type=DataType.TENSOR,
+                description=(
+                    "[N, action_dim] the policy's raw scores at each state, before the "
+                    "temperature divides them (log_probs are under softmax(logits / temperature))."
+                ),
+            ),
             PortDefinition(
                 name="log_probs",
                 data_type=DataType.TENSOR,
                 description=(
                     "[N] log pi(a_t | s_t) for the action actually taken, under the behaviour "
-                    "policy. This is PPO's `log_probs_old`: the record of what the policy "
-                    "thought at sampling time, which the ratio is measured against."
+                    "policy softmax(logits / temperature). This is PPO's `log_probs_old`: the "
+                    "record of what the policy thought at sampling time, which the ratio is "
+                    "measured against."
                 ),
             ),
             PortDefinition(name="returns", data_type=DataType.TENSOR, description="[episodes] undiscounted total reward per episode."),
             PortDefinition(name="episode_lengths", data_type=DataType.TENSOR, description="[episodes] number of steps in each episode."),
             PortDefinition(name="episode_ids", data_type=DataType.TENSOR, description="[N] which episode each step belongs to."),
-            PortDefinition(name="success_rate", data_type=DataType.SCALAR, description="Fraction of episodes that ended at the goal."),
+            PortDefinition(
+                name="success_rate",
+                data_type=DataType.SCALAR,
+                description=(
+                    "Fraction of episodes that ended at the goal. Empty (None) when the env "
+                    "names no episode outcome, as a Gymnasium env does not."
+                ),
+            ),
             PortDefinition(name="report", data_type=DataType.STRING, description="Per-episode summary as text -- connect a Print."),
             PortDefinition(
                 name="trajectory",
@@ -287,6 +308,7 @@ class PolicyRolloutNode(BaseNode):
 
         s_all, a_all, r_all, l_all, ep_all, lp_all = [], [], [], [], [], []
         returns, lengths, outcomes = [], [], []
+        env_names_outcome = False
 
         try:
             for ep in range(episodes):
@@ -321,7 +343,8 @@ class PolicyRolloutNode(BaseNode):
                     # exactly the denominator of PPO's ratio.
                     lp_all.append(torch.log(probs[action].clamp_min(1e-12)))
 
-                    obs, reward, done, outcome = _step(env, action, outcome)
+                    obs, reward, done, outcome, named = _step(env, action, outcome)
+                    env_names_outcome = env_names_outcome or named
                     r_all.append(reward)
                     total += reward
                     steps += 1
@@ -351,9 +374,22 @@ class PolicyRolloutNode(BaseNode):
             traj.append(f"{t:4d} | {state:5d} | {a_all[t]:6d} | {r_all[t]:+.3f}")
         traj.append(f"episode 0 ended at {outcomes[0] if outcomes else 'n/a'}")
 
-        success_rate = n_goal / episodes
+        # Only an env that names its outcomes (GridWorld's goal / trap /
+        # timeout) can say whether an episode succeeded. A Gymnasium episode
+        # ends at terminated or truncated, never at "goal", so counting goals
+        # there reported 0.0 for every CartPole run and filed it as a metric
+        # a sweep would rank by.
+        success_rate: float | None
+        if env_names_outcome:
+            success_rate = n_goal / episodes
+        else:
+            success_rate = None
+            lines.append(
+                "success_rate: n/a -- this env names no episode outcome "
+                "(no goal), so only mean_return is recorded.")
         if context is not None:
-            context.log_metric("success_rate", success_rate, 0)
+            if success_rate is not None:
+                context.log_metric("success_rate", success_rate, 0)
             context.log_metric("mean_return", sum(returns) / episodes, 0)
 
         return {

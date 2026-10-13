@@ -146,3 +146,19 @@ def test_king_minus_man_plus_woman_finds_queen_in_demo():
         {"top_k": 1, "exclude_self_words": "king,man,woman"},
     )
     assert res["top_k_labels"][0] == ["queen"]
+
+
+# ── 2026-10-13 functional-correctness audit ─────────────────────────────
+
+
+def test_fewer_labels_than_keys_is_a_node_named_error():
+    with pytest.raises(ValueError, match="CosineSimilarity: `key_labels` has 3"):
+        _run(torch.randn(2, 4), torch.randn(5, 4), key_labels=list("abc"), top_k=5)
+
+
+def test_excluded_words_never_fill_the_top_k():
+    torch.manual_seed(0)
+    out = _run(torch.randn(1, 4), torch.randn(5, 4), key_labels=list("abcde"),
+               top_k=5, exclude_self_words="a,b")
+    assert sorted(out["top_k_labels"][0]) == ["c", "d", "e"]
+    assert len(out["top_k_indices"][0]) == 3
