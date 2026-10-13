@@ -1250,6 +1250,54 @@ def _schedule_length_note(
     return None
 
 
+def _check_one_cycle_fits(
+    lr_scheduler: Any,
+    epochs: int,
+    *,
+    per_step: bool,
+    step_budget: int | None,
+    max_steps: int,
+) -> None:
+    """Refuse a OneCycleLR too short for the run before the first epoch.
+
+    ``OneCycleLR`` raises "Tried to step N times" on the step past its
+    ``total_steps``, which can be an hour into a run. The scheduler is
+    stepped once per optimizer step with ``scheduler_step=optimizer_step``
+    (``step_budget``, already capped by ``max_steps``) and once per epoch
+    otherwise. In epoch mode a ``max_steps`` cap can end the run before the
+    epochs do, so that case is left to the advisory rather than refused on
+    a count the run may never reach.
+    """
+    import torch.optim.lr_scheduler as sched_module
+
+    if not isinstance(lr_scheduler, sched_module.OneCycleLR):
+        return
+    total = getattr(lr_scheduler, "total_steps", None)
+    if isinstance(total, bool) or not isinstance(total, int) or total < 1:
+        return
+    if per_step:
+        if step_budget is None:
+            return
+        planned = int(step_budget)
+        unit = "optimizer steps"
+        how = "epochs x steps per epoch / accumulate_steps, capped by max_steps"
+    else:
+        if max_steps:
+            return
+        planned = int(epochs)
+        unit = "epochs"
+        how = "scheduler_step=epoch steps the scheduler once per epoch"
+    if planned <= total:
+        return
+    raise ValueError(
+        f"LRScheduler OneCycleLR has total_steps={total} but this run plans "
+        f"{planned} {unit} ({how}), so OneCycleLR would raise \"Tried to step "
+        f"{total + 1} times\" part-way through the run. Set "
+        f"LRScheduler.total_steps to {planned}, or shorten the run to "
+        f"{total} {unit}."
+    )
+
+
 def _report_schedule_length(
     lr_scheduler: Any,
     epochs: int,
@@ -1487,7 +1535,9 @@ class TrainingLoopNode(BaseNode):
                     "usable, and a REBUILT one when it was not (an optimizer "
                     "whose parameters did not line up with the model), which "
                     "is the case where wiring CheckpointSaver from the "
-                    "Optimizer node instead stores state that never trained."
+                    "Optimizer node instead stores state that never trained. "
+                    "After early stopping restores the best weights, the "
+                    "optimizer state is still the last epoch's."
                 ),
             ),
             PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch: the mean of that epoch's per-batch losses, so a short last batch counts as much as a full one"),
@@ -1502,6 +1552,15 @@ class TrainingLoopNode(BaseNode):
                     "it to CheckpointSaver.epoch so the checkpoint resumes "
                     "where training stopped, early stopping and max_steps "
                     "included"
+                ),
+            ),
+            PortDefinition(
+                name="grad_norms",
+                data_type=DataType.TENSOR,
+                description=(
+                    "Pre-clip global gradient norm of every optimizer step "
+                    "this call took, one value per step (not thinned by "
+                    "log_interval). Empty when log_grad_norm is off"
                 ),
             ),
             PortDefinition(
@@ -1978,6 +2037,12 @@ class TrainingLoopNode(BaseNode):
         schedule_note = _report_schedule_length(
             lr_scheduler, epochs, context,
             per_step=scheduler_per_step, step_budget=step_budget)
+        # The advisory above covers schedules that merely fit badly. A
+        # OneCycleLR shorter than the run would crash part-way through, so
+        # it is refused here, before any epoch is spent.
+        _check_one_cycle_fits(
+            lr_scheduler, epochs, per_step=scheduler_per_step,
+            step_budget=step_budget, max_steps=max_steps)
 
         if start_epoch >= epochs:
             logger.warning(
@@ -2107,6 +2172,10 @@ class TrainingLoopNode(BaseNode):
         # denominator once accumulation (several batches per step) or fp16
         # (a step skipped on an overflowing gradient) is in play.
         optimizer_steps = 0
+        # Pre-clip gradient norm of every applied optimizer step, for the
+        # ``grad_norms`` port. Kept as device tensors and stacked once at
+        # the end, so collecting them adds no per-step synchronisation.
+        step_grad_norms: list[Any] = []
         # Set when ``max_steps`` ends the run. Distinct from ``stopped_at``:
         # that means "a human pressed Stop and these results are partial",
         # this means "the configured budget was spent and the run is done".
@@ -2169,6 +2238,11 @@ class TrainingLoopNode(BaseNode):
             if (scheduler_per_step and lr_scheduler is not None
                     and not scheduler_is_plateau):
                 lr_scheduler.step()
+            if log_grad_norm and grad_norm_value is not None:
+                step_grad_norms.append(
+                    grad_norm_value.detach()
+                    if isinstance(grad_norm_value, torch.Tensor)
+                    else torch.tensor(float(grad_norm_value)))
             thinned = optimizer_steps % log_interval == 0
             if (grad_norm_value is not None and thinned
                     and (log_grad_norm or log_update_ratio)):
@@ -2829,6 +2903,9 @@ class TrainingLoopNode(BaseNode):
             "epoch": completed_epochs,
             # None on every fp32 and bf16 run, which is what CheckpointSaver
             # expects to see for "there is no loss scale to store".
+            "grad_norms": (
+                torch.stack([n.float().cpu() for n in step_grad_norms])
+                if step_grad_norms else torch.zeros(0)),
             "grad_scaler_state": policy.state_dict(),
         }
         # The canvas half of #205/#244 and of #149. ``__log__`` is the only
