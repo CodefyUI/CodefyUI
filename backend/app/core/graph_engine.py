@@ -2735,6 +2735,7 @@ async def execute_graph(
     on_inner_status: (
         Callable[[str, str, str, dict[str, Any] | None], Any] | None
     ) = None,
+    on_expanded: Callable[[list[dict]], Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the graph with parallel levels, cancellation, error recovery, and caching.
 
@@ -2777,6 +2778,20 @@ async def execute_graph(
             the caller files it under ``container_id``. A node the run
             bypassed is reported once, up front, as ``bypassed`` -- to
             ``on_progress`` at the top level, here inside a container.
+            A terminal frame for a node inside a container carries the
+            node's own result, as ``on_progress`` does for a top-level node,
+            so the caller can show what it produced (#559).
+        on_expanded: Callback(nodes), called once before anything runs with
+            the node list the run executes: every block and preset card
+            replaced by the nodes inside it, under their run ids. A caller
+            that has to know what a node inside a container declares (its
+            media ports, say) reads it here rather than expanding the graph
+            a second time.
+
+    A container's own terminal frame (completed, cached, interrupted) carries
+    the values on its drawn output ports, read from the nodes inside it that
+    produced them, so a card reports a result the way any node does (#559).
+    Before, it carried ``None`` and a card's output had no summary at all.
 
     Progress and metric delivery (#122)
     -----------------------------------
@@ -2821,6 +2836,9 @@ async def execute_graph(
         if record_outputs and output_store is not None and run_id
         else {}
     )
+
+    if on_expanded is not None:
+        await _maybe_await(on_expanded(expanded_nodes))
 
     levels = topological_levels(expanded_nodes, expanded_edges)
     node_map = {n["id"]: n for n in expanded_nodes}
@@ -2896,6 +2914,33 @@ async def execute_graph(
     # inner_log relay's await in between cannot let a sibling settle the box
     # too: one internal's report at a time.
     container_lock = asyncio.Lock()
+    # Each container's drawn output ports, walked to the node that produces
+    # the value (#559): `blk.out -> blk/nest/b.value`. What a card's terminal
+    # frame reports as its own result.
+    container_ports: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for _target, _aliases in aliases_by_target(output_aliases).items():
+        for _alias_node, _alias_port in _aliases:
+            container_ports[_alias_node].append((_alias_port, *_target))
+
+    def _container_result(
+        container_id: str, data: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """The values on *container_id*'s drawn output ports, or None.
+
+        A port whose producer did not run (skipped, failed, left out) is
+        absent rather than None, as a node's own result never names a port
+        it did not produce. ``data`` is the result of the inner node that
+        settled the card: its ``__log__`` stays on the frame, since an
+        interrupted node's line goes out on that frame and no other.
+        """
+        result: dict[str, Any] = {}
+        for port, producer, producer_port in container_ports.get(container_id, ()):
+            produced = outputs.get(producer)
+            if produced is not None and producer_port in produced:
+                result[port] = produced[producer_port]
+        if isinstance(data, dict) and "__log__" in data:
+            result["__log__"] = data["__log__"]
+        return result or None
 
     async def _emit_preset_aware(
         node_id: str,
@@ -2985,7 +3030,10 @@ async def execute_graph(
         if status in ("error", "interrupted"):
             # Any internal failure or early stop settles the whole container
             container_settled.add(container_id)  # no inner_log relay after this
-            await emit(status, data)
+            # An error frame says what failed; an interrupted one is a
+            # result, the card's own -- never the inner node's ports.
+            await emit(status, data if status == "error"
+                       else _container_result(container_id, data))
             return
 
         if status == "running":
@@ -3022,7 +3070,7 @@ async def execute_graph(
                 await emit("running", {"__log__": inner_log})
             if container_done[container_id] >= container_total[container_id]:
                 terminal = _CONTAINER_RANK_STATUS[container_outcome[container_id]]
-                await emit(terminal, None)
+                await emit(terminal, _container_result(container_id))
 
     # A SEEDED run is a SERIAL run (#134). Per-node seeding below sets the
     # PROCESS-GLOBAL RNGs, and two nodes running concurrently would reseed
