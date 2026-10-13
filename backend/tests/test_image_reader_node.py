@@ -165,3 +165,15 @@ def test_directory_in_upload_store_does_not_shadow_the_file(tmp_path, monkeypatc
     monkeypatch.chdir(workdir)
     res = ImageReaderNode().execute({}, {"path": "frames.png", "mode": "RGB", "resize": 0})
     assert res["tensor"].shape == (3, 32, 64)
+
+
+# -- 2026-10-13 audit: a cleared resize field --------------------------------
+
+
+@pytest.mark.parametrize("resize", [None, "", "  "])
+def test_blank_resize_keeps_the_original_size(tmp_path, resize):
+    """resize=None used to raise TypeError at ``resize > 0``."""
+    img_path = tmp_path / "test.png"
+    Image.new("RGB", (12, 10)).save(img_path)
+    res = ImageReaderNode().execute({}, {"path": str(img_path), "mode": "RGB", "resize": resize})
+    assert res["image"].shape == (3, 10, 12)

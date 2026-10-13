@@ -70,14 +70,32 @@ def frames_to_uint8_thwc(frames: Any) -> Any:
     return t.contiguous()
 
 
-def write_gif(frames_thwc: Any, path: Path, fps: float) -> None:
+def gif_delay_cs(fps: float) -> int:
+    """The GIF frame delay, in hundredths of a second, closest to *fps*.
+
+    GIF stores each frame's delay as a whole number of centiseconds, so only
+    100/n fps is representable: 24 fps becomes 4 cs (25 fps), 30 becomes
+    3 cs (33.3 fps). Browsers treat a delay under 2 cs as 10 cs, so 2 cs
+    (50 fps) is the fastest a GIF plays.
+    """
+    return max(2, round(100.0 / max(0.1, fps)))
+
+
+def write_gif(frames_thwc: Any, path: Path, fps: float) -> float:
+    """Write a looping GIF and return the fps it actually encodes.
+
+    The return value differs from *fps* whenever 100/fps is not a whole
+    number (see :func:`gif_delay_cs`); callers report it so the clip's
+    reference matches what a reader decodes.
+    """
     from PIL import Image
 
-    duration_ms = max(20, round(1000.0 / max(0.1, fps)))
+    delay_cs = gif_delay_cs(fps)
     images = [Image.fromarray(frame.numpy()) for frame in frames_thwc]
     images[0].save(
         path, save_all=True, append_images=images[1:],
-        duration=duration_ms, loop=0)
+        duration=delay_cs * 10, loop=0)
+    return 100.0 / delay_cs
 
 
 def write_mp4(frames_thwc: Any, path: Path, fps: float) -> None:

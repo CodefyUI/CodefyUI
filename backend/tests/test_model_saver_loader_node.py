@@ -1648,3 +1648,122 @@ def test_loader_still_loads_a_plain_state_dict(tmp_path, monkeypatch):
         {"path": "w.pt", "load_mode": "state_dict", "device": "cpu", "strict": True},
     )["model"]
     assert torch.equal(loaded.weight, trained.weight)
+
+
+# -- 2026-10-13 audit: key mismatches and the wrong load_mode ----------------
+
+
+class _Wrapped(nn.Module):
+    """The saved network one attribute deeper: every key gains ``net.``."""
+
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.Linear(8, 2))
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def _save_plain_sequential(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    torch.manual_seed(3)
+    plain = nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.Linear(8, 2))
+    ModelSaverNode().execute(
+        {"model": plain}, {"path": "w.pt", "save_mode": "state_dict", "format": "pytorch"})
+    return plain
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_loader_refuses_a_load_that_matches_no_key_and_names_the_prefix(
+        tmp_path, monkeypatch, strict):
+    """strict=False used to load 0 of 9 tensors and report success."""
+    _save_plain_sequential(tmp_path, monkeypatch)
+    wrapped = _Wrapped()
+    before = {k: v.clone() for k, v in wrapped.state_dict().items()}
+
+    with pytest.raises(ValueError) as exc:
+        ModelLoaderNode().execute(
+            {"model": wrapped},
+            {"path": "w.pt", "load_mode": "state_dict", "device": "cpu", "strict": strict},
+        )
+    message = str(exc.value)
+    assert message.startswith("ModelLoader would load 0 of 9 tensors from w.pt")
+    assert "'net.'" in message
+    assert "net.0.weight" in message and "0.weight" in message
+    # Refused before load_state_dict, so nothing (not even BatchNorm's
+    # num_batches_tracked) was written.
+    assert all(torch.equal(before[k], v) for k, v in wrapped.state_dict().items())
+
+
+def test_loader_refusal_without_a_common_prefix_says_architecture(tmp_path, monkeypatch):
+    _save_plain_sequential(tmp_path, monkeypatch)
+
+    class Other(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(4, 2)
+
+    with pytest.raises(ValueError, match="different architecture"):
+        ModelLoaderNode().execute(
+            {"model": Other()},
+            {"path": "w.pt", "load_mode": "state_dict", "device": "cpu", "strict": False},
+        )
+
+
+def test_loader_partial_strict_false_load_logs_what_it_skipped(tmp_path, monkeypatch):
+    plain = _save_plain_sequential(tmp_path, monkeypatch)
+    # Same first two layers, the head one index later: the model's 3.* are
+    # missing from the file and the file's 2.* have nowhere to go.
+    target = nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.ReLU(), nn.Linear(8, 2))
+    warnings: list[tuple[str, str]] = []
+
+    class Ctx:
+        def log_warning(self, kind, note):
+            warnings.append((kind, note))
+
+    result = ModelLoaderNode().execute(
+        {"model": target},
+        {"path": "w.pt", "load_mode": "state_dict", "device": "cpu", "strict": False},
+        context=Ctx(),
+    )
+    total = len(target.state_dict())
+    assert result["__log__"].startswith("[WARN] ModelLoader: Loaded 7 of 9 tensors from w.pt")
+    assert "3.weight, 3.bias" in result["__log__"]          # missing in the file
+    assert "2.weight, 2.bias" in result["__log__"]          # ignored file entries
+    assert total == 9
+    assert [k for k, _ in warnings] == ["model_loader_key_mismatch"]
+    assert torch.equal(target[0].weight, plain[0].weight)
+
+
+def test_loader_full_load_writes_no_log_line(tmp_path, monkeypatch):
+    _save_plain_sequential(tmp_path, monkeypatch)
+    result = ModelLoaderNode().execute(
+        {"model": nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.Linear(8, 2))},
+        {"path": "w.pt", "load_mode": "state_dict", "device": "cpu", "strict": False},
+    )
+    assert "__log__" not in result
+
+
+def test_full_model_mode_on_a_state_dict_file_names_the_mode(tmp_path, monkeypatch):
+    """It used to output an OrderedDict that Inference then failed on."""
+    _save_plain_sequential(tmp_path, monkeypatch)
+    with pytest.raises(ValueError) as exc:
+        ModelLoaderNode().execute(
+            {}, {"path": "w.pt", "load_mode": "full_model", "device": "cpu", "strict": True})
+    message = str(exc.value)
+    assert message.startswith("ModelLoader (load_mode=full_model) read w.pt")
+    assert "state_dict" in message and "load_mode=state_dict" in message
+
+
+def test_state_dict_mode_on_a_full_model_file_names_the_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    ModelSaverNode().execute(
+        {"model": nn.Sequential(nn.Linear(4, 2))},
+        {"path": "full.pt", "save_mode": "full_model", "format": "pytorch"})
+    with pytest.raises(ValueError) as exc:
+        ModelLoaderNode().execute(
+            {"model": nn.Sequential(nn.Linear(4, 2))},
+            {"path": "full.pt", "load_mode": "state_dict", "device": "cpu", "strict": True})
+    message = str(exc.value)
+    assert message.startswith("ModelLoader (load_mode=state_dict) could not read full.pt")
+    assert "load_mode=full_model" in message

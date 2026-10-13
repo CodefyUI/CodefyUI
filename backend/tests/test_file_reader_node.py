@@ -56,3 +56,40 @@ def test_nonexistent_file_raises():
     p = settings.GRAPHS_DIR / "_definitely_missing.txt"
     with pytest.raises(FileNotFoundError):
         FileReaderNode().execute({}, {"path": str(p), "mode": "text"})
+
+
+# -- 2026-10-13 audit: why a CSV gave no tensor ------------------------------
+
+
+@pytest.fixture
+def graphs_dir(tmp_path, monkeypatch):
+    graphs = tmp_path / "graphs"
+    graphs.mkdir()
+    monkeypatch.setattr(settings, "GRAPHS_DIR", graphs)
+    return graphs
+
+
+def test_ragged_csv_names_the_row_and_the_column_counts(graphs_dir):
+    """A ragged CSV used to be reported as "non-numeric"."""
+    f = graphs_dir / "ragged.csv"
+    f.write_text("a,b,c\n1,2,3\n4,5\n")
+    res = FileReaderNode().execute({}, {"path": str(f), "mode": "csv", "csv_header": True})
+    assert res["tensor"].numel() == 0
+    assert res["__log__"].startswith(
+        "[WARN] FileReader: ragged.csv line 3 has 2 column(s), but line 2 has 3")
+
+
+def test_non_numeric_csv_names_the_cell(graphs_dir):
+    f = graphs_dir / "words.csv"
+    f.write_text("a,b\n1,2\n3,x\n")
+    res = FileReaderNode().execute({}, {"path": str(f), "mode": "csv", "csv_header": True})
+    assert res["tensor"].numel() == 0
+    assert "words.csv line 3, column 2 is 'x'" in res["__log__"]
+
+
+def test_numeric_csv_has_no_log_line(graphs_dir):
+    f = graphs_dir / "ok.csv"
+    f.write_text("a,b\n1,2\n3,4\n")
+    res = FileReaderNode().execute({}, {"path": str(f), "mode": "csv", "csv_header": True})
+    assert res["tensor"].tolist() == [[1.0, 2.0], [3.0, 4.0]]
+    assert "__log__" not in res

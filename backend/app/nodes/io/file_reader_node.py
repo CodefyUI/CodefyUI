@@ -1,6 +1,7 @@
 import logging
 from typing import TYPE_CHECKING, Any
 
+from ...core.advisories import emit_advisory
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 if TYPE_CHECKING:
@@ -11,6 +12,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Prefix on the canvas-log line this node's advisory carries.
+_LOG_PREFIX = "[WARN] FileReader: "
+
 
 class FileReaderNode(BaseNode):
     NODE_NAME = "FileReader"
@@ -18,7 +22,8 @@ class FileReaderNode(BaseNode):
     DESCRIPTION = "Text or CSV file to a string, numeric CSV to a tensor"
     DETAILS = (
         "In csv mode the numeric rows become a 2D float tensor, and a single "
-        "non-numeric cell leaves that output empty; in text mode it stays empty. A "
+        "non-numeric cell or a row of a different length leaves that output "
+        "empty, with a run-log line naming the row; in text mode it stays empty. A "
         "relative path resolves under the graphs directory, or under assets/data "
         "in a project, and files outside the project data directories are refused."
     )
@@ -98,7 +103,7 @@ class FileReaderNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         import torch
 
         path = params.get("path", "")
@@ -139,14 +144,51 @@ class FileReaderNode(BaseNode):
             import io
 
             reader = csv.reader(io.StringIO(text))
-            rows = list(reader)
+            # (line number in the file, cells): the advisory below names the
+            # line a user would look at in an editor.
+            rows = [(reader.line_num, row) for row in reader]
             if csv_header and rows:
                 rows = rows[1:]  # skip header
-            try:
-                data = [[float(cell) for cell in row] for row in rows if row]
+            rows = [(line, row) for line, row in rows if row]
+            problem = _csv_tensor_problem(rows, p.name)
+            if problem is None:
+                data = [[float(cell) for cell in row] for _, row in rows]
                 tensor = torch.tensor(data, dtype=torch.float32)
                 logger.info("Loaded CSV with shape %s", tensor.shape)
-            except ValueError:
-                logger.warning("CSV contains non-numeric data, tensor output will be empty")
+            else:
+                log_line = emit_advisory(
+                    problem + " The tensor output is empty; the text output is unaffected.",
+                    kind="file_reader_csv_not_numeric", prefix=_LOG_PREFIX,
+                    context=context, logger=logger)
+                return {"text": text, "tensor": tensor, "__log__": log_line}
 
         return {"text": text, "tensor": tensor}
+
+
+def _csv_tensor_problem(rows: list[tuple[int, list[str]]], file_name: str) -> str | None:
+    """Why *rows* cannot become a 2D float tensor, or ``None`` if they can.
+
+    Ragged rows used to be reported as "non-numeric data", which sent the user
+    looking for text in a file that had none.
+    """
+    if not rows:
+        return None
+    first_line, first_row = rows[0]
+    width = len(first_row)
+    for line, row in rows:
+        if len(row) != width:
+            return (
+                f"{file_name} line {line} has {len(row)} column(s), but line "
+                f"{first_line} has {width}; every row must have the same "
+                f"number of columns to form a 2D tensor."
+            )
+        for column, cell in enumerate(row, start=1):
+            try:
+                float(cell)
+            except ValueError:
+                return (
+                    f"{file_name} line {line}, column {column} is {cell!r}, "
+                    f"which is not a number; csv mode builds a tensor only "
+                    f"when every cell is numeric."
+                )
+    return None

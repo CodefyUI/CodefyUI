@@ -13,6 +13,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def expand_braces(pattern: str) -> list[str]:
+    """Expand shell-style ``{a,b}`` alternatives into separate glob patterns.
+
+    ``pathlib`` globbing has no brace expansion, so the documented
+    ``*.{png,jpg}`` matched nothing at all. Nested and repeated groups expand
+    left to right; a pattern without a complete ``{...,...}`` group is
+    returned unchanged.
+    """
+    start = pattern.find("{")
+    if start < 0:
+        return [pattern]
+    depth = 0
+    for end in range(start, len(pattern)):
+        if pattern[end] == "{":
+            depth += 1
+        elif pattern[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+    else:
+        return [pattern]
+    body = pattern[start + 1:end]
+    # Split the group on top-level commas only.
+    options, depth, last = [], 0, 0
+    for i, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            options.append(body[last:i])
+            last = i + 1
+    options.append(body[last:])
+    if len(options) < 2:
+        head = pattern[:end + 1]
+        return [head + rest for rest in expand_braces(pattern[end + 1:])]
+    prefix, suffix = pattern[:start], pattern[end + 1:]
+    expanded: list[str] = []
+    for option in options:
+        for candidate in expand_braces(prefix + option + suffix):
+            if candidate not in expanded:
+                expanded.append(candidate)
+    return expanded
+
+
+def glob_sorted(directory: "Path", pattern: str) -> list["Path"]:
+    """Every file under *directory* matching *pattern*, braces expanded,
+    without duplicates, in sorted order."""
+    found: set["Path"] = set()
+    for single in expand_braces(pattern):
+        found.update(directory.glob(single))
+    return sorted(found)
+
+
 class ImageBatchReaderNode(BaseNode):
     NODE_NAME = "ImageBatchReader"
     CATEGORY = "IO"
@@ -55,7 +109,7 @@ class ImageBatchReaderNode(BaseNode):
         try:
             d = cls._resolve_directory(directory)
             pattern = str(params.get("pattern", "*.png") or "*.png")
-            paths = sorted(d.glob(pattern))
+            paths = glob_sorted(d, pattern)
         except Exception:
             return None
         max_images = params.get("max_images", 0) or 0
@@ -162,7 +216,7 @@ class ImageBatchReaderNode(BaseNode):
             raise FileNotFoundError(f"Directory not found: {directory}")
 
         # Collect image paths
-        paths = sorted(d.glob(pattern))
+        paths = glob_sorted(d, pattern)
         if max_images > 0:
             paths = paths[:max_images]
 

@@ -51,3 +51,33 @@ def test_sets_model_to_eval_mode():
     InferenceNode().execute({"model": model, "input": x}, {"device": "cpu"})
     # After inference, model should be in eval mode
     assert not model.training
+
+
+# -- 2026-10-13 audit: input dtype -------------------------------------------
+
+
+def test_float64_input_is_cast_to_the_model_dtype_on_cpu():
+    """CPU used to fail with "mat1 and mat2 must have the same dtype"."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 3)
+    x = torch.randn(5, 4, dtype=torch.float64)
+    out = InferenceNode().execute({"model": model, "input": x}, {"device": "cpu"})["output"]
+    assert out.dtype == torch.float32
+    with torch.no_grad():
+        assert torch.allclose(out, model(x.float()))
+
+
+def test_integer_input_still_reaches_an_embedding_model():
+    model = nn.Sequential(nn.Embedding(10, 4), nn.Flatten(), nn.Linear(8, 2))
+    idx = torch.tensor([[1, 2], [3, 4]])
+    out = InferenceNode().execute({"model": model, "input": idx}, {"device": "cpu"})["output"]
+    assert out.shape == (2, 2)
+
+
+def test_integer_input_into_a_float_layer_gets_a_node_named_error():
+    import pytest
+
+    with pytest.raises(ValueError, match=r"^Inference: the 'input' tensor is torch.int64"):
+        InferenceNode().execute(
+            {"model": nn.Linear(4, 2), "input": torch.ones(2, 4, dtype=torch.int64)},
+            {"device": "cpu"})

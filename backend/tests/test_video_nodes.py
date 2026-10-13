@@ -237,3 +237,19 @@ def test_video_payload_refuses_absolute_paths_and_junk():
          "junk": "dropped", "fps": 10.0})
     assert kept == {"path": "ok.mp4", "format": "mp4",
                     "url": "/api/media/ok.mp4", "fps": 10.0}
+
+
+# -- 2026-10-13 audit: gif frame rate ----------------------------------------
+
+
+@pytest.mark.parametrize("requested,encoded", [(10.0, 10.0), (24.0, 25.0), (30.0, 100 / 3), (60.0, 50.0)])
+def test_gif_reference_reports_the_fps_the_file_encodes(media_dirs, requested, encoded):
+    """GIF delays are whole centiseconds; the reference used to say 24 for a 25 fps file."""
+    result = VideoWriteNode().execute(
+        {"frames": _frames()},
+        {"filename": f"r{int(requested)}", "format": "gif", "fps": requested, "resize": 0},
+    )
+    assert result["video"]["fps"] == pytest.approx(encoded)
+    loaded = VideoLoadNode().execute(
+        {}, {"path": result["video"]["path"], "max_frames": 0, "stride": 1})
+    assert loaded["fps"] == pytest.approx(encoded)

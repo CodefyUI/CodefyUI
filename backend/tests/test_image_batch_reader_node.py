@@ -77,3 +77,35 @@ def test_no_matching_files_raises(monkeypatch, tmp_path):
             {},
             {"directory": str(test_dir), "pattern": "*.png", "resize": 16},
         )
+
+
+# -- 2026-10-13 audit: brace patterns ----------------------------------------
+
+
+def test_expand_braces():
+    from app.nodes.io.image_batch_reader_node import expand_braces
+
+    assert expand_braces("*.png") == ["*.png"]
+    assert expand_braces("*.{png,jpg}") == ["*.png", "*.jpg"]
+    assert expand_braces("{a,b}_{1,2}.png") == ["a_1.png", "a_2.png", "b_1.png", "b_2.png"]
+    assert expand_braces("*.{jp{g,eg},png}") == ["*.jpg", "*.jpeg", "*.png"]
+    assert expand_braces("*.{png") == ["*.{png"]
+
+
+def test_brace_pattern_matches_every_alternative(monkeypatch, tmp_path):
+    """The documented *.{png,jpg} used to find "No images" at all."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+    test_dir = settings.MODELS_DIR.parent / "imgs"
+    test_dir.mkdir(parents=True)
+    for i in range(3):
+        Image.new("RGB", (8, 8), (i * 60, 0, 0)).save(test_dir / f"img_{i}.png")
+    Image.new("RGB", (8, 8)).save(test_dir / "photo.jpg")
+    Image.new("RGB", (8, 8)).save(test_dir / "skip.bmp")
+    params = {"directory": str(test_dir), "pattern": "*.{png,jpg}", "resize": 8,
+              "max_images": 0, "mode": "RGB"}
+
+    res = ImageBatchReaderNode().execute({}, params)
+    assert res["count"] == 4
+    # The cache fingerprint covers the same files the loader reads.
+    names = [p.name for p in ImageBatchReaderNode._selected_paths(params)]
+    assert names == ["img_0.png", "img_1.png", "img_2.png", "photo.jpg"]
