@@ -2,6 +2,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from ...core.advisories import emit_advisory
 from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
@@ -483,6 +484,143 @@ def _full_model_refusal(p: "Path", exc: Exception) -> str:
     )
 
 
+#: Prefix on the canvas-log line a key-mismatch advisory carries; the Log tab
+#: has no severity of its own (see ``core.advisories``).
+_LOG_PREFIX = "[WARN] ModelLoader: "
+
+#: How many key names a message lists before it says "and N more".
+_KEYS_SHOWN = 5
+
+
+def _first_keys(keys: list[str]) -> str:
+    shown = ", ".join(keys[:_KEYS_SHOWN])
+    if len(keys) > _KEYS_SHOWN:
+        shown += f", ... ({len(keys) - _KEYS_SHOWN} more)"
+    return shown
+
+
+def _prefix_hint(model_keys: list[str], file_keys: list[str]) -> str | None:
+    """Name the one prefix that would make the two key sets line up.
+
+    The usual cause of a zero-overlap load is a wrapper: the model names its
+    weights ``net.0.weight`` and the file ``0.weight``, or the reverse (a
+    ``module.`` prefix from ``DataParallel``). Returns ``None`` unless adding
+    or removing a single prefix maps every key of the smaller side onto the
+    other.
+    """
+    if not model_keys or not file_keys:
+        return None
+    for longer, shorter, verb in (
+        (model_keys, file_keys, "added"),
+        (file_keys, model_keys, "removed"),
+    ):
+        longer_set = set(longer)
+        probe = shorter[0]
+        for key in longer:
+            if not key.endswith("." + probe):
+                continue
+            prefix = key[: len(key) - len(probe)]
+            if all(prefix + k in longer_set for k in shorter):
+                return (f"the file's names match the model's once the prefix "
+                        f"'{prefix}' is {verb}")
+    return None
+
+
+def _refuse_zero_overlap(file_name: str, model_keys: list[str], file_keys: list[str]) -> None:
+    """Raise when not one of the file's tensor names is one of the model's.
+
+    Such a load changes nothing. Under ``strict=False`` torch reports it as a
+    success, which is how a run trains from random weights while the user
+    believes it fine-tunes; under ``strict=True`` torch's own message lists
+    every name and never says why they differ. Checked BEFORE
+    ``load_state_dict`` so the refused load leaves the model untouched.
+    """
+    if not model_keys or not file_keys or set(model_keys) & set(file_keys):
+        return
+    hint = _prefix_hint(model_keys, file_keys)
+    if hint:
+        cause = (f"Likely cause: {hint}, i.e. one side was saved from a "
+                 f"wrapper around the other. Wire in the same network the "
+                 f"weights were saved from, or re-save them from this one.")
+    else:
+        cause = ("The file was saved from a different architecture than the "
+                 "one wired into 'model'. Wire in the architecture the weights "
+                 "were saved from.")
+    raise ValueError(
+        f"ModelLoader would load 0 of {len(model_keys)} tensors from "
+        f"{file_name}: none of the file's names match the model's. "
+        f"Model expects: {_first_keys(model_keys)}. "
+        f"File has: {_first_keys(file_keys)}. {cause}"
+    )
+
+
+def _key_mismatch_note(file_name: str, model_keys: list[str], file_keys: list[str],
+                       missing: list[str], unexpected: list[str]) -> str | None:
+    """Say what a ``strict=False`` load skipped, or ``None`` if nothing was."""
+    if not missing and not unexpected:
+        return None
+    # Counted from the names, not as ``len(model_keys) - len(missing)``:
+    # BatchNorm fills in its own ``num_batches_tracked`` when a file lacks it,
+    # so ``missing`` undercounts by one per BatchNorm layer.
+    loaded = len(set(model_keys) & set(file_keys))
+    parts = [f"Loaded {loaded} of {len(model_keys)} tensors from {file_name} "
+             f"(strict=False)."]
+    if missing:
+        parts.append(f"{len(missing)} model tensor(s) kept their current "
+                     f"values because the file has no entry for them: "
+                     f"{_first_keys(missing)}.")
+    if unexpected:
+        parts.append(f"{len(unexpected)} file entry(ies) were ignored because "
+                     f"the model has no tensor of that name: "
+                     f"{_first_keys(unexpected)}.")
+    return " ".join(parts)
+
+
+def _load_state_dict_file(p: "Path", load_device: Any) -> Any:
+    """``torch.load`` a weights file, naming a full-model file for what it is.
+
+    A full-model file is a pickled ``nn.Module``; the plain restricted
+    unpickler refuses its classes with torch's generic "Weights only load
+    failed" text, which says nothing about the load_mode switch that fixes it.
+    """
+    import pickle
+
+    import torch
+
+    try:
+        return torch.load(str(p), map_location=load_device, weights_only=True)
+    except pickle.UnpicklingError as exc:
+        refused = _UNSUPPORTED_GLOBAL.search(str(exc))
+        what = f" (it contains {refused.group(1)})" if refused else ""
+        raise ValueError(
+            f"ModelLoader (load_mode=state_dict) could not read {p.name} as a "
+            f"state_dict{what}. This looks like a full_model file, a whole "
+            f"pickled model saved with ModelSaver save_mode=full_model. Set "
+            f"load_mode=full_model to load it, or re-save it with "
+            f"save_mode=state_dict."
+        ) from exc
+
+
+def _not_a_module_message(file_name: str, loaded: Any) -> str:
+    """The error for a full_model load whose file holds no model."""
+    if isinstance(loaded, dict):
+        if isinstance(loaded.get("model_state_dict"), dict):
+            kind = "a CheckpointSaver checkpoint (weights plus optimizer state)"
+        else:
+            kind = "a state_dict (tensors by name, without the architecture)"
+        return (
+            f"ModelLoader (load_mode=full_model) read {file_name}, but it holds "
+            f"{kind}, which is not a model. Set load_mode=state_dict and wire "
+            f"the architecture (for example a SequentialModel) into the "
+            f"'model' input."
+        )
+    return (
+        f"ModelLoader (load_mode=full_model) read {file_name}, but it holds a "
+        f"{type(loaded).__name__}, which is not a model. Pick a file saved "
+        f"with ModelSaver save_mode=full_model, or use load_mode=state_dict."
+    )
+
+
 class ModelLoaderNode(BaseNode):
     NODE_NAME = "ModelLoader"
     CATEGORY = "IO"
@@ -492,7 +630,9 @@ class ModelLoaderNode(BaseNode):
         ".safetensors. full_model mode rebuilds the saved module itself under "
         "torch's restricted unpickler, so it accepts stock torch.nn layers and "
         "CodefyUI's own layers and refuses everything else, including classes from "
-        "custom nodes and plugins."
+        "custom nodes and plugins. A file whose tensor names match none of the "
+        "model's is refused; with strict off, a partial load writes a run-log "
+        "warning listing the tensors it skipped."
     )
 
     # #254. In ``state_dict`` mode this node's product is a MUTATION of the
@@ -623,6 +763,7 @@ class ModelLoaderNode(BaseNode):
             raise FileNotFoundError(f"Weights file not found: {p}")
 
         is_safetensors = p.suffix == ".safetensors"
+        log_line: str | None = None
 
         if load_mode == "state_dict":
             model = inputs.get("model")
@@ -635,7 +776,7 @@ class ModelLoaderNode(BaseNode):
                 from safetensors.torch import load_file
                 state_dict = load_file(str(p), device=load_device)
             else:
-                state_dict = torch.load(str(p), map_location=load_device, weights_only=True)
+                state_dict = _load_state_dict_file(p, load_device)
             if isinstance(state_dict, dict) and isinstance(
                     state_dict.get("model_state_dict"), dict):
                 # A CheckpointSaver file wraps the weights next to the epoch
@@ -645,7 +786,20 @@ class ModelLoaderNode(BaseNode):
                     "%s is a CheckpointSaver checkpoint; loading its "
                     "model_state_dict", p.name)
                 state_dict = state_dict["model_state_dict"]
-            model.load_state_dict(state_dict, strict=strict)
+            model_keys = list(model.state_dict().keys())
+            file_keys = list(state_dict.keys())
+            _refuse_zero_overlap(p.name, model_keys, file_keys)
+            outcome = model.load_state_dict(state_dict, strict=strict)
+            # strict=False never raises on a key mismatch, so the return value
+            # is the only record of what was skipped; without this note a
+            # partial load was indistinguishable from a complete one.
+            note = _key_mismatch_note(
+                p.name, model_keys, file_keys,
+                list(outcome.missing_keys), list(outcome.unexpected_keys))
+            if note is not None:
+                log_line = emit_advisory(
+                    note, kind="model_loader_key_mismatch", prefix=_LOG_PREFIX,
+                    context=context, logger=logger)
             model = to_device(model, device)
             param_count = sum(p_.numel() for p_ in model.parameters())
             logger.info("Loaded state_dict from %s (%s parameters, strict=%s)", p, f"{param_count:,}", strict)
@@ -653,10 +807,15 @@ class ModelLoaderNode(BaseNode):
             if is_safetensors:
                 raise ValueError("safetensors format only supports state_dict mode, not full_model")
             model = self._load_full_model(p, load_device)
+            if not isinstance(model, torch.nn.Module):
+                raise ValueError(_not_a_module_message(p.name, model))
             model = to_device(model, device)
             logger.info("Loaded full model from %s (%s)", p, type(model).__name__)
 
-        return {"model": model}
+        result: dict[str, Any] = {"model": model}
+        if log_line is not None:
+            result["__log__"] = log_line
+        return result
 
     @staticmethod
     def _load_full_model(p: "Path", load_device: Any) -> Any:

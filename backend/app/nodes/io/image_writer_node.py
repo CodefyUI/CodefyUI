@@ -1,9 +1,13 @@
 import logging
 from typing import Any
 
+from ...core.advisories import emit_advisory
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
+
+#: Prefix on the canvas-log line this node's advisory carries.
+_LOG_PREFIX = "[WARN] ImageWriter: "
 
 
 class ImageWriterNode(BaseNode):
@@ -11,9 +15,11 @@ class ImageWriterNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Save an image tensor to a PNG, JPEG, BMP or TIFF file"
     DETAILS = (
-        "The extension follows the chosen format. A relative path lands under the "
-        "data directory's output folder, and a batched (N, C, H, W) tensor saves "
-        "only its first image."
+        "The extension follows the chosen format (.jpeg and .tif are kept as "
+        "written). A relative path lands under the data directory's output "
+        "folder, and a batched (N, C, H, W) tensor saves only its first image. "
+        "Float values are read as [0, 1] and clipped to it, with a run-log "
+        "warning when any are negative; a uint8 image is read as 0-255."
     )
 
     # The write to disk IS this node's output. A cache hit returns the
@@ -53,7 +59,8 @@ class ImageWriterNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        import torch
         from torchvision.utils import save_image
 
         from ...config import settings
@@ -78,10 +85,13 @@ class ImageWriterNode(BaseNode):
         # be the path checked. Not theoretical -- DB_PATH is env-overridable,
         # so a database named `store.png` is reachable by asking for
         # `store.jpg` with format=PNG and letting the rewrite do the rest.
-        ext_map = {"PNG": ".png", "JPEG": ".jpg", "BMP": ".bmp", "TIFF": ".tiff"}
-        expected_ext = ext_map.get(fmt, ".png")
-        if p.suffix.lower() != expected_ext:
-            p = resolve_data_path(p.with_suffix(expected_ext),
+        # A spelling of the format's own extension (photo.jpeg, scan.tif) is
+        # kept as written; only a different extension is replaced.
+        ext_map = {"PNG": (".png",), "JPEG": (".jpg", ".jpeg"), "BMP": (".bmp",),
+                   "TIFF": (".tiff", ".tif")}
+        accepted_ext = ext_map.get(fmt, (".png",))
+        if p.suffix.lower() not in accepted_ext:
+            p = resolve_data_path(p.with_suffix(accepted_ext[0]),
                                   base=settings.MODELS_DIR.parent / "output")
 
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +100,29 @@ class ImageWriterNode(BaseNode):
         if image.dim() == 4:
             image = image[0]
 
+        # save_image expects floats in [0, 1]. A uint8 image (0..255, as a
+        # PIL or NumPy conversion produces) crashed inside it
+        # with "result type Float can't be cast to ... Byte"; dividing by 255
+        # makes the round trip exact.
+        if image.dtype == torch.uint8:
+            image = image.float() / 255.0
+        elif not image.is_floating_point():
+            image = image.float()
+
+        result: dict[str, Any] = {}
+        if image.numel() and float(image.min()) < 0:
+            lo, hi = float(image.min()), float(image.max())
+            result["__log__"] = emit_advisory(
+                f"the image's values span [{lo:.3g}, {hi:.3g}], and everything "
+                f"below 0 is saved as black (the file stores [0, 1]). If it is "
+                f"normalized to [-1, 1], rescale it first with (x + 1) / 2; "
+                f"if it was standardized with a mean and std, undo that "
+                f"before this node.",
+                kind="image_writer_negative_values",
+                prefix=_LOG_PREFIX, context=context, logger=logger)
+
         save_image(image, str(p))
         logger.info("Saved image to %s", p)
 
-        return {"path": str(p)}
+        result["path"] = str(p)
+        return result

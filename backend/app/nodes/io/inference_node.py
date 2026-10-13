@@ -7,13 +7,26 @@ from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, Po
 logger = logging.getLogger(__name__)
 
 
+def _floating_param_dtype(model: Any) -> Any:
+    """The dtype of the model's first floating parameter, or ``None``."""
+    parameters = getattr(model, "parameters", None)
+    if not callable(parameters):
+        return None
+    for param in parameters():
+        if param.is_floating_point():
+            return param.dtype
+    return None
+
+
 class InferenceNode(BaseNode):
     NODE_NAME = "Inference"
     CATEGORY = "IO"
     DESCRIPTION = "Forward pass on a model in eval mode, gradients off"
     DETAILS = (
         "eval() and the move to the selected device both apply to the model that "
-        "was wired in, and stay in effect after the node returns."
+        "was wired in, and stay in effect after the node returns. Floating input "
+        "is cast to the model's dtype (float64 data works on every device); "
+        "integer input is passed as is, for models that start with an Embedding."
     )
 
     # #254. Two reasons, either one sufficient. (1) ``model.eval()`` is a
@@ -76,9 +89,33 @@ class InferenceNode(BaseNode):
         model = to_device(model, device)
         input_tensor = to_device(input_tensor, device)
 
+        # A float64 tensor (a CSV read by NumPy, TensorInput dtype=float64)
+        # into a float32 model failed on every device but MPS with "mat1 and
+        # mat2 must have the same dtype". Only floating input is cast, and
+        # only to a floating parameter dtype: integer input is left alone so
+        # an Embedding-style model still receives its indices.
+        param_dtype = _floating_param_dtype(model)
+        if (param_dtype is not None and isinstance(input_tensor, torch.Tensor)
+                and input_tensor.is_floating_point() and input_tensor.dtype != param_dtype):
+            input_tensor = input_tensor.to(param_dtype)
+
         model.eval()
         with torch.no_grad():
-            output = model(input_tensor)
+            try:
+                output = model(input_tensor)
+            except RuntimeError as exc:
+                if (param_dtype is not None and isinstance(input_tensor, torch.Tensor)
+                        and not input_tensor.is_floating_point()
+                        and "type" in str(exc)):
+                    raise ValueError(
+                        f"Inference: the 'input' tensor is {input_tensor.dtype} "
+                        f"but the model computes in {param_dtype}, and its "
+                        f"first layer does not take integer input ({exc}). "
+                        f"Convert the input to float before this node (for "
+                        f"example TensorInput dtype=float32); only models that "
+                        f"start with an Embedding take integer indices."
+                    ) from exc
+                raise
 
         logger.info("Inference complete — input %s → output %s", list(input_tensor.shape), list(output.shape))
 

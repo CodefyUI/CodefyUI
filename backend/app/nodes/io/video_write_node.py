@@ -111,7 +111,12 @@ class VideoWriteNode(BaseNode):
                 default=10.0,
                 min_value=0.5,
                 max_value=60.0,
-                description="Playback frames per second",
+                description=(
+                    "Playback frames per second. mp4 keeps it exactly; gif "
+                    "stores whole 1/100 s frame delays, so it rounds to 100/n "
+                    "(24 -> 25, 30 -> 33.3, at most 50) and the video output "
+                    "reports the rounded rate."
+                ),
             ),
             ParamDefinition(
                 name="resize",
@@ -179,7 +184,9 @@ class VideoWriteNode(BaseNode):
         p.parent.mkdir(parents=True, exist_ok=True)
 
         if fmt == "gif":
-            write_gif(frames, p, fps)
+            # GIF delays are whole centiseconds, so 24 fps plays at 25; the
+            # reference reports the rate a reader will actually decode.
+            fps = write_gif(frames, p, fps)
         else:
             write_mp4(frames, p, fps)
 

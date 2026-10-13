@@ -153,7 +153,20 @@ class ImageReaderNode(BaseNode):
 
         path = params.get("path", "")
         mode = params.get("mode", "RGB")
-        resize = params.get("resize", 0)
+        # None or a blank field (a param cleared in the editor) means "keep
+        # the original size", as 0 does; it used to raise a TypeError at
+        # ``resize > 0``.
+        raw_resize = params.get("resize", 0)
+        if raw_resize is None or (isinstance(raw_resize, str) and not raw_resize.strip()):
+            resize = 0
+        else:
+            try:
+                resize = int(raw_resize)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"ImageReader: resize must be a whole number of pixels "
+                    f"(0 keeps the original size), got {raw_resize!r}."
+                ) from None
 
         if not path:
             raise ValueError("Image path is required")

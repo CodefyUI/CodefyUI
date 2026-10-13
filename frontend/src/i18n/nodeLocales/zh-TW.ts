@@ -979,7 +979,9 @@ const zhTW: NodeTranslations = {
   },
   ImageWriter: {
     description: '把影像張量存成 PNG/JPEG/BMP/TIFF',
-    details: '副檔名跟著選定的格式走。相對路徑會寫到資料目錄下的 output 資料夾；輸入是 (N, C, H, W) 批次張量時只存第一張。',
+    details:
+      '副檔名跟著選定的格式走（.jpeg 與 .tif 會照原樣保留）。相對路徑會寫到資料目錄下的 output 資料夾；輸入是 (N, C, H, W) 批次張量時只存第一張。' +
+      '浮點數值視為 [0, 1] 並裁切到這個範圍，有負值時會在執行紀錄留下警告；uint8 影像視為 0-255。',
     params: {
       path: '輸出檔案路徑',
       format: '影像格式',
@@ -993,7 +995,7 @@ const zhTW: NodeTranslations = {
     params: {
       filename: '媒體目錄下的檔名（可含子資料夾）；副檔名依格式決定，同名會覆寫',
       format: 'auto：PATH 上有 ffmpeg 則 mp4，否則 gif。gif 永遠可用；mp4 需要安裝 ffmpeg',
-      fps: '播放幀率（每秒幀數）',
+      fps: '播放幀率（每秒幀數）。mp4 照原值保存；gif 的幀間隔以 1/100 秒為單位，所以會取整成 100/n（24 → 25、30 → 33.3，最高 50），video 輸出回報的是取整後的幀率',
       resize: '輸出高度（像素），等比縮放、最近鄰（0 = 原始大小）；96px 的研究畫面放大 2-3 倍較易觀看',
     },
   },
@@ -1025,7 +1027,7 @@ const zhTW: NodeTranslations = {
   FileReader: {
     description: '讀文字或 CSV 檔為字串，數值 CSV 另出張量',
     details:
-      'csv 模式把數值列轉成 2D 浮點張量，只要有一格不是數字，張量輸出就是空的；text 模式恆為空。相對路徑落在 graphs ' +
+      'csv 模式把數值列轉成 2D 浮點張量，只要有一格不是數字或某一列的欄數不同，張量輸出就是空的，執行紀錄會指出是哪一列；text 模式恆為空。相對路徑落在 graphs ' +
       '目錄（專案模式下是 assets/data），專案資料目錄以外的檔案一律拒讀。',
     params: {
       path: '檔案路徑',
@@ -1051,7 +1053,8 @@ const zhTW: NodeTranslations = {
     details:
       'state_dict 模式要接上模型，可讀 .pt、.pth 或 .safetensors。full_model 模式在 torch ' +
       '受限的 unpickler 下重建整個模組，只接受原生 torch.nn 層與 CodefyUI 自己的層，其餘一律拒絕，' +
-      '包含自訂節點與外掛的類別。',
+      '包含自訂節點與外掛的類別。檔案中的張量名稱與模型完全對不上時會拒絕載入；strict 關閉時若只載入一部分，' +
+      '執行紀錄會列出略過的張量。',
     params: {
       path: '權重檔案路徑（.pt、.pth 或 .safetensors）',
       load_mode:
@@ -1081,7 +1084,9 @@ const zhTW: NodeTranslations = {
   },
   Inference: {
     description: '以 eval 模式對模型做前向傳播，不計算梯度',
-    details: 'eval() 與搬到指定裝置這兩件事都直接作用在接進來的模型上，節點結束後仍然有效。',
+    details:
+      'eval() 與搬到指定裝置這兩件事都直接作用在接進來的模型上，節點結束後仍然有效。' +
+      '浮點輸入會轉成模型的 dtype（float64 資料在任何裝置上都能用）；整數輸入原樣傳入，供以 Embedding 開頭的模型使用。',
     params: {
       device: '此節點的裝置。保持 auto 就跟隨這張圖的裝置（工具列的圖裝置，沒有指定時則用設定）。一張圖只在一個裝置上執行；若部分工作需要不同裝置，請拆成兩張圖。',
     },
