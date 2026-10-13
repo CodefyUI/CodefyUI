@@ -22,6 +22,24 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.10.0] — 2026-10-13
+
+This release follows a correctness audit of every built-in and pack node
+against torch, numpy and scikit-learn references, and fixes the wrong numbers
+it found: binary accuracy, multi-output R², class indices across dataset
+splits, per-row Normalize statistics, in-place script edits, nodes that reseeded
+the global RNG, and more. It adds a Paper Reproductions gallery section with 17
+examples that each reproduce one published method's central claim in seconds on
+a CPU, and an RLTrainingLoop node that trains REINFORCE, DQN and PPO agents on
+the canvas.
+
+The 2026-10-13 issue batch rounds it off: ReduceLROnPlateau gets a `mode`
+param, KFoldSplit makes k-fold cross-validation a sweep, every run records the
+environment that executed it, a picture drawn inside a block reaches the
+Execution Log and the Inspector, an `eval` plugin pack evaluates Hugging Face
+checkpoints with item-aligned A/B diffs, and studies run on the server and
+survive the browser and a restart.
+
 ### Added
 
 - **Paper Reproductions, a new gallery section with 17 examples** ([#739], [#742], [#743], [#744]). Each graph reproduces one published method's central claim with built-in nodes, trains end to end on a CPU in seconds, and quotes the paper, the recipe and the measured numbers in a bilingual note, with a README beside the graph. Classics of optimisation and regularisation on MNIST subsets: dropout (Srivastava 2014), batch normalisation at a high learning rate (Ioffe & Szegedy 2015), skip connections against the degradation of a 20-layer plain net (He 2016), Adam against SGD and momentum (Kingma & Ba 2015), label smoothing and its effect on confidence (Szegedy 2016, Müller 2019), cosine annealing with warm restarts (Loshchilov & Hutter 2017), vanishing sigmoid gradients (Glorot & Bengio 2010). Sequences and regression: gradient clipping for an exploding RNN (Pascanu 2013), a 2-D autoencoder of MNIST against PCA (Hinton & Salakhutdinov 2006), an LSTM forecasting a noisy wave (Hochreiter & Schmidhuber 1997), a transformer that learns to sort (Vaswani 2017), weight decay against fitting noise (Krogh & Hertz 1992), early stopping on validation loss (Prechelt 1998). Reinforcement learning: REINFORCE (Williams 1992), DQN (Mnih 2013, 2015) and PPO (Schulman 2017) each solving CartPole-v1, and Q-learning crossing a trap grid (Watkins 1989). The section renders between Training and LLM as "Paper Reproductions" / "論文復現"; the `papers` key is the sixth value `gallery.section` accepts.
@@ -5962,7 +5980,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.9.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.10.0...main
+[2.10.0]: https://github.com/CodefyUI/CodefyUI/compare/2.9.1...2.10.0
 [2.9.1]: https://github.com/CodefyUI/CodefyUI/compare/2.9.0...2.9.1
 [2.9.0]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...2.9.0
 [2.8.9]: https://github.com/CodefyUI/CodefyUI/compare/2.8.8...2.8.9
