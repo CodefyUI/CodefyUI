@@ -1031,7 +1031,9 @@ const zhTW: NodeTranslations = {
         'MultiStepLR：以逗號分隔的降速點，例如 "30, 80"，單位與 step_size 相同。留空則沿用舊規則：step_size 的 1、2、3、4 倍。',
       eta_min: 'CosineAnnealingLR / CosineAnnealingWarmRestarts：cosine 曲線降到的最低學習率。',
       T_mult: 'CosineAnnealingWarmRestarts：每次重啟後的週期是前一個的幾倍長。1 表示每個週期都是 T_max。',
-      patience: 'ReduceLROnPlateau：驗證損失連續幾個 epoch 沒有進步，才把學習率乘上 gamma。',
+      mode:
+        'ReduceLROnPlateau：監看的指標應該下降還是上升。min 跟著驗證損失（沒有接 val_dataloader 時改看訓練損失）；max 跟著 val_accuracy，需要接 val_dataloader 並使用分類損失。',
+      patience: 'ReduceLROnPlateau：監看的指標（見 mode）連續幾個 epoch 沒有進步，才把學習率乘上 gamma。',
       threshold: 'ReduceLROnPlateau：損失要進步多少比例才算變好（1e-4 = 0.01%）。',
       min_lr: 'ReduceLROnPlateau：學習率不會降到這個值以下。',
       max_lr: 'OneCycleLR 的最大學習率',
