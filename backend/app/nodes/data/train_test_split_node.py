@@ -81,9 +81,12 @@ class TrainTestSplitNode(BaseNode):
                 name="test_size",
                 param_type=ParamType.FLOAT,
                 default=0.2,
-                min_value=0.0,
-                max_value=1.0,
-                description="Fraction of samples reserved for testing. Must be in (0, 1).",
+                min_value=0.01,
+                max_value=0.99,
+                description=(
+                    "Fraction of samples reserved for testing, above 0 and below 1 "
+                    "(0 or 1 would leave one side empty)."
+                ),
             ),
             ParamDefinition(
                 name="seed",
@@ -128,10 +131,15 @@ class TrainTestSplitNode(BaseNode):
                 f"{features.shape[0]} rows vs {len(labels_list)} labels."
             )
 
-        test_size = float(params.get("test_size", 0.2))
+        try:
+            test_size = float(params.get("test_size", 0.2))
+        except (TypeError, ValueError):
+            test_size = float("nan")
         if not (0 < test_size < 1):
             raise ValueError(
-                f"TrainTestSplit: test_size must be in (0, 1), got {test_size}."
+                f"TrainTestSplit: test_size must be a fraction above 0 and below 1, "
+                f"such as 0.2, got {params.get('test_size')!r}. At 0 or 1 one side "
+                f"of the split would be empty."
             )
         seed = int(params.get("seed", 42))
         stratify = bool(params.get("stratify", False))

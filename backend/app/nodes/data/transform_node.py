@@ -16,7 +16,9 @@ Installing a pipeline is one attribute assignment, and a dataset that never
 reads ``.transform`` will accept it and ignore it. ``attach_transform``
 warns when the target had no ``transform`` attribute at all, which is the
 only signal available from here; ``SyntheticShapes`` and
-``SyntheticSegmentation`` are the two built-ins that behave that way.
+``SyntheticSegmentation`` are the two built-ins that behave that way. A
+``Subset`` (``DatasetSplit``'s outputs) gets the pipeline on a copy of the
+dataset it wraps, since ``Subset`` itself never reads ``.transform``.
 """
 
 from typing import Any
@@ -39,8 +41,10 @@ class TransformNode(BaseNode):
         "Wiring a chain into `transform` replaces the three params below. This "
         "node is for datasets with no transform ports of their own — "
         "HuggingFaceDataset, KaggleDataset and custom ones — while Dataset and "
-        "ImageFolderDataset take their pipelines directly. SyntheticShapes and "
-        "SyntheticSegmentation ignore an installed pipeline."
+        "ImageFolderDataset take their pipelines directly. On a DatasetSplit "
+        "output the pipeline goes on that split only. SyntheticShapes and "
+        "SyntheticSegmentation ignore an installed pipeline, and the run log "
+        "says so."
     )
 
     # This node returns a COPY of its input with the pipeline installed
@@ -92,8 +96,11 @@ class TransformNode(BaseNode):
 
         dataset = inputs["dataset"]
         wired = inputs.get("transform")
+        notes: list[str] = []
         if wired is not None:
-            return {"dataset": attach_transform(dataset, wired, context)}
+            return _with_notes(
+                {"dataset": attach_transform(dataset, wired, context, notes=notes)}, notes
+            )
 
         resize = params.get("resize", 0)
         normalize = params.get("normalize", True)
@@ -114,6 +121,13 @@ class TransformNode(BaseNode):
             # Through ``attach_transform`` like the wired branch, so the two
             # paths agree on everything downstream of "which steps". Nothing
             # here is random, so the seeding wrapper is never installed.
-            dataset = attach_transform(dataset, compose(transform_list), context)
+            dataset = attach_transform(dataset, compose(transform_list), context, notes=notes)
 
-        return {"dataset": dataset}
+        return _with_notes({"dataset": dataset}, notes)
+
+
+def _with_notes(result: dict[str, Any], notes: list[str]) -> dict[str, Any]:
+    """Add the canvas Log line for any warning ``attach_transform`` raised."""
+    if notes:
+        result["__log__"] = "\n\n".join(notes)
+    return result

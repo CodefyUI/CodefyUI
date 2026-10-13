@@ -146,3 +146,56 @@ def test_stats_port_type_accepts_the_dict_it_carries():
     assert isinstance(_run(_TRAIN)["stats"], dict)
     assert out.data_type == DataType.ANY
     assert inp.data_type == DataType.ANY and inp.optional
+
+
+# ── 2026-10-13 audit: per-row (axis=1) stats, axis checks ──
+
+_TRAIN_ROWS = torch.tensor([[1.0, 2.0, 3.0, 4.0], [10.0, 0.0, 5.0, 5.0], [2.0, 2.0, 8.0, 0.0]])
+_TEST_ROWS = torch.tensor([[9.0, 8.0, 6.0, -3.0], [1.0, 1.0, 1.0, 2.0]])
+
+
+@pytest.mark.parametrize("mode", ["zscore", "minmax", "unit_norm"])
+def test_axis1_stats_normalise_each_test_row_by_its_own_statistics(mode):
+    fit = _run(_TRAIN_ROWS, mode=mode, axis=1)
+    applied = NormalizeNode().execute(
+        {"tensor": _TEST_ROWS, "stats": fit["stats"]}, {"mode": "zscore", "axis": 1}
+    )
+    # The per-row recipe on the test rows themselves: training row i's
+    # statistics say nothing about test row i.
+    ref = _run(_TEST_ROWS, mode=mode, axis=1)["tensor"]
+    assert torch.allclose(applied["tensor"], ref, atol=1e-6)
+
+
+def test_axis1_stats_accept_a_test_split_of_another_size():
+    fit = _run(_TRAIN_ROWS, mode="unit_norm", axis=1)
+    applied = NormalizeNode().execute(
+        {"tensor": _TEST_ROWS, "stats": fit["stats"]}, {"axis": 1}
+    )
+    assert torch.allclose(applied["tensor"].norm(dim=1), torch.ones(2), atol=1e-6)
+
+
+def test_stats_fitted_on_another_axis_are_refused():
+    fit = _run(_TRAIN, mode="zscore", axis=0)
+    with pytest.raises(ValueError, match=r"Normalize: the `stats` input was fitted with axis=0"):
+        NormalizeNode().execute({"tensor": _TRAIN, "stats": fit["stats"]}, {"axis": 1})
+
+
+def test_axis0_stats_keep_their_keys_and_numbers():
+    fit = _run(_TRAIN, mode="zscore", axis=0)
+    assert sorted(fit["stats"]) == ["mean", "std"]
+    assert fit["stats"]["mean"] == pytest.approx(_TRAIN.mean(0).tolist())
+
+
+def test_axis1_stats_record_their_axis():
+    assert _run(_TRAIN_ROWS, mode="minmax", axis=1)["stats"]["axis"] == 1
+
+
+def test_axis1_stats_wired_into_an_axis0_normalize_are_refused():
+    fit = _run(_TRAIN_ROWS, mode="zscore", axis=1)
+    with pytest.raises(ValueError, match=r"fitted with axis=1, but this node has axis=0"):
+        NormalizeNode().execute({"tensor": _TEST_ROWS, "stats": fit["stats"]}, {"axis": 0})
+
+
+def test_an_out_of_range_axis_names_the_node():
+    with pytest.raises(ValueError, match=r"Normalize: axis=2 is out of range for a 2-D tensor"):
+        _run(_TRAIN, axis=2)

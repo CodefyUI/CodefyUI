@@ -32,6 +32,7 @@ their CSV in pandas before pointing this node at it.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 # Row numbers quoted in a missing-target message before it says "and N more".
 _MAX_NAMED_ROWS = 10
+
+_UNNAMED = re.compile(r"Unnamed: \d+")
 
 
 def _row_list(rows: list[int]) -> str:
@@ -93,6 +96,28 @@ def _target_numbers(values: Any, column: str) -> list[float]:
     return [float(v) for v in numbers.tolist()]
 
 
+def _is_unnamed(column: Any) -> bool:
+    """True for the name pandas gives a column whose header cell is blank.
+
+    ``df.to_csv(path)`` writes the row index as a first column with an empty
+    header, and a trailing comma on every line adds an empty last column;
+    pandas names both ``Unnamed: k``.
+    """
+    return bool(_UNNAMED.fullmatch(str(column)))
+
+
+def _first_non_number(values: Any) -> tuple[int, str] | None:
+    """(1-based data row, cell text) of the first cell that is not a number."""
+    import pandas as pd
+
+    numbers = pd.to_numeric(values, errors="coerce")
+    bad = numbers.isna() & values.notna()
+    if not bad.any():
+        return None
+    first = values.index[bad][0]
+    return int(first) + 1, str(values.loc[first])
+
+
 def _warn(context: Any, detail: str) -> None:
     logger.warning("%s", detail)
     log_warning = getattr(context, "log_warning", None)
@@ -113,7 +138,10 @@ class CSVReaderNode(BaseNode):
         "`drop_missing_target` is on, which drops them. Integral labels read as "
         "'1', not '1.0'. A `number` target that is not a number stops the run, "
         "naming the data rows. NaN in a feature column is kept and logged as a "
-        "warning. Turn "
+        "warning. Without `include_columns`, a column with a blank header (a "
+        "saved row index, or the empty column a trailing comma makes) is left "
+        "out, and so is a column with any text cell, such as '?' or '1,000'; "
+        "both are named in a warning. Turn "
         "`skip_header` off for a headerless file, whose columns are then named 0, "
         "1, 2 and so on."
     )
@@ -335,18 +363,59 @@ class CSVReaderNode(BaseNode):
                     f"Remove it from include_columns."
                 )
             feature_cols = requested
+            for c in feature_cols:
+                if len(df) > 0 and not pd.api.types.is_numeric_dtype(df[c]):
+                    found = _first_non_number(df[c])
+                    if found is not None:
+                        row, cell = found
+                        raise ValueError(
+                            f"CSVReader: include_columns lists {c!r}, but its "
+                            f"value {cell!r} in data row {row} is not a number. "
+                            f"Fix or remove that cell (a missing value can be "
+                            f"left empty), or drop {c!r} from include_columns."
+                        )
         else:
             feature_cols = [c for c in df.columns if c != target_column]
+            if skip_header:
+                # A blank header cell is a saved row index or the empty column
+                # a trailing comma makes, never a feature: an index column on
+                # a file sorted by class predicts the class by itself.
+                unnamed = [c for c in feature_cols if _is_unnamed(c)]
+                if unnamed:
+                    feature_cols = [c for c in feature_cols if c not in unnamed]
+                    _warn(
+                        context,
+                        f"CSVReader: left out column(s) with a blank header: "
+                        f"{', '.join(repr(c) for c in unnamed)} (a saved row "
+                        f"index or a trailing comma). Name one in include_columns "
+                        f"to keep it as a feature.",
+                    )
             # Drop non-numeric features when no whitelist given. Students who
             # need a one-hot or text feature should run pre-processing first.
             # Empty DataFrame: dtype inference returns object for every column,
             # which would drop them all — keep them so the column metadata
             # survives a header-only CSV.
             if len(df) > 0:
-                feature_cols = [
+                dropped = [
                     c for c in feature_cols
-                    if pd.api.types.is_numeric_dtype(df[c])
+                    if not pd.api.types.is_numeric_dtype(df[c])
                 ]
+                if dropped:
+                    feature_cols = [c for c in feature_cols if c not in dropped]
+                    described = []
+                    for c in dropped:
+                        found = _first_non_number(df[c])
+                        if found is None:
+                            described.append(repr(c))
+                        else:
+                            described.append(f"{c!r} (data row {found[0]}: {found[1]!r})")
+                    _warn(
+                        context,
+                        f"CSVReader: left out non-numeric column(s): "
+                        f"{', '.join(described)}. A number column with one text "
+                        f"cell, such as '?' or '1,000', is read as text; fix "
+                        f"that cell to keep the column.",
+                    )
 
         if feature_cols:
             nan_counts = df[feature_cols].isna().sum()

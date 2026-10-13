@@ -69,7 +69,7 @@ A single value broadcasts across every channel, so `Half` is correct for one-cha
 
 The fallback only runs in that one direction, deliberately. A test split never picks up the augmenting chain, because a randomly distorted test set measures something different every time you look at it. **ImageFolderDataset**'s `(none)` split is the one exception, because there is no split there to fall back from; see below.
 
-For the datasets that have no transform inputs — **HuggingFaceDataset**, **KaggleDataset**, or one of your own — wire the chain into the **Transform** node's `transform` input instead. When that input is wired, the node's three parameters are ignored.
+For the datasets that have no transform inputs — **HuggingFaceDataset**, **KaggleDataset**, or one of your own — wire the chain into the **Transform** node's `transform` input instead. When that input is wired, the node's three parameters are ignored. **Transform** also works on a **DatasetSplit** output: the chain applies to that split only, so a `train` output can take the augmenting chain while `val` takes the plain one.
 
 ### The CIFAR-10 recipe
 
@@ -106,7 +106,7 @@ my-dataset/
 - `path` — the directory holding the splits. A relative path resolves against the data folder that also holds `models/` and `images/`; an absolute path is used as given.
 - `split` — which sub-directory to load. Choose `(none)` when the class folders sit directly under `path` with no split level. At `(none)` there is no split to tell the two transform inputs apart, so whichever one is wired is the one used, and `train_transform` wins if both are.
 
-Labels come from the folder names sorted alphabetically, so `cat` is 0 and `dog` is 1 on every machine. The node also outputs a `classes` list in label order.
+Labels come from the folder names sorted alphabetically, so `cat` is 0 and `dog` is 1 on every machine. The node also outputs a `classes` list in label order. The class list is the union of the class folders in every split folder under `path` (`train`, `val`, `valid`, `validation`, `test`), so a `val` folder that lacks a class still labels the others with the indices `train` gives them; the run log names the missing folder.
 
 ### Anything else
 

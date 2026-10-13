@@ -47,8 +47,11 @@ class RandomRotationNode(TransformStepNode):
                 param_type=ParamType.FLOAT,
                 default=0.0,
                 description=(
-                    "Value for the corners the rotation leaves empty. 0 is "
-                    "black."
+                    "Value for the corners the rotation leaves empty, in the "
+                    "image's units where this step sits. Before ToTensor the "
+                    "image is 0-255 and the value is cut to a whole number "
+                    "(255 is white, 0.5 is 0); after ToTensor it is 0-1 (1.0 "
+                    "is white). 0 is black in both."
                 ),
                 advanced=True,
             ),

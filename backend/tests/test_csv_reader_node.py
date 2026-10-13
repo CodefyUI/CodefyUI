@@ -182,3 +182,69 @@ def test_header_names_are_stripped(tmp_path):
 def test_the_target_cannot_also_be_a_feature(tiny_csv):
     with pytest.raises(ValueError, match="target column 'c'"):
         _run(tiny_csv, target_column="c", include_columns="a,c")
+
+
+# ── 2026-10-13 audit: blank-header columns, text cells in number columns ──
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def log_warning(self, kind, detail):
+        self.warnings.append(detail)
+
+
+def _run_logged(path, **params):
+    ctx = _Recorder()
+    p = {"path": str(path), "target_column": "", "include_columns": "", "skip_header": True}
+    p.update(params)
+    return CSVReaderNode().execute({}, p, context=ctx), ctx.warnings
+
+
+def test_a_saved_row_index_is_not_a_feature(tmp_path):
+    # df.to_csv(path) writes the index as a first column with a blank header.
+    path = _write(tmp_path, ",x,label\n0,1.5,a\n1,2.5,b\n2,3.5,a\n")
+    res, warnings = _run_logged(path, target_column="label")
+    assert res["columns"] == ["x"]
+    assert res["tensor"].shape == (3, 1)
+    assert any("Unnamed: 0" in w and "blank header" in w for w in warnings)
+
+
+def test_a_trailing_comma_column_is_not_a_feature(tmp_path):
+    path = _write(tmp_path, "x,y,\n1,2,\n3,4,\n")
+    res, warnings = _run_logged(path)
+    assert res["columns"] == ["x", "y"]
+    assert any("Unnamed: 2" in w for w in warnings)
+
+
+def test_a_blank_header_column_can_still_be_included_by_name(tmp_path):
+    path = _write(tmp_path, ",x\n0,1.5\n1,2.5\n")
+    res, _ = _run_logged(path, include_columns="Unnamed: 0,x")
+    assert res["columns"] == ["Unnamed: 0", "x"]
+    assert res["tensor"][:, 0].tolist() == [0.0, 1.0]
+
+
+def test_a_number_column_with_a_text_cell_is_dropped_with_a_warning(tmp_path):
+    path = _write(tmp_path, "age,bp,chol\n50,120,200\n60,?,210\n70,130,220\n")
+    res, warnings = _run_logged(path)
+    assert res["columns"] == ["age", "chol"]
+    assert any("'bp'" in w and "data row 2" in w and "'?'" in w for w in warnings)
+
+
+def test_including_a_column_with_a_text_cell_names_the_column_and_cell(tmp_path):
+    path = _write(tmp_path, "age,bp\n50,120\n60,?\n")
+    with pytest.raises(ValueError, match=r"CSVReader: include_columns lists 'bp'.*'\?'.*data row 2"):
+        _run(path, include_columns="age,bp")
+
+
+def test_a_thousands_separator_column_is_named_in_the_warning(tmp_path):
+    path = _write(tmp_path, 'x,price\n1,"1,000"\n2,"2,500"\n')
+    res, warnings = _run_logged(path)
+    assert res["columns"] == ["x"]
+    assert any("'price'" in w and "'1,000'" in w for w in warnings)
+
+
+def test_an_all_numeric_file_logs_nothing(tiny_csv):
+    _, warnings = _run_logged(tiny_csv, target_column="label")
+    assert warnings == []
