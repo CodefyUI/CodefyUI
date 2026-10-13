@@ -55,5 +55,5 @@ class GRUNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         gru = self.get_or_build_module(context, params)
-        output, h_n = gru(tensor)
+        output, h_n = gru(self.match_input_dtype(tensor, gru))
         return {"output": output, "hidden": h_n}

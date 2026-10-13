@@ -9,7 +9,9 @@ class SoftmaxNode(BaseNode):
     DESCRIPTION = "Scores to probabilities that sum to 1 over a dimension"
     DETAILS = (
         "$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$, computed with the "
-        "maximum subtracted first so large scores do not overflow."
+        "maximum subtracted first so large scores do not overflow. A slice "
+        "where every score is $-\\infty$ (fully masked) has no maximum to "
+        "subtract and comes out as NaN."
     )
 
     @classmethod
@@ -35,7 +37,9 @@ class SoftmaxNode(BaseNode):
         import torch.nn.functional as F
 
         tensor = inputs["tensor"]
-        dim = params.get("dim", -1)
+        from ...core.param_values import int_param
+
+        dim = int_param(params, "dim", node="Softmax", default=-1)
         output = F.softmax(tensor, dim=dim)
         result: dict[str, Any] = {"tensor": output}
 

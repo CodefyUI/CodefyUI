@@ -83,7 +83,7 @@ def test_top_k_clamped_to_num_experts():
 
 def test_dim_mismatch_raises():
     x = torch.randn(1, 2, 16)  # H=16 but hidden_dim=8
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="MoELayer: the last dimension of `x` is 16 but hidden_dim is 8"):
         _run(x, hidden_dim=8)
 
 

@@ -294,6 +294,82 @@ def _tier0_namespace() -> dict[str, Any]:
     return tier0_module_namespace()
 
 
+def _tensor_version(value: Any) -> int | None:
+    """*value*'s autograd version counter, or None when it has none.
+
+    Every in-place op (``x += 1``, ``x[0] = 0``, ``x.add_(1)``,
+    ``x.masked_fill_(...)``) bumps it. Inference-mode tensors carry no
+    counter and are skipped.
+    """
+    import torch
+
+    if not isinstance(value, torch.Tensor):
+        return None
+    try:
+        return int(value._version)
+    except RuntimeError:
+        return None
+
+
+def _input_tensor_versions(inputs: dict[str, Any]) -> dict[tuple[str, Any], int]:
+    """The version of every tensor input, one container level deep.
+
+    Keyed by ``(port, index-or-key)``; the index is None for a tensor wired
+    straight into the port.
+    """
+    versions: dict[tuple[str, Any], int] = {}
+    for port, value in inputs.items():
+        for where, item in _tensor_slots(value):
+            version = _tensor_version(item)
+            if version is not None:
+                versions[(port, where)] = version
+    return versions
+
+
+def _tensor_slots(value: Any) -> list[tuple[Any, Any]]:
+    if isinstance(value, (list, tuple)):
+        return [(i, item) for i, item in enumerate(value)]
+    if isinstance(value, dict):
+        return [(key, item) for key, item in value.items()]
+    return [(None, value)]
+
+
+def _refuse_in_place_edits(
+    inputs: dict[str, Any],
+    before: dict[tuple[str, Any], int],
+) -> None:
+    """Fail the node when the script edited an input tensor in place.
+
+    ``inputs`` is a shallow copy: the tensors are the very objects the
+    upstream node returned, and every other node wired to that output reads
+    the same memory. Nodes on one level run concurrently, so a sibling saw
+    the edited or the original values depending on scheduling, and the
+    upstream node's own output on the canvas showed the edit. The check runs
+    after the script, so it cannot stop a sibling that already read the
+    tensor; it makes the run fail loudly instead of reporting numbers that
+    depend on thread timing.
+    """
+    for (port, where), version in before.items():
+        value = inputs.get(port)
+        if where is not None:
+            try:
+                value = value[where]
+            except (IndexError, KeyError, TypeError):
+                continue
+        after = _tensor_version(value)
+        if after is None or after == version:
+            continue
+        label = f"`{port}`" if where is None else f"`{port}`[{where!r}]"
+        raise RuntimeError(
+            f"PythonScript changed the input tensor {label} in place. That "
+            f"tensor is the upstream node's output, shared with every other "
+            f"node wired to it, so the edit leaks into them. Build a new "
+            f"tensor instead: x = x + 1 rather than x += 1, "
+            f"x = x.masked_fill(mask, 0) rather than x.masked_fill_(mask, 0), "
+            f"or x = x.clone() before editing x."
+        )
+
+
 class PythonScriptNode(BaseNode):
     NODE_NAME = "PythonScript"
     CATEGORY = "Utility"
@@ -308,7 +384,10 @@ class PythonScriptNode(BaseNode):
         "can do: this is a guardrail, not a sandbox, and the code runs in the "
         "CodefyUI process with your permissions, so only run scripts you "
         "trust. It is never cached and re-runs every time, because only the "
-        "script knows whether it has side effects."
+        "script knows whether it has side effects. Input tensors are shared with "
+        "the nodes that produced them, so editing one in place (x += 1, x[0] = 0, "
+        "x.add_(1)) is an error; build a new tensor instead (x = x + 1, or "
+        "x = x.clone() first)."
     )
 
     # Never cached, deliberately, and this is a correctness decision rather
@@ -330,8 +409,10 @@ class PythonScriptNode(BaseNode):
     #   * In-place mutation of an input. ``inputs`` is a shallow copy, so
     #     ``inputs["in1"].add_(1)``, ``p.data.zero_()`` over a MODEL's
     #     parameters, or ``inputs["in1"].append(x)`` all mutate the object
-    #     upstream produced and downstream nodes share. That is ordinary
-    #     numerics; no AST rule can tell it apart from a pure transform.
+    #     upstream produced and downstream nodes share. No AST rule can tell
+    #     it apart from a pure transform. For tensor inputs the node checks
+    #     the version counter after the script and fails the run
+    #     (``_refuse_in_place_edits``); the other two forms stay open.
     #   * Process-global state. ``torch.manual_seed``, ``numpy.random.seed``,
     #     ``torch.set_default_dtype``, ``torch.set_grad_enabled`` are all
     #     tier-0 reachable and all change what the REST of the run computes.
@@ -534,10 +615,13 @@ class PythonScriptNode(BaseNode):
                 "await it. Define a plain 'def run(inputs, params)'."
             )
 
+        versions = _input_tensor_versions(inputs)
         try:
-            return entry(dict(inputs), dict(params)), capture
+            result = entry(dict(inputs), dict(params))
         except Exception as exc:
             raise self._failure(exc, capture) from exc
+        _refuse_in_place_edits(inputs, versions)
+        return result, capture
 
     @staticmethod
     def _script_builtins(capture: _OutputCapture) -> dict[str, Any]:

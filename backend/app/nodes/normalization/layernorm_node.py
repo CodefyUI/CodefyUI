@@ -41,15 +41,27 @@ class LayerNormNode(StatefulModuleMixin, BaseNode):
         ]
 
     @staticmethod
-    def _parse_shape(shape_str: str) -> list[int]:
-        return [int(s.strip()) for s in shape_str.split(",") if s.strip()]
+    def _parse_shape(raw: Any) -> list[int]:
+        """``512``, ``"512"``, ``"64,32"``, ``"(64, 32)"`` or ``"64 32"``."""
+        from ...core.param_values import parse_int_sequence
+
+        shape = parse_int_sequence(raw, name="normalized_shape", node="LayerNorm")
+        if not shape or any(d <= 0 for d in shape):
+            raise ValueError(
+                "LayerNorm: normalized_shape must be positive whole numbers "
+                f"separated by commas (e.g. 512 or 64,32), got {raw!r}."
+            )
+        return list(shape)
 
     def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
+
+        from ...core.param_values import float_param
+
         shape_str = params.get("normalized_shape", "512")
         return nn.LayerNorm(
             normalized_shape=self._parse_shape(shape_str),
-            eps=params.get("eps", 1e-5),
+            eps=float_param(params, "eps", node="LayerNorm", default=1e-5),
         )
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
@@ -57,6 +69,7 @@ class LayerNormNode(StatefulModuleMixin, BaseNode):
 
         tensor = inputs["tensor"]
         ln = self.get_or_build_module(context, params)
+        tensor = self.match_input_dtype(tensor, ln)
         output = ln(tensor)
         result: dict[str, Any] = {"tensor": output}
 

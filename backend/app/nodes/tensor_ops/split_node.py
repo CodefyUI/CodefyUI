@@ -86,6 +86,8 @@ class SplitNode(BaseNode):
 
         tensor = inputs["tensor"]
         chunks = _resolve_chunks(params)
-        dim = params.get("dim", 0)
+        from ...core.param_values import int_param
+
+        dim = int_param(params, "dim", node="Split", default=0)
         parts = torch.chunk(tensor, chunks, dim=dim)
         return {f"chunk_{i}": part for i, part in enumerate(parts)}

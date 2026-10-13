@@ -141,12 +141,24 @@ class MoELayerNode(BaseNode):
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(x, dtype=torch.float32)
         x = x.float()
-        if x.dim() == 2:
-            x = x.unsqueeze(0)  # treat [T, H] as [1, T, H]
-
         num_experts = max(1, int(params.get("num_experts", 4)))
         top_k = max(1, int(params.get("top_k", 2)))
         hidden_dim = int(params.get("hidden_dim", 128))
+        if x.dim() not in (2, 3):
+            raise ValueError(
+                f"MoELayer: `x` must be [B, T, H] or [T, H], got shape "
+                f"{tuple(x.shape)}. Use Unsqueeze or Reshape to add the token "
+                f"dimension."
+            )
+        if x.shape[-1] != hidden_dim:
+            raise ValueError(
+                f"MoELayer: the last dimension of `x` is {x.shape[-1]} but "
+                f"hidden_dim is {hidden_dim}. Set hidden_dim to "
+                f"{x.shape[-1]}."
+            )
+        unbatched = x.dim() == 2
+        if unbatched:
+            x = x.unsqueeze(0)  # treat [T, H] as [1, T, H]
         expert_hidden_dim = int(params.get("expert_hidden_dim", 256))
         seed = int(params.get("seed", 42))
 
@@ -166,6 +178,10 @@ class MoELayerNode(BaseNode):
 
         with torch.no_grad():
             out, routing_w, idx = layer(x)
+
+        if unbatched:
+            # Hand back the rank that came in: [T, H] -> [T, H], [T, k].
+            out, routing_w, idx = out[0], routing_w[0], idx[0]
 
         return {
             "output": out,

@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.param_values import is_blank, parse_float_sequence
+from app.core.param_values import (
+    bool_param,
+    float_param,
+    int_param,
+    is_blank,
+    parse_float_sequence,
+    parse_int_sequence,
+)
 
 
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t\n"])
@@ -63,3 +70,59 @@ def test_booleans_are_rejected_rather_than_read_as_one():
 def test_unsupported_types_are_rejected_by_name():
     with pytest.raises(ValueError, match="got dict"):
         parse_float_sequence({"a": 1}, name="x")
+
+
+# -- single-value helpers (2026-10-13 audit) ---------------------------------
+
+
+@pytest.mark.parametrize("raw, expected", [(3, 3), (3.0, 3), ("3", 3), (" 3.0 ", 3), (None, 7), ("", 7)])
+def test_int_param_accepts_whole_numbers_in_any_spelling(raw, expected):
+    assert int_param({"k": raw}, "k", node="N", default=7) == expected
+
+
+@pytest.mark.parametrize("raw", [2.5, "abc", True, [3]])
+def test_int_param_names_the_node_and_param(raw):
+    with pytest.raises(ValueError, match="N: k must be a whole number"):
+        int_param({"k": raw}, "k", node="N", default=1)
+
+
+def test_int_param_enforces_the_minimum():
+    with pytest.raises(ValueError, match="N: k must be at least 1, got 0"):
+        int_param({"k": 0}, "k", node="N", default=1, min_value=1)
+
+
+@pytest.mark.parametrize("raw, expected", [(0.5, 0.5), (2, 2.0), ("0.25", 0.25), (None, 1.0)])
+def test_float_param(raw, expected):
+    assert float_param({"p": raw}, "p", node="N", default=1.0) == expected
+
+
+def test_float_param_refuses_a_boolean():
+    with pytest.raises(ValueError, match="N: p must be a number, got True"):
+        float_param({"p": True}, "p", node="N", default=1.0)
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (True, True), (False, False), (1, True), (0, False),
+    ("true", True), ("False", False), ("1", True), ("0", False), (None, True),
+])
+def test_bool_param_reads_words_not_truthiness(raw, expected):
+    assert bool_param({"b": raw}, "b", node="N", default=True) is expected
+
+
+@pytest.mark.parametrize("raw", ["maybe", 2, [True]])
+def test_bool_param_refuses_anything_else(raw):
+    with pytest.raises(ValueError, match="N: b must be true or false"):
+        bool_param({"b": raw}, "b", node="N", default=True)
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (-1, (-1,)), ("2,3", (2, 3)), ("(2, 3)", (2, 3)), ("2 3", (2, 3)),
+    ([2, 3], (2, 3)), ("", None), (None, None),
+])
+def test_parse_int_sequence_spellings(raw, expected):
+    assert parse_int_sequence(raw, name="dim", node="N") == expected
+
+
+def test_parse_int_sequence_names_a_bad_item():
+    with pytest.raises(ValueError, match="N: dim must be whole numbers.*'x' is not one"):
+        parse_int_sequence("1,x", name="dim", node="N")

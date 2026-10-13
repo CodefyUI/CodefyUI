@@ -141,7 +141,8 @@ const zhTW: NodeTranslations = {
     details:
       '沒有可學參數，也沒有隨機初始化。內建預設為 EdgeDetection3x3、Sharpen3x3、VerticalEdge3x3；把 ' +
       'preset 設成 Custom 就能自填 NxN 矩陣，元素數量必須剛好是 kernel_size × kernel_size。' +
-      '同一個卷積核以分組卷積（也就是 depthwise 卷積）逐通道套用，通道數不變。',
+      '同一個卷積核以分組卷積（也就是 depthwise 卷積）逐通道套用，通道數不變。' +
+      '整數或布林輸入會先轉成 float32，輸出也是 float32。',
     params: {
       preset: '內建的 3×3 kernel，或選 Custom 自己寫一個矩陣。',
       kernel_size: 'NxN kernel 的邊長 N（只有 Custom 會用到）。',
@@ -165,7 +166,8 @@ const zhTW: NodeTranslations = {
     details:
       '底層是 nn.BatchNorm2d：$y = \\frac{x - \\mu_C}{\\sqrt{\\sigma_C^2 + ' +
       '\\epsilon}} \\gamma + \\beta$，其中 $\\mu_C$、$\\sigma_C^2$ 是每個通道在 (N, H, W) ' +
-      '上的統計量。num_features 必須等於輸入的通道數。',
+      '上的統計量。num_features 必須等於輸入的通道數。統計量一律取自這次執行的批次（不保留 running ' +
+      '平均），所以每個通道至少要有兩個值。',
     params: {
       num_features: '要正規化的特徵（通道）數量',
     },
@@ -273,7 +275,8 @@ const zhTW: NodeTranslations = {
     description: '對每個特徵在批次上正規化',
     details:
       '底層是 nn.BatchNorm1d。輸入為 (N, C) 或 (N, C, L)，num_features 必須等於 C；(N, C, ' +
-      'H, W) 的影像張量請改用 BatchNorm2d。正規化後會再做一次可學的縮放與平移。',
+      'H, W) 的影像張量請改用 BatchNorm2d。正規化後會再做一次可學的縮放與平移。統計量一律取自這次' +
+      '執行的批次（不保留 running 平均），所以每個特徵至少要有兩個值。',
     params: {
       num_features: '要正規化的特徵數',
     },
@@ -1168,7 +1171,8 @@ const zhTW: NodeTranslations = {
     description: '把遮罩標記的位置換成常數，預設 $-\\infty$',
     details:
       '放在 Softmax 之前：因為 $e^{-\\infty} = 0$，被擋住的位置會拿到恰好 0 的機率，其餘位置重新歸一化後加總仍為 1。' +
-      '改在 softmax 之後才歸零，該列就不再加總為 1。輸入張量必須是浮點數。',
+      '改在 softmax 之後才歸零，該列就不再加總為 1。每一列至少要留一個位置不遮：整列都是 $-\\infty$ 時，' +
+      'softmax 會得到 NaN。輸入張量必須是浮點數。',
     params: {
       value: '填入被遮住位置的值。-inf 是注意力的標準做法（softmax 之後變成 0）；zero 與 custom 用於非注意力的遮罩，不會得到正確的注意力權重。',
       custom_value: '當 value 選 custom 時實際填入的數值。',
@@ -1181,13 +1185,14 @@ const zhTW: NodeTranslations = {
   Mean: {
     description: '沿一或多個維度取平均',
     params: {
-      dim: '要縮減的維度（逗號分隔整數）',
+      dim: '要縮減的維度（逗號分隔整數）；留空則對所有元素取平均',
       keepdim: '是否保留被縮減的維度',
     },
   },
   Softmax: {
     description: '沿指定維度把分數轉成加總為 1 的機率',
-    details: '$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$，計算時會先減去最大值，避免數值過大而溢位。',
+    details: '$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$，計算時會先減去最大值，避免數值過大而溢位。' +
+      '某個切片的分數全是 $-\\infty$（整列被遮住）時沒有最大值可減，結果會是 NaN。',
     params: {
       dim: '要套用 Softmax 的維度',
     },
@@ -1235,7 +1240,8 @@ const zhTW: NodeTranslations = {
   },
   TensorStats: {
     description: '張量的形狀、最小、最大、平均、總和與標準差',
-    details: '每項統計各有輸出埠，report 也會印進執行 Log；張量本身原樣傳出，可直接插在任何連線上。std 是母體標準差（除以 N）；整數與布林輸入先轉成 float32。precision 只影響 report 文字。',
+    details: '每項統計各有輸出埠，report 也會印進執行 Log；張量本身原樣傳出，可直接插在任何連線上。std 是母體標準差（除以 N）。float32 與 float64 輸入維持原本型別，與同一條連線上的 Mean 節點結果相同；' +
+      '整數、布林與半精度輸入改以 float64 計算。precision 只影響 report 文字。',
     params: {
       precision: 'report 文字的小數位數（純量埠不四捨五入）',
     },
@@ -1267,7 +1273,9 @@ const zhTW: NodeTranslations = {
     details:
       '腳本要定義 run(inputs, params)；回傳的不是字典時視為 out1。只能碰 collections、itertools、' +
       'json、math、numpy、re、statistics、torch，限制的是能匯入哪些函式庫，不是它們能做什麼：這是防護欄，不是沙箱，' +
-      '程式碼以你的權限在 CodefyUI 行程內執行，只跑你信任的腳本。此節點不快取，每次都重跑。',
+      '程式碼以你的權限在 CodefyUI 行程內執行，只跑你信任的腳本。此節點不快取，每次都重跑。' +
+      '輸入張量與產生它的節點共用同一塊記憶體，所以原地修改（x += 1、x[0] = 0、x.add_(1)）會報錯；' +
+      '請建立新張量（x = x + 1，或先 x = x.clone()）。',
     params: {
       code: '定義 run(inputs, params) 的 Python 原始碼。每次編輯都會依 Tier-0 政策檢查。',
       input_ports: '輸入連接埠 in1..inN 的數量（1..8）',
@@ -1292,7 +1300,7 @@ const zhTW: NodeTranslations = {
     description: '把資料畫成折線、直方圖、熱圖或影像',
     details:
       '圖由 matplotlib 繪製。line 與 histogram 會先把多維資料攤平，heatmap 會把一維輸入摺成方形格子，' +
-      'image 則把 (N, C, H, W) 批次排成網格。',
+      'image 則把 (N, C, H, W) 或 (N, H, W) 批次排成網格。',
     params: {
       title: '圖表標題',
       plot_type: '要生成的圖表類型',

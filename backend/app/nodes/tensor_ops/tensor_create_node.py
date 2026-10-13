@@ -67,11 +67,16 @@ class TensorCreateNode(BaseNode):
         import torch
 
         from ...core.device_utils import context_device, to_device
+        from ...core.param_values import bool_param, float_param
 
         shape = parse_shape(params.get("shape", "1,3,224,224"))
         fill = params.get("fill", "zeros")
-        value = params.get("value", 0.0)
-        requires_grad = params.get("requires_grad", False)
+        # float() because the canvas saves a FLOAT param as a JS number, so
+        # 2.0 arrives as the int 2 and torch.full would infer int64 from it
+        # (and refuse requires_grad on the result).
+        value = float_param(params, "value", node="TensorCreate", default=0.0)
+        requires_grad = bool_param(
+            params, "requires_grad", node="TensorCreate", default=False)
 
         creators = {
             "zeros": lambda: torch.zeros(*shape),

@@ -35,8 +35,10 @@ class TensorStatsNode(BaseNode):
     DETAILS = (
         "Each statistic has its own port, and `report` also goes to the "
         "Execution Log. The input passes through unchanged, so the node can be dropped onto "
-        "any edge. Statistics cover the whole tensor; integer and boolean "
-        "input is promoted to float32 first. `std` is the population value "
+        "any edge. Statistics cover the whole tensor. float32 and float64 "
+        "input keeps its dtype, matching a Mean node on the same edge; integer, "
+        "boolean and half-precision input is summarised in float64. `std` is "
+        "the population value "
         "(divides by N, not N-1). `precision` only affects the text in `report`; "
         "the scalar ports carry the full-precision numbers."
     )
@@ -88,12 +90,16 @@ class TensorStatsNode(BaseNode):
                 "min/max/mean are undefined."
             )
 
-        # Integer and boolean tensors have no mean/std in torch; promote them.
-        # A floating tensor keeps its own dtype so the reported mean is the
-        # same number a Mean node on the same edge would produce.
+        # float32 and float64 keep their own dtype, so the reported mean is
+        # bit-for-bit the number a Mean node on the same edge produces (the
+        # reference values in exam statements rely on that). Everything else
+        # is summarised in float64: promoted to float32, an int64 element
+        # above 2**24 lost digits (16777217 reported as 16777216), and in
+        # float16 a sum of 70000 ones overflowed to inf. MPS has no float64,
+        # hence the CPU copy.
         stats_src = tensor.detach()
-        if not stats_src.is_floating_point():
-            stats_src = stats_src.to(torch.float32)
+        if stats_src.dtype not in (torch.float32, torch.float64):
+            stats_src = stats_src.to(device="cpu", dtype=torch.float64)
 
         shape = tuple(tensor.shape)
         numel = int(tensor.numel())

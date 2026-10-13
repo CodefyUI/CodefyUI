@@ -54,5 +54,5 @@ class LSTMNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         lstm = self.get_or_build_module(context, params)
-        output, (h_n, _c_n) = lstm(tensor)
+        output, (h_n, _c_n) = lstm(self.match_input_dtype(tensor, lstm))
         return {"output": output, "hidden": h_n}

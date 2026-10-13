@@ -44,6 +44,7 @@ class LinearNode(StatefulModuleMixin, BaseNode):
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         tensor = inputs["tensor"]
         linear = self.get_or_build_module(context, params)
+        tensor = self.match_input_dtype(tensor, linear)
         output = linear(tensor)
         result: dict[str, Any] = {"tensor": output}
 

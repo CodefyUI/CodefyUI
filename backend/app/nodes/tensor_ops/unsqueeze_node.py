@@ -28,5 +28,7 @@ class UnsqueezeNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         tensor = inputs["tensor"]
-        dim = params.get("dim", 0)
+        from ...core.param_values import int_param
+
+        dim = int_param(params, "dim", node="Unsqueeze", default=0)
         return {"tensor": tensor.unsqueeze(dim)}

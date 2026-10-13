@@ -57,4 +57,6 @@ class TransformerDecoderNode(StatefulModuleMixin, BaseNode):
         tensor = inputs["tensor"]
         memory = inputs["memory"]
         decoder = self.get_or_build_module(context, params)
+        tensor = self.match_input_dtype(tensor, decoder)
+        memory = self.match_input_dtype(memory, decoder, port="memory")
         return {"tensor": decoder(tensor, memory)}
