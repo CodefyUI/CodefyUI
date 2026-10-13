@@ -254,6 +254,238 @@ def test_exported_python_carries_the_new_params():
             o, factor=0.5, patience=2, min_lr=0.01), 8, metric=1.0)
 
 
+
+# ── #700: ReduceLROnPlateau's mode ─────────────────────────────────────────
+
+
+def _lrs_on(opt, sched, metrics):
+    """The LR after one ``sched.step(m)`` per metric (``None`` -> no metric)."""
+    out = []
+    for m in metrics:
+        opt.step()
+        if m is None:
+            sched.step()
+        else:
+            sched.step(m)
+        out.append(opt.param_groups[0]["lr"])
+    return out
+
+
+def test_plateau_mode_reaches_torch():
+    # A metric that rises every epoch: improvement under max, a plateau under
+    # min. patience=1, so min halves the LR every second epoch.
+    rising = [0.5, 0.6, 0.7, 0.8, 0.9]
+    by_mode = {}
+    for mode in ("min", "max"):
+        opt = _opt()
+        sched = LRSchedulerNode().execute(
+            {"optimizer": opt},
+            {"type": "ReduceLROnPlateau", "gamma": 0.5, "patience": 1, "mode": mode},
+        )["scheduler"]
+        assert sched.mode == mode
+        by_mode[mode] = _lrs_on(opt, sched, rising)
+        ref_opt = _opt()
+        assert by_mode[mode] == _lrs_on(
+            ref_opt,
+            torch.optim.lr_scheduler.ReduceLROnPlateau(
+                ref_opt, mode=mode, factor=0.5, patience=1),
+            rising)
+    assert by_mode["max"] == [0.1] * 5
+    assert by_mode["min"][-1] < 0.1
+
+
+def test_plateau_mode_defaults_to_min_and_is_shown_only_for_plateau():
+    param = next(p for p in LRSchedulerNode.define_params() if p.name == "mode")
+    assert param.default == "min"
+    assert param.options == ["min", "max"]
+    assert param.visible_when == {"type": ["ReduceLROnPlateau"]}
+    sched = LRSchedulerNode().execute(
+        {"optimizer": _opt()}, {"type": "ReduceLROnPlateau"})["scheduler"]
+    assert sched.mode == "min"
+
+
+def test_plateau_mode_rejects_anything_but_min_or_max():
+    with pytest.raises(ValueError, match="mode"):
+        LRSchedulerNode().execute(
+            {"optimizer": _opt()}, {"type": "ReduceLROnPlateau", "mode": "maximize"})
+
+
+def test_every_per_type_knob_is_shown_only_for_the_types_that_read_it():
+    visible = {p.name: p.visible_when for p in LRSchedulerNode.define_params()}
+    assert visible["milestones"] == {"type": ["MultiStepLR"]}
+    assert visible["eta_min"] == {
+        "type": ["CosineAnnealingLR", "CosineAnnealingWarmRestarts"]}
+    assert visible["T_mult"] == {"type": ["CosineAnnealingWarmRestarts"]}
+    for name in ("mode", "patience", "threshold", "min_lr"):
+        assert visible[name] == {"type": ["ReduceLROnPlateau"]}, name
+    assert visible["pct_start"] == {"type": ["OneCycleLR"]}
+
+
+def test_declared_defaults_keep_the_old_lr_sequence_for_the_other_types():
+    """The types #700 added no knob to, plus OneCycleLR's pct_start."""
+    defaults = {p.name: p.default for p in LRSchedulerNode.define_params()}
+    for sched_type, factory in [
+        ("StepLR", lambda o: torch.optim.lr_scheduler.StepLR(o, step_size=10)),
+        ("ExponentialLR", lambda o: torch.optim.lr_scheduler.ExponentialLR(o, gamma=0.1)),
+        ("OneCycleLR",
+         lambda o: torch.optim.lr_scheduler.OneCycleLR(o, max_lr=0.01, total_steps=1000)),
+    ]:
+        opt = _opt()
+        sched = LRSchedulerNode().execute(
+            {"optimizer": opt}, {**defaults, "type": sched_type})["scheduler"]
+        assert _lrs(opt, sched, 45) == pytest.approx(
+            _reference(factory, 45)), sched_type
+
+
+_EXPORT_CASES = [
+    ({"type": "ReduceLROnPlateau", "gamma": 0.5, "mode": "max", "patience": 1,
+      "threshold": 0.01, "min_lr": 0.0002},
+     lambda o: torch.optim.lr_scheduler.ReduceLROnPlateau(
+         o, mode="max", factor=0.5, patience=1, threshold=0.01, min_lr=0.0002),
+     [0.5, 0.5, 0.5, 0.5, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]),
+    ({"type": "MultiStepLR", "milestones": "2, 5", "gamma": 0.5},
+     lambda o: torch.optim.lr_scheduler.MultiStepLR(o, milestones=[2, 5], gamma=0.5),
+     [None] * 10),
+    ({"type": "CosineAnnealingLR", "T_max": 6, "eta_min": 0.0001},
+     lambda o: torch.optim.lr_scheduler.CosineAnnealingLR(o, T_max=6, eta_min=0.0001),
+     [None] * 10),
+    ({"type": "CosineAnnealingWarmRestarts", "T_max": 2, "T_mult": 2, "eta_min": 0.0001},
+     lambda o: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+         o, T_0=2, T_mult=2, eta_min=0.0001),
+     [None] * 10),
+    ({"type": "OneCycleLR", "max_lr": 0.01, "total_steps": 12, "pct_start": 0.2},
+     lambda o: torch.optim.lr_scheduler.OneCycleLR(
+         o, max_lr=0.01, total_steps=12, pct_start=0.2),
+     [None] * 10),
+]
+
+
+@pytest.mark.parametrize(
+    "params, factory, metrics", _EXPORT_CASES,
+    ids=[case[0]["type"] for case in _EXPORT_CASES])
+def test_an_exported_script_builds_the_same_scheduler(params, factory, metrics):
+    """Export Python emits every knob, and the script's scheduler follows the
+    same LR sequence as one built with torch directly (#700 acceptance 3)."""
+    import ast
+
+    from app.core.codegen import generate_python
+    from app.core.execution_context import ExecutionContext
+
+    script = generate_python(
+        [{"id": "s1", "type": "Start", "data": {"params": {}}},
+         {"id": "model", "type": "SequentialModel", "data": {"params": {}}},
+         {"id": "opt", "type": "Optimizer", "data": {"params": {"lr": 0.001}}},
+         {"id": "sched", "type": "LRScheduler", "data": {"params": params}}],
+        [{"id": "t1", "source": "s1", "target": "model", "sourceHandle": "trigger",
+          "targetHandle": "", "type": "trigger"},
+         {"id": "d1", "source": "model", "target": "opt", "sourceHandle": "model",
+          "targetHandle": "model", "type": "data"},
+         {"id": "d2", "source": "opt", "target": "sched", "sourceHandle": "optimizer",
+          "targetHandle": "optimizer", "type": "data"}],
+        name="knobs")
+
+    emitted = [
+        ast.literal_eval(line.split("=", 1)[1].strip())
+        for line in script.splitlines()
+        if line.strip().startswith("params = {")]
+    assert params in emitted
+
+    module: dict = {"__name__": "lr_scheduler_export"}
+    exec(compile(script, "<exported graph>", "exec"), module)  # noqa: S102
+    module["_RT"] = module["_load_runtime"](None)
+    results = module["run_graph"](ExecutionContext(seed=module.get("GRAPH_SEED")), {})
+    sched = results["sched"]["scheduler"]
+    exported_opt = sched.optimizer
+
+    ref_opt = torch.optim.Adam(nn.Linear(4, 2).parameters(), lr=0.001)
+    assert _lrs_on(exported_opt, sched, metrics) == pytest.approx(
+        _lrs_on(ref_opt, factory(ref_opt), metrics))
+
+
+# ── #700: TrainingLoop feeds a mode="max" plateau schedule val_accuracy ────
+
+
+class _RecordingPlateau(torch.optim.lr_scheduler.ReduceLROnPlateau):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seen: list[float] = []
+
+    def step(self, metrics, *args, **kwargs):  # type: ignore[override]
+        self.seen.append(float(metrics))
+        return super().step(metrics, *args, **kwargs)
+
+
+def _loader(n: int = 12):
+    gen = torch.Generator().manual_seed(3)
+    x = torch.randn(n, 4, generator=gen)
+    y = torch.randint(0, 2, (n,), generator=gen)
+    return torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x, y), batch_size=4, shuffle=False)
+
+
+def _train_with(sched, opt, model, *, val=True, loss_fn=None):
+    from app.nodes.training.training_loop_node import TrainingLoopNode
+
+    inputs = {"model": model, "dataloader": _loader(), "optimizer": opt,
+              "loss_fn": loss_fn or nn.CrossEntropyLoss(), "lr_scheduler": sched}
+    if val:
+        inputs["val_dataloader"] = _loader()
+    return TrainingLoopNode().execute(inputs, {"device": "cpu", "epochs": 3})
+
+
+@pytest.mark.parametrize("mode, series", [
+    ("max", "final_val_accuracy"), ("min", "final_val_loss")])
+def test_training_loop_feeds_the_metric_the_mode_expects(mode, series):
+    torch.manual_seed(0)
+    model = nn.Linear(4, 2)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = _RecordingPlateau(opt, mode=mode, patience=0)
+    result = _train_with(sched, opt, model)
+    assert len(sched.seen) == 3
+    assert sched.seen[-1] == pytest.approx(result["metrics"][series])
+    if mode == "max":
+        # Accuracies over 12 validation samples.
+        assert all(abs(v * 12 - round(v * 12)) < 1e-9 for v in sched.seen)
+
+
+@pytest.mark.parametrize("val, loss_fn, reason", [
+    (False, None, "no val_dataloader"),
+    (True, nn.MSELoss(), "not a classification loss"),
+])
+def test_training_loop_refuses_mode_max_without_an_accuracy(val, loss_fn, reason):
+    torch.manual_seed(0)
+    model = nn.Linear(4, 2)
+    before = model.weight.detach().clone()
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="max")
+    with pytest.raises(ValueError, match=reason):
+        _train_with(sched, opt, model, val=val, loss_fn=loss_fn)
+    # Refused before the first batch: the weights are untouched.
+    assert torch.equal(model.weight.detach(), before)
+
+
+def test_training_loop_skips_a_mode_max_step_when_an_epoch_has_no_accuracy(caplog):
+    import logging
+
+    torch.manual_seed(0)
+    model = nn.Linear(4, 2)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = _RecordingPlateau(opt, mode="max", patience=0)
+    empty = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(torch.zeros(0, 4), torch.zeros(0, dtype=torch.long)),
+        batch_size=4)
+    from app.nodes.training.training_loop_node import TrainingLoopNode
+
+    with caplog.at_level(logging.WARNING):
+        TrainingLoopNode().execute(
+            {"model": model, "dataloader": _loader(), "optimizer": opt,
+             "loss_fn": nn.CrossEntropyLoss(), "lr_scheduler": sched,
+             "val_dataloader": empty},
+            {"device": "cpu", "epochs": 3})
+    assert sched.seen == []
+    assert opt.param_groups[0]["lr"] == pytest.approx(0.1)
+    assert sum("mode='max'" in r.getMessage() for r in caplog.records) == 1
+
 # ── 2026-10-13 audit: lengths below 1 are refused by validation ─────────
 # step_size=0 or T_max=0 passed validate_graph and then raised
 # ZeroDivisionError after a whole epoch of training.

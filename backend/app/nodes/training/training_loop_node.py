@@ -2147,6 +2147,35 @@ class TrainingLoopNode(BaseNode):
             )
             monitor_is_accuracy = False
         best_monitor_value = float("-inf") if monitor_is_accuracy else float("inf")
+
+        # #700: a ReduceLROnPlateau built with mode="max" waits for its
+        # metric to RISE. Fed the loss, every epoch that lowers the loss
+        # would count as no improvement and the LR would drop while the
+        # model is still getting better, so mode="max" is fed val_accuracy.
+        # Refused before the first batch when the run cannot produce one:
+        # the early-stopping fallback to val_loss above works because its
+        # comparison flips with it, but the scheduler's direction is fixed
+        # at construction and inverting it here would be a silent change.
+        plateau_follows_accuracy = (
+            _is_plateau(lr_scheduler)
+            and getattr(lr_scheduler, "mode", "min") == "max")
+        if plateau_follows_accuracy:
+            if val_dataloader is None:
+                plateau_accuracy_missing = "no val_dataloader is wired"
+            elif not (is_classification_loss or is_binary_logit_loss):
+                plateau_accuracy_missing = (
+                    "loss_fn is not a classification loss (CrossEntropyLoss, "
+                    "NLLLoss, or BCEWithLogitsLoss on a single output)")
+            else:
+                plateau_accuracy_missing = None
+            if plateau_accuracy_missing is not None:
+                raise ValueError(
+                    "LRScheduler is ReduceLROnPlateau with mode='max', which "
+                    "follows val_accuracy, but "
+                    f"{plateau_accuracy_missing}. Set mode='min' to follow "
+                    "the loss, or wire a val_dataloader and train with a "
+                    "classification loss.")
+        plateau_accuracy_missing_warned = False
         best_epoch = 0
         best_state_dict = None
         patience_counter = 0
@@ -2635,7 +2664,21 @@ class TrainingLoopNode(BaseNode):
             if lr_scheduler is not None:
                 # ReduceLROnPlateau needs a metric
                 if hasattr(lr_scheduler, "step"):
-                    if scheduler_is_plateau:
+                    if plateau_follows_accuracy:
+                        # mode="max" (#700). An epoch whose validation
+                        # produced no accuracy (an empty val_dataloader, a
+                        # multi-label head) has no observation to judge, so
+                        # the scheduler is not stepped rather than fed a loss
+                        # it would read the wrong way round.
+                        if avg_val_accuracy is not None:
+                            lr_scheduler.step(avg_val_accuracy)
+                        elif not plateau_accuracy_missing_warned:
+                            logger.warning(
+                                "ReduceLROnPlateau(mode='max') follows "
+                                "val_accuracy, but epoch %d produced none; "
+                                "the scheduler was not stepped.", epoch + 1)
+                            plateau_accuracy_missing_warned = True
+                    elif scheduler_is_plateau:
                         # Metric-driven: stays per-epoch in BOTH
                         # scheduler_step modes — there is no per-step metric
                         # for it to react to (#297).

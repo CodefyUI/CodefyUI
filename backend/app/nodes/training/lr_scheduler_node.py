@@ -27,6 +27,17 @@ def _parse_milestones(raw: Any) -> list[int]:
     return sorted(set(out))
 
 
+def _plateau_mode(raw: Any) -> str:
+    """ReduceLROnPlateau's ``mode``; blank -> ``"min"`` (the old behaviour)."""
+    mode = str(raw or "min").strip().lower()
+    if mode not in ("min", "max"):
+        raise ValueError(
+            f"LRScheduler mode: {raw!r} is not 'min' or 'max'. Use 'min' "
+            f"when the watched metric is a loss, 'max' when it is an accuracy."
+        )
+    return mode
+
+
 class LRSchedulerNode(BaseNode):
     NODE_NAME = "LRScheduler"
     CATEGORY = "Training"
@@ -188,13 +199,28 @@ class LRSchedulerNode(BaseNode):
                 visible_when={"type": ["CosineAnnealingWarmRestarts"]},
             ),
             ParamDefinition(
+                name="mode",
+                param_type=ParamType.SELECT,
+                default="min",
+                options=["min", "max"],
+                description=(
+                    "ReduceLROnPlateau: whether the watched metric should "
+                    "fall or rise. min follows the validation loss (the "
+                    "training loss when no val_dataloader is wired); max "
+                    "follows val_accuracy, which needs a val_dataloader and "
+                    "a classification loss."
+                ),
+                visible_when={"type": ["ReduceLROnPlateau"]},
+            ),
+            ParamDefinition(
                 name="patience",
                 param_type=ParamType.INT,
                 default=10,
                 min_value=0,
                 description=(
                     "ReduceLROnPlateau: epochs without improvement in the "
-                    "validation loss before the LR is multiplied by gamma."
+                    "watched metric (see mode) before the LR is multiplied "
+                    "by gamma."
                 ),
                 visible_when={"type": ["ReduceLROnPlateau"]},
             ),
@@ -271,6 +297,7 @@ class LRSchedulerNode(BaseNode):
         elif sched_type == "ReduceLROnPlateau":
             sched = lr_scheduler.ReduceLROnPlateau(
                 optimizer,
+                mode=_plateau_mode(params.get("mode", "min")),
                 factor=params.get("gamma", 0.1),
                 patience=int(params.get("patience", 10)),
                 threshold=float(params.get("threshold", 1e-4)),
