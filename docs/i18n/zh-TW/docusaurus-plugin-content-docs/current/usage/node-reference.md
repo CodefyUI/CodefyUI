@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: 節點參考
-description: 所有內建節點 — 156 個節點涵蓋 16 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
+description: 所有內建節點 — 157 個節點涵蓋 16 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
 ---
 
 # 節點參考
 
-CodefyUI 內建 **156 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
+CodefyUI 內建 **157 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
 
 :::tip
 此表反映目前版本，但後端才是權威來源。請查看即時節點面板或 `GET /api/nodes`，確認目前安裝可用的節點。雙擊畫布可搜尋節點。
@@ -17,7 +17,7 @@ CodefyUI 內建 **156 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 | **CNN** | Conv2d、Conv1d、Conv2dExplicit、ConvTranspose2d、MaxPool2d、AvgPool2d、AdaptiveAvgPool2d、BatchNorm2d、Dropout、Activation | 10 |
 | **RNN** | LSTM、GRU、RNNCell | 3 |
 | **Transformer** | MultiHeadAttention、TransformerEncoder、TransformerDecoder、MoELayer | 4 |
-| **RL** | DQN、PPO、EnvWrapper、RewardModel、KLDivergence、PolicyRollout、PPOClipObjective、GroupRelativeAdvantage、Discount、GridWorldEnv、PreferenceDataset、BradleyTerryLoss、BradleyTerryTrain | 13 |
+| **RL** | DQN、PPO、EnvWrapper、RewardModel、KLDivergence、PolicyRollout、PPOClipObjective、GroupRelativeAdvantage、Discount、GridWorldEnv、PreferenceDataset、BradleyTerryLoss、BradleyTerryTrain、RLTrainingLoop | 14 |
 | **資料 (Data)** | Dataset、ImageFolderDataset、DataLoader、DatasetBatch、Transform、HuggingFaceDataset、KaggleDataset、TensorInput、TextInput、CSVReader、ColumnSelector、RowSelector、Normalize、SyntheticDataset、SyntheticShapes、SyntheticSegmentation、SyntheticSequence、TrainTestSplit、DatasetSplit、ResizeTransform、ToTensorTransform、NormalizeTransform、RandomCrop、RandomHorizontalFlip、RandomRotation、ColorJitter、RandAugment、ComposeTransform、TensorDataset | 29 |
 | **資料流 (Data Flow)** | Map、Reduce、Switch | 3 |
 | **訓練 (Training)** | Optimizer、Loss、TrainingLoop、EvaluateModel、LRScheduler、SequentialModel、BackwardOnce | 7 |
@@ -46,7 +46,7 @@ CodefyUI 內建 **156 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 - **語言模型鏈**（LLM）— 八個節點組成 GPT 式解碼器的訓練路徑：`TextCorpusDataset` 從 Hugging Face Hub 或本機 `.txt` 讀取文字列；`DataMixDataset` 將 2 到 6 個這類語料混合成一個資料集：`ratio` 讓 `weights` 決定各語料在 `total_rows` 列輸出中的占比，必要時重複或抽樣文字列；`interleave` 每一列只用一次，因此占比等於各語料的大小，`weights` 只決定各語料在 `seed` 固定的順序中的分布；`concat` 依序讀完各個語料作為課程；`LMTokenizedDataset` 建立固定長度的下一詞元區塊；`DataLoader` 將批次供應給 `TrainingLoop`；`CausalLMModel` 提供模型；`LMCrossEntropyLoss` 提供 loss；`LMTokenizer` 則提供共用的 tokenizer（tiktoken 的 BPE 詞彙表，或詞彙量小到適合字元層級模型的 `byte` 與 `char` 編碼）。`PerplexityEvaluate` 會評估保留資料切分，`TextGenerate` 則從已訓練權重取樣文字。`CausalLMModel` 的預設值會產生 203,668,480 個參數；若要在筆電上訓練，請降低 `d_model` 與 `n_layers`。請參閱[範例集](./examples-gallery)中的 **Pretrain an LM on TinyStories**。
 - **RAG 鏈**（LLM）— 七個節點使用指定文件作為回答脈絡：`DocumentLoader` 將目錄中的每個 `.md` 與 `.txt` 讀取為 `{text, source}`；`TextChunker` 建立可嵌入的切塊，並保留來源名稱與字元位移；`TextEmbedding` 建立向量；`VectorStore` 將一個 `[N, D]` 矩陣與切塊文字一併儲存，並以一次矩陣乘法搜尋；`Retriever` 回傳最接近的 `top_k` 個切塊與分數；`PromptBuilder` 將切塊及問題插入限定脈絡的範本；`HFTextGenerate` 則在本機執行 Qwen2.5-0.5B-Instruct。你可以用 `LLMChat` 取代 `HFTextGenerate`，改用 Ollama 或託管提供者。`TextEmbedding` 需要 `sentence-embeddings` 套件包，`HFTextGenerate` 需要 `rag` 套件包。請參閱[範例集](./examples-gallery)中的 **Fully local RAG** 與 **RAG with a chat API**，下載內容則請參閱[選用套件包](./optional-packs)。
 - **VLA 鏈**（VLA）— VLA 類別包含五個專用節點。訓練與評估圖會連接 `PushWorldEnv`、`PushWorldDemos`、`VLAModel` 與 `TrainingLoop`，再使用 `VLAActionEval` 和 `VLARollout`。`PushWorldEnv` 以 torch 實作受語言條件控制的 2D 推動任務；干擾圓盤會使策略必須讀取指令才能識別目標。`PushWorldDemos` 會建立 scripted-expert 行為複製樣本與保留資料切分。`VLAModel` 結合視覺前端、位元組層級指令嵌入、Transformer 主幹與分塊動作專家。`VLAActionEval` 會測量相對於 expert 的保留資料開迴路 MSE，`VLARollout` 則以滾動時域執行測量閉迴路成功率。[**Train a VLA on PushWorld** 的 README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md)建議使用 CUDA GPU，並記錄 RTX 4080 約需執行 56 分鐘。
-- **RL 節點**（RL）— `GridWorldEnv` 提供不依賴 Gymnasium 的 gridworld。`PolicyRollout` 會執行策略 N 個回合，並記錄狀態、動作、獎勵與 logits。`Discount` 計算 return，`GroupRelativeAdvantage` 計算 GRPO 的群組平均 baseline，`PPOClipObjective` 則計算 PPO 的 clipped surrogate，並回傳指出哪些樣本使用 clipped branch 的 mask。`RewardModel` 會為每個 sequence 產生一個純量分數。`PreferenceDataset` 建立訓練與保留 preference pair；`BradleyTerryLoss` 計算 preference loss；`BradleyTerryTrain` 訓練 reward head，並回報訓練與保留資料的 accuracy，以呈現捷徑學習。`KLDivergence` 計算 policy 相對於 reference 的正則化項。`DQN`、`PPO` 與 `EnvWrapper` 會與 Gymnasium 整合。請參閱[範例集](./examples-gallery)中的 **RLHF reward and KL terms**。
+- **RL 節點**（RL）— `GridWorldEnv` 提供不依賴 Gymnasium 的 gridworld。`PolicyRollout` 會執行策略 N 個回合，並記錄狀態、動作、獎勵與 logits。`Discount` 計算 return，`GroupRelativeAdvantage` 計算 GRPO 的群組平均 baseline，`PPOClipObjective` 則計算 PPO 的 clipped surrogate，並回傳指出哪些樣本使用 clipped branch 的 mask。`RewardModel` 會為每個 sequence 產生一個純量分數。`PreferenceDataset` 建立訓練與保留 preference pair；`BradleyTerryLoss` 計算 preference loss；`BradleyTerryTrain` 訓練 reward head，並回報訓練與保留資料的 accuracy，以呈現捷徑學習。`KLDivergence` 計算 policy 相對於 reference 的正則化項。`DQN`、`PPO` 與 `EnvWrapper` 會與 Gymnasium 整合。`RLTrainingLoop` 以 REINFORCE、DQN 或 PPO 完整訓練一個智能體：接上模型（REINFORCE 與 DQN 用 `DQN` 或 `SequentialModel`，PPO 用 `PPO` 的 actor-critic）、`EnvWrapper` 或 `GridWorldEnv` 的環境，以及 `Optimizer`。它會跑 `episodes` 個回合，或在最近 20 個回合的平均回報達到 `target_return` 時停止，同時繪製即時 loss 曲線並把 `mean_return` 記錄為 run metric。請參閱[範例集](./examples-gallery)中的 **RLHF reward and KL terms**。
 - **Diffusion 鏈**（Diffusion）— `GaussianNoise` 建立帶 seed 的 noise，並可符合上游張量的 shape。`DiffusionUNet` 提供將 `(x, t)` 映射至 predicted noise 的 toy U-Net，`DiffusionTrainingLoop` 則訓練此模型。`DDPMSampler` 在單一節點內執行 reverse process，使圖維持無環；其詳細 trace 會記錄 trajectory snapshot。`TimestepEmbedding`、`Upsample` 與 `Lerp` 可用來明確建構相同運算。Diffusion 範例包括 **Forward diffusion on a digit**（`GaussianNoise` 與 `Lerp`），以及 **Toy reverse diffusion sampling** 和 **Mini U-Net node**（`GaussianNoise` → `DiffusionUNet` → `DDPMSampler`）。請參閱[範例集](./examples-gallery)。
 - **`ModelSaver` / `ModelLoader`**（IO）— 寫入與讀取模型檔。預設的 `state_dict` 模式會儲存張量，且不要求載入任何類別。`full_model` 模式會儲存以 pickle 序列化的模組，並使用受限解序列化器載入；此解序列化器允許 torch 與 CodefyUI 的 layer class，以及 CodefyUI Transformer layer 所儲存的兩個 torch activation function。模式選擇與載入需求請參閱[儲存與載入模型](./model-files)。
 - **`VideoWrite` / `VideoLoad`**（IO）— `VideoWrite` 將 `(T, C, H, W)` 或 `(T, H, W, C)` 的影格張量編碼後寫入媒體資料夾（`backend/data/media`，專案目錄模式下為 `assets/media`）。`format` 為 `auto` 時，若 `PATH` 中有 `ffmpeg` 執行檔就寫出 mp4，否則透過 Pillow 寫出 gif；選 `mp4` 則必須有 ffmpeg。相同的 `filename` 會覆寫先前的影片。執行紀錄與檢視器會直接播放 mp4，gif 則以圖片顯示；`preview` 輸出是中間影格的 PNG。`VideoLoad` 會將影片解碼為數值在 `[0, 1]` 的 `(T, 3, H, W)` 影格，並輸出 `fps` 與 `num_frames`；相對的 `path` 會從媒體資料夾讀取。mp4 與 webm 需要 `ffmpeg` 與 `ffprobe` 執行檔，gif 只需要 Pillow；`max_frames` 與 `stride` 可限制保留在記憶體中的影格數。
