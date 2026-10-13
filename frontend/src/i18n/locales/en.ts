@@ -509,6 +509,19 @@ const en = {
   'layersEditor.import.fail': 'Import failed: {error}',
   'layersEditor.import.selectModel': 'Select SequentialModel to Import',
   'layersEditor.import.noContent': 'No layers or SequentialModel nodes in this file.',
+  'layersEditor.import.warnings': 'Imported with changes: {warnings}',
+  'layersEditor.import.issue.reshapeNoBatch':
+    'Reshape "{node}": shape "{shape}" needs a batch entry first (e.g. -1,784). The layer editor keeps the batch dim and takes the dims after it.',
+  'layersEditor.import.issue.reshapeBatchDropped':
+    'Reshape "{node}": the first entry of "{shape}" ({batch}) was read as the batch size and dropped; the layer keeps the incoming batch size.',
+  'layersEditor.import.issue.addAlpha':
+    'Add "{node}" computes a + {alpha} * b, and the layer editor\'s Add has no alpha. Set alpha to 1 on the canvas, or scale that branch first.',
+  'layersEditor.import.issue.layerNormShape':
+    'LayerNorm "{node}": normalized_shape "{shape}" is not a comma-separated list of integers. Fix it on the canvas, then import again.',
+  'layersEditor.import.issue.attentionBatchFirst':
+    'MultiHeadAttention "{node}" read (seq, batch, embed) on the canvas. The layer editor\'s attention is batch-first (batch, seq, embed); check the layers that feed it.',
+  'layersEditor.import.issue.meanSkipped':
+    'Mean "{node}" was not imported: on the canvas it averages one tensor over a dim, and the layer editor\'s Mean averages two or more branches.',
   'layersEditor.searchLayers': 'Search layers...',
   'layersEditor.snapOn': 'Snap ON',
   'layersEditor.snapOff': 'Snap OFF',

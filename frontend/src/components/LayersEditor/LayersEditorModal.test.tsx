@@ -429,6 +429,20 @@ describe('LayersEditorModal', () => {
     expect(added).toBeTruthy();
   });
 
+  it('onConnect into a taken operand handle replaces the old wire', () => {
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    act(() => {
+      lastFlowProps.onConnect({ source: 'in1', sourceHandle: null, target: 'merge1', targetHandle: 'a' });
+    });
+    act(() => {
+      lastFlowProps.onConnect({ source: 'lin1', sourceHandle: null, target: 'merge1', targetHandle: 'a' });
+    });
+    const intoA = (lastFlowProps.edges as any[]).filter((e) => e.target === 'merge1' && e.targetHandle === 'a');
+    expect(intoA).toHaveLength(1);
+    expect(intoA[0].source).toBe('lin1');
+  });
+
   it('isValidConnection covers all branches', () => {
     setupOpenModal(validGraphJson());
     render(<LayersEditorModal />);
@@ -1184,6 +1198,44 @@ describe('LayersEditorModal', () => {
     act(() => vi.advanceTimersByTime(60));
     // convertWorkflowToGraphSpec adds Input + Output around the 2 layers → 4.
     expect(screen.getByText('4 layers')).toBeTruthy();
+  });
+
+  it('handleFileSelect refuses a workflow with a canvas node the layer editor cannot express', () => {
+    setupOpenModal(validGraphJson());
+    const { container } = render(<LayersEditorModal />);
+    const workflow = JSON.stringify({
+      nodes: [
+        { id: 'r', type: 'ReLU', data: {} },
+        { id: 'plus', type: 'Add', data: { params: { alpha: 2 } } },
+      ],
+      edges: [{ id: 'e', source: 'r', target: 'plus' }],
+    });
+    importText(container, workflow);
+    act(() => vi.advanceTimersByTime(60));
+    // The starter graph stays; nothing half-imported.
+    expect(screen.getByText('4 layers')).toBeTruthy();
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('error');
+    expect(toasts[0].message).toContain('Add "plus" computes a + 2 * b');
+  });
+
+  it('handleFileSelect imports with a warning toast when params had to change meaning', () => {
+    setupOpenModal(validGraphJson());
+    const { container } = render(<LayersEditorModal />);
+    const workflow = JSON.stringify({
+      nodes: [
+        { id: 'att', type: 'MultiHeadAttention', data: { params: { embed_dim: 8, num_heads: 2, batch_first: false } } },
+      ],
+      edges: [],
+    });
+    importText(container, workflow);
+    act(() => vi.advanceTimersByTime(60));
+    expect(screen.getByText('3 layers')).toBeTruthy();
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('warning');
+    expect(toasts[0].message).toContain('MultiHeadAttention "att" read (seq, batch, embed)');
   });
 
   it('handleFileSelect imports a workflow with an Activation node (function → layer mapping)', () => {

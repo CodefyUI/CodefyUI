@@ -49,7 +49,21 @@ export interface GraphSpec {
 
 const MERGE_TYPES = new Set(['Add', 'Concat', 'Multiply', 'Subtract', 'Mean', 'Stack']);
 
-/** All layer types that the layers editor can represent. */
+/**
+ * Merges whose result depends on operand order. Each operand gets its own
+ * named target handle on the card ("a"/"b" for Subtract, "in0", "in1", ...
+ * for Concat and Stack), and the backend takes the operands in handle order.
+ * Add, Multiply and Mean are order-free and keep a single handle.
+ */
+const ORDERED_MERGE_TYPES = new Set(['Subtract', 'Concat', 'Stack']);
+
+/**
+ * Canvas layer types the "Import from workflow" path converts.
+ *
+ * `Mean` is absent on purpose: on the canvas it reduces ONE tensor over a
+ * dim, while the layer editor's `Mean` averages two or more branches. The
+ * names collide; the operations do not.
+ */
 const KNOWN_LAYER_TYPES = new Set([
   'Conv2d', 'Conv1d', 'ConvTranspose2d',
   'BatchNorm2d', 'BatchNorm1d', 'LayerNorm', 'GroupNorm', 'InstanceNorm2d',
@@ -61,7 +75,7 @@ const KNOWN_LAYER_TYPES = new Set([
   'Flatten', 'Reshape', 'SelectIndex',
   'ReLU', 'LeakyReLU', 'GELU', 'SiLU', 'Mish', 'ELU', 'SELU', 'PReLU',
   'Sigmoid', 'Tanh', 'Hardswish', 'Softmax',
-  'Add', 'Concat', 'Multiply', 'Subtract', 'Mean', 'Stack',
+  'Add', 'Concat', 'Multiply', 'Subtract', 'Stack',
 ]);
 
 /** Map main-editor Activation node's `function` param → layers-editor layer type. */
@@ -73,6 +87,64 @@ const ACTIVATION_MAP: Record<string, string> = {
 
 export function isMergeType(t: string): boolean {
   return MERGE_TYPES.has(t);
+}
+
+export function isOrderedMergeType(t: string): boolean {
+  return ORDERED_MERGE_TYPES.has(t);
+}
+
+/** Target handle id of operand `index` (0-based) on an order-sensitive merge. */
+export function mergeOperandHandle(type: string, index: number): string {
+  if (type === 'Subtract') return index === 0 ? 'a' : 'b';
+  return `in${index}`;
+}
+
+/** Operand position a target handle stands for, or null when it names none. */
+export function mergeOperandIndex(type: string, handle: string | null | undefined): number | null {
+  if (typeof handle !== 'string') return null;
+  if (type === 'Subtract') return handle === 'a' ? 0 : handle === 'b' ? 1 : null;
+  const match = /^in(\d+)$/.exec(handle);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The target handles an order-sensitive merge card shows. Subtract always
+ * has `a` and `b`. Concat and Stack show one handle per wired operand plus
+ * one free handle to connect the next branch to, and never fewer than two.
+ * Any other type returns [] (it keeps the single unnamed handle).
+ */
+export function mergeInputHandles(
+  type: string,
+  usedHandles: ReadonlyArray<string | null | undefined>,
+): string[] {
+  if (!ORDERED_MERGE_TYPES.has(type)) return [];
+  if (type === 'Subtract') return ['a', 'b'];
+  let highest = -1;
+  for (const h of usedHandles) {
+    const index = mergeOperandIndex(type, h);
+    if (index !== null) highest = Math.max(highest, index);
+  }
+  const count = Math.max(2, highest + 2);
+  return Array.from({ length: count }, (_, i) => `in${i}`);
+}
+
+/**
+ * Give the incoming edges of every order-sensitive merge a named handle,
+ * in edge-list order, when none of them has one. A spec saved before the
+ * handles existed is built by the backend in edge-list order, so this
+ * assignment shows on the card the order the model already computes in.
+ * A merge whose edges already name handles is left alone.
+ */
+function assignMergeOperandHandles(nodes: GraphSpec['nodes'], edges: Edge[]): void {
+  for (const n of nodes) {
+    if (!ORDERED_MERGE_TYPES.has(n.type)) continue;
+    const incoming = edges.filter((e) => e.target === n.id);
+    if (incoming.some((e) => mergeOperandIndex(n.type, e.targetHandle) !== null)) continue;
+    const limit = n.type === 'Subtract' ? 2 : incoming.length;
+    incoming.slice(0, limit).forEach((e, i) => {
+      e.targetHandle = mergeOperandHandle(n.type, i);
+    });
+  }
 }
 
 /**
@@ -199,14 +271,130 @@ export function detectImportFormat(text: string): ImportDetection {
   return { kind: 'unknown' };
 }
 
-export function convertWorkflowToGraphSpec(workflow: WorkflowData): GraphSpec {
+/**
+ * Something the import had to say about one canvas node. `error` stops the
+ * import (the layer editor cannot express what the canvas node computes);
+ * `warning` imports it and tells the user what changed. Carried as a locale
+ * key plus values, like `ValidationError`, so the toast is in the user's
+ * language.
+ */
+export interface ImportIssue {
+  level: 'error' | 'warning';
+  key: TranslationKey;
+  params: Record<string, string | number>;
+}
+
+export interface WorkflowImport {
+  spec: GraphSpec;
+  issues: ImportIssue[];
+}
+
+/** Canvas port names of a two-input tensor op, in operand order. */
+const CANVAS_OPERAND_PORTS: Record<string, number> = { tensor_a: 0, tensor_b: 1 };
+
+function parseIntList(text: unknown): number[] | null {
+  if (typeof text === 'number' && Number.isInteger(text)) return [text];
+  if (typeof text !== 'string') return null;
+  const parts = text.split(',').map((p) => p.trim()).filter((p) => p !== '');
+  if (parts.length === 0 || parts.some((p) => !/^-?\d+$/.test(p))) return null;
+  return parts.map(Number);
+}
+
+/**
+ * Rewrite one canvas node's params into what the layer builder means by
+ * the same layer, or report why it cannot be done. The canvas and the layer
+ * editor share type names, and several params do not mean the same thing
+ * on both sides; copying them verbatim built a different model.
+ * Returns null when the node must not be imported.
+ */
+function translateCanvasParams(
+  type: string,
+  nodeId: string,
+  params: Record<string, any>,
+  issues: ImportIssue[],
+): Record<string, any> | null {
+  const out = { ...params };
+  const refuse = (key: TranslationKey, extra: Record<string, string | number> = {}) => {
+    issues.push({ level: 'error', key, params: { node: nodeId, ...extra } });
+    return null;
+  };
+  const warn = (key: TranslationKey, extra: Record<string, string | number> = {}) => {
+    issues.push({ level: 'warning', key, params: { node: nodeId, ...extra } });
+  };
+
+  switch (type) {
+    case 'Embedding': {
+      // The canvas spells "no padding" as -1. nn.Embedding reads a negative
+      // padding_idx as counted from the end, so -1 zeroed the last row.
+      const idx = Number(out.padding_idx);
+      if (out.padding_idx === undefined || out.padding_idx === null || !(idx >= 0)) {
+        delete out.padding_idx;
+      }
+      return out;
+    }
+    case 'Reshape': {
+      // The canvas shape includes the batch dim; the layer's Reshape keeps
+      // the incoming batch size and takes the remaining dims only.
+      const shape = String(out.shape ?? '');
+      const dims = parseIntList(shape);
+      if (!dims || dims.length < 2) return refuse('layersEditor.import.issue.reshapeNoBatch', { shape });
+      if (dims[0] !== -1) warn('layersEditor.import.issue.reshapeBatchDropped', { shape, batch: dims[0] });
+      out.shape = dims.slice(1).join(',');
+      return out;
+    }
+    case 'Add': {
+      // The canvas Add computes a + alpha * b; the merge Add has no alpha.
+      const alpha = out.alpha === undefined ? 1 : Number(out.alpha);
+      if (alpha !== 1) return refuse('layersEditor.import.issue.addAlpha', { alpha: String(out.alpha) });
+      delete out.alpha;
+      return out;
+    }
+    case 'LayerNorm': {
+      // The canvas stores "512" or "4,8"; nn.LayerNorm wants an int or a list.
+      const dims = parseIntList(out.normalized_shape);
+      if (!dims) {
+        return refuse('layersEditor.import.issue.layerNormShape', { shape: String(out.normalized_shape) });
+      }
+      out.normalized_shape = dims.length === 1 ? dims[0] : dims;
+      return out;
+    }
+    case 'AdaptiveAvgPool2d': {
+      // The canvas has output_height / output_width; the builder takes output_size.
+      const h = Number(out.output_height ?? 1);
+      const w = Number(out.output_width ?? 1);
+      delete out.output_height;
+      delete out.output_width;
+      out.output_size = h === w ? h : [h, w];
+      return out;
+    }
+    case 'MultiHeadAttention': {
+      // The layer block is always batch-first. A canvas node with
+      // batch_first off read (seq, batch, embed), so say so.
+      if (!out.batch_first) warn('layersEditor.import.issue.attentionBatchFirst');
+      delete out.batch_first;
+      return out;
+    }
+    default:
+      return out;
+  }
+}
+
+/**
+ * Convert a canvas workflow's layer nodes into a layer-editor graph,
+ * translating params the two sides spell differently and listing what
+ * could not be carried over. The caller refuses the import when any issue
+ * has level `error`.
+ */
+export function convertWorkflowForImport(workflow: WorkflowData): WorkflowImport {
+  const issues: ImportIssue[] = [];
   const layerNodeIds = new Set<string>();
   const convertedNodes: GraphSpec['nodes'] = [];
+  const typeById = new Map<string, string>();
 
   for (const n of workflow.nodes) {
     const rawType = n.type ?? '';
     let layerType = rawType;
-    const params = { ...(n.data?.params ?? {}) };
+    let params: Record<string, any> | null = { ...(n.data?.params ?? {}) };
 
     if (rawType === 'Activation') {
       const fn = params.function ?? 'relu';
@@ -214,11 +402,18 @@ export function convertWorkflowToGraphSpec(workflow: WorkflowData): GraphSpec {
       if (!mapped) continue;
       layerType = mapped;
       delete params.function;
+    } else if (rawType === 'Mean') {
+      issues.push({ level: 'warning', key: 'layersEditor.import.issue.meanSkipped', params: { node: n.id } });
+      continue;
     } else if (!KNOWN_LAYER_TYPES.has(rawType)) {
       continue;
+    } else {
+      params = translateCanvasParams(rawType, n.id, params, issues);
+      if (params === null) continue;
     }
 
     layerNodeIds.add(n.id);
+    typeById.set(n.id, layerType);
     convertedNodes.push({
       id: n.id,
       type: layerType,
@@ -227,16 +422,27 @@ export function convertWorkflowToGraphSpec(workflow: WorkflowData): GraphSpec {
     });
   }
 
-  // Keep only edges between converted layer nodes, strip handles
+  // Keep only edges between converted layer nodes. Canvas handles mean
+  // nothing here, except the operand port of an order-sensitive merge
+  // (tensor_a / tensor_b), which becomes that merge's operand handle.
   const convertedEdges: GraphSpec['edges'] = workflow.edges
     .filter((e) => layerNodeIds.has(e.source) && layerNodeIds.has(e.target))
-    .map((e) => ({
-      id: e.id,
-      source: e.source,
-      sourceHandle: null,
-      target: e.target,
-      targetHandle: null,
-    }));
+    .map((e) => {
+      // The filter above keeps only edges between converted nodes, all in typeById.
+      const targetType = typeById.get(e.target)!;
+      const operand = e.targetHandle !== undefined ? CANVAS_OPERAND_PORTS[e.targetHandle] : undefined;
+      const targetHandle =
+        ORDERED_MERGE_TYPES.has(targetType) && operand !== undefined
+          ? mergeOperandHandle(targetType, operand)
+          : null;
+      return {
+        id: e.id,
+        source: e.source,
+        sourceHandle: null,
+        target: e.target,
+        targetHandle,
+      };
+    });
 
   // Compute in-degree / out-degree
   const inDeg = new Map<string, number>();
@@ -295,7 +501,12 @@ export function convertWorkflowToGraphSpec(workflow: WorkflowData): GraphSpec {
     targetHandle: outputPorts[0].id,
   });
 
-  return { version: 2, nodes: convertedNodes, edges: convertedEdges };
+  return { spec: { version: 2, nodes: convertedNodes, edges: convertedEdges }, issues };
+}
+
+/** `convertWorkflowForImport` without the issue list. */
+export function convertWorkflowToGraphSpec(workflow: WorkflowData): GraphSpec {
+  return convertWorkflowForImport(workflow).spec;
 }
 
 export function flowToGraphJson(nodes: Node<LayerNodeData>[], edges: Edge[]): string {
@@ -572,6 +783,7 @@ export function graphToFlow(json: string): { nodes: Node<LayerNodeData>[]; edges
     targetHandle: e.targetHandle ?? undefined,
     style: { stroke: '#555', strokeWidth: 2 },
   }));
+  assignMergeOperandHandles(spec.nodes, edges);
 
   return { nodes, edges };
 }

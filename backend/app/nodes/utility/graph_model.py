@@ -7,6 +7,7 @@ plain layers, and merge layers (Add, Concat, Multiply, Subtract, Mean, Stack).
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from typing import Any
 
@@ -19,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 _MERGE_TYPES = {"Add", "Concat", "Multiply", "Subtract", "Mean", "Stack"}
+# Merges whose result depends on operand order. The layer editor gives each
+# of these one named target handle per operand ("a"/"b" for Subtract,
+# "in0", "in1", ... for Concat and Stack), and the operands are taken in
+# handle order. Add, Multiply and Mean are order-free and keep one handle.
+_ORDERED_MERGE_TYPES = {"Subtract", "Concat", "Stack"}
+_SUBTRACT_HANDLES = {"a": 0, "b": 1}
+_INDEXED_HANDLE = re.compile(r"in(\d+)")
 _BOUNDARY_TYPES = {"Input", "Output"}
 
 
@@ -180,6 +188,41 @@ def _apply_merge(merge_type: str, inputs: list[torch.Tensor], params: dict[str, 
     raise ValueError(f"Unknown merge type: {merge_type}")
 
 
+def _operand_rank(merge_type: str, handle: Any) -> int | None:
+    """Position of the operand wired to *handle*, or None for no named handle."""
+    if not isinstance(handle, str):
+        return None
+    if merge_type == "Subtract":
+        return _SUBTRACT_HANDLES.get(handle)
+    match = _INDEXED_HANDLE.fullmatch(handle)
+    return int(match.group(1)) if match else None
+
+
+def _order_operands(
+    node: dict[str, Any],
+    edges_in: list[tuple[str, str | None, str | None]],
+) -> list[tuple[str, str | None, str | None]]:
+    """Sort a merge node's incoming edges by their target handle.
+
+    Falls back to the edge-list order unless every incoming edge names a
+    handle, so an old spec (no handles at all) builds exactly as before.
+    """
+    merge_type, node_id = node["type"], node["id"]
+    ranks = [_operand_rank(merge_type, th) for (_src, _sh, th) in edges_in]
+    if not edges_in or any(r is None for r in ranks):
+        return edges_in
+    seen: dict[int, str | None] = {}
+    for (_src, _sh, th), rank in zip(edges_in, ranks):
+        if rank in seen:
+            raise ValueError(
+                f'{merge_type} layer "{node_id}": two edges go into input "{th}". '
+                "Connect one branch per input and delete the extra edge."
+            )
+        seen[rank] = th
+    order = sorted(range(len(edges_in)), key=lambda i: ranks[i])
+    return [edges_in[i] for i in order]
+
+
 def build_graph_model(spec: dict[str, Any]) -> GraphModelModule:
     """Build a GraphModelModule from a v2 spec dict."""
     if spec.get("version") != 2:
@@ -226,6 +269,13 @@ def build_graph_model(spec: dict[str, Any]) -> GraphModelModule:
             raise ValueError(f"Edge references unknown node: {src} -> {tgt}")
         incoming[tgt].append((src, e.get("sourceHandle"), e.get("targetHandle")))
         outgoing[src].append(tgt)
+
+    # Order-sensitive merges take their operands in target-handle order. A
+    # spec saved before the handles existed carries no targetHandle on these
+    # edges and keeps the edge-list order it always had.
+    for n in nodes:
+        if n["type"] in _ORDERED_MERGE_TYPES:
+            incoming[n["id"]] = _order_operands(n, incoming[n["id"]])
 
     # Build layers + merge specs
     layers: dict[str, nn.Module] = {}
