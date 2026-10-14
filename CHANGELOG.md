@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Removed
+
+- **Compatibility with pre-#117 log formats and the pre-v2 `stop` action** ([#757]). The Results panel no longer parses `__PROGRESS__:` / `__IMAGE__:` prefixed log messages, the canvas reads a node's progress, text, images and tensor summary only from the `outputs` list of a `node_status` frame, and the execution WebSocket answers `stop` with `Unknown action: stop` instead of treating it as `cancel`. Only a mix of versions from before 2.0 is affected; every in-tree client already sends the structured forms.
+
 ## [3.0.0rc1] — 2026-10-14
 
 The release candidate for 3.0.0. It carries the same code as 2.10.0 under the
@@ -6109,3 +6113,4 @@ Release candidates before 1.0.0 are on the
 [#751]: https://github.com/CodefyUI/CodefyUI/pull/751
 [#752]: https://github.com/CodefyUI/CodefyUI/pull/752
 [#753]: https://github.com/CodefyUI/CodefyUI/pull/753
+[#757]: https://github.com/CodefyUI/CodefyUI/pull/757
