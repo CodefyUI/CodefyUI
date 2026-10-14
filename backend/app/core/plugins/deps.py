@@ -46,7 +46,11 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 from app.core.packs import runner as packs_runner
-from app.core.packs.constraints import machine_pins, write_constraints_file
+from app.core.packs.constraints import (
+    Replacement,
+    replacement_plan,
+    write_constraints_file,
+)
 from app.core.packs.errors import PackCancelled
 from app.core.version import PACKAGE_NAME
 
@@ -319,11 +323,13 @@ def install_deps_step(
 
     *replace_allowed* is for a caller that knows no server is using this
     interpreter -- ``cdui plugin`` holding the server's instance locks. An
-    add-only resolve that conflicts is then tried once more with only
-    :func:`~app.core.packs.constraints.machine_pins` in place, so a plugin
-    that needs a newer ``safetensors`` gets it, while the PyTorch build stays
-    the one chosen for this machine. Add-only is still tried first: it is
-    the install that changes the least.
+    add-only resolve that conflicts is then tried once more under a
+    :func:`~app.core.packs.constraints.replacement_plan`: uv re-resolves the
+    plugin's specs together with every installed package, so a plugin that
+    needs a newer ``safetensors`` gets it without breaking a package that
+    depends on the old range, and the PyTorch build stays the one chosen for
+    this machine. Add-only is still tried first: it is the install that
+    changes the least.
 
     Three ways out, and the caller's answer differs for each:
 
@@ -354,7 +360,7 @@ def install_deps_step(
           "label": f"Installing packages: {', '.join(specs)}"})
 
     returncode, tail, logged, conflict = _attempt(
-        specs, emit=emit, cancel_check=cancel_check, pinned=None,
+        specs, emit=emit, cancel_check=cancel_check, replacement=None,
     )
     if returncode != 0 and conflict and replace_allowed:
         emit({"type": "log", "line": (
@@ -362,7 +368,7 @@ def install_deps_step(
             "packages (the PyTorch build stays pinned)")})
         returncode, tail, logged, conflict = _attempt(
             specs, emit=emit, cancel_check=cancel_check,
-            pinned=machine_pins(),
+            replacement=replacement_plan(),
         )
         conflict = False
 
@@ -391,12 +397,12 @@ def _attempt(
     *,
     emit: Callable[[dict], None],
     cancel_check: Callable[[], bool],
-    pinned: dict[str, str] | None,
+    replacement: Replacement | None,
 ) -> tuple[int, list[str], list[str], bool]:
     """One uv run: ``(returncode, uv's tail, lines logged, conflict seen)``.
 
-    *pinned* is what the constraints file holds; ``None`` is every
-    distribution in this interpreter, which is what makes the run add-only.
+    *replacement* ``None`` pins every distribution in this interpreter,
+    which is what makes the run add-only.
     """
     tail: list[str] = []
     logged: list[str] = []
@@ -422,7 +428,7 @@ def _attempt(
     try:
         returncode = _run_uv(
             specs, emit=_watched, cancel_check=cancel_check, tail=tail,
-            conflict=conflict, pinned=pinned,
+            conflict=conflict, replacement=replacement,
         )
     finally:
         # Whatever happened. uv installs in dependency order and stops at the
@@ -442,7 +448,7 @@ def _run_uv(
     cancel_check: Callable[[], bool],
     tail: list[str],
     conflict: threading.Event,
-    pinned: dict[str, str] | None = None,
+    replacement: Replacement | None = None,
 ) -> int:
     """Run uv under a constraints file written for this call, and only this one.
 
@@ -462,10 +468,16 @@ def _run_uv(
         # resolves relative to a directory anyway, and an empty one is the
         # single cwd that cannot mean something.
         workdir_path = Path(workdir)
-        constraints_path = write_constraints_file(workdir_path, pinned)
+        if replacement is None:
+            constraints_path = write_constraints_file(workdir_path)
+            requested = list(specs)
+        else:
+            constraints_path = write_constraints_file(
+                workdir_path, text=replacement.constraints)
+            requested = [*specs, *replacement.names]
         try:
             return packs_runner.run_pip(
-                specs,
+                requested,
                 constraints_path=constraints_path,
                 emit=emit,
                 cancel_check=cancel_check,

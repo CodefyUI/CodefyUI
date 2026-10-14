@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A plugin install that upgrades packages no longer breaks the ones it leaves in place** ([#762]). In 3.0.1, `cdui plugin sync` with no server running asked uv for the plugin's packages alone, and uv does not check the packages it does not touch: installing the `eval` pack upgraded `huggingface-hub` to 2.2.0 under a `datasets` that requires `<2.0`. The install now resolves the plugin's packages together with every installed package, keeping installed versions wherever they fit (`huggingface-hub` 1.33.0 in that case), and still pins the PyTorch build and packages installed from a URL or a path. To repair an install that 3.0.1 already changed, run `uv pip check` in the backend venv and reinstall what it names with the server stopped, for example `uv pip install --python backend/.venv/bin/python "huggingface-hub<2"`.
+
 ## [3.0.1] — 2026-10-14
 
 A fix for installing plugin packs from the terminal: `cdui plugin sync` with
@@ -6151,3 +6155,4 @@ Release candidates before 1.0.0 are on the
 [#753]: https://github.com/CodefyUI/CodefyUI/pull/753
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
+[#762]: https://github.com/CodefyUI/CodefyUI/pull/762

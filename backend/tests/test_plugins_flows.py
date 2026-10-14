@@ -540,14 +540,18 @@ def test_a_conflict_uv_explains_at_length_still_asks_for_a_restart(
 _CONFLICT = ("  × No solution found when resolving dependencies:",)
 
 
-def test_a_conflict_is_retried_with_only_the_machine_pins_when_allowed(
+def test_a_conflict_is_retried_as_one_resolve_with_every_installed_package(
     fake_github, fake_pip, user_root, monkeypatch
 ):
     """With no server running there is nothing to protect but the PyTorch
     build, so a plugin that needs a newer package than the venv has gets it:
-    add-only first, then once more with only torch pinned."""
-    monkeypatch.setattr(constraints_mod, "installed_distributions", lambda: {
-        "torch": "2.11.0+cu128", "safetensors": "0.7.0", "numpy": "2.3.0"})
+    add-only first, then once more with every installed package requested
+    beside the plugin's specs -- so uv honours their requirements too -- and
+    only what must not move in the constraints file."""
+    plan = constraints_mod.Replacement(
+        names=("datasets", "safetensors"),
+        constraints="torch==2.11.0+cu128\nsympy>=1.13\n")
+    monkeypatch.setattr(deps, "replacement_plan", lambda: plan)
     fake_github({"cdui.plugin.toml": WITH_DEPS})
     calls = fake_pip(returncode=1, output=_CONFLICT, then=(0, ()))
     events: list[dict] = []
@@ -555,10 +559,10 @@ def test_a_conflict_is_retried_with_only_the_machine_pins_when_allowed(
     outcome = _install(_github_plan(), emit=events.append, replace_allowed=True)
 
     assert outcome.deps_installed == ("tinylib==1.0.0",)
-    assert [c["constraints_text"] for c in calls] == [
-        "numpy==2.3.0\nsafetensors==0.7.0\ntorch==2.11.0+cu128\n",
-        "torch==2.11.0+cu128\n",
-    ]
+    assert [c["specs"] for c in calls] == [
+        ["tinylib==1.0.0"], ["tinylib==1.0.0", "datasets", "safetensors"]]
+    assert calls[1]["constraints_text"] == plan.constraints
+    assert "==" in calls[0]["constraints_text"], "the first run is add-only"
     assert any("No CodefyUI server is running" in line
                for line in _lines(events))
     assert _entry("extras") is not None

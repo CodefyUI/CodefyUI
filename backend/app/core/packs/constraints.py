@@ -32,7 +32,10 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
 
 #: PEP 503 normalisation: runs of ``-``, ``_`` and ``.`` are one separator,
 #: and case never matters. ``huggingface_hub`` and ``huggingface-hub`` are one
@@ -132,19 +135,100 @@ def installed_distributions() -> dict[str, str]:
 _MACHINE_CHOSEN = frozenset({"torch", "torchvision", "torchaudio"})
 
 
-def machine_pins(dists: dict[str, str] | None = None) -> dict[str, str]:
-    """The part of *dists* an install must keep even with no server running.
+def _machine_chosen(name: str, version: str) -> bool:
+    """Was this package picked for this machine's hardware?
 
-    With the server stopped nothing has these packages imported, so an
-    install may upgrade them like any other -- except the PyTorch family and
-    anything carrying a local version tag (``+cu128``, ``+rocm6.4``): those
-    were picked for this machine's hardware, and replacing one is the silent
-    CPU-wheel downgrade the module docstring describes.
+    The PyTorch family, and anything carrying a local version tag
+    (``+cu128``, ``+rocm6.4``). Replacing one is the silent CPU-wheel
+    downgrade the module docstring describes, so it stays pinned even when
+    an install may replace packages.
     """
-    if dists is None:
-        dists = installed_distributions()
-    return {name: version for name, version in dists.items()
-            if name in _MACHINE_CHOSEN or "+" in version}
+    return name in _MACHINE_CHOSEN or "+" in version
+
+
+@dataclass(frozen=True)
+class Replacement:
+    """How an install may replace packages when no server is running.
+
+    ``names`` are handed to uv beside the plugin's own specs, so it resolves
+    them as one set: every installed package's requirements are honoured,
+    and an installed version is kept wherever it still fits. Without them uv
+    resolves the plugin's specs alone and does not check the packages it
+    leaves in place -- 3.0.1 upgraded ``huggingface-hub`` to 2.x under a
+    ``datasets`` that requires ``<2.0``.
+
+    ``constraints`` holds what must not move: the packages picked for this
+    machine's hardware, every package installed from a URL or a path
+    (nothing on the index can stand in for it), and the requirements those
+    and the editable project declare -- they are not re-resolved, so their
+    requirements would otherwise go unchecked too.
+    """
+
+    names: tuple[str, ...]
+    constraints: str
+
+
+def _declared(dist) -> list[str]:
+    """*dist*'s requirements as constraint lines, extras and URLs left out.
+
+    An extra's requirements apply only if the extra was asked for, which
+    the installed record does not say; a URL requirement cannot be written
+    as a constraint. Neither is needed to keep the rest consistent.
+    """
+    lines = []
+    for raw in dist.requires or ():
+        try:
+            requirement = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        name = _canonical(requirement.name)
+        marker = str(requirement.marker) if requirement.marker else ""
+        if (requirement.url or not requirement.specifier
+                or "extra" in marker or not _SAFE_NAME.fullmatch(name)):
+            continue
+        line = f"{name}{requirement.specifier}"
+        if marker:
+            line += f"; {marker}"
+        if "\n" not in line and "\r" not in line:
+            lines.append(line)
+    return lines
+
+
+def replacement_plan() -> Replacement:
+    """The :class:`Replacement` for this interpreter as it is now."""
+    names: dict[str, None] = {}
+    pinned: dict[str, str] = {}
+    declared: list[str] = []
+    editable: set[str] = set()
+
+    for dist in importlib.metadata.distributions():
+        try:
+            metadata = dist.metadata
+            name = _canonical(str((metadata["Name"] if metadata else None) or ""))
+            version = str(dist.version or "")
+            is_editable = _is_editable(dist)
+            from_url = not is_editable and bool(dist.read_text("direct_url.json"))
+        except Exception:
+            continue
+        if not name or not version or not _SAFE_NAME.fullmatch(name):
+            continue
+        if is_editable:
+            editable.add(name)
+            declared.extend(_declared(dist))
+        elif from_url or _machine_chosen(name, version):
+            pinned.setdefault(name, version)
+            declared.extend(_declared(dist))
+        else:
+            names.setdefault(name, None)
+
+    for name in editable:
+        names.pop(name, None)
+        pinned.pop(name, None)
+    for name in pinned:
+        names.pop(name, None)
+    text = constraints_text(pinned) + "".join(
+        f"{line}\n" for line in dict.fromkeys(declared))
+    return Replacement(names=tuple(names), constraints=text)
 
 
 def constraints_text(dists: dict[str, str] | None = None) -> str:
@@ -169,14 +253,18 @@ def constraints_text(dists: dict[str, str] | None = None) -> str:
 
 def write_constraints_file(
     directory: Path, dists: dict[str, str] | None = None,
+    *, text: str | None = None,
 ) -> Path:
     """Write ``constraints.txt`` into *directory* and return its path.
 
     The caller owns *directory* (a per-job temporary directory) and its
     lifetime, so this does not create or clean up anything around the file.
     Written as UTF-8 with explicit LF newlines: on Windows the default would
-    translate every line ending to CRLF.
+    translate every line ending to CRLF. *text*, when given, is written as
+    it is instead of pins rendered from *dists* (a :class:`Replacement`'s).
     """
     path = Path(directory) / CONSTRAINTS_FILENAME
-    path.write_text(constraints_text(dists), encoding="utf-8", newline="\n")
+    if text is None:
+        text = constraints_text(dists)
+    path.write_text(text, encoding="utf-8", newline="\n")
     return path
