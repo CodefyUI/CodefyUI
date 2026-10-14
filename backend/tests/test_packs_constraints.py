@@ -25,6 +25,7 @@ from app.core.packs.constraints import (
     _canonical,
     constraints_text,
     installed_distributions,
+    machine_pins,
     write_constraints_file,
 )
 
@@ -273,3 +274,22 @@ def test_write_constraints_file_does_not_create_its_directory(tmp_path):
         write_constraints_file(gone)
 
     assert not gone.exists()
+
+
+# ── machine_pins: what stays pinned with no server running ────────────────
+
+def test_machine_pins_keep_the_pytorch_family_and_local_builds():
+    """Everything else may be upgraded once nothing has it imported; these
+    were chosen for this machine's hardware."""
+    assert machine_pins({
+        "torch": "2.11.0", "torchvision": "0.26.0", "torchaudio": "2.11.0",
+        "triton": "3.5.0+rocm6.4", "safetensors": "0.7.0", "numpy": "2.3.0",
+    }) == {"torch": "2.11.0", "torchvision": "0.26.0",
+           "torchaudio": "2.11.0", "triton": "3.5.0+rocm6.4"}
+
+
+def test_machine_pins_default_to_this_interpreter(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.packs.constraints.installed_distributions",
+        lambda: {"torch": "2.11.0+cu128", "idna": "3.13"})
+    assert machine_pins() == {"torch": "2.11.0+cu128"}

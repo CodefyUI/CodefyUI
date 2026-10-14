@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.metadata
 import io
 import json
@@ -24,7 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on the 3.10 CI 
     import tomli as tomllib  # 3.10 backport -- same API.
 
 import plugins as plugin_cli
-from app.core import plugin_loader
+from app.core import instance_lock, plugin_loader
 from app.core.packs import catalog as packs_catalog
 from app.core.packs import runner as packs_runner
 from app.core.plugin_validator import PluginValidationError
@@ -713,6 +714,36 @@ def test_install_deps_builds_correct_pip_specs(monkeypatch):
     assert "qux" in specs
 
 
+@contextlib.contextmanager
+def _a_server_is_running():
+    """Stands in for ``plugins._server_stopped`` beside a live server."""
+    yield False
+
+
+def _conflicted_then(*returncodes: int):
+    """A ``run_pip`` that reports a resolver conflict, then *returncodes*.
+
+    Filled the way the real runner fills its out-parameters: the verdict is
+    reached on the line as it streams past. Records each run's constraints.
+    """
+    seen: list[str] = []
+
+    def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
+                 tail=None, conflict=None):
+        seen.append(constraints_path.read_text(encoding="utf-8"))
+        if len(seen) > 1:
+            return returncodes[min(len(seen), len(returncodes) + 1) - 2]
+        line = "  x No solution found when resolving dependencies:"
+        if tail is not None:
+            tail.append(line)
+        if conflict is not None and packs_runner.looks_like_resolver_conflict(
+                (line,)):
+            conflict.set()
+        return 1
+
+    return _run_pip, seen
+
+
 def test_install_deps_reports_a_resolver_conflict_as_exit_3(monkeypatch, capsys):
     """`cdui plugin link` is the live caller, and it propagates this code.
 
@@ -740,11 +771,93 @@ def test_install_deps_reports_a_resolver_conflict_as_exit_3(monkeypatch, capsys)
         return 1
 
     monkeypatch.setattr("app.core.packs.runner.run_pip", _conflicted)
+    monkeypatch.setattr(plugin_cli, "_server_stopped", _a_server_is_running)
 
     assert plugin_cli._install_deps({"tabulate": ">=0.9"}) == 3
     printed = _out(capsys)
     assert "uv pip install" in printed
     assert "tabulate>=0.9" in printed
+
+
+def test_install_deps_with_no_server_running_upgrades_instead(
+        monkeypatch, capsys):
+    """The 3.0.0 report: ``cdui plugin sync`` with the server stopped still
+    said "stop the server", because the install was add-only whether or not
+    one was running. With none running it may now upgrade what the venv
+    has, and only the PyTorch build stays pinned."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    monkeypatch.setattr(
+        "app.core.packs.constraints.installed_distributions",
+        lambda: {"torch": "2.11.0", "safetensors": "0.7.0"})
+    run_pip, seen = _conflicted_then(0)
+    monkeypatch.setattr("app.core.packs.runner.run_pip", run_pip)
+
+    assert plugin_cli._install_deps({"transformers": ">=5.0,<6"}) == 0
+    assert seen == ["safetensors==0.7.0\ntorch==2.11.0\n", "torch==2.11.0\n"]
+    assert "No CodefyUI server is running" in _out(capsys)
+
+
+def test_install_deps_with_no_server_running_and_a_real_conflict_is_exit_1(
+        monkeypatch, capsys):
+    """Not exit 3: there is no server to stop, so the hint would be wrong
+    and a retry after following it would fail the same way."""
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    run_pip, seen = _conflicted_then(1)
+    monkeypatch.setattr("app.core.packs.runner.run_pip", run_pip)
+
+    assert plugin_cli._install_deps({"transformers": ">=5.0,<6"}) == 1
+    assert len(seen) == 2
+    assert "Stop the server" not in _out(capsys)
+
+
+def test_server_stopped_holds_the_stores_this_cdui_points_at():
+    """The probe takes the same instance locks a server's startup takes, so
+    while an install runs no server can start and import a package that is
+    being replaced."""
+    locks = instance_lock.server_locks()
+    with plugin_cli._server_stopped() as stopped:
+        assert stopped is True
+        with pytest.raises(instance_lock.ServerAlreadyRunning):
+            _hold_from_another_process(locks)
+    _hold_from_another_process(locks)
+
+
+def test_server_stopped_falls_back_to_add_only_when_it_cannot_ask(
+        monkeypatch):
+    """A lock that cannot be taken at all says nothing about a server, and
+    add-only is the install that is safe either way."""
+    def _no_locks(*args, **kwargs):
+        raise OSError("this filesystem has no locks")
+
+    monkeypatch.setattr(instance_lock, "held_if_free", _no_locks)
+    with plugin_cli._server_stopped() as stopped:
+        assert stopped is False
+
+
+def _hold_from_another_process(locks) -> None:
+    """Take *locks* in a child process; raise ``ServerAlreadyRunning`` when
+    it is refused. A thread will not do: the lock counts per process."""
+    code = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from app.core import instance_lock\n"
+        "locks = [(Path(p), w) for p, w in json.loads(sys.argv[1])]\n"
+        "try:\n"
+        "    with instance_lock.hold(locks, host='', port=0):\n"
+        "        pass\n"
+        "except instance_lock.ServerAlreadyRunning:\n"
+        "    sys.exit(3)\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code,
+         json.dumps([[str(p), w] for p, w in locks])],
+        capture_output=True, text=True, timeout=60,
+        cwd=Path(__file__).resolve().parents[1])
+    if done.returncode == 3:
+        raise instance_lock.ServerAlreadyRunning(
+            what="test", lock_path=Path(locks[0][0]), holder=None,
+            holder_alive=True)
+    assert done.returncode == 0, done.stderr
 
 
 # ── _manifest_has_frontend ────────────────────────────────────────────────
@@ -2400,6 +2513,7 @@ def test_packages_that_cannot_be_installed_here_are_exit_3_with_the_command(
         return 1
 
     monkeypatch.setattr("app.core.packs.runner.run_pip", _conflicted)
+    monkeypatch.setattr(plugin_cli, "_server_stopped", _a_server_is_running)
 
     assert _official(_install_args(
         accept_capabilities=True, trust_author=True)) == 3
@@ -2509,7 +2623,7 @@ def test_ctrl_c_during_link_dependency_install_uses_the_same_two_stage_handler(
     monkeypatch.setattr(plugin_cli._ConsoleReporter, "close", _close_spy)
     monkeypatch.setattr(plugin_cli, "warn", _warn_spy)
 
-    def _cancelled(specs, *, emit, cancel_check):
+    def _cancelled(specs, *, emit, cancel_check, replace_allowed=False):
         assert cancel_check() is False
         handler = signal.getsignal(signal.SIGINT)
         assert callable(handler)

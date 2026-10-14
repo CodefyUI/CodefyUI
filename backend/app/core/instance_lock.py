@@ -240,6 +240,38 @@ def hold(locks: Iterable[tuple[Path, str]], *, host: str,
             _release(key)
 
 
+@contextlib.contextmanager
+def held_if_free(locks: Iterable[tuple[Path, str]], *, host: str,
+                 port: int) -> Iterator[bool]:
+    """Hold every lock in *locks* if no server has them; yield whether it did.
+
+    For a command that may change what a server would have imported --
+    ``cdui plugin`` upgrading a package in the venv -- and is only safe to do
+    so while no server is running. ``True`` means none was, and that none
+    can start until the block ends: the start would be refused at its own
+    :func:`hold`. ``False`` means one is (or a lock is unreadable as free),
+    and nothing was taken. Unlike :func:`hold` a refusal is the answer, not
+    an error, so nothing is logged.
+    """
+    taken: list[str] = []
+    try:
+        free = True
+        for path, what in locks:
+            try:
+                taken.append(_acquire(Path(path), what, host=host, port=port))
+            except ServerAlreadyRunning:
+                free = False
+                break
+        if not free:
+            for key in reversed(taken):
+                _release(key)
+            taken.clear()
+        yield free
+    finally:
+        for key in reversed(taken):
+            _release(key)
+
+
 # -- the in-process count ---------------------------------------------------
 
 @dataclass

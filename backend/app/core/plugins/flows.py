@@ -246,6 +246,7 @@ def install_plugin_live(
     emit: Callable[[dict], None],
     cancel_check: Callable[[], bool],
     github: object | None = None,
+    replace_allowed: bool = False,
 ) -> InstallOutcome:
     """Install *plan*, reporting every step to *emit*.
 
@@ -265,6 +266,9 @@ def install_plugin_live(
     that passes while talking to the real network. A client that supplies
     only some of the names falls back to the core one per name, which is
     what lets the CLI hand over its own module unchanged.
+
+    *replace_allowed* reaches :func:`~.deps.install_deps_step` unchanged:
+    only a caller that knows no server is using this interpreter sets it.
     """
     # At the door, before anything is dispatched. Three writes are built out
     # of ``plan.plugin_id`` -- the staging directory, the install directory
@@ -281,11 +285,13 @@ def install_plugin_live(
             hint=f"A plugin id has to match {PLUGIN_ID_RE.pattern}.",
         )
     if plan.kind == "builtin":
-        return _install_builtin(plan, emit=emit, cancel_check=cancel_check)
+        return _install_builtin(plan, emit=emit, cancel_check=cancel_check,
+                                replace_allowed=replace_allowed)
     if plan.kind == "github":
         client = github_client if github is None else github
         return _install_from_github(
-            plan, emit=emit, cancel_check=cancel_check, client=client
+            plan, emit=emit, cancel_check=cancel_check, client=client,
+            replace_allowed=replace_allowed,
         )
     raise ValueError(f"install kind {plan.kind!r} has no live install")
 
@@ -297,6 +303,7 @@ def _install_builtin(
     *,
     emit: Callable[[dict], None],
     cancel_check: Callable[[], bool],
+    replace_allowed: bool = False,
 ) -> InstallOutcome:
     """Activate a pack that shipped with this release."""
     plugin_dir = plugin_loader.plugins_builtin_root() / plan.plugin_id
@@ -322,7 +329,8 @@ def _install_builtin(
     specs = tuple(deps.dep_specs(manifest_python_deps(manifest)))
     _stop_if_cancelled(plan, cancel_check)
     if specs:
-        deps.install_deps_step(specs, emit=emit, cancel_check=cancel_check)
+        deps.install_deps_step(specs, emit=emit, cancel_check=cancel_check,
+                               replace_allowed=replace_allowed)
         _stop_if_cancelled(plan, cancel_check)
 
     with _step(emit, "lock", f"Recording {plan.plugin_id}"):
@@ -346,6 +354,7 @@ def _install_from_github(
     emit: Callable[[dict], None],
     cancel_check: Callable[[], bool],
     client: object,
+    replace_allowed: bool = False,
 ) -> InstallOutcome:
     """Fetch one commit of a repository and put it on the disk."""
     download_tarball = _client_call(client, "download_tarball")
@@ -435,7 +444,8 @@ def _install_from_github(
 
         specs = tuple(deps.dep_specs(manifest_python_deps(manifest)))
         if specs:
-            deps.install_deps_step(specs, emit=emit, cancel_check=cancel_check)
+            deps.install_deps_step(specs, emit=emit, cancel_check=cancel_check,
+                               replace_allowed=replace_allowed)
             _stop_if_cancelled(plan, cancel_check)
 
         with _step(emit, "stage", f"Installing {plan.plugin_id}"):

@@ -46,7 +46,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 from app.core.packs import runner as packs_runner
-from app.core.packs.constraints import write_constraints_file
+from app.core.packs.constraints import machine_pins, write_constraints_file
 from app.core.packs.errors import PackCancelled
 from app.core.version import PACKAGE_NAME
 
@@ -303,6 +303,7 @@ def install_deps_step(
     *,
     emit: Callable[[dict], None],
     cancel_check: Callable[[], bool],
+    replace_allowed: bool = False,
 ) -> None:
     """Install *specs* into this interpreter, add-only, as one job step.
 
@@ -316,11 +317,20 @@ def install_deps_step(
     it, because it describes THIS interpreter at THIS moment and caching it
     would pin an install to a machine state that has since changed.
 
+    *replace_allowed* is for a caller that knows no server is using this
+    interpreter -- ``cdui plugin`` holding the server's instance locks. An
+    add-only resolve that conflicts is then tried once more with only
+    :func:`~app.core.packs.constraints.machine_pins` in place, so a plugin
+    that needs a newer ``safetensors`` gets it, while the PyTorch build stays
+    the one chosen for this machine. Add-only is still tried first: it is
+    the install that changes the least.
+
     Three ways out, and the caller's answer differs for each:
 
     * a resolver conflict -- uv would have to replace a package this process
       is holding open -- is :class:`~.errors.PluginNeedsRestart` carrying the
-      command to run with the server stopped;
+      command to run with the server stopped, unless *replace_allowed*, when
+      a conflict that remains is the plugin's own and an install error;
     * any other non-zero exit is a :class:`~.errors.PluginInstallError` with
       uv's last lines as the ``hint``, which is what a learner pastes into
       an issue -- and when there are none, the last lines this step LOGGED,
@@ -343,6 +353,51 @@ def install_deps_step(
     emit({"type": "step_started", "step": "deps",
           "label": f"Installing packages: {', '.join(specs)}"})
 
+    returncode, tail, logged, conflict = _attempt(
+        specs, emit=emit, cancel_check=cancel_check, pinned=None,
+    )
+    if returncode != 0 and conflict and replace_allowed:
+        emit({"type": "log", "line": (
+            "No CodefyUI server is running: allowing upgrades of installed "
+            "packages (the PyTorch build stays pinned)")})
+        returncode, tail, logged, conflict = _attempt(
+            specs, emit=emit, cancel_check=cancel_check,
+            pinned=machine_pins(),
+        )
+        conflict = False
+
+    if returncode != 0:
+        detail = "\n".join(tail).strip() or "\n".join(logged).strip()
+        if conflict:
+            command = manual_install_command(specs)
+            raise PluginNeedsRestart(
+                "This plugin's Python packages cannot be installed while the "
+                "server is running: they would have to replace a package it "
+                "is already using",
+                command=command,
+                hint=f"stop the server, then run:\n{command}\n\n{detail}",
+            )
+        raise PluginInstallError(
+            f"installing the plugin's Python packages failed "
+            f"(uv exited {returncode})",
+            hint=detail,
+        )
+
+    emit({"type": "step_done", "step": "deps"})
+
+
+def _attempt(
+    specs: Sequence[str],
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    pinned: dict[str, str] | None,
+) -> tuple[int, list[str], list[str], bool]:
+    """One uv run: ``(returncode, uv's tail, lines logged, conflict seen)``.
+
+    *pinned* is what the constraints file holds; ``None`` is every
+    distribution in this interpreter, which is what makes the run add-only.
+    """
     tail: list[str] = []
     logged: list[str] = []
     # Set by the runner while uv is still talking, because it is the only
@@ -367,7 +422,7 @@ def install_deps_step(
     try:
         returncode = _run_uv(
             specs, emit=_watched, cancel_check=cancel_check, tail=tail,
-            conflict=conflict,
+            conflict=conflict, pinned=pinned,
         )
     finally:
         # Whatever happened. uv installs in dependency order and stops at the
@@ -377,25 +432,7 @@ def install_deps_step(
         # The very next import in this process would answer from a picture
         # taken before the install.
         importlib.invalidate_caches()
-
-    if returncode != 0:
-        detail = "\n".join(tail).strip() or "\n".join(logged).strip()
-        if conflict.is_set():
-            command = manual_install_command(specs)
-            raise PluginNeedsRestart(
-                "This plugin's Python packages cannot be installed while the "
-                "server is running: they would have to replace a package it "
-                "is already using",
-                command=command,
-                hint=f"stop the server, then run:\n{command}\n\n{detail}",
-            )
-        raise PluginInstallError(
-            f"installing the plugin's Python packages failed "
-            f"(uv exited {returncode})",
-            hint=detail,
-        )
-
-    emit({"type": "step_done", "step": "deps"})
+    return returncode, tail, logged, conflict.is_set()
 
 
 def _run_uv(
@@ -405,6 +442,7 @@ def _run_uv(
     cancel_check: Callable[[], bool],
     tail: list[str],
     conflict: threading.Event,
+    pinned: dict[str, str] | None = None,
 ) -> int:
     """Run uv under a constraints file written for this call, and only this one.
 
@@ -424,7 +462,7 @@ def _run_uv(
         # resolves relative to a directory anyway, and an empty one is the
         # single cwd that cannot mean something.
         workdir_path = Path(workdir)
-        constraints_path = write_constraints_file(workdir_path)
+        constraints_path = write_constraints_file(workdir_path, pinned)
         try:
             return packs_runner.run_pip(
                 specs,
