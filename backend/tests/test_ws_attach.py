@@ -781,18 +781,19 @@ async def test_cancel_defaults_to_the_attached_run(run_env):
     assert record.status == "cancelled"
 
 
-async def test_the_legacy_stop_action_still_cancels(run_env):
-    """A prebuilt frontend from before v2 sends ``stop``; it must work."""
+async def test_the_removed_stop_alias_is_an_unknown_action(run_env):
+    """The pre-v2 ``stop`` alias was removed in 3.0: it neither cancels nor
+    is silently ignored."""
     async with _client() as client:
         async with aconnect_ws(_WS_PATH, client) as ws:
             attached = await _execute(ws, _graph("_WsSlow", {"seconds": 0.6}))
             await _recv_until(ws, "execution_start")
             await ws.send_text(json.dumps({"action": "stop"}))
-            ack = (await _recv_until(ws, "cancel_ack"))[-1]
-            assert ack["cancelled"] is True
+            frame = (await _recv_until(ws, "error"))[-1]
+            assert frame["error"] == "Unknown action: stop"
 
     record = await _await_terminal(run_env.store, attached["run_id"])
-    assert record.status == "cancelled"
+    assert record.status == "succeeded"
 
 
 async def test_cancel_with_nothing_attached_unsticks_the_ui(run_env):
