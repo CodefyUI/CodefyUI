@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from app.core import plugin_loader
+from app.core.packs import constraints as constraints_mod
 from app.core.packs import runner as packs_runner
 from app.core.plugins import deps, flows, github
 from app.core.plugins import inspect as plugin_inspect
@@ -213,9 +214,14 @@ def fake_pip(monkeypatch):
     """
     calls: list[dict[str, Any]] = []
 
-    def _make(*, returncode: int = 0, output: tuple[str, ...] = ()):
+    def _make(*, returncode: int = 0, output: tuple[str, ...] = (),
+              then: tuple[int, tuple[str, ...]] | None = None):
+        """*then* is ``(returncode, output)`` for every run after the first,
+        for the retry an install allowed to replace packages makes."""
         def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
                      tail=None, conflict=None):
+            code, lines = (returncode, output) if not calls or then is None \
+                else then
             calls.append({
                 "specs": list(specs),
                 "constraints_path": constraints_path,
@@ -225,7 +231,7 @@ def fake_pip(monkeypatch):
             })
             emit({"type": "log", "line": " ".join(packs_runner.pip_install_argv(
                 specs, constraints_path=constraints_path))})
-            for line in output:
+            for line in lines:
                 # Both out-parameters, filled the way the real runner fills
                 # them -- trimming included. Without the trim this fake
                 # cannot produce uv's real failure shape, a conflict whose
@@ -238,7 +244,7 @@ def fake_pip(monkeypatch):
                         and packs_runner.looks_like_resolver_conflict((line,))):
                     conflict.set()
                 emit({"type": "log", "line": line})
-            return returncode
+            return code
 
         monkeypatch.setattr(packs_runner, "run_pip", _run_pip)
         return calls
@@ -529,6 +535,82 @@ def test_a_conflict_uv_explains_at_length_still_asks_for_a_restart(
     assert '"tinylib==1.0.0"' in command
     assert command in (excinfo.value.hint or "")
     assert not (user_root / "extras").exists(), "deps run before anything is staged"
+
+
+_CONFLICT = ("  × No solution found when resolving dependencies:",)
+
+
+def test_a_conflict_is_retried_with_only_the_machine_pins_when_allowed(
+    fake_github, fake_pip, user_root, monkeypatch
+):
+    """With no server running there is nothing to protect but the PyTorch
+    build, so a plugin that needs a newer package than the venv has gets it:
+    add-only first, then once more with only torch pinned."""
+    monkeypatch.setattr(constraints_mod, "installed_distributions", lambda: {
+        "torch": "2.11.0+cu128", "safetensors": "0.7.0", "numpy": "2.3.0"})
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    calls = fake_pip(returncode=1, output=_CONFLICT, then=(0, ()))
+    events: list[dict] = []
+
+    outcome = _install(_github_plan(), emit=events.append, replace_allowed=True)
+
+    assert outcome.deps_installed == ("tinylib==1.0.0",)
+    assert [c["constraints_text"] for c in calls] == [
+        "numpy==2.3.0\nsafetensors==0.7.0\ntorch==2.11.0+cu128\n",
+        "torch==2.11.0+cu128\n",
+    ]
+    assert any("No CodefyUI server is running" in line
+               for line in _lines(events))
+    assert _entry("extras") is not None
+
+
+def test_a_conflict_that_survives_the_retry_is_the_plugins_own(
+    fake_github, fake_pip, user_root
+):
+    """Nothing is running, so "stop the server" would send the user looking
+    for a server that is not there: the failure is an install error with
+    uv's own explanation."""
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    calls = fake_pip(returncode=1, output=_CONFLICT, then=(1, _CONFLICT))
+
+    with pytest.raises(PluginInstallError) as excinfo:
+        _install(_github_plan(), replace_allowed=True)
+    assert not isinstance(excinfo.value, PluginNeedsRestart)
+    assert "No solution found" in (excinfo.value.hint or "")
+    assert len(calls) == 2
+    assert _entry("extras") is None
+
+
+def test_an_add_only_install_that_works_is_never_retried(
+    fake_github, fake_pip, user_root
+):
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    calls = fake_pip(then=(1, _CONFLICT))
+
+    _install(_github_plan(), replace_allowed=True)
+    assert len(calls) == 1
+
+
+def test_a_failure_that_is_not_a_conflict_is_not_retried(
+    fake_github, fake_pip, user_root
+):
+    """A download error says nothing about pins; loosening them would only
+    run the same failure twice."""
+    fake_github({"cdui.plugin.toml": WITH_DEPS})
+    calls = fake_pip(returncode=2, output=("error: could not download",))
+
+    with pytest.raises(PluginInstallError):
+        _install(_github_plan(), replace_allowed=True)
+    assert len(calls) == 1
+
+
+def test_a_builtin_pack_passes_replace_allowed_through(builtin_root, fake_pip):
+    _write_builtin(builtin_root, BUILTIN_WITH_DEPS)
+    calls = fake_pip(returncode=1, output=_CONFLICT, then=(0, ()))
+
+    outcome = _install(_builtin_plan(), replace_allowed=True)
+    assert outcome.deps_installed == ("tinylib==1.0.0",)
+    assert len(calls) == 2
 
 
 def test_any_other_pip_failure_keeps_uvs_last_lines(fake_github, fake_pip):

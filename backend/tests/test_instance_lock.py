@@ -395,6 +395,45 @@ def test_the_record_names_this_server_and_is_emptied_on_release(locks):
     assert [path.read_bytes() for path, _ in locks] == [b"", b""]
 
 
+# -- held_if_free: the probe a command uses ------------------------------------
+
+def test_held_if_free_holds_the_locks_when_no_server_runs(locks):
+    """``True``, and a server started meanwhile is refused."""
+    with instance_lock.held_if_free(locks, host="", port=0) as free:
+        assert free is True
+        assert _second_process(locks)[:2] == (3, "refused")
+    assert _second_process(locks)[:2] == (0, "held")
+
+
+def test_held_if_free_answers_false_beside_a_running_server(
+        locks, caplog):
+    """A refusal is the answer here, not an error: nothing is logged and
+    the running server's records are left alone."""
+    with _holding_process(locks):
+        before = [path.read_bytes() for path, _ in locks]
+        with caplog.at_level(logging.ERROR):
+            with instance_lock.held_if_free(locks, host="", port=0) as free:
+                assert free is False
+        assert [path.read_bytes() for path, _ in locks] == before
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_held_if_free_lets_go_of_a_lock_taken_before_the_refusal(tmp_path):
+    """The data dir is free and the database is not: the data-dir lock
+    taken first is released before the block runs, not after."""
+    data_a, data_b = tmp_path / "data-a", tmp_path / "data-b"
+    db = tmp_path / "db" / "codefyui.db"
+    with _holding_process(instance_lock.server_locks(data_dir=data_a,
+                                                     db_path=db)):
+        locks = instance_lock.server_locks(data_dir=data_b, db_path=db)
+        with instance_lock.held_if_free(locks, host="", port=0) as free:
+            assert free is False
+            assert (data_b / "server.lock").read_bytes() == b""
+            assert _second_process(
+                [(data_b / "server.lock", "the data directory")])[:2] == (
+                    0, "held")
+
+
 # -- how a refusal reads in uvicorn's log ------------------------------------
 
 def _traceback_of(exc: BaseException) -> str:

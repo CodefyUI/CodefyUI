@@ -47,7 +47,7 @@ The in-app **Plugin Center**, available from the sidebar's **Custom & Plugins** 
 
 Every subcommand that changes the lockfile, and `reload`, asks the running server to hot-reload. The request connects to `127.0.0.1` on `CODEFYUI_PORT` (default `8000`); see [Environment variables](#environment-variables).
 
-Exit codes, for scripts: `0` done — including declining at the `Proceed?` prompt, which is an answer rather than a failure; `1` the install failed, or a capability or module request was refused; `2` a source could not be parsed (the sources before it are already installed), or no source was given; `3` the plugin's Python packages cannot be installed while the server is running — the command to type instead is printed; `130` cancelled with `Ctrl+C`.
+Exit codes, for scripts: `0` done — including declining at the `Proceed?` prompt, which is an answer rather than a failure; `1` the install failed, or a capability or module request was refused; `2` a source could not be parsed (the sources before it are already installed), or no source was given; `3` the plugin's Python packages cannot be installed while the server is running — the command to type instead is printed (with no server running, the install upgrades the packages instead, keeping the PyTorch build pinned); `130` cancelled with `Ctrl+C`.
 
 See **[Plugins](/advanced/plugins)** for the full plugin workflow.
 

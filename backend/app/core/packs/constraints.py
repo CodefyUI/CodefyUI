@@ -126,6 +126,27 @@ def installed_distributions() -> dict[str, str]:
     return versions
 
 
+#: Pinned even when an install may replace packages: the PyTorch build is
+#: chosen per machine (``cdui install --gpu``), and an index only has to
+#: carry the same version under another build for a resolver to swap it.
+_MACHINE_CHOSEN = frozenset({"torch", "torchvision", "torchaudio"})
+
+
+def machine_pins(dists: dict[str, str] | None = None) -> dict[str, str]:
+    """The part of *dists* an install must keep even with no server running.
+
+    With the server stopped nothing has these packages imported, so an
+    install may upgrade them like any other -- except the PyTorch family and
+    anything carrying a local version tag (``+cu128``, ``+rocm6.4``): those
+    were picked for this machine's hardware, and replacing one is the silent
+    CPU-wheel downgrade the module docstring describes.
+    """
+    if dists is None:
+        dists = installed_distributions()
+    return {name: version for name, version in dists.items()
+            if name in _MACHINE_CHOSEN or "+" in version}
+
+
 def constraints_text(dists: dict[str, str] | None = None) -> str:
     """Render *dists* (default: this interpreter) as constraints-file text.
 
