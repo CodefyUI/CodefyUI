@@ -22,6 +22,19 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.0.0rc1] — 2026-10-14
+
+The release candidate for 3.0.0. It carries the same code as 2.10.0 under the
+new version number, so that it can be installed and tested before 3.0.0 is
+published. 3.0.0 is the baseline later releases stay compatible with, starting
+with the Export Python script's contract with course graders (#558): the shape
+of each node function, one sorted JSON line on stdout, exit codes 0/1/2, and
+data files found in the working directory.
+
+Install it with `CODEFYUI_RELEASE_TAG=3.0.0rc1`. A pre-release is never marked
+Latest, so the installers and `cdui update` stay on 2.10.0 without that
+variable.
+
 ## [2.10.0] — 2026-10-13
 
 This release follows a correctness audit of every built-in and pack node
@@ -5980,7 +5993,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.10.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc1...main
+[3.0.0rc1]: https://github.com/CodefyUI/CodefyUI/compare/2.10.0...3.0.0rc1
 [2.10.0]: https://github.com/CodefyUI/CodefyUI/compare/2.9.1...2.10.0
 [2.9.1]: https://github.com/CodefyUI/CodefyUI/compare/2.9.0...2.9.1
 [2.9.0]: https://github.com/CodefyUI/CodefyUI/compare/2.8.9...2.9.0
