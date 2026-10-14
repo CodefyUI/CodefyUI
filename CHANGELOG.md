@@ -22,6 +22,14 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.0.0rc2] — 2026-10-14
+
+The second release candidate for 3.0.0. It removes the compatibility paths
+that 2.0 kept for one release: pre-#117 log formats and the pre-v2 `stop`
+WebSocket action. Nothing else changed since 3.0.0rc1.
+
+Install it with `CODEFYUI_RELEASE_TAG=3.0.0rc2`.
+
 ### Removed
 
 - **Compatibility with pre-#117 log formats and the pre-v2 `stop` action** ([#757]). The Results panel no longer parses `__PROGRESS__:` / `__IMAGE__:` prefixed log messages, the canvas reads a node's progress, text, images and tensor summary only from the `outputs` list of a `node_status` frame, and the execution WebSocket answers `stop` with `Unknown action: stop` instead of treating it as `cancel`. Only a mix of versions from before 2.0 is affected; every in-tree client already sends the structured forms.
@@ -5997,7 +6005,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc2...main
+[3.0.0rc2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc1...3.0.0rc2
 [3.0.0rc1]: https://github.com/CodefyUI/CodefyUI/compare/2.10.0...3.0.0rc1
 [2.10.0]: https://github.com/CodefyUI/CodefyUI/compare/2.9.1...2.10.0
 [2.9.1]: https://github.com/CodefyUI/CodefyUI/compare/2.9.0...2.9.1
