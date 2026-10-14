@@ -22,6 +22,21 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-10-14
+
+3.0.0 is the baseline later releases stay compatible with, starting with the
+Export Python script's contract with course graders (#558): the shape of each
+node function, one sorted JSON line on stdout, exit codes 0/1/2, and data files
+found in the working directory. The code is the same as 3.0.0rc2, which testers
+checked before this release.
+
+Compared with 2.10.0, the only change is the removal of the compatibility paths
+that 2.0 kept for one release.
+
+### Removed
+
+- **Compatibility with pre-#117 log formats and the pre-v2 `stop` action** ([#757]). The Results panel no longer parses `__PROGRESS__:` / `__IMAGE__:` prefixed log messages, the canvas reads a node's progress, text, images and tensor summary only from the `outputs` list of a `node_status` frame, and the execution WebSocket answers `stop` with `Unknown action: stop` instead of treating it as `cancel`. Only a mix of versions from before 2.0 is affected; every in-tree client already sends the structured forms.
+
 ## [3.0.0rc2] — 2026-10-14
 
 The second release candidate for 3.0.0. It removes the compatibility paths
@@ -6005,7 +6020,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc2...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0...main
+[3.0.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc2...3.0.0
 [3.0.0rc2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc1...3.0.0rc2
 [3.0.0rc1]: https://github.com/CodefyUI/CodefyUI/compare/2.10.0...3.0.0rc1
 [2.10.0]: https://github.com/CodefyUI/CodefyUI/compare/2.9.1...2.10.0

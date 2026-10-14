@@ -358,7 +358,7 @@ wheels = [
 
 [[package]]
 name = "codefyui-backend"
-version = "3.0.0rc2"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
