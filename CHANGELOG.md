@@ -22,6 +22,13 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.0.2] — 2026-10-14
+
+Fixes the package upgrade 3.0.1 introduced for `cdui plugin sync`: an
+install that upgrades packages now resolves them together with everything
+already installed, so it cannot leave an installed package outside the
+versions it requires.
+
 ### Fixed
 
 - **A plugin install that upgrades packages no longer breaks the ones it leaves in place** ([#762]). In 3.0.1, `cdui plugin sync` with no server running asked uv for the plugin's packages alone, and uv does not check the packages it does not touch: installing the `eval` pack upgraded `huggingface-hub` to 2.2.0 under a `datasets` that requires `<2.0`. The install now resolves the plugin's packages together with every installed package, keeping installed versions wherever they fit (`huggingface-hub` 1.33.0 in that case), and still pins the PyTorch build and packages installed from a URL or a path. To repair an install that 3.0.1 already changed, run `uv pip check` in the backend venv and reinstall what it names with the server stopped, for example `uv pip install --python backend/.venv/bin/python "huggingface-hub<2"`.
@@ -6034,7 +6041,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...main
+[3.0.2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.1...3.0.2
 [3.0.1]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0...3.0.1
 [3.0.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc2...3.0.0
 [3.0.0rc2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc1...3.0.0rc2
