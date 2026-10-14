@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cdui plugin sync` installs a pack whose packages need an upgrade when no server is running** ([#760]). The CLI installed a plugin's Python packages add-only even with the server stopped, so on an install with `safetensors` 0.7.0 the built-in `eval` pack failed with "cannot be installed while the server is running", and stopping the server changed nothing. `cdui plugin install`, `sync`, `update` and `link` now hold the server's instance locks during the install; when no server is running, a conflicting add-only install is retried with only the PyTorch build pinned (`torch`, `torchvision`, `torchaudio` and packages with a local build tag such as `+cu128`). Beside a running server the install stays add-only and exits `3` with the command to run, as before.
+
 ## [3.0.0] — 2026-10-14
 
 3.0.0 is the baseline later releases stay compatible with, starting with the
@@ -6139,3 +6143,4 @@ Release candidates before 1.0.0 are on the
 [#752]: https://github.com/CodefyUI/CodefyUI/pull/752
 [#753]: https://github.com/CodefyUI/CodefyUI/pull/753
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
+[#760]: https://github.com/CodefyUI/CodefyUI/pull/760
