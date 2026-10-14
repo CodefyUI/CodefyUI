@@ -346,13 +346,8 @@ export function useGraphExecution() {
           outputs.filter((o) => o && typeof o === 'object' && o.output_kind === kind);
         const firstOf = (kind: string) => ofKind(kind)[0];
 
-        // DEPRECATED (remove one release after #117): a frontend built from
-        // source can meet an older prebuilt backend that still sends these
-        // flat fields — and that guessed `image` from the string's length.
-        const legacy = outputs.length === 0 ? data : {};
-
         if (data.status === 'progress') {
-          const p = firstOf('progress')?.progress ?? legacy.progress;
+          const p = firstOf('progress')?.progress;
           if (p) {
             // #125: buffered, not written straight through. A training run
             // streams these faster than the screen repaints, and every
@@ -453,7 +448,6 @@ export function useGraphExecution() {
         // — a node may emit several (and #130's chart pack will emit text
         // alongside other kinds).
         const texts = ofKind('text').map((o) => o.text);
-        if (legacy.log) texts.push(legacy.log);
         for (const text of texts) {
           if (!text) continue;
           store.addTabLog(tabId, {
@@ -464,19 +458,14 @@ export function useGraphExecution() {
           });
         }
 
-        const imageEntries = ofKind('image');
-        // Legacy backends sent a bare base64 string with no container info.
-        if (typeof legacy.image === 'string' && legacy.image) {
-          imageEntries.push({ image: { format: 'png', encoding: 'base64', data: legacy.image } });
-        }
         logMedia(
           { nodeId: data.node_id },
-          imageEntries,
+          ofKind('image'),
           ofKind('video'),
           ofKind('chart'),
         );
 
-        const summary = firstOf('tensor_summary')?.tensor_summary ?? legacy.output_summary;
+        const summary = firstOf('tensor_summary')?.tensor_summary;
         if (summary) {
           store.setTabOutputSummary(tabId, data.node_id, summary);
         }
@@ -510,8 +499,7 @@ export function useGraphExecution() {
         }
 
         // #310: a video entry is a REFERENCE (path/url/format) to a file the
-        // backend wrote under its media dir — never bytes. No legacy
-        // fallback — the kind postdates the flat-field era entirely.
+        // backend wrote under its media dir — never bytes.
         for (const entry of videos) {
           const payload = entry.video;
           if (!payload?.url || !payload?.format) continue;
@@ -524,8 +512,7 @@ export function useGraphExecution() {
           });
         }
 
-        // #130: a chart entry carries a spec the client draws itself. No
-        // legacy fallback — the kind postdates the flat-field era entirely.
+        // #130: a chart entry carries a spec the client draws itself.
         for (const entry of charts) {
           const payload = entry.chart;
           if (!payload?.kind) continue;

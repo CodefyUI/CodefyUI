@@ -40,14 +40,9 @@ vi.mock('./RunsPanel', () => ({
   ),
 }));
 
-/**
- * DEPRECATED (remove one release after #117, together with the parsing in
- * ResultsPanel). Builds the legacy magic-prefixed progress string that
- * pre-#117 frontends smuggled through the log stream. New code seeds
- * `{ kind: 'progress', progress: {...} }` entries instead.
- */
-function progress(obj: Record<string, unknown>): string {
-  return '__PROGRESS__:' + JSON.stringify(obj);
+/** A structured progress log entry, as useGraphExecution files it. */
+function progress(obj: Record<string, unknown>) {
+  return { message: '', kind: 'progress' as const, progress: obj };
 }
 
 function makeLog(partial: Partial<LogEntry> & Pick<LogEntry, 'message'>): LogEntry {
@@ -90,19 +85,18 @@ describe('ResultsPanel — log tab basics', () => {
     expect(clearBtn).toBeDisabled();
   });
 
-  it('filters out __PROGRESS__ entries from the log tab and shows a count badge', () => {
+  it('filters out progress entries from the log tab and shows a count badge', () => {
     // Use a non-config/non-epoch progress event so it is filtered out of the
     // log view but does NOT flip hasTraining (which would auto-switch tabs).
     seedLogs([
       makeLog({ message: 'hello world' }),
-      makeLog({ message: progress({ event: 'noop' }) }),
+      makeLog({ ...progress({ event: 'noop' }) }),
       makeLog({ message: 'second line', type: 'success' }),
     ]);
     render(<ResultsPanel />);
     expect(screen.getByText('hello world')).toBeInTheDocument();
     expect(screen.getByText('second line')).toBeInTheDocument();
     // progress message is filtered out of the visible log
-    expect(screen.queryByText(/__PROGRESS__/)).not.toBeInTheDocument();
     // count badge (on the log tab) reflects the 2 visible non-progress entries
     const logTabBtn = screen.getByText(t('results.title')).closest('button')!;
     expect(within(logTabBtn).getByText('2')).toBeInTheDocument();
@@ -196,14 +190,6 @@ describe('ResultsPanel — log tab basics', () => {
     expect(screen.queryByText('oops')).not.toBeInTheDocument();
   });
 
-  // DEPRECATED (remove one release after #117): legacy prefixed image entry.
-  it('renders a legacy __IMAGE__ entry as an <img> with a base64 data URL', () => {
-    seedLogs([makeLog({ message: '__IMAGE__:QUJD' })]);
-    render(<ResultsPanel />);
-    const img = screen.getByAltText('Node output image') as HTMLImageElement;
-    expect(img.src).toBe('data:image/png;base64,QUJD');
-  });
-
   it('clears logs when the Clear button is pressed', () => {
     seedLogs([makeLog({ message: 'one' })]);
     render(<ResultsPanel />);
@@ -269,22 +255,22 @@ describe('ResultsPanel — training tab', () => {
   function seedTraining() {
     seedLogs([
       makeLog({
-        message: progress({
+        ...progress({
           event: 'config',
           config: { lr: 0.01, epochs: 3, optimizer: 'adam', momentum: 0.9 },
         }),
       }),
       makeLog({
         timestamp: 1000,
-        message: progress({ event: 'epoch', epoch: 1, total_epochs: 3, loss: 0.8 }),
+        ...progress({ event: 'epoch', epoch: 1, total_epochs: 3, loss: 0.8 }),
       }),
       makeLog({
         timestamp: 3000,
-        message: progress({ event: 'epoch', epoch: 2, total_epochs: 3, loss: 0.4 }),
+        ...progress({ event: 'epoch', epoch: 2, total_epochs: 3, loss: 0.4 }),
       }),
       makeLog({
         timestamp: 4000,
-        message: progress({ event: 'epoch', epoch: 3, total_epochs: 3, loss: 0.6 }),
+        ...progress({ event: 'epoch', epoch: 3, total_epochs: 3, loss: 0.6 }),
       }),
     ]);
   }
@@ -334,11 +320,11 @@ describe('ResultsPanel — training tab', () => {
     seedLogs([
       makeLog({
         timestamp: 1000,
-        message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9, val_loss: 0.7 }),
+        ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9, val_loss: 0.7 }),
       }),
       makeLog({
         timestamp: 2000,
-        message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.65 }),
+        ...progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.65 }),
       }),
     ]);
     render(<ResultsPanel />);
@@ -356,11 +342,11 @@ describe('ResultsPanel — training tab', () => {
     seedLogs([
       makeLog({
         timestamp: 1000,
-        message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9 }),
+        ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9 }),
       }),
       makeLog({
         timestamp: 2000,
-        message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.6 }),
+        ...progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.5, val_loss: 0.6 }),
       }),
     ]);
     render(<ResultsPanel />);
@@ -376,14 +362,14 @@ describe('ResultsPanel — training tab', () => {
     seedLogs([
       makeLog({
         timestamp: 1000,
-        message: progress({
+        ...progress({
           event: 'epoch', epoch: 10, total_epochs: 200, loss: 0.5,
           losses: [0.5], episode_return: 12, mean_return: 10.5,
         }),
       }),
       makeLog({
         timestamp: 2000,
-        message: progress({
+        ...progress({
           event: 'epoch', epoch: 20, total_epochs: 200, loss: 0.25,
           losses: [0.5, 0.25], episode_return: 31.5, mean_return: 18.25,
         }),
@@ -408,7 +394,7 @@ describe('ResultsPanel — training tab', () => {
   it('shows a dash for the return when an episodic frame lacks episode_return', () => {
     seedLogs([
       makeLog({
-        message: progress({
+        ...progress({
           event: 'epoch', epoch: 1, total_epochs: 5, loss: 0.5, mean_return: 4,
         }),
       }),
@@ -432,7 +418,7 @@ describe('ResultsPanel — training tab', () => {
 
   it('renders the config-only training state: no summary, shows waitingEpoch, disables epoch UI', () => {
     seedLogs([
-      makeLog({ message: progress({ event: 'config', config: { lr: 0.1 } }) }),
+      makeLog({ ...progress({ event: 'config', config: { lr: 0.1 } }) }),
     ]);
     render(<ResultsPanel />);
     // hasTraining true (config != null) so it auto-switches to training
@@ -443,19 +429,6 @@ describe('ResultsPanel — training tab', () => {
     // no chart, no epoch table, no summary
     expect(screen.queryByTestId('loss-chart')).not.toBeInTheDocument();
     expect(screen.queryByText(t('results.col.loss'))).not.toBeInTheDocument();
-  });
-
-  it('handles malformed progress JSON gracefully (catch branch)', () => {
-    seedLogs([
-      makeLog({ message: '__PROGRESS__:{not valid json' }),
-      makeLog({ message: 'normal' }),
-    ]);
-    render(<ResultsPanel />);
-    // malformed progress yields no training data -> still on log tab
-    expect(screen.getByText('normal')).toBeInTheDocument();
-    // training tab button is disabled (no training data)
-    const trainingBtn = screen.getByText(t('results.training')).closest('button')!;
-    expect(trainingBtn).toBeDisabled();
   });
 
   it('does not switch tabs when there is no training data; the Training tab is disabled and inert', () => {
@@ -472,7 +445,7 @@ describe('ResultsPanel — training tab', () => {
   it('clicking the enabled Training tab invokes its handler (hasTraining && setPanelTab)', () => {
     seedLogs([
       makeLog({ message: 'a log line' }),
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+      makeLog({ timestamp: 1000, ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
     // switch to log first, then click the enabled training tab to drive its onClick
@@ -488,7 +461,7 @@ describe('ResultsPanel — training tab', () => {
 
   it('falls back to the Log tab when the logs are cleared while on the Training tab', () => {
     seedLogs([
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+      makeLog({ timestamp: 1000, ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
     // auto-switched to training; clearing the logs disables the Training tab,
@@ -505,7 +478,7 @@ describe('ResultsPanel — training tab', () => {
     // The logs follow the active canvas tab: switching from a training graph
     // to one that trains nothing must show that graph's log.
     seedLogs([
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+      makeLog({ timestamp: 1000, ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
     expect(screen.getByTestId('loss-chart')).toBeInTheDocument();
@@ -516,7 +489,7 @@ describe('ResultsPanel — training tab', () => {
 
   it('stays on Runs when the training data goes away', () => {
     seedLogs([
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+      makeLog({ timestamp: 1000, ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
     fireEvent.click(screen.getByText(t('runs.tab')));
@@ -527,7 +500,7 @@ describe('ResultsPanel — training tab', () => {
   it('lets the user switch back to the Log tab after training auto-switch', () => {
     seedLogs([
       makeLog({ message: 'a log line' }),
-      makeLog({ message: progress({ event: 'epoch', epoch: 1, total_epochs: 1, loss: 0.5 }) }),
+      makeLog({ ...progress({ event: 'epoch', epoch: 1, total_epochs: 1, loss: 0.5 }) }),
     ]);
     render(<ResultsPanel />);
     // auto-switched to training; switch back to log
@@ -538,8 +511,8 @@ describe('ResultsPanel — training tab', () => {
   it('switches to training manually when only epochs exist (epoch-only, no config)', () => {
     // epochs but no config -> config section + row divider absent
     seedLogs([
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
-      makeLog({ timestamp: 2000, message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.3 }) }),
+      makeLog({ timestamp: 1000, ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+      makeLog({ timestamp: 2000, ...progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.3 }) }),
     ]);
     render(<ResultsPanel />);
     // chart present
@@ -554,9 +527,9 @@ describe('ResultsPanel — training tab', () => {
 describe('ResultsPanel — training column dividers (drag handlers)', () => {
   function seedFull() {
     seedLogs([
-      makeLog({ message: progress({ event: 'config', config: { lr: 0.01 } }) }),
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.8 }) }),
-      makeLog({ timestamp: 2000, message: progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.4 }) }),
+      makeLog({ ...progress({ event: 'config', config: { lr: 0.01 } }) }),
+      makeLog({ timestamp: 1000, ...progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.8 }) }),
+      makeLog({ timestamp: 2000, ...progress({ event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.4 }) }),
     ]);
   }
 
@@ -897,38 +870,6 @@ describe('ResultsPanel — Runs tab', () => {
     fireEvent.click(screen.getByText(t('runs.tab')));
     fireEvent.click(screen.getByLabelText(t('results.collapse')));
     expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
-  });
-});
-
-describe('ResultsPanel — legacy magic prefixes (deprecated, #117)', () => {
-  // Kept for one release so a frontend running against a pre-#117 backend
-  // still renders. Delete this block together with the parsing it covers.
-  it('still parses a mix of legacy prefixes and structured entries', () => {
-    seedLogs([
-      makeLog({ message: '__IMAGE__:TEdD' }),
-      makeLog({
-        message: '',
-        kind: 'image',
-        image: { format: 'png', encoding: 'base64', data: 'QUJD' },
-      }),
-      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
-      makeLog({
-        timestamp: 2000,
-        message: '',
-        kind: 'progress',
-        progress: { event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.25 },
-      }),
-    ]);
-    render(<ResultsPanel />);
-    // Both progress sources feed one epoch series.
-    expect(screen.getByTestId('loss-chart').getAttribute('data-len')).toBe('2');
-    // Both image sources render.
-    fireEvent.click(screen.getByText(t('results.title')));
-    const imgs = screen.getAllByAltText('Node output image') as HTMLImageElement[];
-    expect(imgs.map((i) => i.src)).toEqual([
-      'data:image/png;base64,TEdD',
-      'data:image/png;base64,QUJD',
-    ]);
   });
 });
 

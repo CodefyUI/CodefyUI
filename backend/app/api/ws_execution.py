@@ -20,8 +20,7 @@ Client -> server (``action``):
 ``detach``    Stop forwarding. **Never cancels.** So does closing the
               socket, which is the entire point of the wave.
 ``cancel``    ``{run_id?}`` — the ONLY way to stop a run. Defaults to the
-              attached one. (``stop`` is kept as a deprecated alias because
-              a prebuilt frontend from before this change still sends it.)
+              attached one. (The pre-v2 alias ``stop`` was removed in 3.0.)
 ``clear_cache`` Drop this socket's ``ExecutionCache``.
 
 Server -> client: every frame of a run's event log, verbatim, as
@@ -91,9 +90,6 @@ ACTION_EXECUTE = "execute"
 ACTION_ATTACH = "attach"
 ACTION_DETACH = "detach"
 ACTION_CANCEL = "cancel"
-#: Pre-v2 name for ``cancel``. A prebuilt frontend tarball from before this
-#: release sends it, and those users update the backend first.
-ACTION_STOP = "stop"
 ACTION_CLEAR_CACHE = "clear_cache"
 
 #: How many stored events one replay query pulls. Bounded so a run with
@@ -539,7 +535,7 @@ class _ExecutionSocket:
                     await self.handle_attach(data)
                 elif action == ACTION_DETACH:
                     await self.detach()
-                elif action in (ACTION_CANCEL, ACTION_STOP):
+                elif action == ACTION_CANCEL:
                     await self.handle_cancel(data)
                 elif action == ACTION_CLEAR_CACHE:
                     await self.handle_clear_cache()

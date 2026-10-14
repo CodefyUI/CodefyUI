@@ -240,8 +240,6 @@ describe('useGraphExecution - node_status handler', () => {
     // epoch event → a structured progress log entry is appended (#117).
     const entry = tab.logs.find((l: any) => l.kind === 'progress');
     expect(entry.progress).toEqual({ event: 'epoch', value: 1 });
-    // ...and never a magic-prefixed string.
-    expect(tab.logs.some((l: any) => l.message.startsWith('__PROGRESS__:'))).toBe(false);
   });
 
   it('handles progress events WITHOUT epoch/config (no progress log)', () => {
@@ -509,8 +507,6 @@ describe('useGraphExecution - node_status handler', () => {
       data: 'QUJD',
       port: 'image',
     });
-    // No magic prefix is ever produced any more.
-    expect(tab.logs.some((l: any) => l.message.startsWith('__IMAGE__:'))).toBe(false);
     expect(tab.outputSummaries.n1).toEqual({ out: { shape: [1] } });
   });
 
@@ -651,11 +647,9 @@ describe('useGraphExecution - node_status handler', () => {
     expect(kinds).toEqual(['text', 'chart']);
   });
 
-  // ── Deprecated flat fields (remove one release after #117) ──────────────
-  // A frontend built from source can talk to an older prebuilt backend that
-  // still sends `log` / `image` / `progress` / `output_summary` at the top
-  // level (and guessed the image). Keep reading them for one release.
-  it('still reads the legacy flat log / image / output_summary fields', () => {
+  // The pre-#117 flat fields were read for a release after #117 and are
+  // ignored since 3.0: only `outputs` carries renderable payloads.
+  it('ignores the pre-#117 flat log / image / progress / output_summary fields', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
     act(() => {
@@ -666,21 +660,6 @@ describe('useGraphExecution - node_status handler', () => {
         image: 'QUJD',
         output_summary: { out: { shape: [1] } },
       });
-    });
-    const tab = tabById('t1');
-    expect(tab.logs.find((l: any) => l.message === 'hello log').kind).toBe('text');
-    expect(tab.logs.find((l: any) => l.kind === 'image').image).toEqual({
-      format: 'png',
-      encoding: 'base64',
-      data: 'QUJD',
-    });
-    expect(tab.outputSummaries.n1).toEqual({ out: { shape: [1] } });
-  });
-
-  it('still reads the legacy flat progress field', () => {
-    const ws = tabById('t1').ws as FakeWs;
-    renderHook(() => useGraphExecution());
-    act(() => {
       ws.emit('node_status', {
         node_id: 'n1',
         status: 'progress',
@@ -689,11 +668,9 @@ describe('useGraphExecution - node_status handler', () => {
     });
     flushFrame();
     const tab = tabById('t1');
-    expect(tab.nodes[0].data.progress).toEqual({ event: 'config', config: { lr: 0.1 } });
-    expect(tab.logs.find((l: any) => l.kind === 'progress').progress).toEqual({
-      event: 'config',
-      config: { lr: 0.1 },
-    });
+    expect(tab.logs.some((l: any) => ['text', 'image', 'progress'].includes(l.kind))).toBe(false);
+    expect(tab.outputSummaries.n1).toBeUndefined();
+    expect(tab.nodes[0].data.progress).toBeUndefined();
   });
 
   // #125 acceptance: a burst of frames must cost ONE nodes-array rebuild.
