@@ -27,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on the 3.10 CI 
 import plugins as plugin_cli
 from app.core import instance_lock, plugin_loader
 from app.core.packs import catalog as packs_catalog
+from app.core.packs import constraints as packs_constraints
 from app.core.packs import runner as packs_runner
 from app.core.plugin_validator import PluginValidationError
 from app.core.plugins import catalog as core_catalog
@@ -789,6 +790,9 @@ def test_install_deps_with_no_server_running_upgrades_instead(
     monkeypatch.setattr(
         "app.core.packs.constraints.installed_distributions",
         lambda: {"torch": "2.11.0", "safetensors": "0.7.0"})
+    monkeypatch.setattr(core_deps, "replacement_plan", lambda: (
+        packs_constraints.Replacement(names=("safetensors",),
+                                      constraints="torch==2.11.0\n")))
     run_pip, seen = _conflicted_then(0)
     monkeypatch.setattr("app.core.packs.runner.run_pip", run_pip)
 

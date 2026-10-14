@@ -25,7 +25,7 @@ from app.core.packs.constraints import (
     _canonical,
     constraints_text,
     installed_distributions,
-    machine_pins,
+    replacement_plan,
     write_constraints_file,
 )
 
@@ -33,10 +33,12 @@ from app.core.packs.constraints import (
 class _FakeDist:
     """The parts of ``importlib.metadata.Distribution`` this module reads."""
 
-    def __init__(self, name: str, version: str, direct_url: str | None = None):
+    def __init__(self, name: str, version: str, direct_url: str | None = None,
+                 requires: list[str] | None = None):
         self.metadata = {"Name": name}
         self.version = version
         self._direct_url = direct_url
+        self.requires = requires
 
     def read_text(self, filename: str) -> str | None:
         return self._direct_url if filename == "direct_url.json" else None
@@ -276,20 +278,71 @@ def test_write_constraints_file_does_not_create_its_directory(tmp_path):
     assert not gone.exists()
 
 
-# ── machine_pins: what stays pinned with no server running ────────────────
+# ── replacement_plan: one resolve over the whole venv ─────────────────────
 
-def test_machine_pins_keep_the_pytorch_family_and_local_builds():
-    """Everything else may be upgraded once nothing has it imported; these
-    were chosen for this machine's hardware."""
-    assert machine_pins({
-        "torch": "2.11.0", "torchvision": "0.26.0", "torchaudio": "2.11.0",
-        "triton": "3.5.0+rocm6.4", "safetensors": "0.7.0", "numpy": "2.3.0",
-    }) == {"torch": "2.11.0", "torchvision": "0.26.0",
-           "torchaudio": "2.11.0", "triton": "3.5.0+rocm6.4"}
+_EDITABLE = '{"url": "file:///x/backend", "dir_info": {"editable": true}}'
+_FROM_PATH = '{"url": "file:///wheels/local_tool-1.0-py3-none-any.whl"}'
 
 
-def test_machine_pins_default_to_this_interpreter(monkeypatch):
-    monkeypatch.setattr(
-        "app.core.packs.constraints.installed_distributions",
-        lambda: {"torch": "2.11.0+cu128", "idna": "3.13"})
-    assert machine_pins() == {"torch": "2.11.0+cu128"}
+def test_replacement_plan_requests_what_uv_may_re_resolve(monkeypatch):
+    """The 3.0.1 bug: uv resolved the plugin's specs alone and moved
+    huggingface-hub to 2.x under a datasets that requires <2.0. Every
+    package that may move is requested by name, so uv honours its
+    requirements -- datasets' <2.0 included."""
+    monkeypatch.setattr(importlib.metadata, "distributions", _yielding(
+        _FakeDist("datasets", "5.0.1",
+                  requires=["huggingface-hub<2.0,>=0.25.0"]),
+        _FakeDist("huggingface_hub", "1.29.0"),
+        _FakeDist("torch", "2.11.0+cu128", requires=["sympy>=1.13.3"]),
+        _FakeDist("torchvision", "0.26.0"),
+        _FakeDist("codefyui-backend", "3.0.2", direct_url=_EDITABLE,
+                  requires=["huggingface_hub>=1.19",
+                            "pytest>=8; extra == \"dev\""]),
+        _FakeDist("local-tool", "1.0", direct_url=_FROM_PATH,
+                  requires=["numpy>=2"]),
+    ))
+    plan = replacement_plan()
+
+    assert plan.names == ("datasets", "huggingface-hub")
+    assert plan.constraints.splitlines() == [
+        "local-tool==1.0",
+        "torch==2.11.0+cu128",
+        "torchvision==0.26.0",
+        "sympy>=1.13.3",
+        "huggingface-hub>=1.19",
+        "numpy>=2",
+    ]
+
+
+def test_replacement_plan_leaves_out_requirements_it_cannot_constrain(
+        monkeypatch):
+    """An extra's requirements, a URL requirement, a bare name and an
+    unparsable line say nothing a constraints file can hold."""
+    monkeypatch.setattr(importlib.metadata, "distributions", _yielding(
+        _FakeDist("torch", "2.11.0", requires=[
+            "filelock",
+            "triton==3.5.0; platform_system == \"Linux\"",
+            "opt-einsum>=3.3; extra == \"opt-einsum\"",
+            "evil @ https://example.invalid/evil.whl",
+            "not a requirement ((",
+        ]),
+    ))
+    assert replacement_plan().constraints.splitlines() == [
+        "torch==2.11.0",
+        'triton==3.5.0; platform_system == "Linux"',
+    ]
+
+
+def test_replacement_plan_skips_a_record_it_cannot_read(monkeypatch):
+    class _Broken(_FakeDist):
+        @property
+        def metadata(self):
+            raise OSError("truncated dist-info")
+
+        @metadata.setter
+        def metadata(self, value):
+            pass
+
+    monkeypatch.setattr(importlib.metadata, "distributions", _yielding(
+        _Broken("ghost", "1.0"), _FakeDist("numpy", "2.3.0")))
+    assert replacement_plan().names == ("numpy",)
