@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Internal
+
+- **A `single-node-parity` CI check runs exported examples and pins the default submit path** ([#765]). Every CPU example the smoke suite executes is now exported, run under `python -I` in an empty folder the way a course grader runs it, and compared with the same graph run in-process: the order its nodes run in, and its printed output or GraphOutput JSON. Three graphs submitted over `POST /api/runs` with default settings have their event sequence compared with `backend/tests/snapshots/single_node_parity.json`, which changes only in a commit that means to change it. Both modules also run in the full suite.
+
 ## [3.0.2] — 2026-10-14
 
 Fixes the package upgrade 3.0.1 introduced for `cdui plugin sync`: an
@@ -6164,3 +6168,4 @@ Release candidates before 1.0.0 are on the
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
 [#762]: https://github.com/CodefyUI/CodefyUI/pull/762
+[#765]: https://github.com/CodefyUI/CodefyUI/issues/765
