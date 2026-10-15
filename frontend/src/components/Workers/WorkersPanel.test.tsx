@@ -334,7 +334,8 @@ describe('WorkersPanel', () => {
   it('opens the Add worker dialog over the panel; its Escape closes only itself', async () => {
     const dialog = await openPanel([]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add worker' }));
-    const add = screen.getByRole('dialog', { name: 'Add a worker' });
+    // The dialog is a lazy chunk of its own: it arrives a tick later.
+    const add = await screen.findByRole('dialog', { name: 'Add a worker' });
     expect(within(add).getByText('cdui agent start')).toBeInTheDocument();
     fireEvent.keyDown(add, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();

@@ -4,6 +4,7 @@ import App from './App';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useProjectStore } from './store/projectStore';
+import { useWorkerStore } from './store/workerStore';
 import { fetchHealth } from './api/rest';
 import { startWorkspaceLock, _resetWorkspaceLockForTests } from './utils/workspaceLock';
 
@@ -65,6 +66,9 @@ vi.mock('./components/CustomNodeManager/CustomNodeManager', () => ({
 }));
 vi.mock('./components/shared/Toast', () => ({
   ToastContainer: () => <div data-testid="toast-container" />,
+}));
+vi.mock('./components/Workers/WorkersPanel', () => ({
+  WorkersPanel: () => <div data-testid="workers-panel" />,
 }));
 vi.mock('./components/shared/ShortcutsModal', () => ({
   ShortcutsModal: () => <div data-testid="shortcuts-modal" />,
@@ -224,6 +228,16 @@ describe('App', () => {
     });
     expect(screen.queryByTestId('toolbar')).toBeNull();
     expect(screen.getAllByTestId('custom-node-manager-modal')).toHaveLength(1);
+  });
+
+  it('loads the Workers panel only once it opens (#776, a lazy chunk)', async () => {
+    useWorkerStore.setState({ panelOpen: false });
+    render(<App />);
+    expect(screen.queryByTestId('workers-panel')).toBeNull();
+    act(() => useWorkerStore.setState({ panelOpen: true }));
+    expect(await screen.findByTestId('workers-panel')).toBeInTheDocument();
+    act(() => useWorkerStore.setState({ panelOpen: false }));
+    expect(screen.queryByTestId('workers-panel')).toBeNull();
   });
 
   // ── RightColumn conditional rendering ───────────────────────────────────────
