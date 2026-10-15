@@ -253,11 +253,16 @@ async def test_a_loopback_worker_token_with_our_machine_id_is_same_host(
 async def test_plain_ws_from_another_machine_is_warned_about(
         enrolled, remote_peer, caplog):
     _, _, _, worker_token = enrolled
+    # In the header, as the agent sends it: the test client's own request
+    # log (httpx, at INFO) would otherwise print a query-string token.
     async with _client(token=False) as client, \
-            aconnect_ws(_path(worker_token), client) as ws:
+            aconnect_ws(wp.WORKER_WS_PATH, client,
+                        headers={"X-CodefyUI-Token": worker_token}) as ws:
         await FakeAgent(ws).hello("gpu-box")
     assert "plain ws://" in caplog.text
-    assert worker_token not in caplog.text
+    server_log = "\n".join(r.getMessage() for r in caplog.records
+                           if r.name.startswith("app."))
+    assert worker_token not in server_log
 
 
 async def test_no_warning_from_this_machine(enrolled, caplog):
