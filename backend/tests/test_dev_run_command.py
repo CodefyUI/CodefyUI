@@ -30,6 +30,7 @@ from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import registry
 from app.core.output_entries import build_node_output_entries
 from app.core.run_service import (
+    TARGET_NOT_ENROLLED,
     RunService,
     normalize_graph,
     normalize_name,
@@ -296,11 +297,35 @@ def test_the_target_and_device_lines(graph_file):
     assert dev._run_display_device(plain, graph) == "cpu"
     sets = dev._parse_run_args([str(graph_file), "--target", "local",
                                 "--devices", "CUDA:0,cuda:1"])
-    assert dev._run_display_target(sets) == "local (CUDA:0, cuda:1)"
+    # Lowercased once, so both lines spell the device the same way.
+    assert dev._run_display_target(sets) == "local (cuda:0, cuda:1)"
     assert dev._run_display_device(sets, graph) == "cuda:0 (target)"
+    assert dev._run_submit_body(sets)["options"]["target"]["devices"] == [
+        "cuda:0", "cuda:1"]
     both = dev._parse_run_args([str(graph_file), "--device", "cuda:0",
                                 "--devices", "cuda:0"])
     assert dev._run_display_device(both, graph) == "cuda:0"
+
+
+@pytest.mark.parametrize("device", ["auto", "cuda", "CUDA"])
+def test_the_device_line_is_the_effective_device(graph_file, device):
+    """The server's rule: --device auto or a bare kind defers to the set."""
+    graph = json.loads(graph_file.read_text(encoding="utf-8"))
+    args = dev._parse_run_args([str(graph_file), "--device", device,
+                                "--devices", "cuda:1,cuda:0"])
+    assert dev._run_display_device(args, graph) == "cuda:1 (target)"
+    assert normalize_options(
+        dev._run_submit_body(args)["options"])["device"] == "cuda:1"
+
+
+def test_dev_still_means_device_and_prefixes_are_refused(graph_file):
+    """#769 added --devices next to --device. ``--dev`` keeps working as an
+    explicit alias; any other prefix is refused instead of guessed."""
+    args = dev._parse_run_args([str(graph_file), "--dev", "cpu"])
+    assert args.device == "cpu" and args.devices is None
+    for flag in ("--devic", "--det", "--rec"):
+        with pytest.raises(SystemExit):
+            dev._parse_run_args([str(graph_file), flag, "cpu"])
 
 
 def test_every_device_the_cli_advertises_is_one_the_server_accepts():
@@ -632,8 +657,7 @@ def test_a_rejected_submit_shows_the_servers_reason(monkeypatch, graph_file,
 
 def test_a_refused_target_shows_the_servers_reason(monkeypatch, graph_file,
                                                    capsys):
-    detail = ("no workers are enrolled on this server; remote targets "
-              "arrive with #772")
+    detail = TARGET_NOT_ENROLLED
     error = HTTPError(f"{BASE}/api/runs", 400, "Bad Request", {},
                       _Body(json.dumps({"detail": detail})))
     monkeypatch.setattr(dev, "urlopen",

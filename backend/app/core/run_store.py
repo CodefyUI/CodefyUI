@@ -348,8 +348,10 @@ class RunRecord:
     #: MIGRATION_008 has NULL and reads back as ``local``, which is where it
     #: ran.
     worker_id: str = WORKER_LOCAL
-    #: The run's device set (``options.target.devices``), or None when the
-    #: run named one ``device`` as every run before #769 did.
+    #: The REQUESTED device set (``options.target.devices``), or None when
+    #: the run named one ``device`` as every run before #769 did. In this
+    #: release only the first entry is used -- it is the run's device and
+    #: so its ``queue_key``; the rest is recorded as asked and not checked.
     devices: list[str] | None = None
 
     @classmethod
@@ -579,14 +581,18 @@ class RunStore:
         *study_id* / *study_attempt_id* stamp the run as the child of one
         study attempt (#343); the ``studies`` row must exist (enforced FK).
 
-        *worker_id* / *devices* record where the run executes (#769):
-        ``local`` and the ``target.devices`` list, or None for a run that
-        named a single ``device``.
+        *worker_id* / *devices* record where the run executes (#769): the
+        worker (a non-empty string; ``local`` is the only one today) and
+        the REQUESTED ``target.devices`` list, or None for a run that named
+        a single ``device``. Only the first device is used in this release.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
                 f"unknown run status {status!r}; expected one of "
                 f"{sorted(RUN_STATUSES)}")
+        if not isinstance(worker_id, str) or not worker_id:
+            raise ValueError(
+                f"worker_id must be a non-empty string, got {worker_id!r}")
         if provenance is None:
             provenance = await asyncio.to_thread(RunProvenance.capture)
 

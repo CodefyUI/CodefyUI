@@ -4332,11 +4332,16 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
             "run is owned by the server: it joins that device's queue, "
             "survives this terminal, and is visible in the Runs panel."
         ),
+        # No prefix matching: --device and --devices (#769) made `--dev`
+        # and `--devic` ambiguous, and a flag added later must never change
+        # what an abbreviation in someone's script means. `--dev` stays an
+        # explicit alias of --device because it worked before.
+        allow_abbrev=False,
     )
     p.add_argument("graph", help="path to a graph .json file")
     p.add_argument("--name", default=None,
                    help="label for the run (shown in the Runs panel)")
-    p.add_argument("--device", default=None,
+    p.add_argument("--device", "--dev", dest="device", default=None,
                    help="cpu | auto | cuda | cuda:N | mps. Omitted: the "
                         "graph file's settings.device, else cpu. auto: the "
                         "best accelerator this server has. The RESOLVED "
@@ -4477,13 +4482,15 @@ def _run_submit_body(args) -> dict:
 def _run_devices_flag(args) -> "list | None":
     """``--devices cuda:0,cuda:1`` as a list; None when the flag is absent.
 
-    Split on commas with blanks dropped, nothing else: the server owns the
-    vocabulary, the uniqueness and the one-kind rule.
+    Split on commas, trimmed, lowercased (as the server will), blanks
+    dropped -- once, here, so the Target and Device lines print the same
+    spelling. The server owns the vocabulary, canonical form, uniqueness
+    and the one-kind rule.
     """
     raw = getattr(args, "devices", None)
     if raw is None:
         return None
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]
 
 
 def _run_display_target(args) -> str:
@@ -4495,15 +4502,20 @@ def _run_display_target(args) -> str:
 
 
 def _run_display_device(args, graph: dict) -> str:
-    """The device line printed after submit: the flag, else the first entry
-    of ``--devices`` marked ``(target)``, else the graph file's
-    ``settings.device`` marked ``(graph)``, else ``cpu``. Display only; the
-    server resolves the effective device and reports it as ``queue_key``."""
-    if args.device is not None:
-        return str(args.device)
+    """The device line printed after submit: the effective device by the
+    server's rule. With ``--devices``, its first entry marked ``(target)``
+    when ``--device`` is omitted, ``auto`` or only the kind (``cuda``);
+    else the flag; else the graph file's ``settings.device`` marked
+    ``(graph)``; else ``cpu``. Display only; the server resolves the
+    effective device (refusing a ``--device`` that disagrees with the set)
+    and reports it as ``queue_key``."""
+    device = None if args.device is None else str(args.device).strip().lower()
     devices = _run_devices_flag(args)
-    if devices:
-        return f"{devices[0].lower()} (target)"
+    if devices and (device is None or device == "auto"
+                    or device == devices[0].partition(":")[0]):
+        return f"{devices[0]} (target)"
+    if device is not None:
+        return str(args.device)
     graph_settings = graph.get("settings") if isinstance(graph, dict) else None
     value = graph_settings.get("device") if isinstance(graph_settings, dict) else None
     if isinstance(value, str) and value.strip():

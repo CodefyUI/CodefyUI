@@ -57,7 +57,6 @@ from pydantic import (
 )
 
 from ..config import settings
-from ..core.device_utils import graph_settings_device
 from ..core.run_service import (
     LANE_INTERACTIVE,
     MAX_NAME_LENGTH,
@@ -65,7 +64,7 @@ from ..core.run_service import (
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
-    names_target_devices,
+    fill_graph_device,
     normalize_graph,
     normalize_name,
     normalize_options,
@@ -446,14 +445,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         # An absent options.device means the base graph's own device, the
         # same rule RunService.submit applies to a single run; the resolved
         # options dict is then copied into every variant below.
-        raw_options = body.options
-        settings_device = graph_settings_device(body.base_graph)
-        # A ``target.devices`` list names the device itself (#769).
-        if settings_device and not names_target_devices(raw_options) and (
-                raw_options is None or (isinstance(raw_options, dict)
-                                        and "device" not in raw_options)):
-            raw_options = {**(raw_options or {}), "device": settings_device}
-        options = normalize_options(raw_options)
+        options = normalize_options(
+            fill_graph_device(body.base_graph, body.options))
         name = normalize_name(body.name)
         graph = normalize_graph(body.base_graph)
         compiled = compile_sweep(

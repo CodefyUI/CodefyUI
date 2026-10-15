@@ -40,7 +40,7 @@ from app.core.node_base import (
 )
 from app.core.node_registry import registry
 from app.core.run_output_store import RunOutputStore
-from app.core.run_service import QueueLimits, RunService
+from app.core.run_service import TARGET_NOT_ENROLLED, QueueLimits, RunService
 from app.core.run_store import MetricRecord, RunProvenance, RunStore
 from app.main import app
 
@@ -402,8 +402,7 @@ async def test_a_matching_device_and_device_set_are_accepted(client):
     assert response.status_code == 200, response.text
 
 
-_NOT_ENROLLED = ("no workers are enrolled on this server; remote targets "
-                 "arrive with #772")
+_NOT_ENROLLED = TARGET_NOT_ENROLLED
 
 
 @pytest.mark.parametrize("target,detail", [
@@ -412,6 +411,12 @@ _NOT_ENROLLED = ("no workers are enrolled on this server; remote targets "
     ({"worker": "gpu-box-1", "devices": ["cuda:0"]}, _NOT_ENROLLED),
     ({"devices": ["cuda:0", "cpu"]}, "mixes device kinds"),
     ({"devices": ["cuda:0", "cuda:0"]}, "twice"),
+    # Duplicates are found after canonicalising.
+    ({"devices": ["cuda:00", "cuda:0"]}, "twice"),
+    ({"devices": ["mps", "mps:0"]}, "twice"),
+    # A device set lists cards, not kinds.
+    ({"devices": ["cuda"]}, "names a device kind"),
+    ({"devices": ["cuda:0", "cuda"]}, "names a device kind"),
     ({"devices": ["auto"]}, "unknown target device"),
     ({"devices": ["cudda:0"]}, "unknown target device"),
     ({"devices": []}, "non-empty list"),

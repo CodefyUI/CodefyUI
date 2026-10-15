@@ -296,6 +296,12 @@ def test_migration_004_upgrades_a_v3_db(tmp_path, monkeypatch):
         new.close()
 
 
+@pytest.mark.parametrize("worker_id", ["", None, 3])
+async def test_create_run_refuses_a_blank_worker_id(store, worker_id):
+    with pytest.raises(ValueError, match="worker_id"):
+        await _make_run(store, worker_id=worker_id)
+
+
 async def test_migration_008_upgrades_a_v7_db(tmp_path, monkeypatch):
     """#769's two columns land on a populated v7 database in place.
 

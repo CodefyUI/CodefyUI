@@ -585,12 +585,13 @@ def test_options_accept_every_documented_key():
         "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
         "backward_mode": True, "auto_backward": True,
         "error_mode": "retry", "max_retries": 3, "deterministic": True,
-        "target": {"devices": [" CUDA "]},
+        "target": {"devices": [" CUDA:1 "]},
     }
     assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
+    # " CUDA " is the bare kind, so the device set's first card wins.
     assert normalize_options(asked) == {
-        **asked, "device": "cuda",
-        "target": {"worker": "local", "devices": ["cuda"]}}
+        **asked, "device": "cuda:1",
+        "target": {"worker": "local", "devices": ["cuda:1"]}}
 
 
 @pytest.mark.parametrize("device,devices,effective", [
@@ -602,8 +603,10 @@ def test_options_accept_every_documented_key():
     ("cuda", ["cuda:1", "cuda:0"], "cuda:1"),
     ("mps", ["mps:0"], "mps:0"),
     ("cpu", ["cpu"], "cpu"),
-    # Equal after trim/lowercase.
+    # Equal after trim/lowercase, or after canonicalising.
     (" CUDA:1 ", ["cuda:1"], "cuda:1"),
+    ("cuda:01", ["cuda:1"], "cuda:1"),
+    ("mps:0", ["mps"], "mps:0"),
 ])
 def test_device_set_precedence_accepts(device, devices, effective):
     """#769: the device list is the more specific statement."""
@@ -613,6 +616,32 @@ def test_device_set_precedence_accepts(device, devices, effective):
     options = normalize_options(raw)
     assert options["device"] == effective
     assert options["target"]["devices"][0] == effective
+
+
+@pytest.mark.parametrize("devices,canonical", [
+    ([" CUDA:1 ", "cuda:00"], ["cuda:1", "cuda:0"]),
+    (["mps"], ["mps:0"]),
+    (["MPS:0"], ["mps:0"]),
+    (["cpu"], ["cpu"]),
+])
+def test_device_set_entries_are_canonical(devices, canonical):
+    target = normalize_options({"target": {"devices": devices}})["target"]
+    assert target == {"worker": "local", "devices": canonical}
+
+
+@pytest.mark.parametrize("worker", ["local", " LOCAL ", "Local"])
+def test_target_worker_is_trimmed_and_lowercased(worker):
+    assert normalize_options(
+        {"target": {"worker": worker}})["target"]["worker"] == "local"
+
+
+def test_target_worker_pattern_must_match_the_whole_name():
+    """Matched with ``fullmatch`` (the repo convention): ``match`` with a
+    ``$`` anchor would let a trailing newline through."""
+    from app.core.run_service import TARGET_WORKER_PATTERN
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu-box-1")
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu-box-1\n") is None
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu box") is None
 
 
 @pytest.mark.parametrize("device,devices", [

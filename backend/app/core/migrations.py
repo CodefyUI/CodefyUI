@@ -446,9 +446,11 @@ CREATE INDEX idx_exec_runs_study_attempt ON exec_runs(study_attempt_id)
 # - ``worker_id``: the worker that runs it. ``local`` (this process) is the
 #   only value written today; NULL is a row from before this migration and
 #   reads back as ``local`` (``RunRecord.from_row``), which is what it was.
-# - ``devices``: the run's device set as a JSON array (``target.devices``),
-#   or NULL when the run asked for one ``device`` the way every run did
-#   before. ``queue_key`` keeps its meaning either way.
+# - ``devices``: the REQUESTED device set as a JSON array
+#   (``target.devices``), or NULL when the run asked for one ``device`` the
+#   way every run did before. In this release only the first entry is used
+#   -- it is the run's device and so its ``queue_key``, which keeps its
+#   meaning -- and the rest is recorded as asked, unchecked.
 MIGRATION_008 = """
 ALTER TABLE exec_runs ADD COLUMN worker_id TEXT;
 ALTER TABLE exec_runs ADD COLUMN devices TEXT;
