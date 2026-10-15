@@ -27,9 +27,9 @@ run row to its terminal status, and the result is compared with
 ``tests/snapshots/single_node_parity.json``. Nothing in it depends on the
 machine: no timestamps, durations, values, paths, run ids or cursors. Two
 things are timed by the wall clock and are normalised for that: the training
-loop's per-batch progress frames (a run of identical consecutive rows is
-collapsed to one) and metric batches (left out of the sequence; the snapshot
-records only that one arrived).
+loop's per-batch progress frames (a run of identical consecutive progress
+rows is collapsed to one) and metric batches (left out of the sequence;
+the snapshot records only that one arrived).
 
 A changed snapshot is a reviewed, deliberate commit. To regenerate it after
 an intended change, run this module with ``UPDATE_SINGLE_NODE_PARITY_SNAPSHOT=1``
@@ -62,6 +62,10 @@ TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 
 #: Flushed on a size-or-time cadence; see `_submit_and_follow`.
 METRIC_EVENT = "metric"
+
+#: A node's throttled progress frame; see `_collapse_progress`.
+PROGRESS_EVENT = "node_status"
+PROGRESS_STATUS = "progress"
 
 
 # ── The three graphs ────────────────────────────────────────────────────
@@ -205,14 +209,23 @@ def _event_row(event: dict[str, Any]) -> list[Any]:
     ]
 
 
-def _collapse_repeats(rows: list[list[Any]]) -> list[list[Any]]:
-    """Drop a row identical to the one before it: the training loop's
-    per-batch progress frames are throttled by wall clock, so how many of
-    them a run produces depends on the machine, not on the code."""
+def _is_progress_frame(row: list[Any]) -> bool:
+    return row[0] == PROGRESS_EVENT and row[2] == PROGRESS_STATUS
+
+
+def _collapse_progress(rows: list[list[Any]]) -> list[list[Any]]:
+    """Drop a progress frame identical to the one before it.
+
+    The training loop's per-batch progress frames are throttled by wall
+    clock, so how many of them a run produces depends on the machine, not on
+    the code. Only those rows collapse: a repeated ``running`` or
+    ``execution_complete`` is a change, and the snapshot has to see it.
+    """
     collapsed: list[list[Any]] = []
     for row in rows:
-        if not collapsed or collapsed[-1] != row:
-            collapsed.append(row)
+        if collapsed and _is_progress_frame(row) and collapsed[-1] == row:
+            continue
+        collapsed.append(row)
     return collapsed
 
 
@@ -227,19 +240,30 @@ async def served_app(tmp_path, monkeypatch):
     the user data dir is already the session's temporary one (conftest).
     ``setup_logging`` is a no-op because the real one clears the root
     logger's handlers, which would detach pytest's capture mid-test.
+
+    Afterwards ``app.state`` is put back exactly as it was: the lifespan
+    leaves attributes behind (``sweep_store``, ``run_output_store``,
+    ``node_state_store``, ``port_stats_cache``, ``app_locks``, ...), and a
+    later test must not find this test's services there.
     """
     monkeypatch.setattr(settings, "DB_PATH", tmp_path / "db" / "parity.db")
     monkeypatch.setattr(main_mod, "setup_logging", lambda **kwargs: None)
-    async with main_mod.lifespan(main_mod.app):
-        async with AsyncClient(
-            transport=ASGITransport(app=main_mod.app),
-            base_url=f"http://127.0.0.1:{settings.PORT}",
-            headers={TOKEN_HEADER: session_token()},
-        ) as client:
-            yield client
-    # The lifespan re-ran init_allowed_hosts with CORS origins added; hand
-    # back the exact whitelist conftest seeded.
-    init_allowed_hosts(settings.HOST, settings.PORT)
+    state = main_mod.app.state._state
+    state_before = dict(state)
+    try:
+        async with main_mod.lifespan(main_mod.app):
+            async with AsyncClient(
+                transport=ASGITransport(app=main_mod.app),
+                base_url=f"http://127.0.0.1:{settings.PORT}",
+                headers={TOKEN_HEADER: session_token()},
+            ) as client:
+                yield client
+    finally:
+        state.clear()
+        state.update(state_before)
+        # The lifespan re-ran init_allowed_hosts with CORS origins added;
+        # hand back the exact whitelist conftest seeded.
+        init_allowed_hosts(settings.HOST, settings.PORT)
 
 
 async def _submit_and_follow(client: AsyncClient,
@@ -251,19 +275,21 @@ async def _submit_and_follow(client: AsyncClient,
     events: list[dict[str, Any]] = []
     cursor = 0
     deadline = time.monotonic() + RUN_TIMEOUT_S
+    terminal = False
     while True:
+        # Pages are byte-capped, so a terminal status says nothing about
+        # whether this page held the last event. Stop only on an empty page
+        # read after the run was already over.
         page = await client.get(f"/api/runs/{run_id}/events",
-                                params={"cursor": cursor, "wait": 1.0})
+                                params={"cursor": cursor,
+                                        "wait": 0.0 if terminal else 1.0})
         assert page.status_code == 200, page.text
         body = page.json()
+        if terminal and not body["events"]:
+            break
         events.extend(body["events"])
         cursor = body["cursor"]
-        if body["status"] in TERMINAL_STATUSES and not body["active"]:
-            # One more read: the last events may land after the status flips.
-            tail = (await client.get(f"/api/runs/{run_id}/events",
-                                     params={"cursor": cursor})).json()
-            events.extend(tail["events"])
-            break
+        terminal = body["status"] in TERMINAL_STATUSES and not body["active"]
         assert time.monotonic() < deadline, (
             f"run {run_id} still {body['status']} after {RUN_TIMEOUT_S}s")
         await asyncio.sleep(0)
@@ -272,7 +298,7 @@ async def _submit_and_follow(client: AsyncClient,
     # A metric batch is flushed by size or by wall clock, so where in the
     # sequence it lands depends on the machine; that one exists does not.
     metric_events = [e for e in events if e["type"] == METRIC_EVENT]
-    rows = _collapse_repeats([
+    rows = _collapse_progress([
         _event_row(event) for event in events if event["type"] != METRIC_EVENT
     ])
     return {

@@ -9,18 +9,30 @@ in-process smoke suite (``test_builtin_examples.py``) executes:
 
 1. export it through ``POST /api/graph/export``, the route the editor's
    button calls, and write the script into a fresh, otherwise empty folder;
-2. run it the way a grader does (``test_export_contract.py``'s harness:
-   ``python -I``, no ``CODEFYUI_*`` variable inherited, a dead proxy) with
-   ``--device cpu`` and ``--verbose``;
+2. run it with ``test_export_contract._run_like_a_grader`` (``python -I``,
+   no ``CODEFYUI_*`` variable inherited, a dead proxy) and the extra
+   arguments ``--device cpu --verbose``;
 3. run the same graph in-process with ``execute_graph`` on the same device
-   and seed, and compare:
+   and seed, with ``PREFER_WORKING_DIR`` on as the exported runtime turns it
+   on, in a second fresh folder holding the same files, and compare:
 
    * the order nodes ran in: ``--verbose`` prints ``[<id>] running`` per
      node in the script's order, which ``topological_sort`` decides at
      export time, and the engine reports ``running`` in its level order;
    * the answer: with a GraphOutput, the one JSON line on stdout against
      ``api_contract.serialize_output`` of the engine's outputs; without one,
-     everything Print wrote to stdout, byte for byte.
+     everything Print wrote to stdout, character for character once line
+     endings are normalised (text-mode output ends lines in CRLF on
+     Windows).
+
+The script's stdout is decoded as UTF-8, strictly, as the contract test
+does. Every example here prints ASCII only; one that printed other text on
+Windows, where a ``-I`` run writes the locale code page, would fail that
+decode, and that is a finding about the exported file rather than noise.
+
+What the in-process side does not share with the script: the conftest's
+node registry (the test packs are loaded) and its user data and upload
+directories. Neither changes what these examples compute.
 
 The seed is the example's ``settings.seed``, baked into the script as its
 default. An example without one runs with ``--seed 0`` on both sides: a
@@ -42,24 +54,21 @@ import asyncio
 import json
 import re
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from app.config import settings
 from app.core import api_contract
 from app.core.execution_context import ExecutionContext
 from app.core.graph_engine import build_preset_fallback, execute_graph
 from tests._example_graphs import graph_nodes
 from tests.test_builtin_examples import _SLOW_NODE_TYPES
-from tests.test_export_contract import RUN_TIMEOUT_S, _answer_line, _export, _grader_env
+from tests.test_export_contract import _answer_line, _export, _run_like_a_grader
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _EXAMPLES_ROOT = _BACKEND_DIR.parent / "examples"
-
-SCRIPT_NAME = "exported_example.py"
 
 #: Node types that reach the network even though ``_SLOW_NODE_TYPES`` lets
 #: them through. Empty today: every example the smoke suite runs works
@@ -153,19 +162,10 @@ def _stage_folder(folder: Path) -> None:
         shutil.copyfile(source, target)
 
 
-def _run_exported(script: str, folder: Path, home: Path,
-                  extra_args: list[str]) -> subprocess.CompletedProcess:
-    (folder / SCRIPT_NAME).write_bytes(script.encode("utf-8"))
-    return subprocess.run(
-        # -I and the scrubbed environment: see test_export_contract.py.
-        [sys.executable, "-I", SCRIPT_NAME, "--device", "cpu", "--verbose",
-         *extra_args],
-        cwd=folder,
-        env=_grader_env(home),
-        capture_output=True,
-        timeout=RUN_TIMEOUT_S,
-        check=False,
-    )
+def _lf(text: str) -> str:
+    """Text-mode stdout and stderr end lines in CRLF on Windows; the engine
+    side, read through capsys, ends them in LF."""
+    return text.replace("\r\n", "\n")
 
 
 def _engine_run(graph: dict, seed: int) -> tuple[dict, list[str]]:
@@ -177,7 +177,9 @@ def _engine_run(graph: dict, seed: int) -> tuple[dict, list[str]]:
     order: list[str] = []
 
     def on_progress(node_id, status, data=None):
-        if status == "running":
+        # First `running` per node only: a container re-emits `running`
+        # with a log payload while its inner nodes work.
+        if status == "running" and node_id not in order:
             order.append(node_id)
 
     results = asyncio.run(execute_graph(
@@ -215,31 +217,35 @@ async def test_exported_example_matches_the_engine(
     seed = FALLBACK_SEED if own_seed is None else own_seed
 
     script = await _export(test_client, graph)
-    folder, home = tmp_path / "grader", tmp_path / "home"
-    _stage_folder(folder)
+    grader_folder, home = tmp_path / "grader", tmp_path / "home"
+    _stage_folder(grader_folder)
+    extra_args = ["--device", "cpu", "--verbose"]
+    if own_seed is None:
+        extra_args += ["--seed", str(FALLBACK_SEED)]
     run = await asyncio.to_thread(
-        _run_exported, script, folder, home,
-        [] if own_seed is not None else ["--seed", str(FALLBACK_SEED)])
-    stdout = run.stdout.decode("utf-8")
-    stderr = run.stderr.decode("utf-8", errors="replace")
+        _run_like_a_grader, script, grader_folder, home, extra_args)
+    stdout, stderr = _lf(run.stdout), _lf(run.stderr)
     assert run.returncode == 0, f"exit {run.returncode}\nstderr:\n{stderr}"
     assert re.search(r"completed on cpu \(\d+ node results\)\.$", stderr,
                      re.MULTILINE), stderr
 
-    # Same folder as the script, so relative names resolve the same way.
-    monkeypatch.chdir(folder)
+    # The engine side under the settings the exported runtime switches on
+    # (initialize_export_runtime sets PREFER_WORKING_DIR), in a fresh copy of
+    # the same files, so neither run can see what the other one wrote.
+    engine_folder = tmp_path / "engine"
+    _stage_folder(engine_folder)
+    monkeypatch.setattr(settings, "PREFER_WORKING_DIR", True)
+    monkeypatch.chdir(engine_folder)
     capsys.readouterr()
     results, engine_order = await asyncio.to_thread(_engine_run, graph, seed)
-    engine_stdout = capsys.readouterr().out
+    engine_stdout = _lf(capsys.readouterr().out)
 
     exported_order = _RUNNING_LINE.findall(stderr)
     assert exported_order == engine_order, (
         "the exported script runs its nodes in another order than the engine")
 
     if has_output:
-        answer = json.loads(
-            _answer_line(SimpleNamespace(stdout=stdout, stderr=stderr)))
+        answer = json.loads(_answer_line(SimpleNamespace(stdout=stdout, stderr=stderr)))
         assert answer == _engine_answer(graph, results)
     else:
         assert stdout == engine_stdout
-

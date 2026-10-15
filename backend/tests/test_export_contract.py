@@ -45,7 +45,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pytest
 from PIL import Image
@@ -351,8 +351,14 @@ def _grader_env(home: Path) -> dict[str, str]:
     return env
 
 
-def _run_like_a_grader(script: str, folder: Path, home: Path) -> _Run:
-    """``python <file>.py`` inside *folder*, the way the grader runs it."""
+def _run_like_a_grader(script: str, folder: Path, home: Path,
+                       extra_args: Sequence[str] = ()) -> _Run:
+    """``python <file>.py`` inside *folder*, the way the grader runs it.
+
+    *extra_args* follow the file name. A grader passes none; the export
+    parity suite (test_export_run_parity.py) adds ``--device cpu`` and
+    ``--verbose``.
+    """
     # Bytes, so the file is exactly what the browser would save.
     (folder / SCRIPT_NAME).write_bytes(script.encode("utf-8"))
     completed = subprocess.run(
@@ -361,7 +367,7 @@ def _run_like_a_grader(script: str, folder: Path, home: Path) -> _Run:
         # imports, and PYTHONUTF8 would change how stdout is encoded. A grader
         # sets none. The one other difference, the script's folder on
         # sys.path, holds only data here.
-        [sys.executable, "-I", SCRIPT_NAME],
+        [sys.executable, "-I", SCRIPT_NAME, *extra_args],
         cwd=folder,
         env=_grader_env(home),
         capture_output=True,
