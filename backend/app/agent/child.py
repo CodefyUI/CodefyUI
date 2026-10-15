@@ -274,7 +274,10 @@ def run_assignment(spec: dict[str, Any], send: Send,
             sinks=_pipe_sinks(send),
             explicit_metric_nodes=set(),
         )
-        outcome = asyncio.run(InProcessExecutor().run(request))
+        # This process runs this one run and nothing else, so its peak
+        # memory figures are exact (#770).
+        outcome = asyncio.run(
+            InProcessExecutor(exclusive_process=True).run(request))
         status, error = outcome.status, outcome.error
         peak_memory = getattr(outcome, "peak_memory", None)
     except BaseException as exc:  # noqa: BLE001 -- reported, then we exit
