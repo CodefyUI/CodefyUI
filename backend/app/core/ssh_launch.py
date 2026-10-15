@@ -8,31 +8,46 @@ opens a port. This process runs, per ``ssh_workers`` row::
         -o ServerAliveInterval=15 -o ServerAliveCountMax=3
         -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20
         [-p <port>] [-i <identity>]
-        -R 127.0.0.1:<remote port>:127.0.0.1:<this server's port>
-        -- <target> "sh -c '...cdui agent start --foreground
-                      --control http://127.0.0.1:<remote port> --name <id>'"
+        -R <remote $HOME>/.codefyui-ssh/<slot>/sock:127.0.0.1:<listener>
+        -- <target> "sh -c '...cdui agent start --uds <that sock>
+                      --foreground --control http://127.0.0.1:<slot>
+                      --name <id>'"
 
-and the agent on the remote host dials its own loopback, which the
-reverse forward carries here. Facts that shape it:
+and the agent on the remote host dials that Unix socket, which the reverse
+forward carries to this server. Facts that shape it:
 
 - **The system ``ssh``, with the server account's own config**, so a
   ``Host`` alias, a ``ProxyJump`` and the account's keys and agent work as
   they do in a terminal. ``BatchMode=yes``: ssh never prompts (a key that
   needs a passphrase must be in an agent). ``StrictHostKeyChecking`` is
   ``accept-new`` unless ``CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes``.
-- **The forward binds the remote host's loopback only** (``-R
-  127.0.0.1:...``). Every user of that host can still reach the port, so a
-  request arriving with that ``Host`` may reach ``/ws/worker`` and
-  ``/api/workers/enroll`` only (``auth.tunnel_host_allows``).
+- **Only this account on the remote host can reach the forward.** It is
+  a Unix-domain socket (OpenSSH >= 6.7, sshd ``AllowStreamLocalForwarding``,
+  on by default) in ``~/.codefyui-ssh/<slot>/``, a directory of mode 0700:
+  another user of a shared GPU host can neither connect to it nor bind it
+  first and catch the agent's token, as a loopback TCP port would allow.
+  Before each session a one-shot ssh (:func:`remote_prepare_command`)
+  creates that directory, removes a socket a dropped session left behind
+  (sshd's ``StreamLocalBindUnlink`` is off by default, and the client's
+  option of that name does not reach a ``-R`` forward) and reports the
+  absolute path, which ``-R`` needs.
+- **The forward lands on a listener of its own** (``core.tunnel_listener``),
+  an ephemeral port on this machine's loopback opened per SSH worker, never
+  on the server's port. It serves the agent routes only, each with a worker
+  (or enrollment) token, and never the session token; nothing a client
+  sends, ``Host`` included, makes a request on the main port count as
+  tunnelled.
 - **No token on any command line.** Each launch mints a one-time
   enrollment token (10 minutes, one use; bound to the worker once it is
   enrolled, so it can only re-key that name) and writes it to ssh's
   **stdin**; the remote shell reads it into ``$CODEFYUI_AGENT_TOKEN``. The
   agent uses the worker credential it stored on the remote host when it
-  has one for that address (``app.agent.enroll``, keyed by the tunnel's
-  ``127.0.0.1:<remote port>``) and enrolls with the token otherwise. The
-  remote port is stored with the row, so a restart reuses the address and
-  the credential stored for it. A worker token never leaves either host.
+  has one for that address (``app.agent.enroll``, keyed by the control URL
+  ``http://127.0.0.1:<slot>``, which names the tunnel; the agent dials the
+  socket, never that TCP port) and enrolls with the token otherwise. The
+  slot (``remote_port``, from ``CODEFYUI_SSH_REMOTE_PORT_RANGE``) is stored
+  with the row, so a restart reuses the state directory and the credential
+  stored for it. A worker token never leaves either host.
 - **Non-interactive shells have a minimal PATH** (#809): the launcher is
   called by path (``remote_cdui``, default ``~/CodefyUI/cdui``, where
   ``install.sh`` puts it) and ``~/.local/bin`` / ``~/.cargo/bin`` are put
@@ -44,22 +59,26 @@ reverse forward carries here. Facts that shape it:
   session (a laptop asleep, a network gone): the agent keeps running, its
   runs keep going and spool (#783), and only after
   ``CODEFYUI_WORKER_RESUME_GRACE_S`` with no newer session attached does
-  it get SIGTERM. The next launch re-creates the tunnel on the **same**
-  remote port and the remote script finds the agent alive (its pid in
-  ``~/.codefyui-ssh/<port>/pid``): it starts no second one, it re-attaches,
-  and the agent reconnects through the new tunnel by itself. When the
-  remote sshd has not yet noticed the old session is gone and still holds
-  the port, the launch ends that stale session first
-  (:func:`remote_reclaim_command`). Disable with no session attached
-  stops the agent with a one-shot ssh (:func:`remote_stop_command`).
+  it get SIGTERM. The next launch re-creates the forward at the **same**
+  socket path and the remote script finds the agent alive (its pid in
+  ``~/.codefyui-ssh/<slot>/pid``): it starts no second one, it re-attaches,
+  and the agent reconnects through the new tunnel by itself. Disable with
+  no session attached stops the agent with a one-shot ssh
+  (:func:`remote_stop_command`).
+- **An intentional stop lets the agent finish.** Disable, Remove and a
+  server shutdown send ``stop``; the agent stops its runs (their grace),
+  uploads what they wrote (a transfer run's interrupt checkpoint) and
+  reports each ``run_finished`` before it exits, so ssh is given
+  :data:`STOP_GRACE_S` before it is terminated. A run still attached after
+  that ends at once (``WorkerRegistry.stopped``), not after the resume
+  grace: nothing is coming back for it.
 - **Retries with backoff** (2 s doubling to 60 s, reset after a minute
-  up). A forward failure (the remote port is taken) moves to the next port
-  of ``CODEFYUI_SSH_REMOTE_PORT_RANGE``; a server that refuses forwarding
-  itself (``AllowTcpForwarding`` / ``PermitListen``: an explicit refusal,
-  or :data:`FORWARD_GIVE_UP` ports in a row) is a final failure with that
-  reason, until Enable. The last lines ssh and the agent wrote, and the
-  remote agent's pid, are kept and shown in the Workers panel.
-- **Stored credentials that do not fit.** The first launch on a port this
+  up). A server that refuses the forward (``AllowStreamLocalForwarding`` /
+  ``DisableForwarding``: an explicit refusal, or :data:`FORWARD_GIVE_UP`
+  failed forwards in a row) is a final failure with that reason, until
+  Enable. The last lines ssh and the agent wrote, and the remote agent's
+  pid, are kept and shown in the Workers panel.
+- **Stored credentials that do not fit.** The first launch on a slot this
   entry has not used before runs ``cdui agent forget`` first, so a
   credential another worker (or another control plane) left for that
   address is never presented. When it happens anyway -- this server
@@ -91,7 +110,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import settings
-from . import auth
+from .tunnel_listener import TunnelListener
 from .worker_store import SshWorker
 
 logger = logging.getLogger(__name__)
@@ -116,20 +135,26 @@ STABLE_S = 60.0
 POLL_S = 1.0
 #: The one-time enrollment token each launch sends.
 ENROLL_TTL_S = 600
-#: A stop waits this long for the agent to wind down after its stdin
-#: closes, then terminates ssh, then kills it.
-STOP_GRACE_S = 10.0
+#: A stop waits this long for the agent to wind down after ``stop``, then
+#: terminates ssh, then kills it. The agent gives each run its own 10 s
+#: grace (``Runner.shutdown_grace_s``), terminates it, kills it 5 s later
+#: (``KILL_AFTER_S``), then uploads what a transfer run wrote (its interrupt
+#: checkpoint) and reports ``run_finished``: all of that must still find
+#: the tunnel up. An agent with no run exits within a second or two.
+STOP_GRACE_S = 60.0
 KILL_GRACE_S = 5.0
 SERVER_ALIVE_INTERVAL_S = 15
 CONNECT_TIMEOUT_S = 20
 
 #: ssh's words when ``ExitOnForwardFailure`` ends a session.
 FORWARD_FAILED = "remote port forwarding failed"
-#: An sshd that does not allow the forward at all (``AllowTcpForwarding``,
-#: ``PermitListen``, ``DisableForwarding``) words it one of these ways.
+#: An sshd that does not allow the forward at all
+#: (``AllowStreamLocalForwarding``, ``DisableForwarding``) words it one of
+#: these ways.
 FORWARD_FORBIDDEN = ("administratively prohibited", "forwarding disabled",
-                     "not permitted", "permitlisten", "allowtcpforwarding")
-#: Forward failures on this many ports in a row: forwarding is not allowed.
+                     "not permitted", "permitlisten", "allowtcpforwarding",
+                     "allowstreamlocalforwarding")
+#: Forward failures this many times in a row: forwarding is not allowed.
 FORWARD_GIVE_UP = 3
 #: The agent's words when its stored credential names another worker
 #: (``app.agent.cli.use_stored_credential``; the remote runs in English).
@@ -140,9 +165,15 @@ REMOTE_PID = re.compile(r"codefyui-ssh: agent pid (\d+)")
 NO_TOKEN_EXIT = 97
 #: ... and when it cannot create its state directory.
 NO_STATE_EXIT = 98
-#: The remote script's state, per tunnel port, under the remote $HOME.
+#: The remote script's state, per slot, under the remote $HOME.
 REMOTE_STATE_DIR = ".codefyui-ssh"
-#: How long a one-shot remote command (stop, reclaim) may take.
+#: The forward's Unix socket, in that per-slot directory.
+SOCKET_NAME = "sock"
+#: The prepare command's line naming the (absolute) state directory.
+REMOTE_DIR = re.compile(r"codefyui-ssh: dir (/[^\s:]+)")
+#: ``sun_path`` holds 108 bytes on Linux, 104 on macOS and the BSDs.
+MAX_SOCKET_PATH = 100
+#: How long a one-shot remote command (prepare, stop) may take.
 ONESHOT_TIMEOUT_S = 40.0
 
 #: ``user@host``, ``host``, or an ssh ``Host`` alias; never an option.
@@ -226,24 +257,6 @@ def ssh_executable() -> str | None:
     return shutil.which("ssh")
 
 
-def local_forward_host() -> str:
-    """Where the forward lands on this machine, which ssh connects to.
-
-    A wildcard IPv4 or 127.x bind: ``127.0.0.1``. ``localhost`` and the
-    IPv6 wildcard: ``localhost``, which ssh resolves and tries address by
-    address (uvicorn may have bound ``localhost`` to ``::1``). ``::1``:
-    ``[::1]``. Any other address is the only one the server listens on, so
-    the forward goes there; such a peer is not loopback, and the tunnel
-    ``Host`` is what marks it as tunnelled (``auth.tunnel_port``).
-    """
-    host = settings.HOST.strip().strip("[]").lower()
-    if host in ("", "0.0.0.0") or host.startswith("127."):
-        return "127.0.0.1"
-    if host in ("localhost", "::"):
-        return "localhost"
-    return f"[{host}]" if ":" in host else host
-
-
 # ── the command ───────────────────────────────────────────────────────────
 
 
@@ -257,8 +270,9 @@ def _remote_cdui(entry: SshWorker) -> str:
 
 
 def _state_dir(remote_port: int) -> str:
-    """Where the remote script keeps the agent's pid, its log and the
-    attached session's pid, per tunnel port (per control-plane address)."""
+    """Where the remote script keeps the agent's pid, its log, the attached
+    session's pid and the forward's socket, per slot (per control-plane
+    address)."""
     return f'"$HOME"/{REMOTE_STATE_DIR}/{remote_port}'
 
 
@@ -281,15 +295,15 @@ def remote_command(entry: SshWorker, remote_port: int, *,
     One ``sh -c '...'`` whose script has no single quote and no backslash,
     so it reads the same to bash, zsh, fish and csh login shells. It reads
     the token from stdin, puts ``~/.local/bin`` on PATH and asks for
-    English output (which this module reads). Then, in the per-port state
-    directory (``~/.codefyui-ssh/<remote port>``):
+    English output (which this module reads). Then, in the per-slot state
+    directory (``~/.codefyui-ssh/<slot>``, where the forward's socket is):
 
     - it records itself as the attached session (``session``);
     - if the agent named in ``pid`` is alive, it **re-attaches**: no
       second agent; the agent reconnects through this session's tunnel by
-      itself. Otherwise it starts one in the foreground, its output in
-      ``log``, its pid in ``pid``. Either way it prints the pid and follows
-      ``log`` on its stderr;
+      itself. Otherwise it starts one in the foreground (``--uds`` names
+      the socket), its output in ``log``, its pid in ``pid``. Either way it
+      prints the pid and follows ``log`` on its stderr;
     - a watcher reads ssh's stdin: a ``stop`` line sends the agent SIGTERM
       at once (Disable, Remove, shutdown). End of input without ``stop`` is
       a dropped session: after *grace_s* the agent gets SIGTERM, unless a
@@ -313,14 +327,22 @@ def remote_command(entry: SshWorker, remote_port: int, *,
         'echo $$ > "$d/session"; '
         "exec 3<&0; "
         'a=$(cat "$d/pid" 2>/dev/null); o=; '
+        # An agent from before the socket forward (#784 follow-up) dials a
+        # TCP port nothing serves any more: stop it, start a new one.
         'if [ -n "$a" ] && ps -p "$a" -o args= 2>/dev/null '
-        '| grep -q "agent start"; then '
+        '| grep "agent start" | grep -qv "agent start --uds"; then '
+        "kill -TERM $a; a=; fi; "
+        'if [ -n "$a" ] && ps -p "$a" -o args= 2>/dev/null '
+        '| grep -q "agent start --uds"; then '
         "echo codefyui-ssh: agent pid $a reattached >&2; "
         'tail -n 5 -f "$d/log" >&2 & l=$!; '
         "else "
         + forget
         + ': > "$d/log"; '
-        f"{cdui} agent start --foreground --control {url} --name {entry.id} "
+        # ``--uds`` right after ``agent start``: the re-attach check above
+        # reads it there even from a ``ps`` that cuts long lines.
+        f'{cdui} agent start --uds "$d/{SOCKET_NAME}" --foreground '
+        f"--control {url} --name {entry.id} "
         '</dev/null 3<&- >> "$d/log" 2>&1 & a=$!; o=1; '
         'echo $a > "$d/pid"; '
         "echo codefyui-ssh: agent pid $a >&2; "
@@ -358,20 +380,22 @@ def remote_stop_command(remote_port: int) -> str:
         "echo codefyui-ssh: stopped agent pid $a; fi; exit 0")
 
 
-def remote_reclaim_command(remote_port: int) -> str:
-    """End the remote sshd of the session last attached for *remote_port*
-    (one whose client is gone, but whose sshd has not noticed yet and
-    still holds the forward's port), so the next launch can listen there
-    again and the surviving agent reconnects through it."""
+def remote_prepare_command(remote_port: int) -> str:
+    """Before each session: create *remote_port*'s state directory (mode
+    0700, as is ``~/.codefyui-ssh``), remove a socket a dropped session
+    left there (``-R`` cannot bind over it), and print the directory's
+    absolute path (``-R`` takes no ``~``)."""
     d = _state_dir(remote_port)
     return _sh(
-        f"d={d}; "
-        'q=$(cat "$d/session" 2>/dev/null); '
-        'while [ -n "$q" ] && [ "$q" -gt 1 ] 2>/dev/null; do '
-        'c=$(ps -o args= -p "$q" 2>/dev/null); '
-        'case "$c" in sshd:*) kill "$q"; '
-        "echo codefyui-ssh: ended stale session $q; break;; esac; "
-        'q=$(ps -o ppid= -p "$q" 2>/dev/null | tr -d " "); done; exit 0')
+        f"umask 077; d={d}; "
+        f'mkdir -p "$d" && chmod 700 "$HOME"/{REMOTE_STATE_DIR} "$d" '
+        f"|| exit {NO_STATE_EXIT}; "
+        f'rm -f "$d/{SOCKET_NAME}"; '
+        'echo "codefyui-ssh: dir $d"')
+
+
+def socket_path(remote_dir: str) -> str:
+    return f"{remote_dir.rstrip('/')}/{SOCKET_NAME}"
 
 
 def ssh_base_argv(ssh: str, entry: SshWorker) -> list[str]:
@@ -390,12 +414,13 @@ def ssh_base_argv(ssh: str, entry: SshWorker) -> list[str]:
 
 
 def ssh_argv(ssh: str, entry: SshWorker, remote_port: int, local_port: int,
-             *, forget_first: bool = False,
+             *, remote_dir: str, forget_first: bool = False,
              grace_s: int | None = None) -> list[str]:
+    """The session: *remote_dir*'s socket forwarded to *local_port* on this
+    machine's loopback (the SSH worker's own listener)."""
     argv = ssh_base_argv(ssh, entry)
     argv[2:2] = ["-o", "ExitOnForwardFailure=yes"]
-    argv += ["-R", f"127.0.0.1:{remote_port}:{local_forward_host()}:"
-                   f"{local_port}",
+    argv += ["-R", f"{socket_path(remote_dir)}:127.0.0.1:{local_port}",
              "--", validate_target(entry.target),
              remote_command(entry, remote_port, forget_first=forget_first,
                             grace_s=grace_s)]
@@ -442,10 +467,14 @@ class SshLaunch:
         self._refused = False
         self._mismatch = False
         self._forward_failures = 0
-        #: The remote port a session last attached on (the remote script
-        #: printed the agent pid): an agent may survive there.
+        #: The slot a session last attached on (the remote script printed
+        #: the agent pid): an agent may survive there.
         self._attached_port: int | None = None
-        self._reclaimed = False
+        #: This SSH worker's own listener (``core.tunnel_listener``), where
+        #: the forward lands; open from the first attempt to :meth:`stop`.
+        self._listener: TunnelListener | None = None
+        #: The remote state directory, absolute (the prepare step's answer).
+        self.remote_dir: str | None = None
         #: The last session re-attached to an agent that survived a drop.
         self.reattached = False
         self._proc: asyncio.subprocess.Process | None = None
@@ -471,8 +500,11 @@ class SshLaunch:
         return self._task is not None and not self._task.done()
 
     async def stop(self) -> None:
-        """End the ssh session: close its stdin (the remote agent winds
-        down), then terminate, then kill. The loop does not restart it."""
+        """End the ssh session: send ``stop`` and close its stdin (the
+        remote agent winds down, its runs report how they ended), then
+        terminate, then kill. Then close the listener and end whatever run
+        of this worker is still waiting for it. The loop does not restart
+        it."""
         self._stop.set()
         proc = self._proc
         if proc is not None and proc.returncode is None:
@@ -489,8 +521,13 @@ class SshLaunch:
             if not self._task.done():  # pragma: no cover - defensive
                 self._task.cancel()
         self._task = None
-        self._release_port()
+        await self._close_listener()
+        self._port = None
         await self._drop_enrollment()
+        # Stopped on purpose: a run the agent did not report the end of
+        # (it was killed, or the session was gone) will not come back; it
+        # ends now, not after the resume grace.
+        self.launcher.worker_stopped(self.entry.id)
         self.state = STATE_STOPPED
         self.retry_at = None
         self.up_since = None
@@ -549,13 +586,18 @@ class SshLaunch:
         port = await self._ensure_port()
         if port is None:
             low, high = self.launcher.port_range
-            self._fail(f"no free remote port left in {low}-{high} "
+            self._fail(f"no free slot left in {low}-{high} "
                        "(CODEFYUI_SSH_REMOTE_PORT_RANGE)")
+            return False
+        local_port = await self._listen()
+        remote_dir = await self._prepare(port)
+        if remote_dir is None or self._stop.is_set():
             return False
         token = await self._mint_token()
         if self._stop.is_set():
             return False
-        argv = ssh_argv(ssh, self.entry, port, self.launcher.local_port(),
+        argv = ssh_argv(ssh, self.entry, port, local_port,
+                        remote_dir=remote_dir,
                         forget_first=self._forget_first)
         self.reattached = False
         self._forget_first = False
@@ -564,8 +606,8 @@ class SshLaunch:
         self.remote_pid = None
         self.tail.clear()
         self.state = STATE_CONNECTING
-        logger.info("SSH worker %s: ssh %s (remote port %d)", self.entry.id,
-                    self.entry.target, port)
+        logger.info("SSH worker %s: ssh %s (slot %d, forward to 127.0.0.1:%d)",
+                    self.entry.id, self.entry.target, port, local_port)
         kwargs: dict[str, Any] = {}
         if sys.platform != "win32":
             # Not in the server's process group, and no controlling tty: a
@@ -639,32 +681,21 @@ class SshLaunch:
         lowered = " ".join(tail).lower()
         if any(word in lowered for word in FORWARD_FORBIDDEN):
             self._give_up(
-                f"{self.entry.target} does not allow remote port forwarding "
-                "(sshd AllowTcpForwarding / PermitListen); ask its admin to "
-                f"allow -R to 127.0.0.1, then press Enable.\n{message}", code)
-            return was_up
-        if (any(FORWARD_FAILED in line for line in tail) and not was_up
-                and port == self._attached_port and not self._reclaimed):
-            # Our own last session's sshd may still hold the port (it has
-            # not noticed the drop): end it, and listen there again, where
-            # the surviving agent dials.
-            self._reclaimed = True
-            await self._oneshot(remote_reclaim_command(port),
-                                "end the stale session")
-            self._fail(message, code)
+                f"{self.entry.target} does not allow forwarding to a Unix "
+                "socket (sshd AllowStreamLocalForwarding / "
+                "DisableForwarding); ask its admin to allow it, then press "
+                f"Enable.\n{message}", code)
             return was_up
         if any(FORWARD_FAILED in line for line in tail) and not was_up:
             self._forward_failures += 1
             if self._forward_failures >= FORWARD_GIVE_UP:
                 self._give_up(
-                    f"remote port forwarding failed on {FORWARD_GIVE_UP} "
-                    f"ports in a row on {self.entry.target}: its sshd "
-                    "probably does not allow it (AllowTcpForwarding / "
-                    "PermitListen), or the ports are all taken (change "
-                    "CODEFYUI_SSH_REMOTE_PORT_RANGE). Press Enable to try "
+                    f"the forward to a Unix socket failed {FORWARD_GIVE_UP} "
+                    f"times in a row on {self.entry.target}: its sshd "
+                    "probably does not allow it (AllowStreamLocalForwarding; "
+                    "OpenSSH 6.7 or later is needed). Press Enable to try "
                     f"again.\n{message}", code)
                 return was_up
-            await self._move_port(port)
         else:
             self._forward_failures = 0
         self._fail(message, code)
@@ -696,7 +727,6 @@ class SshLaunch:
                 self.remote_pid = int(pid.group(1))
                 self.reattached = "reattached" in line
                 self._attached_port = self._port
-                self._reclaimed = False
             if CREDENTIAL_MISMATCH in line:
                 self._mismatch = True
             logger.debug("ssh %s: %s", self.entry.id, line)
@@ -717,15 +747,6 @@ class SshLaunch:
         self._hold_port(port)
         return port
 
-    async def _move_port(self, failed: int) -> None:
-        port = self.launcher.free_port(self.entry.id, after=failed)
-        if port is None or port == failed:
-            return
-        logger.warning("SSH worker %s: remote port %d is taken on %s; "
-                       "trying %d", self.entry.id, failed, self.entry.target,
-                       port)
-        await self._save_port(port)
-
     async def _save_port(self, port: int) -> None:
         """Take *port* for this entry. A port this entry has not used may
         hold another worker's credential on the remote host (or another
@@ -737,20 +758,52 @@ class SshLaunch:
                                                     remote_port=port)
 
     def _hold_port(self, port: int) -> None:
-        if self._port is not None and self._port != port:
-            auth.forget_tunnel_port(self._port)
         self._port = port
-        auth.allow_tunnel_port(port)
 
-    def _release_port(self) -> None:
-        if self._port is not None:
-            auth.forget_tunnel_port(self._port)
-            self._port = None
+    # ── the listener and the remote directory ────────────────────────────
 
-    @property
-    def tunnel_port(self) -> int | None:
-        """The remote port this launch holds, while it holds one."""
-        return self._port
+    async def _listen(self) -> int:
+        """The local port the forward goes to: this SSH worker's own
+        listener, opened at the first attempt and kept until :meth:`stop`
+        (a launcher without an app, in unit tests, has a fixed port)."""
+        if self._listener is None:
+            self._listener = self.launcher.make_listener(self.entry.id)
+        if self._listener is None:
+            return self.launcher.local_port()
+        if self._listener.port is None:
+            await self._listener.open()
+        assert self._listener.port is not None
+        return self._listener.port
+
+    async def _close_listener(self) -> None:
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            await listener.close()
+
+    async def _prepare(self, port: int) -> str | None:
+        """Run :func:`remote_prepare_command`: the absolute state directory
+        on the remote host, or None (the failure is recorded)."""
+        code, lines = await self._oneshot(remote_prepare_command(port),
+                                          "prepare the remote directory")
+        found = [m.group(1) for m in map(REMOTE_DIR.search, lines)
+                 if m is not None]
+        if code != 0 or not found:
+            text = "\n".join(lines[-ERROR_LINES:])
+            if code == NO_STATE_EXIT:
+                text = (f"could not create ~/{REMOTE_STATE_DIR}/{port} on "
+                        f"{self.entry.target}\n{text}")
+            self._fail(text or f"preparing {self.entry.target} failed "
+                       f"(ssh exited with status {code})", code)
+            return None
+        remote_dir = found[-1]
+        if len(socket_path(remote_dir).encode()) > MAX_SOCKET_PATH:
+            self._give_up(
+                f"the socket path {socket_path(remote_dir)} on "
+                f"{self.entry.target} is longer than {MAX_SOCKET_PATH} bytes, "
+                "which a Unix socket cannot have (a very long $HOME)", None)
+            return None
+        self.remote_dir = remote_dir
+        return remote_dir
 
     async def _mint_token(self) -> str:
         """A one-time enrollment token for this launch (the previous
@@ -801,12 +854,15 @@ class SshLaunch:
             "reattached": self.reattached,
         }
 
-    async def _oneshot(self, command: str, what: str) -> None:
+    async def _oneshot(self, command: str,
+                       what: str) -> tuple[int | None, list[str]]:
         """Run *command* on the remote host over its own short ssh (no
-        forward). Best effort: a failure is logged and kept in the tail."""
+        forward). Returns ssh's exit status (None when it did not finish
+        within :data:`ONESHOT_TIMEOUT_S`; it is killed then) and its
+        output lines, which are also kept in the tail."""
         ssh = self.launcher.ssh_path()
         if ssh is None:
-            return
+            return None, []
         kwargs: dict[str, Any] = {}
         if sys.platform != "win32":
             kwargs["start_new_session"] = True
@@ -816,17 +872,31 @@ class SshLaunch:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT, **kwargs)
-            out, _ = await asyncio.wait_for(proc.communicate(),
-                                            ONESHOT_TIMEOUT_S)
-        except (OSError, asyncio.TimeoutError) as exc:
+        except OSError as exc:
             logger.warning("SSH worker %s: could not %s: %s", self.entry.id,
                            what, exc)
-            return
-        for line in out.decode("utf-8", errors="replace").splitlines():
-            if line.strip():
-                self.tail.append(line.rstrip())
+            return None, [str(exc)]
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(),
+                                            ONESHOT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            # Not left behind: kill it and reap it.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), KILL_GRACE_S)
+            message = (f"ssh did not finish within {ONESHOT_TIMEOUT_S:.0f} s "
+                       f"trying to {what}")
+            logger.warning("SSH worker %s: %s", self.entry.id, message)
+            self.tail.append(message)
+            return None, [message]
+        lines = [line.rstrip() for line in
+                 out.decode("utf-8", errors="replace").splitlines()
+                 if line.strip()]
+        self.tail.extend(lines)
         logger.info("SSH worker %s: %s (ssh exited with status %s)",
                     self.entry.id, what, proc.returncode)
+        return proc.returncode, lines
 
 
 async def _end_process(proc: asyncio.subprocess.Process) -> None:
@@ -864,9 +934,13 @@ class SshLauncher:
     def __init__(self, store: Any, registry: Any, *,
                  ssh: str | None = None,
                  port_range: tuple[int, int] | None = None,
-                 local_port: int | None = None) -> None:
+                 local_port: int | None = None,
+                 app: Any = None) -> None:
         self.store = store
         self.registry = registry
+        #: The ASGI app each SSH worker's listener serves (its agent routes
+        #: only); None in unit tests, which forward to *local_port*.
+        self.app = app
         self._ssh = ssh
         self.port_range = port_range or parse_port_range(
             settings.SSH_REMOTE_PORT_RANGE)
@@ -880,6 +954,17 @@ class SshLauncher:
 
     def local_port(self) -> int:
         return self._local_port or settings.PORT
+
+    def make_listener(self, name: str) -> TunnelListener | None:
+        """A new listener for SSH worker *name*, or None without an app."""
+        return TunnelListener(self.app, name) if self.app is not None else None
+
+    def worker_stopped(self, name: str) -> None:
+        """SSH worker *name* was stopped on purpose (Disable, Remove, a
+        shutdown): its runs still waiting for it end now."""
+        stopped = getattr(self.registry, "stopped", None)
+        if stopped is not None:
+            stopped(name, f"SSH worker {name} was stopped")
 
     def _lock(self, name: str) -> asyncio.Lock:
         lock = self._locks.get(name)
@@ -912,12 +997,12 @@ class SshLauncher:
 
     # ── events from the socket side ──────────────────────────────────────
 
-    def note_refused(self, tunnel_port: int) -> None:
+    def note_refused(self, name: str) -> None:
         """``ws_worker`` refused the credential an agent presented through
-        the tunnel on *tunnel_port* (an unknown or revoked worker token)."""
-        for launch in self.launches.values():
-            if launch.tunnel_port == tunnel_port:
-                launch.note_refused()
+        SSH worker *name*'s listener (an unknown or revoked worker token)."""
+        launch = self.launches.get(name)
+        if launch is not None:
+            launch.note_refused()
 
     def worker_connected(self, name: str) -> None:
         """A worker connected: one whose SSH row is disabled stays

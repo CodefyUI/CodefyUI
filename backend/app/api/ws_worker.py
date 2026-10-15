@@ -5,9 +5,11 @@ The server end of ``core.worker_protocol``; the agent end is ``app.agent``
 
 Handshake checks, before ``accept``:
 
-- Host header against the whitelist, as ``/ws/execution`` does, or the
-  remote end of an SSH worker's reverse tunnel (``127.0.0.1:<port>``,
-  ``auth.tunnel_host_allows``, #784);
+- Host header against the whitelist, as ``/ws/execution`` does; a
+  connection through an SSH worker's own listener (#784,
+  ``core.tunnel_listener``) skips that check, since whoever reaches the
+  forward's far end chooses the ``Host``, and the session token is never
+  accepted there;
 - no browser: a request with an ``Origin`` header is refused (an agent
   sends none, and no page has a reason to open this socket);
 - a credential (``X-CodefyUI-Token`` header, or ``?token=``), accepted by
@@ -71,9 +73,8 @@ from ..core.auth import (
     host_is_allowed,
     is_loopback_peer,
     session_token,
-    tunnel_host_allows,
-    tunnel_port,
 )
+from ..core.tunnel_listener import tunnel_of
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,8 @@ def plain_from_another_machine(ws: WebSocket) -> bool:
     this machine that forwards no headers, or the local end of an SSH
     tunnel (#784), whose hop across the network is encrypted by ssh.
     """
-    if tunnel_port(ws.headers.get("host")) is not None:
-        # Through an SSH tunnel to a server bound to one LAN address: the
-        # peer is that address, but the network hop is ssh's.
+    if tunnel_of(ws.scope) is not None:
+        # Through an SSH worker's listener: the network hop is ssh's.
         return False
     return not _peer_is_loopback(ws) and ws.url.scheme not in ("wss",
                                                                "https")
@@ -155,7 +155,10 @@ AUTHORISERS: list[Authoriser] = [session_token_authoriser,
 async def authorise(ws: WebSocket) -> Authorised | None:
     provided = (ws.headers.get("x-codefyui-token")
                 or ws.query_params.get(TOKEN_QUERY_PARAM))
-    loopback = _peer_is_loopback(ws)
+    # Through an SSH worker's listener the peer is ssh on this machine, but
+    # the client is anyone who can reach the forward's far end: never the
+    # session token there (#784).
+    loopback = _peer_is_loopback(ws) and tunnel_of(ws.scope) is None
     for authoriser in AUTHORISERS:
         result = await authoriser(ws, provided, loopback)
         if result is not None:
@@ -166,8 +169,7 @@ async def authorise(ws: WebSocket) -> Authorised | None:
 @router.websocket(wp.WORKER_WS_PATH)
 async def websocket_worker(ws: WebSocket) -> None:
     host = ws.headers.get("host", "")
-    if not host_is_allowed(host) and not tunnel_host_allows(
-            host, wp.WORKER_WS_PATH):
+    if tunnel_of(ws.scope) is None and not host_is_allowed(host):
         await ws.close(code=4003, reason="Host not allowed")
         return
     if ws.headers.get("origin"):
@@ -175,7 +177,7 @@ async def websocket_worker(ws: WebSocket) -> None:
         return
     auth = await authorise(ws)
     if auth is None:
-        _note_tunnel_refusal(ws, host)
+        _note_tunnel_refusal(ws)
         await ws.close(code=4401, reason="Missing or invalid token")
         return
     enrolled_as = auth.worker
@@ -310,15 +312,15 @@ async def _record_fingerprint(service: Any, worker: Any) -> None:
                        worker.name, exc_info=True)
 
 
-def _note_tunnel_refusal(ws: WebSocket, host: str) -> None:
+def _note_tunnel_refusal(ws: WebSocket) -> None:
     """A credential refused through an SSH worker's tunnel (#784): tell
     the launcher, which restarts that agent with ``cdui agent forget``.
     Only this refusal (an unknown or revoked token, 4401) counts; a Host
     or registry refusal never does."""
-    port = tunnel_port(host)
+    name = tunnel_of(ws.scope)
     launcher = getattr(ws.app.state, "ssh_launcher", None)
-    if port is not None and launcher is not None:
-        launcher.note_refused(port)
+    if name is not None and launcher is not None:
+        launcher.note_refused(name)
 
 
 async def _touch(store: Any, hello: wp.Hello | None,

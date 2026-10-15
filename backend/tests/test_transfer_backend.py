@@ -899,15 +899,19 @@ async def test_deleting_a_worker_run_removes_its_received_files(
 
 async def test_through_an_ssh_tunnel_the_transfer_routes_need_a_worker_token(
         http, data_root):
-    """#784 + #785: a request through an SSH worker's tunnel (``Host:
-    127.0.0.1:<remote port>``) reaches the transfer backend's routes only
-    with a valid worker token; everything else there stays 421."""
-    from app.core.auth import allow_tunnel_port, forget_tunnel_port
+    """#784 + #785: a request through an SSH worker's own listener
+    (``TunnelApp``) reaches the transfer backend's routes only with a
+    valid worker token; nothing else exists there (404), whatever the
+    token or the ``Host``."""
+    from httpx import ASGITransport, AsyncClient
 
-    port = 47915
-    allow_tunnel_port(port)
-    tunnel = {"host": f"127.0.0.1:{port}"}
+    from app.core.tunnel_listener import TunnelApp
+
+    tunnel = {"host": "127.0.0.1:8000"}
     worker = {**tunnel, TOKEN_HEADER: "token-gpu-1"}
+    main_http = http
+    http = AsyncClient(transport=ASGITransport(app=TunnelApp(app, "gpu-1")),
+                       base_url="http://127.0.0.1:47915")
     try:
         for path in ("/api/files/download/train.csv",
                      "/api/images/download/cat.png",
@@ -935,19 +939,21 @@ async def test_through_an_ssh_tunnel_the_transfer_routes_need_a_worker_token(
             data={"kind": "checkpoint", "name": "a.pt"},
             files={"file": ("a.pt", b"w", "application/octet-stream")})
         assert refused.status_code == 403
-        # Everything else through the tunnel is still misdirected, token
-        # or not: the listings, the run API, the artifact download route
-        # (the agent never uses it), a path that only starts like a
-        # download route.
+        # Nothing else exists through the tunnel, token or not: the
+        # listings, the run API, the artifact download route (the agent
+        # never uses it), a path that only starts like a download route,
+        # the session bootstrap.
         for method, path in (("GET", "/api/files"), ("GET", "/api/runs"),
                              ("GET", "/api/runs/r1/artifacts/1/download"),
                              ("GET", "/api/files/download/"),
                              ("DELETE", "/api/files/train.csv"),
-                             ("POST", "/api/runs/r1/cancel")):
+                             ("POST", "/api/runs/r1/cancel"),
+                             ("GET", "/api/auth/bootstrap")):
             response = await http.request(method, path, headers=worker)
-            assert response.status_code == 421, (method, path)
+            assert response.status_code == 404, (method, path)
     finally:
-        forget_tunnel_port(port)
-    # A port no tunnel holds is just a disallowed Host.
-    assert (await http.get("/api/files/download/train.csv",
-                           headers=worker)).status_code == 421
+        await http.aclose()
+    # On the main port, a forged tunnel Host is just a disallowed Host.
+    assert (await main_http.get("/api/files/download/train.csv",
+                                headers={**worker, "host": "127.0.0.1:47915"})
+            ).status_code == 421

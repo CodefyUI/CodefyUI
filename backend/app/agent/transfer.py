@@ -236,7 +236,8 @@ class TransferClient:
 
     def __init__(self, *, base_url: Any, token: Any, cache: InputCache,
                  timeout_s: float = TIMEOUT_S,
-                 ssl_context: Callable[[], Any] | None = None) -> None:
+                 ssl_context: Callable[[], Any] | None = None,
+                 uds: str | None = None) -> None:
         self._base_url = base_url
         self._token = token
         self.cache = cache
@@ -244,6 +245,9 @@ class TransferClient:
         #: The agent's TLS verification (``agent.trust``, #786), read per
         #: session: an ``ssl.SSLContext`` over https, None over http.
         self._ssl_context = ssl_context
+        #: An SSH worker's tunnel (#784): every request goes to this Unix
+        #: socket; the base URL still names the control plane.
+        self.uds = uds
 
     def _url(self, path: str) -> str:
         return str(_resolve(self._base_url)).rstrip("/") + path
@@ -258,10 +262,14 @@ class TransferClient:
         import httpx
 
         context = self._ssl_context() if self._ssl_context else None
+        extra: dict[str, Any] = {}
+        if self.uds:
+            extra["transport"] = httpx.HTTPTransport(uds=self.uds)
         return httpx.Client(timeout=httpx.Timeout(self.timeout_s,
                                                   connect=10.0),
                             follow_redirects=False,
-                            verify=context if context is not None else True)
+                            verify=context if context is not None else True,
+                            **extra)
 
     def session(self) -> Any:
         """A client for a batch of requests; close it (``with``) after."""

@@ -190,10 +190,11 @@ class Settings(BaseSettings):
     # the openssl command that computes it on the proxy host instead.
     TLS_CERT_FILE: str = ""
     # ── SSH workers (#784) ─────────────────────────────────────────────
-    # The ports an SSH worker's reverse tunnel may take on the REMOTE host's
-    # loopback ("ssh -R 127.0.0.1:<port>:..."), as "low-high". The control
-    # plane picks a free one per entry and moves to the next on a forward
-    # failure. Nothing listens on them until an SSH worker is added.
+    # Slot numbers for SSH workers, as "low-high": one per entry, naming its
+    # state directory on the remote host (~/.codefyui-ssh/<slot>/, where the
+    # reverse tunnel's Unix socket is) and the control URL its credential is
+    # stored under (http://127.0.0.1:<slot>). No TCP port is opened for them
+    # on either machine.
     SSH_REMOTE_PORT_RANGE: str = "18000-18100"
     # ssh's StrictHostKeyChecking for SSH workers: "accept-new" (default:
     # trust a host the first time, refuse a changed key) or "yes" (the host

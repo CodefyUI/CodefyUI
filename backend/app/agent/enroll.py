@@ -18,14 +18,21 @@ token stays usable.
 One file per control plane (host and port), so one machine can serve two
 control planes. Plain ``urllib``: the agent stays free of the server's
 dependencies.
+
+An SSH worker's agent (#784) is given ``--uds PATH`` as well: the request
+goes to that Unix socket (the end of the control plane's reverse forward)
+instead of a TCP connection to the URL's host, and the URL still names
+the control plane (the credential file, the ``Host`` header).
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
 import re
+import socket
 import ssl
 import sys
 import urllib.error
@@ -178,15 +185,49 @@ def forget_credential(user_data: Path, control_url: str) -> Path | None:
     return path
 
 
+class _UnixConnection(http.client.HTTPConnection):
+    """``http.client`` over a Unix-domain socket at *path*."""
+
+    def __init__(self, path: str, host: str, **kwargs: Any) -> None:
+        super().__init__(host, **kwargs)
+        self._uds_path = path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.timeout)
+            sock.connect(self._uds_path)
+        except OSError:
+            sock.close()
+            raise
+        self.sock = sock
+
+
+class UnixHTTPHandler(urllib.request.HTTPHandler):
+    """``urllib`` handler that sends every ``http`` request to the Unix
+    socket at *path* (an SSH worker's tunnel, #784)."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = path
+
+    def http_open(self, req: urllib.request.Request) -> Any:
+        return self.do_open(
+            lambda host, **kwargs: _UnixConnection(self.path, host, **kwargs),
+            req)
+
+
 def enroll(control_url: str, token: str, *, name: str,
            platform: dict[str, str], devices: list[dict[str, Any]],
            mounts: dict[str, str] | None = None,
            timeout: float = ENROLL_TIMEOUT_S,
-           trust: ControlPlaneTrust | None = None) -> tuple[str, str]:
+           trust: ControlPlaneTrust | None = None,
+           uds: str | None = None) -> tuple[str, str]:
     """``POST /api/workers/enroll``. Returns ``(worker_id, worker_token)``.
 
     Over ``https`` the request goes through *trust*'s context (the same
-    verifier the worker socket uses)."""
+    verifier the worker socket uses). With *uds* it goes to that Unix
+    socket (``http`` only)."""
     url = normalize_url(control_url) + "/api/workers/enroll"
     body = json.dumps({"token": token.strip(), "name": name,
                        "platform": platform, "devices": devices,
@@ -194,8 +235,10 @@ def enroll(control_url: str, token: str, *, name: str,
     request = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/json"})
-    handlers = []
-    if url.startswith("https:"):
+    handlers: list[Any] = []
+    if uds:
+        handlers.append(UnixHTTPHandler(uds))
+    elif url.startswith("https:"):
         trust = trust or ControlPlaneTrust()
         handlers.append(urllib.request.HTTPSHandler(context=trust.context()))
     opener = urllib.request.build_opener(*handlers)

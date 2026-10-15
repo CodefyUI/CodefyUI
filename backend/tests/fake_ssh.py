@@ -13,28 +13,36 @@ JSON line, to ``$FAKE_SSH_LOG`` and the first stdin line (the token) to
 - ``forbidden``: refuse every forward with sshd's "administratively
   prohibited" words;
 - ``tunnel``: be the reverse forward for real -- listen on the ``-R``
-  remote port on 127.0.0.1 and relay each connection to the local end --
+  remote Unix socket path and relay each connection to the local end --
   and run the remote command with ``sh -c`` (``$HOME`` from
   ``$FAKE_SSH_HOME``), its stdin copied from this process's, as an ssh
   server would: when this process dies (a dropped session), the command
   reads the end of its input. The exit status is the command's.
 
-Without ``-R`` (a one-shot command: stop, reclaim) ``tunnel`` mode runs
-the command the same way; the other modes just exit 0.
+Without ``-R`` (a one-shot command: prepare, stop) ``tunnel`` mode runs
+the command the same way; the other modes answer the prepare command with
+a made-up directory (``/home/fake/.codefyui-ssh/<slot>``) and exit 0.
 
-A ``-R`` port listed in ``$FAKE_SSH_BUSY_PORTS`` (comma-separated, or
-``all``) fails the way ``ExitOnForwardFailure=yes`` does, in every mode
-but ``fail``. In ``hold`` mode it prints the remote script's pid line.
+A ``-R`` whose slot (``.codefyui-ssh/<slot>/sock``) is listed in
+``$FAKE_SSH_BUSY_PORTS`` (comma-separated, or ``all``) fails the way
+``ExitOnForwardFailure=yes`` does, in every mode but ``fail``. In ``hold``
+mode it prints the remote script's pid line.
+
+With ``$FAKE_SSH_HANG_S`` above 0 a one-shot writes its pid to
+``$FAKE_SSH_LOG.pid`` and sleeps that long (a remote host that never
+answers), for the launcher's timeout to kill.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import threading
+import time
 
 
 def _pipe(source: socket.socket, sink: socket.socket) -> None:
@@ -103,32 +111,48 @@ def main() -> int:
               file=sys.stderr, flush=True)
         return 255
     if "-R" not in argv:
+        hang = float(os.environ.get("FAKE_SSH_HANG_S") or 0)
+        if hang > 0:
+            # A one-shot that never finishes: the launcher must kill it.
+            with open(log + ".pid", "a", encoding="utf-8") as handle:
+                handle.write(f"{os.getpid()}\n")
+            time.sleep(hang)
+            return 0
         if mode != "tunnel":
+            slot = re.search(r"\.codefyui-ssh/(\d+)", argv[-1])
+            if "codefyui-ssh: dir" in argv[-1] and slot is not None:
+                print(f"codefyui-ssh: dir /home/fake/.codefyui-ssh/"
+                      f"{slot.group(1)}", flush=True)
             return 0
         return subprocess.run(["sh", "-c", argv[-1]], env=_remote_env(),
                               stdin=subprocess.DEVNULL,
                               check=False).returncode
     forward = argv[argv.index("-R") + 1]
-    bind, remote_port, rest = forward.split(":", 2)
+    path, rest = forward.split(":", 1)
     local_host, _, local_port = rest.rpartition(":")
+    slot = re.search(r"\.codefyui-ssh/(\d+)/", path)
+    remote_port = slot.group(1) if slot is not None else ""
     if mode == "forbidden":
-        print("Warning: remote port forwarding failed for listen port "
-              f"{remote_port}: administratively prohibited",
+        print("Warning: remote port forwarding failed for listen path "
+              f"{path}: administratively prohibited",
               file=sys.stderr, flush=True)
         return 255
     busy = os.environ.get("FAKE_SSH_BUSY_PORTS", "").split(",")
     if remote_port in busy or "all" in busy:
-        print(f"Error: remote port forwarding failed for listen port "
-              f"{remote_port}", file=sys.stderr, flush=True)
+        print(f"Error: remote port forwarding failed for listen path "
+              f"{path}", file=sys.stderr, flush=True)
         return 255
     if mode == "tunnel":
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            listener.bind((bind, int(remote_port)))
+            old = os.umask(0o177)
+            try:
+                listener.bind(path)
+            finally:
+                os.umask(old)
         except OSError:
-            print(f"Error: remote port forwarding failed for listen port "
-                  f"{remote_port}", file=sys.stderr, flush=True)
+            print(f"Error: remote port forwarding failed for listen path "
+                  f"{path}", file=sys.stderr, flush=True)
             return 255
         listener.listen(16)
         threading.Thread(target=_relay, daemon=True, args=(

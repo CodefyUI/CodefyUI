@@ -193,66 +193,6 @@ def host_is_allowed(host_header: str) -> bool:
     return host_header.strip().lower() in {h.lower() for h in _ALLOWED_HOSTS}
 
 
-# ── SSH reverse tunnels (#784) ─────────────────────────────────────────
-#
-# An SSH worker's agent dials ``http://127.0.0.1:<remote port>`` on ITS
-# machine; ``ssh -R`` carries that to this server, so the request arrives
-# from a loopback peer with ``Host: 127.0.0.1:<remote port>``. Those hosts
-# are accepted for the two paths an agent uses to connect, and for the
-# transfer backend's routes (#785) with a valid worker token, and nothing
-# else: every user on the remote host can reach that loopback port, and
-# the open reads of this API are none of their business.
-
-_TUNNEL_PORTS: set[int] = set()
-#: The paths a tunnel ``Host`` may reach with no further check; the
-#: transfer backend's routes need a worker token too (:func:`tunnel_token_route`).
-TUNNEL_PATHS = frozenset({"/ws/worker", "/api/workers/enroll"})
-
-
-def allow_tunnel_port(port: int) -> None:
-    _TUNNEL_PORTS.add(int(port))
-
-
-def forget_tunnel_port(port: int) -> None:
-    _TUNNEL_PORTS.discard(int(port))
-
-
-def tunnel_port(host_header: str | None) -> int | None:
-    """The remote port of the SSH tunnel *host_header* names
-    (``127.0.0.1:<port>`` or ``localhost:<port>``, for a port a tunnel
-    holds now), else None. Such a request came through ``ssh -R``, whatever
-    its peer address (a server bound to one LAN address sees the tunnel
-    from that address, not from loopback)."""
-    host, _, port = (host_header or "").strip().lower().rpartition(":")
-    if host not in ("127.0.0.1", "localhost") or not port.isdigit():
-        return None
-    return int(port) if int(port) in _TUNNEL_PORTS else None
-
-
-def tunnel_token_route(method: str, path: str) -> bool:
-    """Whether *method* *path* is one of the transfer backend's routes an
-    agent uses through its tunnel (#785): the three input downloads and
-    the output upload (``core.transfer``, the one spelling of both). A
-    tunnel ``Host`` reaches them only with a valid worker token (the
-    ``host_guard`` middleware checks it): for a LAN client the downloads
-    are open reads, but every user on the worker's machine can reach the
-    tunnel's loopback port."""
-    from .transfer import DOWNLOAD_ROUTES, UPLOAD_PATH_PATTERN
-
-    if method == "GET":
-        return any(path.startswith(route) and len(path) > len(route)
-                   for route in DOWNLOAD_ROUTES.values())
-    return method == "POST" and UPLOAD_PATH_PATTERN.fullmatch(path) is not None
-
-
-def tunnel_host_allows(host_header: str, path: str) -> bool:
-    """Whether *host_header* is an SSH tunnel's remote end
-    (:func:`tunnel_port`) asking for one of :data:`TUNNEL_PATHS`."""
-    if path.rstrip("/") not in TUNNEL_PATHS:
-        return False
-    return tunnel_port(host_header) is not None
-
-
 def allowed_hosts() -> frozenset[str]:
     """Snapshot of the current whitelist (mostly for tests / error messages)."""
     return frozenset(_ALLOWED_HOSTS)

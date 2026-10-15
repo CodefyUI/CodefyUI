@@ -652,6 +652,23 @@ class WorkerRegistry:
             self.disconnect(worker, reason)
             self._spawn(_close_quietly(worker))
 
+    def stopped(self, worker_id: str, reason: str) -> None:
+        """*worker_id* was stopped on purpose (an SSH worker's Disable,
+        Remove or a shutdown, #784): its runs will not come back, so the
+        ones still on it end ``interrupted`` now instead of after the
+        resume grace. A live connection is closed the same way."""
+        worker = self._workers.get(worker_id)
+        if worker is None:
+            return
+        if worker.online:
+            self.disconnect(worker, reason, resume=False)
+            self._spawn(_close_quietly(worker))
+            return
+        if worker.running:
+            for run in list(worker.running.values()):
+                self._end(worker, run, reason)
+            self._changed()
+
     def disconnect(self, worker: Worker, reason: str = "the connection closed",
                    *, resume: bool = True) -> None:
         """Mark *worker* disconnected. Idempotent.

@@ -169,6 +169,7 @@ class AgentConnection:
         trust: ControlPlaneTrust | None = None,
         on_trusted: Callable[[str], None] | None = None,
         facts: AgentFacts | None = None,
+        uds: str | None = None,
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
@@ -181,13 +182,16 @@ class AgentConnection:
                 base_url=lambda: self._resolve(self._control_url),
                 token=lambda: self._resolve(self._token),
                 cache=InputCache(runner.runs_dir.parent / CACHE_DIRNAME),
-                ssl_context=self._http_tls)
+                ssl_context=self._http_tls, uds=uds)
         #: Every run's frames not acknowledged yet (#783).
         self.spools = spools if spools is not None else SpoolStore(
             runner.runs_dir)
         self.name = name
         self.version = version
         self._control_url = control_url
+        #: An SSH worker's tunnel (#784): dial this Unix socket, not the
+        #: URL's host; the URL still names the control plane.
+        self.uds = uds
         self._token = token
         self._probe_devices = probe_devices
         self.max_message_bytes = max_message_bytes
@@ -360,9 +364,15 @@ class AgentConnection:
                     if self.trust is None:
                         self.trust = ControlPlaneTrust()
                     options["ssl"] = self.trust.context()
-                async with websockets.connect(
+                if self.uds:
+                    dial = websockets.unix_connect(
+                        self.uds, url, max_size=self.max_message_bytes,
+                        open_timeout=WELCOME_TIMEOUT_S, **options)
+                else:
+                    dial = websockets.connect(
                         url, max_size=self.max_message_bytes,
-                        open_timeout=WELCOME_TIMEOUT_S, **options) as ws:
+                        open_timeout=WELCOME_TIMEOUT_S, **options)
+                async with dial as ws:
                     if "ssl" in options:
                         await self._trusted()
                     welcomed = await self._serve(ws, stop)

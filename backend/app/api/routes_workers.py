@@ -83,8 +83,8 @@ from ..core.auth import (
     allowed_hosts,
     bound_to_loopback,
     is_loopback_peer,
-    tunnel_port,
 )
+from ..core.tunnel_listener import tunnel_of
 from ..core.mounts import (
     control_plane_label,
     control_plane_mounts,
@@ -423,9 +423,9 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
     """Trade an enrollment token for a worker token (no session token)."""
     client = request.client.host if request.client is not None else "?"
     # Every SSH tunnel arrives from this machine's own address: one bucket
-    # per tunnel (its remote port), so SSH workers restarting together do
-    # not spend each other's attempts, nor a local agent's (#784).
-    tunnel = tunnel_port(request.headers.get("host"))
+    # per SSH worker's listener, so SSH workers restarting together do not
+    # spend each other's attempts, nor a local agent's (#784).
+    tunnel = tunnel_of(request.scope)
     wait = enroll_limiter.take(client if tunnel is None
                                else f"ssh-tunnel:{tunnel}")
     if wait > 0:

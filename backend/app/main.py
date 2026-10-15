@@ -73,9 +73,6 @@ from .core.auth import (
     init_allowed_hosts,
     local_interface_ips,
     session_token,
-    tunnel_host_allows,
-    tunnel_port,
-    tunnel_token_route,
     write_token_file,
 )
 from .core.body_limit import BodySizeLimitMiddleware, RequestBodyTooLarge
@@ -109,6 +106,7 @@ from .core.study_coordinator import StudyCoordinator
 from .core.study_store import StudyStore
 from .core.sweep_store import SweepStore
 from .core.transfer import UPLOAD_PATH_PATTERN
+from .core.tunnel_listener import agent_route, tunnel_of, worker_token_route
 
 logger = logging.getLogger(__name__)
 
@@ -509,7 +507,7 @@ async def _lifespan_body(app: FastAPI):
     # ── SSH workers (#784): the ones this server starts itself ────────
     # Each enabled ``ssh_workers`` row gets its ``ssh -R`` process back.
     # None configured (the default): nothing is started, no port is held.
-    ssh_launcher = SshLauncher(worker_store, worker_registry)
+    ssh_launcher = SshLauncher(worker_store, worker_registry, app=app)
     app.state.ssh_launcher = ssh_launcher
     await ssh_launcher.start_all()
 
@@ -651,24 +649,32 @@ async def host_guard(request: Request, call_next):
     """
     host = request.headers.get("host", "")
     path = request.url.path
-    if host_is_allowed(host) or tunnel_host_allows(host, path):
+    tunnel = tunnel_of(request.scope)
+    if tunnel is not None:
+        # An SSH worker's own listener (#784), never this server's port:
+        # ``TunnelApp`` let only the agent routes through and set this
+        # mark. The ``Host`` is whatever the far end of the forward sent,
+        # so it decides nothing here.
+        if not agent_route("http", request.method, path):
+            return JSONResponse(status_code=404,
+                                content={"detail": "Not Found"})
+        if worker_token_route(request.method, path):
+            # The transfer backend (#785): only with a worker token, never
+            # as the open read it is on the main port.
+            store = getattr(request.app.state, "worker_store", None)
+            provided = request.headers.get(TOKEN_HEADER)
+            if store is None or not provided \
+                    or await store.authenticate(provided) is None:
+                logger.warning("refused %s %s through SSH worker %s's "
+                               "tunnel without a worker token",
+                               request.method, path, tunnel)
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "a worker token is required through "
+                                       "an SSH tunnel"})
         return await call_next(request)
-    if tunnel_port(host) is not None \
-            and tunnel_token_route(request.method, path):
-        # The transfer backend through an SSH worker's tunnel (#785): only
-        # with a worker token, never as the open read it is on the LAN.
-        store = getattr(request.app.state, "worker_store", None)
-        provided = request.headers.get(TOKEN_HEADER)
-        if store is not None and provided \
-                and await store.authenticate(provided) is not None:
-            return await call_next(request)
-        logger.warning("refused %s %s through an SSH tunnel without a "
-                       "worker token", request.method, path)
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "a worker token is required through an "
-                               "SSH tunnel"},
-        )
+    if host_is_allowed(host):
+        return await call_next(request)
     logger.warning("rejected request with Host=%r path=%s", host, path)
     return JSONResponse(
         status_code=421,

@@ -568,7 +568,7 @@ describe('WorkersPanel', () => {
     expect(within(card).getByText('SSH tunnel')).toBeInTheDocument();
     expect(within(card).getByText('Up')).toBeInTheDocument();
     expect(within(card).getByText('alice@gpu-box')).toBeInTheDocument();
-    expect(within(card).getByText('remote port 18000')).toBeInTheDocument();
+    expect(within(card).getByText('tunnel slot 18000')).toBeInTheDocument();
     expect(within(card).queryByRole('status')).toBeNull();
     expect(within(card).queryByText('Recent ssh output')).toBeNull();
     vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box', { enabled: false, state: 'stopped' })]));
@@ -595,7 +595,7 @@ describe('WorkersPanel', () => {
     const card = within(dialog).getByRole('article', { name: 'gpu-box' });
     expect(within(card).getByText('Failed')).toBeInTheDocument();
     expect(within(card).getByText('alice@gpu-box:2222')).toHaveAttribute('title', '/home/me/.ssh/key');
-    expect(within(card).queryByText(/remote port/)).toBeNull();
+    expect(within(card).queryByText(/tunnel slot/)).toBeNull();
     expect(within(card).getByRole('status')).toHaveTextContent('Permission denied (publickey).');
     expect(within(card).getByText('Recent ssh output')).toBeInTheDocument();
     expect(within(card).getByText(/debug1: hello/)).toBeInTheDocument();

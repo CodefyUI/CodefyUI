@@ -2,9 +2,10 @@
 
 A fake ``ssh`` (``tests/fake_ssh.py``, behind an ``ssh`` shim on PATH)
 records its argv and the token it reads from stdin, and keeps running (or
-fails, or reports a busy or forbidden forward port, or another worker's
-stored credential). The
-remote command itself is run with a real ``sh`` against a fake ``cdui``.
+fails, or reports a failed or forbidden forward, or another worker's
+stored credential). It answers the prepare one-shot with a made-up remote
+directory. The remote commands themselves are run with a real ``sh``
+against a fake ``cdui``.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
-from app.core import auth, ssh_launch
+from app.core import ssh_launch
 from app.core.auth import TOKEN_HEADER, session_token
 from app.core.db import Database
 from app.core.ssh_launch import SshLauncher
@@ -37,6 +38,8 @@ pytestmark = pytest.mark.skipif(
 FAKE_SSH = Path(__file__).resolve().parent / "fake_ssh.py"
 LOCAL_PORT = 8123
 RANGE = (18000, 18009)
+#: The remote directory the fake ssh's prepare answers with, for slot 18000.
+FAKE_DIR = "/home/fake/.codefyui-ssh/18000"
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────
@@ -55,6 +58,7 @@ def fake_ssh(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_SSH_LOG", str(log))
     monkeypatch.setenv("FAKE_SSH_MODE", "hold")
     monkeypatch.delenv("FAKE_SSH_BUSY_PORTS", raising=False)
+    monkeypatch.setenv("FAKE_SSH_HANG_S", "0")
     monkeypatch.setattr(ssh_launch, "BACKOFF_MIN_S", 0.05)
     monkeypatch.setattr(ssh_launch, "POLL_S", 0.05)
     monkeypatch.setattr(ssh_launch, "STOP_GRACE_S", 3.0)
@@ -67,12 +71,16 @@ class FakeRegistry:
     def __init__(self) -> None:
         self.online: set[str] = set()
         self.drained: dict[str, bool] = {}
+        self.stopped_names: list[str] = []
 
     def get(self, name: str) -> Any:
         return SimpleNamespace(online=True) if name in self.online else None
 
     def drain(self, name: str, draining: bool = True) -> None:
         self.drained[name] = draining
+
+    def stopped(self, name: str, reason: str) -> None:
+        self.stopped_names.append(name)
 
 
 @pytest.fixture
@@ -95,10 +103,20 @@ def _entry(name: str = "gpu-box", **fields: Any) -> SshWorker:
                      **fields)
 
 
-def _calls(log: Path) -> list[list[str]]:
+def _all_calls(log: Path) -> list[list[str]]:
+    """Every ssh the launcher ran: sessions and one-shots."""
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def _calls(log: Path) -> list[list[str]]:
+    """The sessions (the ssh runs with a forward)."""
+    return [argv for argv in _all_calls(log) if "-R" in argv]
+
+
+def _oneshots(log: Path) -> list[list[str]]:
+    return [argv for argv in _all_calls(log) if "-R" not in argv]
 
 
 def _stdin(log: Path) -> list[str]:
@@ -141,16 +159,21 @@ async def test_ssh_gets_the_spec_options_and_the_token_only_on_stdin(
     assert "-T" in argv
     assert argv[argv.index("-p") + 1] == "2222"
     assert argv[argv.index("-i") + 1] == str(key)
-    # The remote end binds the remote loopback only.
-    assert argv[argv.index("-R") + 1] == f"127.0.0.1:18000:127.0.0.1:{LOCAL_PORT}"
+    # The remote end is a Unix socket in the 0700 state directory the
+    # prepare one-shot made (and reported) first; never a TCP port.
+    [prepare] = _oneshots(fake_ssh)
+    assert "chmod 700" in prepare[-1] and 'rm -f "$d/sock"' in prepare[-1]
+    assert _all_calls(fake_ssh).index(prepare) == 0
+    assert argv[argv.index("-R") + 1] == (
+        f"{FAKE_DIR}/sock:127.0.0.1:{LOCAL_PORT}")
     # `--`, then the target, then one command string.
     dashes = argv.index("--")
     assert argv[dashes + 1:dashes + 2] == ["alice@gpu-box"]
     command = argv[dashes + 2]
     assert len(argv) == dashes + 3
     assert command.startswith("sh -c '") and command.endswith("'")
-    assert ('"$HOME"/CodefyUI/cdui agent start --foreground --control '
-            'http://127.0.0.1:18000 --name gpu-box') in command
+    assert ('"$HOME"/CodefyUI/cdui agent start --uds "$d/sock" --foreground '
+            '--control http://127.0.0.1:18000 --name gpu-box') in command
     # The token is an enrollment token, on stdin, never on a command line.
     assert ssh_launch.ENROLL_TTL_S <= 600
     assert all(token not in arg for arg in argv)
@@ -203,17 +226,25 @@ async def test_an_enrolled_worker_gets_a_token_bound_to_it(launcher,
     assert pending["worker"] == "gpu-box"
 
 
-async def test_the_tunnel_host_reaches_the_agent_paths_only(launcher,
-                                                            fake_ssh):
+async def test_a_stop_ends_the_workers_waiting_runs(launcher, fake_ssh):
+    """Disable (and Remove, and a shutdown) is a stop on purpose: once ssh
+    is gone, whatever run is still waiting for the worker ends now, not
+    after the resume grace."""
     await launcher.add(_entry())
-    await _until(lambda: _calls(fake_ssh), "ssh never ran")
-    assert auth.tunnel_host_allows("127.0.0.1:18000", "/ws/worker")
-    assert auth.tunnel_host_allows("localhost:18000", "/api/workers/enroll")
-    assert not auth.tunnel_host_allows("127.0.0.1:18000", "/api/runs")
-    assert not auth.tunnel_host_allows("127.0.0.1:18001", "/ws/worker")
-    assert not auth.tunnel_host_allows("evil.example:18000", "/ws/worker")
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
     await launcher.set_enabled("gpu-box", False)
-    assert not auth.tunnel_host_allows("127.0.0.1:18000", "/ws/worker")
+    assert launcher.registry.stopped_names == ["gpu-box"]
+
+
+def test_the_stop_grace_outlasts_the_agents_own_shutdown(tmp_path):
+    """ssh must still carry the tunnel while the agent stops its runs
+    (their grace, then terminate, then kill) and uploads their last files
+    (an interrupt checkpoint), or ``run_finished`` never arrives."""
+    from app.agent.runner import KILL_AFTER_S, Runner
+
+    runner = Runner(runs_dir=tmp_path / "runs", offered_devices={"cpu"})
+    assert ssh_launch.STOP_GRACE_S >= (runner.shutdown_grace_s
+                                       + KILL_AFTER_S + 30)
 
 
 # ── failures and retries ──────────────────────────────────────────────────
@@ -223,7 +254,7 @@ async def test_a_failing_ssh_is_retried_with_its_error_surfaced(
         launcher, fake_ssh, monkeypatch):
     monkeypatch.setenv("FAKE_SSH_MODE", "fail")
     await launcher.add(_entry())
-    await _until(lambda: len(_calls(fake_ssh)) >= 3
+    await _until(lambda: len(_all_calls(fake_ssh)) >= 3
                  and launcher.describe("gpu-box")["state"] == "failed",
                  "ssh was not retried")
     view = launcher.describe("gpu-box")
@@ -242,17 +273,22 @@ def test_the_backoff_doubles_up_to_a_minute():
     assert ssh_launch.next_backoff(0.0) == ssh_launch.BACKOFF_MIN_S
 
 
-async def test_a_taken_remote_port_moves_to_the_next(launcher, fake_ssh,
-                                                     monkeypatch):
-    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "18000")
+async def test_a_oneshot_that_hangs_is_killed_and_reaped(launcher, fake_ssh,
+                                                        monkeypatch, tmp_path):
+    """A one-shot ssh (prepare, stop) that does not finish within
+    ``ONESHOT_TIMEOUT_S`` is killed and waited for, not left running."""
+    monkeypatch.setattr(ssh_launch, "ONESHOT_TIMEOUT_S", 0.5)
+    monkeypatch.setenv("FAKE_SSH_HANG_S", "30")
     await launcher.add(_entry())
-    await _until(lambda: _tokens(fake_ssh), "the second port was never tried")
-    calls = _calls(fake_ssh)
-    assert [c[c.index("-R") + 1].split(":")[1] for c in calls] == [
-        "18000", "18001"]
-    assert (await launcher.store.list_ssh_workers())[0].remote_port == 18001
-    assert launcher.describe("gpu-box")["remote_port"] == 18001
-    assert "--control http://127.0.0.1:18001" in calls[1][-1]
+    pid_file = Path(str(fake_ssh) + ".pid")
+    await _until(lambda: launcher.describe("gpu-box")["state"] == "failed"
+                 and pid_file.exists(), "the hanging one-shot never failed")
+    pid = int(pid_file.read_text().split()[0])
+    await _until(lambda: not _alive(pid), "the hanging ssh was left running")
+    view = launcher.describe("gpu-box")
+    assert "did not finish within" in view["last_error"]
+    # No session was started without its directory.
+    assert _calls(fake_ssh) == []
 
 
 async def test_the_first_launch_on_a_new_port_forgets_and_later_ones_reuse(
@@ -275,8 +311,8 @@ async def test_a_credential_this_server_refuses_restarts_with_forget(
     await launcher.start_all()
     await _until(lambda: _tokens(fake_ssh), "ssh never ran")
     assert "agent forget" not in _calls(fake_ssh)[0][-1]
-    launcher.note_refused(18004)  # another tunnel: nothing happens
-    launcher.note_refused(18003)
+    launcher.note_refused("other-box")  # another tunnel: nothing happens
+    launcher.note_refused("gpu-box")
     await _until(lambda: len(_calls(fake_ssh)) >= 2,
                  "the refused agent was not restarted")
     assert ('"$HOME"/CodefyUI/cdui agent forget http://127.0.0.1:18003'
@@ -304,7 +340,7 @@ async def test_forbidden_forwarding_is_a_final_failure_without_port_walking(
                  "forbidden forwarding was retried")
     view = launcher.describe("gpu-box")
     assert view["state"] == "failed" and view["retry_at"] is None
-    assert "does not allow remote port forwarding" in view["last_error"]
+    assert "does not allow forwarding to a Unix" in view["last_error"]
     assert len(_calls(fake_ssh)) == 1
     assert view["remote_port"] == 18000
     # Enable tries again.
@@ -314,17 +350,19 @@ async def test_forbidden_forwarding_is_a_final_failure_without_port_walking(
     assert launcher.describe("gpu-box")["gave_up"] is False
 
 
-async def test_every_port_failing_gives_up_after_a_few(launcher, fake_ssh,
-                                                       monkeypatch):
+async def test_failed_forwards_give_up_after_a_few(launcher, fake_ssh,
+                                                  monkeypatch):
     monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "all")
     await launcher.add(_entry())
     await _until(lambda: launcher.describe("gpu-box")["gave_up"],
-                 "the port walk never stopped")
+                 "the retries never stopped")
     calls = _calls(fake_ssh)
     assert len(calls) == ssh_launch.FORWARD_GIVE_UP
-    assert [c[c.index("-R") + 1].split(":")[1] for c in calls] == [
-        "18000", "18001", "18002"]
-    assert "ports in a row" in launcher.describe("gpu-box")["last_error"]
+    # The same slot every time: a socket path is not a port someone took.
+    assert {c[c.index("-R") + 1] for c in calls} == {
+        f"{FAKE_DIR}/sock:127.0.0.1:{LOCAL_PORT}"}
+    assert "times in a row" in launcher.describe("gpu-box")["last_error"]
+    assert launcher.describe("gpu-box")["remote_port"] == 18000
 
 
 async def test_the_remote_agent_pid_is_reported(launcher, fake_ssh):
@@ -339,8 +377,8 @@ async def test_disable_sends_stop_through_the_session(launcher, fake_ssh):
                  "the session never attached")
     await launcher.set_enabled("gpu-box", False)
     assert _stdin(fake_ssh)[1:] == ["stop"]
-    # A live session carried the stop: no one-shot ssh.
-    assert all("-R" in argv for argv in _calls(fake_ssh))
+    # A live session carried the stop: no one-shot stop.
+    assert not any("kill -TERM" in argv[-1] for argv in _oneshots(fake_ssh))
 
 
 async def test_disable_with_the_session_gone_stops_the_agent_over_ssh(
@@ -353,31 +391,28 @@ async def test_disable_with_the_session_gone_stops_the_agent_over_ssh(
     await _until(lambda: launcher.describe("gpu-box")["state"] == "failed",
                  "the drop was not seen")
     await launcher.set_enabled("gpu-box", False)
-    oneshots = [argv for argv in _calls(fake_ssh) if "-R" not in argv]
+    oneshots = [argv for argv in _oneshots(fake_ssh)
+                if "stopped agent pid" in argv[-1]]
     assert len(oneshots) == 1
     assert "ExitOnForwardFailure=yes" not in oneshots[0]
     assert "kill -TERM $a" in oneshots[0][-1]
     assert ".codefyui-ssh/18000" in oneshots[0][-1]
 
 
-async def test_a_held_own_port_is_reclaimed_then_tried_again(
-        launcher, fake_ssh, monkeypatch):
+async def test_a_dropped_session_comes_back_on_the_same_socket(
+        launcher, fake_ssh):
+    """Each session is prepared first (the stale socket removed), and the
+    relaunch forwards the same path, where the surviving agent dials."""
     await launcher.add(_entry())
     await _until(lambda: launcher.describe("gpu-box")["remote_pid"] == 4242,
                  "the session never attached")
-    # The session drops, but the remote sshd still holds port 18000.
-    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "18000")
-    os.kill(launcher.describe("gpu-box")["pid"], 9)
-    await _until(lambda: any("-R" not in argv for argv in _calls(fake_ssh)),
-                 "the stale session was not reclaimed")
-    reclaim = next(argv for argv in _calls(fake_ssh) if "-R" not in argv)
-    assert "sshd:" in reclaim[-1]
-    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "")
+    os.kill(launcher.describe("gpu-box")["pid"], 9)  # the session drops
     await _until(lambda: len(_tokens(fake_ssh)) >= 2, "never relaunched")
-    forwards = [argv[argv.index("-R") + 1].split(":")[1]
-                for argv in _calls(fake_ssh) if "-R" in argv]
-    # The same port throughout: the surviving agent dials there.
-    assert set(forwards) == {"18000"}
+    forwards = {argv[argv.index("-R") + 1] for argv in _calls(fake_ssh)}
+    assert forwards == {f"{FAKE_DIR}/sock:127.0.0.1:{LOCAL_PORT}"}
+    prepares = [argv for argv in _oneshots(fake_ssh)
+                if "codefyui-ssh: dir" in argv[-1]]
+    assert len(prepares) >= 2
     assert launcher.describe("gpu-box")["remote_port"] == 18000
 
 
@@ -437,7 +472,7 @@ async def test_the_port_range_can_run_out(tmp_path, fake_ssh):
         await launcher.add(_entry("two", target="bob@other"))
         await _until(lambda: launcher.describe("two")["state"] == "failed",
                      "a full range was not reported")
-        assert "no free remote port" in launcher.describe("two")["last_error"]
+        assert "no free slot" in launcher.describe("two")["last_error"]
     finally:
         await launcher.shutdown()
         database.close()
@@ -490,9 +525,10 @@ async def test_restart_relaunches_enabled_rows_and_drains_disabled_ones(
         await launcher.start_all()
         await _until(lambda: _tokens(fake_ssh), "the enabled row never ran")
         [argv] = _calls(fake_ssh)
-        # The stored remote port is reused (and with it the credential the
-        # agent keeps for that address).
-        assert argv[argv.index("-R") + 1].startswith("127.0.0.1:18005:")
+        # The stored slot is reused (and with it the credential the agent
+        # keeps for that address).
+        assert argv[argv.index("-R") + 1].startswith(
+            "/home/fake/.codefyui-ssh/18005/sock:")
         assert registry.drained == {"off-box": True}
         assert [v["id"] for v in launcher.describe_all()] == ["off-box",
                                                               "on-box"]
@@ -578,8 +614,9 @@ def test_the_remote_agent_gets_the_token_in_its_env_and_stop_ends_it(
     proc.stdin.flush()
     assert _wait_file(remote_home / "token") == TOKEN
     args = (remote_home / "args").read_text()
-    assert args.strip() == ("agent start --foreground --control "
-                            "http://127.0.0.1:18000 --name gpu-box")
+    assert args.strip() == (
+        f"agent start --uds {_state(remote_home)}/sock --foreground "
+        "--control http://127.0.0.1:18000 --name gpu-box")
     assert "abcdef" not in args
     assert (_wait_file(remote_home / "path").split(":")[:2]
             == [f"{remote_home}/.local/bin", f"{remote_home}/.cargo/bin"])
@@ -663,7 +700,7 @@ def test_forget_first_runs_cdui_agent_forget_before_a_fresh_start(
     _wait_file(remote_home / "token")
     lines = (remote_home / "args").read_text().splitlines()
     assert lines[0] == "agent forget http://127.0.0.1:18000"
-    assert lines[1].startswith("agent start --foreground")
+    assert lines[1].startswith("agent start --uds ")
     proc.stdin.write(b"stop\n")
     proc.stdin.close()
     assert proc.wait(timeout=10) == 0
@@ -690,17 +727,54 @@ def test_the_one_shot_stop_ends_a_surviving_agent(remote_home):
     assert again.returncode == 0 and again.stdout == ""
 
 
-def test_the_reclaim_command_is_harmless_without_a_stale_session(
+def test_the_prepare_command_makes_a_private_directory_and_clears_the_socket(
         remote_home):
-    _state(remote_home).mkdir(parents=True)
-    (_state(remote_home) / "session").write_text("999999\n")
-    result = subprocess.run(
-        ["/bin/sh", "-c", ssh_launch.remote_reclaim_command(18000)],
-        env={**os.environ, "HOME": str(remote_home)},
-        capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0 and result.stdout == ""
-    command = ssh_launch.remote_reclaim_command(18000)
+    command = ssh_launch.remote_prepare_command(18000)
     assert "'" not in command[len("sh -c '"):-1] and "\\" not in command
+    env = {**os.environ, "HOME": str(remote_home)}
+    first = subprocess.run(["/bin/sh", "-c", command], env=env,
+                           capture_output=True, text=True, timeout=10)
+    assert first.returncode == 0, first.stderr
+    state = _state(remote_home)
+    assert first.stdout.strip() == f"codefyui-ssh: dir {state}"
+    assert ssh_launch.REMOTE_DIR.search(first.stdout).group(1) == str(state)
+    assert state.stat().st_mode & 0o777 == 0o700
+    assert state.parent.stat().st_mode & 0o777 == 0o700
+    # A socket a dropped session left behind is removed.
+    (state / "sock").write_text("stale")
+    state.parent.chmod(0o755)
+    again = subprocess.run(["/bin/sh", "-c", command], env=env,
+                           capture_output=True, text=True, timeout=10)
+    assert again.returncode == 0
+    assert not (state / "sock").exists()
+    assert state.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_an_agent_from_before_the_socket_forward_is_replaced(remote_home):
+    """An agent started without ``--uds`` dials a TCP port nothing serves
+    now: the next session stops it and starts one on the socket."""
+    state = _state(remote_home)
+    state.mkdir(parents=True)
+    script = remote_home / "old-agent"
+    script.write_text("#!/bin/sh\nwhile :; do sleep 0.05; done\n")
+    script.chmod(0o755)
+    old = subprocess.Popen([str(script), "agent", "start", "--foreground"],
+                           start_new_session=True)
+    try:
+        (state / "pid").write_text(str(old.pid))
+        proc = _run_remote(remote_home, ssh_launch.remote_command(
+            _entry(remote_cdui="~/cdui"), 18000))
+        proc.stdin.write(f"{TOKEN}\n".encode())
+        proc.stdin.flush()
+        _wait_file(remote_home / "token")
+        old.wait(timeout=10)
+        assert "agent start --uds" in (remote_home / "args").read_text()
+        proc.stdin.write(b"stop\n")
+        proc.stdin.close()
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if old.poll() is None:
+            old.kill()
 
 
 # ── validation ────────────────────────────────────────────────────────────
@@ -750,17 +824,6 @@ def test_default_names_and_port_ranges():
     assert ssh_launch.parse_port_range("19000-19010") == (19000, 19010)
     assert ssh_launch.parse_port_range("nope") == ssh_launch.DEFAULT_PORT_RANGE
     assert ssh_launch.parse_port_range("90-100") == ssh_launch.DEFAULT_PORT_RANGE
-
-
-def test_the_forward_lands_on_this_servers_bind_address(monkeypatch):
-    for host, expected in (("127.0.0.1", "127.0.0.1"),
-                           ("0.0.0.0", "127.0.0.1"),
-                           ("::", "localhost"),
-                           ("localhost", "localhost"),
-                           ("192.168.1.5", "192.168.1.5"),
-                           ("::1", "[::1]")):
-        monkeypatch.setattr(settings, "HOST", host)
-        assert ssh_launch.local_forward_host() == expected
 
 
 # ── routes ────────────────────────────────────────────────────────────────
@@ -893,36 +956,15 @@ async def test_removing_the_worker_removes_its_ssh_entry(api, fake_ssh):
             "ssh_workers"] == []
 
 
-async def test_a_tunnel_host_reaches_enroll_and_nothing_else(api, fake_ssh):
+async def test_no_host_on_the_main_port_counts_as_a_tunnel(api, fake_ssh):
+    """With an SSH worker running, a request to the main port naming its
+    slot (or anything else) as ``Host`` is just a Host the guard refuses;
+    one naming this server is an ordinary request, no tunnel either."""
     async with _client() as client:
         await client.post("/api/workers/ssh", json={"target": "a@b"})
-    async with _client(token=False, base="http://127.0.0.1:18000") as tunnel:
-        enroll = await tunnel.post("/api/workers/enroll", json={
-            "token": "nope", "name": "b"})
-        # Past the Host guard: the route itself answers.
-        assert enroll.status_code == 401
-        assert (await tunnel.get("/api/workers")).status_code == 421
-        assert (await tunnel.get("/api/runs")).status_code == 421
-    async with _client(token=False, base="http://127.0.0.1:18001") as other:
-        assert (await other.post("/api/workers/enroll", json={
-            "token": "nope", "name": "b"})).status_code == 421
-
-
-async def test_each_tunnel_has_its_own_enrollment_rate_bucket(api, fake_ssh,
-                                                              monkeypatch):
-    from app.api import routes_workers
-
-    monkeypatch.setattr(routes_workers, "enroll_limiter",
-                        routes_workers.TokenBucket(burst=2, per_minute=1))
-    async with _client() as client:
-        await client.post("/api/workers/ssh", json={"target": "a@b"})
-    body = {"token": "nope", "name": "b"}
-    async with _client(token=False, base="http://127.0.0.1:18000") as tunnel:
-        codes = [(await tunnel.post("/api/workers/enroll", json=body)
-                  ).status_code for _ in range(3)]
-    assert codes == [401, 401, 429]
-    # The same peer address, not through the tunnel: a bucket of its own.
-    async with _client(token=False) as local:
-        assert (await local.post("/api/workers/enroll", json=body)
-                ).status_code == 401
-
+    for base in ("http://127.0.0.1:18000", "http://localhost:18000"):
+        async with _client(token=False, base=base) as forged:
+            assert (await forged.post("/api/workers/enroll", json={
+                "token": "nope", "name": "b"})).status_code == 421
+            assert (await forged.get("/api/auth/bootstrap")).status_code \
+                == 421
