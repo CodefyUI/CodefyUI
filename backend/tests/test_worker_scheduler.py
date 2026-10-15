@@ -134,11 +134,11 @@ def test_any_tries_workers_in_name_order_then_this_process():
     assert scheduler.place(entry, {**full, ("local", "cpu"): 2}) is None
 
 
-def test_any_with_a_device_set_never_runs_here():
-    """A set is renumbered from cuda:0 on a worker (CUDA_VISIBLE_DEVICES),
-    not in this process, so node pins would address the wrong cards here:
-    an ``any`` set run waits for a worker even when this server has every
-    card of the set."""
+def test_any_with_a_renumbered_cuda_set_never_runs_here():
+    """A CUDA set is renumbered from cuda:0 on a worker
+    (CUDA_VISIBLE_DEVICES), not in this process, so node pins would address
+    other cards here: such an ``any`` run waits for a worker even when this
+    server has every card of the set."""
     entry = _Entry("r1", "any/cuda:1",
                    _target("any", "cuda:1", ["cuda:1", "cuda:0"]))
     for here in (("cpu", "cuda:1"), ("cpu", "cuda:0", "cuda:1")):
@@ -148,6 +148,9 @@ def test_any_with_a_device_set_never_runs_here():
         assert not scheduler.can_serve_any("cuda:1", ["cuda:1", "cuda:0"])
         assert scheduler.explain(entry) == (
             "waiting for a worker that offers cuda:1, cuda:0")
+    # One card other than cuda:0 is renumbered too (a worker calls it cuda:0).
+    one = _Entry("r2", "any/cuda:1", _target("any", "cuda:1", ["cuda:1"]))
+    assert _scheduler(here=("cpu", "cuda:1")).place(one, {}) is None
     # Without a set, this process still qualifies.
     assert _scheduler(here=("cpu", "cuda:1")).can_serve_any("cuda:1", None)
     # A worker with the set takes it, in the order the set lists it.
@@ -155,6 +158,32 @@ def test_any_with_a_device_set_never_runs_here():
                           here=("cpu", "cuda:0", "cuda:1"))
     assert with_box.place(entry, {}) == Placement(
         "box", ("cuda:1", "cuda:0"), (("box", "cuda:1"), ("box", "cuda:0")))
+
+
+@pytest.mark.parametrize("devices,first", [
+    (["cuda:0"], "cuda:0"),
+    (["mps:0"], "mps:0"),
+    (["cpu"], "cpu"),
+])
+def test_any_with_a_set_nothing_renumbers_may_run_here(devices, first):
+    """``cuda:0`` alone, ``mps`` and ``cpu`` mean the same card here and on
+    a worker, so this server still qualifies for them."""
+    here = ("cpu", "cuda:0", "mps:0")
+    entry = _Entry("r1", f"any/{first}", _target("any", first, devices))
+    scheduler = _scheduler(here=here)
+    assert scheduler.can_serve_any(first, devices)
+    assert scheduler.place(entry, {}) == Placement(
+        "local", (first,), (("local", first),))
+    assert scheduler.place(entry, {("local", first): 2}) is None
+
+
+def test_renumbered_on_a_worker():
+    from app.core.scheduling import renumbered_on_a_worker
+
+    for devices in (None, [], ["cuda:0"], ["cpu"], ["mps"], ["mps:0"]):
+        assert not renumbered_on_a_worker(devices), devices
+    for devices in (["cuda:1"], ["cuda:0", "cuda:1"], ["cuda:1", "cuda:0"]):
+        assert renumbered_on_a_worker(devices), devices
 
 
 def test_explain_names_the_worker_a_run_waits_for():
@@ -237,7 +266,8 @@ def test_submit_keys_and_refusals():
 
 
 def test_submit_refuses_an_any_set_only_this_server_could_take():
-    """This server has both cards but never takes an ``any`` set run."""
+    """This server has both cards but never takes an ``any`` run whose CUDA
+    set a worker would renumber; ``cuda:0`` alone it still takes."""
     service = RunService(
         store=None, workers=_registry_with(_worker("box", "cpu")),  # type: ignore[arg-type]
         scheduler=WorkerScheduler(LIMITS, _registry_with(_worker("box", "cpu")),
@@ -245,6 +275,9 @@ def test_submit_refuses_an_any_set_only_this_server_could_take():
     key = service._submit_queue_key
     with pytest.raises(RunSubmitError, match="never on this server"):
         key(_options(worker="any", devices=["cuda:0", "cuda:1"]))
+    with pytest.raises(RunSubmitError, match="never on this server"):
+        key(_options(worker="any", devices=["cuda:1"]))
+    assert key(_options(worker="any", devices=["cuda:0"])) == "any/cuda:0"
     assert key(_options(worker="any", device="cuda:1")) == "any/cuda:1"
 
 
@@ -287,7 +320,18 @@ def test_a_heartbeat_that_changes_the_devices_reschedules():
     same = [wp.DeviceReport(value="cpu", kind="cpu")]
     registry.heartbeat(worker, wp.Heartbeat(devices=same))
     assert calls == []
-    grown = [*same, wp.DeviceReport(value="cuda:0", kind="cuda")]
+    grown = [*same, wp.DeviceReport(value="cuda:0", kind="cuda", index=0,
+                                    uuid="abc", free_bytes=100)]
     registry.heartbeat(worker, wp.Heartbeat(devices=grown))
     assert calls == [None]
     assert worker.device_values() == ["cpu", "cuda:0"]
+    # Memory figures move on every heartbeat: stored, but not a change.
+    busier = [*same, wp.DeviceReport(value="cuda:0", kind="cuda", index=0,
+                                     uuid="abc", free_bytes=10)]
+    registry.heartbeat(worker, wp.Heartbeat(devices=busier))
+    assert calls == [None]
+    assert worker.devices[1].free_bytes == 10
+    swapped = [*same, wp.DeviceReport(value="cuda:0", kind="cuda", index=0,
+                                      uuid="def", free_bytes=10)]
+    registry.heartbeat(worker, wp.Heartbeat(devices=swapped))
+    assert calls == [None, None]

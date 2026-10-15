@@ -32,7 +32,8 @@ holding one of them. Reservations are first come, first served (an
 earlier reservation also blocks a later set run), so two set runs cannot
 reserve each other into a deadlock. An ``any`` run with a set reserves
 nothing: which worker's cards it needs is not known until it is placed.
-Nor does it ever run in this process (:class:`WorkerScheduler`).
+A CUDA set a worker would renumber never runs in this process
+(:func:`renumbered_on_a_worker`, :class:`WorkerScheduler`).
 
 Same-host workers (#773): a worker whose ``hello.machine_id`` equals this
 process's runs on this machine. Each card it shares with this process
@@ -200,6 +201,28 @@ class LocalScheduler:
 
 
 
+def renumbered_on_a_worker(devices: list[str] | None) -> bool:
+    """Whether a worker would renumber *devices* for the run.
+
+    A worker's run subprocess sees a CUDA set through
+    ``CUDA_VISIBLE_DEVICES``, numbered from ``cuda:0`` in the set's order;
+    this process does not renumber. The two agree only for no CUDA set or
+    the one card ``cuda:0``: a set of several cards, or one other card
+    (``["cuda:1"]``, which a worker calls ``cuda:0``), would have a node
+    pinned to ``cuda:N`` address different cards here and there. ``cpu``
+    and ``mps`` sets are not renumbered.
+    """
+    cuda: list[str] = []
+    for device in devices or ():
+        try:
+            device = canonical_device(device)
+        except ValueError:
+            continue
+        if device.split(":")[0] == "cuda":
+            cuda.append(device)
+    return len(cuda) > 1 or (len(cuda) == 1 and cuda[0] != "cuda:0")
+
+
 def entry_target(options: Mapping[str, Any]) -> tuple[str, list[str] | None]:
     """``(worker, devices)`` of a run's normalised options; ``local`` without
     a target."""
@@ -221,11 +244,14 @@ class WorkerScheduler:
     - ``any``: the first connected, non-draining worker that can take it
       the same way, in name order, and this process last, judged the same
       way against *local_devices* (this process's devices, canonical).
-      With a device set, this process never qualifies: a worker's run
-      subprocess sees the set renumbered from ``cuda:0`` through
+      A device set a worker would renumber (:func:`renumbered_on_a_worker`:
+      several CUDA cards, or one other than ``cuda:0``) never runs here: a
+      worker's run subprocess sees it numbered from ``cuda:0`` through
       ``CUDA_VISIBLE_DEVICES``, so a node pinned to ``cuda:1`` means the
-      set's second card; in this process it would mean physical card 1.
-      An ``any`` set run therefore waits for a worker that offers the set.
+      set's second card there and physical card 1 here. Such a run waits
+      for a worker that offers the set. Any other set qualifies here when
+      this process has every device of it, and executes on its first
+      device, as a local run with a set does.
 
     Every worker slot is ``(worker_id, device)`` capped by
     ``limits.for_slot(slot)`` (a same-host worker's is this process's slot,
@@ -305,15 +331,15 @@ class WorkerScheduler:
                       *, connected_only: bool = False) -> bool:
         """Whether this process or a worker could ever run it.
 
-        This process counts only for a run without a device set (see the
-        class docstring: a set is renumbered on a worker, not here). By
-        default every worker this server has seen counts, connected or
+        This process does not count for a device set a worker would
+        renumber (see the class docstring). By default every worker this server has seen counts, connected or
         not (#777): a run submitted while the only worker offering its
         device is away waits for it to reconnect rather than being refused.
         *connected_only* asks about the workers connected now, which is
         what a waiting run's reason describes.
         """
-        if not devices and _serves(self._local_devices(), requested, None):
+        if not renumbered_on_a_worker(devices) \
+                and _serves(self._local_devices(), requested, devices):
             return True
         return any((w.online or not connected_only)
                    and _serves(w.device_values(), requested, devices)
@@ -321,9 +347,17 @@ class WorkerScheduler:
 
     def _place_here(self, requested: str, devices: list[str] | None,
                     taken: Mapping[SlotKey, int]) -> Placement | None:
-        if devices:  # renumbered only on a worker; see the class docstring
+        if renumbered_on_a_worker(devices):  # see the class docstring
             return None
         offered = self._local_devices()
+        if devices:
+            if not _serves(offered, requested, devices):
+                return None
+            first = canonical_device(devices[0])
+            slots = local_set_slots(first, devices)
+            if _all_free(self._limits, slots, taken):
+                return Placement(LOCAL_WORKER_ID, (first,), slots)
+            return None
         for device in candidate_devices(offered, requested):
             slot: SlotKey = (LOCAL_WORKER_ID, device)
             if _free(self._limits, slot, taken):

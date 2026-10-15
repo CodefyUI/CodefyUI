@@ -174,6 +174,16 @@ def lingering_child(spec: dict[str, Any], events_out: Any,
         time.sleep(0.05)
 
 
+def chatty_child(spec: dict[str, Any], events_out: Any,
+                 control_in: Any) -> None:
+    """Report success, write 2 MB more down the pipe (more than a pipe
+    buffer holds), then exit: blocks forever unless the agent keeps reading."""
+    quick_child(spec, events_out, control_in)
+    blob = "x" * 65536
+    for _ in range(32):
+        events_out.send((child.MSG_EVENT, "late", {"blob": blob}))
+
+
 def deaf_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     """Start a node and never stop: ignores ``cancel`` (terminate path)."""
     _running(events_out, "deaf")

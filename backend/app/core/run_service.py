@@ -116,8 +116,8 @@ seen since it started and offer the device at submit (else
 the interactive lane are refused (the canvas always executes here).
 :class:`~app.core.scheduling.WorkerScheduler` places it on
 ``(worker, device)`` slots, capped per device like a local slot; ``any``
-tries the connected workers in name order and this process last (a run
-with a device set: the workers only). The
+tries the connected workers in name order and this process last (a CUDA
+set a worker would renumber: the workers only). The
 placement decides the executor (``WorkerExecutor`` for a worker,
 ``InProcessExecutor`` here), the context device (the placement's first
 device), and what the row records once the run starts: ``queue_key``
@@ -185,6 +185,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import heapq
 import itertools
 import json
 import logging
@@ -201,6 +202,7 @@ from typing import (
     Awaitable,
     Callable,
     Iterable,
+    Iterator,
     NamedTuple,
 )
 
@@ -290,6 +292,7 @@ from .scheduling import (
     candidate_devices,
     entry_target,
     on_a_worker,
+    renumbered_on_a_worker,
 )
 from .secret_params import (
     SecretVault,
@@ -798,8 +801,8 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     holds a slot on every device of the set (#773). On a worker (#772) the
     run holds a slot for every device in the set and its subprocess sees
     all of them (#774), renumbered from ``cuda:0`` in the set's order.
-    An ``any`` run with a set is therefore placed on a worker only, never
-    in this process (``WorkerScheduler``).
+    An ``any`` run with a CUDA set that renumbering changes is therefore
+    placed on a worker only (``scheduling.renumbered_on_a_worker``).
     """
     if raw is None:
         return None
@@ -1573,6 +1576,11 @@ class RunService:
         # ``<worker>/cuda:0``), and ``reschedule`` serves their fronts in
         # this order so no queue starves the others.
         self._submit_seq = itertools.count(1)
+        # A reschedule asked for by a cancel runs on the loop AFTER the
+        # cancel, coalesced (``_request_reschedule``); while a bulk cancel
+        # holds ``deferred_reschedule`` it waits for the whole batch.
+        self._reschedule_holds = 0
+        self._reschedule_requested = False
         # Runs holding each ``(worker_id, device)`` slot (#768). NOT derived
         # from ``_runs`` on demand: counting a dict by predicate on every
         # promotion is both slower and easier to get subtly wrong than
@@ -1974,9 +1982,10 @@ class RunService:
         it to reconnect, #777), and must offer every device of the set (or
         the requested device, or one of the requested kind) as it last
         reported them; ``any`` likewise needs this server or a worker it
-        has seen to offer the device (a device set: a worker it has seen,
-        since this server never takes an ``any`` set run, see
-        ``WorkerScheduler``). The run must be one a worker can do
+        has seen to offer the device (a CUDA set a worker would renumber:
+        a worker it has seen, since this server never takes such an
+        ``any`` run, see ``WorkerScheduler``). The run must be one a
+        worker can do
         in this wave (no ``record_outputs``, not the interactive lane).
         Only an unknown worker name, a device nobody offers, or one of
         those two options is refused, so a worker disconnecting halfway
@@ -1993,14 +2002,16 @@ class RunService:
         if worker_id == TARGET_WORKER_ANY:
             can_serve = getattr(self._scheduler, "can_serve_any", None)
             if can_serve is not None and not can_serve(requested, devices):
-                if devices:
+                if renumbered_on_a_worker(devices):
                     raise RunSubmitError(
                         f"no known worker offers the device set "
-                        f"{', '.join(devices)} (target 'any' runs a device "
-                        f"set on a worker only, never on this server)")
+                        f"{', '.join(devices or [])} (with target 'any', a "
+                        f"CUDA set other than cuda:0 alone runs on a worker "
+                        f"only, never on this server)")
+                wanted = ", ".join(devices) if devices else requested
                 raise RunSubmitError(
                     f"neither this server nor a known worker offers "
-                    f"{requested}")
+                    f"{wanted}")
             return f"{TARGET_WORKER_ANY}{WORKER_QUEUE_SEPARATOR}{requested}"
         worker = None if self._workers is None else self._workers.get(worker_id)
         if worker is None:
@@ -2148,9 +2159,52 @@ class RunService:
             # offer it to the scheduler: a front that was waiting for a
             # worker, or whose placement raised, holds no slot whose
             # release would pump its queue. Cards it reserved are open
-            # to every other run again too.
-            self.reschedule()
+            # to every other run again too. Deferred, not done here: a
+            # "cancel all" dequeues its runs one by one, and the sibling
+            # behind this one must not start just to be cancelled next.
+            self._request_reschedule()
         return entry
+
+    def _request_reschedule(self) -> None:
+        """Reschedule once, on the loop, after the current step. Coalesced.
+
+        Inside :meth:`deferred_reschedule` it waits for the block to end.
+        Outside a running loop (a synchronous caller) it reschedules now.
+        """
+        if self._reschedule_requested:
+            return
+        self._reschedule_requested = True
+        if self._reschedule_holds:
+            return
+        try:
+            asyncio.get_running_loop().call_soon(self._run_requested_reschedule)
+        except RuntimeError:
+            self._run_requested_reschedule()
+
+    def _run_requested_reschedule(self) -> None:
+        if self._reschedule_holds or not self._reschedule_requested:
+            return  # the hold's end runs it
+        self._reschedule_requested = False
+        self.reschedule()
+
+    @contextlib.contextmanager
+    def deferred_reschedule(self) -> Iterator[None]:
+        """Hold back rescheduling for a bulk cancel; reschedule once after.
+
+        Cancelling a sweep's or a study's runs one at a time would
+        otherwise start each queued sibling as the one ahead of it leaves
+        (a cancelled front, a running sibling releasing its slot), only to
+        cancel it a moment later. Nestable; the outermost exit reschedules
+        if anything asked for it.
+        """
+        self._reschedule_holds += 1
+        try:
+            yield
+        finally:
+            self._reschedule_holds -= 1
+            if not self._reschedule_holds and self._reschedule_requested:
+                self._reschedule_requested = False
+                self.reschedule()
 
     def _reserve(self, entry: _QueuedRun) -> None:
         """Record (or drop) what the refused front-of-line *entry* reserves.
@@ -2427,7 +2481,10 @@ class RunService:
                 self._slots[slot] = remaining
             else:
                 self._slots.pop(slot, None)
-        self.reschedule()
+        if self._reschedule_holds:
+            self._request_reschedule()  # a bulk cancel is in progress
+        else:
+            self.reschedule()
 
     def reschedule(self) -> None:
         """Offer the front of every waiting FIFO to the scheduler. SYNCHRONOUS.
@@ -2447,16 +2504,19 @@ class RunService:
         the slot forever. A queue whose front is refused is not asked
         again in this pass, so strict FIFO per queue still holds.
         """
-        blocked: set[str] = set()
-        while True:
-            fronts = [(queue[0].seq, key)
-                      for key, queue in self._pending.items()
-                      if queue and key not in blocked]
-            if not fronts:
-                return
-            _, key = min(fronts)
+        fronts = [(queue[0].seq, key)
+                  for key, queue in self._pending.items() if queue]
+        heapq.heapify(fronts)
+        while fronts:
+            seq, key = heapq.heappop(fronts)
+            queue = self._pending.get(key)
+            if not queue or queue[0].seq != seq:
+                continue  # stale: that queue moved since it was pushed
             if not self._pump_one(key):
-                blocked.add(key)
+                continue  # refused: not asked again in this pass
+            queue = self._pending.get(key)
+            if queue:
+                heapq.heappush(fronts, (queue[0].seq, key))
 
     # ── the run task ──────────────────────────────────────────────────────
 

@@ -38,6 +38,7 @@ variants, and a caller who wants live progress long-polls each child's
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import logging
@@ -937,35 +938,40 @@ async def cancel_sweep(sweep_id: str, request: Request):
     results: list[dict[str, Any]] = []
     cancelled = 0
     already_finished = 0
-    for variant in sorted(sweep.variants, key=lambda entry: entry.index):
-        if variant.run_id is None:
-            # The failed-submit-loop case: there is nothing to cancel, and
-            # nothing FINISHED either, so it is counted in neither tally.
-            # `already_finished` counts runs that had ended or been deleted.
-            results.append({"index": variant.index, "run_id": None,
-                            "status": _STATUS_MISSING, "cancelled": False})
-            continue
-        outcome = await service.cancel(variant.run_id)
-        if outcome is None:
-            # The row is gone -- pruned, or DELETE /api/runs/{id}. It had a
-            # run, so it counts as already finished.
+    # One reschedule after the whole loop: cancelling variant k must not
+    # start variant k+1 (or let a running sibling's freed slot do so) only
+    # for the next iteration to cancel it.
+    hold = getattr(service, "deferred_reschedule", contextlib.nullcontext)
+    with hold():
+        for variant in sorted(sweep.variants, key=lambda entry: entry.index):
+            if variant.run_id is None:
+                # The failed-submit-loop case: there is nothing to cancel, and
+                # nothing FINISHED either, so it is counted in neither tally.
+                # `already_finished` counts runs that had ended or been deleted.
+                results.append({"index": variant.index, "run_id": None,
+                                "status": _STATUS_MISSING, "cancelled": False})
+                continue
+            outcome = await service.cancel(variant.run_id)
+            if outcome is None:
+                # The row is gone -- pruned, or DELETE /api/runs/{id}. It had a
+                # run, so it counts as already finished.
+                results.append({"index": variant.index, "run_id": variant.run_id,
+                                "status": variant.status or _STATUS_MISSING,
+                                "cancelled": False})
+                already_finished += 1
+                continue
             results.append({"index": variant.index, "run_id": variant.run_id,
-                            "status": variant.status or _STATUS_MISSING,
-                            "cancelled": False})
-            already_finished += 1
-            continue
-        results.append({"index": variant.index, "run_id": variant.run_id,
-                        "status": outcome.status,
-                        "cancelled": outcome.cancelled})
-        if outcome.cancelled:
-            cancelled += 1
-        elif outcome.status in TERMINAL_STATUSES:
-            already_finished += 1
-        # Anything else still says it is active although no cancel reached
-        # it: a run another process drives on this database, a row whose
-        # terminal write failed, or one this process is finishing right now.
-        # None of those has finished, so it is in neither tally, like a
-        # variant that never got a run.
+                            "status": outcome.status,
+                            "cancelled": outcome.cancelled})
+            if outcome.cancelled:
+                cancelled += 1
+            elif outcome.status in TERMINAL_STATUSES:
+                already_finished += 1
+            # Anything else still says it is active although no cancel reached
+            # it: a run another process drives on this database, a row whose
+            # terminal write failed, or one this process is finishing right now.
+            # None of those has finished, so it is in neither tally, like a
+            # variant that never got a run.
 
     if cancelled:
         # `cancelling` ONLY when at least one child was still active. If

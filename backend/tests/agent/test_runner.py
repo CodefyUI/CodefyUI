@@ -249,6 +249,47 @@ async def test_run_finished_follows_a_clean_exit(tmp_path):
     assert alive_at_finish == [False]
 
 
+async def test_a_child_writing_after_reporting_is_drained_not_blocked(
+        tmp_path):
+    """2 MB after ``finished`` would fill the pipe and block the child's
+    exit; the reader keeps reading (and dropping) until it is gone."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.chatty_child,
+                     exit_after_finished_s=30.0)
+    started = time.monotonic()
+    await runner.assign(_assign("chatty1"))
+    handle = runner.runs["chatty1"]
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=25)
+    assert time.monotonic() - started < 25  # it exited, nobody terminated it
+    assert finished.status == "succeeded"
+    assert [type(f) for f in sink.of("chatty1")] == [wp.RunStarted,
+                                                     wp.RunFinished]
+    assert handle.discarded == 32
+    assert not handle.terminated
+
+
+async def test_a_cancel_while_waiting_for_exit_stops_the_process(tmp_path):
+    """The child reported; the cancel must not wait out the exit grace,
+    and the report it gave is still the one sent."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.lingering_child,
+                     exit_after_finished_s=60.0, kill_after_s=2.0)
+    await runner.assign(_assign("lc1"))
+    await asyncio.wait_for(_until(lambda: runner.runs["lc1"].finished), 20)
+    handle = runner.runs["lc1"]
+    assert sink.finished("lc1") is None
+    started = time.monotonic()
+    assert await runner.cancel("lc1") is True
+    assert await runner.cancel("lc1") is True  # repeat: same escalation
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=15)
+    assert time.monotonic() - started < 10
+    assert handle.terminated and not handle.process.is_alive()
+    assert finished.status == "succeeded" and finished.error is None
+    assert [f.seq for f in sink.of("lc1")] == [1, 2]
+
+
 async def test_cancel_is_cooperative_within_grace(tmp_path):
     """Acceptance: cancel ends a long node well inside grace_s + 5 s."""
     sink = h.FrameSink()

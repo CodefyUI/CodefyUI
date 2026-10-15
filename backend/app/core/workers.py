@@ -164,6 +164,12 @@ def _canonical_or_none(device: str) -> str | None:
         return None
 
 
+def _device_identities(devices: list[wp.DeviceReport]) -> list[tuple]:
+    """What placement reads off a device list: which devices, not their
+    memory figures."""
+    return [(d.value, d.kind, d.index, d.uuid) for d in devices]
+
+
 class WorkerRegistry:
     """Every worker this control plane knows, by name. Event-loop only.
 
@@ -351,11 +357,15 @@ class WorkerRegistry:
         worker.last_heartbeat = self._clock()
         worker.last_heartbeat_at = time.time()
         if frame.devices != worker.devices:
+            identity_changed = (_device_identities(frame.devices)
+                                != _device_identities(worker.devices))
             worker.devices = list(frame.devices)
-            worker.shared = self._shared_devices(worker)
-            # A device appearing (or a card changing its slot) is capacity
-            # a waiting run may now take.
-            self._changed()
+            if identity_changed:
+                worker.shared = self._shared_devices(worker)
+                # A device appearing (or a card changing its slot) is
+                # capacity a waiting run may now take. Memory figures
+                # change on every heartbeat and are not.
+                self._changed()
         if worker.status == STATUS_DEGRADED:
             worker.status = STATUS_ONLINE
             logger.info("worker %s is back on time", worker.name)
