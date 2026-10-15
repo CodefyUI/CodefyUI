@@ -628,6 +628,19 @@ async def test_children_inherit_the_base_graph_device(client, store):
     for child in children:
         await _await_terminal(store, child.id)
 
+    # So does a target device set (#769): its first entry is the device,
+    # and every child records the set.
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1, 0.2]), graph=graph,
+        options={"target": {"devices": ["cpu"]}}))
+    assert response.status_code == 201, response.text
+    children = await store.list_runs_by_sweep(response.json()["sweep_id"])
+    assert {c.queue_key for c in children} == {"cpu"}
+    assert [c.devices for c in children] == [["cpu"], ["cpu"]]
+    assert {c.worker_id for c in children} == {"local"}
+    for child in children:
+        await _await_terminal(store, child.id)
+
 
 async def test_seed_variants_off_leaves_every_variant_unseeded(client, store):
     """RULING 1: an unseeded run takes the SHARED exclusion and overlaps up

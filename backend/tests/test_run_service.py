@@ -585,9 +585,12 @@ def test_options_accept_every_documented_key():
         "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
         "backward_mode": True, "auto_backward": True,
         "error_mode": "retry", "max_retries": 3, "deterministic": True,
+        "target": {"devices": [" CUDA "]},
     }
     assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
-    assert normalize_options(asked) == {**asked, "device": "cuda"}
+    assert normalize_options(asked) == {
+        **asked, "device": "cuda",
+        "target": {"worker": "local", "devices": ["cuda"]}}
 
 
 @pytest.mark.parametrize("lane", [LANE_INTERACTIVE, "queued", "gpu"])

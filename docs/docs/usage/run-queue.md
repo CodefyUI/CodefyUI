@@ -29,6 +29,8 @@ A saturated GPU never delays a CPU run, and two different cards never wait on ea
 A run without an explicit `device` option uses the graph file's `settings.device`, and a graph without one runs on `cpu`; no mechanism picks an accelerator on your behalf. `--device auto` (or `"device": "auto"` in the request body) is the one exception: it resolves to the best accelerator this server can see, `cuda` before `mps` before `cpu`, and queues on that line. An accelerator that is not present falls back to `cpu` with a warning.
 :::
 
+A run can also name a **target**: `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}` in the request's `options`, or `--target` / `--devices` on `cdui run`. Today the only worker is `local`, this server, and it is also what an omitted `worker` means; any other worker name, and `any`, is refused with `400` until remote workers arrive. `devices` lists concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`; no `auto`, no duplicates, no mixing `cuda` with `cpu`). Its first entry becomes the run's device, and therefore its queue, when `device` is omitted; a `device` that names a different card is refused. The run's row reports both as `worker_id` and `devices`. A run without a target behaves exactly as before.
+
 This is a limit on **runs per device**, and it is not the same knob as `CODEFYUI_MAX_PARALLEL_NODES`, which bounds how many *nodes inside one run* execute at the same time. The two multiply.
 
 ## Lanes
@@ -109,6 +111,8 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <text>` | Label stored on the run and shown wherever runs are listed |
 | `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`. Omitted: the graph's `settings.device`, else `cpu`. `auto`: the best accelerator this server has. The resolved device is the queue it joins. |
+| `--target <name>` | Where the run executes. Only `local` (this server) is accepted today. Omitted: `local`. |
+| `--devices <list>` | Comma-separated device set of one kind, e.g. `cuda:0,cuda:1`. Its first entry is the run's device when `--device` is omitted; given both, they must agree. |
 | `--seed <n>` | Seed every node from `n`, making the run reproducible. Omitted: the graph's `settings.seed`, if any. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
 | `--no-seed` | Run unseeded even when the graph has a `settings.seed` (sends `"seed": null`) |
 | `--deterministic` | Also ask PyTorch for deterministic kernels (`warn_only`) |
@@ -124,6 +128,7 @@ While a run is waiting, the CLI reports where it is in line rather than sitting 
 === Run submitted ===
   Run ID          3f1c9ab2c04e4d5f8b1a7e6d2c930f45
   Graph           sweep-3.json
+  Target          local
   Device          cuda:0
   Status          queued
 

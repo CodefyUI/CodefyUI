@@ -344,6 +344,33 @@ async def test_execute_persists_the_canvas_flags_and_passes_them_to_the_engine(
     assert record.options["record_outputs"] is True
 
 
+async def test_a_target_on_the_execute_message_never_reaches_the_run(run_env):
+    """#769 / invariant 3 of #764: the canvas lane always executes in this
+    process. ``target`` is not one of the fields ``handle_execute`` copies
+    into the options, so it is dropped like any other unknown field: the run
+    starts locally, its stored options carry no ``target``, and the row reads
+    ``worker_id="local"`` with no device set -- even for a worker name the
+    REST route would refuse."""
+    async with _client() as client:
+        async with aconnect_ws(_WS_PATH, client) as ws:
+            attached = await _execute(
+                ws, _graph(),
+                target={"worker": "gpu-box-1", "devices": ["cuda:0"]})
+            assert attached["type"] == "attached", attached
+            run_id = attached["run_id"]
+            await _recv_until(ws, "execution_complete")
+
+    record = await run_env.store.get_run(run_id)
+    assert record is not None
+    assert record.status == "succeeded"
+    assert record.options["lane"] == LANE_INTERACTIVE
+    assert "target" not in record.options
+    assert record.options["device"] == "cpu"
+    assert record.queue_key == "cpu"
+    assert record.worker_id == "local"
+    assert record.devices is None
+
+
 async def test_the_socket_cache_survives_across_executes(run_env):
     """Second Run on the same socket serves unchanged nodes from cache.
 

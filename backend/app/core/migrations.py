@@ -8,7 +8,7 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 (see the naming-decision block above ``MIGRATION_003``); 004 is the sweep
 schema (#140); 005 indexes metrics by producer (#641); 006 records the
 environment that executed each run (#344); 007 is the durable study
-coordinator (#343).
+coordinator (#343); 008 records where each run executes (#769).
 """
 
 from __future__ import annotations
@@ -439,9 +439,24 @@ CREATE INDEX idx_exec_runs_study_attempt ON exec_runs(study_attempt_id)
   WHERE study_attempt_id IS NOT NULL;
 """
 
+# ── Migration 008: where a run executes (#769) ────────────────────────────
+#
+# Part of the control-plane / worker split (#764). Two nullable columns:
+#
+# - ``worker_id``: the worker that runs it. ``local`` (this process) is the
+#   only value written today; NULL is a row from before this migration and
+#   reads back as ``local`` (``RunRecord.from_row``), which is what it was.
+# - ``devices``: the run's device set as a JSON array (``target.devices``),
+#   or NULL when the run asked for one ``device`` the way every run did
+#   before. ``queue_key`` keeps its meaning either way.
+MIGRATION_008 = """
+ALTER TABLE exec_runs ADD COLUMN worker_id TEXT;
+ALTER TABLE exec_runs ADD COLUMN devices TEXT;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
-                         MIGRATION_007]
+                         MIGRATION_007, MIGRATION_008]
 
 
 def _is_comment_only(statement: str) -> bool:

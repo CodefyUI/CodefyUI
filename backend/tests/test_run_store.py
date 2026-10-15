@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 7
+    assert _user_version(db) == len(MIGRATIONS) == 8
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -162,6 +162,8 @@ def test_exec_runs_has_the_full_column_list(db):
         "fingerprint_digest", "execution_facts",
         # MIGRATION_007 (#343): the study attempt that submitted the run.
         "study_id", "study_attempt_id",
+        # MIGRATION_008 (#769): where the run executes.
+        "worker_id", "devices",
     ]
 
 
@@ -290,6 +292,69 @@ def test_migration_004_upgrades_a_v3_db(tmp_path, monkeypatch):
             "SELECT COUNT(*) FROM exec_run_metrics").fetchone()[0] == 1
         assert new._conn.execute(
             "SELECT COUNT(*) FROM sweeps").fetchone()[0] == 0
+    finally:
+        new.close()
+
+
+async def test_migration_008_upgrades_a_v7_db(tmp_path, monkeypatch):
+    """#769's two columns land on a populated v7 database in place.
+
+    A pre-migration row keeps its data, stores NULL in both columns, and
+    reads back as ``worker_id="local"`` (where it ran) and ``devices=None``
+    through ``get_run`` and ``list_runs`` alike. A run written after the
+    upgrade round-trips its device set.
+    """
+    from app.core import db as dbmod
+
+    old_list = list(MIGRATIONS[:7])
+    monkeypatch.setattr(dbmod, "MIGRATIONS", old_list)
+    old = Database(tmp_path / "w.db")
+    old.connect()
+    assert _user_version(old) == 7
+    assert "worker_id" not in _columns(old, "exec_runs")
+    now = "2026-01-01T00:00:00.000000Z"
+    old._conn.execute(
+        "INSERT INTO exec_runs (id, name, graph_snapshot, options, status, "
+        "queue_key, created_at) VALUES ('legacy-run', 'pre-target', '{}', "
+        "'{\"device\": \"cpu\"}', 'succeeded', 'cpu', ?)", (now,),
+    )
+    old.close()
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS))
+    new = Database(tmp_path / "w.db")
+    new.connect()
+    try:
+        assert _user_version(new) == len(MIGRATIONS)
+        row = new._conn.execute(
+            "SELECT worker_id, devices FROM exec_runs "
+            "WHERE id = 'legacy-run'").fetchone()
+        assert row["worker_id"] is None and row["devices"] is None
+
+        store = RunStore(new)
+        legacy = await store.get_run("legacy-run")
+        assert legacy.name == "pre-target"            # old data intact
+        assert legacy.options == {"device": "cpu"}
+        assert legacy.queue_key == "cpu"
+        assert legacy.worker_id == "local"
+        assert legacy.devices is None
+        listed = await store.list_runs()
+        assert [(r.id, r.worker_id, r.devices) for r in listed] == [
+            ("legacy-run", "local", None)]
+
+        fresh = await store.create_run(
+            graph_snapshot={}, options={"device": "cuda:0"},
+            queue_key="cuda:0", devices=["cuda:0", "cuda:1"],
+            provenance=RunProvenance())
+        assert fresh.worker_id == "local"
+        assert fresh.devices == ["cuda:0", "cuda:1"]
+        again = await store.get_run(fresh.id)
+        assert again.worker_id == "local"
+        assert again.devices == ["cuda:0", "cuda:1"]
+        stored = new._conn.execute(
+            "SELECT worker_id, devices FROM exec_runs WHERE id = ?",
+            (fresh.id,)).fetchone()
+        assert stored["worker_id"] == "local"
+        assert json.loads(stored["devices"]) == ["cuda:0", "cuda:1"]
     finally:
         new.close()
 
@@ -428,9 +493,9 @@ def test_the_sweep_columns_arrived_without_a_table_rebuild(db):
     MIGRATION_004 ships it, it asserts what the stand-in was a proxy for."""
     from app.core.migrations import MIGRATION_003, iter_statements
 
-    # MIGRATION_006's two ALTERs (#344) and MIGRATION_007's two (#343)
-    # come after the sweep pair.
-    assert _columns(db, "exec_runs")[-6:-4] == ["sweep_id", "sweep_variant"]
+    # MIGRATION_006's two ALTERs (#344), MIGRATION_007's two (#343) and
+    # MIGRATION_008's two (#769) come after the sweep pair.
+    assert _columns(db, "exec_runs")[-8:-6] == ["sweep_id", "sweep_variant"]
     ddl = db._conn.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'exec_runs'").fetchone()[0]
     # THE rebuild detector, and it has to be structural rather than a

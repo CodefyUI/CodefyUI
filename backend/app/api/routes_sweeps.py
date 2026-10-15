@@ -65,6 +65,7 @@ from ..core.run_service import (
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
+    names_target_devices,
     normalize_graph,
     normalize_name,
     normalize_options,
@@ -447,8 +448,10 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         # options dict is then copied into every variant below.
         raw_options = body.options
         settings_device = graph_settings_device(body.base_graph)
-        if settings_device and (raw_options is None or (
-                isinstance(raw_options, dict) and "device" not in raw_options)):
+        # A ``target.devices`` list names the device itself (#769).
+        if settings_device and not names_target_devices(raw_options) and (
+                raw_options is None or (isinstance(raw_options, dict)
+                                        and "device" not in raw_options)):
             raw_options = {**(raw_options or {}), "device": settings_device}
         options = normalize_options(raw_options)
         name = normalize_name(body.name)

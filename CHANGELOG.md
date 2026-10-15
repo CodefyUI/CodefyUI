@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Runs accept a `target` option and record where they execute** ([#769]). `POST /api/runs` takes `options.target` as `{"worker": "local", "devices": ["cuda:0", "cuda:1"]}`, and `cdui run` sends it with `--target NAME` and `--devices cuda:0,cuda:1` and prints a Target line. Only `local` (this server) is accepted for now; another worker name, or `any`, is refused with `400` until remote workers arrive. `devices` must list concrete devices of one kind with no duplicates; its first entry becomes the run's device when `device` is omitted, and a `device` that disagrees is refused. Run rows gain `worker_id` (`local`, also for runs from before this change) and `devices` (the list, or `null`). A run submitted without `target` stores the same options, joins the same queue and emits the same events as before.
+
 ## [3.0.2] — 2026-10-14
 
 Fixes the package upgrade 3.0.1 introduced for `cdui plugin sync`: an
@@ -6164,3 +6168,4 @@ Release candidates before 1.0.0 are on the
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
 [#762]: https://github.com/CodefyUI/CodefyUI/pull/762
+[#769]: https://github.com/CodefyUI/CodefyUI/issues/769

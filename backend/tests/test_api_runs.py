@@ -341,6 +341,107 @@ async def test_submit_rejects_bad_input(client, payload, expected):
     assert response.status_code == expected, response.text
 
 
+# ── target (#769) ─────────────────────────────────────────────────────────
+
+
+async def test_a_run_without_a_target_keeps_its_row_and_reads_local(client):
+    """Invariant 1 of #764: no ``target``, no change. The options row has no
+    ``target`` key, the queue is the device's, and the two new columns read
+    ``local`` / null."""
+    response = await client.post("/api/runs", json={"graph": _graph()})
+    record = await _poll_until_terminal(client, response.json()["run_id"])
+    assert record["status"] == "succeeded"
+    assert "target" not in record["options"]
+    assert record["queue_key"] == "cpu"
+    assert record["worker_id"] == "local"
+    assert record["devices"] is None
+    listed = (await client.get("/api/runs")).json()["runs"][0]
+    assert listed["worker_id"] == "local" and listed["devices"] is None
+
+
+async def test_a_local_target_with_devices_runs_on_the_first_device(client):
+    response = await client.post("/api/runs", json={
+        "graph": _graph(),
+        "options": {"target": {"worker": "local", "devices": [" CPU "]}}})
+    assert response.status_code == 200, response.text
+    record = await _poll_until_terminal(client, response.json()["run_id"])
+    assert record["status"] == "succeeded"
+    assert record["options"]["device"] == "cpu"
+    assert record["options"]["target"] == {"worker": "local",
+                                           "devices": ["cpu"]}
+    assert record["queue_key"] == "cpu"
+    assert record["worker_id"] == "local"
+    assert record["devices"] == ["cpu"]
+
+
+async def test_a_target_without_worker_or_devices_is_local(client):
+    response = await client.post("/api/runs", json={
+        "graph": _graph(), "options": {"device": "cpu", "target": {}}})
+    assert response.status_code == 200, response.text
+    record = await _poll_until_terminal(client, response.json()["run_id"])
+    assert record["options"]["target"] == {"worker": "local", "devices": None}
+    assert record["worker_id"] == "local" and record["devices"] is None
+
+
+async def test_target_devices_win_over_the_graph_settings_device(client):
+    """``settings.device`` fills an absent ``device``; a device set names
+    one itself, so the two must not be reported as disagreeing."""
+    response = await client.post("/api/runs", json={
+        "graph": {**_graph(), "settings": {"device": "mps"}},
+        "options": {"target": {"devices": ["cpu"]}}})
+    assert response.status_code == 200, response.text
+    record = await _poll_until_terminal(client, response.json()["run_id"])
+    assert record["options"]["device"] == "cpu"
+    assert record["queue_key"] == "cpu"
+
+
+async def test_a_matching_device_and_device_set_are_accepted(client):
+    response = await client.post("/api/runs", json={
+        "graph": _graph(),
+        "options": {"device": "cpu", "target": {"devices": ["cpu"]}}})
+    assert response.status_code == 200, response.text
+
+
+_NOT_ENROLLED = ("no workers are enrolled on this server; remote targets "
+                 "arrive with #772")
+
+
+@pytest.mark.parametrize("target,detail", [
+    ({"worker": "gpu-box-1"}, _NOT_ENROLLED),
+    ({"worker": "any"}, _NOT_ENROLLED),
+    ({"worker": "gpu-box-1", "devices": ["cuda:0"]}, _NOT_ENROLLED),
+    ({"devices": ["cuda:0", "cpu"]}, "mixes device kinds"),
+    ({"devices": ["cuda:0", "cuda:0"]}, "twice"),
+    ({"devices": ["auto"]}, "unknown target device"),
+    ({"devices": ["cudda:0"]}, "unknown target device"),
+    ({"devices": []}, "non-empty list"),
+    ({"devices": "cuda:0"}, "non-empty list"),
+    ({"devices": [0]}, "entries must be strings"),
+    ({"devices": [f"cuda:{i}" for i in range(65)]}, "at most 64"),
+    ({"worker": "GPU_BOX"}, "target.worker must be"),
+    ({"worker": "-box"}, "target.worker must be"),
+    ({"worker": "x" * 64}, "target.worker must be"),
+    ({"worker": 3}, "target.worker must be"),
+    ({"host": "gpu-box-1"}, "unknown target key"),
+    ("local", "target must be an object"),
+])
+async def test_submit_rejects_a_bad_target(client, target, detail):
+    response = await client.post("/api/runs", json={
+        "graph": _graph(), "options": {"target": target}})
+    assert response.status_code == 400, response.text
+    assert detail in response.json()["detail"]
+    # Refused before anything was written.
+    assert (await client.get("/api/runs")).json()["total"] == 0
+
+
+async def test_a_device_that_disagrees_with_the_device_set_is_400(client):
+    response = await client.post("/api/runs", json={
+        "graph": _graph(),
+        "options": {"device": "cpu", "target": {"devices": ["cuda:0"]}}})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "target.devices and device disagree"
+
+
 # ── body cap (#250 item 3) ────────────────────────────────────────────────
 # The two sibling submit routes have capped their request bodies against
 # Content-Length since they were written (test_api_graph_run's

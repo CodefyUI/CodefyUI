@@ -129,6 +129,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 import weakref
 from collections import deque
@@ -282,6 +283,10 @@ OPTION_KEYS = frozenset({
     "auto_backward",
     # Engine error policy, likewise straight off the execute message.
     "error_mode", "max_retries",
+    # Where the run executes (#769): ``{"worker": ..., "devices": [...]}``.
+    # Stored only when the caller sent it, so a run without a target keeps
+    # exactly the options row it had before; see :func:`normalize_target`.
+    "target",
 })
 
 #: Default lane, and the one the per-device FIFO schedules. Every lane that
@@ -550,6 +555,107 @@ class InteractiveSession:
     node_state_store: NodeStateStore | None = None
 
 
+#: The one worker a run can target today: this control-plane process.
+TARGET_WORKER_LOCAL = "local"
+#: "Place it wherever there is room" -- reserved, refused until #772.
+TARGET_WORKER_ANY = "any"
+#: Worker names (#769). ``local`` and ``any`` match it too; they are the
+#: two reserved names a worker cannot enroll under.
+TARGET_WORKER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+#: Upper bound on ``target.devices``. A device set names cards on ONE
+#: host; the cap keeps a stored row bounded like every other option.
+MAX_TARGET_DEVICES = 64
+#: The refusal for any target that is not this process. One string so the
+#: REST layer, the CLI docs and the tests cannot drift apart.
+TARGET_NOT_ENROLLED = (
+    "no workers are enrolled on this server; remote targets arrive with #772")
+
+
+def normalize_target(raw: Any) -> dict[str, Any] | None:
+    """Validate ``options.target`` (#769). ``None`` means "not given".
+
+    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...]}``, both
+    keys optional and no others. ``worker`` absent is ``local``. Only
+    ``local`` is accepted here: there is no worker registry yet, so any
+    other name, and ``any``, is refused with :data:`TARGET_NOT_ENROLLED`.
+
+    ``devices`` absent (or null) means the run's ``device`` option as
+    today. Given, it is a non-empty list of concrete devices -- the
+    ``DEVICE_PATTERN`` vocabulary minus ``auto``, which names no card --
+    with no duplicates and one kind (``cuda:0`` with ``cpu`` is not a
+    device set). Entries are normalised like ``device`` (trimmed,
+    lowercased).
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RunSubmitError(
+            f"target must be an object, got {type(raw).__name__}")
+    unknown = sorted(set(raw) - {"worker", "devices"})
+    if unknown:
+        raise RunSubmitError(
+            f"unknown target key(s) {unknown}; supported: "
+            "['devices', 'worker']")
+
+    worker = raw.get("worker")
+    if worker is None:
+        worker = TARGET_WORKER_LOCAL
+    if not isinstance(worker, str) \
+            or TARGET_WORKER_PATTERN.match(worker) is None:
+        raise RunSubmitError(
+            "target.worker must be 'local', 'any' or a worker name "
+            "(lowercase letters, digits and '-', at most 63 chars)")
+    if worker != TARGET_WORKER_LOCAL:
+        raise RunSubmitError(TARGET_NOT_ENROLLED)
+
+    devices = raw.get("devices")
+    if devices is not None:
+        if not isinstance(devices, list) or not devices:
+            raise RunSubmitError("target.devices must be a non-empty list")
+        if len(devices) > MAX_TARGET_DEVICES:
+            raise RunSubmitError(
+                f"target.devices must list at most {MAX_TARGET_DEVICES} "
+                "devices")
+        cleaned: list[str] = []
+        for entry in devices:
+            if not isinstance(entry, str):
+                raise RunSubmitError("target.devices entries must be strings")
+            device = entry.strip().lower()
+            if device == "auto" or DEVICE_PATTERN.match(device) is None:
+                raise RunSubmitError(
+                    f"unknown target device {device!r}; expected cpu, cuda, "
+                    "cuda:N, mps or mps:N")
+            if device in cleaned:
+                raise RunSubmitError(
+                    f"target.devices lists {device!r} twice")
+            cleaned.append(device)
+        kinds = sorted({device.split(":", 1)[0] for device in cleaned})
+        if len(kinds) > 1:
+            raise RunSubmitError(
+                f"target.devices mixes device kinds {kinds}; a device set is "
+                "one kind")
+        devices = cleaned
+    return {"worker": worker, "devices": devices}
+
+
+def target_devices(options: Any) -> list[str] | None:
+    """The device set a NORMALISED options dict asks for, or None."""
+    target = options.get("target") if isinstance(options, dict) else None
+    return target.get("devices") if isinstance(target, dict) else None
+
+
+def names_target_devices(raw_options: Any) -> bool:
+    """True when RAW options carry a ``target.devices`` list (#769).
+
+    Such a run names its device through the list, so the graph's
+    ``settings.device`` must not be filled in as ``device`` -- it would
+    then "disagree" with a device set the caller chose on purpose.
+    """
+    target = (raw_options.get("target")
+              if isinstance(raw_options, dict) else None)
+    return isinstance(target, dict) and target.get("devices") is not None
+
+
 def normalize_options(raw: Any) -> dict[str, Any]:
     """Validate the submit options and fill in defaults.
 
@@ -574,7 +680,12 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         raise RunSubmitError(
             f"unknown option(s) {unknown}; supported: {sorted(OPTION_KEYS)}")
 
-    device = raw.get("device", "cpu")
+    target = normalize_target(raw.get("target"))
+    devices = None if target is None else target["devices"]
+
+    # ``target.devices[0]`` is the effective device when ``device`` is
+    # absent (#769); when both are given they must name the same device.
+    device = raw.get("device", devices[0] if devices else "cpu")
     if not isinstance(device, str) or not device.strip():
         raise RunSubmitError("device must be a non-empty string")
     device = device.strip().lower()
@@ -582,6 +693,8 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         raise RunSubmitError(
             f"unknown device {device!r}; expected cpu, auto, cuda, cuda:N, "
             "mps or mps:N")
+    if devices and device != devices[0]:
+        raise RunSubmitError("target.devices and device disagree")
 
     seed = raw.get("seed")
     if seed is not None:
@@ -632,7 +745,7 @@ def normalize_options(raw: Any) -> dict[str, Any]:
             raise RunSubmitError(f"{key} must be true or false")
         flags[key] = value
 
-    return {
+    normalized = {
         "device": device,
         "seed": seed,
         "lane": lane.strip(),
@@ -641,6 +754,11 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         "max_retries": max_retries,
         **flags,
     }
+    # Only when sent: a run without a target stores the same options row it
+    # stored before #769.
+    if target is not None:
+        normalized["target"] = target
+    return normalized
 
 
 def normalize_name(raw: Any) -> str | None:
@@ -753,7 +871,9 @@ def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
     if options is not None and not isinstance(options, dict):
         return options
     filled = dict(options or {})
-    if "device" not in filled:
+    # A ``target.devices`` list names the device itself (#769), so the
+    # graph's ``settings.device`` does not compete with it.
+    if "device" not in filled and not names_target_devices(filled):
         device = graph_settings_device(graph)
         if device:
             filled["device"] = device
@@ -1668,6 +1788,7 @@ class RunService:
             run_id=run_id,
             study_id=study_id,
             study_attempt_id=study_attempt_id,
+            devices=target_devices(normalized_options),
         )
         if self._shutting_down:
             # The same re-check ``_start`` makes, for the same reason and at
@@ -1727,6 +1848,7 @@ class RunService:
             record = await self.store.create_run(
                 graph_snapshot=stored_graph, options=options, name=name,
                 status=STATUS_QUEUED, queue_key=queue_key,
+                devices=target_devices(options),
             )
             return self._start(record.id, graph, options,
                                queue_key=queue_key, lane=LANE_INTERACTIVE,

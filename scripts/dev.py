@@ -47,6 +47,11 @@
                                         （省略時用圖檔的 settings.device，
                                         再沒有就是 cpu；auto 表示這台伺服器
                                         最好的加速器；解析後的裝置就是佇列 key）
+                      --target <名稱>   在哪裡執行；目前只接受 local（這台伺服器），
+                                        遠端 worker 由 #772 提供
+                      --devices <清單>  同一種類的裝置集合，逗號分隔，如
+                                        cuda:0,cuda:1；省略 --device 時第一個
+                                        就是 run 的裝置，兩者都給則必須一致
                       --seed <n>        隨機種子（省略時用圖檔的 settings.seed）
                       --no-seed         不設種子執行，即使圖檔有 settings.seed
                       --deterministic   要求 torch 用確定性演算法（沒有確定性實作
@@ -4335,6 +4340,14 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
                         "graph file's settings.device, else cpu. auto: the "
                         "best accelerator this server has. The RESOLVED "
                         "device is the queue this run joins.")
+    p.add_argument("--target", default=None, metavar="NAME",
+                   help="where the run executes. Only `local` (this server) "
+                        "is accepted today; remote workers arrive with #772.")
+    p.add_argument("--devices", default=None, metavar="LIST",
+                   help="comma-separated device set of one kind, e.g. "
+                        "cuda:0,cuda:1. Its first entry is the run's device "
+                        "when --device is omitted; given both, they must "
+                        "agree.")
     seeding = p.add_mutually_exclusive_group()
     seeding.add_argument("--seed", type=int, default=None,
                          help="seed for random / numpy / torch. Every node is "
@@ -4444,18 +4457,52 @@ def _run_submit_body(args) -> dict:
         options["seed"] = None
     if getattr(args, "deterministic", False):
         options["deterministic"] = True
+    # Sent only when asked for (#769): a run without a target is the run it
+    # always was. The server validates the worker name and the device set.
+    target = {}
+    if getattr(args, "target", None) is not None:
+        target["worker"] = args.target
+    devices = _run_devices_flag(args)
+    if devices is not None:
+        target["devices"] = devices
+    if target:
+        options["target"] = target
     body = {"graph": graph, "options": options}
     if args.name:
         body["name"] = args.name
     return body
 
 
+def _run_devices_flag(args) -> "list | None":
+    """``--devices cuda:0,cuda:1`` as a list; None when the flag is absent.
+
+    Split on commas with blanks dropped, nothing else: the server owns the
+    vocabulary, the uniqueness and the one-kind rule.
+    """
+    raw = getattr(args, "devices", None)
+    if raw is None:
+        return None
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _run_display_target(args) -> str:
+    """The Target line printed after submit: the worker (``local`` when
+    ``--target`` is omitted), then the device set when one was asked for."""
+    worker = getattr(args, "target", None) or "local"
+    devices = _run_devices_flag(args)
+    return f"{worker} ({', '.join(devices)})" if devices else worker
+
+
 def _run_display_device(args, graph: dict) -> str:
-    """The device line printed after submit: the flag, else the graph file's
+    """The device line printed after submit: the flag, else the first entry
+    of ``--devices`` marked ``(target)``, else the graph file's
     ``settings.device`` marked ``(graph)``, else ``cpu``. Display only; the
     server resolves the effective device and reports it as ``queue_key``."""
     if args.device is not None:
         return str(args.device)
+    devices = _run_devices_flag(args)
+    if devices:
+        return f"{devices[0].lower()} (target)"
     graph_settings = graph.get("settings") if isinstance(graph, dict) else None
     value = graph_settings.get("device") if isinstance(graph_settings, dict) else None
     if isinstance(value, str) and value.strip():
@@ -4743,6 +4790,7 @@ def run_graph() -> None:
     section("提交執行", "Run submitted")
     _kv(t("Run ID", "Run ID"), run_id)
     _kv(t("圖檔", "Graph"), str(path))
+    _kv(t("目標", "Target"), _run_display_target(args))
     _kv(t("裝置", "Device"), _run_display_device(args, body["graph"]))
     _kv(t("種子", "Seed"), _run_display_seed(args, body["graph"]))
     if args.name:
