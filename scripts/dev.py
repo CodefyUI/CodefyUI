@@ -138,6 +138,15 @@
                 離開碼：0 完成、1 取消或刪不掉、2 拒絕執行（參數錯誤、無法確認）、
                 3 伺服器執行中（圖可能正在讀這些檔），130 Ctrl+C 取消。
 
+    agent <start|stop> ...
+                Worker agent：連到控制面的 /ws/worker，每個 run 在自己的子程序執行。
+                同機模式不需參數：位址與 token 取自上次 cdui start 的伺服器。
+                    cdui agent start                     # 背景執行（pidfile、agent.log）
+                    cdui agent start --foreground        # 前景（systemd）
+                    cdui agent start --control http://127.0.0.1:8000 --name gpu-box
+                    cdui agent start --devices cuda:0,cuda:1
+                    cdui agent stop
+
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要安裝的 release tag（預設：latest）。指定了版本
                             時，cdui update 即使有 pnpm 或 FORCE_BUILD 也切到該版本
@@ -5132,6 +5141,25 @@ def _dispatch_packs_subcommand() -> int:
     return packs_cli.main(sys.argv[2:])
 
 
+def _dispatch_agent_subcommand() -> int:
+    """Hand off `cdui agent <start|stop> ...` to scripts/agent.py (#771).
+
+    Same venv hop as the other subgroups: the agent is `app.agent`. No
+    `_ensure_uv()`, like `cache`: an agent spawns no package manager, and it
+    must start on a GPU box with no route to astral.sh. `_apply_dev_env()`
+    is what makes its same-host defaults right: the session token and
+    `server.addr` it reads are the ones the server `cdui start` launched
+    wrote.
+    """
+    _exec_into_venv_if_available()
+    _apply_dev_env()
+    for path in (Path(__file__).resolve().parent, BACKEND_DIR):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    import agent as agent_cli  # noqa: PLC0415 — late import: needs venv
+    return agent_cli.main(sys.argv[2:])
+
+
 #: `cdui <group> <subcmd> ...` — commands that hand their tail to a sibling
 #: script rather than to a function in this module. A table rather than a
 #: chain of `if`s in `__main__`, because `__main__` is not importable: the
@@ -5142,6 +5170,7 @@ SUBCOMMAND_GROUPS = {
     "project": _dispatch_project_subcommand,
     "packs": _dispatch_packs_subcommand,
     "cache": _dispatch_cache_subcommand,
+    "agent": _dispatch_agent_subcommand,
 }
 
 

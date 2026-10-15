@@ -1,0 +1,278 @@
+"""``app.agent.runner``: one spawned subprocess per run (#771).
+
+The subprocess tests use the cheap entry points in ``_helpers`` (no torch,
+no node discovery) except the two that must run the real ``child.main``:
+the torch-free/byte-identity check and the cooperative cancel (which runs
+the real engine with one registered node).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
+
+import pytest
+
+from app.agent.runner import (
+    AssignmentRefused,
+    Runner,
+    child_device,
+    child_environment,
+    prune_run_dirs,
+    read_tail,
+)
+from app.core import worker_protocol as wp
+
+from . import _helpers as h
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def _runner(tmp_path: Path, sink: h.FrameSink, **kw) -> Runner:
+    kw.setdefault("offered_devices", {"cpu"})
+    return Runner(runs_dir=tmp_path / "agent-runs", send=sink, **kw)
+
+
+def _assign(run_id: str, **kw) -> wp.Assign:
+    kw.setdefault("graph", {"nodes": [], "edges": []})
+    return wp.Assign(run_id=run_id, **kw)
+
+
+# ── pure helpers ──────────────────────────────────────────────────────────
+
+
+def test_child_device_renumbers_into_the_visible_set():
+    assert child_device("cuda:5", ["cuda:2", "cuda:5"]) == "cuda:1"
+    assert child_device("cuda:2", ["cuda:2", "cuda:5"]) == "cuda:0"
+    # No set, a bare kind and non-CUDA devices pass through unchanged.
+    assert child_device("cuda:3", []) == "cuda:3"
+    assert child_device("cuda", ["cuda:1"]) == "cuda"
+    assert child_device("cpu", ["cpu"]) == "cpu"
+    assert child_device("mps", []) == "mps"
+    with pytest.raises(AssignmentRefused):
+        child_device("cuda:1", ["cuda:2"])
+    with pytest.raises(AssignmentRefused):
+        child_device("tpu:0", [])
+
+
+def test_child_environment_pins_cards_and_drops_the_database():
+    env = child_environment(["cuda:3", "cuda:1"])
+    assert env["set"] == {"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                          "CUDA_VISIBLE_DEVICES": "3,1",
+                          "HIP_VISIBLE_DEVICES": "3,1"}
+    assert env["unset"] == ["CODEFYUI_DB_PATH"]
+    # A set without CUDA cards leaves the inherited visibility alone.
+    assert child_environment(["cpu"])["set"] == {
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+
+
+def test_read_tail_keeps_the_last_bytes(tmp_path):
+    log = tmp_path / "out.log"
+    log.write_bytes(b"x" * 5000 + b"END")
+    tail = read_tail(log, limit=10)
+    assert tail == "xxxxxxxEND"
+    assert read_tail(tmp_path / "missing.log") == ""
+
+
+def test_prune_keeps_the_newest_and_the_running(tmp_path):
+    for index, name in enumerate(["a", "b", "c", "d"]):
+        path = tmp_path / name
+        path.mkdir()
+        os.utime(path, (1000 + index, 1000 + index))
+    prune_run_dirs(tmp_path, keep_last=2, protect={"a"})
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a", "c", "d"]
+    prune_run_dirs(tmp_path, keep_last=0)  # 0 disables retention
+    assert len(list(tmp_path.iterdir())) == 3
+
+
+# ── refusals: no subprocess is started ───────────────────────────────────
+
+
+@pytest.mark.parametrize("assign, reason", [
+    (_assign("r1", options={"record_outputs": True}), "record_outputs"),
+    (_assign("r1", devices=["cuda:0"], device="cuda:0"), "not offered"),
+    (_assign("r1", device="tpu:0"), "unknown device"),
+])
+async def test_refused_assignments_finish_failed_at_once(tmp_path, assign,
+                                                         reason):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.quick_child)
+    await runner.assign(assign)
+    finished = sink.finished("r1")
+    assert finished is not None and finished.status == "failed"
+    assert reason in finished.error and finished.seq == 1
+    assert runner.runs == {}
+    assert [type(f) for f in sink.frames] == [wp.RunFinished]
+
+
+async def test_draining_refuses_new_runs(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.quick_child)
+    runner.draining = True
+    await runner.assign(_assign("r1"))
+    assert "draining" in sink.finished("r1").error
+
+
+# ── subprocess behaviour ─────────────────────────────────────────────────
+
+
+async def test_crash_is_reported_with_exit_code_and_agent_keeps_serving(
+        tmp_path):
+    """Acceptance: os._exit(3) mid-run -> execution_error-style finish."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.crash_child)
+    await runner.assign(_assign("crash1"))
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished) and f.run_id == "crash1")
+    assert finished.status == "failed"
+    assert finished.exit_code == 3
+    assert finished.error == "run subprocess exited with code 3"
+    assert h.CRASH_MARKER in finished.stderr_tail
+    assert finished.last_node == "boom"
+    frames = sink.of("crash1")
+    assert [f.type for f in frames] == ["run_started", "event", "run_finished"]
+    assert [f.seq for f in frames] == [1, 2, 3]
+    await asyncio.wait_for(_until(lambda: "crash1" not in runner.runs), 10)
+
+    # The agent keeps serving: the next run starts and finishes.
+    runner.child_entry = h.quick_child
+    await runner.assign(_assign("after"))
+    after = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished) and f.run_id == "after")
+    assert after.status == "succeeded"
+
+
+async def test_cancel_is_cooperative_within_grace(tmp_path):
+    """Acceptance: cancel ends a long node well inside grace_s + 5 s."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.slow_graph_child)
+    await runner.assign(_assign("slow1", graph=h.slow_graph()))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event)
+                        and f.payload.get("node_id") == "slow"
+                        and f.payload.get("status") == "running", timeout=60)
+    # A second assignment of a running run is refused without a frame.
+    await runner.assign(_assign("slow1", graph=h.slow_graph()))
+    assert len([f for f in sink.of("slow1")
+                if isinstance(f, wp.RunFinished)]) == 0
+    started = time.monotonic()
+    assert await runner.cancel("slow1", grace_s=20)
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=25)
+    assert time.monotonic() - started < 20
+    assert finished.status == "cancelled"
+    assert not runner.runs.get("slow1") or runner.runs["slow1"].finished
+    seqs = [f.seq for f in sink.of("slow1")]
+    assert seqs == list(range(1, len(seqs) + 1))
+
+
+async def test_cancel_escalates_to_terminate_and_reports_interrupted(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.deaf_child,
+                     kill_after_s=2.0)
+    await runner.assign(_assign("deaf1"))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    started = time.monotonic()
+    await runner.cancel("deaf1", grace_s=0.5)
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=0.5 + 2.0 + 10)
+    assert time.monotonic() - started < 0.5 + 2.0 + 5
+    assert finished.status == "interrupted"
+    assert finished.last_node == "deaf"
+    assert "grace period" in finished.error
+    assert await runner.cancel("deaf1") is False  # gone: nothing to cancel
+
+
+async def test_shutdown_stops_every_run(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.deaf_child,
+                     kill_after_s=1.0)
+    await runner.assign(_assign("d1"))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    await asyncio.wait_for(runner.shutdown(grace_s=0.2), 15)
+    assert runner.runs == {}
+    assert sink.finished("d1").status == "interrupted"
+    assert runner.draining
+
+
+async def test_child_gets_the_assigned_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEFYUI_DB_PATH", str(tmp_path / "never.db"))
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.env_child,
+                     offered_devices={"cpu", "cuda:2", "cuda:5"})
+    await runner.assign(_assign("env1", device="cuda:5",
+                                devices=["cuda:2", "cuda:5"]))
+    event = await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    assert event.payload["env"] == {
+        "CUDA_VISIBLE_DEVICES": "2,5", "HIP_VISIBLE_DEVICES": "2,5",
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CODEFYUI_DB_PATH": None}
+    assert event.payload["device"] == "cuda:1"
+    assert event.payload["torch_loaded"] is False
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert (tmp_path / "agent-runs" / "env1").is_dir()
+
+
+async def _until(predicate) -> None:
+    while not predicate():
+        await asyncio.sleep(0.02)
+
+
+# ── the agent process stays torch-free; a child's events are byte-identical
+
+
+_DRIVER = textwrap.dedent("""
+    import asyncio, json, sys
+    from pathlib import Path
+    from app.agent.runner import Runner
+    from app.core import worker_protocol as wp
+
+    async def main():
+        frames, done = [], asyncio.Event()
+
+        async def send(frame):
+            frames.append(wp.encode_frame(frame))
+            if isinstance(frame, wp.RunFinished):
+                done.set()
+
+        runner = Runner(runs_dir=Path(sys.argv[1]), offered_devices={"cpu"},
+                        send=send)
+        await runner.assign(wp.Assign.model_validate_json(sys.argv[2]))
+        await asyncio.wait_for(done.wait(), 120)
+        while runner.runs:
+            await asyncio.sleep(0.05)
+        print(json.dumps({"frames": frames,
+                          "torch": "torch" in sys.modules}))
+
+    asyncio.run(main())
+""")
+
+
+async def test_agent_never_imports_torch_and_child_events_match_in_process(
+        tmp_path):
+    """Acceptance: the agent process never imports torch, and the frames a
+    real run subprocess sends are byte-identical to InProcessExecutor's."""
+    assign = wp.Assign(run_id="parity1", graph=h.tensor_graph(),
+                       options=h.TENSOR_OPTIONS)
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", _DRIVER, str(tmp_path / "runs"),
+         assign.model_dump_json()],
+        cwd=BACKEND_DIR, capture_output=True, text=True, timeout=180,
+        env={**os.environ, "PYTHONPATH": str(BACKEND_DIR)})
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["torch"] is False
+    frames = [wp.decode_agent_frame(raw) for raw in result["frames"]]
+    assert frames[0].type == "run_started" and frames[-1].type == "run_finished"
+    assert frames[-1].status == "succeeded"
+    assert [f.seq for f in frames] == list(range(1, len(frames) + 1))
+    worker = [h.event_bytes(f.event_type, f.payload) for f in frames
+              if isinstance(f, wp.Event)]
+    local = await h.in_process_events(h.tensor_graph(), h.TENSOR_OPTIONS)
+    assert worker == local
+    assert len(local) == 8  # running + completed for each of four nodes

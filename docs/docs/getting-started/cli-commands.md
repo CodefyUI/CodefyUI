@@ -91,6 +91,15 @@ A project directory is a Git repository used as the service's storage. It contai
 | `cdui project restore <dir>` | Install the manifest's plugin pins at their exact SHAs. Run this command before `validate` in CI. |
 | `cdui project publish <dir>` | Publish a graph to the local server (at `127.0.0.1` on `CODEFYUI_PORT`, default `8000`) and record the Git commit in the version. `--graph` and `--slug` override the manifest's `[publish]` target. `--note` adds an immutable version note. `--create` permits the first publish to a `--slug` that the server does not yet know. |
 
+## Agent commands
+
+A worker agent runs graphs for a CodefyUI server (the control plane), each run in a subprocess of its own, so a crash, an out-of-memory kill or a forced stop ends that run and nothing else. The agent connects out to the server's `/ws/worker` socket and never listens on a port. This release supports same-host mode only: the agent runs beside `cdui start` on the same machine. The server side of the connection, and `--target` choosing an agent, arrive with [#772](https://github.com/CodefyUI/CodefyUI/issues/772).
+
+| Command | Description |
+|---------|-------------|
+| `cdui agent start` | Start the agent in the background. Its pid is kept in `agent.pid` and its log in `agent.log`, both in the user-data directory (`.codefyui_dev/` in an install), with each run's output in `agent-runs/<run id>/output.log`, kept for the same number of runs as the run history. Without flags it uses the address of the last `cdui start` and that server's session token, and reads both again on every reconnect, so a restarted server is found again. If either cannot be found and the terminal is interactive, it asks for that value. `--control <url>` sets the server URL, `--token <token>` the connection token, `--name <name>` the worker name (default: the hostname; lower-case letters, digits and `-`), `--devices cuda:0,cuda:1` limits the GPUs it offers (the CPU is always offered), and `--foreground` keeps it attached, for systemd. A second `start` while one is running reports the running agent and exits with code `0`. The agent itself never imports PyTorch; only its run subprocesses do. |
+| `cdui agent stop` | Stop the background agent. Running runs are asked to stop and are terminated after 10 seconds. On Windows the agent and its run subprocesses are terminated at once. |
+
 ## Background vs foreground
 
 `cdui start` runs in the **background** by default — close the terminal and the server keeps running. Manage it with:

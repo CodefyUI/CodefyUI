@@ -31,9 +31,10 @@ cards "the way CUDA does" from NVML is not reliable, so torch-free indices
 ASSUME ``CUDA_DEVICE_ORDER=PCI_BUS_ID``: under that setting ``cuda:N`` here
 is the same card as ``cuda:N`` in a child process.
 
-TODO(#771): the agent must set ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` in the
-environment of every run subprocess it starts, so the indices it reports
-from this module are the indices its runs use.
+The worker agent (#771) sets ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` in its own
+environment and in every run subprocess it starts
+(``app.agent.runner.child_environment``), so the indices it reports from
+this module are the indices its runs use.
 
 Every probe degrades instead of raising: a missing library, a broken driver
 or an odd answer yields ``None`` fields (or no entry) and a debug log line.

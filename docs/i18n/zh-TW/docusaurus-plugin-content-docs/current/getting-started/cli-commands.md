@@ -91,6 +91,15 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 | `cdui project restore <dir>` | 依 manifest 記錄的確切 SHA 安裝 plugin pin。在 CI 中，請先執行此指令再執行 `validate`。 |
 | `cdui project publish <dir>` | 將 graph 發佈到本機伺服器（`127.0.0.1` 上的 `CODEFYUI_PORT`，預設 `8000`），並在版本上記錄 git commit。`--graph` / `--slug` 可覆蓋 manifest 的 `[publish]` 目標；`--note` 加上一則不可變更的版本註記；`--create` 允許首次發佈到伺服器尚未認得的 `--slug`。 |
 
+## Agent 指令 {/* #agent-commands */}
+
+Worker agent 替 CodefyUI 伺服器（控制面）執行圖，每個 run 在自己的子程序裡跑：崩潰、記憶體不足被系統終止或被強制停止，都只影響那一個 run。Agent 主動連到伺服器的 `/ws/worker`，自己不開任何埠。這個版本只支援同機模式：agent 與 `cdui start` 跑在同一台機器上。伺服器端的連線處理，以及用 `--target` 指定 agent，會在 [#772](https://github.com/CodefyUI/CodefyUI/issues/772) 加入。
+
+| 指令 | 說明 |
+|---------|-------------|
+| `cdui agent start` | 在背景啟動 agent。pid 存在 `agent.pid`、日誌在 `agent.log`，都在 user-data 目錄（安裝版是 `.codefyui_dev/`）；每個 run 的輸出在 `agent-runs/<run id>/output.log`，保留的 run 數與 run 歷史相同。不帶參數時使用上次 `cdui start` 的位址與該伺服器的 session token，且每次重新連線都會重讀，所以伺服器重啟後會自動找回。任一項找不到且終端機可互動時，會詢問該值。`--control <url>` 指定伺服器網址，`--token <token>` 指定連線 token，`--name <name>` 指定 worker 名稱（預設為主機名稱；小寫英數字與 `-`），`--devices cuda:0,cuda:1` 限制提供的 GPU（CPU 一律提供），`--foreground` 在前景執行，供 systemd 使用。已有 agent 執行時再次 `start` 會顯示執行中的 agent，並以代碼 `0` 結束。Agent 本身不會載入 PyTorch，只有 run 子程序會。 |
+| `cdui agent stop` | 停止背景 agent。執行中的 run 會先被要求停止，10 秒後仍未停止則強制終止。Windows 上 agent 與其 run 子程序會立即終止。 |
+
 ## 背景與前景 {/* #background-vs-foreground */}
 
 `cdui start` 預設在**背景**執行。關閉終端機後，伺服器仍會繼續執行。使用以下指令管理：
