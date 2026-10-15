@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項、與伺服器在**同一台機器**上的 worker agent、裝置集合、每個 run 的峰值記憶體，以及 Workers 面板。已規劃但尚未進入程式碼：enrollment token 與遠端 worker（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)），以及控制面指紋釘選（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。以下各節會註明哪些部分仍在規劃中。
+目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在**同一台機器**上的 worker agent、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：enrollment token 與遠端 worker（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)），以及控制面指紋釘選（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。以下各節會註明哪些部分仍在規劃中。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -56,7 +56,7 @@ Browser / cdui run ── REST, /ws/execution ──► control plane (cdui star
 每個 run 屬於兩條通道之一（[執行佇列：通道](/usage/run-queue#lanes)）：
 
 - **Interactive**（畫布）。它一律在控制面程序內執行，因為它使用存在那裡的狀態：socket 的執行快取、持久化的模組權重，以及 Inspector 的擷取輸出。把 interactive 通道與 worker target 一起送出，會在送出時被拒絕。
-- **Queued**（`POST /api/runs`、`cdui run`、sweep、study）。預設在控制面執行。若 `options.target.worker` 設為某個 worker 名稱，或設為 `any` 並被放到某個 worker 上，就在該 worker 的 run 子程序中執行。worker run 在 [#789](https://github.com/CodefyUI/CodefyUI/issues/789) 之前不接受 `record_outputs`；要擷取輸出請以 `local` 為 target。
+- **Queued**（`POST /api/runs`、`cdui run`、工具列的 **Queue on...** 對話框、sweep、study）。預設在控制面執行。若 `options.target.worker` 設為某個 worker 名稱，或設為 `any` 並被放到某個 worker 上，就在該 worker 的 run 子程序中執行。sweep 或 study 會把它的 `options.target` 傳給每個子 run，因此 `any` 會把子 run 分散到空出的 slot。worker run 在 [#789](https://github.com/CodefyUI/CodefyUI/issues/789) 之前不接受 `record_outputs`；要擷取輸出請以 `local` 為 target。
 
 沒有 `target`、或 `"worker": "local"` 的 run 完全不會經過 worker 程式路徑：queue key、`InProcessExecutor` 與事件序列都與 3.0.2 相同，`single-node-parity` CI 工作會拿它與儲存的快照比對。
 
@@ -94,11 +94,9 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 - **worker 名稱**：放到該 worker，用裝置集合、或要求的裝置、或該 worker 提供的同種類裝置中第一個有空 slot 的。
 - **`any`**：依名稱順序第一個已連線、未 drain 且能接下這個 run 的 worker，伺服器排最後。帶裝置集合時，伺服器必須擁有集合中每個裝置才符合資格。
 
-**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：指定的 worker 未連線、worker 不提供要求的裝置、伺服器與所有已連線 worker 都無法服務的 `any` run，或 worker target 搭配 interactive 通道或 `record_outputs`。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
+**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：伺服器啟動以來從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run，或 worker target 搭配 interactive 通道或 `record_outputs`。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
 
-:::note 待合併的變更
-[#777](https://github.com/CodefyUI/CodefyUI/issues/777)（PR [#814](https://github.com/CodefyUI/CodefyUI/pull/814) 尚未合併）讓 sweep 與 study 把 `target` 傳給每個子 run，並改變上面的一條規則：指定一個伺服器認得但目前斷線的 worker 時，run 會在佇列中等待，不再被拒絕。
-:::
+**Sweep 與 study**（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。`options.target` 會傳到每個子 run。在寫入任何資料列之前，`RunService.check_placeable_batch` 會對每個不同的子 run（子 run 之間只差在圖的 `settings`）套用上面的送出規則，所以 sweep 或 study 要嘛整批被拒絕、要嘛整批被接受；送出子 run 途中有 worker 離線，只會讓它們等待，不會讓整批失敗。只要子 run 還存在，每個 sweep variant 與 study attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。在這台伺服器上帶種子的 run 會占用程序層級的種子閘門而單獨執行；worker run 有自己的隨機狀態，不經過這道閘門，所以在不同 worker 或不同卡上帶種子的子 run 可以同時執行。New Sweep 對話框目前還沒有目標選擇器；請透過 API 設定 `target`。
 
 ## 隔離 {/* #isolation */}
 
@@ -162,6 +160,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | 2026-10-15 | 每個 run 一個 spawn 子程序，裝置集合以 `CUDA_VISIBLE_DEVICES` 傳入（[#771](https://github.com/CodefyUI/CodefyUI/issues/771)）；agent 程序從不 import torch。 |
 | 2026-10-15 | 同機 worker 以 machine id 判定，共用的卡以 NVML UUID 判定，從不依對端位址（[#773](https://github.com/CodefyUI/CodefyUI/issues/773)）。 |
 | 2026-10-15 | enrollment 完成之前，`/ws/worker` 只接受帶 session token 的 loopback 對端（[#772](https://github.com/CodefyUI/CodefyUI/issues/772)）。 |
+| 2026-10-15 | 單一 run、sweep 與 study 共用同一條送出規則：只有啟動以來從未見過的 worker 名稱會被拒絕；目標為已知但離線之 worker 的 run 會等它回來（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。 |
 
 ## 進入點 {/* #entry-points */}
 
@@ -179,3 +178,4 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | `/api/workers` 路由 | `backend/app/api/routes_workers.py` |
 | Worker agent（CLI、連線、runner、run 子程序） | `backend/app/agent/` |
 | Workers 面板 | `frontend/src/components/Workers/` |
+| Queue on... 對話框 | `frontend/src/components/Toolbar/QueueRunDialog.tsx`、`frontend/src/components/Toolbar/queueTargets.ts` |

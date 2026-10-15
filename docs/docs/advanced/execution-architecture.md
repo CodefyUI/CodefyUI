@@ -9,7 +9,7 @@ description: How a run gets from submission to a result when it can execute in t
 [Architecture](./architecture) describes the server as a whole. This page covers one part of it in depth: where a run's graph executes. By default every run executes inside the server process, exactly as in 3.0. A queued run can instead be sent to a **worker agent** (`cdui agent start`), which executes it in a subprocess of its own. The design is tracked in [#764](https://github.com/CodefyUI/CodefyUI/issues/764); the usage side is [Run Queue, Workers](/usage/run-queue#workers) and [CLI Commands, Agent commands](/getting-started/cli-commands#agent-commands).
 
 :::note Status
-In the code today: the executor seam, placement by `(worker, device)` slot, the `target` option, worker agents on the **same machine** as the server, device sets, peak memory per run and the Workers panel. Planned and not yet in the code: enrollment tokens and remote workers ([#780](https://github.com/CodefyUI/CodefyUI/issues/780)), handshake checks of version and node catalog ([#781](https://github.com/CodefyUI/CodefyUI/issues/781)), storage mounts ([#782](https://github.com/CodefyUI/CodefyUI/issues/782)) and the transfer backend ([#785](https://github.com/CodefyUI/CodefyUI/issues/785)), a spool that lets a run survive a dropped connection ([#783](https://github.com/CodefyUI/CodefyUI/issues/783)), and control-plane fingerprint pinning ([#786](https://github.com/CodefyUI/CodefyUI/issues/786)). Sections below say which parts are planned.
+In the code today: the executor seam, placement by `(worker, device)` slot, the `target` option (for single runs, sweeps and studies), worker agents on the **same machine** as the server, device sets, peak memory per run, the Workers panel, and the toolbar's **Queue on...** dialog with the Runs panel's Worker and Devices columns. Planned and not yet in the code: enrollment tokens and remote workers ([#780](https://github.com/CodefyUI/CodefyUI/issues/780)), handshake checks of version and node catalog ([#781](https://github.com/CodefyUI/CodefyUI/issues/781)), storage mounts ([#782](https://github.com/CodefyUI/CodefyUI/issues/782)) and the transfer backend ([#785](https://github.com/CodefyUI/CodefyUI/issues/785)), a spool that lets a run survive a dropped connection ([#783](https://github.com/CodefyUI/CodefyUI/issues/783)), and control-plane fingerprint pinning ([#786](https://github.com/CodefyUI/CodefyUI/issues/786)). Sections below say which parts are planned.
 :::
 
 ## Vocabulary
@@ -56,7 +56,7 @@ Browser / cdui run ── REST, /ws/execution ──► control plane (cdui star
 A run belongs to one of two lanes ([Run Queue, Lanes](/usage/run-queue#lanes)):
 
 - **Interactive** (the canvas). It always executes in the control-plane process, because it uses state that lives there: the socket's execution cache, persistent module weights and captured outputs for the Inspector. A submission that combines the interactive lane with a worker target is refused at submit.
-- **Queued** (`POST /api/runs`, `cdui run`, sweeps, studies). It executes in the control plane by default. With `options.target.worker` set to a worker name, or to `any` and placed on a worker, it executes in a run subprocess on that worker. `record_outputs` is refused for worker runs until [#789](https://github.com/CodefyUI/CodefyUI/issues/789); target `local` to capture outputs.
+- **Queued** (`POST /api/runs`, `cdui run`, the toolbar's **Queue on...** dialog, sweeps, studies). It executes in the control plane by default. With `options.target.worker` set to a worker name, or to `any` and placed on a worker, it executes in a run subprocess on that worker. A sweep or study passes its `options.target` to every child, so `any` spreads the children over free slots. `record_outputs` is refused for worker runs until [#789](https://github.com/CodefyUI/CodefyUI/issues/789); target `local` to capture outputs.
 
 A run without `target`, or with `"worker": "local"`, never meets the worker code path: the same queue key, the same `InProcessExecutor` and the same event sequence as 3.0.2, which the `single-node-parity` CI job checks against a stored snapshot.
 
@@ -94,11 +94,9 @@ The frames are defined once, in `core/worker_protocol.py`, imported by both ends
 - **a worker name**: that worker, on the device set, or on the requested device, or on the first offered device of the requested kind with a free slot.
 - **`any`**: the first connected, non-draining worker that can take the run, in name order, and the server last. With a device set, the server qualifies only when it has every device of the set.
 
-**Why some refusals are immediate.** A submission is refused with `400` when it can never run as asked: a named worker that is not connected, a worker that does not offer the requested devices, an `any` run that neither the server nor any connected worker could serve, the interactive lane or `record_outputs` with a worker target. Parking such a run would leave a `queued` row that nothing will ever start, and a client could not tell it from a slow queue. A run that can run later waits instead, and `queue_reason` on its row says why when the reason is more than a busy slot: `waiting for worker gpu-box to reconnect`, `worker gpu-box is draining`, `waiting for a worker that offers cuda:0, cuda:1`. Draining a worker (`POST /api/workers/{id}/drain`) stops new placements on it; its running runs continue.
+**Why some refusals are immediate.** A submission is refused with `400` when it can never run as asked: a worker name that has not connected since the server started, a worker that does not offer the requested devices (as it last reported them), an `any` run that neither the server nor any worker it has seen could serve, the interactive lane or `record_outputs` with a worker target. Parking such a run would leave a `queued` row that nothing will ever start, and a client could not tell it from a slow queue. A run that can run later waits instead, including a run for a known worker that is away now, and `queue_reason` on its row says why when the reason is more than a busy slot: `waiting for worker gpu-box to reconnect`, `worker gpu-box is draining`, `waiting for a worker that offers cuda:0, cuda:1`. Draining a worker (`POST /api/workers/{id}/drain`) stops new placements on it; its running runs continue.
 
-:::note Pending change
-[#777](https://github.com/CodefyUI/CodefyUI/issues/777) (open PR [#814](https://github.com/CodefyUI/CodefyUI/pull/814)) lets sweeps and studies pass `target` to every child and changes one rule above: a submission naming a worker that is known to the server but disconnected waits in the queue instead of being refused.
-:::
+**Sweeps and studies** ([#777](https://github.com/CodefyUI/CodefyUI/issues/777)). `options.target` reaches every child. Before any row is written, `RunService.check_placeable_batch` applies the submit rules above to each distinct child (children differ only in their graph's `settings`), so a sweep or study is refused whole or accepted whole; a worker that goes away while the children are being submitted makes them wait, never fails the batch. Each sweep variant and study attempt reports `worker_id`, `devices` and `queue_key` while its run exists. A seeded run on this server takes the process-wide seed gate and runs alone; a worker run has random state of its own and skips that gate, so seeded children on different workers or cards run at the same time. The New Sweep dialog has no target selector yet; set `target` through the API.
 
 ## Isolation
 
@@ -162,6 +160,7 @@ Every change in this area keeps these ([#764](https://github.com/CodefyUI/Codefy
 | 2026-10-15 | One spawned subprocess per run, with the device set as `CUDA_VISIBLE_DEVICES` ([#771](https://github.com/CodefyUI/CodefyUI/issues/771)); the agent process never imports torch. |
 | 2026-10-15 | Same-host workers are detected by machine id, and shared cards by NVML UUID, never by peer address ([#773](https://github.com/CodefyUI/CodefyUI/issues/773)). |
 | 2026-10-15 | Until enrollment exists, `/ws/worker` accepts loopback peers with the session token only ([#772](https://github.com/CodefyUI/CodefyUI/issues/772)). |
+| 2026-10-15 | One submit rule for single runs, sweeps and studies: only a worker name never seen since startup is refused; a run for a known worker that is away waits for it ([#777](https://github.com/CodefyUI/CodefyUI/issues/777)). |
 
 ## Entry points
 
@@ -179,3 +178,4 @@ Every change in this area keeps these ([#764](https://github.com/CodefyUI/Codefy
 | `/api/workers` routes | `backend/app/api/routes_workers.py` |
 | Worker agent (CLI, connection, runner, run subprocess) | `backend/app/agent/` |
 | Workers panel | `frontend/src/components/Workers/` |
+| Queue on... dialog | `frontend/src/components/Toolbar/QueueRunDialog.tsx`, `frontend/src/components/Toolbar/queueTargets.ts` |
