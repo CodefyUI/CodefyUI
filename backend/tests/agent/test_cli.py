@@ -72,8 +72,10 @@ def test_devices_are_parsed_in_the_protocols_spelling():
     and ``mps:0`` both name the probe's ``mps``, ``cuda:01`` is ``cuda:1``,
     and a typo is refused with the accepted forms."""
     assert cli.parse_devices("MPS, cuda:01") == ["mps:0", "cuda:1"]
-    with pytest.raises(ValueError, match="cuda:N"):
-        cli.parse_devices("gpu0")
+    for typo in ("gpu0", "cuda", " CUDA "):  # a bare cuda names no card
+        with pytest.raises(ValueError, match="cuda:N"):
+            cli.parse_devices(typo)
+    assert cli.parse_devices("cpu") == ["cpu"]
     facts = [SimpleNamespace(value="cpu", kind="cpu"),
              SimpleNamespace(value="mps", kind="mps")]
     for wanted in ("mps", "mps:0"):

@@ -259,7 +259,10 @@ def parse_devices(raw: str | None) -> list[str] | None:
         if not part.strip():
             continue
         try:
-            devices.append(wp.canonical_device(part))
+            device = wp.canonical_device(part)
+            if device == "cuda":  # which card: the agent offers cards
+                raise ValueError(device)
+            devices.append(device)
         except ValueError:
             raise ValueError(t(
                 f"--devices 看不懂 {part.strip()!r}（請用 cpu、cuda:N 或 mps）",

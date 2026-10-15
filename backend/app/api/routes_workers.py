@@ -582,9 +582,14 @@ async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
 @router.delete("/ssh/{name}")
 async def delete_ssh_worker(request: Request, name: str) -> dict[str, Any]:
     """Stop the SSH worker and delete its row. Its enrollment stays (remove
-    the worker itself to revoke it)."""
+    the worker itself to revoke it). It is dropped from the registry too:
+    its session is gone, so every run on it, including a run waiting for it
+    to reconnect, ends ``interrupted`` now instead of waiting forever."""
     if not await _launcher(request).remove(name):
         raise HTTPException(404, f"no SSH worker named {name!r}")
+    registry = getattr(request.app.state, "worker_registry", None)
+    if registry is not None:
+        registry.forget(name, "the SSH worker was deleted")
     logger.info("SSH worker %s deleted", name)
     return {"id": name, "deleted": True}
 

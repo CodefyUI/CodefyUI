@@ -178,6 +178,8 @@ async def test_hello_registers_and_heartbeats_update(env):
         assert isinstance(welcome, wp.Welcome)
         assert (welcome.worker_id, welcome.heartbeat_s, welcome.grace_s) == (
             "box", 10, wp.DEFAULT_GRACE_S)
+        # The resume grace, which the agent's upload retries follow (#785).
+        assert welcome.resume_grace_s == registry.resume_grace_s
         worker = registry.get("box")
         assert worker.online and worker.device_values() == ["cpu", "cuda:0"]
         await agent.send(wp.Heartbeat(devices=[wp.DeviceReport(

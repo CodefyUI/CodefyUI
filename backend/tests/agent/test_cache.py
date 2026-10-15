@@ -272,6 +272,7 @@ def _outage(tmp_path, monkeypatch, failures: int):
     left = [failures]
 
     def flaky(request: httpx.Request) -> httpx.Response:
+        server.attempts = getattr(server, "attempts", 0) + 1
         if left[0] > 0:
             left[0] -= 1
             raise httpx.ConnectError("refused", request=request)
@@ -318,11 +319,12 @@ def test_an_upload_gives_up_after_the_window_and_on_a_cancel(
 
 
 def test_a_runs_uploads_share_one_retry_window(tmp_path, monkeypatch):
-    """Once the window ran out, the next file tries only a few times, so a
-    dead control plane cannot hold a run's end for a window per file."""
-    client, _, clock = _outage(tmp_path, monkeypatch, failures=10_000)
+    """Once the window ran out, the next file is tried once, with no pause,
+    so a dead control plane holds a run's end for one window in all. The
+    window is the run's (the control plane's resume grace)."""
+    client, server, clock = _outage(tmp_path, monkeypatch, failures=10_000)
     run = tr.RunTransfer(run_id="r1", root=tr.run_data_root(tmp_path / "r"),
-                         client=client)
+                         client=client, retry_window_s=lambda: 1800.0)
     for name in ("a.pt", "b.pt"):
         (run.root / "models" / name).write_bytes(b"1")
     body = {"kind": "checkpoint", "meta": None, "node_id": None,
@@ -330,12 +332,33 @@ def test_a_runs_uploads_share_one_retry_window(tmp_path, monkeypatch):
     _, warning = run.upload_artifact(
         {**body, "path": str(run.root / "models" / "a.pt")})
     assert "stays on worker" in warning
-    first = clock.now
+    assert 1800 <= clock.now < 1800 + tr.UPLOAD_MAX_PAUSE_S
+    first, tries = clock.now, server.attempts
     _, warning = run.upload_artifact(
         {**body, "path": str(run.root / "models" / "b.pt")})
     assert "stays on worker" in warning
-    assert clock.now - first == 1.0 + 2.0  # ATTEMPTS, no new window
+    assert clock.now == first  # no pause
+    assert server.attempts == tries + 1  # one attempt
     run.close()
+
+
+def test_only_an_outage_gets_the_long_window(tmp_path, monkeypatch):
+    """No connection, 408, 429, 502-504: the control plane is away, so the
+    upload waits for it. Any other 5xx fails after the quick attempts."""
+    client, server, clock = _outage(tmp_path, monkeypatch, failures=0)
+    source = tmp_path / "ck.pt"
+    source.write_bytes(b"weights")
+    server.fail_next = [500] * 10
+    with pytest.raises(tr.TransferError, match="HTTP 500"):
+        client.upload("run-1", "checkpoint", "ck.pt", source)
+    assert len(server.requests) == tr.ATTEMPTS
+    assert clock.now == 1.0 + 2.0
+    for status in (408, 429, 502, 503, 504):
+        server.fail_next = [status] * 5
+        clock.now = 0.0
+        key = client.upload("run-1", "checkpoint", "ck.pt", source)
+        assert server.uploads[key] == b"weights", status
+        assert clock.now == 1.0 + 2.0 + 4.0 + 8.0 + 16.0, status
 
 
 def test_prepare_inputs_copies_each_input_under_its_kind(tmp_path,

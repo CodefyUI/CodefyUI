@@ -390,6 +390,12 @@ class Welcome(_Frame):
     capabilities: list[str] = Field(default_factory=list)
     heartbeat_s: float = Field(default=DEFAULT_HEARTBEAT_S, gt=0)
     grace_s: float = Field(default=DEFAULT_GRACE_S, ge=0)
+    #: How long this control plane keeps a disconnected worker's runs
+    #: (``CODEFYUI_WORKER_RESUME_GRACE_S``, #783): the agent retries a
+    #: transfer upload through an outage that long (#785). Optional and
+    #: additive (no capability): None from a control plane that predates
+    #: it, and the agent then uses its default.
+    resume_grace_s: float | None = Field(default=None, ge=0)
 
 
 #: ``TransferInput.kind`` -> the run's data setting its file goes under.

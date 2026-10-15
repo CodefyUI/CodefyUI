@@ -378,6 +378,9 @@ class Runner:
         self.send: Send = send if send is not None else _drop
         self.keep_last = keep_last
         self.default_grace_s = default_grace_s
+        #: How long a transfer run's uploads retry through an outage: the
+        #: control plane's resume grace, from ``welcome`` (#785).
+        self.upload_window_s = transfer_module.UPLOAD_RETRY_WINDOW_S
         self.kill_after_s = kill_after_s
         self.exit_after_finished_s = exit_after_finished_s
         self.child_entry = child_entry
@@ -598,7 +601,8 @@ class Runner:
         handle.transfer = transfer_module.RunTransfer(
             run_id=frame.run_id, root=root, client=self.transfer,
             max_upload_bytes=storage.max_upload_bytes, inputs=placed,
-            stop=lambda: handle.uploads_cancelled)
+            stop=lambda: handle.uploads_cancelled,
+            retry_window_s=lambda: self.upload_window_s)
         try:
             await self._start(frame, device, devices, handle=handle,
                               storage_env=(mounts_module.data_root_env(root),

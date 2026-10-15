@@ -201,7 +201,7 @@ cdui agent start --mount data=/nas/codefyui/data
 - run 結束後，它在 `models/`、`media/`、`output/` 底下寫出的其他檔案（CheckpointSaver、ModelSaver、VideoWrite、ImageWriter），以及被它覆寫的輸入檔，上傳到控制面自己的資料夾、相同的相對路徑，也就是同一個節點在本機 run 時寫入的位置（`CODEFYUI_MODELS_DIR` 中的 `models/best.pt`）。該處已有不同的檔案時會保留原檔，新檔加上後綴（`best-1.pt`）；內容相同則不重複存放。這些檔案的 kind 為 `output`；
 - 最後是被停止的訓練迴圈寫出的 checkpoint，存到 run 的資料夾，讓已取消 run 的續訓點留在控制面上。
 
-上傳與 run 並行，網路慢不會拖住 run；上傳完成後才回報 run 結束。`GET /api/runs/{id}/artifacts` 以 `backend: "transfer"` 和控制面上的路徑列出，執行任務面板在每一筆旁提供 **下載**（`GET /api/runs/{id}/artifacts/{artifact_id}/download`）。連不上控制面時（連線中斷），agent 會持續重試每個上傳，間隔逐次拉長，最多 5 分鐘（`CODEFYUI_WORKER_RESUME_GRACE_S` 的預設值），所以在短暫斷線期間結束的 run 仍會送回它的檔案。超過控制面上傳上限（`CODEFYUI_MAX_UPLOAD_SIZE`，500 MB）的檔案，或重試後仍未被接收的檔案，會留在 worker 上，以它在 worker 上的路徑列出，並附上 `transfer_failed` 警告。在最後一批上傳期間按停止，尚未送出的檔案就不再上傳，並以一則 `transfer_failed` 警告說明有幾個留在 worker 上。
+上傳與 run 並行，網路慢不會拖住 run；上傳完成後才回報 run 結束。`GET /api/runs/{id}/artifacts` 以 `backend: "transfer"` 和控制面上的路徑列出，執行任務面板在每一筆旁提供 **下載**（`GET /api/runs/{id}/artifacts/{artifact_id}/download`）。連不上控制面時（連線中斷，或 proxy 回應 502、503、504），agent 會持續重試，間隔逐次拉長，時間與控制面保留已斷線 worker 之 run 的時間相同（`CODEFYUI_WORKER_RESUME_GRACE_S`，預設 5 分鐘），所以在斷線期間結束的 run 仍會送回它的檔案。同一個 run 的檔案共用這段時間：用完之後，其餘每個檔案只再試一次。超過控制面上傳上限（`CODEFYUI_MAX_UPLOAD_SIZE`，500 MB）的檔案，或重試後仍未被接收的檔案，會留在 worker 上，以它在 worker 上的路徑列出，並附上 `transfer_failed` 警告。在最後一批上傳期間按停止，尚未送出的檔案就不再上傳，並以一則 `transfer_failed` 警告說明有幾個留在 worker 上。
 
 **清理。** Run 自己的資料夾屬於該 run：run 保留機制（`CODEFYUI_RUN_RETENTION_KEEP_LAST`）或 **刪除** 移除 run 時，它的 `runs/<run id>` 資料夾也一起刪除。想保留的檔案請下載或另行複製。以 `interrupted` 結束、之後被保留機制移除的 run 會保留 `checkpoint` 資料夾，與本機 run 保留續訓點的做法相同。放進資料夾的檔案屬於你，與本機 run 相同：兩者都不會刪除它們。在 worker 上，run 的資料夾跟著 agent 自己的 run 保留機制；快取不會自動清理，刪除 `agent-cache` 是安全的（需要時會重新下載）。
 

@@ -100,9 +100,11 @@ CHUNK = 1024 * 1024
 #: The name prefix of a file an upload is being received into
 #: (:class:`Receiver`); listings skip such files.
 INCOMING_PREFIX = ".incoming-"
-#: :func:`sweep_incoming` removes a leftover temporary file this old: a
-#: server that died mid-upload left it, and nothing else will.
-INCOMING_STALE_S = 3600.0
+#: Under the data root: one entry per upload being received, naming its
+#: temporary file, removed when the upload ends either way. What is left
+#: at startup names the temporary files a server that died mid-upload
+#: left (:func:`sweep_incoming`), without walking the data folders.
+INCOMING_LEDGER_DIRNAME = ".upload-ledger"
 
 
 def is_incoming(path: Path | str) -> bool:
@@ -451,36 +453,35 @@ def remove_run_files(run_id: str, *, keep_checkpoints: bool = False) -> bool:
     return removed
 
 
-def sweep_incoming(max_age_s: float = INCOMING_STALE_S) -> int:
-    """Remove the temporary files of uploads that never finished (the
-    server died while receiving them): every ``.incoming-*`` file older
-    than *max_age_s* under the runs root and the data folders uploads land
-    in (:data:`DATA_PLACES`). Symlinks are neither followed nor removed.
-    Blocking (startup runs it off the loop). How many were removed."""
-    import time
+def incoming_ledger() -> Path:
+    from .data_paths import data_root
 
-    bases = [runs_root(), *(_data_base(first) for first in DATA_PLACES)]
-    cutoff = time.time() - max_age_s
+    return data_root() / INCOMING_LEDGER_DIRNAME
+
+
+def sweep_incoming() -> int:
+    """Remove the temporary files of uploads that never finished: the ones
+    the ledger (:data:`INCOMING_LEDGER_DIRNAME`) still names. Startup only:
+    ``server.lock`` keeps one server per data directory, so no upload is in
+    progress then and every entry is stale. Reads the ledger, never walks
+    the data folders (they may be large). A named file that is not an
+    ``.incoming-*`` regular file is left alone. Blocking. How many
+    temporary files were removed."""
+    ledger = incoming_ledger()
+    if ledger.is_symlink() or not ledger.is_dir():
+        return 0
     removed = 0
-    seen: set[Path] = set()
-    for base in bases:
-        if base is None or base in seen or base.is_symlink() \
-                or not base.is_dir():
-            continue
-        seen.add(base)
-        for root, _dirs, files in os.walk(base, followlinks=False):
-            for name in files:
-                if not name.startswith(INCOMING_PREFIX):
-                    continue
-                path = Path(root) / name
-                try:
-                    if path.is_symlink() or not path.is_file() \
-                            or path.stat().st_mtime > cutoff:
-                        continue
+    for entry in ledger.iterdir():
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                path = Path(entry.read_text(encoding="utf-8").strip())
+                if path.is_absolute() and is_incoming(path) \
+                        and not path.is_symlink() and path.is_file():
                     path.unlink()
                     removed += 1
-                except OSError:
-                    logger.debug("could not remove %s", path, exc_info=True)
+            entry.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not sweep %s", entry, exc_info=True)
     if removed:
         logger.info("removed %d unfinished upload(s) (%s*) left by an "
                     "earlier server", removed, INCOMING_PREFIX)
@@ -560,7 +561,8 @@ class Receiver:
     ``sha256``) must come before the ``file`` part, as the agent sends them;
     the file goes to ``<directory(fields)>/.incoming-<uuid>`` (a name of its
     own per request, beside where it will land, so the final move is a
-    rename on one filesystem).
+    rename on one filesystem), recorded in the ledger
+    (:func:`incoming_ledger`) until :meth:`discard`.
     """
 
     FIELDS = ("kind", "name", "place", "sha256")
@@ -580,6 +582,7 @@ class Receiver:
         self.fields: dict[str, str] = {}
         self.size = 0
         self.tmp: Path | None = None
+        self._ledger_entry: Path | None = None
         self.got_file = False
         self._digest = hashlib.sha256()
         self._out: Any = None
@@ -629,7 +632,13 @@ class Receiver:
             self.got_file = True
             folder = self.directory(self.fields)
             folder.mkdir(parents=True, exist_ok=True)
-            self.tmp = folder / f"{INCOMING_PREFIX}{uuid.uuid4().hex}"
+            token = uuid.uuid4().hex
+            self.tmp = folder / f"{INCOMING_PREFIX}{token}"
+            ledger = incoming_ledger()
+            ledger.mkdir(parents=True, exist_ok=True)
+            self._ledger_entry = ledger / token
+            self._ledger_entry.write_text(str(self.tmp.resolve()),
+                                          encoding="utf-8")
             self._out = open(self.tmp, "wb")  # noqa: SIM115 -- closed in close()
 
     def _part_data(self, data: bytes, start: int, end: int) -> None:
@@ -667,3 +676,5 @@ class Receiver:
             self._out = None
         if self.tmp is not None:
             self.tmp.unlink(missing_ok=True)
+        if self._ledger_entry is not None:
+            self._ledger_entry.unlink(missing_ok=True)

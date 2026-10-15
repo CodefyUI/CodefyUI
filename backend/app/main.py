@@ -452,7 +452,8 @@ async def _lifespan_body(app: FastAPI):
     await run_service.scrub_stored_secrets()
     await run_service.prune_retention()
     # Uploads a worker was sending when an earlier server died (#785):
-    # their `.incoming-*` temporary files would stay forever.
+    # their `.incoming-*` temporary files would stay forever. Reads the
+    # upload ledger only; no walk of the data folders.
     from .core.transfer import sweep_incoming
     try:
         await asyncio.to_thread(sweep_incoming)

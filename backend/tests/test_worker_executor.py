@@ -396,9 +396,9 @@ async def test_removing_an_online_worker_ends_its_runs(registry):
     assert outcome.status == "interrupted"
 
 
-async def test_a_stop_for_a_run_whose_worker_vanished_ends_it(registry):
-    """A stop for a run whose worker no longer tracks it does not retry
-    forever: the run ends (cancelled, the user's Stop)."""
+async def test_a_stop_waiting_for_a_removed_worker_ends_the_run(registry):
+    """A Stop waiting for a disconnected worker does not retry forever once
+    the worker is removed: the run ends, as the user's stop."""
     recorder = _Recorder()
     agent = _Agent(registry)
     request = _request(recorder)
@@ -406,9 +406,10 @@ async def test_a_stop_for_a_run_whose_worker_vanished_ends_it(registry):
     await agent.wait_for(wp.Assign)
     registry.disconnect(agent.worker, "network dropped")
     await _until(lambda: ("connection", False) in recorder.calls)
-    # Gone from the registry without its runs being ended.
-    del registry._workers["box"]
     request.context.cancel()
+    await asyncio.sleep(0.3)  # the watcher is retrying the cancel
+    assert not task.done()
+    registry.forget("box")
     assert (await asyncio.wait_for(task, 5)).status == "cancelled"
 
 

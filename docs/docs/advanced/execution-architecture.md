@@ -77,7 +77,7 @@ The frames are defined once, in `core/worker_protocol.py`, imported by both ends
 | Direction | Frames |
 |-----------|--------|
 | agent → control plane | `hello` (name, version, protocol version, environment fingerprint, node catalog hash and node types, capabilities, machine id, devices, mounts, platform), `heartbeat` (devices with free memory, running run ids), `run_alive` (after a reconnect), and per run `run_started`, `event`, `metrics`, `artifact`, `warning`, `run_finished` |
-| control plane → agent | `welcome` (worker id, `heartbeat_s`, `grace_s`, capabilities), `reject` (reason, then close), `assign` (run id, graph, options, device, devices, optional `grace_s`), `cancel` (run id, optional `grace_s`), `drain`, `ack` (run id, seq: every frame of the run up to it is recorded) |
+| control plane → agent | `welcome` (worker id, `heartbeat_s`, `grace_s`, capabilities, optional `resume_grace_s`: how long the control plane keeps a disconnected worker's runs, which the agent's upload retries follow), `reject` (reason, then close), `assign` (run id, graph, options, device, devices, optional `grace_s`), `cancel` (run id, optional `grace_s`), `drain`, `ack` (run id, seq: every frame of the run up to it is recorded) |
 
 ## Scheduling
 

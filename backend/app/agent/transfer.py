@@ -35,11 +35,12 @@ plane this worker shares no directory with. The agent then
    stored the file under. A file that cannot be uploaded (over the control
    plane's ``MAX_UPLOAD_SIZE``, the control plane unreachable, the uploads
    cancelled) stays reported by its path on this worker, with a
-   ``transfer_failed`` warning. An unreachable control plane (or a 5xx) is
-   retried, backing off, for up to :data:`UPLOAD_RETRY_WINDOW_S` per
-   outage (its default resume grace), so a run that ends during a
-   connection drop still delivers its files; its ``run_finished`` goes out
-   after them.
+   ``transfer_failed`` warning. An unreachable control plane (no
+   connection, :data:`OUTAGE_STATUSES`) is retried, backing off, for the
+   control plane's resume grace (``welcome.resume_grace_s``, else
+   :data:`UPLOAD_RETRY_WINDOW_S`), one window per run's outage, so a run
+   that ends during a connection drop still delivers its files; its
+   ``run_finished`` goes out after them.
 
 The run's directory goes with the agent's own run retention
 (``runner.prune_run_dirs``); the cache is never pruned (delete the folder
@@ -95,14 +96,19 @@ OUTPUT_DIRS = tuple(DATA_PLACES)
 #: Attempts per HTTP transfer, with a pause of ``RETRY_PAUSE_S * attempt``.
 ATTEMPTS = 3
 RETRY_PAUSE_S = 1.0
-#: An upload the control plane did not refuse (it was unreachable, or
-#: answered 5xx) keeps being retried for this long, the pause doubling up
-#: to :data:`UPLOAD_MAX_PAUSE_S`. The control plane's default resume grace
-#: (``CODEFYUI_WORKER_RESUME_GRACE_S``): a connection drop that the run
-#: survives must not lose the files it wrote meanwhile, and the run's
-#: ``run_finished`` waits for them.
+#: An upload that failed because the control plane is away (no
+#: connection, or :data:`OUTAGE_STATUSES`) keeps being retried for the
+#: control plane's resume grace (``CODEFYUI_WORKER_RESUME_GRACE_S``, sent
+#: in ``welcome.resume_grace_s``; this default when an older control plane
+#: does not send it), the pause doubling up to :data:`UPLOAD_MAX_PAUSE_S`:
+#: a connection drop that the run survives must not lose the files it wrote
+#: meanwhile, and the run's ``run_finished`` waits for them. Any other 5xx
+#: gets the :data:`ATTEMPTS` quick retries only.
 UPLOAD_RETRY_WINDOW_S = 300.0
 UPLOAD_MAX_PAUSE_S = 30.0
+#: Statuses that mean "not reachable right now", not "this upload failed":
+#: a proxy with no upstream (502/503/504), a timeout, a rate limit.
+OUTAGE_STATUSES = frozenset({408, 429, 502, 503, 504})
 TIMEOUT_S = 60.0
 
 
@@ -307,15 +313,21 @@ class TransferClient:
     def upload(self, run_id: str, kind: str, name: str, path: Path, *,
                place: str = PLACE_RUN, client: Any = None,
                cancelled: Callable[[], bool] = lambda: False,
-               retry_until: Callable[[], float] | None = None) -> str:
+               retry_until: Callable[[], float] | None = None,
+               fail_fast: bool = False) -> str:
         """Upload *path* as *run_id*'s *kind*/*name* to *place*; the key the
         control plane stored it under. ``TransferError`` when it was not
-        taken: refused (4xx), or still failing after :data:`ATTEMPTS`
-        attempts and :data:`UPLOAD_RETRY_WINDOW_S` seconds (backing off),
-        or *cancelled*. *retry_until* (asked once retrying starts) gives
-        the monotonic time to stop retrying instead, so a run's uploads
-        share one window. Form fields go before the file (the control plane
-        streams the body and must know where it goes first)."""
+        taken: refused (a 4xx but 408/429), a 5xx still failing after
+        :data:`ATTEMPTS` quick attempts, an outage (no connection,
+        :data:`OUTAGE_STATUSES`) still on after :data:`ATTEMPTS` attempts
+        and the retry window (backing off), or *cancelled*.
+
+        The window ends :data:`UPLOAD_RETRY_WINDOW_S` after the first
+        outage failure, or at what *retry_until* answers (asked then), so
+        a run's uploads share one window. *fail_fast*: that window is
+        already spent; one attempt, no pause. Form fields go before the
+        file (the control plane streams the body and must know where it
+        goes first)."""
         url = self._url(UPLOAD_ROUTE.format(run_id=quote(run_id, safe="")))
         checksum = sha256_file(path)
         own = client is None
@@ -327,6 +339,7 @@ class TransferClient:
             attempt = 0
             while True:
                 attempt += 1
+                outage = False
                 if cancelled():
                     raise TransferError("the uploads were cancelled")
                 try:
@@ -337,18 +350,28 @@ class TransferClient:
                                   "sha256": checksum},
                             files={"file": (path.name, handle,
                                             "application/octet-stream")})
-                    if response.status_code == 200:
+                    status = response.status_code
+                    if status == 200:
                         return str(response.json()["path"])
                     error = TransferError(
-                        f"uploading {name}: HTTP {response.status_code} "
+                        f"uploading {name}: HTTP {status} "
                         f"{_detail(response)}")
-                    if response.status_code < 500:
+                    if status < 500 and status not in OUTAGE_STATUSES:
                         raise error
                     last = error
+                    outage = status in OUTAGE_STATUSES
                 except TransferError:
                     raise
                 except Exception as exc:  # noqa: BLE001 -- httpx and OS errors
                     last = TransferError(f"uploading {name}: {exc}")
+                    outage = True
+                if fail_fast:
+                    break
+                if not outage:
+                    if attempt >= ATTEMPTS:
+                        break
+                    _sleep(RETRY_PAUSE_S * attempt, cancelled)
+                    continue
                 if deadline is None:
                     deadline = retry_until() if retry_until is not None \
                         else started + UPLOAD_RETRY_WINDOW_S
@@ -457,14 +480,24 @@ class RunTransfer:
     #: Set (by a cancel that came after the run ended): upload nothing more.
     stop: Callable[[], bool] = lambda: False
     _http: Any = None
+    #: The outage retry window, read when an outage starts: the control
+    #: plane's resume grace (``Runner.upload_window_s``, from ``welcome``).
+    retry_window_s: Callable[[], float] = lambda: UPLOAD_RETRY_WINDOW_S
     #: When the control plane stopped taking this run's uploads
     #: (monotonic), or None: the run's uploads share one retry window.
     _failing_since: float | None = None
+    _window_end: float | None = None
 
     def _retry_until(self) -> float:
-        if self._failing_since is None:
+        if self._failing_since is None or self._window_end is None:
             self._failing_since = time.monotonic()
-        return self._failing_since + UPLOAD_RETRY_WINDOW_S
+            self._window_end = self._failing_since \
+                + max(0.0, float(self.retry_window_s()))
+        return self._window_end
+
+    def _window_spent(self) -> bool:
+        return self._window_end is not None \
+            and time.monotonic() >= self._window_end
 
     def _session(self) -> Any:
         if self._http is None:
@@ -500,8 +533,9 @@ class RunTransfer:
                 f"{human_size(self.max_upload_bytes)} (MAX_UPLOAD_SIZE)")
         key = self.client.upload(self.run_id, kind, name, path, place=place,
                                  client=self._session(), cancelled=self.stop,
-                                 retry_until=self._retry_until)
-        self._failing_since = None
+                                 retry_until=self._retry_until,
+                                 fail_fast=self._window_spent())
+        self._failing_since = self._window_end = None
         self.uploaded.add(path.resolve())
         return key
 

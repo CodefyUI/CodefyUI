@@ -402,12 +402,13 @@ class WorkerScheduler:
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount, usable_only=True,
                                   transfer=entry_transfers(entry)):
+            # The workers the first check counted and this one did not:
+            # the same predicate as ``can_serve_any`` (``reaches`` is its
+            # mount/transfer rule), so the list is never empty.
             skipped = sorted(
                 w.name for w in self._registry.workers()
-                if w.online and _skipped_by_any(w)
+                if w.online and _skipped_by_any(w) and reaches(w, entry)
                 and _serves(w.device_values(), requested, devices))
-            if not skipped:
-                return f"waiting for a worker that offers {wanted}"
             return (f"waiting for a worker that offers {wanted}: "
                     f"{', '.join(skipped)} "
                     f"{'is' if len(skipped) == 1 else 'are'} skipped by "
