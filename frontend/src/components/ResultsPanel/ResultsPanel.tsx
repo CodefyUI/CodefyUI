@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTabStore } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { useI18n } from '../../i18n';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart, type ChartSeries } from './LossChart';
@@ -169,6 +170,18 @@ export function ResultsPanel() {
       setPanelTab((current) => (current === 'training' ? 'log' : current));
     }
   }, [hasTraining]);
+
+  // A run link in the Workers panel (#776) shows that run in the Runs tab.
+  // Only a change seen while mounted counts: a panel mounted later (another
+  // canvas tab) must not jump to Runs for a link clicked before it existed.
+  const runsRevealSeq = useWorkerStore((s) => s.runsRevealSeq);
+  const seenRevealSeq = useRef(runsRevealSeq);
+  useEffect(() => {
+    if (runsRevealSeq === seenRevealSeq.current) return;
+    seenRevealSeq.current = runsRevealSeq;
+    setPanelTab('runs');
+    setCollapsed(false);
+  }, [runsRevealSeq]);
 
   // Only non-progress logs for the Log tab
   const filteredLogs = useMemo(

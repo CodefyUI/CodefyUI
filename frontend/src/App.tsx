@@ -23,6 +23,7 @@ import { WorkspaceLockOverlay } from './components/WorkspaceLock/WorkspaceLockOv
 import { settleAutosave } from './components/WorkspaceLock/settleAutosave';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
+import { WorkersPanel } from './components/Workers/WorkersPanel';
 import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
 import { PluginHost } from './plugins/PluginHost';
@@ -190,6 +191,7 @@ function App() {
       <GitDiffModal />
       <ToastContainer />
       <ShortcutsModal />
+      <WorkersPanel />
       <GuideTour />
       <DialogContainer />
       <PluginHost />

@@ -2,6 +2,7 @@ import { useDialogStore } from './dialogStore';
 import { useSweepStore } from './sweepStore';
 import { useTabStore } from './tabStore';
 import { useUIStore } from './uiStore';
+import { useWorkerStore } from './workerStore';
 
 /**
  * "Is anything modal on screen?", asked in one place (#475).
@@ -45,12 +46,15 @@ export type ModalName =
   | 'layersModal'
   | 'vizModal'
   /** The Runs panel's New Sweep dialog. */
-  | 'newSweep';
+  | 'newSweep'
+  /** The Workers panel (#776), Add worker dialog included. */
+  | 'workers';
 
 type UIStoreState = ReturnType<typeof useUIStore.getState>;
 type TabStoreState = ReturnType<typeof useTabStore.getState>;
 type DialogStoreState = ReturnType<typeof useDialogStore.getState>;
 type SweepStoreState = ReturnType<typeof useSweepStore.getState>;
+type WorkerStoreState = ReturnType<typeof useWorkerStore.getState>;
 
 /**
  * Shared empty list, so the no-argument call passes the SAME reference every
@@ -101,6 +105,10 @@ function sweepModalOpen(s: SweepStoreState, ignore: readonly ModalName[]): boole
   return !ignore.includes('newSweep') && s.newSweepOpen;
 }
 
+function workerModalOpen(s: WorkerStoreState, ignore: readonly ModalName[]): boolean {
+  return !ignore.includes('workers') && s.panelOpen;
+}
+
 /**
  * Is any modal open right now? Reads the stores directly, at the moment of
  * asking, which is when every caller needs the answer: the global keydown
@@ -115,6 +123,7 @@ export function isAnyModalOpen(ignore: readonly ModalName[] = IGNORE_NOTHING): b
     dialogModalOpen(useDialogStore.getState(), ignore) ||
     uiModalOpen(useUIStore.getState(), ignore) ||
     tabModalOpen(useTabStore.getState(), ignore) ||
-    sweepModalOpen(useSweepStore.getState(), ignore)
+    sweepModalOpen(useSweepStore.getState(), ignore) ||
+    workerModalOpen(useWorkerStore.getState(), ignore)
   );
 }

@@ -18,6 +18,7 @@ import {
   type SweepLimitWarning,
 } from './sweepParams';
 import { metricProducers, producerLabel, recordedMetricNames } from './sweepObjective';
+import { trapTab } from '../shared/focusTrap';
 import styles from './NewSweepDialog.module.css';
 
 type DomainMode = 'values' | 'range';
@@ -33,7 +34,6 @@ interface DomainEditor {
   scale: 'linear' | 'log';
 }
 
-const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 /** The planner seed range the server accepts (`sweep_compiler.MAX_PLANNER_SEED`). */
 const MAX_PLANNER_SEED = 0xFFFFFFFF;
 /**
@@ -246,20 +246,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       onClose();
       return;
     }
-    if (event.key !== 'Tab') return;
-    const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    // The dialog itself holds the focus after a click between controls.
-    const atStart = document.activeElement === first || document.activeElement === dialogRef.current;
-    if (event.shiftKey && atStart) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    trapTab(event, dialogRef.current);
   };
 
   const seedUsed = method === 'random' || seedVariants;
