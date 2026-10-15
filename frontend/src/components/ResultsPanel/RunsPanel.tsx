@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'rea
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { friendlyError } from '../../utils/errorMessages';
+import { formatBytes } from '../../utils/formatBytes';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import {
@@ -120,44 +121,69 @@ export function requestedDeviceNote(run: RunSummary | null): string | null {
   return requested === run.queue_key ? null : requested;
 }
 
-/** `6.2 GiB`, or `512 MiB` under one GiB so a small run does not read 0.0. */
-export function formatBytes(bytes: number): string {
-  const mib = bytes / 1024 ** 2;
-  if (mib < 1024) return `${Math.round(mib)} MiB`;
-  return `${(mib / 1024).toFixed(1)} GiB`;
-}
-
-export interface PeakMemoryEntry {
+/**
+ * One device of a run's recorded memory (#770). `peak` is a CUDA card's
+ * high-water mark over the run; `held` is what the MPS driver still held
+ * when the run ended (cache included), which is not a peak.
+ */
+export interface DeviceMemoryEntry {
   device: string;
-  allocated: number;
+  kind: 'peak' | 'held';
+  bytes: number;
   reserved: number | null;
   exact: boolean;
+  shared: boolean;
 }
 
 /**
- * The run's recorded peak device memory (#770), one entry per device, or
- * `null` when there is nothing to show: a CPU run (`peak_memory: null`), a
- * run that has not finished, or one from before the server recorded it.
- * Entries the server could not have written are skipped rather than shown
- * as zero.
+ * The run's recorded device memory, one entry per device, or `null` when
+ * there is nothing to show: a CPU run (`peak_memory: null`), a run that has
+ * not finished, or one from before the server recorded it. Entries the
+ * server could not have written are skipped rather than shown as zero.
  */
-export function peakMemoryEntries(run: RunSummary | null): PeakMemoryEntry[] | null {
-  const peak = run?.execution_facts?.peak_memory;
-  if (!peak || typeof peak !== 'object') return null;
-  const entries: PeakMemoryEntry[] = [];
-  for (const [device, raw] of Object.entries(peak as Record<string, unknown>)) {
+export function deviceMemoryEntries(run: RunSummary | null): DeviceMemoryEntry[] | null {
+  const recorded = run?.execution_facts?.peak_memory;
+  if (!recorded || typeof recorded !== 'object') return null;
+  const entries: DeviceMemoryEntry[] = [];
+  for (const [device, raw] of Object.entries(recorded as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object') continue;
-    const { allocated_bytes: allocated, reserved_bytes: reserved, exact } =
-      raw as Record<string, unknown>;
-    if (typeof allocated !== 'number') continue;
-    entries.push({
-      device,
-      allocated,
-      reserved: typeof reserved === 'number' ? reserved : null,
-      exact: exact === true,
-    });
+    const fields = raw as Record<string, unknown>;
+    const exact = fields.exact === true;
+    if (typeof fields.allocated_bytes === 'number') {
+      entries.push({
+        device,
+        kind: 'peak',
+        bytes: fields.allocated_bytes,
+        reserved: typeof fields.reserved_bytes === 'number' ? fields.reserved_bytes : null,
+        exact,
+        shared: fields.shared === true,
+      });
+    } else if (typeof fields.held_bytes === 'number') {
+      entries.push({
+        device, kind: 'held', bytes: fields.held_bytes, reserved: null, exact, shared: false,
+      });
+    }
   }
   return entries.length ? entries : null;
+}
+
+/** One hover line per device, for the header chip's title. */
+function deviceMemoryLine(entry: DeviceMemoryEntry, t: ReturnType<typeof useI18n.getState>['t']): string {
+  if (entry.kind === 'held') {
+    return t('runs.detail.memoryHeldDevice', {
+      device: entry.device, held: formatBytes(entry.bytes),
+    });
+  }
+  const line = entry.reserved === null
+    ? t('runs.detail.peakMemoryDevice', {
+        device: entry.device, allocated: formatBytes(entry.bytes),
+      })
+    : t('runs.detail.peakMemoryDeviceReserved', {
+        device: entry.device,
+        allocated: formatBytes(entry.bytes),
+        reserved: formatBytes(entry.reserved),
+      });
+  return entry.shared ? `${line} ${t('runs.detail.peakMemoryShared')}` : line;
 }
 
 /** How many hex characters of an environment digest the header shows. */
@@ -279,24 +305,25 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
   // whole digest on hover -- it is what a reader compares across runs.
   const digest = run?.fingerprint_digest ?? null;
   const requestedDevice = requestedDeviceNote(run);
-  // #770: the header shows the largest card's peak; the hover names every
-  // device and says when the number is shared with other in-process runs.
-  const peakEntries = peakMemoryEntries(run);
-  const peakTitle = peakEntries
+  // #770: the header shows the largest CUDA peak ("Peak memory"), or, for
+  // an MPS run, what the driver held at the end -- a different quantity,
+  // so a different label. The hover names every device and says when the
+  // number is approximate.
+  const memoryEntries = deviceMemoryEntries(run);
+  const peaks = memoryEntries?.filter((entry) => entry.kind === 'peak') ?? [];
+  const memoryLabel = !memoryEntries
+    ? ''
+    : peaks.length
+      ? t('runs.detail.peakMemory', {
+          amount: formatBytes(Math.max(...peaks.map((entry) => entry.bytes))),
+        })
+      : t('runs.detail.memoryHeld', {
+          amount: formatBytes(Math.max(...memoryEntries.map((entry) => entry.bytes))),
+        });
+  const memoryTitle = memoryEntries
     ? [
-        ...peakEntries.map((entry) =>
-          entry.reserved === null
-            ? t('runs.detail.peakMemoryDevice', {
-                device: entry.device,
-                allocated: formatBytes(entry.allocated),
-              })
-            : t('runs.detail.peakMemoryDeviceReserved', {
-                device: entry.device,
-                allocated: formatBytes(entry.allocated),
-                reserved: formatBytes(entry.reserved),
-              }),
-        ),
-        ...(peakEntries.every((entry) => entry.exact)
+        ...memoryEntries.map((entry) => deviceMemoryLine(entry, t)),
+        ...(memoryEntries.every((entry) => entry.exact)
           ? []
           : [t('runs.detail.peakMemoryApproximate')]),
       ].join('\n')
@@ -340,15 +367,13 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
             {t('runs.detail.environment')} {digest.slice(0, DIGEST_SHORT_LENGTH)}
           </span>
         )}
-        {peakEntries && (
+        {memoryEntries && (
           <span
             className={styles.detailMeta}
             data-testid="run-peak-memory"
-            title={peakTitle}
+            title={memoryTitle}
           >
-            {t('runs.detail.peakMemory', {
-              amount: formatBytes(Math.max(...peakEntries.map((entry) => entry.allocated))),
-            })}
+            {memoryLabel}
           </span>
         )}
         <button

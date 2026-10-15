@@ -111,7 +111,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 
 `execution_facts` 把請求與實際結果並列。`requested` 包含儲存的選項中的 `device`、`seed` 與 `deterministic`，以及圖中的 `graph_settings_device` 與 `graph_settings_seed`。`resolved` 包含排程器解析出的裝置（例如 `auto` 會變成 `mps:0`）、交給引擎的種子與決定性旗標，以及 `numerics`：run 開始時 torch 的預設 dtype、float32 矩陣乘法精度、TF32 與 cuDNN benchmark 開關，以及執行緒數。目前沒有 run 層級的精度選項；混合精度是訓練節點的參數，記錄在圖快照中。具有自己 `device` 參數的節點可以為該節點覆寫 run 的裝置。
 
-已執行的 run 結束時，無論結果為何，`execution_facts` 都會加上 `peak_memory`。CUDA run 記錄 `{"cuda:0": {"allocated_bytes": N, "reserved_bytes": M, "exact": false}}`：從 run 開始到結束之間，配置器的最高水位（`max_memory_allocated`、`max_memory_reserved`）。MPS 沒有峰值計數器，所以 MPS run 記錄 `{"mps": {"allocated_bytes": N, "exact": false}}`，也就是 run 結束時 Metal 驅動程式仍佔用的記憶體，是峰值的下限。CPU run，或伺服器沒有載入 torch 時的 run，記錄 `null`；在執行前就停止的 run 不記錄。在伺服器行程內執行的 run，`exact` 一律為 `false`：這些 run 共用同一個 CUDA context，同時在同一張卡上的另一個 run 會讓數字變大，而它開始時也會重設計數器。只有獨佔一個行程的 run 才能回報 `exact: true`。Runs 面板在 run 的詳細資訊標題列以「峰值記憶體」顯示其中最大的值。
+已執行的 run 結束時，無論結果為何，`execution_facts` 都會加上 `peak_memory`。CUDA run 會為伺服器行程佔用記憶體的每張卡各記錄一筆，run 自己的卡排在最前面，所以釘選到其他卡的節點也會算進去：`{"cuda:0": {"allocated_bytes": N, "reserved_bytes": M, "exact": false}}`，是 run 期間配置器的最高水位（`max_memory_allocated`、`max_memory_reserved`）。MPS run 記錄 `{"mps": {"held_bytes": N, "exact": false}}`：run 結束時 Metal 驅動程式為伺服器行程佔用的記憶體，包含快取。MPS 沒有峰值計數器，所以這不是峰值。CPU run，或伺服器沒有載入 torch、從未初始化 CUDA 時的 run，記錄 `null`。在執行前就停止的 run，或執行器失敗且沒有回報的 run，不記錄（沒有這個鍵）。在伺服器行程內執行的 run，`exact` 一律為 `false`，因為這些 run 共用同一個 CUDA context。峰值計數器屬於整個行程，所以 run 只有在該卡上沒有其他行程內的 run 時才會在開始時重設計數器；否則不重設，以免抹掉另一個 run 的峰值，並把該卡標為 `"shared": true`，表示數字也包含另一個 run。Runs 面板的詳細資訊標題列以「峰值記憶體」顯示最大的 CUDA 值，MPS 則以「結束時佔用記憶體」顯示，滑鼠移上去會列出每個裝置。
 
 摘要與種子相同，並不保證數值完全相同。非決定性的 kernel 與執行緒排程仍可能改變結果，相同種子在不同硬體或函式庫版本上也可能得到不同數值。摘要只回答兩個環境是否相同。
 

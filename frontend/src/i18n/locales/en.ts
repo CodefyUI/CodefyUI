@@ -1142,7 +1142,11 @@ const en = {
   'runs.detail.environmentTitle':
     'Environment fingerprint (sha256) of the server that started this run: {digest}',
   'runs.detail.peakMemory': 'Peak memory {amount}',
-  'runs.detail.peakMemoryDevice': '{device}: {allocated} held at the end of the run',
+  'runs.detail.memoryHeld': 'Memory held at end {amount}',
+  'runs.detail.peakMemoryDevice': '{device}: {allocated} peak allocated',
+  'runs.detail.memoryHeldDevice':
+    '{device}: {held} held by the driver when the run ended, cache included (not a peak)',
+  'runs.detail.peakMemoryShared': '(shared with another run in this server process)',
   'runs.detail.peakMemoryDeviceReserved':
     '{device}: {allocated} peak allocated, {reserved} peak reserved',
   'runs.detail.peakMemoryApproximate':

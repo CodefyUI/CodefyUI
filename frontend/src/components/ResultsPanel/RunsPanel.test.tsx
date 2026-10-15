@@ -3,14 +3,14 @@ import { render, screen, fireEvent, waitFor, within, act, createEvent } from '@t
 import {
   DIGEST_SHORT_LENGTH,
   RunsPanel,
-  formatBytes,
   formatDuration,
   formatStarted,
-  peakMemoryEntries,
+  deviceMemoryEntries,
   requestedDeviceNote,
   runDevice,
 } from './RunsPanel';
 import styles from './RunsPanel.module.css';
+import { formatBytes } from '../../utils/formatBytes';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
@@ -133,33 +133,28 @@ afterEach(() => {
 
 // ── peak memory helpers (#770) ────────────────────────────────────────────
 
-describe('formatBytes', () => {
-  it('prints MiB under one GiB and one-decimal GiB from there', () => {
-    expect(formatBytes(0)).toBe('0 MiB');
-    expect(formatBytes(300 * 1024 ** 2)).toBe('300 MiB');
-    expect(formatBytes(1024 ** 3)).toBe('1.0 GiB');
-    expect(formatBytes(6.2 * 1024 ** 3)).toBe('6.2 GiB');
-  });
-});
-
-describe('peakMemoryEntries', () => {
+describe('deviceMemoryEntries', () => {
   const withPeak = (peak: unknown) =>
     makeRun({ id: 'p', execution_facts: { peak_memory: peak } as Record<string, unknown> });
 
   it('is null when nothing was recorded', () => {
-    expect(peakMemoryEntries(null)).toBeNull();
-    expect(peakMemoryEntries(makeRun({ id: 'p' }))).toBeNull();
-    expect(peakMemoryEntries(withPeak(null))).toBeNull();
-    expect(peakMemoryEntries(withPeak('6 GiB'))).toBeNull();
-    expect(peakMemoryEntries(withPeak({}))).toBeNull();
+    expect(deviceMemoryEntries(null)).toBeNull();
+    expect(deviceMemoryEntries(makeRun({ id: 'p' }))).toBeNull();
+    expect(deviceMemoryEntries(withPeak(null))).toBeNull();
+    expect(deviceMemoryEntries(withPeak('6 GiB'))).toBeNull();
+    expect(deviceMemoryEntries(withPeak({}))).toBeNull();
   });
 
-  it('skips entries the server could not have written', () => {
-    expect(peakMemoryEntries(withPeak({
+  it('reads CUDA peaks and MPS held bytes, skipping what the server could not have written', () => {
+    expect(deviceMemoryEntries(withPeak({
       'cuda:0': null,
       'cuda:1': { allocated_bytes: '5' },
-      mps: { allocated_bytes: 7 },
-    }))).toEqual([{ device: 'mps', allocated: 7, reserved: null, exact: false }]);
+      'cuda:2': { allocated_bytes: 9, shared: true },
+      mps: { held_bytes: 7, exact: true },
+    }))).toEqual([
+      { device: 'cuda:2', kind: 'peak', bytes: 9, reserved: null, exact: false, shared: true },
+      { device: 'mps', kind: 'held', bytes: 7, reserved: null, exact: true, shared: false },
+    ]);
   });
 });
 
@@ -552,47 +547,50 @@ describe('RunsPanel — detail view', () => {
     expect(chip.getAttribute('title')).toBe(t('runs.detail.environmentTitle', { digest }));
   });
 
-  // #770: the run's peak device memory, from execution_facts.peak_memory.
-  it('shows the peak memory with every device and the approximation on hover', async () => {
-    const recorded = {
-      ...liveRun,
-      execution_facts: {
-        peak_memory: {
-          'cuda:0': { allocated_bytes: 6.2 * 1024 ** 3, reserved_bytes: 7 * 1024 ** 3, exact: false },
-          'cuda:1': { allocated_bytes: 512 * 1024 ** 2, reserved_bytes: 1024 ** 3, exact: true },
-        },
-      },
-    };
+  // #770: the run's device memory, from execution_facts.peak_memory.
+  const openWithMemory = async (peak: Record<string, unknown>) => {
+    const recorded = { ...liveRun, execution_facts: { peak_memory: peak } };
     api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
     await renderPanel([recorded]);
     fireEvent.click(rowOf('r1'));
     await screen.findByTestId('run-detail');
-    const chip = screen.getByTestId('run-peak-memory');
-    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: '6.2 GiB' }));
+    return screen.getByTestId('run-peak-memory');
+  };
+
+  it('shows the largest CUDA peak, with every card and the approximation on hover', async () => {
+    const chip = await openWithMemory({
+      'cuda:0': { allocated_bytes: 6.2 * 1024 ** 3, reserved_bytes: 7 * 1024 ** 3, exact: false },
+      'cuda:1': {
+        allocated_bytes: 512 * 1024 ** 2, reserved_bytes: 1024 ** 3, exact: false, shared: true,
+      },
+      'cuda:2': { allocated_bytes: 1024 ** 2, exact: true },
+    });
+    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: formatBytes(6.2 * 1024 ** 3) }));
     expect(chip.getAttribute('title')).toBe([
       t('runs.detail.peakMemoryDeviceReserved', {
-        device: 'cuda:0', allocated: '6.2 GiB', reserved: '7.0 GiB',
+        device: 'cuda:0', allocated: formatBytes(6.2 * 1024 ** 3), reserved: formatBytes(7 * 1024 ** 3),
       }),
-      t('runs.detail.peakMemoryDeviceReserved', {
-        device: 'cuda:1', allocated: '512 MiB', reserved: '1.0 GiB',
-      }),
+      `${t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:1', allocated: formatBytes(512 * 1024 ** 2), reserved: formatBytes(1024 ** 3),
+      })} ${t('runs.detail.peakMemoryShared')}`,
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:2', allocated: formatBytes(1024 ** 2) }),
       t('runs.detail.peakMemoryApproximate'),
     ].join('\n'));
   });
 
-  it('shows an exact MPS reading without the approximation note', async () => {
-    const recorded = {
-      ...liveRun,
-      execution_facts: { peak_memory: { mps: { allocated_bytes: 3 * 1024 ** 3, exact: true } } },
-    };
-    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
-    await renderPanel([recorded]);
-    fireEvent.click(rowOf('r1'));
-    await screen.findByTestId('run-detail');
-    const chip = screen.getByTestId('run-peak-memory');
-    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: '3.0 GiB' }));
+  it('labels an MPS reading as memory held at the end, not a peak', async () => {
+    const chip = await openWithMemory({ mps: { held_bytes: 3 * 1024 ** 3, exact: false } });
+    expect(chip.textContent).toBe(t('runs.detail.memoryHeld', { amount: formatBytes(3 * 1024 ** 3) }));
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.memoryHeldDevice', { device: 'mps', held: formatBytes(3 * 1024 ** 3) }),
+      t('runs.detail.peakMemoryApproximate'),
+    ].join('\n'));
+  });
+
+  it('omits the approximation note when every reading is exact', async () => {
+    const chip = await openWithMemory({ 'cuda:0': { allocated_bytes: 1024 ** 3, exact: true } });
     expect(chip.getAttribute('title')).toBe(
-      t('runs.detail.peakMemoryDevice', { device: 'mps', allocated: '3.0 GiB' }),
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:0', allocated: formatBytes(1024 ** 3) }),
     );
   });
 

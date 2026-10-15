@@ -250,6 +250,10 @@ STOP_REASON_INTERRUPTED = "interrupted"
 EXECUTOR_STATUSES = frozenset({STATUS_SUCCEEDED, STATUS_FAILED,
                                STATUS_CANCELLED})
 
+#: An outcome object without a ``peak_memory`` attribute (#770): the
+#: executor did not measure, which is different from measuring None.
+_NOT_MEASURED = object()
+
 #: The frames that END a run's log: a client replaying it over the WS
 #: attach view (the canvas) takes one of them as the run's end.
 #: ``cdui run --wait`` stops on the row's status instead and only prints
@@ -1455,11 +1459,12 @@ class _ActiveRun:
     #: training loop that logs ``val_loss`` and also puts ``val_loss`` in its
     #: epoch payload would write the same point twice.
     explicit_metric_nodes: set[str] = field(default_factory=set)
-    #: True once an executor reported an outcome for this run, and the
-    #: ``peak_memory`` it reported (#770). ``_finalize`` records the peak
-    #: only for a run that executed: one stopped before its first node, or
-    #: whose snapshot was unusable, has no number to report, not a null one.
-    executed: bool = False
+    #: True once the executor reported a measurement for this run, and the
+    #: ``peak_memory`` it reported (#770; None is a measurement: a CPU
+    #: run). ``_finalize`` records only a measured run: one stopped before
+    #: its first node, an unusable snapshot, or an executor that raised has
+    #: no number to report, not a null one.
+    peak_measured: bool = False
     peak_memory: dict[str, Any] | None = None
 
     def close(self) -> None:
@@ -2308,10 +2313,14 @@ class RunService:
             logger.warning("run %s: the executor raised: %s", active.run_id,
                            exc, exc_info=True)
             outcome = ExecutionOutcome(STATUS_FAILED, str(exc))
-        active.executed = True
-        peak_memory = getattr(outcome, "peak_memory", None)
-        active.peak_memory = (peak_memory if isinstance(peak_memory, dict)
-                              else None)
+        else:
+            # Only an outcome the executor itself reported carries a
+            # measurement; a raise, or a value that is neither a map nor
+            # null, records nothing (key absent = not recorded).
+            peak_memory = getattr(outcome, "peak_memory", _NOT_MEASURED)
+            if peak_memory is None or isinstance(peak_memory, dict):
+                active.peak_measured = True
+                active.peak_memory = peak_memory
         status = getattr(outcome, "status", None)
         if status not in EXECUTOR_STATUSES:
             logger.warning("run %s: the executor reported status %r",
@@ -2343,14 +2352,14 @@ class RunService:
         terminal event rather than after it — see ``_release_admission`` for
         the window that closes.
 
-        A run that executed has its peak device memory merged into
+        A run its executor measured has its device memory merged into
         ``execution_facts`` after the metric flush (#770, see
         ``_record_peak_memory``).
         """
         active.terminating = True
         self._release_admission(active)
         await self._flush_metrics(active, force=True)
-        if active.executed:
+        if active.peak_measured:
             await self._record_peak_memory(active)
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
@@ -2388,8 +2397,12 @@ class RunService:
         run must not fail because the thing describing it did.
         """
         try:
-            await self.store.update_execution_facts(
+            landed = await self.store.update_execution_facts(
                 active.run_id, {"peak_memory": active.peak_memory})
+            if not landed:
+                logger.info(
+                    "run %s: no execution facts recorded, so its peak "
+                    "memory is dropped", active.run_id)
         except asyncio.CancelledError:
             raise
         except Exception:

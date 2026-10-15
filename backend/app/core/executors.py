@@ -31,6 +31,7 @@ import sys
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
+from .device_utils import split_device
 from .execution_context import (
     ArtifactSignal,
     CancellationError,
@@ -121,12 +122,11 @@ class ExecutionOutcome:
 
     status: str
     error: str | None = None
-    #: The run's device memory high-water mark (#770), merged into the row's
-    #: ``execution_facts.peak_memory`` by ``RunService._finalize``. A map of
-    #: device to ``{"allocated_bytes", "reserved_bytes", "exact"}``
-    #: (``reserved_bytes`` is CUDA only); None for a CPU run, a run without
-    #: torch loaded, or when the allocator could not be read. See
-    #: :func:`read_peak_memory`.
+    #: The run's device memory (#770), merged into the row's
+    #: ``execution_facts.peak_memory`` by ``RunService._finalize``: a map of
+    #: ``"cuda:N"`` to its peaks, or ``"mps"`` to what the driver held at
+    #: the end; None for a CPU run, a run without torch or CUDA, or when the
+    #: allocator could not be read. See :meth:`PeakMemoryScope.read`.
     peak_memory: dict[str, Any] | None = None
 
 
@@ -150,13 +150,15 @@ class InProcessExecutor:
 
         Never raises but cancel. The peak is read whatever the outcome: a
         run that failed with an out-of-memory error is the one whose number
-        matters most. ``exact`` is False here: see :func:`read_peak_memory`.
+        matters most. ``exact`` is False here: in-process runs share one
+        CUDA context (see :class:`PeakMemoryScope`).
         """
-        device = request.context.device
-        reset_peak_memory(device)
-        outcome = await self._execute(request)
-        return replace(outcome,
-                       peak_memory=read_peak_memory(device, exact=False))
+        scope = PeakMemoryScope(request.context.device).open()
+        try:
+            outcome = await self._execute(request)
+            return replace(outcome, peak_memory=scope.read(exact=False))
+        finally:
+            scope.close()
 
     async def _execute(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph and classify the outcome. Never raises but cancel."""
@@ -226,105 +228,157 @@ class InProcessExecutor:
 # torch is read off ``sys.modules`` rather than imported: this module never
 # imported it, and a run that never loaded torch has allocated no device
 # memory, so "not loaded" is the honest null rather than a reason to pay
-# for the import. A CUDA or MPS run has loaded it long before this point
-# (device resolution does).
+# for the import. Nothing here initialises CUDA either: every CUDA call is
+# behind ``torch.cuda.is_initialized()``.
+#
+# CUDA's peak counters are per PROCESS and per card, so in-process runs
+# share them. ``_ACTIVE_SCOPES`` is the set of in-process runs currently
+# measuring, by the card they run on. It is only touched on the event loop,
+# between awaits, so it needs no lock. A run resets a card's counters only
+# when no other in-process run is on that card; otherwise it leaves them
+# alone (resetting would wipe the other run's peak) and records the card as
+# ``shared``.
 
 
-def _device_kind_index(device: str | None) -> tuple[str, int | None]:
-    """``("cuda", 1)`` for ``"cuda:1"``, ``("mps", None)`` for ``"mps"``."""
-    kind, _, index = (device or "").partition(":")
-    try:
-        return kind, int(index) if index else None
-    except ValueError:
-        return kind, None
+class PeakMemoryScope:
+    """One run's peak-memory measurement. ``open`` -> ``read`` -> ``close``.
 
-
-def _cuda_index(torch: Any, index: int | None) -> int | None:
-    """The CUDA index to read, or None when CUDA is not usable."""
-    if not torch.cuda.is_available():
-        return None
-    return int(torch.cuda.current_device()) if index is None else index
-
-
-def reset_peak_memory(device: str | None) -> None:
-    """Start a fresh CUDA high-water mark on *device*. Never raises.
-
-    Only for a CUDA device whose context already exists: resetting an
-    uninitialised one would create the context for a run that may never
-    touch the card, and its counters are zero anyway. MPS has no peak
-    counter to reset; CPU has nothing to read.
-
-    The counters are per process and per card, so this also restarts the
-    peak of any other in-process run on the same card (and the "peak this
-    process" figure of an out-of-memory digest): one reason in-process
-    numbers are recorded as ``exact: false``.
+    Opened before the graph executes, read after it (whatever the outcome),
+    closed in a ``finally`` so a hard cancel still unregisters it.
     """
-    kind, index = _device_kind_index(device)
-    if kind != "cuda":
-        return
-    torch = sys.modules.get("torch")
-    if torch is None:
-        return
-    try:
-        if not torch.cuda.is_initialized():
-            return
-        resolved = _cuda_index(torch, index)
-        if resolved is not None:
-            torch.cuda.reset_peak_memory_stats(resolved)
-    except Exception:  # noqa: BLE001 - observability never fails a run
-        logger.debug("could not reset the CUDA peak memory statistics",
-                     exc_info=True)
 
+    def __init__(self, device: str | None) -> None:
+        self.kind, index = split_device(device or "")
+        self.card: int | None = None
+        #: Another in-process run shared this run's card at some point.
+        self.shared = False
+        #: Counters were all zero when this run started (no CUDA context).
+        self.fresh = False
+        #: Cards whose counters this run reset at its start.
+        self.reset_cards: set[int] = set()
+        self._index = index
 
-def read_peak_memory(
-    device: str | None, *, exact: bool,
-) -> dict[str, Any] | None:
-    """The run's peak device memory, as ``execution_facts.peak_memory``.
+    def open(self) -> "PeakMemoryScope":
+        """Register on the run's card and reset what is safe to reset."""
+        if self.kind != "cuda":
+            return self
+        torch = sys.modules.get("torch")
+        initialised = _cuda_initialised(torch)
+        # A bare ``cuda`` is whichever card torch points at. Asking would
+        # initialise CUDA; without a context nothing has moved it off 0.
+        self.card = self._index
+        if self.card is None:
+            self.card = (int(torch.cuda.current_device()) if initialised
+                         else 0)
+        others = [scope for scope in _ACTIVE_SCOPES if scope is not self]
+        for scope in others:
+            if scope.card == self.card:
+                scope.shared = True
+                self.shared = True
+        _ACTIVE_SCOPES.append(self)
+        if not initialised:
+            self.fresh = torch is not None
+            return self
+        if self.shared:
+            return self
+        busy = {scope.card for scope in others}
+        try:
+            for card in range(int(torch.cuda.device_count())):
+                if card not in busy:
+                    torch.cuda.reset_peak_memory_stats(card)
+                    self.reset_cards.add(card)
+        except Exception:  # noqa: BLE001 - observability never fails a run
+            logger.debug("could not reset the CUDA peak memory statistics",
+                         exc_info=True)
+        return self
 
-    - CUDA: ``{"cuda:N": {"allocated_bytes", "reserved_bytes", "exact"}}``
-      from ``max_memory_allocated`` / ``max_memory_reserved`` since
-      :func:`reset_peak_memory`.
-    - MPS: ``{"mps": {"allocated_bytes", "exact"}}`` from
-      ``torch.mps.driver_allocated_memory()`` at the END of the run. MPS
-      has no peak counter, so this is what the driver still holds when the
-      run ends, a lower bound on the peak.
-    - CPU, torch never loaded, or any read failing: None.
+    def close(self) -> None:
+        """Unregister. Idempotent."""
+        if self in _ACTIVE_SCOPES:
+            _ACTIVE_SCOPES.remove(self)
 
-    *exact* is the caller's to say. In-process runs share one CUDA context
-    (and one MPS driver allocation) with everything else in this process,
-    so a concurrent run on the same card inflates the number, and that
-    run's own reset can lower it: those pass ``exact=False``. A run alone
-    in its own process (the worker subprocess, #771) passes True.
-    """
-    kind, index = _device_kind_index(device)
-    if kind not in ("cuda", "mps"):
-        return None
-    torch = sys.modules.get("torch")
-    if torch is None:
-        return None
-    try:
-        if kind == "cuda":
-            resolved = _cuda_index(torch, index)
-            if resolved is None:
-                return None
-            return {f"cuda:{resolved}": {
-                "allocated_bytes": int(
-                    torch.cuda.max_memory_allocated(resolved)),
-                "reserved_bytes": int(
-                    torch.cuda.max_memory_reserved(resolved)),
-                "exact": bool(exact),
-            }}
-        mps_backend = getattr(torch.backends, "mps", None)
-        if mps_backend is None or not mps_backend.is_available():
+    def read(self, *, exact: bool) -> dict[str, Any] | None:
+        """The run's device memory, as ``execution_facts.peak_memory``.
+
+        - CUDA: one ``"cuda:N"`` entry per card this process holds memory
+          on (``memory_reserved > 0`` or a nonzero peak), the run's own card
+          first, so a node pinned to another card is counted too. Each is
+          ``{"allocated_bytes", "reserved_bytes", "exact"}`` from
+          ``max_memory_allocated`` / ``max_memory_reserved``, plus
+          ``"shared": true`` when the number is not this run's alone:
+          another in-process run used the card while this one ran, or its
+          counters could not be reset at the start (they then still hold
+          an earlier peak).
+        - MPS: ``{"mps": {"held_bytes", "exact"}}``,
+          ``torch.mps.driver_allocated_memory()`` at the END of the run:
+          everything the Metal driver holds for this process, the
+          allocator's cache included. MPS has no peak counter, so this is
+          not a peak and not a bound on one.
+        - CPU, torch never loaded, CUDA never initialised, or a read
+          failing: None.
+
+        *exact* is the caller's to say: in-process runs share one CUDA
+        context and pass False; a run alone in its own process (the worker
+        subprocess, #771) can pass True. A ``shared`` card is never exact.
+        """
+        if self.kind not in ("cuda", "mps"):
             return None
-        return {"mps": {
-            "allocated_bytes": int(torch.mps.driver_allocated_memory()),
-            "exact": bool(exact),
-        }}
-    except Exception:  # noqa: BLE001 - observability never fails a run
-        logger.debug("could not read the %s peak memory", kind,
-                     exc_info=True)
-        return None
+        torch = sys.modules.get("torch")
+        if torch is None:
+            return None
+        try:
+            if self.kind == "mps":
+                backend = getattr(torch.backends, "mps", None)
+                if backend is None or not backend.is_available():
+                    return None
+                return {"mps": {
+                    "held_bytes": int(torch.mps.driver_allocated_memory()),
+                    "exact": False,
+                }}
+            if not _cuda_initialised(torch):
+                return None
+            count = int(torch.cuda.device_count())
+            order = sorted(range(count), key=lambda card: card != self.card)
+            busy = {scope.card for scope in _ACTIVE_SCOPES
+                    if scope is not self}
+            entries: dict[str, Any] = {}
+            for card in order:
+                allocated = int(torch.cuda.max_memory_allocated(card))
+                if allocated <= 0 and torch.cuda.memory_reserved(card) <= 0:
+                    continue
+                shared = (
+                    (self.shared and card == self.card)
+                    or card in busy
+                    or (not self.fresh and card not in self.reset_cards)
+                )
+                entry: dict[str, Any] = {
+                    "allocated_bytes": allocated,
+                    "reserved_bytes": int(
+                        torch.cuda.max_memory_reserved(card)),
+                    "exact": bool(exact) and not shared,
+                }
+                if shared:
+                    entry["shared"] = True
+                entries[f"cuda:{card}"] = entry
+            return entries or None
+        except Exception:  # noqa: BLE001 - observability never fails a run
+            logger.debug("could not read the %s peak memory", self.kind,
+                         exc_info=True)
+            return None
+
+
+#: In-process runs currently measuring (see the block comment above).
+_ACTIVE_SCOPES: list[PeakMemoryScope] = []
+
+
+def _cuda_initialised(torch: Any) -> bool:
+    """True when *torch* has a live CUDA context. Never initialises one."""
+    if torch is None:
+        return False
+    try:
+        return bool(torch.cuda.is_initialized())
+    except Exception:  # noqa: BLE001 - no driver, a broken build
+        return False
 
 
 # ── engine bridges ────────────────────────────────────────────────────────
