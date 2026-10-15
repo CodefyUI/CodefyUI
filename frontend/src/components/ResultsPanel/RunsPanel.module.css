@@ -109,7 +109,8 @@
   grid-template-columns:
     minmax(90px, 240px)   /* name */
     84px                  /* status chip */
-    minmax(70px, 170px)   /* device + queue position */
+    minmax(70px, 120px)   /* worker (+ why it waits) */
+    minmax(70px, 150px)   /* devices + queue position */
     68px                  /* started */
     72px                  /* duration */
     80px                  /* final loss */
@@ -170,6 +171,23 @@
 
 .queuePos {
   color: var(--accent-deep);
+}
+
+/* The worker's name, and under it why a queued run waits (#772). */
+.workerCell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.queueReason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--status-warning);
+  font-size: var(--fs-xs);
 }
 
 .empty {
@@ -463,14 +481,14 @@
 
 /* ── narrow dock ──────────────────────────────────────────────────────
    With the detail open, a 1280px laptop leaves the table roughly 600px
-   against a ~676px minimum, which clips the actions column off the right
+   against a ~730px minimum (with the worker column, #775), which clips the actions column off the right
    edge. Drop the least load-bearing columns instead: `started` is also in
    the detail header, and the device is repeated on the chip row there. */
 
-@container (max-width: 720px) {
+@container (max-width: 780px) {
   .row {
     grid-template-columns:
-      minmax(80px, 200px) 84px minmax(70px, 150px) 68px 76px minmax(120px, 1fr);
+      minmax(80px, 200px) 84px minmax(60px, 100px) minmax(70px, 130px) 68px 76px minmax(120px, 1fr);
   }
 
   .colStarted {
@@ -502,14 +520,15 @@
 @container (max-width: 560px) {
   /* Five tracks for the five cells still visible here (name, status,
      duration, loss, actions) — `started` is gone from the rule above and
-     `device` from this one. Final loss stays because it is the one number
+     `worker` and `devices` from this one. Final loss stays because it is the one number
      that says what the run achieved; a sixth dropped column is cheaper than
      losing it, and 70+84+68+76+110 plus gaps still fits inside 560px. */
   .row {
     grid-template-columns: minmax(70px, 1fr) 84px 68px 76px minmax(110px, auto);
   }
 
-  .colDevice {
+  .colDevice,
+  .colWorker {
     display: none;
   }
 }

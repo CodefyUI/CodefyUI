@@ -224,9 +224,10 @@ export interface RunSummary {
   /** Zero-based compiled variant index within its sweep. */
   sweep_variant?: number | null;
   /**
-   * Where the run executes (#769). `local` (this server process) is the
-   * only worker today, and a row from before #769 reads `local` too.
-   * Optional: a server before #769 does not send it.
+   * Where the run executes (#769 / #772): `local` (this server process), a
+   * worker's name once placed, or `any` while an `any` run waits. A row
+   * from before #769 reads `local`. Optional: a server before #769 does not
+   * send it.
    */
   worker_id?: string;
   /**
@@ -235,6 +236,12 @@ export interface RunSummary {
    * queue is still `queue_key`.
    */
   devices?: string[] | null;
+  /**
+   * Why a queued run is not starting beyond its place in line (#772), e.g.
+   * `waiting for worker gpu-box to reconnect`; `null` otherwise. Optional:
+   * a server before #772 does not send it.
+   */
+  queue_reason?: string | null;
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */
@@ -324,6 +331,47 @@ export async function deleteRun(
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail ?? `Delete failed: ${res.statusText}`);
   }
+  return res.json();
+}
+
+/**
+ * Where a queued run executes (#769 / #772): `local` (this server), `any`
+ * (the first connected worker with room, this server last) or a worker's
+ * name. `devices` is the device set: physical ids of one kind. Absent, the
+ * run's `device` option decides.
+ */
+export interface RunTarget {
+  worker: string;
+  devices?: string[];
+}
+
+export interface SubmitRunRequest {
+  /** A serialized graph, with its session secrets (the run needs them in memory; the server drops them before persisting). */
+  graph: Record<string, unknown>;
+  /** `target`, `device`, `seed`, `deterministic`, `record_outputs`, ... */
+  options: Record<string, unknown> & { target?: RunTarget };
+  name: string | null;
+}
+
+export interface SubmitRunResponse {
+  run_id: string;
+  /** `running` when it started at once, `queued` when it joined a FIFO. */
+  status: RunStatus;
+}
+
+/**
+ * Submit a run on the queued lane (`POST /api/runs`), as `cdui run` does.
+ * Returns once the run is scheduled. A refusal (400: a target the server
+ * cannot place, 503: the run service is not up) throws an `ApiError`
+ * carrying the server's sentence.
+ */
+export async function submitRun(request: SubmitRunRequest): Promise<SubmitRunResponse> {
+  const res = await apiFetch(`${BASE_URL}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) return detailError(res, 'Failed to submit run');
   return res.json();
 }
 
@@ -460,12 +508,12 @@ export interface CancelSweepResponse {
 }
 
 /**
- * A refused sweep request, as an `ApiError` so a caller can tell a 404 (the
- * sweep is gone) from a failure worth retrying. FastAPI's 422 carries a list
+ * A refused sweep or run request, as an `ApiError` so a caller can
+ * tell a 404 (the sweep is gone) from a failure worth retrying. FastAPI's 422 carries a list
  * of `{loc, msg}` entries, read here as `field: message` lines; `loc` starts
  * with `body`, which names no field.
  */
-async function sweepError(res: Response, fallback: string): Promise<never> {
+async function detailError(res: Response, fallback: string): Promise<never> {
   const raw = await res.json().catch(() => null);
   const body = raw !== null && typeof raw === 'object' ? raw as Record<string, unknown> : null;
   const detail = body?.detail;
@@ -493,7 +541,7 @@ export async function createSweep(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   });
-  if (!res.ok) return sweepError(res, 'Failed to create sweep');
+  if (!res.ok) return detailError(res, 'Failed to create sweep');
   return res.json();
 }
 
@@ -503,7 +551,7 @@ export async function getSweep(
 ): Promise<SweepDetail> {
   const url = `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}`;
   const res = signal ? await apiFetch(url, { signal }) : await apiFetch(url);
-  if (!res.ok) return sweepError(res, 'Failed to fetch sweep');
+  if (!res.ok) return detailError(res, 'Failed to fetch sweep');
   return res.json();
 }
 
@@ -512,7 +560,7 @@ export async function cancelSweep(sweepId: string): Promise<CancelSweepResponse>
     `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}/cancel`,
     { method: 'POST' },
   );
-  if (!res.ok) return sweepError(res, 'Failed to cancel sweep');
+  if (!res.ok) return detailError(res, 'Failed to cancel sweep');
   return res.json();
 }
 
@@ -520,7 +568,7 @@ export async function downloadSweepCsv(sweepId: string): Promise<void> {
   const res = await fetch(
     `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}?format=csv`,
   );
-  if (!res.ok) return sweepError(res, 'Failed to download sweep CSV');
+  if (!res.ok) return detailError(res, 'Failed to download sweep CSV');
   if (!res.headers.get('content-type')?.toLowerCase().startsWith('text/csv')) {
     throw new Error('Sweep export response is not CSV');
   }

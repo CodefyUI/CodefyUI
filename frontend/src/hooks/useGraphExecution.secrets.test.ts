@@ -505,7 +505,7 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe('the keys go only to in-memory execution requests', () => {
-  it('limits keepSecrets to the store, Run hook and New Sweep dialog', () => {
+  it('limits keepSecrets to the store, Run hook, New Sweep and Queue run dialogs', () => {
     const users = sourceFiles(SRC)
       .filter((file) => readFileSync(file, 'utf8').includes('keepSecrets'))
       // Posix separators, so the list reads the same on Windows and Linux.
@@ -513,9 +513,20 @@ describe('the keys go only to in-memory execution requests', () => {
       .sort();
     expect(users).toEqual([
       'components/ResultsPanel/NewSweepDialog.tsx',
+      'components/Toolbar/QueueRunDialog.tsx',
       'hooks/useGraphExecution.ts',
       'store/tabStore.ts',
     ]);
+  });
+
+  it('keeps the queued run graph local to its submit request (#775)', () => {
+    const dialog = readFileSync(
+      join(SRC, 'components', 'Toolbar', 'QueueRunDialog.tsx'),
+      'utf8',
+    );
+    expect(dialog).toContain('const graph = store.getSerializedGraph({ keepSecrets: true })');
+    expect(dialog).toMatch(/await submitRun\(\{\r?\n        graph,/);
+    expect(dialog).not.toMatch(/set[A-Z]\w*\([^)]*graph/);
   });
 
   it('keeps the New Sweep graph local to its create request', () => {

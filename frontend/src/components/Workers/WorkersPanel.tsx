@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkerDevice, WorkerInfo, WorkerStatus } from '../../api/workers';
 import { useI18n } from '../../i18n';
@@ -8,7 +8,6 @@ import { friendlyError } from '../../utils/errorMessages';
 import { formatBytes } from '../../utils/formatBytes';
 import { relativeTime } from '../SourceControl/scm';
 import { trapTab } from '../shared/focusTrap';
-import { AddWorkerDialog } from './AddWorkerDialog';
 import styles from './WorkersPanel.module.css';
 
 /** Hex characters of the environment digest shown; the tooltip has it all. */
@@ -183,6 +182,11 @@ function WorkerCard({ worker, serverVersion, now }: {
  * Opened from Settings -> Execution and from the Runs panel header; mounted
  * once in `App`.
  */
+/** The Add worker dialog (#776), loaded the first time it opens. */
+const AddWorkerDialog = lazy(() =>
+  import('./AddWorkerDialog').then((module) => ({ default: module.AddWorkerDialog })),
+);
+
 export function WorkersPanel() {
   const open = useWorkerStore((s) => s.panelOpen);
   if (!open) return null;
@@ -276,7 +280,11 @@ function WorkersDialog() {
           {content}
         </div>
       </div>
-      {addOpen && <AddWorkerDialog mode="same-host" onClose={() => setAddOpen(false)} />}
+      {addOpen && (
+        <Suspense fallback={null}>
+          <AddWorkerDialog mode="same-host" onClose={() => setAddOpen(false)} />
+        </Suspense>
+      )}
     </div>,
     document.body,
   );

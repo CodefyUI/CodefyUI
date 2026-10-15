@@ -48,7 +48,9 @@ export type ModalName =
   /** The Runs panel's New Sweep dialog. */
   | 'newSweep'
   /** The Workers panel (#776), Add worker dialog included. */
-  | 'workers';
+  | 'workers'
+  /** The toolbar's Queue on... dialog (#775). */
+  | 'queueRun';
 
 type UIStoreState = ReturnType<typeof useUIStore.getState>;
 type TabStoreState = ReturnType<typeof useTabStore.getState>;
@@ -83,6 +85,7 @@ function uiModalOpen(s: UIStoreState, ignore: readonly ModalName[]): boolean {
   if (!ignore.includes('pluginCenter') && s.pluginCenterOpen) return true;
   if (!ignore.includes('customNodeManager') && s.customNodeManagerOpen) return true;
   if (!ignore.includes('gitDiff') && s.gitDiff) return true;
+  if (!ignore.includes('queueRun') && s.queueRunOpen) return true;
   return false;
 }
 

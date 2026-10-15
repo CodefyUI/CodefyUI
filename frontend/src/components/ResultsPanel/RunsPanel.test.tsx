@@ -8,6 +8,9 @@ import {
   deviceMemoryEntries,
   requestedDeviceNote,
   runDevice,
+  runDevices,
+  runWorker,
+  deviceAliasLines,
 } from './RunsPanel';
 import styles from './RunsPanel.module.css';
 import { formatBytes } from '../../utils/formatBytes';
@@ -209,6 +212,48 @@ describe('RunsPanel — the table', () => {
     // A null position must NOT render as 0.
     expect(within(rowOf('q2')).queryByText(/Queue #/)).not.toBeInTheDocument();
     expect(within(rowOf('q2')).queryByText(/Queue #0/)).not.toBeInTheDocument();
+  });
+
+  it('names where each run executes: This server, a worker, or any while it waits (#775)', async () => {
+    await renderPanel([
+      makeRun({ id: 'l', name: 'here', worker_id: 'local', devices: ['cpu'] }),
+      makeRun({ id: 'o', name: 'old-row', worker_id: undefined, queue_key: 'cpu' }),
+      makeRun({
+        id: 'w', name: 'on-box', status: 'running', worker_id: 'gpu-box',
+        queue_key: 'gpu-box/cuda:2', devices: ['cuda:2', 'cuda:0'], finished_at: null,
+      }),
+      makeRun({
+        id: 'a', name: 'waiting', status: 'queued', worker_id: 'any', queue_key: null,
+        options: { device: 'cuda' }, queue_position: 1, started_at: null, finished_at: null,
+        queue_reason: 'waiting for a worker that offers cuda',
+      }),
+    ]);
+    expect(screen.getByRole('columnheader', { name: 'Worker' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Devices' })).toBeInTheDocument();
+    expect(within(rowOf('l')).getByText('This server')).toBeInTheDocument();
+    expect(within(rowOf('o')).getByText('This server')).toBeInTheDocument();
+    expect(within(rowOf('o')).getByText('cpu')).toBeInTheDocument();
+    // The worker has its own column; the devices cell is the set.
+    expect(within(rowOf('w')).getByText('gpu-box')).toBeInTheDocument();
+    const set = within(rowOf('w')).getByText('cuda:2, cuda:0');
+    expect(set).toHaveAttribute('title', 'cuda:2 -> cuda:0 in this run\ncuda:0 -> cuda:1 in this run');
+    // A local run is not renumbered.
+    expect(within(rowOf('l')).getByText('cpu')).not.toHaveAttribute('title');
+    // Queued: position as before, and why it waits beside the worker.
+    const waiting = rowOf('a');
+    expect(within(waiting).getByText('Any available')).toBeInTheDocument();
+    expect(within(waiting).getByText(/Queue #1/)).toBeInTheDocument();
+    const reason = within(waiting).getByText('waiting for a worker that offers cuda');
+    expect(reason.parentElement).toHaveAttribute('title', 'waiting for a worker that offers cuda');
+  });
+
+  it('shows no reason for a queued run the server gave none, nor for a running one', async () => {
+    await renderPanel([
+      makeRun({ id: 'q', name: 'q', status: 'queued', queue_reason: null, started_at: null, finished_at: null }),
+      makeRun({ id: 'r', name: 'r', status: 'running', queue_reason: 'stale', finished_at: null }),
+    ]);
+    expect(within(rowOf('q')).getByText('This server')).not.toHaveAttribute('title');
+    expect(within(rowOf('r')).queryByText('stale')).toBeNull();
   });
 
   it('falls back to the requested device when the run has not been scheduled yet', async () => {
@@ -1285,6 +1330,24 @@ describe('RunsPanel helpers', () => {
     expect(runDevice(makeRun({ id: 'a', queue_key: null, options: { device: 'cpu' } })))
       .toBe('cpu');
     expect(runDevice(makeRun({ id: 'a', queue_key: null, options: {} }))).toBe('-');
+  });
+
+  it('reads the worker and the devices of a row (#775)', () => {
+    expect(runWorker(makeRun({ id: 'a' }))).toBe('local');
+    expect(runWorker(makeRun({ id: 'a', worker_id: 'gpu-box' }))).toBe('gpu-box');
+    expect(runDevices(makeRun({ id: 'a', devices: ['cuda:0', 'cuda:1'] }))).toBe('cuda:0, cuda:1');
+    expect(runDevices(makeRun({ id: 'a', devices: [], queue_key: 'gpu-box/cuda:1' }))).toBe('cuda:1');
+    expect(runDevices(makeRun({ id: 'a', devices: null, queue_key: 'cpu' }))).toBe('cpu');
+    expect(runDevices(makeRun({ id: 'a', queue_key: null, options: {} }))).toBe('-');
+  });
+
+  it('lists the in-run names of a worker run, and nothing when none changes', () => {
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: ['cuda:1'] }), t))
+      .toBe('cuda:1 -> cuda:0 in this run');
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: ['cuda:0'] }), t)).toBeNull();
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: ['cpu'] }), t)).toBeNull();
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: null }), t)).toBeNull();
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'local', devices: ['cuda:1'] }), t)).toBeNull();
   });
 
   it('notes the requested device only when the scheduler resolved another', () => {

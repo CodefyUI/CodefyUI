@@ -7,6 +7,8 @@ import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { isRunSeed } from '../../utils/graphSettings';
+import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import {
   buildRangeDomain,
   buildValuesDomain,
@@ -34,8 +36,6 @@ interface DomainEditor {
   scale: 'linear' | 'log';
 }
 
-/** The planner seed range the server accepts (`sweep_compiler.MAX_PLANNER_SEED`). */
-const MAX_PLANNER_SEED = 0xFFFFFFFF;
 /**
  * Objectives offered before any listed run has recorded a series: what the
  * built-in TrainingLoop logs every epoch, and with validation data.
@@ -57,41 +57,12 @@ function isNumeric(entry: EligibleSweepParam | null | undefined): boolean {
 
 function parseSeed(raw: string): number {
   const value = Number(raw);
-  if (raw.trim() === '' || !Number.isInteger(value) || value < 0 || value > MAX_PLANNER_SEED) {
+  // The planner seed range (`sweep_compiler.MAX_PLANNER_SEED`) is the run
+  // seed range, so the one run-seed check serves both.
+  if (raw.trim() === '' || !isRunSeed(value)) {
     throw new SweepInputError('seed');
   }
   return value;
-}
-
-/**
- * The server's run-name limit (`run_service.MAX_NAME_LENGTH`), in code points.
- * Also the Name field's `maxLength`, which counts UTF-16 units, at least one
- * per code point, so typing stops at the limit or before it. An input method
- * can compose past `maxLength`, so a typed name is cut when sent as well.
- */
-const MAX_RUN_NAME_LENGTH = 64;
-
-/**
- * A run name the server stores rather than refuses (#623). The sweep route
- * REFUSES a name over the limit instead of cutting it, so a sweep's name is
- * made storable here the way the server makes a canvas run's: trimmed, cut to
- * the limit in code points (`Array.from` counts them, as the server does), and
- * half of a surrogate pair, which the database cannot store, sent as "?".
- */
-function storableRunName(raw: string): string {
-  return Array.from(raw.trim(), (char) => {
-    const code = char.codePointAt(0) ?? 0;
-    return code >= 0xd800 && code <= 0xdfff ? '?' : char;
-  }).slice(0, MAX_RUN_NAME_LENGTH).join('').trimEnd();
-}
-
-/**
- * What a blank Name sends: the tab's name, as a canvas run is named (#623).
- * Checked to be text, since a tab restored from a damaged record may not
- * carry one.
- */
-function tabDefaultName(tab: { name?: unknown } | null): string {
-  return tab && typeof tab.name === 'string' ? storableRunName(tab.name) : '';
 }
 
 /** Compact, keyboard-contained editor for one sweep request. */
