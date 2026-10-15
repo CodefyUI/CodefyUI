@@ -10,6 +10,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { useI18n } from '../../i18n';
 import {
   resetWeights,
@@ -1055,6 +1056,17 @@ describe('SettingsPopover', () => {
     expect(useUIStore.getState().guideOpen).toBe(true);
     useUIStore.getState().closeGuide();
     expect(useUIStore.getState().guideOpen).toBe(false);
+  });
+
+  it('opens the Workers panel from Execution, closing the popover (#776)', async () => {
+    useWorkerStore.setState({ panelOpen: false });
+    const onClose = vi.fn();
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Workers');
+    fireEvent.click(within(row).getByRole('button', { name: 'Manage' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(useWorkerStore.getState().panelOpen).toBe(true);
+    useWorkerStore.setState({ panelOpen: false });
   });
 
   // ── Reset weights ─────────────────────────────────────────────────

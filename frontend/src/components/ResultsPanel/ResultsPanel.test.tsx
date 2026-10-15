@@ -3,6 +3,7 @@ import { cleanup, render, screen, fireEvent, act, within } from '@testing-librar
 import { ResultsPanel } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { useI18n } from '../../i18n';
 import {
   _clearPluginPanels, registerPluginPanel, removePluginPanel,
@@ -862,6 +863,21 @@ describe('ResultsPanel — Runs tab', () => {
     // The attach streams into the log, so that is where the user is put.
     expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
     expect(screen.getByText('a log line')).toBeInTheDocument();
+  });
+
+  it('shows the Runs tab, expanded, when a Workers panel run link asks for it (#776)', () => {
+    seedLogs([]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    act(() => useWorkerStore.getState().revealRuns());
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
+  });
+
+  it('does not jump to Runs for a link clicked before it mounted (#776)', () => {
+    act(() => useWorkerStore.getState().revealRuns());
+    seedLogs([]);
+    render(<ResultsPanel />);
+    expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
   });
 
   it('hides the Runs panel while the dock is collapsed', () => {

@@ -14,6 +14,7 @@ import {
   type RunStatusFilter,
 } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
+import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
 import { LossChart } from './LossChart';
 import { NewSweepDialog } from './NewSweepDialog';
@@ -678,6 +679,14 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               onClick={() => setNewSweepOpen(true)}
             >
               {t('sweeps.new.title')}
+            </button>
+            <button
+              type="button"
+              className={styles.rowBtn}
+              title={t('workers.openTitle')}
+              onClick={() => useWorkerStore.getState().openPanel()}
+            >
+              {t('workers.open')}
             </button>
             <span className={styles.countText}>
               {t('runs.showing', { shown: runs.length, total })}
