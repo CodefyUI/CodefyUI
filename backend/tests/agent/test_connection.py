@@ -20,6 +20,7 @@ from app.agent.connection import (
     next_backoff,
     worker_ws_url,
 )
+from app.agent.facts import AgentFacts
 from app.agent.runner import Runner
 from app.core import worker_protocol as wp
 from app.core.machine_identity import machine_identity
@@ -114,13 +115,14 @@ def _cpu() -> list[wp.DeviceReport]:
 class Agent:
     """An ``AgentConnection`` serving in a task, stopped on exit."""
 
-    def __init__(self, tmp_path: Any, control: str, **runner_kw: Any) -> None:
+    def __init__(self, tmp_path: Any, control: str, facts: Any = None,
+                 **runner_kw: Any) -> None:
         runner_kw.setdefault("offered_devices", {"cpu"})
         self.runner = Runner(runs_dir=tmp_path / "agent-runs", **runner_kw)
         self.connection = AgentConnection(
             runner=self.runner, name="test-box", version="9.9.9",
             control_url=lambda: control, token="tok en/1",
-            probe_devices=_cpu, backoff_min_s=0.05)
+            probe_devices=_cpu, backoff_min_s=0.05, facts=facts)
         self.stop = asyncio.Event()
         self.task: asyncio.Task | None = None
 
@@ -214,6 +216,25 @@ async def test_hello_heartbeats_and_a_run_match_in_process(tmp_path):
         # A heartbeat during the run named it.
         assert any("run1" in beat.running
                    for beat in cp.of_type(wp.Heartbeat))
+
+
+async def test_hello_carries_the_facts_and_capabilities(tmp_path):
+    """#781: the fingerprint and node catalog the helper collected, and
+    this build's capabilities; none of them without facts."""
+    facts = AgentFacts(fingerprint={"a": 1}, fingerprint_digest="d",
+                       node_catalog_hash="h", node_types=["Start", "x:Y"])
+    async with FakeControlPlane() as cp, Agent(tmp_path, cp.url,
+                                               facts=facts):
+        hello = await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        assert hello.fingerprint == wp.FingerprintReport(document={"a": 1},
+                                                         digest="d")
+        assert (hello.node_catalog_hash, hello.node_types) == (
+            "h", ["Start", "x:Y"])
+        assert hello.capabilities == list(wp.CAPABILITIES)
+    async with FakeControlPlane() as cp, Agent(tmp_path, cp.url):
+        hello = await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        assert hello.fingerprint is None and hello.node_catalog_hash is None
+        assert hello.node_types == []
 
 
 async def test_reject_stops_the_agent(tmp_path):

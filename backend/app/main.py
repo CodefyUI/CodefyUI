@@ -81,7 +81,7 @@ from .core.db import Database
 from .core.git.service import GitService
 from .core import instance_lock
 from .core.logging_config import setup_logging
-from .core.node_registry import registry
+from .core.node_registry import node_catalog, registry
 from .core.node_state_store import NodeStateStore
 from .core.packs import restart as pack_restart
 from .core.packs.service import PackService
@@ -398,7 +398,8 @@ async def _lifespan_body(app: FastAPI):
     # a run without a target is placed and executed in this process.
     worker_registry = WorkerRegistry(
         local_devices=_local_device_facts,
-        resume_grace_s=settings.WORKER_RESUME_GRACE_S)
+        resume_grace_s=settings.WORKER_RESUME_GRACE_S,
+        node_catalog=node_catalog)
     app.state.worker_registry = worker_registry
     # Enrolled workers (#780) are known before they dial in, as offline, so
     # a run can target one and wait. None enrolled: nothing changes.

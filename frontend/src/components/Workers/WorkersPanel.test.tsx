@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import {
   drainWorker,
   fetchEnrollments,
+  fetchWorkerList,
   fetchWorkers,
   removeWorker,
   undrainWorker,
@@ -18,6 +19,7 @@ import { FINGERPRINT_SHORT_LENGTH, WorkersPanel } from './WorkersPanel';
 
 vi.mock('../../api/workers', () => ({
   fetchWorkers: vi.fn(),
+  fetchWorkerList: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
@@ -63,6 +65,7 @@ beforeEach(() => {
   _resetWorkerStoreForTesting();
   vi.spyOn(Date, 'now').mockReturnValue(NOW_S * 1000);
   vi.mocked(fetchWorkers).mockReset().mockResolvedValue([]);
+  vi.mocked(fetchWorkerList).mockReset().mockImplementation(async () => ({ workers: await fetchWorkers(), rejections: [] }));
   rememberAppVersion('3.0.2');
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
@@ -436,6 +439,79 @@ describe('WorkersPanel', () => {
     expect(within(add).getByText(/Re-key new-box/)).toBeInTheDocument();
     fireEvent.keyDown(add, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();
+  });
+
+  it('shows how the node catalog compares: matches, not reported, or the types that differ', async () => {
+    const dialog = await openPanel([
+      worker('same', { node_catalog: { status: 'match', hash: 'h', missing: [], extra: [] } }),
+      worker('old', { node_catalog: { status: 'unknown', hash: null, missing: [], extra: [] } }),
+      worker('bare', {
+        status: 'degraded',
+        degraded_reasons: ['node_catalog'],
+        node_catalog: {
+          status: 'mismatch', hash: 'x', missing: ['foundations:Edu-KNN', 'foundations:Edu-FFN'], extra: ['mine:Only'],
+        },
+      }),
+      worker('fewer', {
+        node_catalog: { status: 'mismatch', hash: 'y', missing: [], extra: ['mine:Only'] },
+      }),
+    ]);
+    const same = within(dialog).getByRole('article', { name: 'same' });
+    expect(within(same).getByText('match this server')).toBeInTheDocument();
+    const old = within(dialog).getByRole('article', { name: 'old' });
+    expect(within(old).getByText(/not reported: runs naming this worker are not checked/)).toBeInTheDocument();
+    const bare = within(dialog).getByRole('article', { name: 'bare' });
+    expect(within(bare).getByText('Degraded')).toBeInTheDocument();
+    expect(within(bare).getByText(/differ from this server/)).toBeInTheDocument();
+    expect(within(bare).getByText('foundations:Edu-KNN, foundations:Edu-FFN').parentElement)
+      .toHaveTextContent('Missing here (2): foundations:Edu-KNN, foundations:Edu-FFN');
+    expect(within(bare).getByText('mine:Only').parentElement).toHaveTextContent('Only on the worker (1): mine:Only');
+    const fewer = within(dialog).getByRole('article', { name: 'fewer' });
+    expect(within(fewer).queryByText(/Missing here/)).toBeNull();
+  });
+
+  it('shows the last refused handshake on a card, and refused names without one on their own', async () => {
+    const reason = 'version mismatch: worker 3.0.1, control plane 3.0.2';
+    vi.mocked(fetchWorkerList).mockResolvedValue({
+      workers: [worker('gpu-box'), worker('busy-box')],
+      rejections: [
+        { name: 'new-box', reason, at: NOW_S - 60 },
+        { name: 'gpu-box', reason: 'version mismatch: worker 1, control plane 2', at: NOW_S - 5, peer: '10.0.0.7' },
+        { name: 'busy-box', reason: 'a worker named busy-box is connected with another kind of credential', at: NOW_S - 9, peer: '10.0.0.9', live_owner: true },
+      ],
+    });
+    render(<WorkersPanel />);
+    act(() => useWorkerStore.getState().openPanel());
+    await settle();
+    const dialog = screen.getByRole('dialog', { name: 'Workers' });
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    expect(within(card).getByText('Last refused')).toBeInTheDocument();
+    expect(within(card).getByText(/version mismatch: worker 1/)).toHaveTextContent(
+      `(${relativeTime(NOW_S - 5, 'en', NOW_S * 1000)}, from 10.0.0.7)`,
+    );
+    // Someone else's attempt on a connected worker's name is not its own.
+    const busy = within(dialog).getByRole('article', { name: 'busy-box' });
+    expect(within(busy).queryByText('Last refused')).toBeNull();
+    const refused = within(dialog).getByRole('region', { name: 'Refused connections' });
+    expect(within(refused).getByText('new-box')).toBeInTheDocument();
+    expect(within(refused).getByText(reason, { exact: false })).toHaveTextContent(
+      `${reason} (${relativeTime(NOW_S - 60, 'en', NOW_S * 1000)})`,
+    );
+    expect(within(refused).queryByText('gpu-box')).toBeNull();
+    expect(within(refused).getByText('busy-box')).toBeInTheDocument();
+    expect(within(refused).getByText(/another kind of credential/)).toHaveTextContent('from 10.0.0.9');
+  });
+
+  it('lists refused names instead of the empty line when no worker is connected', async () => {
+    vi.mocked(fetchWorkerList).mockResolvedValue({
+      workers: [],
+      rejections: [{ name: 'old-box', reason: 'version mismatch', at: 0 }],
+    });
+    render(<WorkersPanel />);
+    act(() => useWorkerStore.getState().openPanel());
+    await settle();
+    expect(screen.queryByText(/No worker agent has connected/)).toBeNull();
+    expect(screen.getByRole('region', { name: 'Refused connections' })).toHaveTextContent('old-box');
   });
 
   it('renders in zh-TW', async () => {

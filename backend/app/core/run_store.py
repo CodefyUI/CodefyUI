@@ -571,6 +571,31 @@ def _capture_plugin_pins() -> dict[str, dict[str, Any]]:
 # ── the store ─────────────────────────────────────────────────────────────
 
 
+def _insert_fingerprint(conn: sqlite3.Connection,
+                        fingerprint: dict[str, Any], digest: str | None,
+                        stamp: str) -> str:
+    """Write *fingerprint* to the content-addressed ``exec_run_fingerprints``
+    (``INSERT OR IGNORE``: the first writer stores it, later ones point at
+    it) and return its digest: *digest* when given (computed from the same
+    canonical bytes by ``env_fingerprint.fingerprint_digest``), else the
+    sha256 of those bytes. One implementation for :meth:`RunStore.mark_running`
+    and :meth:`RunStore.record_fingerprint`."""
+    from .env_fingerprint import SCHEMA_VERSION, canonical_json
+
+    raw = canonical_json(fingerprint)
+    if digest is None:
+        digest = hashlib.sha256(raw).hexdigest()
+    version = fingerprint.get("schema_version")
+    conn.execute(
+        "INSERT OR IGNORE INTO exec_run_fingerprints "
+        "(digest, schema_version, fingerprint, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (digest, version if isinstance(version, int) else SCHEMA_VERSION,
+         raw.decode("utf-8"), stamp),
+    )
+    return digest
+
+
 @dataclass
 class RunStore:
     """Typed CRUD over the four ``exec_*`` tables.
@@ -845,6 +870,7 @@ class RunStore:
         execution_facts: dict[str, Any] | None = None,
         worker_id: str | None = None,
         devices: list[str] | None = None,
+        fingerprint_digest: str | None = None,
     ) -> bool:
         """Move a run to ``running``. False when no such run exists.
 
@@ -862,36 +888,22 @@ class RunStore:
         the same transaction as the status change. None for either argument
         leaves the stored value alone, like *queue_key*; a re-mark that does
         pass them records the environment that started the run most
-        recently, which is the one that executes it.
+        recently, which is the one that executes it. *fingerprint_digest*
+        is the document's digest when the caller already has it (a worker's,
+        computed once at its handshake by ``env_fingerprint``, #781), so it
+        is not hashed again for every run.
 
         *worker_id* / *devices* record where a worker run was PLACED
         (#772): the worker it got and the devices it holds, replacing what
         submit stored (``any`` and the requested set). None leaves them.
         """
         stamp = utc_now_iso()
-        digest: str | None = None
-        canonical: str | None = None
-        schema_version: int | None = None
-        if fingerprint is not None:
-            from .env_fingerprint import SCHEMA_VERSION, canonical_json
-
-            raw = canonical_json(fingerprint)
-            canonical = raw.decode("utf-8")
-            digest = hashlib.sha256(raw).hexdigest()
-            version = fingerprint.get("schema_version")
-            schema_version = version if isinstance(version, int) \
-                else SCHEMA_VERSION
         facts = None if execution_facts is None else _dumps(execution_facts)
 
         def _update(conn: sqlite3.Connection) -> int:
             with transaction(conn):
-                if digest is not None:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO exec_run_fingerprints "
-                        "(digest, schema_version, fingerprint, created_at) "
-                        "VALUES (?, ?, ?, ?)",
-                        (digest, schema_version, canonical, stamp),
-                    )
+                digest = None if fingerprint is None else _insert_fingerprint(
+                    conn, fingerprint, fingerprint_digest, stamp)
                 return conn.execute(
                     "UPDATE exec_runs SET status = ?, "
                     "started_at = COALESCE(started_at, ?), "
@@ -963,6 +975,18 @@ class RunStore:
                 ).rowcount
 
         return await self.db.run(_update) > 0
+
+    async def record_fingerprint(self, fingerprint: dict[str, Any],
+                                 digest: str | None = None) -> str:
+        """Store an environment document without a run; returns its digest.
+
+        For a worker's fingerprint at its handshake (#781), so the digest
+        the Workers panel shows resolves (:meth:`get_fingerprint`) before
+        any run on that worker records it. *digest*, when the caller has
+        it, is not computed again (:func:`_insert_fingerprint`).
+        """
+        return await self.db.run(lambda conn: _insert_fingerprint(
+            conn, fingerprint, digest, utc_now_iso()))
 
     async def get_fingerprint(self, digest: str) -> dict[str, Any] | None:
         """The environment document a ``fingerprint_digest`` names, or None.

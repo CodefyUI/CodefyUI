@@ -10,7 +10,7 @@ schema (#140); 005 indexes metrics by producer (#641); 006 records the
 environment that executed each run (#344); 007 is the durable study
 coordinator (#343); 008 records where each run executes (#769); 009 is
 worker enrollment (#780); 010 says where each artifact's file lives
-(#782).
+(#782); 011 records a worker's environment (#781).
 """
 
 from __future__ import annotations
@@ -528,10 +528,22 @@ ALTER TABLE exec_run_artifacts ADD COLUMN mount_label TEXT;
 ALTER TABLE exec_run_artifacts ADD COLUMN worker_id TEXT;
 """
 
+# ── Migration 011: a worker's environment (#781) ──────────────────────────
+#
+# ``workers.fingerprint_digest`` is the environment fingerprint digest the
+# worker's last ``hello`` carried (``core.env_fingerprint``), so a worker
+# known from an earlier boot shows it before it reconnects. The document
+# itself is in ``exec_run_fingerprints``, content-addressed like a run's
+# (``RunStore.record_fingerprint``). NULL: never reported, or the last
+# connection reported none.
+MIGRATION_011 = """
+ALTER TABLE workers ADD COLUMN fingerprint_digest TEXT;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
-                         MIGRATION_010]
+                         MIGRATION_010, MIGRATION_011]
 
 
 def _is_comment_only(statement: str) -> bool:

@@ -41,6 +41,16 @@ it once. The list's ``local`` field describes this server the same way
 without a run service; its ``mounts`` is this server's own label and path,
 #782), so a Workers panel can draw this server beside its
 workers.
+
+Handshake validation (#781): each worker entry carries ``node_catalog``
+(``{"status": "match" | "mismatch" | "unknown", "hash", "missing",
+"extra"}``: its node catalog against this server's, the type lists sorted)
+and ``degraded_reasons`` (``node_catalog``, ``heartbeat``; ``status`` reads
+``degraded`` when either applies and the worker is not draining), and
+``fingerprint_digest`` is its environment's. The list's ``rejections`` field
+is each worker name's last refused handshake, newest first (``[{"name",
+"reason", "at"}]``, ``at`` in epoch seconds; in memory, cleared when that
+name connects), so the panel can say why a worker never appeared.
 """
 
 from __future__ import annotations
@@ -179,7 +189,8 @@ async def list_workers(request: Request) -> dict[str, Any]:
     registry = _registry(request)
     service = _service(request)
     return {"workers": [_describe(w, service) for w in registry.workers()],
-            "local": _describe_local(service)}
+            "local": _describe_local(service),
+            "rejections": registry.rejections()}
 
 
 def _set_draining(request: Request, worker_id: str,

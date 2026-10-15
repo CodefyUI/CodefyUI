@@ -17,6 +17,7 @@ from httpx_ws import WebSocketDisconnect, aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from app.core import worker_protocol as wp
+from app.core.version import get_version
 from app.core.auth import TOKEN_HEADER, TOKEN_QUERY_PARAM, session_token
 from app.core.db import Database
 from app.core.run_service import RunService
@@ -95,7 +96,7 @@ class FakeAgent:
 
     async def hello(self, name: str = "box", devices: tuple = ("cpu",),
                     **kw: Any) -> Any:
-        await self.send(wp.Hello(name=name, version="t", devices=[
+        await self.send(wp.Hello(name=name, version=get_version(), devices=[
             wp.DeviceReport(value=d, kind=d.split(":")[0]) for d in devices],
             **kw))
         return await self.recv()
@@ -154,9 +155,9 @@ async def test_a_refused_handshake_never_registers(env, path, headers, code):
 
 
 @pytest.mark.parametrize("hello, reason", [
-    (wp.Hello(name="local", version="t"), "reserved"),
-    (wp.Hello(name="any", version="t"), "reserved"),
-    (wp.Hello(name="box", version="t", protocol_version=99),
+    (wp.Hello(name="local", version=get_version()), "reserved"),
+    (wp.Hello(name="any", version=get_version()), "reserved"),
+    (wp.Hello(name="box", version=get_version(), protocol_version=99),
      "protocol version"),
 ])
 async def test_a_bad_hello_is_rejected(env, hello, reason):
@@ -537,7 +538,7 @@ async def test_a_local_run_waits_for_a_same_host_workers_card(
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         agent = FakeAgent(ws)
         await agent.send(wp.Hello(
-            name="box", version="t", machine_id=same_machine_id, devices=[
+            name="box", version=get_version(), machine_id=same_machine_id, devices=[
                 wp.DeviceReport(value="cpu", kind="cpu"),
                 wp.DeviceReport(value="cuda:0", kind="cuda", uuid="u-0")]))
         await agent.recv()

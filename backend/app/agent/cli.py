@@ -57,6 +57,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -540,6 +541,7 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     from ..core import worker_protocol as wp
     from ..core.version import get_version
     from .connection import AgentConnection
+    from .facts import gather as gather_facts
     from .runner import Runner
 
     name = args.name
@@ -556,10 +558,27 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     async def serve() -> int:
         stop = asyncio.Event()
         _install_stop_handlers(asyncio.get_running_loop(), stop)
+        # Once per agent: a helper subprocess imports torch and discovers
+        # the nodes, so this process never does (#781). A stop meanwhile
+        # ends the helper and the agent at once.
+        logger.info("collecting this machine's environment fingerprint and "
+                    "node catalog")
+        cancel = threading.Event()
+        gathering = asyncio.ensure_future(
+            asyncio.to_thread(gather_facts, cancel=cancel))
+        stopping = asyncio.ensure_future(stop.wait())
+        await asyncio.wait({gathering, stopping},
+                           return_when=asyncio.FIRST_COMPLETED)
+        stopping.cancel()
+        if stop.is_set():
+            cancel.set()
+            await gathering
+            return 0
+        facts = gathering.result()
         connection = AgentConnection(
             runner=runner, name=name, version=get_version(),
             control_url=control, token=token, probe_devices=probe,
-            max_message_bytes=settings.WS_MAX_MESSAGE_BYTES,
+            max_message_bytes=settings.WS_MAX_MESSAGE_BYTES, facts=facts,
             token_source=token_source or (
                 f"the session token file {token_file()}"
                 if callable(token) else f"--token / ${TOKEN_ENV}"),

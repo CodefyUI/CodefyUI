@@ -18,7 +18,12 @@ from app.api import ws_worker
 from app.core import worker_protocol as wp
 from app.core.auth import TOKEN_QUERY_PARAM
 from app.core.worker_store import WorkerStore
-from app.core.workers import CREDENTIAL_SESSION, CREDENTIAL_WORKER
+from app.core.env_fingerprint import fingerprint_digest
+from app.core.workers import (
+    CREDENTIAL_SESSION,
+    CREDENTIAL_WORKER,
+    WorkerRegistry,
+)
 from app.main import app
 
 from .test_ws_worker import FakeAgent, _client, _path, _until, env  # noqa: F401
@@ -113,8 +118,10 @@ async def test_connecting_records_the_facts_and_last_seen(enrolled,
         "SELECT last_seen_at FROM workers").fetchone()[0]
     async with _client(token=False) as client, \
             aconnect_ws(_path(worker_token), client) as ws:
-        await FakeAgent(ws).hello("gpu-box", devices=("cpu", "cuda:0"),
-                                  platform={"system": "Linux"})
+        await FakeAgent(ws).hello(
+            "gpu-box", devices=("cpu", "cuda:0"),
+            platform={"system": "Linux"},
+            fingerprint=wp.FingerprintReport(document={"k": 1}, digest="d"))
         await _until(lambda: json.loads(db._conn.execute(
             "SELECT devices_json FROM workers").fetchone()[0]) != [])
     row = db._conn.execute("SELECT * FROM workers").fetchone()
@@ -124,6 +131,18 @@ async def test_connecting_records_the_facts_and_last_seen(enrolled,
     assert row["last_seen_at"] >= before
     [known] = await store.list_workers()
     assert known.name == "gpu-box"
+    # Its environment (#781), shown before it reconnects after a restart.
+    assert row["fingerprint_digest"] == known.fingerprint_digest \
+        == fingerprint_digest({"k": 1})
+    [offline] = WorkerRegistry().load_known([known])
+    assert offline.describe()["fingerprint_digest"] == known.fingerprint_digest
+    # Reconnected without a fingerprint: the stored digest is cleared, so
+    # the panel says "not reported" rather than show a stale one.
+    async with _client(token=False) as client, \
+            aconnect_ws(_path(worker_token), client) as ws:
+        await FakeAgent(ws).hello("gpu-box")
+        await _until(lambda: db._conn.execute(
+            "SELECT fingerprint_digest FROM workers").fetchone()[0] is None)
 
 
 async def test_revoking_disconnects_and_refuses_reconnects(enrolled,

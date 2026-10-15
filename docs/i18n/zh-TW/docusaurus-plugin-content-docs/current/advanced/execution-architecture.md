@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)），以及讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）。以下各節會註明哪些部分仍在規劃中。
+目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)），以及讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）。以下各節會註明哪些部分仍在規劃中。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -75,8 +75,8 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 | 方向 | Frame |
 |-----------|--------|
-| agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊、machine id、裝置、mount、平台）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished` |
-| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄） |
+| agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊與節點型別、capabilities、machine id、裝置、mount、平台）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished` |
+| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄） |
 
 ## 排程 {/* #scheduling */}
 
@@ -92,9 +92,9 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 - **`local`**（或沒有 target）：`LocalScheduler`，即 3.0 的規則。
 - **worker 名稱**：放到該 worker，用裝置集合、或要求的裝置、或該 worker 提供的同種類裝置中第一個有空 slot 的。
-- **`any`**：依名稱順序第一個已連線、未 drain 且能接下這個 run 的 worker，伺服器排最後。CUDA 裝置集合超過一張卡、或是 `cuda:0` 以外的單張卡時，伺服器永遠不符合資格：worker 的 run 子程序看到的集合會從 `cuda:0` 重新編號（`CUDA_VISIBLE_DEVICES`），伺服器的程序則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。其他集合（`cpu`、`mps`、只有 `cuda:0`）在伺服器擁有集合中每個裝置時符合資格。
+- **`any`**：依名稱順序第一個已連線、未 drain、能接下這個 run，且不缺少伺服器有的節點型別的 worker（缺少型別或未回報節點目錄的 worker 會被略過；只多出型別的不會），伺服器排最後。CUDA 裝置集合超過一張卡、或是 `cuda:0` 以外的單張卡時，伺服器永遠不符合資格：worker 的 run 子程序看到的集合會從 `cuda:0` 重新編號（`CUDA_VISIBLE_DEVICES`），伺服器的程序則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。其他集合（`cpu`、`mps`、只有 `cuda:0`）在伺服器擁有集合中每個裝置時符合資格。
 
-**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：既未加入、伺服器啟動以來也從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run（重新編號會改變的 CUDA 集合，則是它見過的所有 worker 都無法服務），或 worker target 搭配 interactive 通道或 `record_outputs`。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
+**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：既未加入、伺服器啟動以來也從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run（重新編號會改變的 CUDA 集合，則是它見過的所有 worker 都無法服務），worker target 搭配 interactive 通道或 `record_outputs`，或指定的降級 worker 缺少圖（展開 preset 與 subgraph 之後）用到的節點型別。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
 
 **Sweep 與 study**（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。`options.target` 會傳到每個子 run。在寫入任何資料列之前，`RunService.check_placeable_batch` 會對每個不同的子 run（子 run 之間只差在圖的 `settings`）套用上面的送出規則，所以 sweep 或 study 要嘛整批被拒絕、要嘛整批被接受；送出子 run 途中有 worker 離線，只會讓它們等待，不會讓整批失敗。只要子 run 還存在，每個 sweep variant 與 study attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。在這台伺服器上帶種子的 run 會占用程序層級的種子閘門而單獨執行；worker run 有自己的隨機狀態，不經過這道閘門，所以在不同 worker 或不同卡上帶種子的子 run 可以同時執行。**新增掃描**對話框提供與 **Queue on...** 相同的目標選擇器，sweep 檢視會顯示每個 variant 的 Worker 與裝置；study 請透過 API 設定 `target`。
 
@@ -127,7 +127,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 - 沒有 `Origin` 標頭（agent 不會送，網頁也沒有理由開這個 socket）；
 - 某個驗證器（`ws_worker.py` 的 `AUTHORISERS`）接受 `X-CodefyUI-Token`（或 `?token=`）中的憑證：來自 loopback 對端的伺服器 **session token**（同機的 agent 從伺服器寫出的 token 檔讀取），或來自任何對端的 **worker token**（agent 加入後取得的長期憑證，見[遠端 Worker](/usage/remote-workers#adding-a-worker)）。
 
-被拒絕的握手以 **4003**（Host、Origin）或 **4401**（憑證）關閉。`accept` 之後，第一個 frame 必須在 10 秒內送出 `hello`；協定版本不符、名稱不合法或為保留字，會收到 `reject`。身分綁定憑證：worker token 代表它的 worker，所以 `hello` 必須使用該名稱；新連線只有在以相同方式驗證時，才能取代同名的現有連線。
+被拒絕的握手以 **4003**（Host、Origin）或 **4401**（憑證）關閉。`accept` 之後，第一個 frame 必須在 10 秒內送出 `hello`。它必須滿足的條件由 `core/worker_handshake.py` 決定（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）：相同的協定版本、相同的 CodefyUI 版本（不同時會被拒絕並列出雙方版本，`version mismatch: worker 3.1.0, control plane 3.1.2`），以及合法且非保留字的名稱；其他情況都會收到 `reject`，原因會依名稱保留給 Workers 面板。身分綁定憑證：worker token 代表它的 worker，所以 `hello` 必須使用該名稱；新連線只有在以相同方式驗證時，才能取代同名的現有連線。
 
 **加入。** Workers 面板的「新增 worker」對話框向 `POST /api/workers/enrollments` 取得一次性 token（`abcdef.0123456789abcdef`，預設 24 小時、可用一次），並顯示 `cdui agent start --control <url> --token <token>`。agent 在 `POST /api/workers/enroll`（不需 session token，依用戶端位址限速）用它換得 worker token，存在 0600 檔案中，每次重啟都沿用。`workers` 與 `worker_enrollments` 兩張表只保存 sha256 雜湊值。已加入的名稱即被占用：只有綁定該 worker 的 token（重新核發）能再次加入，並撤銷舊憑證。`DELETE /api/workers/{id}` 撤銷 worker、中斷連線，並讓佇列中等它的 run 失敗。已加入的 worker 在開機時以 `offline` 載入，所以 run 可以指定它並等待。worker token 或加入請求若從其他機器以明文 HTTP 傳送，會記錄警告。REST 端與 run 路由相同：`GET /api/workers` 開放，`POST /api/workers/{id}/drain` 與 `/undrain` 需要 session token（[API 參考](./api-reference#runs-and-sweeps)）。
 
@@ -135,7 +135,11 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **方向規則。** worker 一律主動連到控制面，從不監聽任何埠；控制面從不連向 worker。worker 從不寫 SQLite。
 
-**規劃中。** 握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）。Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
+**節點目錄與指紋**（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）。agent 永遠不 import torch，所以啟動時由一個短暫的輔助子程序以 run 的方式探索節點，計算節點目錄（`node_registry.node_catalog`：每個節點型別連同 `GET /api/nodes` 提供的定義的 sha256；參數選項採宣告值，不依機器的裝置縮減，所以硬體不影響它）與環境指紋。`hello` 帶著這兩者。節點目錄雜湊與伺服器不同時，worker 會標為 `degraded`，並列出雙方各自缺少的型別；伺服器自己的節點目錄改變時會重新比對。以 worker 為目標的 run，會在送出時於另一個執行緒中計算一次它的節點型別（`worker_handshake.graph_node_types`：準備好的圖，加上 Map 執行的每個已安裝 preset 中的節點）；指定的 worker 若節點目錄不同，就必須擁有全部型別，`WorkerExecutor` 在 `assign` 前也會再檢查一次。指紋文件與 run 的指紋存在同一處（`exec_run_fingerprints`），摘要記在 `workers` 那一列，worker 執行的每個 run 也以它作為 `fingerprint_digest`。
+
+**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack` 與 `mounts`）；只有雙方清單都列出的功能才會使用。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；接下來新增的功能（tunnel、`transfer` 後端）改為宣告 capability。
+
+**TLS。** Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 
 ## 不變量 {/* #invariants */}
 

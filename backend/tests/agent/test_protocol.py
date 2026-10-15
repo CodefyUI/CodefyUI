@@ -65,7 +65,6 @@ def test_nan_crosses_the_wire_unchanged():
     "not json", "[1, 2]", '{"type": "nope"}',
     '{"type": "event", "run_id": "r1", "seq": 0, "event_type": "x"}',
     '{"type": "event", "run_id": "../etc", "seq": 1, "event_type": "x"}',
-    '{"type": "heartbeat", "surprise": 1}',
     '{"type": "metrics", "run_id": "r1", "seq": 1, "points": []}',
 ])
 def test_invalid_agent_frames_are_refused(raw):

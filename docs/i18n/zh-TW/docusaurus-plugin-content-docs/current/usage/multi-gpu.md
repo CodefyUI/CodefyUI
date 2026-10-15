@@ -90,9 +90,11 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 從 Runs 面板標題列的 **Workers**，或 **Settings → 執行 → Workers → 管理**開啟。開啟期間每 5 秒更新一次，每個 worker 會顯示：
 
-- 狀態（**Online**、心跳延遲時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、mount 標籤（見[儲存：共用檔案系統](./run-queue#storage-shared-filesystem)），以及上次心跳距今多久；
+- 狀態（**Online**、心跳延遲或節點型別與伺服器不同時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、節點型別是否與伺服器相同（以及哪些不同）、上次連線被拒的原因、mount 標籤（見[儲存：共用檔案系統](./run-queue#storage-shared-filesystem)），以及上次心跳距今多久；
 - 每個裝置在最近一次心跳時的可用與總記憶體，以及 slot 的已占用 / 上限；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
+
+伺服器拒絕過（例如版本不同）且沒有卡片的 agent，會列在 **被拒的連線** 下並附上原因（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。
 
 **排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 會產生另一台機器用的加入指令，或顯示上面那段同機指令與其參數。**重新核發** 讓 worker 換新憑證，**移除** 會撤銷憑證、中斷連線，並讓佇列中等它的 run 失敗（[遠端 Worker](/usage/remote-workers)）。
 

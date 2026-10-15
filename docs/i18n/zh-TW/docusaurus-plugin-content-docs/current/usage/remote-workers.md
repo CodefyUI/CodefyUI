@@ -70,3 +70,18 @@ openssl x509 -in /path/to/fullchain.pem -pubkey -noout | openssl pkey -pubin -ou
 **未加密的 HTTP。** 以 `http://` 位址連到另一台機器時，`cdui agent start` 會印出一次警告：worker token 與每個指派中的 secret 參數都以明文傳輸。Agent 仍會連線。Workers 面板會把這種 worker 標成 **未加密 HTTP**：它的連線從另一台機器未加密地抵達伺服器。伺服器依連線的 scheme（只有 uvicorn 回報 `wss` 才算，uvicorn 只對 `--forwarded-allow-ips` 列出的 proxy 這麼做；CodefyUI 本身從不讀 `X-Forwarded-Proto`）與對端位址判斷：loopback 對端，例如同一台機器的 agent 或 SSH 通道的本機端，不會被標記，因為跨越網路的不是那條 socket。同樣的理由，`http://127.0.0.1` 位址不會讓 agent 印出警告。
 
 不涵蓋：mutual TLS（agent 由 worker 憑證識別）、由 CodefyUI 管理的憑證機構，以及使用者身分。
+
+## 讓 worker 保持同步 {/* #keeping-workers-in-sync */}
+
+worker 必須執行與伺服器相同的 CodefyUI 版本，也應該認得相同的節點。agent 每次連線時，伺服器都會檢查這兩項。
+
+**版本。** 版本不同的 agent 會被拒絕，原因中列出雙方版本，例如 `version mismatch: worker 3.1.0, control plane 3.1.2`。agent 會停止而不重試，Workers 面板則在 **被拒的連線** 下列出該名稱與原因，所以一直沒出現的 worker 會說明原因；試圖搶用已連線 worker 名稱的 agent 會連同位址列在那裡，不會顯示在該 worker 的卡片上。版本會在 agent 第一則訊息中最先被讀取，所以即使訊息格式已改變的 agent 也會得到這個原因。在 worker 上安裝相同版本後重新啟動 agent；該名稱連線成功後，拒絕紀錄就會清除。面板會保留每個名稱最近一次的拒絕，直到伺服器重新啟動。
+
+**節點型別。** 外掛、Package Center 套件與自訂節點都是每台機器各自安裝。agent 啟動時，一個短暫的輔助程序會以 run 的方式載入所有節點，回報節點型別與其定義的雜湊（節點目錄）。雜湊與伺服器不同時，worker 會標為 **Degraded**，卡片列出 worker 缺少的型別，以及只有它有的型別。降級的 worker：
+
+- 缺少伺服器有的型別時，永遠不會收到 target 為 `any` 的 run（只比伺服器多出型別的 worker 仍可接收）；
+- 只有在圖用到的每個節點型別它都有時，才會收到 run：包括展開 preset 與 subgraph 之後的節點，以及 **Map** 節點所執行的每個已安裝 preset 中的節點。否則送出時就會被拒絕並列出缺少的型別；佇列中的 run 在送出前也會以同樣方式失敗，以防 worker 在等待期間以較少的型別重新連線。
+
+要解除降級，請在 worker 上安裝相同的外掛與套件（`cdui plugin install ...`、Package Center、相同的自訂節點檔）並重新啟動 agent：它只在啟動時回報節點。輔助程序失敗的 worker 不會回報節點目錄：它的卡片會顯示警告，`any` 會略過它，指定它的 run 則不經檢查直接送出（agent 的 log 會說明輔助程序失敗的原因）。把伺服器的外掛組合複製到 worker 的指令（`cdui agent sync`）尚在規劃中。
+
+**環境指紋。** 同一個輔助程序也會收集 worker 的[環境指紋](/advanced/api-reference#run-environment)（CodefyUI commit、Python、torch build、加速器、外掛版本、影響數值的環境變數）。Workers 面板顯示它的摘要，worker 執行的每個 run 都會記錄這個摘要（重新連線時未回報指紋的 worker 會顯示「未回報」，不會沿用舊的摘要），所以 Runs 面板會指出實際執行它的環境。指紋描述的是 agent 的環境，也就是它的 run 子程序所繼承的環境，在 run 的裝置集合縮小 `CUDA_VISIBLE_DEVICES` 之前。

@@ -299,8 +299,10 @@ class WorkerScheduler:
                 return None
             return self._place_on(worker, requested, devices, taken)
         for worker in self._registry.workers():
-            if worker.accepts_runs and (mount is None
-                                        or holds_mount(worker, mount)):
+            # A worker that lacks node types this server has, or
+            # reported no catalog, takes only runs that name it (#781).
+            if worker.accepts_runs and not _skipped_by_any(worker) \
+                    and (mount is None or holds_mount(worker, mount)):
                 placement = self._place_on(worker, requested, devices, taken)
                 if placement is not None:
                     return placement
@@ -347,18 +349,29 @@ class WorkerScheduler:
             if mount is not None and not holds_mount(worker, mount):
                 return no_mount(worker_id, mount)
             return None
+        wanted = ", ".join(devices) if devices else requested
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount):
-            wanted = ", ".join(devices) if devices else requested
             if mount is not None:
                 return (f"waiting for a worker that offers {wanted} and "
                         f"has the `{mount}` mount")
             return f"waiting for a worker that offers {wanted}"
+        if not self.can_serve_any(requested, devices, connected_only=True,
+                                  mount=mount, usable_only=True):
+            skipped = sorted(
+                w.name for w in self._registry.workers()
+                if w.online and _skipped_by_any(w)
+                and _serves(w.device_values(), requested, devices))
+            return (f"waiting for a worker that offers {wanted}: "
+                    f"{', '.join(skipped)} "
+                    f"{'is' if len(skipped) == 1 else 'are'} skipped by "
+                    "`any` (node types missing, or not reported)")
         return None
 
     def can_serve_any(self, requested: str, devices: list[str] | None,
                       *, connected_only: bool = False,
-                      mount: str | None = None) -> bool:
+                      mount: str | None = None,
+                      usable_only: bool = False) -> bool:
         """Whether this process or a worker could ever run it.
 
         This process does not count for a device set a worker would
@@ -368,13 +381,15 @@ class WorkerScheduler:
         *connected_only* asks about the workers connected now, which is
         what a waiting run's reason describes. With *mount* (#782), a
         worker counts only when it holds that mount; this process always
-        does.
+        does. *usable_only* leaves out the workers ``any`` skips (#781:
+        one that lacks node types, or reported no catalog).
         """
         if not renumbered_on_a_worker(devices) \
                 and _serves(self._local_devices(), requested, devices):
             return True
         return any((w.online or not connected_only)
                    and (mount is None or holds_mount(w, mount))
+                   and not (usable_only and _skipped_by_any(w))
                    and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
 
@@ -419,6 +434,10 @@ def no_mount(worker_id: str, mount: str) -> str:
     submit refusal and the waiting reason, one sentence."""
     return (f"worker {worker_id} has no `{mount}` mount; add "
             f"`--mount {mount}=...` or use the transfer backend (#785)")
+
+
+def _skipped_by_any(worker: Any) -> bool:
+    return bool(getattr(worker, "skipped_by_any", False))
 
 
 def _serves(offered: list[str], requested: str,

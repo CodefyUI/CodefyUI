@@ -359,7 +359,7 @@ def test_a_bad_index_cannot_open_a_queue_for_a_card_that_is_not_there(
 
 def test_every_device_param_offers_the_indexed_forms(four_cards):
     """The node API is the only place a saved graph's device can come from."""
-    from app.api.routes_nodes import _node_to_definition
+    from app.core.node_registry import node_definition
     from app.core.node_registry import registry
 
     checked = 0
@@ -374,7 +374,7 @@ def test_every_device_param_offers_the_indexed_forms(four_cards):
         assert raw.options == list(DEVICE_PARAM_OPTIONS), name
         # DiffusionTrainingLoop was exempt while its text was Chinese (#693).
         assert raw.description == DEVICE_PARAM_DESCRIPTION, name
-        definition = _node_to_definition(name, cls)
+        definition = node_definition(name, cls)
         device_param = next(p for p in definition.params if p.name == "device")
         assert "cuda:2" in device_param.options, name
         checked += 1

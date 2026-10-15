@@ -8,6 +8,7 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from app.core import worker_protocol as wp
+from app.core.env_fingerprint import fingerprint_digest
 from app.core.auth import TOKEN_HEADER, session_token
 from app.core.db import Database
 from app.core.run_service import QueueLimits, RunService
@@ -44,7 +45,8 @@ def _client(token: bool = True) -> AsyncClient:
 
 async def test_list_is_an_open_read(registry):
     registry.connect(wp.Hello(
-        name="box", version="3.1.0", fingerprint="abc",
+        name="box", version="3.1.0",
+        fingerprint=wp.FingerprintReport(document={"a": 1}, digest="x"),
         devices=[wp.DeviceReport(value="cpu", kind="cpu", name="arm",
                                  total_bytes=8, free_bytes=2,
                                  source="psutil"),
@@ -56,7 +58,11 @@ async def test_list_is_an_open_read(registry):
     [worker] = body["workers"]
     assert worker["name"] == worker["id"] == "box"
     assert (worker["status"], worker["draining"], worker["version"],
-            worker["fingerprint_digest"]) == ("online", False, "3.1.0", "abc")
+            worker["fingerprint_digest"]) == (
+        "online", False, "3.1.0", fingerprint_digest({"a": 1}))
+    assert worker["node_catalog"] == {"status": "unknown", "hash": None,
+                                      "missing": [], "extra": []}
+    assert worker["degraded_reasons"] == [] and body["rejections"] == []
     assert worker["devices"][0]["memory"] == {
         "total_bytes": 8, "free_bytes": 2, "source": "psutil"}
     assert worker["devices"][1]["memory"] is None

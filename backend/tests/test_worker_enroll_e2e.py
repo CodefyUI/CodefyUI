@@ -61,6 +61,11 @@ def _worker(client: httpx.Client) -> dict[str, Any] | None:
     return None
 
 
+#: A connected worker: ``degraded`` when its node catalog differs from the
+#: test server's (#781), which depends on what earlier tests registered.
+CONNECTED = ("online", "degraded")
+
+
 def _wait(predicate: Any, agent: subprocess.Popen | None, what: str,
           timeout: float = 30) -> None:
     deadline = time.monotonic() + timeout
@@ -86,7 +91,7 @@ def test_an_agent_enrolls_reconnects_with_its_credential_and_is_revoked(
     agent = _start_agent(base, home, "--token", created["token"],
                          "--name", NAME)
     try:
-        _wait(lambda: (_worker(client) or {}).get("status") == "online",
+        _wait(lambda: (_worker(client) or {}).get("status") in CONNECTED,
               agent, "the enrolled agent never connected")
         worker = _worker(client)
         assert worker["enrolled"] is True
@@ -112,7 +117,7 @@ def test_an_agent_enrolls_reconnects_with_its_credential_and_is_revoked(
     # A restart: no --token at all. The stored credential is the only way in.
     agent = _start_agent(base, home)
     try:
-        _wait(lambda: (_worker(client) or {}).get("status") == "online",
+        _wait(lambda: (_worker(client) or {}).get("status") in CONNECTED,
               agent, "the restarted agent never reconnected")
         assert _worker(client)["credential"] == "worker_token"
         run = client.post("/api/runs", json={
