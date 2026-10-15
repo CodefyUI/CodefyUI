@@ -14,6 +14,7 @@ from ..core.data_paths import (
     resolve_under,
     upload_file_name,
 )
+from ..core.transfer import is_incoming
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,8 @@ async def list_model_files():
 
     files = []
     for f in sorted(models_dir.iterdir()):
-        if f.is_file() and f.suffix.lower() in ALLOWED_EXTENSIONS:
+        if f.is_file() and f.suffix.lower() in ALLOWED_EXTENSIONS \
+                and not is_incoming(f):
             files.append({
                 "filename": f.name,
                 "size": f.stat().st_size,

@@ -301,6 +301,46 @@ def test_a_run_file_is_replaced_atomically(data_root):
     assert (run_dir / "checkpoint" / "a.pt").read_bytes() == b"1"
 
 
+def test_unfinished_uploads_are_swept_and_never_listed(data_root, tmp_path):
+    """A server that died mid-upload leaves ``.incoming-*`` files beside
+    where they would have landed: startup removes the stale ones, and the
+    models and media listings never show one."""
+    import os
+    import time
+
+    from app.api.routes_media import list_media_files
+    from app.api.routes_models import list_model_files
+
+    old = time.time() - transfer.INCOMING_STALE_S - 10
+    stale = [data_root / "runs" / "r1" / "checkpoint" / ".incoming-a",
+             data_root / "models" / "periodic" / ".incoming-b",
+             data_root / "models" / ".incoming-c.pt",
+             data_root / "media" / ".incoming-d.mp4",
+             data_root / "output" / "x" / ".incoming-e"]
+    for path in stale:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"partial")
+    names = {f["filename"] for f in asyncio.run(list_model_files())}
+    assert ".incoming-c.pt" not in names and "periodic" not in names
+    assert asyncio.run(list_media_files()) == []
+    for path in stale:
+        os.utime(path, (old, old))
+    fresh = data_root / "models" / ".incoming-f"
+    fresh.write_bytes(b"still arriving")
+    outside = tmp_path / "precious"
+    outside.write_bytes(b"keep")
+    os.utime(outside, (old, old))
+    link = data_root / "models" / ".incoming-g"
+    link.symlink_to(outside)
+    kept = data_root / "models" / "periodic" / "x.pt"
+    os.utime(kept, (old, old))
+
+    assert transfer.sweep_incoming() == len(stale)
+    assert not any(path.exists() for path in stale)
+    assert fresh.exists() and link.is_symlink() and outside.exists()
+    assert kept.exists()
+
+
 def test_the_run_directory_guard_refuses_symlinks(data_root, tmp_path):
     outside = tmp_path / "precious"
     (outside / "checkpoint").mkdir(parents=True)

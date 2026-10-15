@@ -52,7 +52,7 @@ The enrollment token is shown once; the server keeps only its hash. A used-up, e
 
 **Restarts.** `cdui agent start --control <url>` finds the stored credential and reconnects with it, without a token. An enrolled worker is remembered by the server across its own restarts: it is listed as `offline` until it connects, and runs that target it wait in the queue. `cdui agent forget <url>` deletes the stored credential, so the next start enrolls again.
 
-**Removing a worker.** **Remove** in the Workers panel revokes the worker's credential, disconnects it (its running runs end `interrupted`, its queued runs fail), and drops it from the list; its agent is refused from then on.
+**Removing a worker.** **Remove** in the Workers panel revokes the worker's credential, disconnects it (its running runs end `interrupted` at once, including runs waiting for it to reconnect, and its queued runs fail), and drops it from the list; its agent is refused from then on.
 
 **Re-keying a worker.** A name is taken once enrolled: an ordinary token cannot enroll it again (the server answers `409`). To give a worker a new credential, for a reinstalled machine or a lost credential file, press **Re-key** on its card: the token generated there can enroll that worker only, and the command carries its `--name`. Using it invalidates the old credential. If the machine still has the old credential file, run `cdui agent forget <url>` there first.
 
@@ -201,7 +201,7 @@ A run that reads uploads or writes files can go to a worker that shares no folde
 - after the run ends, every other file it wrote under `models/`, `media/` or `output/` (CheckpointSaver, ModelSaver, VideoWrite, ImageWriter), and any input it wrote over, into the control plane's own data folders at the same relative path, where the same node writes on a local run (`models/best.pt` in `CODEFYUI_MODELS_DIR`). A different file already there is kept and the new one gets a suffix (`best-1.pt`); the same content is not stored twice. They are listed with kind `output`;
 - last, the checkpoint a stopped training loop writes, into the run's folder, so a cancelled run's resume point is on the control plane.
 
-The uploads run beside the run, so a slow network never holds the run up; its end is reported once they are done. `GET /api/runs/{id}/artifacts` lists them with `backend: "transfer"` and their path on the control plane, and the Runs panel offers **Download** next to each one (`GET /api/runs/{id}/artifacts/{artifact_id}/download`). A file larger than the control plane's upload limit (`CODEFYUI_MAX_UPLOAD_SIZE`, 500 MB) stays on the worker, listed at its path there, with a `transfer_failed` warning. A Stop that arrives while the last uploads are going stops the ones not sent yet, with one `transfer_failed` warning saying how many stay on the worker.
+The uploads run beside the run, so a slow network never holds the run up; its end is reported once they are done. `GET /api/runs/{id}/artifacts` lists them with `backend: "transfer"` and their path on the control plane, and the Runs panel offers **Download** next to each one (`GET /api/runs/{id}/artifacts/{artifact_id}/download`). If the control plane cannot be reached (the connection dropped), the agent keeps retrying each upload, waiting longer each time, for up to 5 minutes (the default `CODEFYUI_WORKER_RESUME_GRACE_S`), so a run that ends during a short outage still delivers its files. A file larger than the control plane's upload limit (`CODEFYUI_MAX_UPLOAD_SIZE`, 500 MB), or one still not taken after those retries, stays on the worker, listed at its path there, with a `transfer_failed` warning. A Stop that arrives while the last uploads are going stops the ones not sent yet, with one `transfer_failed` warning saying how many stay on the worker.
 
 **Clean-up.** The run's own folder belongs to the run: when run retention (`CODEFYUI_RUN_RETENTION_KEEP_LAST`) or **Delete** removes the run, its `runs/<run id>` folder goes too. Download or copy what you want to keep. A run that retention removes after it ended `interrupted` keeps its `checkpoint` folder, as a local run keeps its resume point. Files placed in the data folders are yours, as a local run's are: neither removes them. On the worker, the run's folder follows the agent's own run retention; the cache is never cleaned automatically, and deleting `agent-cache` is safe (files are fetched again).
 
@@ -272,6 +272,8 @@ A renewed certificate keeps its fingerprint only if it keeps its key (certbot's 
 
 **On the worker.** The agent hands a run's secret values to its subprocess in memory and writes them to no file of its own, but the worker machine holds them for the length of the run: whoever administers that machine is trusted with them. The worker credential file is readable by the agent's OS user only.
 
+**On the control plane.** An enrolled worker can write files into the control plane's `models/`, `media/` and `output/` folders and record them as downloadable artifacts of its runs ([No shared filesystem](#storage-no-shared-filesystem)), so enroll only machines you trust.
+
 Not covered: mutual TLS (the worker credential identifies the agent), a certificate authority managed by CodefyUI, and user identity.
 
 ## Running the agent as a service {/* #running-the-agent-as-a-service */}
@@ -309,6 +311,10 @@ Restart=on-failure
 RestartSec=5s
 # On SIGTERM the agent asks its runs to stop and terminates them after 10 s.
 TimeoutStopSec=60s
+# SIGTERM to the agent only: with the default (control-group) systemd also
+# signals the run subprocesses directly, and a running run ends `failed`
+# instead of `cancelled`. The rest of the group is killed after TimeoutStopSec.
+KillMode=mixed
 
 # Deliberately NOT PrivateDevices (breaks GPU access) or ProtectHome /
 # ProtectSystem=strict (both break writes to the user data dir under
@@ -327,7 +333,7 @@ sudo systemctl enable --now codefyui-agent
 journalctl -u codefyui-agent -f
 ```
 
-`--foreground` is required for the same reason as the server's: without it `cdui agent start` starts a background agent and exits, and systemd treats the exit of a `Type=exec` service's main process as the service ending. An agent refused for a version mismatch exits with an error, and `Restart=on-failure` retries it every 5 s until you update; `systemctl stop codefyui-agent` while you update avoids that. An SSH worker needs no unit: the control plane keeps its agent running.
+`--foreground` is required for the same reason as the server's: without it `cdui agent start` starts a background agent and exits, and systemd treats the exit of a `Type=exec` service's main process as the service ending. An agent refused for a version mismatch exits with an error, and `Restart=on-failure` retries it every 5 s until you update; `systemctl stop codefyui-agent` while you update avoids that. Keep `KillMode=mixed`: it lets the agent stop its runs itself, so a run in progress ends `cancelled` (a training loop writes its interrupt checkpoint); with systemd's default the run subprocesses get SIGTERM directly and the run ends `failed` with `run subprocess exited with code -15`. An SSH worker needs no unit: the control plane keeps its agent running.
 
 ## Limits {/* #limits */}
 

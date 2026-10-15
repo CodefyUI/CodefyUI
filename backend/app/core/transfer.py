@@ -97,6 +97,18 @@ RUNS_DIRNAME = "runs"
 #: Bytes read at a time when hashing or copying.
 CHUNK = 1024 * 1024
 
+#: The name prefix of a file an upload is being received into
+#: (:class:`Receiver`); listings skip such files.
+INCOMING_PREFIX = ".incoming-"
+#: :func:`sweep_incoming` removes a leftover temporary file this old: a
+#: server that died mid-upload left it, and nothing else will.
+INCOMING_STALE_S = 3600.0
+
+
+def is_incoming(path: Path | str) -> bool:
+    """Whether *path* is an upload still being received (or left by one)."""
+    return Path(path).name.startswith(INCOMING_PREFIX)
+
 
 class TransferRefused(ValueError):
     """The run cannot use the transfer backend; the message says why."""
@@ -439,6 +451,42 @@ def remove_run_files(run_id: str, *, keep_checkpoints: bool = False) -> bool:
     return removed
 
 
+def sweep_incoming(max_age_s: float = INCOMING_STALE_S) -> int:
+    """Remove the temporary files of uploads that never finished (the
+    server died while receiving them): every ``.incoming-*`` file older
+    than *max_age_s* under the runs root and the data folders uploads land
+    in (:data:`DATA_PLACES`). Symlinks are neither followed nor removed.
+    Blocking (startup runs it off the loop). How many were removed."""
+    import time
+
+    bases = [runs_root(), *(_data_base(first) for first in DATA_PLACES)]
+    cutoff = time.time() - max_age_s
+    removed = 0
+    seen: set[Path] = set()
+    for base in bases:
+        if base is None or base in seen or base.is_symlink() \
+                or not base.is_dir():
+            continue
+        seen.add(base)
+        for root, _dirs, files in os.walk(base, followlinks=False):
+            for name in files:
+                if not name.startswith(INCOMING_PREFIX):
+                    continue
+                path = Path(root) / name
+                try:
+                    if path.is_symlink() or not path.is_file() \
+                            or path.stat().st_mtime > cutoff:
+                        continue
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    logger.debug("could not remove %s", path, exc_info=True)
+    if removed:
+        logger.info("removed %d unfinished upload(s) (%s*) left by an "
+                    "earlier server", removed, INCOMING_PREFIX)
+    return removed
+
+
 def _suffixed(path: Path, n: int) -> Path:
     return path.with_name(f"{path.stem}-{n}{path.suffix}")
 
@@ -581,7 +629,7 @@ class Receiver:
             self.got_file = True
             folder = self.directory(self.fields)
             folder.mkdir(parents=True, exist_ok=True)
-            self.tmp = folder / f".incoming-{uuid.uuid4().hex}"
+            self.tmp = folder / f"{INCOMING_PREFIX}{uuid.uuid4().hex}"
             self._out = open(self.tmp, "wb")  # noqa: SIM115 -- closed in close()
 
     def _part_data(self, data: bytes, start: int, end: int) -> None:

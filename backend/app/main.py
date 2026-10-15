@@ -451,6 +451,13 @@ async def _lifespan_body(app: FastAPI):
     # a key surviving in a row that pruning was never going to reach.
     await run_service.scrub_stored_secrets()
     await run_service.prune_retention()
+    # Uploads a worker was sending when an earlier server died (#785):
+    # their `.incoming-*` temporary files would stay forever.
+    from .core.transfer import sweep_incoming
+    try:
+        await asyncio.to_thread(sweep_incoming)
+    except Exception:  # noqa: BLE001 -- housekeeping must not block startup
+        logger.warning("could not sweep unfinished uploads", exc_info=True)
 
     # ── Package Center: one optional-pack install at a time ────────────
     # Same lifetime rules as the run service above: it owns an asyncio.Task

@@ -694,7 +694,7 @@ class WorkerExecutor:
                 options=request.options, device=devices[0],
                 devices=devices, storage=storage))
             watcher = asyncio.create_task(
-                self._forward_cancel(request, worker_id),
+                self._forward_cancel(request, worker_id, run),
                 name=f"cancel-watch:{request.run_id}")
             acks = _Acks(self, request, worker_id, run.inbox)
             while True:
@@ -809,17 +809,33 @@ class WorkerExecutor:
         return ExecutionOutcome(STATUS_INTERRUPTED, detail)
 
     async def _forward_cancel(self, request: ExecutionRequest,
-                              worker_id: str) -> None:
-        """Watcher task: forward the run's stop as ``cancel``. Never raises."""
+                              worker_id: str, run: Any = None) -> None:
+        """Watcher task: forward the run's stop as ``cancel``. Never raises.
+
+        A worker that is away gets the cancel when it is back (#783). One
+        that no longer tracks *run* (it was removed, or a re-enrolled worker
+        of that name never had it) never will: the run ends (``WORKER_GONE``
+        in its inbox) instead of waiting forever.
+        """
         from . import worker_protocol as wp
+        from .workers import WORKER_GONE
 
         try:
             while not request.context.should_stop():
                 await asyncio.sleep(CANCEL_POLL_S)
             told = False
-            # A worker that is away gets the cancel when it is back (#783).
             while not await self._send(worker_id,
                                        wp.Cancel(run_id=request.run_id)):
+                if run is not None:
+                    if run.gone:
+                        return
+                    worker = self._registry.get(worker_id)
+                    if worker is None \
+                            or worker.running.get(request.run_id) is not run:
+                        run.gone = True
+                        run.inbox.put_nowait((
+                            WORKER_GONE, f"worker {worker_id} was removed"))
+                        return
                 if not told:
                     told = True
                     logger.info("run %s: stop requested, but worker %s is "

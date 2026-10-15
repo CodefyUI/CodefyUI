@@ -44,7 +44,7 @@ addition never bumps :data:`PROTOCOL_VERSION`:
   so a frame carrying a new optional field still parses on a reader that
   predates it;
 - ``hello`` and ``welcome`` each list the optional features their sender
-  speaks (:data:`CAPABILITIES`: ``"ack"``, ``"mounts"``; next
+  speaks (:data:`CAPABILITIES`: ``"ack"``, ``"mounts"``,
   ``"transfer"``). A new feature declares its name there, and is used only
   when both lists name it (:func:`shared_capabilities`).
 

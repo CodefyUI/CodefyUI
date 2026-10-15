@@ -367,6 +367,51 @@ async def test_a_stop_while_disconnected_reaches_the_worker_when_back(
     assert (await asyncio.wait_for(task, 5)).status == "cancelled"
 
 
+async def test_removing_a_disconnected_worker_ends_its_runs(registry):
+    """Remove while the run waits for a reconnect: it ends at once, and the
+    registry has nothing left to expire (the run used to hang forever)."""
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.disconnect(agent.worker, "network dropped")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    registry.forget("box", "the worker was removed")
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+    assert "the worker was removed" in outcome.error
+    assert registry.get("box") is None
+    assert agent.worker.running == {}
+
+
+async def test_removing_an_online_worker_ends_its_runs(registry):
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.forget("box")
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+
+
+async def test_a_stop_for_a_run_whose_worker_vanished_ends_it(registry):
+    """A stop for a run whose worker no longer tracks it does not retry
+    forever: the run ends (cancelled, the user's Stop)."""
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await agent.wait_for(wp.Assign)
+    registry.disconnect(agent.worker, "network dropped")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    # Gone from the registry without its runs being ended.
+    del registry._workers["box"]
+    request.context.cancel()
+    assert (await asyncio.wait_for(task, 5)).status == "cancelled"
+
+
 async def test_acks_come_every_n_frames_and_after_a_quiet_second(
         registry, monkeypatch):
     from app.core import executors

@@ -163,6 +163,7 @@ class _Server:
 
 def _client(tmp_path: Path, server: _Server, monkeypatch) -> tr.TransferClient:
     monkeypatch.setattr(tr, "RETRY_PAUSE_S", 0.0)
+    monkeypatch.setattr(tr, "UPLOAD_RETRY_WINDOW_S", 0.0)
     client = tr.TransferClient(base_url=lambda: "http://cp:8000/",
                                token=lambda: "worker-token",
                                cache=tr.InputCache(tmp_path / "cache"))
@@ -244,6 +245,99 @@ def test_upload_answers_the_key_and_refuses_a_413(tmp_path, monkeypatch):
         client.upload("run-1", "checkpoint", "ck.pt", source)
 
 
+class _Clock:
+    """``time`` for ``agent.transfer``: sleeping advances a fake clock."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def _outage(tmp_path, monkeypatch, failures: int):
+    """A client whose control plane is unreachable for *failures*
+    requests, then answers; a fake clock; the backoff of the real one."""
+    server = _Server({})
+    client = _client(tmp_path, server, monkeypatch)
+    monkeypatch.setattr(tr, "RETRY_PAUSE_S", 1.0)
+    monkeypatch.setattr(tr, "UPLOAD_RETRY_WINDOW_S", 300.0)
+    clock = _Clock()
+    monkeypatch.setattr(tr, "time", clock)
+    left = [failures]
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        if left[0] > 0:
+            left[0] -= 1
+            raise httpx.ConnectError("refused", request=request)
+        return server(request)
+
+    monkeypatch.setattr(client, "_client", lambda: httpx.Client(
+        transport=httpx.MockTransport(flaky)))
+    return client, server, clock
+
+
+def test_an_upload_outlasts_a_connection_drop(tmp_path, monkeypatch):
+    """Past the 3 quick attempts it keeps retrying, backing off, inside
+    the resume grace: a run ending during a drop keeps its files."""
+    client, server, clock = _outage(tmp_path, monkeypatch, failures=8)
+    source = tmp_path / "ck.pt"
+    source.write_bytes(b"weights")
+    key = client.upload("run-1", "checkpoint", "ck.pt", source)
+    assert server.uploads[key] == b"weights"
+    pauses = [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]
+    assert sum(clock.slept) == sum(pauses)
+    assert clock.now < tr.UPLOAD_RETRY_WINDOW_S
+
+
+def test_an_upload_gives_up_after_the_window_and_on_a_cancel(
+        tmp_path, monkeypatch):
+    client, _, clock = _outage(tmp_path, monkeypatch, failures=10_000)
+    source = tmp_path / "ck.pt"
+    source.write_bytes(b"weights")
+    with pytest.raises(tr.TransferError, match="refused"):
+        client.upload("run-1", "checkpoint", "ck.pt", source)
+    assert tr.UPLOAD_RETRY_WINDOW_S <= clock.now \
+        < tr.UPLOAD_RETRY_WINDOW_S + tr.UPLOAD_MAX_PAUSE_S
+    stop = [False]
+
+    def cancel_soon() -> bool:
+        stop[0] = stop[0] or clock.now > 5
+        return stop[0]
+
+    clock.now = 0.0
+    with pytest.raises(tr.TransferError, match="cancelled"):
+        client.upload("run-1", "checkpoint", "ck.pt", source,
+                      cancelled=cancel_soon)
+    assert clock.now < 10
+
+
+def test_a_runs_uploads_share_one_retry_window(tmp_path, monkeypatch):
+    """Once the window ran out, the next file tries only a few times, so a
+    dead control plane cannot hold a run's end for a window per file."""
+    client, _, clock = _outage(tmp_path, monkeypatch, failures=10_000)
+    run = tr.RunTransfer(run_id="r1", root=tr.run_data_root(tmp_path / "r"),
+                         client=client)
+    for name in ("a.pt", "b.pt"):
+        (run.root / "models" / name).write_bytes(b"1")
+    body = {"kind": "checkpoint", "meta": None, "node_id": None,
+            "mount_label": None}
+    _, warning = run.upload_artifact(
+        {**body, "path": str(run.root / "models" / "a.pt")})
+    assert "stays on worker" in warning
+    first = clock.now
+    _, warning = run.upload_artifact(
+        {**body, "path": str(run.root / "models" / "b.pt")})
+    assert "stays on worker" in warning
+    assert clock.now - first == 1.0 + 2.0  # ATTEMPTS, no new window
+    run.close()
+
+
 def test_prepare_inputs_copies_each_input_under_its_kind(tmp_path,
                                                          monkeypatch):
     files = {"t.csv": b"csv", "cat.png": b"png", "sub/m.pt": b"pt"}
@@ -318,7 +412,7 @@ class _Uploads:
         return _Closable()
 
     def upload(self, run_id: str, kind: str, name: str, path: Path, *,
-               place: str = "run", client: Any = None) -> str:
+               place: str = "run", client: Any = None, **_: Any) -> str:
         assert client is not None  # the run's one session
         if name in self.fail:
             raise tr.TransferError(f"uploading {name}: HTTP 503")
@@ -502,7 +596,7 @@ class _FakeClient:
         return self.cache.add(entry.sha256, [self.files[entry.name]]), True
 
     def upload(self, run_id: str, kind: str, name: str, path: Path, *,
-               place: str = "run", client: Any = None) -> str:
+               place: str = "run", client: Any = None, **_: Any) -> str:
         if self.upload_gate is not None:
             self.upload_gate.wait(10)
         self.uploads.append((kind, name))
