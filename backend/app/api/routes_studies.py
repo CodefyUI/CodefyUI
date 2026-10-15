@@ -41,11 +41,12 @@ from ..config import settings
 from ..core.run_service import (
     LANE_INTERACTIVE,
     MAX_SEED,
+    RunServiceUnavailable,
     RunSubmitError,
     normalize_graph,
     normalize_name,
-    normalize_options,
 )
+from ..core.run_store import RunRecord
 from ..core.study_coordinator import StudyCoordinator, StudySpec
 from ..core.study_store import (
     ATTEMPT_STATUSES,
@@ -241,7 +242,9 @@ def _build_spec(body: CreateStudyRequest,
             detail="a study cannot use the interactive lane; its children "
                    "are queued")
     try:
-        normalize_options(raw_options)
+        # `options` itself is validated by the placement check in
+        # create_study (once per distinct settings.device), after the
+        # idempotency lookup.
         name = normalize_name(body.name)
         base = (None if body.base_graph is None
                 else normalize_graph(body.base_graph))
@@ -294,12 +297,30 @@ def _counts(current: dict[tuple[int, int], AttemptRecord]) -> dict[str, int]:
     return counts
 
 
+def _attempt_payload(attempt: AttemptRecord,
+                     runs: dict[str, RunRecord]) -> dict[str, Any]:
+    """An attempt, plus where its child run is placed (#777) while that
+    run exists: ``worker_id``, ``devices`` and ``queue_key`` off the run
+    row, as a sweep variant reports them (``any`` / ``any/<device>`` until
+    a ``target: any`` child starts). Omitted when the run is gone."""
+    payload = attempt.as_json()
+    run = runs.get(attempt.id)
+    if run is not None and run.id == attempt.run_id:
+        payload["worker_id"] = run.worker_id
+        payload["devices"] = run.devices
+        payload["queue_key"] = run.queue_key
+    return payload
+
+
 async def _study_detail(coordinator: StudyCoordinator,
                         study: StudyRecord) -> dict[str, Any]:
     store = coordinator.store
     variants = await store.list_variants(study.id)
     attempts = await store.list_attempts(study.id)
     current = current_attempts(attempts)
+    # ONE indexed read for every child, keyed by the attempt stamp.
+    runs = await coordinator.service.store.find_runs_by_study_attempt(
+        [a.id for a in attempts if a.run_id is not None])
     ranking = rank_study(len(variants), study.repetitions, attempts,
                          direction=study.objective["direction"])
     by_variant: dict[int, list[AttemptRecord]] = {}
@@ -315,12 +336,12 @@ async def _study_detail(coordinator: StudyCoordinator,
                  "seed": (current[(variant.index, repetition)].seed
                           if (variant.index, repetition) in current
                           else None),
-                 "current": (current[(variant.index, repetition)].as_json()
-                             if (variant.index, repetition) in current
-                             else None)}
+                 "current": (_attempt_payload(
+                     current[(variant.index, repetition)], runs)
+                     if (variant.index, repetition) in current else None)}
                 for repetition in range(study.repetitions)],
-            "attempts": [a.as_json() for a in by_variant.get(variant.index,
-                                                              [])],
+            "attempts": [_attempt_payload(a, runs)
+                         for a in by_variant.get(variant.index, [])],
             "aggregate": {"count": row["count"], "mean": row["mean"],
                           "std": row["std"], "values": row["values"]},
             "eligible": row["eligible"],
@@ -354,29 +375,6 @@ def _not_found(study_id: str) -> HTTPException:
 # ── routes ────────────────────────────────────────────────────────────────
 
 
-async def _refuse_unplaceable(coordinator: StudyCoordinator,
-                              spec: StudySpec) -> None:
-    """400 for children the run service would refuse, before any row.
-
-    Every child inherits ``options.target`` (#777); a worker that is not
-    connected, a device nobody offers, or ``record_outputs`` on a worker
-    would otherwise fail the study at its first child. Each variant graph is
-    checked, because its own ``settings.device`` can differ from the
-    others'. A retry of a study that already exists under the same
-    idempotency key is not refused: it returns that study, whatever the
-    workers are doing now.
-    """
-    try:
-        for _label, _ops, graph in spec.variants:
-            coordinator.service.check_placeable(graph, spec.options)
-    except RunSubmitError as exc:
-        if spec.idempotency_key is not None and \
-                await coordinator.store.find_by_idempotency_key(
-                    spec.idempotency_key) is not None:
-            return
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
 @router.post("", status_code=201)
 async def create_study(
     body: CreateStudyRequest, request: Request, response: Response,
@@ -408,11 +406,14 @@ async def create_study(
                    "idempotency_key differ; send one, or the same value")
     key = header_key or body.idempotency_key
     spec = _build_spec(body, key)
-    await _refuse_unplaceable(coordinator, spec)
     try:
         study, created = await coordinator.create_study(spec)
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RunSubmitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RunServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     payload = await _study_detail(coordinator, study)
     payload["created"] = created
     if not created:

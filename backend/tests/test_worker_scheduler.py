@@ -211,7 +211,7 @@ def test_submit_keys_and_refusals():
     with pytest.raises(RunSubmitError, match="neither this server"):
         key(_options(worker="any", devices=["cuda:0", "cuda:1"]))
     assert key(_options(worker="local")) == "cpu"
-    with pytest.raises(RunSubmitError, match="not connected"):
+    with pytest.raises(RunSubmitError, match="has not connected"):
         key(_options(worker="nobody"))
     with pytest.raises(RunSubmitError, match="does not offer cuda:1"):
         key(_options(worker="box", devices=["cuda:1"]))
@@ -227,6 +227,31 @@ def test_submit_keys_and_refusals():
         pytest.raises(RunSubmitError, key, _options(worker="nobody")).value)
 
 
+def test_a_known_worker_that_is_away_is_waited_for_not_refused():
+    """#777: one uniform rule. A worker this server has seen but that is
+    disconnected now queues the run (it waits for the reconnect); only an
+    unknown name or a device it never offered is refused."""
+    away = _worker("box", "cpu", "cuda:0", status="disconnected")
+    service = _service(_registry_with(away))
+    key = service._submit_queue_key
+    assert key(_options(worker="box", device="cuda")) == "box/cuda"
+    assert key(_options(worker="any", device="cuda")) == "any/cuda"
+    with pytest.raises(RunSubmitError, match="does not offer cuda:1"):
+        key(_options(worker="box", devices=["cuda:1"]))
+    with pytest.raises(RunSubmitError, match="neither this server"):
+        key(_options(worker="any", device="cuda:1"))
+    with pytest.raises(RunSubmitError, match="has not connected"):
+        key(_options(worker="other"))
+    # The waiting run's reason still describes the workers connected now.
+    scheduler = _scheduler(away)
+    entry = _Entry("r1", "any/cuda", _target("any", "cuda"))
+    assert scheduler.can_serve_any("cuda", None)
+    assert not scheduler.can_serve_any("cuda", None, connected_only=True)
+    assert scheduler.explain(entry) == "waiting for a worker that offers cuda"
+    assert scheduler.explain(_Entry("r2", "box/cuda", _target(
+        "box", "cuda"))) == "waiting for worker box to reconnect"
+
+
 def test_without_a_registry_a_named_worker_is_refused():
-    with pytest.raises(RunSubmitError, match="not connected"):
+    with pytest.raises(RunSubmitError, match="has not connected"):
         _service()._submit_queue_key(_options(worker="box"))

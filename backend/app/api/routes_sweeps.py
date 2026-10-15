@@ -457,14 +457,17 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
             max_params=settings.MAX_SWEEP_PARAMS,
             max_domain=settings.MAX_SWEEP_DOMAIN)
         # Every variant inherits options.target (#777), so a target the
-        # service would refuse (a worker that is not connected, a device
-        # nobody offers, record_outputs on a worker) is refused HERE, as a
-        # 400 with no rows, rather than at the first child as a 500 and a
-        # `failed` sweep. The variants share the base graph's settings, so
-        # checking the base graph answers for all of them.
-        service.check_placeable(graph, options)
+        # service would refuse (a worker it has never seen, a device nobody
+        # offers, record_outputs on a worker) is refused HERE, as a 400 with
+        # no rows, rather than at the first child as a 500 and a `failed`
+        # sweep. The service checks each distinct `settings` once; the
+        # variants of one sweep share the base graph's.
+        service.check_placeable_batch(
+            (variant.graph for variant in compiled.variants), options)
     except (RunSubmitError, SweepCompileError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RunServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     _refuse_unrecordable_outputs(request, options, len(compiled.variants))
 

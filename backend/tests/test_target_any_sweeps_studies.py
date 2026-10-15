@@ -260,9 +260,9 @@ async def test_a_named_worker_target_is_inherited_by_every_variant(env):
 
 
 @pytest.mark.parametrize("options, needle", [
-    ({"target": {"worker": "gpu-box"}}, "not connected"),
+    ({"target": {"worker": "gpu-box"}}, "has not connected"),
     ({"device": "cuda:3", "target": {"worker": "any"}},
-     "neither this server nor a connected worker offers cuda:3"),
+     "neither this server nor a known worker offers cuda:3"),
     ({"record_outputs": True, "target": {"worker": "any"}},
      "record_outputs"),
 ])
@@ -351,7 +351,7 @@ async def test_a_study_target_the_service_would_refuse_is_a_400(env):
         response = await client.post("/api/studies", json=_study_body(
             options={"target": {"worker": "gpu-box"}}))
         assert response.status_code == 400, response.text
-        assert "not connected" in response.json()["detail"]
+        assert "has not connected" in response.json()["detail"]
     studies, total = await coordinator.store.list_studies()
     assert (studies, total) == ([], 0)
 
@@ -375,7 +375,141 @@ async def test_an_idempotent_retry_returns_the_study_after_its_worker_left(
         assert retry.status_code == 200, retry.text
         assert retry.json()["study_id"] == created.json()["study_id"]
         assert retry.json()["created"] is False
-        # A different request is still refused for its target.
-        other = await client.post("/api/studies", json={
+        # The lookup comes before the placement check, so the key reused
+        # for a different request is a 409 even when that request's target
+        # would be refused.
+        conflict = await client.post("/api/studies", json={
+            **body, "options": {"target": {"worker": "nobody"}}})
+        assert conflict.status_code == 409, conflict.text
+        # A new study for the known-but-away worker is accepted and waits.
+        waiting = await client.post("/api/studies", json={
             **body, "idempotency_key": "k-other"})
+        assert waiting.status_code == 201, waiting.text
+        # An unknown worker is refused.
+        other = await client.post("/api/studies", json={
+            **body, "options": {"target": {"worker": "nobody"}},
+            "idempotency_key": "k-third"})
         assert other.status_code == 400
+        assert "has not connected" in other.json()["detail"]
+
+
+# ── #777 review: one submit rule, one batch check, study placement ───────
+
+
+async def test_a_sweep_for_a_worker_that_went_away_waits_for_it(env):
+    """A worker this server has seen is waited for, not refused, so a sweep
+    submitted (or still submitting) while it is away queues every variant
+    and runs them once it is back."""
+    service, _ = env
+    async with _client() as client:
+        async with aconnect_ws(WS_PATH, client) as ws:
+            await FakeAgent(ws).hello("box", ("cuda:0",))
+        response = await client.post("/api/sweeps", json=_sweep_body(
+            [1.0, 2.0], device="cuda", target={"worker": "box"}))
+        assert response.status_code == 201, response.text
+        ids = [v["run_id"] for v in response.json()["variants"]]
+        row = (await client.get(f"/api/runs/{ids[0]}")).json()
+        assert (row["status"], row["queue_reason"]) == (
+            "queued", "waiting for worker box to reconnect")
+        async with aconnect_ws(WS_PATH, client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello("box", ("cuda:0",))
+            for run_id in ids:
+                assign = await agent.assignment()
+                assert assign.run_id == run_id
+                await agent.finish(assign)
+                assert (await _terminal(service, run_id)).status \
+                    == "succeeded"
+
+
+async def test_the_batch_check_runs_once_per_distinct_settings(env,
+                                                                monkeypatch):
+    service, _ = env
+    calls: list[Any] = []
+    real = service._prepare
+
+    def _spy(graph: Any, options: Any, **kw: Any) -> Any:
+        calls.append((graph.get("settings"), kw))
+        return real(graph, options, **kw)
+
+    monkeypatch.setattr(service, "_prepare", _spy)
+    graphs = [_graph(), _graph(),
+              {**_graph(), "settings": {"device": "cpu"}},
+              {**_graph(), "settings": {"device": "cpu"}}]
+    service.check_placeable_batch(graphs, {})
+    assert calls == [(None, {"batch_child": True}),
+                     ({"device": "cpu"}, {"batch_child": True})]
+
+    async with _client() as client:
+        calls.clear()
+        body = _study_body()
+        body["variants"].append({"label": "on-cpu", "graph": {
+            **_graph(), "settings": {"device": "cpu"}}})
+        response = await client.post("/api/studies", json=body)
+        assert response.status_code == 201, response.text
+        # Two distinct settings among three variants: two checks, before
+        # any child was submitted.
+        assert [c[0] for c in calls[:2]] == [None, {"device": "cpu"}]
+        assert all(c[1] == {"batch_child": True} for c in calls[:2])
+
+
+async def test_the_batch_check_refuses_an_interactive_lane_and_a_shutdown(
+        env):
+    service, _ = env
+    from app.core.run_service import RunServiceUnavailable, RunSubmitError
+    with pytest.raises(RunSubmitError, match="interactive"):
+        service.check_placeable_batch([_graph()], {"lane": "interactive"})
+    service._shutting_down = True
+    try:
+        with pytest.raises(RunServiceUnavailable):
+            service.check_placeable_batch([_graph()], {})
+        async with _client() as client:
+            sweep = await client.post("/api/sweeps", json=_sweep_body([1.0]))
+            assert sweep.status_code == 503, sweep.text
+            study = await client.post("/api/studies", json=_study_body())
+            assert study.status_code == 503, study.text
+    finally:
+        service._shutting_down = False
+
+
+async def test_the_study_detail_says_where_each_child_runs(env):
+    service, coordinator = env
+    async with _client() as client, \
+            aconnect_ws(WS_PATH, client) as ws_a, \
+            aconnect_ws(WS_PATH, client) as ws_b:
+        a, b = FakeAgent(ws_a), FakeAgent(ws_b)
+        await a.hello("a-box", ("cuda:0",))
+        await b.hello("b-box", ("cuda:0",))
+        response = await client.post("/api/studies", json=_study_body(
+            repetitions=1,
+            options={"device": "cuda", "target": {"worker": "any"}},
+            budget={"max_parallel_runs": 2}))
+        assert response.status_code == 201, response.text
+        study_id = response.json()["study_id"]
+        first_a, first_b = await a.assignment(), await b.assignment()
+
+        async def _placed() -> bool:
+            detail = (await client.get(f"/api/studies/{study_id}")).json()
+            return all(v["repetitions"][0]["current"].get("worker_id")
+                       not in (None, "any") for v in detail["variants"])
+        await _until(_placed)
+        detail = (await client.get(f"/api/studies/{study_id}")).json()
+        placed = {v["repetitions"][0]["current"]["run_id"]:
+                  v["repetitions"][0]["current"] for v in detail["variants"]}
+        assert (placed[first_a.run_id]["worker_id"],
+                placed[first_a.run_id]["devices"],
+                placed[first_a.run_id]["queue_key"]) == (
+            "a-box", ["cuda:0"], "a-box/cuda:0")
+        assert placed[first_b.run_id]["worker_id"] == "b-box"
+        attempts = [a for v in detail["variants"] for a in v["attempts"]]
+        assert {a["worker_id"] for a in attempts} == {"a-box", "b-box"}
+        await a.finish(first_a)
+        await b.finish(first_b)
+        for assign in (first_a, first_b):
+            await _terminal(service, assign.run_id)
+        # A child whose run row is gone reports no placement.
+        await service.store.delete_run(first_a.run_id)
+        detail = (await client.get(f"/api/studies/{study_id}")).json()
+        gone = [a for v in detail["variants"] for a in v["attempts"]
+                if a["run_id"] == first_a.run_id]
+        assert gone and "worker_id" not in gone[0]

@@ -293,17 +293,25 @@ class WorkerScheduler:
             if worker.draining:
                 return f"worker {worker_id} is draining"
             return None
-        if not self.can_serve_any(requested, devices):
+        if not self.can_serve_any(requested, devices, connected_only=True):
             wanted = ", ".join(devices) if devices else requested
             return f"waiting for a worker that offers {wanted}"
         return None
 
-    def can_serve_any(self, requested: str,
-                      devices: list[str] | None) -> bool:
-        """Whether this process or a connected worker could ever run it."""
+    def can_serve_any(self, requested: str, devices: list[str] | None,
+                      *, connected_only: bool = False) -> bool:
+        """Whether this process or a worker could ever run it.
+
+        By default every worker this server has seen counts, connected or
+        not (#777): a run submitted while the only worker offering its
+        device is away waits for it to reconnect rather than being refused.
+        *connected_only* asks about the workers connected now, which is
+        what a waiting run's reason describes.
+        """
         if _serves(self._local_devices(), requested, devices):
             return True
-        return any(w.online and _serves(w.device_values(), requested, devices)
+        return any((w.online or not connected_only)
+                   and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
 
     def _place_here(self, requested: str, devices: list[str] | None,
