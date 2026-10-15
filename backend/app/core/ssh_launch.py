@@ -84,14 +84,15 @@ forward carries to this server. Facts that shape it:
   so their reports are still recorded). A run still attached after that
   ends at once (``WorkerRegistry.stopped``), not after the resume grace:
   nothing is coming back for it.
-- **Delete cleans up on the remote host; Disable does not.** After the
-  session has ended, Delete runs one more one-shot ssh
-  (:func:`remote_remove_command`) that forgets the credential the agent
-  stored for this control plane's address and removes the slot's state
-  directory, best effort and within :data:`REMOVE_TIMEOUT_S`: an
-  unreachable host does not stop the Delete, and what was left behind is
-  logged. Disable keeps both, so Enable reconnects with the same
-  credential.
+- **Delete cleans up on the remote host; Disable does not.** Once the
+  session has ended and the row is deleted, Delete answers and, in the
+  background, runs one more one-shot ssh (:func:`remote_remove_command`)
+  that forgets the credential the agent stored for this control plane's
+  address and removes the slot's state directory, best effort and within
+  :data:`REMOVE_TIMEOUT_S`; the slot stays reserved until it has finished,
+  so no other entry takes it meanwhile. An unreachable host does not stop
+  the Delete; what was left behind is logged. Disable keeps both, so
+  Enable reconnects with the same credential.
 - **The remote script leaves no process behind.** Whatever ends it (the
   agent exiting, ``stop``, a newer session taking over, a signal) ends its
   ``tail`` of the log and its grace timer too; once its output is in
@@ -134,6 +135,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..config import settings
@@ -372,6 +374,14 @@ _FUNCS = ('al() { ps -p "$1" -o stat= 2>/dev/null | grep -q "^[^Z]"; }; '
           "}; ")
 
 
+#: What each remote script that runs ``cdui`` starts with: a
+#: non-interactive ssh shell reads no profile, so ``~/.local/bin`` (uv,
+#: #809) is put on PATH first, and English output (which this module
+#: reads) is asked for.
+_PROLOGUE = ('PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; '
+             "CODEFYUI_LANG=en; export CODEFYUI_LANG; ")
+
+
 def _sh(script: str) -> str:
     assert "'" not in script and "\\" not in script
     return f"sh -c '{script}'"
@@ -416,9 +426,7 @@ def remote_command(entry: SshWorker, cp: str, remote_port: int, *,
     script = (
         'IFS= read -r t; [ -n "$t" ] || exit ' + str(NO_TOKEN_EXIT) + "; "
         "CODEFYUI_AGENT_TOKEN=$t; export CODEFYUI_AGENT_TOKEN; t=; "
-        'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; '
-        "CODEFYUI_LANG=en; export CODEFYUI_LANG; "
-        f"d={d}; " + _FUNCS +
+        + _PROLOGUE + f"d={d}; " + _FUNCS +
         'mkdir -p "$d" && chmod 700 "$d" || exit ' + str(NO_STATE_EXIT) + "; "
         'echo $$ > "$d/session"; '
         # Whatever ends this shell ends its ``tail`` too (#829): a signal
@@ -450,9 +458,10 @@ def remote_command(entry: SshWorker, cp: str, remote_port: int, *,
         "exec >/dev/null 2>&1; "
         "( while IFS= read -r m; do "
         'if [ "$m" = stop ]; then kill -TERM $a; exit 0; fi; done; '
-        # The grace's ``sleep`` ends with this watcher when it is killed.
-        "z=; kz() { kill $z 2>/dev/null; exit 0; }; trap kz TERM; "
-        f"sleep {grace} & z=$!; wait $z; "
+        # The grace in one-second steps: a watcher killed meanwhile leaves
+        # a ``sleep`` behind for a second at most, and there is no window
+        # in which a signal could orphan a long one.
+        f"i=0; while [ $i -lt {grace} ]; do sleep 1; i=$((i+1)); done; "
         'if [ "$(cat "$d/session" 2>/dev/null)" = "$$" ]; then '
         "kill -TERM $a; exit 0; fi; exit 3 ) <&3 >/dev/null 2>&1 & w=$!; "
         "exec 3<&-; "
@@ -487,43 +496,53 @@ REMOVED_DIR = "codefyui-ssh: removed"
 FORGOT = "codefyui-ssh: forgot"
 #: How long the remove command waits for a still-running agent to exit.
 REMOVE_AGENT_WAIT_S = 10
-#: Delete waits this long for the remove one-shot (an unreachable host:
-#: ssh's own ``ConnectTimeout`` is 20 s), then deletes the row anyway.
-REMOVE_TIMEOUT_S = 30.0
+#: Time for ``cdui agent forget`` on the remote host (a ``uv run`` start
+#: on a cold cache).
+FORGET_ALLOWANCE_S = 30
+#: The remove one-shot's whole budget: ssh's ``ConnectTimeout``, the wait
+#: for the agent, and the forget. It runs in the background, after Delete
+#: has answered.
+REMOVE_TIMEOUT_S = float(CONNECT_TIMEOUT_S + REMOVE_AGENT_WAIT_S
+                         + FORGET_ALLOWANCE_S)
 
 
 def remote_remove_command(entry: SshWorker, cp: str, remote_port: int) -> str:
     """Delete (#829), after the session has ended: stop this state
-    directory's agent if it still runs, forget the credential the agent
-    stored for this control plane's address (``cdui agent forget``), and
-    remove the directory (``~/.codefyui-ssh/<cp>-<slot>``; this control
+    directory's agent if it still runs, then forget the credential the
+    agent stored for this control plane's address (``cdui agent forget``)
+    and remove the directory (``~/.codefyui-ssh/<cp>-<slot>``; this control
     plane's alone, never another's), then ``~/.codefyui-ssh`` itself when
     nothing else is left in it. A session still attached there, or an
-    agent that does not exit within :data:`REMOVE_AGENT_WAIT_S`, keeps the
-    directory (and says so). Each step prints what it did."""
+    agent that does not exit within :data:`REMOVE_AGENT_WAIT_S`, keeps both
+    the credential and the directory (and says so). Each step prints what
+    it did."""
     cdui = _remote_cdui(entry)
     url = control_url(cp, remote_port)
     d = _state_dir(cp, remote_port)
     key = state_key(cp, remote_port)
     return _sh(
-        'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; '
-        "CODEFYUI_LANG=en; export CODEFYUI_LANG; "
-        f"d={d}; " + _FUNCS +
-        'a=$(cat "$d/pid" 2>/dev/null); k=1; '
-        'if own "$a"; then kill -TERM $a; i=0; '
+        _PROLOGUE + f"d={d}; " + _FUNCS +
+        'a=$(cat "$d/pid" 2>/dev/null); k=1; i=0; '
+        'if own "$a"; then kill -TERM $a; '
         f"while al $a && [ $i -lt {REMOVE_AGENT_WAIT_S} ]; do "
         "sleep 1; i=$((i+1)); done; "
         'if al $a; then k=; echo "codefyui-ssh: agent pid $a still runs; '
-        'kept $d"; fi; fi; '
+        'kept $d and its credential"; fi; fi; '
+        # A dropped session's script outlives its ssh until its agent has
+        # gone (it notices within a second): the same budget for that.
         's=$(cat "$d/session" 2>/dev/null); '
-        f'if [ -n "$s" ] && al "$s" && has "$s" ".codefyui-ssh/{key};"; '
-        'then k=; echo "codefyui-ssh: session pid $s still attached; '
-        'kept $d"; fi; '
+        f'at() {{ [ -n "$s" ] && al "$s" && has "$s" ".codefyui-ssh/{key};"; '
+        "}; "
+        f"while at && [ $i -lt {REMOVE_AGENT_WAIT_S} ]; do "
+        "sleep 1; i=$((i+1)); done; "
+        'if at; then k=; echo "codefyui-ssh: session pid $s still attached; '
+        'kept $d and its credential"; fi; '
+        'if [ -n "$k" ]; then '
         f"if {cdui} agent forget {url} </dev/null >/dev/null 2>&1; then "
         f'echo "{FORGOT} {url}"; else '
         f'echo "codefyui-ssh: could not forget {url}"; fi; '
-        f'if [ -n "$k" ] && rm -rf "$d"; then echo "{REMOVED_DIR} $d"; '
-        "rmdir \"$HOME\"/" + REMOTE_STATE_DIR + " 2>/dev/null; fi; "
+        f'rm -rf "$d" && echo "{REMOVED_DIR} $d" '
+        f'&& rmdir "$HOME"/{REMOTE_STATE_DIR} 2>/dev/null; fi; '
         "exit 0")
 
 
@@ -594,6 +613,76 @@ def ssh_oneshot_argv(ssh: str, entry: SshWorker, command: str) -> list[str]:
     """ssh without a forward, for one remote command."""
     return [*ssh_base_argv(ssh, entry), "--", validate_target(entry.target),
             command]
+
+
+#: The one-shot's answer when there is no ssh to run.
+NO_SSH = "ssh was not found on this machine's PATH"
+
+
+async def run_oneshot(launcher: SshLauncher, entry: SshWorker, command: str,
+                      what: str, *, timeout_s: float | None = None,
+                      ) -> tuple[int | None, list[str]]:
+    """Run *command* on *entry*'s host over a short ssh of its own (no
+    forward). Returns ssh's exit status and its output lines. The status is
+    None when ssh did not run (the last line says why) or did not finish
+    within *timeout_s* (:data:`ONESHOT_TIMEOUT_S`): it is killed then, and
+    reaped, as it is when this task is cancelled, and the last line says
+    whether the host answered at all."""
+    timeout_s = ONESHOT_TIMEOUT_S if timeout_s is None else timeout_s
+    ssh = launcher.ssh_path()
+    if ssh is None:
+        return None, [NO_SSH]
+    kwargs: dict[str, Any] = {}
+    if sys.platform != "win32":
+        kwargs["start_new_session"] = True
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_oneshot_argv(ssh, entry, command),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT, **kwargs)
+    except OSError as exc:
+        logger.warning("SSH worker %s: could not %s: %s", entry.id, what, exc)
+        return None, [f"could not start ssh: {exc}"]
+    lines: list[str] = []
+
+    async def collect() -> None:
+        assert proc.stdout is not None
+        while True:
+            try:
+                raw = await proc.stdout.readline()
+            except (ValueError, asyncio.LimitOverrunError):
+                continue  # an over-long line; skip it
+            if not raw:
+                return
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if line.strip():
+                lines.append(line)
+
+    try:
+        await asyncio.wait_for(asyncio.gather(collect(), proc.wait()),
+                               timeout_s)
+    except asyncio.TimeoutError:
+        if lines:
+            message = (f"ssh was cut off after {timeout_s:.0f} s trying to "
+                       f"{what}; its last line: {lines[-1]}")
+        else:
+            message = (f"ssh did not finish within {timeout_s:.0f} s "
+                       f"trying to {what} (no answer)")
+        logger.warning("SSH worker %s: %s", entry.id, message)
+        lines.append(message)
+        return None, lines
+    finally:
+        if proc.returncode is None:
+            # Timed out, or this task was cancelled: never left behind.
+            # A cancellation is re-raised after this ``finally``.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(proc.wait()),
+                                       KILL_GRACE_S)
+    logger.info("SSH worker %s: %s (ssh exited with status %s)", entry.id,
+                what, proc.returncode)
+    return proc.returncode, lines
 
 
 def next_backoff(current: float) -> float:
@@ -1030,51 +1119,12 @@ class SshLaunch:
 
     async def _oneshot(self, command: str,
                        what: str) -> tuple[int | None, list[str]]:
-        """Run *command* on the remote host over its own short ssh (no
-        forward). Returns ssh's exit status (None when it did not finish
-        within :data:`ONESHOT_TIMEOUT_S`; it is killed then) and its
-        output lines, which are also kept in the tail."""
-        ssh = self.launcher.ssh_path()
-        if ssh is None:
-            return None, []
-        kwargs: dict[str, Any] = {}
-        if sys.platform != "win32":
-            kwargs["start_new_session"] = True
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *ssh_oneshot_argv(ssh, self.entry, command),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT, **kwargs)
-        except OSError as exc:
-            logger.warning("SSH worker %s: could not %s: %s", self.entry.id,
-                           what, exc)
-            return None, [str(exc)]
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(),
-                                            ONESHOT_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            message = (f"ssh did not finish within {ONESHOT_TIMEOUT_S:.0f} s "
-                       f"trying to {what}")
-            logger.warning("SSH worker %s: %s", self.entry.id, message)
-            self.tail.append(message)
-            return None, [message]
-        finally:
-            if proc.returncode is None:
-                # Timed out, or this task was cancelled: never left behind.
-                # A cancellation is re-raised after this ``finally``.
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(proc.wait()),
-                                           KILL_GRACE_S)
-        lines = [line.rstrip() for line in
-                 out.decode("utf-8", errors="replace").splitlines()
-                 if line.strip()]
+        """:func:`run_oneshot` for this entry; its output also goes to the
+        tail."""
+        code, lines = await run_oneshot(self.launcher, self.entry, command,
+                                        what)
         self.tail.extend(lines)
-        logger.info("SSH worker %s: %s (ssh exited with status %s)",
-                    self.entry.id, what, proc.returncode)
-        return proc.returncode, lines
+        return code, lines
 
 
 async def _end_process(proc: asyncio.subprocess.Process,
@@ -1131,6 +1181,12 @@ class SshLauncher:
         self.entries: dict[str, SshWorker] = {}
         self.launches: dict[str, SshLaunch] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        #: Slots of deleted entries whose remote clean-up still runs, and
+        #: whose they were. No entry takes one meanwhile: the clean-up would
+        #: forget its credential and remove its directory.
+        self.reserved: dict[int, str] = {}
+        #: Those clean-ups (:meth:`_clean_remote`), each a task.
+        self._cleanups: set[asyncio.Task] = set()
 
     @property
     def instance_id(self) -> str:
@@ -1166,8 +1222,12 @@ class SshLauncher:
     # ── ports ─────────────────────────────────────────────────────────────
 
     def _ports_taken(self, exclude: str) -> set[int]:
-        return {entry.remote_port for name, entry in self.entries.items()
-                if name != exclude and entry.remote_port is not None}
+        taken = {entry.remote_port for name, entry in self.entries.items()
+                 if name != exclude and entry.remote_port is not None}
+        # A deleted entry's slot, still being cleaned: nobody's, this
+        # entry's (a new one under the same name) included.
+        taken.update(self.reserved)
+        return taken
 
     def port_usable(self, port: int, owner: str) -> bool:
         """*port* is a slot in the range no other entry holds (a slot names
@@ -1250,51 +1310,79 @@ class SshLauncher:
                     await launch.stop()
             return self.describe(name)
 
-    async def remove(self, name: str) -> bool:
-        """Stop *name*, clean up after it on the remote host
-        (:meth:`_clean_remote`) and delete its row. The worker's enrollment
-        is left to ``DELETE /api/workers/{id}``."""
+    async def remove(self, name: str, *,
+                     before_cleanup: Callable[[], Awaitable[Any]]
+                     | None = None) -> bool:
+        """Stop *name* and delete its row (under the entry's lock), then
+        await *before_cleanup* (the route's revocation of the worker) and
+        start the clean-up on the remote host in the background
+        (:meth:`_clean_remote`); the entry's slot stays reserved until that
+        has finished. False when there is no such row."""
         async with self._lock(name):
             launch = self.launches.pop(name, None)
             if launch is not None:
                 await launch.stop()
             entry = self.entries.pop(name, None)
-            if entry is not None:
-                await self._clean_remote(entry, launch)
-            return await self.store.delete_ssh_worker(name)
+            deleted = await self.store.delete_ssh_worker(name)
+            port = entry.remote_port if entry is not None else None
+            if port is not None:
+                self.reserved[port] = name
+        try:
+            if deleted and before_cleanup is not None:
+                await before_cleanup()
+        finally:
+            if entry is not None and port is not None:
+                self._start_cleanup(entry, port)
+        return deleted
 
-    async def _clean_remote(self, entry: SshWorker,
-                            launch: SshLaunch | None) -> None:
+    def _start_cleanup(self, entry: SshWorker, port: int) -> None:
+        task = asyncio.get_running_loop().create_task(
+            self._clean_remote(entry, port), name=f"ssh-clean-{entry.id}")
+        self._cleanups.add(task)
+
+        def done(finished: asyncio.Task) -> None:
+            self._cleanups.discard(finished)
+            if self.reserved.get(port) == entry.id:
+                del self.reserved[port]
+
+        task.add_done_callback(done)
+
+    async def wait_for_cleanups(self) -> None:
+        """Until every clean-up started so far has finished."""
+        while self._cleanups:
+            await asyncio.gather(*list(self._cleanups),
+                                 return_exceptions=True)
+
+    async def _clean_remote(self, entry: SshWorker, port: int) -> None:
         """Best effort, within :data:`REMOVE_TIMEOUT_S`: run
-        :func:`remote_remove_command` for *entry*'s slot, so neither its
+        :func:`remote_remove_command` for *entry*'s *port*, so neither its
         state directory nor the credential its agent stored stays on the
         remote host. Disable never does this (Enable reuses both). Whatever
-        could not be removed (an unreachable host) is logged, and Delete
-        goes on."""
-        port = entry.remote_port
-        if port is None:
-            return  # never launched: nothing was made there
+        could not be removed (an unreachable host, an agent that would not
+        stop) is logged."""
         cp = self.instance_id
         where = f"~/{REMOTE_STATE_DIR}/{state_key(cp, port)}/"
         url = control_url(cp, port)
-        helper = launch if launch is not None else SshLaunch(entry, self)
-        helper.entry = entry
+        left = [where, f"the credential stored for {url} (cdui agent "
+                       f"forget {url})"]
         code: int | None = None
         lines: list[str] = []
         try:
-            code, lines = await asyncio.wait_for(helper._oneshot(
-                remote_remove_command(entry, cp, port),
-                "remove the remote state"), REMOVE_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            lines = [f"no answer within {REMOVE_TIMEOUT_S:.0f} s"]
-        except Exception as exc:  # noqa: BLE001 -- Delete goes on
+            code, lines = await run_oneshot(
+                self, entry, remote_remove_command(entry, cp, port),
+                "remove the remote state", timeout_s=REMOVE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            logger.warning(
+                "SSH worker %s deleted; its clean-up on %s was cut short "
+                "(server shutdown), so these were left behind: %s",
+                entry.id, entry.target, "; ".join(left))
+            raise
+        except Exception as exc:  # noqa: BLE001 -- logged, Delete is done
             lines = [str(exc) or type(exc).__name__]
-        left = []
-        if not any(REMOVED_DIR in line for line in lines):
-            left.append(where)
-        if not any(FORGOT in line for line in lines):
-            left.append(f"the credential stored for {url} (cdui agent "
-                        f"forget {url})")
+        if any(REMOVED_DIR in line for line in lines):
+            left.remove(where)
+        if any(FORGOT in line for line in lines):
+            left.pop()
         if left:
             reason = " | ".join(lines[-ERROR_LINES:]) or (
                 f"ssh exited with status {code}")
@@ -1315,6 +1403,15 @@ class SshLauncher:
         await asyncio.gather(*(launch.stop(SHUTDOWN_GRACE_S)
                                for launch in launches),
                              return_exceptions=True)
+        # Clean-ups of deleted entries still running: a moment to finish,
+        # then cancelled (their ssh is killed and reaped; each logs what it
+        # left behind).
+        pending = list(self._cleanups)
+        if pending:
+            _, late = await asyncio.wait(pending, timeout=KILL_GRACE_S)
+            for task in late:
+                task.cancel()
+            await asyncio.gather(*late, return_exceptions=True)
 
     # ── the panel's view ──────────────────────────────────────────────────
 

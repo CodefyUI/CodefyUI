@@ -582,21 +582,50 @@ async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
     return await _set_ssh_enabled(request, name, False)
 
 
+async def _revoke_worker(request: Request, worker_id: str,
+                         reason: str) -> tuple[bool, Any, list[Any]]:
+    """Revoke *worker_id*'s credential, drop it from the registry (its runs
+    end ``interrupted``) and fail its queued runs. Returns (revoked, the
+    registry's removed worker or None, the failed run ids)."""
+    store = getattr(request.app.state, "worker_store", None)
+    revoked = False
+    if store is not None:
+        revoked = await store.delete_worker(worker_id)
+    registry = getattr(request.app.state, "worker_registry", None)
+    removed = None
+    if registry is not None:
+        removed = registry.forget(
+            worker_id, f"{reason} and its credential revoked" if revoked
+            else reason)
+    if revoked:
+        logger.info("worker %s: credential revoked", worker_id)
+    service = _service(request)
+    failed = [] if service is None else await service.fail_queued_for_worker(
+        worker_id, f"worker {worker_id} was removed")
+    return revoked, removed, failed
+
+
 @router.delete("/ssh/{name}")
 async def delete_ssh_worker(request: Request, name: str) -> dict[str, Any]:
-    """Stop the SSH worker, remove its state directory and stored
-    credential on the remote host (best effort: an unreachable host is
-    logged, not an error), and delete its row. Its enrollment stays (remove
-    the worker itself to revoke it). It is dropped from the registry too:
-    its session is gone, so every run on it, including a run waiting for it
-    to reconnect, ends ``interrupted`` now instead of waiting forever."""
-    if not await _launcher(request).remove(name):
+    """Delete the SSH worker as Remove does: end its ssh session, delete its
+    row, revoke the worker's credential and drop it from the registry
+    (every run on it, including one waiting for it to reconnect, ends
+    ``interrupted``; its queued runs fail), so the name can be added again.
+    Then, in the background, its state directory and stored credential
+    are removed on the remote host (best effort: an unreachable host is
+    logged, not an error)."""
+    outcome: dict[str, Any] = {}
+
+    async def revoke() -> None:
+        outcome["revoked"], _, outcome["failed_runs"] = await _revoke_worker(
+            request, name, "the SSH worker was deleted")
+
+    if not await _launcher(request).remove(name, before_cleanup=revoke):
         raise HTTPException(404, f"no SSH worker named {name!r}")
-    registry = getattr(request.app.state, "worker_registry", None)
-    if registry is not None:
-        registry.forget(name, "the SSH worker was deleted")
     logger.info("SSH worker %s deleted", name)
-    return {"id": name, "deleted": True}
+    return {"id": name, "deleted": True,
+            "revoked": outcome.get("revoked", False),
+            "failed_runs": outcome.get("failed_runs", [])}
 
 
 @router.delete("/{worker_id}")
@@ -606,24 +635,24 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
     Its running runs end ``interrupted`` (the socket closes), and the runs
     still queued for it fail at once: nothing would ever place them. An SSH
     worker's session is ended and its row deleted first, so it does not
-    come back.
+    come back; its remote clean-up follows in the background.
     """
-    registry = _registry(request)
+    _registry(request)
     launcher = getattr(request.app.state, "ssh_launcher", None)
+    outcome: dict[str, Any] = {}
+
+    async def revoke() -> None:
+        outcome["result"] = await _revoke_worker(
+            request, worker_id, "the worker was removed")
+
     ssh_removed = (launcher is not None and worker_id in launcher.entries
-                   and await launcher.remove(worker_id))
-    store = getattr(request.app.state, "worker_store", None)
-    revoked = False
-    if store is not None:
-        revoked = await store.delete_worker(worker_id)
-    removed = registry.forget(
-        worker_id, "the worker was removed and its credential revoked"
-        if revoked else "the worker was removed")
+                   and await launcher.remove(worker_id,
+                                             before_cleanup=revoke))
+    if "result" not in outcome:
+        await revoke()
+    revoked, removed, failed = outcome["result"]
     if removed is None and not revoked and not ssh_removed:
         raise HTTPException(404, f"no worker named {worker_id!r}")
-    if revoked:
-        logger.info("worker %s: credential revoked", worker_id)
-    service = _service(request)
-    failed = [] if service is None else await service.fail_queued_for_worker(
-        worker_id, f"worker {worker_id} was removed")
     return {"id": worker_id, "revoked": revoked, "failed_runs": failed}
+
+

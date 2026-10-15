@@ -601,6 +601,7 @@ async def test_delete_removes_the_slot_and_the_credential_disable_does_not(
     await _until(lambda: len(_tokens(fake_ssh)) == 2, "never relaunched")
     assert _removes(fake_ssh) == []
     assert await launcher.remove("gpu-box") is True
+    await launcher.wait_for_cleanups()
     [remove] = _removes(fake_ssh)
     # After the session ended (its ``stop`` went first), its own slot only.
     assert _stdin(fake_ssh)[-1] == "stop"
@@ -621,10 +622,12 @@ async def test_delete_of_a_disabled_or_never_launched_entry(launcher,
                                                enabled=False))
     await launcher.start_all()
     assert await launcher.remove("gpu-box") is True
+    await launcher.wait_for_cleanups()
     [remove] = _removes(fake_ssh)
     assert f".codefyui-ssh/{CP}-18004;" in remove[-1]
     # No slot was ever taken: nothing was made on the remote host.
     assert await launcher.remove("new-box") is True
+    await launcher.wait_for_cleanups()
     assert len(_removes(fake_ssh)) == 1
 
 
@@ -635,6 +638,7 @@ async def test_delete_succeeds_when_the_host_is_unreachable(
     monkeypatch.setenv("FAKE_SSH_MODE", "fail")
     with caplog.at_level("WARNING", logger="app.core.ssh_launch"):
         assert await launcher.remove("gpu-box") is True
+        await launcher.wait_for_cleanups()
     assert len(_removes(fake_ssh)) == 1
     assert await launcher.store.list_ssh_workers() == []
     [warning] = [r.getMessage() for r in caplog.records
@@ -644,20 +648,93 @@ async def test_delete_succeeds_when_the_host_is_unreachable(
     assert "Permission denied" in warning
 
 
-async def test_a_hanging_delete_cleanup_is_bounded(launcher, fake_ssh,
-                                                   monkeypatch):
+async def test_delete_answers_at_once_and_keeps_the_slot_until_cleaned(
+        launcher, fake_ssh, monkeypatch, caplog):
+    """The clean-up runs after Delete has answered, within its own budget;
+    until it has finished nobody takes the slot it cleans (it would forget
+    that entry's credential and remove its directory)."""
     await launcher.store.add_ssh_worker(_entry(enabled=False,
                                                remote_port=18000))
     await launcher.start_all()
-    monkeypatch.setattr(ssh_launch, "REMOVE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(ssh_launch, "REMOVE_TIMEOUT_S", 1.5)
+    monkeypatch.setattr(ssh_launch, "ONESHOT_TIMEOUT_S", 2.0)
     monkeypatch.setenv("FAKE_SSH_HANG_S", "30")
     began = time.monotonic()
-    assert await launcher.remove("gpu-box") is True
-    assert time.monotonic() - began < 10
-    pid = int(Path(str(fake_ssh) + ".pid").read_text().split()[0])
-    assert not _alive(pid)
-    assert await launcher.store.list_ssh_workers() == []
+    with caplog.at_level("WARNING", logger="app.core.ssh_launch"):
+        assert await launcher.remove("gpu-box") is True
+        assert time.monotonic() - began < 1.0
+        assert launcher.reserved == {18000: "gpu-box"}
+        # Added meanwhile, under the same name too: another slot.
+        await launcher.add(_entry())
+        await _until(lambda: launcher.entries["gpu-box"].remote_port
+                     is not None, "the new entry took no slot")
+        assert launcher.entries["gpu-box"].remote_port == 18001
+        assert launcher.free_port("other") == 18002
+        await launcher.wait_for_cleanups()
+    assert launcher.reserved == {}
+    assert launcher.free_port("other") == 18000
+    # Every hung ssh is killed and reaped: the clean-up's at its budget,
+    # the new entry's prepare at the one-shot timeout.
+    pids = [int(p) for p in
+            Path(str(fake_ssh) + ".pid").read_text().split()]
+    await _until(lambda: not any(_alive(p) for p in pids),
+                 "a hung ssh was left running")
+    [warning] = [r.getMessage() for r in caplog.records
+                 if "left behind" in r.getMessage()]
+    assert "did not finish within 2 s" in warning
+    assert "(no answer)" in warning
 
+
+async def test_a_cleanup_cut_off_after_an_answer_says_so(
+        launcher, fake_ssh, monkeypatch, caplog):
+    await launcher.store.add_ssh_worker(_entry(enabled=False,
+                                               remote_port=18000))
+    await launcher.start_all()
+    monkeypatch.setattr(ssh_launch, "REMOVE_TIMEOUT_S", 1.0)
+    monkeypatch.setenv("FAKE_SSH_HANG_S", "30")
+    monkeypatch.setenv("FAKE_SSH_HANG_SAY", "codefyui-ssh: agent pid 7 "
+                       "still runs; kept it")
+    with caplog.at_level("WARNING", logger="app.core.ssh_launch"):
+        await launcher.remove("gpu-box")
+        await launcher.wait_for_cleanups()
+    [warning] = [r.getMessage() for r in caplog.records
+                 if "left behind" in r.getMessage()]
+    assert "cut off after 1 s" in warning and "still runs" in warning
+    assert "no answer" not in warning
+
+
+async def test_a_cleanup_without_ssh_names_the_cause(launcher, monkeypatch,
+                                                     caplog):
+    await launcher.store.add_ssh_worker(_entry(enabled=False,
+                                               remote_port=18000))
+    await launcher.start_all()
+    monkeypatch.setattr(ssh_launch, "ssh_executable", lambda: None)
+    with caplog.at_level("WARNING", logger="app.core.ssh_launch"):
+        await launcher.remove("gpu-box")
+        await launcher.wait_for_cleanups()
+    [warning] = [r.getMessage() for r in caplog.records
+                 if "left behind" in r.getMessage()]
+    assert ssh_launch.NO_SSH in warning
+    assert "status None" not in warning
+
+
+async def test_a_shutdown_cancels_a_running_cleanup_and_reaps_its_ssh(
+        launcher, fake_ssh, monkeypatch, caplog):
+    await launcher.store.add_ssh_worker(_entry(enabled=False,
+                                               remote_port=18000))
+    await launcher.start_all()
+    monkeypatch.setattr(ssh_launch, "KILL_GRACE_S", 0.5)
+    monkeypatch.setenv("FAKE_SSH_HANG_S", "30")
+    pid_file = Path(str(fake_ssh) + ".pid")
+    with caplog.at_level("WARNING", logger="app.core.ssh_launch"):
+        await launcher.remove("gpu-box")
+        await _until(pid_file.exists, "the clean-up never started")
+        began = time.monotonic()
+        await launcher.shutdown()
+        assert time.monotonic() - began < 5
+    assert not _alive(int(pid_file.read_text().split()[0]))
+    assert launcher.reserved == {}
+    assert any("cut short" in r.getMessage() for r in caplog.records)
 
 
 # ── stop, enable, disable, restart ────────────────────────────────────────
@@ -1173,7 +1250,10 @@ def test_the_remove_command_keeps_the_directory_of_an_attached_session(
         assert "still attached; kept" in result.stdout
         assert "still runs; kept" in result.stdout
         assert "codefyui-ssh: removed" not in result.stdout
+        assert "forget" not in result.stdout
         assert _state(remote_home).exists()
+        # Its credential is kept with it: the agent still uses it.
+        assert "agent forget" not in (remote_home / "args").read_text()
     finally:
         subprocess.run(["kill", "-CONT", str(pid)], capture_output=True)
         proc.stdin.write(b"stop\n")
@@ -1432,9 +1512,31 @@ async def test_the_ssh_routes_add_list_disable_enable_and_delete(api,
                 ).status_code == 404
 
         deleted = await client.delete("/api/workers/ssh/gpu1")
-        assert deleted.json() == {"id": "gpu1", "deleted": True}
+        assert deleted.json() == {"id": "gpu1", "deleted": True,
+                                  "revoked": False, "failed_runs": []}
         assert (await client.delete("/api/workers/ssh/gpu1")
                 ).status_code == 404
+
+
+async def test_delete_revokes_the_worker_so_its_name_can_be_added_again(
+        api, fake_ssh):
+    """Delete forgets the credential on the remote host, so it revokes the
+    worker here too, as Remove does: adding the same name again works."""
+    async with _client() as client:
+        added = await client.post("/api/workers/ssh", json={
+            "target": "alice@gpu-box"})
+        assert added.status_code == 200, added.text
+        created = await api.store.create_enrollment()
+        await api.store.enroll(created["token"], name="gpu-box", platform={},
+                               mounts={}, devices=[])
+        deleted = await client.delete("/api/workers/ssh/gpu-box")
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["revoked"] is True
+        assert not await api.store.is_enrolled("gpu-box")
+        again = await client.post("/api/workers/ssh", json={
+            "target": "alice@gpu-box"})
+        assert again.status_code == 200, again.text
+    await api.wait_for_cleanups()
 
 
 async def test_listing_needs_the_session_token_and_adding_too(api):

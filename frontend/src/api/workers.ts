@@ -320,7 +320,7 @@ export async function setSshWorkerEnabled(id: string, enabled: boolean): Promise
   return res.json();
 }
 
-/** Stop an SSH worker and forget it; its enrollment stays. */
+/** Delete an SSH worker: end its session, revoke it, and clean up on its host. */
 export async function deleteSshWorker(id: string): Promise<void> {
   const res = await apiFetch(`${BASE_URL}/ssh/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw await failure(res, 'Delete failed');

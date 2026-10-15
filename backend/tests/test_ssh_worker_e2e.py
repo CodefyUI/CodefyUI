@@ -254,7 +254,12 @@ def test_an_ssh_worker_enrolls_runs_and_survives_disable_enable(
     assert removed.json()["revoked"] is True
     assert _ssh_entry(client, NAME) is None
     # Remove cleaned up on the "remote host" too (#829): the credential the
-    # agent stored for this control plane and the slot's directory.
+    # agent stored for this control plane and the slot's directory. That
+    # runs in the background, after the answer.
+    deadline = time.monotonic() + 60
+    while ((credential_file.exists() or state.exists())
+           and time.monotonic() < deadline):
+        time.sleep(0.1)
     assert not credential_file.exists()
     assert not state.exists()
 

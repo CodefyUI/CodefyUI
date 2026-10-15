@@ -232,8 +232,11 @@ async def test_deleting_an_ssh_worker_ends_its_waiting_runs(registry):
     class _Launcher:
         entries = {"box": object()}
 
-        async def remove(self, name):
-            return self.entries.pop(name, None) is not None
+        async def remove(self, name, *, before_cleanup=None):
+            found = self.entries.pop(name, None) is not None
+            if found and before_cleanup is not None:
+                await before_cleanup()
+            return found
 
     worker, _ = registry.connect(wp.Hello(name="box", version="t"),
                                  send=_noop, close=_noop)
