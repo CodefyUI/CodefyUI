@@ -16,6 +16,7 @@ import { usePluginStore } from '../../store/pluginStore';
 import { isAnyModalOpen } from '../../store/modalState';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
+import * as workersApi from '../../api/workers';
 import * as exportDiagram from '../../utils/exportDiagram';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
 import { CustomNodeManagerModal } from '../CustomNodeManager/CustomNodeManager';
@@ -50,8 +51,6 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   GraphExistsError: (await importOriginal<typeof import('../../api/rest')>()).GraphExistsError,
   // Read at module load by runStore, which the Queue on... dialog uses (#775).
   ACTIVE_RUN_STATUSES: (await importOriginal<typeof import('../../api/rest')>()).ACTIVE_RUN_STATUSES,
-  // The Queue on... dialog lists the workers when it opens (#775).
-  listWorkers: vi.fn(() => Promise.resolve([])),
   submitRun: vi.fn(),
   // Used by the toolbar's Save, through saveActiveGraph. The overwrite
   // question comes back from `saveGraph` itself now; `listGraphs` is left
@@ -118,6 +117,12 @@ vi.mock('../../utils/exportDiagram', async (importOriginal) => {
   return { ...actual, svgToPngBlob: vi.fn() };
 });
 const mockedExportDiagram = vi.mocked(exportDiagram);
+
+// The Queue on... dialog lists the workers when it opens (#775).
+vi.mock('../../api/workers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/workers')>()),
+  fetchWorkers: vi.fn(() => Promise.resolve([])),
+}));
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -2206,7 +2211,7 @@ describe('Toolbar', () => {
       expect(screen.queryByRole('menu')).toBeNull();
       expect(useUIStore.getState().queueRunOpen).toBe(true);
       expect(isAnyModalOpen()).toBe(true);
-      await waitFor(() => expect(mockedRest.listWorkers).toHaveBeenCalled());
+      await waitFor(() => expect(vi.mocked(workersApi).fetchWorkers).toHaveBeenCalled());
 
       fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
       expect(screen.queryByRole('dialog')).toBeNull();

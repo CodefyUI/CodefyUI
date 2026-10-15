@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { listWorkers, submitRun, type RunTarget, type WorkerInfo } from '../../api/rest';
+import { submitRun, type RunTarget } from '../../api/rest';
+import { fetchWorkers, type WorkerInfo } from '../../api/workers';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
@@ -92,7 +93,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   // what a submission can name.
   useEffect(() => {
     let live = true;
-    listWorkers().then(
+    fetchWorkers().then(
       (listed) => { if (live) setWorkers(listed); },
       (err: unknown) => { if (live) setWorkersError(err instanceof Error ? err.message : String(err)); },
     );
@@ -216,7 +217,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     const devices = candidate.devices.map((d) => d.value).join(', ') || t('queueRun.noDevices');
     return t('queueRun.target.worker', {
       name: candidate.name,
-      status: t(`queueRun.status.${candidate.status}`),
+      status: t(`workers.status.${candidate.status}`),
       devices,
     });
   };

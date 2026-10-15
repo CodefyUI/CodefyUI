@@ -4,7 +4,8 @@
  * its workers (`GET /api/workers`). Pure, so the rules are tested without a
  * React tree.
  */
-import type { DeviceInfo, WorkerDevice, WorkerInfo } from '../../api/rest';
+import type { DeviceInfo } from '../../api/rest';
+import type { WorkerDevice, WorkerInfo } from '../../api/workers';
 
 /** `target.worker` for this server, and for "wherever there is room". */
 export const TARGET_LOCAL = 'local';
@@ -54,10 +55,11 @@ export function workerDeviceChoices(worker: WorkerInfo): DeviceChoice[] {
   }));
 }
 
-/** The workers a run can be queued on: connected ones (a disconnected
- * worker is listed by the server until it restarts, but cannot take one). */
+/** The workers a run can be queued on: connected ones. A disconnected
+ * worker is listed by the server until it restarts, and an `offline` one
+ * (persisted, #780) until it dials in; neither can take a run. */
 export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
-  return workers.filter((w) => w.status !== 'disconnected');
+  return workers.filter((w) => w.status !== 'disconnected' && w.status !== 'offline');
 }
 
 const ACCELERATORS = ['cuda', 'mps'];

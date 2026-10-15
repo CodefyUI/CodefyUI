@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import * as rest from '../../api/rest';
-import type { DeviceInfo, WorkerInfo } from '../../api/rest';
+import type { DeviceInfo } from '../../api/rest';
+import * as workersApi from '../../api/workers';
+import type { WorkerInfo } from '../../api/workers';
 import { QueueRunDialog } from './QueueRunDialog';
 import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
 import { useI18n } from '../../i18n';
@@ -15,8 +17,15 @@ import { renderSettled, settle } from '../../test/utils';
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof rest>();
-  return { ...actual, listWorkers: vi.fn(), submitRun: vi.fn(), fetchDevices: vi.fn() };
+  return { ...actual, submitRun: vi.fn(), fetchDevices: vi.fn() };
 });
+
+vi.mock('../../api/workers', async (importOriginal) => {
+  const actual = await importOriginal<typeof workersApi>();
+  return { ...actual, fetchWorkers: vi.fn() };
+});
+
+const workersMock = vi.mocked(workersApi);
 
 const api = vi.mocked(rest);
 
@@ -93,7 +102,7 @@ beforeEach(() => {
   useToastStore.setState({ toasts: [] });
   useSweepStore.setState({ closeSweep });
   api.fetchDevices.mockResolvedValue({ default: 'cpu', devices: [CPU] });
-  api.listWorkers.mockResolvedValue([]);
+  workersMock.fetchWorkers.mockResolvedValue([]);
   api.submitRun.mockResolvedValue({ run_id: 'run-1', status: 'queued' });
   onClose.mockReset();
   serialize.mockClear();
@@ -231,27 +240,28 @@ describe('QueueRunDialog: this server', () => {
 });
 
 describe('QueueRunDialog: workers', () => {
-  it('lists connected workers with status and devices, leaving out the disconnected and disabling the draining', async () => {
-    api.listWorkers.mockResolvedValue([
+  it('lists connected workers with status and devices, leaving out the disconnected and offline, disabling the draining', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([
       worker({ name: 'gpu-box' }),
       worker({ name: 'slow-box', status: 'degraded', devices: [] }),
       worker({ name: 'busy-box', status: 'draining', draining: true }),
       worker({ name: 'gone-box', status: 'disconnected' }),
+      worker({ name: 'cold-box', status: 'offline' }),
     ]);
     await open();
     const options = within(targetSelect()).getAllByRole('option') as HTMLOptionElement[];
     expect(options.map((o) => o.textContent)).toEqual([
       'This server',
-      'gpu-box (online): cpu, cuda:0, cuda:1, cuda:2',
-      'slow-box (heartbeat late): no devices',
-      'busy-box (draining): cpu, cuda:0, cuda:1, cuda:2',
+      'gpu-box (Online): cpu, cuda:0, cuda:1, cuda:2',
+      'slow-box (Degraded): no devices',
+      'busy-box (Draining): cpu, cuda:0, cuda:1, cuda:2',
       'Any available',
     ]);
     expect(options[3]).toBeDisabled();
   });
 
   it('builds a device set of one kind and shows each card under its in-run name', async () => {
-    api.listWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     patchTab({ graphDevice: 'cuda:1' });
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
@@ -289,7 +299,7 @@ describe('QueueRunDialog: workers', () => {
   });
 
   it('replaces the set with a device of another kind, and unchecks one already in it', async () => {
-    api.listWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
     // The graph's device is cpu, which the worker has.
@@ -311,7 +321,7 @@ describe('QueueRunDialog: workers', () => {
   });
 
   it('shows a refused placement in the dialog and stays open', async () => {
-    api.listWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     api.submitRun.mockRejectedValueOnce(new rest.ApiError(400, "worker 'gpu-box' does not offer cuda:7"));
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
@@ -342,7 +352,7 @@ describe('QueueRunDialog: workers', () => {
 
 describe('QueueRunDialog: any available', () => {
   it('asks for a kind, defaulting to the graph device kind, and sends no device set', async () => {
-    api.listWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     patchTab({ graphDevice: 'cuda' });
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'any' } });
@@ -359,14 +369,14 @@ describe('QueueRunDialog: any available', () => {
 
 describe('QueueRunDialog: the worker list', () => {
   it('says why only This server is offered when the list cannot be read', async () => {
-    api.listWorkers.mockRejectedValueOnce(new Error('worker registry is not available'));
+    workersMock.fetchWorkers.mockRejectedValueOnce(new Error('worker registry is not available'));
     await open();
     expect(screen.getByText('Could not list workers: worker registry is not available')).toBeInTheDocument();
     expect(within(targetSelect()).getAllByRole('option')).toHaveLength(1);
   });
 
   it('reads a refusal that is not an Error as text', async () => {
-    api.listWorkers.mockRejectedValueOnce('offline');
+    workersMock.fetchWorkers.mockRejectedValueOnce('offline');
     await open();
     expect(screen.getByText('Could not list workers: offline')).toBeInTheDocument();
   });
@@ -374,7 +384,7 @@ describe('QueueRunDialog: the worker list', () => {
   it('drops an answer that arrives after the dialog closed', async () => {
     let answer: (workers: WorkerInfo[]) => void = () => {};
     let refuse: (reason: unknown) => void = () => {};
-    api.listWorkers
+    workersMock.fetchWorkers
       .mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }))
       .mockReturnValueOnce(new Promise((_resolve, reject) => { refuse = reject; }));
     const first = await open();

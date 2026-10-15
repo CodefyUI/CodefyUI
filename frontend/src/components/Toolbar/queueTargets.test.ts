@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { DeviceInfo, WorkerInfo } from '../../api/rest';
+import type { DeviceInfo } from '../../api/rest';
+import type { WorkerInfo } from '../../api/workers';
 import {
   anyKinds,
   connectedWorkers,
@@ -48,8 +49,8 @@ describe('workerDeviceChoices / connectedWorkers', () => {
     expect(workerDeviceChoices(box).map((c) => c.kind)).toEqual(['cuda', 'mps']);
   });
 
-  it('leaves out disconnected workers', () => {
-    const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('c', 'draining', [])];
+  it('leaves out disconnected and offline workers', () => {
+    const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('c', 'draining', []), worker('d', 'offline', [])];
     expect(connectedWorkers(list).map((w) => w.name)).toEqual(['a', 'c']);
   });
 });

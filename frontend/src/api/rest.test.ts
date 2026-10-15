@@ -42,7 +42,6 @@ import {
   downloadRunMetricsCsv,
   createSweep,
   submitRun,
-  listWorkers,
   getSweep,
   cancelSweep,
   downloadSweepCsv,
@@ -1279,7 +1278,7 @@ describe('run endpoints', () => {
 
 // ── Sweeps (#140) ────────────────────────────────────────────────────────
 
-describe('queued run submit and the worker list (#775)', () => {
+describe('queued run submit (#775)', () => {
   const request = {
     graph: { nodes: [], edges: [], presets: [] },
     options: { target: { worker: 'gpu-box', devices: ['cuda:0', 'cuda:1'] }, device: 'cuda:0' },
@@ -1302,18 +1301,6 @@ describe('queued run submit and the worker list (#775)', () => {
     const error = await submitRun(request).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 400, message: "worker 'gpu-box' is not connected to this server" });
-  });
-
-  it('lists the workers', async () => {
-    const workers = [{ id: 'gpu-box', name: 'gpu-box', status: 'online', devices: [] }];
-    const fetchMock = mockFetch(200, { workers });
-    await expect(listWorkers()).resolves.toEqual(workers);
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/workers');
-  });
-
-  it('throws when the server has no worker registry', async () => {
-    mockFetch(503, { detail: 'worker registry is not available' });
-    await expect(listWorkers()).rejects.toMatchObject({ status: 503, message: 'worker registry is not available' });
   });
 });
 

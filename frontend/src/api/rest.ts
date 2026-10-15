@@ -375,50 +375,6 @@ export async function submitRun(request: SubmitRunRequest): Promise<SubmitRunRes
   return res.json();
 }
 
-/** `online`, `degraded` (a heartbeat is late) or `disconnected`; `draining`
- * is a connected worker that takes no new runs (`core/workers.py`). */
-export type WorkerStatus = 'online' | 'degraded' | 'disconnected' | 'draining';
-
-/** One device a worker offers, as its agent reported it (#772). */
-export interface WorkerDevice {
-  /** `cpu`, `cuda:0`, `mps`, ... */
-  value: string;
-  kind: string;
-  index: number | null;
-  name: string;
-  memory: DeviceMemory | null;
-}
-
-/** One `GET /api/workers` entry (`Worker.describe()`). */
-export interface WorkerInfo {
-  /** The worker's name: an id IS a name. */
-  id: string;
-  name: string;
-  status: WorkerStatus;
-  draining: boolean;
-  version: string;
-  fingerprint_digest: string | null;
-  platform: Record<string, string>;
-  mounts: Record<string, string>;
-  devices: WorkerDevice[];
-  /** Ids of the runs it is executing. */
-  running: string[];
-  /** Unix seconds. */
-  connected_at: number;
-  last_heartbeat_at: number;
-}
-
-/**
- * Every worker this control plane knows (`GET /api/workers`), disconnected
- * ones included. A 503 (no worker registry) throws like any refusal.
- */
-export async function listWorkers(): Promise<WorkerInfo[]> {
-  const res = await apiFetch(`${BASE_URL}/workers`);
-  if (!res.ok) return detailError(res, 'Failed to list workers');
-  const body = (await res.json()) as { workers: WorkerInfo[] };
-  return body.workers;
-}
-
 export type SweepValue = number | boolean | string;
 export type SweepMethod = 'grid' | 'random';
 export type SweepState = 'running' | 'cancelling' | 'finished' | 'failed';
@@ -552,7 +508,7 @@ export interface CancelSweepResponse {
 }
 
 /**
- * A refused sweep, run or worker request, as an `ApiError` so a caller can
+ * A refused sweep or run request, as an `ApiError` so a caller can
  * tell a 404 (the sweep is gone) from a failure worth retrying. FastAPI's 422 carries a list
  * of `{loc, msg}` entries, read here as `field: message` lines; `loc` starts
  * with `body`, which names no field.
