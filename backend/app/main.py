@@ -132,6 +132,14 @@ _AUTH_EXEMPT_PATHS = frozenset({
 _AUTH_EXEMPT_PREFIXES = ("/api/apps", "/api/keys")
 
 
+def _local_device_facts() -> list:
+    """This process's devices with their CUDA UUIDs, for matching a
+    same-host worker's cards to ours (#773). Called once, lazily."""
+    from .core.resources import probe_devices
+
+    return probe_devices()
+
+
 def _prefix_exempt(path: str) -> bool:
     """Exact-or-slash prefix match: '/api/apps' and '/api/apps/x' are
     exempt, '/api/appsfoo' is not. Footgun (spec Section 8): a future
@@ -379,7 +387,7 @@ async def _lifespan_body(app: FastAPI):
     # Worker agents (#772) register here when they connect to /ws/worker.
     # With none connected, the run service behaves exactly as without it:
     # a run without a target is placed and executed in this process.
-    worker_registry = WorkerRegistry()
+    worker_registry = WorkerRegistry(local_devices=_local_device_facts)
     app.state.worker_registry = worker_registry
     run_service = RunService(
         RunStore(db),

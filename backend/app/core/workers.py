@@ -99,6 +99,13 @@ class Worker:
     heartbeat_s: float
     status: str = STATUS_ONLINE
     draining: bool = False
+    #: Its ``hello.machine_id`` equals this process's: the same machine
+    #: (#773). Decided by machine identity, never by the peer address.
+    same_host: bool = False
+    #: Worker device -> this process's device for each card the two share
+    #: (#773, ``scheduling.slot_for``): ``cpu``, ``mps:0``, and each CUDA
+    #: card whose UUID matches one here. Empty for another machine.
+    shared: dict[str, str] = field(default_factory=dict)
     connected_at: float = field(default_factory=time.time)
     last_heartbeat: float = field(default_factory=time.monotonic)
     last_heartbeat_at: float = field(default_factory=time.time)
@@ -132,6 +139,7 @@ class Worker:
             "status": (STATUS_DRAINING if self.draining and self.online
                        else self.status),
             "draining": self.draining,
+            "same_host": self.same_host,
             "version": self.version,
             "fingerprint_digest": self.fingerprint,
             "platform": dict(self.platform),
@@ -157,12 +165,23 @@ def _canonical_or_none(device: str) -> str | None:
 
 
 class WorkerRegistry:
-    """Every worker this control plane knows, by name. Event-loop only."""
+    """Every worker this control plane knows, by name. Event-loop only.
+
+    *local_devices* returns this process's devices as ``DeviceFact``-like
+    objects (``value``, ``uuid``); it is called once, on the first
+    same-host worker, and is what a same-host worker's CUDA cards are
+    matched against by UUID. Without it no CUDA card is shared.
+    """
 
     def __init__(self, *, heartbeat_s: float = wp.DEFAULT_HEARTBEAT_S,
                  grace_s: float = wp.DEFAULT_GRACE_S,
                  missed_heartbeats: int = MISSED_HEARTBEATS,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 local_devices: Callable[[], list[Any]] | None = None) -> None:
+        self._local_devices_source = local_devices
+        self._local_devices_cache: list[Any] | None = None
+        #: ``(worker, device, uuid)`` already logged as not shared.
+        self._unshared_logged: set[tuple[str, str, str | None]] = set()
         self.heartbeat_s = heartbeat_s
         self.grace_s = grace_s
         self.missed_heartbeats = missed_heartbeats
@@ -182,6 +201,65 @@ class WorkerRegistry:
     def workers(self) -> list[Worker]:
         return sorted(self._workers.values(), key=lambda w: w.name)
 
+    # ── same-host devices (#773) ─────────────────────────────────────────
+
+    def _local_devices(self) -> list[Any]:
+        if self._local_devices_cache is None:
+            source = self._local_devices_source
+            try:
+                self._local_devices_cache = list(source()) if source else []
+            except Exception:  # noqa: BLE001 -- sharing degrades, never fails
+                logger.exception("could not list this server's devices; no "
+                                 "CUDA card is shared with same-host workers")
+                self._local_devices_cache = []
+        return self._local_devices_cache
+
+    def _shared_devices(self, worker: Worker) -> dict[str, str]:
+        """Worker device -> this process's device, for the cards both use.
+
+        Only for a same-host worker. ``cpu`` is shared, and ``mps:0`` when
+        this process has it too (one Apple GPU per machine). A CUDA card is
+        shared only when its UUID matches one of this process's cards, so
+        two processes that number the cards differently (another
+        ``CUDA_VISIBLE_DEVICES``) still agree on which card is which. A
+        CUDA card without a UUID, or whose UUID matches nothing here, keeps
+        a slot of its own; that is logged once.
+        """
+        if not worker.same_host:
+            return {}
+        local = self._local_devices()
+        by_uuid: dict[str, str] = {}
+        local_values: set[str] = set()
+        for fact in local:
+            value = _canonical_or_none(getattr(fact, "value", ""))
+            if value is None:
+                continue
+            local_values.add(value)
+            uuid = getattr(fact, "uuid", None)
+            if uuid and value.startswith("cuda"):
+                by_uuid[str(uuid).lower()] = value
+        shared: dict[str, str] = {}
+        for report in worker.devices:
+            value = _canonical_or_none(report.value)
+            if value is None:
+                continue
+            if value == "cpu" or (value.startswith("mps")
+                                  and value in local_values):
+                shared[value] = value
+                continue
+            match = by_uuid.get(report.uuid.lower()) if report.uuid else None
+            if match is not None:
+                shared[value] = match
+                continue
+            key = (worker.name, value, report.uuid)
+            if key not in self._unshared_logged:
+                self._unshared_logged.add(key)
+                logger.warning(
+                    "worker %s runs on this machine, but its %s (uuid %s) "
+                    "matches no card of this server; it keeps a slot of "
+                    "its own", worker.name, value, report.uuid or "unknown")
+        return shared
+
     # ── change notification ───────────────────────────────────────────────
 
     def add_listener(self, listener: Callable[[], None]) -> None:
@@ -198,8 +276,13 @@ class WorkerRegistry:
     # ── connections ───────────────────────────────────────────────────────
 
     def connect(self, hello: wp.Hello, *, send: Send,
-                close: Callable[[], Awaitable[None]]) -> tuple[Worker, Worker | None]:
+                close: Callable[[], Awaitable[None]],
+                same_host: bool = False) -> tuple[Worker, Worker | None]:
         """Register *hello*'s worker. Returns ``(worker, replaced)``.
+
+        *same_host*: the worker's machine identity equals this process's
+        (``ws_worker``), so the cards it shares with this process (see
+        :meth:`_shared_devices`) share their slots.
 
         A worker already registered under the name is replaced: its runs
         move to the new connection and wait for ``run_alive``, and the
@@ -211,7 +294,8 @@ class WorkerRegistry:
             fingerprint=hello.fingerprint, platform=dict(hello.platform),
             mounts=dict(hello.mounts), devices=list(hello.devices),
             send=send, close=close, heartbeat_s=self.heartbeat_s,
-            last_heartbeat=self._clock())
+            last_heartbeat=self._clock(), same_host=same_host)
+        worker.shared = self._shared_devices(worker)
         replaced = None
         if old is not None and old.online:
             replaced = old
@@ -266,7 +350,9 @@ class WorkerRegistry:
     def heartbeat(self, worker: Worker, frame: wp.Heartbeat) -> None:
         worker.last_heartbeat = self._clock()
         worker.last_heartbeat_at = time.time()
-        worker.devices = list(frame.devices)
+        if frame.devices != worker.devices:
+            worker.devices = list(frame.devices)
+            worker.shared = self._shared_devices(worker)
         if worker.status == STATUS_DEGRADED:
             worker.status = STATUS_ONLINE
             logger.info("worker %s is back on time", worker.name)

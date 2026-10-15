@@ -35,6 +35,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from ..core import worker_protocol as wp
+from ..core.machine_identity import machine_identity
 from .runner import Runner
 
 logger = logging.getLogger(__name__)
@@ -231,7 +232,8 @@ class AgentConnection:
     async def _handshake(self, ws: Any) -> wp.Welcome:
         hello = wp.Hello(
             name=self.name, version=self.version,
-            devices=await self._device_reports(), platform=platform_facts())
+            devices=await self._device_reports(), platform=platform_facts(),
+            machine_id=await asyncio.to_thread(machine_identity))
         await ws.send(wp.encode_frame(hello))
         raw = await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S)
         frame = wp.decode_control_frame(raw)

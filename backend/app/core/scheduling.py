@@ -11,10 +11,35 @@ card. A run may hold several slots at once (a device set, #774), which is
 why a placement carries a tuple of them and why releasing a run gives back
 every one.
 
-:class:`LocalScheduler` reproduces the 3.0 rule exactly: a run on queue key
-``K`` takes the single slot ``("local", K)`` while fewer than
-``limits.for_key(K)`` runs hold it. :class:`WorkerScheduler` (#772) adds
-the connected worker agents; per-device slots for local device sets are #773.
+Admission (#773) is count-based, per slot: while fewer than
+``limits.for_slot(slot)`` runs hold a slot, another may take it (1 per
+accelerator and 2 for ``cpu`` by default; ``CODEFYUI_RUN_QUEUE_MAX_CONCURRENT``
+overrides one slot). :class:`LocalScheduler` reproduces the 3.0 rule for a
+run without a device set: queue key ``K`` takes the single slot
+``("local", K)``. :class:`WorkerScheduler` (#772) adds the connected
+worker agents.
+
+Device sets: a run whose placement names several slots (``target.devices``,
+here or on a worker) starts only when EVERY one has room, takes them all
+in one step and gives them all back in one step; it never holds part of a
+set. While it waits at the front of its FIFO, ``RunService`` RESERVES the
+slots it needs (:meth:`WorkerScheduler.reservation`): no other run may
+start on a reserved card until the set run starts, runs already on those
+cards finish normally, and so the set run starts once they have. The
+price is idle capacity: a reserved card that is free stays idle until the
+set's other cards free too, at most as long as the longest run already
+holding one of them. Reservations are first come, first served (an
+earlier reservation also blocks a later set run), so two set runs cannot
+reserve each other into a deadlock. An ``any`` run with a set reserves
+nothing: which worker's cards it needs is not known until it is placed.
+
+Same-host workers (#773): a worker whose ``hello.machine_id`` equals this
+process's runs on this machine. Each card it shares with this process
+(``Worker.shared``: ``cpu``, ``mps:0``, and every CUDA card whose UUID
+matches one here, whatever its index on either side) is ALIASED onto this
+process's slot (:func:`slot_for`), one budget under the local cap, so an
+in-process run and a worker run cannot both take one physical card under
+``gpu=1``. A card with no UUID or no match keeps a slot of its own.
 
 This module imports nothing from ``run_service``: the scheduler sees a
 waiting run through :class:`QueuedEntry` and the caps through
@@ -70,9 +95,55 @@ class QueuedEntry(Protocol):
 
 
 class SlotLimits(Protocol):
-    """The per-key concurrency caps (``run_service.QueueLimits``)."""
+    """The per-slot concurrency caps (``run_service.QueueLimits``)."""
 
-    def for_key(self, queue_key: str) -> int: ...
+    def for_slot(self, slot: SlotKey) -> int: ...
+
+
+def slot_for(worker: Any, device: str) -> SlotKey:
+    """The slot a run on *device* of *worker* takes.
+
+    ``(worker.id, device)``, except for a card a same-host worker shares
+    with this process (``worker.shared``, see
+    ``WorkerRegistry._shared_devices``): that card's slot is this
+    process's, ``("local", <its device here>)``, with this process's
+    budget and cap.
+    """
+    shared = getattr(worker, "shared", None) or {}
+    local = shared.get(device)
+    if local is not None:
+        return (LOCAL_WORKER_ID, local)
+    return (worker.id, device)
+
+
+def local_set_slots(queue_key: str,
+                    devices: list[str] | None) -> tuple[SlotKey, ...]:
+    """This process's slots for a run on *queue_key*, with its device set.
+
+    One slot without a set (the 3.0 rule). With one (#774), a slot on every
+    device of the set, the run's own queue key first: the in-process run
+    executes on the first device, and holding the rest keeps another run
+    off the cards its nodes may address.
+    """
+    slots: list[SlotKey] = [(LOCAL_WORKER_ID, queue_key)]
+    for device in devices or ():
+        try:
+            device = canonical_device(device)
+        except ValueError:
+            continue
+        if (LOCAL_WORKER_ID, device) not in slots:
+            slots.append((LOCAL_WORKER_ID, device))
+    return tuple(slots)
+
+
+def _free(limits: SlotLimits, slot: SlotKey,
+          taken: Mapping[SlotKey, int]) -> bool:
+    return taken.get(slot, 0) < limits.for_slot(slot)
+
+
+def _all_free(limits: SlotLimits, slots: tuple[SlotKey, ...],
+              taken: Mapping[SlotKey, int]) -> bool:
+    return all(_free(limits, slot, taken) for slot in slots)
 
 
 class Scheduler(Protocol):
@@ -87,6 +158,11 @@ class Scheduler(Protocol):
     A placement must name at least one slot; ``_pump`` treats an empty
     ``slots`` (and an exception) as a refusal, since an uncounted start
     would let the whole FIFO drain past its cap.
+
+    A scheduler may also offer ``reservation(entry)``: the slots a refused
+    front-of-line run needs, which ``_pump`` then keeps every other run
+    off until it starts (see the module docstring). Without it nothing is
+    reserved.
     """
 
     def place(self, entry: QueuedEntry,
@@ -94,7 +170,13 @@ class Scheduler(Protocol):
 
 
 class LocalScheduler:
-    """Everything runs in this process; one slot per run, capped per device."""
+    """Everything runs in this process; one slot per device, capped per slot.
+
+    A run without a device set takes the one slot ``("local", queue_key)``,
+    the 3.0 rule unchanged. A ``target.worker: local`` run with a device set
+    takes a slot on every device of it, all or nothing
+    (:func:`local_set_slots`); it still executes on its queue key.
+    """
 
     def __init__(self, limits: SlotLimits) -> None:
         self._limits = limits
@@ -102,10 +184,17 @@ class LocalScheduler:
     def place(self, entry: QueuedEntry,
               taken: Mapping[SlotKey, int]) -> Placement | None:
         queue_key = entry.queue_key
-        slot: SlotKey = (LOCAL_WORKER_ID, queue_key)
-        if taken.get(slot, 0) >= self._limits.for_key(queue_key):
+        _, devices = entry_target(entry.options)
+        slots = local_set_slots(queue_key, devices)
+        if not _all_free(self._limits, slots, taken):
             return None
-        return Placement(LOCAL_WORKER_ID, (queue_key,), (slot,))
+        return Placement(LOCAL_WORKER_ID, (queue_key,), slots)
+
+    def reservation(self, entry: QueuedEntry) -> tuple[SlotKey, ...] | None:
+        """The slots to reserve while *entry* waits: its set's, or None."""
+        _, devices = entry_target(entry.options)
+        slots = local_set_slots(entry.queue_key, devices)
+        return slots if len(slots) > 1 else None
 
 
 
@@ -136,9 +225,9 @@ class WorkerScheduler:
       local run with a set does.
 
     Every worker slot is ``(worker_id, device)`` capped by
-    ``limits.for_key(device)``; a device set takes one slot per device on
-    a worker and starts only when all of them are free. A local run keeps
-    the one slot it has always taken.
+    ``limits.for_slot(slot)`` (a same-host worker's is this process's slot,
+    see :func:`slot_for`); a device set takes one slot per device, here or
+    on a worker, and starts only when all of them are free.
 
     :meth:`explain` says why a run that :meth:`place` refused cannot start
     for a reason other than a busy slot (the Runs list shows it).
@@ -169,6 +258,28 @@ class WorkerScheduler:
                     return placement
         return self._place_here(requested, devices, taken)
 
+    def reservation(self, entry: QueuedEntry) -> tuple[SlotKey, ...] | None:
+        """The slots to reserve while *entry* waits at the front, or None.
+
+        Only a device-set run on this process or on a named worker that
+        accepts runs and offers the whole set: those are the runs refused
+        for lack of slots alone, and the slots they need are known. A
+        single-device run needs no reservation (its FIFO is its line), an
+        ``any`` set run's slots are not known until it is placed, and a run
+        waiting for a worker to come back or undrain must not hold cards
+        idle for it.
+        """
+        worker_id, devices = entry_target(entry.options)
+        if worker_id == TARGET_LOCAL:
+            return self._local.reservation(entry)
+        if worker_id == TARGET_ANY or not devices or len(devices) < 2:
+            return None
+        worker = self._registry.get(worker_id)
+        if worker is None or not worker.accepts_runs \
+                or not all(worker.offers(d) for d in devices):
+            return None
+        return tuple(slot_for(worker, d) for d in devices)
+
     def explain(self, entry: QueuedEntry) -> str | None:
         """Why *entry* is waiting, when it is not just a busy slot."""
         worker_id, devices = entry_target(entry.options)
@@ -195,21 +306,20 @@ class WorkerScheduler:
         return any(w.online and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
 
-    def _free(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> bool:
-        return taken.get(slot, 0) < self._limits.for_key(slot[1])
-
     def _place_here(self, requested: str, devices: list[str] | None,
                     taken: Mapping[SlotKey, int]) -> Placement | None:
         offered = self._local_devices()
         if devices:
             if not _serves(offered, requested, devices):
                 return None
-            candidates = [canonical_device(devices[0])]
-        else:
-            candidates = candidate_devices(offered, requested)
-        for device in candidates:
+            first = canonical_device(devices[0])
+            slots = local_set_slots(first, devices)
+            if _all_free(self._limits, slots, taken):
+                return Placement(LOCAL_WORKER_ID, (first,), slots)
+            return None
+        for device in candidate_devices(offered, requested):
             slot: SlotKey = (LOCAL_WORKER_ID, device)
-            if self._free(slot, taken):
+            if _free(self._limits, slot, taken):
                 return Placement(LOCAL_WORKER_ID, (device,), (slot,))
         return None
 
@@ -219,13 +329,13 @@ class WorkerScheduler:
         if devices:
             if not all(worker.offers(d) for d in devices):
                 return None
-            slots = tuple((worker.id, d) for d in devices)
-            if all(self._free(slot, taken) for slot in slots):
+            slots = tuple(slot_for(worker, d) for d in devices)
+            if _all_free(self._limits, slots, taken):
                 return Placement(worker.id, tuple(devices), slots)
             return None
         for device in candidate_devices(worker.device_values(), requested):
-            slot: SlotKey = (worker.id, device)
-            if self._free(slot, taken):
+            slot = slot_for(worker, device)
+            if _free(self._limits, slot, taken):
                 return Placement(worker.id, (device,), (slot,))
         return None
 

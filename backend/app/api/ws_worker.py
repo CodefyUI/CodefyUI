@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..core import worker_protocol as wp
+from ..core.machine_identity import machine_identity, same_machine
 from ..core.auth import (
     TOKEN_QUERY_PARAM,
     constant_time_equals,
@@ -108,7 +109,14 @@ async def websocket_worker(ws: WebSocket) -> None:
         await close()
         return
 
-    worker, replaced = registry.connect(hello, send=send, close=close)
+    # Same machine by identity, not by peer address (#773): an ``ssh -R``
+    # tunnel or a local proxy makes a remote agent look like loopback.
+    worker, replaced = registry.connect(
+        hello, send=send, close=close,
+        same_host=same_machine(hello.machine_id, machine_identity()))
+    service = getattr(ws.app.state, "run_service", None)
+    if service is not None:
+        service.check_worker_overrides(worker)
     if replaced is not None:
         await replaced.close()
     await send(wp.Welcome(worker_id=worker.id,
