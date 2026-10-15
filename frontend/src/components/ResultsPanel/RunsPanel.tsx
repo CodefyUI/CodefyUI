@@ -16,6 +16,7 @@ import {
 import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
+import { aliasForDevice } from '../../utils/deviceAliases';
 import { LossChart } from './LossChart';
 import { NewSweepDialog } from './NewSweepDialog';
 import { SweepDetail } from './SweepDetail';
@@ -107,6 +108,43 @@ export function runDevice(run: RunSummary): string {
   if (run.queue_key) return run.queue_key;
   const requested = run.options?.device;
   return typeof requested === 'string' && requested ? requested : '-';
+}
+
+/** Where a run executes (#769): `local` for this server and for a row from
+ * before #769, a worker's name, or `any` while an `any` run waits. */
+export function runWorker(run: RunSummary): string {
+  return run.worker_id || 'local';
+}
+
+/**
+ * The Devices column (#775): the run's device set when it named one, else
+ * its device. A worker run's queue key is `<worker>/<device>`; the worker
+ * has its own column, so only the device is shown here.
+ */
+export function runDevices(run: RunSummary): string {
+  if (run.devices && run.devices.length > 0) return run.devices.join(', ');
+  const device = runDevice(run);
+  return device.slice(device.lastIndexOf('/') + 1);
+}
+
+/**
+ * The in-run names of a worker run's CUDA cards (#774), one line each
+ * (`cuda:2 -> cuda:1 in this run`), or null when none is renamed. A run on
+ * this server is not renumbered: it executes on its first device as named.
+ */
+export function deviceAliasLines(
+  run: RunSummary,
+  t: ReturnType<typeof useI18n.getState>['t'],
+): string | null {
+  if (runWorker(run) === 'local' || !run.devices) return null;
+  const devices = run.devices;
+  const lines = devices.flatMap((device) => {
+    const alias = aliasForDevice(devices, device);
+    return alias !== null && alias !== device
+      ? [t('queueRun.alias', { device, alias })]
+      : [];
+  });
+  return lines.length > 0 ? lines.join('\n') : null;
 }
 
 /**
@@ -708,8 +746,11 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
           <div className={`${styles.row} ${styles.rowHeader}`} role="row">
             <span role="columnheader">{t('runs.col.name')}</span>
             <span role="columnheader">{t('runs.col.status')}</span>
+            <span role="columnheader" className={styles.colWorker}>
+              {t('runs.col.worker')}
+            </span>
             <span role="columnheader" className={styles.colDevice}>
-              {t('runs.col.device')}
+              {t('runs.col.devices')}
             </span>
             <span role="columnheader" className={styles.colStarted}>
               {t('runs.col.started')}
@@ -734,6 +775,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const active = isActiveRun(run.status);
               const expanded = selectedRunId === run.id;
               const toggle = () => void select(expanded ? null : run.id);
+              const worker = runWorker(run);
+              const workerName = worker === 'local'
+                ? t('runs.worker.local')
+                : worker === 'any' ? t('runs.worker.any') : worker;
+              // Why a queued run waits beyond its place in line (#772).
+              const queueReason = run.status === 'queued' ? run.queue_reason || null : null;
               return (
                 // Opening a run is this panel's primary interaction, so the
                 // row is a real control: focusable, Enter/Space activated,
@@ -760,8 +807,20 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                     {run.name || t('runs.unnamed')}
                   </span>
                   <StatusChip run={run} />
-                  <span className={`${styles.mono} ${styles.colDevice}`}>
-                    {runDevice(run)}
+                  <span
+                    className={`${styles.workerCell} ${styles.colWorker}`}
+                    title={queueReason ?? undefined}
+                  >
+                    {workerName}
+                    {queueReason && (
+                      <span className={styles.queueReason}>{queueReason}</span>
+                    )}
+                  </span>
+                  <span
+                    className={`${styles.mono} ${styles.colDevice}`}
+                    title={deviceAliasLines(run, t) ?? undefined}
+                  >
+                    {runDevices(run)}
                     {run.status === 'queued' && (
                       <span className={styles.queuePos}>
                         {/* A null position is "we cannot say", not zero — the

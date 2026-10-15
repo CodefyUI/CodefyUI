@@ -33,6 +33,7 @@ const MODALS: Array<[ModalName, () => void]> = [
   ['vizModal', () => setActiveTab({ vizModalNodeId: 'n1' })],
   ['newSweep', () => useSweepStore.getState().setNewSweepOpen(true)],
   ['workers', () => useWorkerStore.getState().openPanel()],
+  ['queueRun', () => useUIStore.getState().setQueueRunOpen(true)],
 ];
 
 beforeEach(() => {
@@ -56,6 +57,7 @@ beforeEach(() => {
     pluginCenterOpen: false,
     customNodeManagerOpen: false,
     gitDiff: null,
+    queueRunOpen: false,
   });
   useDialogStore.setState({ active: null, resolve: null });
   useSweepStore.setState({ newSweepOpen: false });

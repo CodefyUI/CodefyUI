@@ -1,0 +1,187 @@
+/* The New Sweep dialog's frame (ResultsPanel/NewSweepDialog.module.css), so
+   the two queued-submission dialogs look like one family. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8800;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  background: var(--surface-scrim);
+}
+
+.dialog {
+  width: min(520px, 100%);
+  max-height: min(760px, calc(100vh - var(--sp-8)));
+  overflow-y: auto;
+  color: var(--text-secondary);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.dialog form {
+  display: flex;
+  flex-direction: column;
+}
+
+.header,
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+}
+
+.header {
+  border-bottom: 1px solid var(--border-base);
+}
+
+.header h2 {
+  flex: 1;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+}
+
+.close {
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: var(--fs-xl);
+  cursor: pointer;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.field,
+.devices legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.field input,
+.field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-control-sm);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: var(--fw-normal);
+}
+
+.devices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.check input {
+  margin: 0;
+}
+
+.deviceId {
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.alias {
+  color: var(--accent);
+  font-family: monospace;
+  font-size: var(--fs-xs);
+}
+
+.hint,
+.error,
+.muted {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.hint,
+.muted {
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--status-error);
+}
+
+.footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-base);
+}
+
+.footer button {
+  min-height: var(--h-control-sm);
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.footer .primary {
+  color: var(--text-on-accent);
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
+}
+
+.footer button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dialog :focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.dialog:focus {
+  outline: none;
+}
+
+@media (max-width: 859px) {
+  .pair {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog {
+    max-height: calc(100vh - var(--sp-4));
+  }
+}

@@ -48,6 +48,11 @@ vi.mock('../../api/rest', async (importOriginal) => ({
   // 409 from an ordinary failure with `err instanceof GraphExistsError`, so a
   // stub here would make every failed save throw a TypeError instead (#455).
   GraphExistsError: (await importOriginal<typeof import('../../api/rest')>()).GraphExistsError,
+  // Read at module load by runStore, which the Queue on... dialog uses (#775).
+  ACTIVE_RUN_STATUSES: (await importOriginal<typeof import('../../api/rest')>()).ACTIVE_RUN_STATUSES,
+  // The Queue on... dialog lists the workers when it opens (#775).
+  listWorkers: vi.fn(() => Promise.resolve([])),
+  submitRun: vi.fn(),
   // Used by the toolbar's Save, through saveActiveGraph. The overwrite
   // question comes back from `saveGraph` itself now; `listGraphs` is left
   // mocked because the module is, not because the save path calls it.
@@ -2158,5 +2163,74 @@ describe('Toolbar', () => {
     useI18n.setState({ locale: 'fr' as never });
     await renderSettled(<Toolbar />);
     expect(screen.getByRole('button', { name: 'Language' })).toHaveTextContent('fr');
+  });
+
+  // ── Run split button: Queue on... (#775) ────────────────────────────
+
+  describe('Run split button', () => {
+    const caret = () => screen.getByRole('button', { name: 'More ways to run' });
+    const queueItem = () => screen.getByRole('menuitem', { name: 'Queue on...' });
+
+    afterEach(() => {
+      useUIStore.setState({ queueRunOpen: false });
+    });
+
+    it('keeps Run interactive and opens a menu on the focused Queue on... item', async () => {
+      await renderSettled(<Toolbar />);
+      fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(caret()).toHaveAttribute('aria-expanded', 'false');
+      expect(caret()).toHaveAttribute('aria-haspopup', 'menu');
+
+      fireEvent.click(caret());
+      expect(caret()).toHaveAttribute('aria-expanded', 'true');
+      expect(queueItem()).toHaveFocus();
+
+      // A second press closes it again.
+      fireEvent.click(caret());
+      expect(screen.queryByRole('menu')).toBeNull();
+    });
+
+    it('stays usable while the canvas runs: a queued run is a separate one', async () => {
+      setActiveTab({ status: 'running' });
+      await renderSettled(<Toolbar />);
+      expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled();
+      expect(caret()).toBeEnabled();
+    });
+
+    it('opens the Queue run dialog as a modal and hands the focus back to the caret', async () => {
+      await renderSettled(<Toolbar />);
+      fireEvent.click(caret());
+      fireEvent.click(queueItem());
+      const dialog = await screen.findByRole('dialog', { name: 'Queue run' });
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(useUIStore.getState().queueRunOpen).toBe(true);
+      expect(isAnyModalOpen()).toBe(true);
+      await waitFor(() => expect(mockedRest.listWorkers).toHaveBeenCalled());
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(useUIStore.getState().queueRunOpen).toBe(false);
+      expect(caret()).toHaveFocus();
+    });
+
+    it('closes the menu on Escape, back on the caret, and ignores other keys', async () => {
+      await renderSettled(<Toolbar />);
+      fireEvent.click(caret());
+      fireEvent.keyDown(document, { key: 'Enter' });
+      expect(screen.getByRole('menu')).toBeInTheDocument();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(caret()).toHaveFocus();
+    });
+
+    it('closes the menu on a press outside it, canvas included, and not on one inside', async () => {
+      await renderSettled(<Toolbar />);
+      fireEvent.click(caret());
+      fireEvent.mouseDown(queueItem());
+      expect(screen.getByRole('menu')).toBeInTheDocument();
+      fireEvent.mouseDown(canvasPane());
+      expect(screen.queryByRole('menu')).toBeNull();
+    });
   });
 });

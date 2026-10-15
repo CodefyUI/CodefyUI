@@ -205,6 +205,14 @@ interface UIState {
   layoutFitRequests: Readonly<Record<string, LayoutFitBounds>>;
   requestLayoutFit: (tabId: string, bounds: LayoutFitBounds) => void;
   clearLayoutFit: (tabId: string) => void;
+  /** The toolbar's "Queue on..." dialog (#775). Here, not in the Toolbar's
+   * own state, so `isAnyModalOpen` sees it. */
+  queueRunOpen: boolean;
+  setQueueRunOpen: (open: boolean) => void;
+  /** Bumped to ask the Results panel to show its Runs tab (expanding it if
+   * collapsed); the panel reacts to a change, so 0 asks nothing. */
+  runsTabRequest: number;
+  requestRunsTab: () => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
   /** The device a run uses when the graph has no `settings.device` of its
@@ -380,6 +388,10 @@ export const useUIStore = create<UIState>((set) => ({
       delete rest[tabId];
       return { layoutFitRequests: rest };
     }),
+  queueRunOpen: false,
+  setQueueRunOpen: (open) => set({ queueRunOpen: open }),
+  runsTabRequest: 0,
+  requestRunsTab: () => set((state) => ({ runsTabRequest: state.runsTabRequest + 1 })),
   fontSize: loadFontSize(),
   setFontSize: (size) => {
     localStorage.setItem(FONT_SIZE_KEY, size);

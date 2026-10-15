@@ -4,6 +4,7 @@ import { ResultsPanel } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import {
   _clearPluginPanels, registerPluginPanel, removePluginPanel,
@@ -198,6 +199,24 @@ describe('ResultsPanel — log tab basics', () => {
     expect(clearBtn).not.toBeDisabled();
     fireEvent.click(clearBtn);
     expect(useTabStore.getState().getActiveTab().logs).toHaveLength(0);
+  });
+});
+
+describe('ResultsPanel — asked to show the Runs tab (#775)', () => {
+  it('switches to Runs, expanding a collapsed dock, on each new request only', () => {
+    useUIStore.setState({ runsTabRequest: 4 });
+    render(<ResultsPanel />);
+    // A request made before the panel mounted is not replayed.
+    expect(screen.queryByTestId('runs-panel')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    act(() => useUIStore.getState().requestRunsTab());
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
+    expect(screen.getByLabelText(t('results.collapse'))).toBeInTheDocument();
+
+    // Already open: a second request keeps it so.
+    act(() => useUIStore.getState().requestRunsTab());
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
   });
 });
 
