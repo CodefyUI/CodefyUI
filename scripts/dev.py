@@ -50,8 +50,9 @@
                       --target <名稱>   在哪裡執行；目前只接受 local（這台伺服器），
                                         遠端 worker 由 #772 提供
                       --devices <清單>  同一種類的裝置集合，逗號分隔，如
-                                        cuda:0,cuda:1；省略 --device 時第一個
-                                        就是 run 的裝置，兩者都給則必須一致
+                                        cuda:0,cuda:1；--device 省略、為 auto
+                                        或只寫種類（cuda）時，第一個就是 run
+                                        的裝置；其他 --device 必須與它相同
                       --seed <n>        隨機種子（省略時用圖檔的 settings.seed）
                       --no-seed         不設種子執行，即使圖檔有 settings.seed
                       --deterministic   要求 torch 用確定性演算法（沒有確定性實作
@@ -4346,8 +4347,8 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
     p.add_argument("--devices", default=None, metavar="LIST",
                    help="comma-separated device set of one kind, e.g. "
                         "cuda:0,cuda:1. Its first entry is the run's device "
-                        "when --device is omitted; given both, they must "
-                        "agree.")
+                        "when --device is omitted, auto, or only the kind "
+                        "(cuda); any other --device must equal it.")
     seeding = p.add_mutually_exclusive_group()
     seeding.add_argument("--seed", type=int, default=None,
                          help="seed for random / numpy / torch. Every node is "

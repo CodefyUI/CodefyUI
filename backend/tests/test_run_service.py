@@ -593,6 +593,42 @@ def test_options_accept_every_documented_key():
         "target": {"worker": "local", "devices": ["cuda"]}}
 
 
+@pytest.mark.parametrize("device,devices,effective", [
+    # (a) absent or auto: devices[0], silently.
+    (None, ["cuda:1", "cuda:0"], "cuda:1"),
+    ("auto", ["cuda:1"], "cuda:1"),
+    (" AUTO ", ["mps:0"], "mps:0"),
+    # (b) a bare kind agrees with any devices[0] of that kind.
+    ("cuda", ["cuda:1", "cuda:0"], "cuda:1"),
+    ("mps", ["mps:0"], "mps:0"),
+    ("cpu", ["cpu"], "cpu"),
+    # Equal after trim/lowercase.
+    (" CUDA:1 ", ["cuda:1"], "cuda:1"),
+])
+def test_device_set_precedence_accepts(device, devices, effective):
+    """#769: the device list is the more specific statement."""
+    raw = {"target": {"devices": devices}}
+    if device is not None:
+        raw["device"] = device
+    options = normalize_options(raw)
+    assert options["device"] == effective
+    assert options["target"]["devices"][0] == effective
+
+
+@pytest.mark.parametrize("device,devices", [
+    # (c) anything else that differs is a disagreement.
+    ("cuda:0", ["cuda:1"]),
+    ("cpu", ["cuda:0"]),
+    ("cuda", ["mps:0"]),
+    ("mps:1", ["mps:0"]),
+])
+def test_device_set_precedence_refuses(device, devices):
+    with pytest.raises(RunSubmitError,
+                       match="^target.devices and device disagree$"):
+        normalize_options({"device": device,
+                           "target": {"devices": devices}})
+
+
 @pytest.mark.parametrize("lane", [LANE_INTERACTIVE, "queued", "gpu"])
 def test_lane_is_carried_through_verbatim(lane):
     assert normalize_options({"lane": lane})["lane"] == lane

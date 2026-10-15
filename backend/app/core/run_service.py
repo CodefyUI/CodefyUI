@@ -669,6 +669,17 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     checked here: that resolution happens at start time via
     ``resolve_device`` and lands in ``exec_runs.queue_key``, so the row keeps
     both what was asked for and what was used.
+
+    With ``target.devices`` (#769) the list is the more specific statement,
+    and ``devices[0]`` relates to ``device`` in one of three ways:
+
+    - ``device`` absent, or ``"auto"``: ``devices[0]`` becomes the device.
+    - ``device`` a bare kind (``cuda``, ``mps``, ``cpu``) that matches the
+      kind of ``devices[0]``: they agree, and ``devices[0]`` becomes the
+      device (``cuda`` + ``["cuda:1"]`` is ``cuda:1``).
+    - anything else that differs after trimming and lowercasing (``cuda:0``
+      + ``["cuda:1"]``, ``cpu`` + ``["cuda:0"]``): ``RunSubmitError``
+      ``target.devices and device disagree``.
     """
     if raw is None:
         raw = {}
@@ -683,8 +694,7 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     target = normalize_target(raw.get("target"))
     devices = None if target is None else target["devices"]
 
-    # ``target.devices[0]`` is the effective device when ``device`` is
-    # absent (#769); when both are given they must name the same device.
+    # ``target.devices`` against ``device`` (#769); see the docstring.
     device = raw.get("device", devices[0] if devices else "cpu")
     if not isinstance(device, str) or not device.strip():
         raise RunSubmitError("device must be a non-empty string")
@@ -694,7 +704,10 @@ def normalize_options(raw: Any) -> dict[str, Any]:
             f"unknown device {device!r}; expected cpu, auto, cuda, cuda:N, "
             "mps or mps:N")
     if devices and device != devices[0]:
-        raise RunSubmitError("target.devices and device disagree")
+        if device == "auto" or device == devices[0].split(":", 1)[0]:
+            device = devices[0]
+        else:
+            raise RunSubmitError("target.devices and device disagree")
 
     seed = raw.get("seed")
     if seed is not None:

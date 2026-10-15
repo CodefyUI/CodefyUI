@@ -29,7 +29,7 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 沒有明確指定 `device` 的 run 會使用圖檔裡的 `settings.device`；圖檔也沒有指定時就在 `cpu` 上執行，不會有任何機制替你選加速器。`--device auto`（或請求本文中的 `"device": "auto"`）是唯一的例外：它會解析成這台伺服器能看到的最佳加速器（依序 `cuda`、`mps`、`cpu`），並排在那條佇列上。指定了不存在的加速器會退回 `cpu` 並發出警告。
 :::
 
-run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。目前唯一的 worker 是 `local`，也就是這台伺服器；省略 `worker` 時也是 `local`。其他 worker 名稱以及 `any` 在遠端 worker 推出前都會回 `400`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。省略 `device` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 指向不同的卡則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。沒有指定 target 的 run 行為與以往完全相同。
+run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。目前唯一的 worker 是 `local`，也就是這台伺服器；省略 `worker` 時也是 `local`。其他 worker 名稱以及 `any` 在遠端 worker 推出前都會回 `400`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。`device` 省略或為 `auto` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 只寫種類時也一樣（`"device": "cuda"` 搭配 `["cuda:1", "cuda:0"]` 會在 `cuda:1` 上執行）。`device` 指向其他裝置則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。沒有指定 target 的 run 行為與以往完全相同。
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
 
@@ -112,7 +112,7 @@ cdui run infer.json --record-outputs
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
 | `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
 | `--target <名稱>` | run 在哪裡執行。目前只接受 `local`（這台伺服器）。省略時為 `local`。 |
-| `--devices <清單>` | 同一種類的裝置集合，以逗號分隔，例如 `cuda:0,cuda:1`。省略 `--device` 時第一個就是 run 的裝置；兩者都給時必須一致。 |
+| `--devices <清單>` | 同一種類的裝置集合，以逗號分隔，例如 `cuda:0,cuda:1`。`--device` 省略、為 `auto` 或只寫種類（`cuda`）時，第一個就是 run 的裝置；其他 `--device` 必須與它相同。 |
 | `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。省略時使用圖檔的 `settings.seed`（若有）。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#reproducible-runs-seed)**。 |
 | `--no-seed` | 即使圖檔有 `settings.seed`，也不設種子執行（送出 `"seed": null`） |
 | `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |

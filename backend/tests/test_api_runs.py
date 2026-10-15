@@ -434,10 +434,29 @@ async def test_submit_rejects_a_bad_target(client, target, detail):
     assert (await client.get("/api/runs")).json()["total"] == 0
 
 
-async def test_a_device_that_disagrees_with_the_device_set_is_400(client):
+@pytest.mark.parametrize("device", ["cpu", " CPU ", "auto"])
+async def test_a_device_that_agrees_with_the_device_set_runs(client, device):
+    """Same device, ``auto``, or the bare kind: ``devices[0]`` wins."""
     response = await client.post("/api/runs", json={
         "graph": _graph(),
-        "options": {"device": "cpu", "target": {"devices": ["cuda:0"]}}})
+        "options": {"device": device, "target": {"devices": ["cpu"]}}})
+    assert response.status_code == 200, response.text
+    record = await _poll_until_terminal(client, response.json()["run_id"])
+    assert record["options"]["device"] == "cpu"
+    assert record["queue_key"] == "cpu"
+
+
+@pytest.mark.parametrize("device,devices", [
+    ("cpu", ["cuda:0"]),
+    ("cuda:0", ["cuda:1"]),
+    ("mps", ["cuda:0"]),
+    ("cuda", ["mps:0"]),
+])
+async def test_a_device_that_disagrees_with_the_device_set_is_400(
+        client, device, devices):
+    response = await client.post("/api/runs", json={
+        "graph": _graph(),
+        "options": {"device": device, "target": {"devices": devices}}})
     assert response.status_code == 400
     assert response.json()["detail"] == "target.devices and device disagree"
 
