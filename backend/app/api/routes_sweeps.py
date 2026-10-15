@@ -462,8 +462,9 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         # offers, record_outputs on a worker) is refused HERE, as a 400 with
         # no rows, rather than at the first child as a 500 and a `failed`
         # sweep. The service checks each distinct `settings` once; the
-        # variants of one sweep share the base graph's.
-        service.check_placeable_batch(
+        # variants of one sweep share the base graph's. Each variant's
+        # storage needs (#782) come back in order and go to its submit.
+        variant_needs = service.check_placeable_batch(
             (variant.graph for variant in compiled.variants), options)
     except (RunSubmitError, SweepCompileError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -505,7 +506,7 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                       for variant in compiled.variants],
             name=name)
 
-        for variant in compiled.variants:
+        for position, variant in enumerate(compiled.variants):
             variant_options = dict(options)
             seed: int | None = None
             if body.seed_variants:
@@ -525,7 +526,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                     variant.graph, options=variant_options,
                     name=_variant_run_name(name, variant.index),
                     provenance=provenance, sweep_id=sweep.id,
-                    sweep_variant=variant.index)
+                    sweep_variant=variant.index,
+                    needs=variant_needs[position])
                 # Patched once per variant, not once at the end: a single
                 # patch at the end would lose every id if the loop broke
                 # half-way, which is precisely the case RULING 2 says must

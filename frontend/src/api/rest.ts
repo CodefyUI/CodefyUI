@@ -707,10 +707,21 @@ export interface RunArtifact {
   id: number | string;
   /** Open vocabulary: `checkpoint`, `export`, `image`, or a node pack's own. */
   kind: string;
-  /** Path as the node wrote it, relative to the data root. */
-  path: string;
+  /**
+   * Where the file is on this server. `null` for a file a worker wrote on a
+   * shared mount this server does not hold: then only `mount_label` and
+   * `relative_path` say where it is, and neither is a path on this machine.
+   */
+  path: string | null;
   meta: Record<string, unknown> | null;
   created_at: string;
+  /** `local` (an absolute path) or `mount` (a file on a shared mount). */
+  backend?: string;
+  mount_label?: string | null;
+  /** The stored path under `mount_label`, for a `mount` row. */
+  relative_path?: string | null;
+  /** The worker whose run wrote the file; `local` is this server. */
+  worker_id?: string;
 }
 
 /**

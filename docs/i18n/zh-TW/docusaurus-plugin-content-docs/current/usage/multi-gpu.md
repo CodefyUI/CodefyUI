@@ -90,7 +90,7 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 從 Runs 面板標題列的 **Workers**，或 **Settings → 執行 → Workers → 管理**開啟。開啟期間每 5 秒更新一次，每個 worker 會顯示：
 
-- 狀態（**Online**、心跳延遲時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、mount 標籤，以及上次心跳距今多久；
+- 狀態（**Online**、心跳延遲時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、mount 標籤（見[儲存：共用檔案系統](./run-queue#storage-shared-filesystem)），以及上次心跳距今多久；
 - 每個裝置在最近一次心跳時的可用與總記憶體，以及 slot 的已占用 / 上限；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
 

@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 9
+    assert _user_version(db) == len(MIGRATIONS) == 10
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -173,7 +173,9 @@ def test_child_tables_have_the_specified_columns(db):
     assert _columns(db, "exec_run_events") == [
         "id", "run_id", "cursor", "type", "payload", "ts"]
     assert _columns(db, "exec_run_artifacts") == [
-        "id", "run_id", "kind", "path", "meta", "created_at"]
+        "id", "run_id", "kind", "path", "meta", "created_at",
+        # MIGRATION_010 (#782): where the file lives, and who wrote it.
+        "backend", "mount_label", "worker_id"]
 
 
 def test_required_indexes_exist(db):
@@ -1793,3 +1795,151 @@ async def test_explicit_provenance_overrides_capture(store, monkeypatch):
                                  plugin_pins={}))
     assert run.git_commit == "c" * 40
     assert (await store.get_run(run.id)).git_dirty is False
+
+
+# ── 6c. artifact rows on a shared mount (#782) ───────────────────────────
+
+
+async def test_migration_010_upgrades_a_v9_db(tmp_path, monkeypatch):
+    """#782's three columns land on a populated v9 database in place. A row
+    from before reads back as a ``local`` row with its absolute path."""
+    from app.core import db as dbmod
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS[:9]))
+    old = Database(tmp_path / "a.db")
+    old.connect()
+    assert _user_version(old) == 9
+    assert "backend" not in _columns(old, "exec_run_artifacts")
+    now = "2026-01-01T00:00:00.000000Z"
+    old._conn.execute(
+        "INSERT INTO exec_runs (id, name, graph_snapshot, options, status, "
+        "queue_key, created_at) VALUES ('legacy', NULL, '{}', '{}', "
+        "'succeeded', 'cpu', ?)", (now,))
+    old._conn.execute(
+        "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
+        "created_at) VALUES ('legacy', 'checkpoint', '/abs/old.pt', NULL, ?)",
+        (now,))
+    old.close()
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS))
+    new = Database(tmp_path / "a.db")
+    new.connect()
+    try:
+        assert _user_version(new) == len(MIGRATIONS)
+        row = new._conn.execute(
+            "SELECT backend, mount_label FROM exec_run_artifacts").fetchone()
+        assert row["backend"] is None and row["mount_label"] is None
+        [legacy] = await RunStore(new).list_artifacts("legacy")
+        assert legacy.path == "/abs/old.pt"
+        assert legacy.backend == "local"
+        assert legacy.mount_label is None
+        assert legacy.worker_id == "local"
+    finally:
+        new.close()
+
+
+async def test_a_mount_row_is_stored_relative_and_read_translated(
+    store, db, tmp_path, monkeypatch,
+):
+    """The row keeps the path relative to the mount; every read gives this
+    server's path for it. A local row is untouched."""
+    data = tmp_path / "data"
+    monkeypatch.setattr(settings, "MODELS_DIR", data / "models")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    run = await _make_run(store)
+    mounted = await store.add_artifact(
+        run.id, "checkpoint", "models/periodic/r-n-e1.pt", backend="mount",
+        mount_label="data", worker_id="gpu-box-1")
+    local = await store.add_artifact(run.id, "checkpoint", "/abs/here.pt")
+
+    expected = str(data.resolve() / "models" / "periodic" / "r-n-e1.pt")
+    assert mounted.path == expected
+    assert mounted.stored_path == "models/periodic/r-n-e1.pt"
+    assert (mounted.backend, mounted.mount_label) == ("mount", "data")
+    assert (mounted.worker_id, local.worker_id) == ("gpu-box-1", "local")
+    assert (local.path, local.backend, local.mount_label) == (
+        "/abs/here.pt", "local", None)
+    assert await store.list_artifacts(run.id) == [mounted, local]
+    stored = db._conn.execute(
+        "SELECT path, backend, mount_label, worker_id FROM "
+        "exec_run_artifacts ORDER BY id").fetchall()
+    assert [tuple(r) for r in stored] == [
+        ("models/periodic/r-n-e1.pt", "mount", "data", "gpu-box-1"),
+        ("/abs/here.pt", "local", None, "local")]
+
+    # Another label is not this server's to translate; nor is a path that
+    # leaves the mount. No local path is made up for either: path is None,
+    # and the relative path and label stay.
+    other = await store.add_artifact(run.id, "checkpoint", "x.pt",
+                                     backend="mount", mount_label="scratch")
+    assert (other.path, other.stored_path, other.mount_label) == (
+        None, "x.pt", "scratch")
+    escaping = await store.add_artifact(run.id, "checkpoint", "../db.pt",
+                                        backend="mount", mount_label="data")
+    assert escaping.path is None
+    absolute = await store.add_artifact(run.id, "checkpoint", "/etc/x.pt",
+                                        backend="mount", mount_label="data")
+    assert absolute.path is None
+
+
+async def test_a_mount_row_translates_to_the_project_dir_in_project_mode(
+    store, tmp_path, monkeypatch,
+):
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setattr(settings, "PROJECT_DIR", project)
+    run = await _make_run(store)
+    art = await store.add_artifact(
+        run.id, "checkpoint", "assets/models/a.pt", backend="mount",
+        mount_label=settings.MOUNT_LABEL)
+    assert art.path == str(project.resolve() / "assets" / "models" / "a.pt")
+
+
+async def test_add_artifact_refuses_an_unknown_backend_or_a_bare_mount(store):
+    run = await _make_run(store)
+    with pytest.raises(ValueError, match="backend"):
+        await store.add_artifact(run.id, "checkpoint", "a.pt", backend="ftp")
+    with pytest.raises(ValueError, match="mount_label"):
+        await store.add_artifact(run.id, "checkpoint", "a.pt",
+                                 backend="mount")
+
+
+async def test_prune_deletes_a_mount_rows_checkpoint_at_this_servers_path(
+    store, tmp_path, monkeypatch,
+):
+    """Retention finds a worker's checkpoint where THIS server sees the
+    mount, through the same translation the list uses."""
+    data = tmp_path / "data"
+    (data / "models" / "periodic").mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", data / "models")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    run = await _make_run(store)
+    checkpoint = data / "models" / "periodic" / "w-node1-e1.pt"
+    checkpoint.write_bytes(b"from a worker")
+    await store.add_artifact(run.id, "checkpoint",
+                             "models/periodic/w-node1-e1.pt",
+                             backend="mount",
+                             mount_label=settings.MOUNT_LABEL)
+    await store.mark_finished(run.id, "succeeded")
+    assert await store.prune(keep_last=0) == 1
+    assert not checkpoint.exists()
+
+
+async def test_a_mount_rows_event_names_it_and_a_local_rows_is_unchanged(
+    store, monkeypatch,
+):
+    from app.core.run_events import artifact_payload
+
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    run = await _make_run(store)
+    local = await store.add_artifact(run.id, "checkpoint", "/abs/a.pt")
+    assert set(artifact_payload(local, "n")) == {
+        "artifact_id", "kind", "path", "meta", "node_id"}
+    elsewhere = await store.add_artifact(
+        run.id, "checkpoint", "models/b.pt", backend="mount",
+        mount_label="scratch", worker_id="gpu-box-1")
+    payload = artifact_payload(elsewhere, "n")
+    assert payload["path"] is None
+    assert (payload["mount_label"], payload["relative_path"],
+            payload["worker_id"]) == ("scratch", "models/b.pt", "gpu-box-1")

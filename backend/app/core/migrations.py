@@ -9,7 +9,8 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 schema (#140); 005 indexes metrics by producer (#641); 006 records the
 environment that executed each run (#344); 007 is the durable study
 coordinator (#343); 008 records where each run executes (#769); 009 is
-worker enrollment (#780).
+worker enrollment (#780); 010 says where each artifact's file lives
+(#782).
 """
 
 from __future__ import annotations
@@ -504,9 +505,33 @@ CREATE TABLE worker_enrollments (
 );
 """
 
+# ── Migration 010: where an artifact's file lives (#782) ─────────────────
+#
+# A worker run writes its checkpoints on the worker. With a shared
+# filesystem the file is under a mount both hosts hold, at a different
+# absolute path on each, so the row records it relative to the mount:
+#
+# - ``backend``: ``local`` (``path`` is absolute on this machine: every row
+#   before this migration, which reads back NULL and means ``local``),
+#   ``mount`` (``path`` is relative to the mount ``mount_label`` names);
+#   ``transfer`` (#785) and ``s3`` (#791) are reserved.
+# - ``mount_label``: the mount's label, for ``mount`` rows; else NULL.
+# - ``worker_id``: the worker whose run produced the file (``local`` for
+#   this process), so a path from another machine is never read as one of
+#   this machine's. NULL on a row from before and reads back as ``local``.
+#
+# ``RunStore`` translates a ``mount`` row to this server's path when it is
+# read (``core.mounts.translate``).
+MIGRATION_010 = """
+ALTER TABLE exec_run_artifacts ADD COLUMN backend TEXT;
+ALTER TABLE exec_run_artifacts ADD COLUMN mount_label TEXT;
+ALTER TABLE exec_run_artifacts ADD COLUMN worker_id TEXT;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
-                         MIGRATION_007, MIGRATION_008, MIGRATION_009]
+                         MIGRATION_007, MIGRATION_008, MIGRATION_009,
+                         MIGRATION_010]
 
 
 def _is_comment_only(statement: str) -> bool:

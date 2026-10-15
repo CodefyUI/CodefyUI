@@ -832,6 +832,29 @@ describe('RunsPanel — detail view', () => {
     expect(lastToast()).toMatchObject({ type: 'success' });
   });
 
+  it('names a file on a mount this server does not hold by its label, with nothing to copy', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 9, kind: 'checkpoint', path: null, meta: null,
+        created_at: '2026-10-15T00:00:00Z', backend: 'mount',
+        mount_label: 'scratch', relative_path: 'models/periodic/a.pt',
+        worker_id: 'gpu-box-1',
+      }, {
+        id: 10, kind: 'checkpoint', path: null, meta: null,
+        created_at: '2026-10-15T00:00:01Z', backend: 'mount',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const where = await screen.findByText('scratch:models/periodic/a.pt');
+    expect(where).toHaveAttribute(
+      'title', t('runs.detail.notOnThisServer', { label: 'scratch' }));
+    expect(screen.getByText('?:')).toHaveAttribute(
+      'title', t('runs.detail.notOnThisServer', { label: '?' }));
+    expect(screen.queryByTitle(t('runs.detail.copyPath'))).toBeNull();
+  });
+
   it('reports a clipboard the browser refused', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

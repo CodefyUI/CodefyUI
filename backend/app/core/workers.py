@@ -541,6 +541,13 @@ class WorkerRegistry:
                 # capacity a waiting run may now take. Memory figures
                 # change on every heartbeat and are not.
                 self._changed()
+        if frame.mounts is not None and frame.mounts != worker.mounts:
+            # A share that appeared (or went away) on the worker (#782):
+            # waiting runs that need it may now be placed.
+            logger.info("worker %s now serves mounts %s", worker.name,
+                        sorted(frame.mounts) or "none")
+            worker.mounts = dict(frame.mounts)
+            self._changed()
         if worker.status == STATUS_DEGRADED:
             worker.status = STATUS_ONLINE
             logger.info("worker %s is back on time", worker.name)

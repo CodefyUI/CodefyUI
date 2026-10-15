@@ -90,7 +90,7 @@ A worker on the same machine shares this server's slot for every card that is ph
 
 Open it with **Workers** in the Runs panel header, or from **Settings → Execution → Workers → Manage**. It refreshes every 5 seconds while open and shows, for each worker:
 
-- its status (**Online**, **Degraded** when a heartbeat is late, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, mount labels and the age of its last heartbeat;
+- its status (**Online**, **Degraded** when a heartbeat is late, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, mount labels (see [Storage: shared filesystem](./run-queue#storage-shared-filesystem)) and the age of its last heartbeat;
 - each device with its free and total memory from the latest heartbeat and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
 

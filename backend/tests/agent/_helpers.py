@@ -205,6 +205,29 @@ def env_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     quick_child(spec, events_out, control_in)
 
 
+def data_roots_child(spec: dict[str, Any], events_out: Any,
+                     control_in: Any) -> None:
+    """Report the data directories ``app.config`` derives in the run
+    subprocess (#782), and where an artifact under the mount is reported."""
+    child.apply_environment(spec.get("env") or {})
+    from app.config import settings
+
+    roots = {name: (None if value is None else str(value)) for name, value in (
+        ("DATA_FILES_DIR", settings.DATA_FILES_DIR),
+        ("IMAGES_DIR", settings.IMAGES_DIR),
+        ("MODELS_DIR", settings.MODELS_DIR),
+        ("MEDIA_DIR", settings.MEDIA_DIR),
+        ("GRAPHS_DIR", settings.GRAPHS_DIR),
+        ("USER_PRESETS_DIR", settings.USER_PRESETS_DIR),
+        ("PROJECT_DIR", settings.PROJECT_DIR))}
+    checkpoint = str(settings.MODELS_DIR / "periodic" / "r-n-e1.pt")
+    events_out.send((child.MSG_EVENT, "roots", {
+        "roots": roots, "mount": spec.get("mount"),
+        "artifact": list(child.artifact_location(checkpoint,
+                                                 spec.get("mount")))}))
+    quick_child(spec, events_out, control_in)
+
+
 def slow_graph_child(spec: dict[str, Any], events_out: Any,
                      control_in: Any) -> None:
     """``child.main`` with one registered node that runs until cancelled.

@@ -36,7 +36,8 @@ card with a matching UUID) carries ``shared_with: "local"``, otherwise
 counter, under this server's limit), so a panel adding up usage must count
 it once. The list's ``local`` field describes this server the same way
 (``{"id": "local", "devices": [{"value", "kind", "slots"}]}``; ``null``
-without a run service), so a Workers panel can draw this server beside its
+without a run service; its ``mounts`` is this server's own label and path,
+#782), so a Workers panel can draw this server beside its
 workers.
 """
 
@@ -57,6 +58,12 @@ from ..core import worker_protocol as wp
 from ..core import worker_store as ws_store
 from ..core.api_keys import require_session_token
 from ..core.auth import allowed_hosts, bound_to_loopback, is_loopback_peer
+from ..core.mounts import (
+    control_plane_label,
+    control_plane_mounts,
+    control_plane_root,
+    lends_mount,
+)
 from ..core.scheduling import LOCAL_WORKER_ID, slot_for
 from ..core.worker_protocol import canonical_device
 from ..core.workers import CREDENTIAL_SESSION
@@ -128,8 +135,16 @@ def _store(request: Request) -> Any:
 
 
 def _describe(worker: Any, service: Any) -> dict[str, Any]:
-    """``worker.describe()`` with each device's slot usage filled in."""
+    """``worker.describe()`` with each device's slot usage filled in.
+
+    ``mounts`` are the labels the worker declared (``--mount``, #782); a
+    same-host worker that declared no directory for this server's label
+    also shows this server's own path for it, which is what its runs use.
+    """
     entry = worker.describe()
+    label = control_plane_label()
+    if lends_mount(worker, label):
+        entry["mounts"][label] = str(control_plane_root())
     shared = getattr(worker, "shared", None) or {}
     for device in entry["devices"]:
         try:
@@ -146,7 +161,8 @@ def _describe(worker: Any, service: Any) -> dict[str, Any]:
 def _describe_local(service: Any) -> dict[str, Any] | None:
     if service is None:
         return None
-    return {"id": LOCAL_WORKER_ID, "devices": [{
+    return {"id": LOCAL_WORKER_ID, "mounts": control_plane_mounts(),
+            "devices": [{
         "value": value, "kind": value.split(":")[0],
         "slots": service.slot_usage((LOCAL_WORKER_ID, value)),
     } for value in service.local_devices()]}

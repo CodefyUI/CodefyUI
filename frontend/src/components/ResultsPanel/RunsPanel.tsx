@@ -485,22 +485,41 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
           <div className={styles.detailEmpty}>{t('runs.detail.noArtifacts')}</div>
         ) : (
           <div className={styles.artifactList}>
-            {detail.artifacts.map((artifact) => (
-              <div key={artifact.id} className={styles.artifactRow}>
-                <span className={styles.artifactKind}>{artifact.kind}</span>
-                <span className={styles.artifactPath} title={artifact.path}>
-                  {artifact.path}
-                </span>
-                <button
-                  type="button"
-                  className={styles.rowBtn}
-                  onClick={() => void copyPath(artifact.path)}
-                  title={t('runs.detail.copyPath')}
-                >
-                  {t('runs.detail.copyPath')}
-                </button>
-              </div>
-            ))}
+            {detail.artifacts.map((artifact) => {
+              const { path } = artifact;
+              if (path === null) {
+                // On a shared mount this server does not hold: name it by
+                // label, never as a local path, and offer nothing to copy.
+                const where = `${artifact.mount_label ?? '?'}:${artifact.relative_path ?? ''}`;
+                return (
+                  <div key={artifact.id} className={styles.artifactRow}>
+                    <span className={styles.artifactKind}>{artifact.kind}</span>
+                    <span
+                      className={styles.artifactPath}
+                      title={t('runs.detail.notOnThisServer', { label: artifact.mount_label ?? '?' })}
+                    >
+                      {where}
+                    </span>
+                  </div>
+                );
+              }
+              return (
+                <div key={artifact.id} className={styles.artifactRow}>
+                  <span className={styles.artifactKind}>{artifact.kind}</span>
+                  <span className={styles.artifactPath} title={path}>
+                    {path}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.rowBtn}
+                    onClick={() => void copyPath(path)}
+                    title={t('runs.detail.copyPath')}
+                  >
+                    {t('runs.detail.copyPath')}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

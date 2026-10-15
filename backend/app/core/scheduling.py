@@ -55,6 +55,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from .mounts import holds_mount
 from .run_store import WORKER_LOCAL
 from .worker_protocol import TARGET_ANY, TARGET_LOCAL, canonical_device
 
@@ -94,6 +95,15 @@ class QueuedEntry(Protocol):
     run_id: str
     queue_key: str
     options: dict[str, Any]
+    # An entry may also carry ``needs`` (``run_needs.needs``, #782) for a
+    # run that targets a worker; read through :func:`entry_mount`.
+
+
+def entry_mount(entry: Any) -> str | None:
+    """The mount label *entry*'s run needs (``run_needs``), or None (#782)."""
+    needs = getattr(entry, "needs", None)
+    mount = needs.get("mount") if isinstance(needs, Mapping) else None
+    return mount if isinstance(mount, str) and mount else None
 
 
 class SlotLimits(Protocol):
@@ -258,6 +268,11 @@ class WorkerScheduler:
     see :func:`slot_for`); a device set takes one slot per device, here or
     on a worker, and starts only when all of them are free.
 
+    Storage (#782): a run whose ``needs`` name a mount (``run_needs``) goes
+    only to a worker that holds it (``mounts.holds_mount``: it declared the
+    label, or it is a same-host worker and the label is this server's);
+    ``any`` skips the others, and this process always holds its own.
+
     :meth:`explain` says why a run that :meth:`place` refused cannot start
     for a reason other than a busy slot (the Runs list shows it).
     """
@@ -275,13 +290,17 @@ class WorkerScheduler:
         if worker_id == TARGET_LOCAL:
             return self._local.place(entry, taken)
         requested = str(entry.options.get("device") or "cpu")
+        mount = entry_mount(entry)
         if worker_id != TARGET_ANY:
             worker = self._registry.get(worker_id)
             if worker is None or not worker.accepts_runs:
                 return None
+            if mount is not None and not holds_mount(worker, mount):
+                return None
             return self._place_on(worker, requested, devices, taken)
         for worker in self._registry.workers():
-            if worker.accepts_runs:
+            if worker.accepts_runs and (mount is None
+                                        or holds_mount(worker, mount)):
                 placement = self._place_on(worker, requested, devices, taken)
                 if placement is not None:
                     return placement
@@ -307,6 +326,9 @@ class WorkerScheduler:
         if worker is None or not worker.accepts_runs \
                 or not all(worker.offers(d) for d in devices):
             return None
+        mount = entry_mount(entry)
+        if mount is not None and not holds_mount(worker, mount):
+            return None
         return tuple(slot_for(worker, d) for d in devices)
 
     def explain(self, entry: QueuedEntry) -> str | None:
@@ -315,20 +337,28 @@ class WorkerScheduler:
         if worker_id == TARGET_LOCAL:
             return None
         requested = str(entry.options.get("device") or "cpu")
+        mount = entry_mount(entry)
         if worker_id != TARGET_ANY:
             worker = self._registry.get(worker_id)
             if worker is None or not worker.online:
                 return f"waiting for worker {worker_id} to reconnect"
             if worker.draining:
                 return f"worker {worker_id} is draining"
+            if mount is not None and not holds_mount(worker, mount):
+                return no_mount(worker_id, mount)
             return None
-        if not self.can_serve_any(requested, devices, connected_only=True):
+        if not self.can_serve_any(requested, devices, connected_only=True,
+                                  mount=mount):
             wanted = ", ".join(devices) if devices else requested
+            if mount is not None:
+                return (f"waiting for a worker that offers {wanted} and "
+                        f"has the `{mount}` mount")
             return f"waiting for a worker that offers {wanted}"
         return None
 
     def can_serve_any(self, requested: str, devices: list[str] | None,
-                      *, connected_only: bool = False) -> bool:
+                      *, connected_only: bool = False,
+                      mount: str | None = None) -> bool:
         """Whether this process or a worker could ever run it.
 
         This process does not count for a device set a worker would
@@ -336,12 +366,15 @@ class WorkerScheduler:
         not (#777): a run submitted while the only worker offering its
         device is away waits for it to reconnect rather than being refused.
         *connected_only* asks about the workers connected now, which is
-        what a waiting run's reason describes.
+        what a waiting run's reason describes. With *mount* (#782), a
+        worker counts only when it holds that mount; this process always
+        does.
         """
         if not renumbered_on_a_worker(devices) \
                 and _serves(self._local_devices(), requested, devices):
             return True
         return any((w.online or not connected_only)
+                   and (mount is None or holds_mount(w, mount))
                    and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
 
@@ -379,6 +412,13 @@ class WorkerScheduler:
             if _free(self._limits, slot, taken):
                 return Placement(worker.id, (device,), (slot,))
         return None
+
+
+def no_mount(worker_id: str, mount: str) -> str:
+    """Why a run that needs *mount* cannot go to *worker_id* (#782): the
+    submit refusal and the waiting reason, one sentence."""
+    return (f"worker {worker_id} has no `{mount}` mount; add "
+            f"`--mount {mount}=...` or use the transfer backend (#785)")
 
 
 def _serves(offered: list[str], requested: str,
