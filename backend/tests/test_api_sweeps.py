@@ -934,6 +934,11 @@ async def test_every_variant_completes_unattended_and_the_table_ranks_them(
     assert body["variants"][0]["final_metrics"]["train_loss"] == \
         pytest.approx(0.02)
     assert all(v["run_exists"] for v in body["variants"])
+    # Placement (#777): a sweep without a target ran here, on the one
+    # device FIFO it always used.
+    assert {(v["worker_id"], v["queue_key"]) for v in body["variants"]} \
+        == {("local", "cpu")}
+    assert all(v["devices"] is None for v in body["variants"])
     assert "objective_warning" not in body
     # The pre-rank identity survives the sort, so a client can put the table
     # back into submission order (spec 5.3).

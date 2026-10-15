@@ -308,11 +308,27 @@ async def test_a_worker_that_goes_away_interrupts_its_runs(env):
                    for e in events)
         assert events[-1].type == "execution_stopped"
         assert service._slots == {}
-        # And a new submission to it is refused while it is away.
-        refused = await client.post("/api/runs", json={
+        # A new submission to it while it is away WAITS for it (#777); an
+        # unknown worker name is still refused.
+        waiting = await client.post("/api/runs", json={
             "graph": _graph(), "options": {"target": {"worker": "box"}}})
+        assert waiting.status_code == 200, waiting.text
+        row = (await client.get(
+            f"/api/runs/{waiting.json()['run_id']}")).json()
+        assert (row["status"], row["queue_reason"]) == (
+            "queued", "waiting for worker box to reconnect")
+        refused = await client.post("/api/runs", json={
+            "graph": _graph(), "options": {"target": {"worker": "nobody"}}})
         assert refused.status_code == 400
-        assert "not connected" in refused.json()["detail"]
+        assert "has not connected" in refused.json()["detail"]
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            assign = await agent.recv()
+            assert assign.run_id == waiting.json()["run_id"]
+            await agent.finish_run(assign)
+            assert (await _terminal(service, assign.run_id)).status \
+                == "succeeded"
 
 
 async def test_heartbeat_timeout_disconnects_and_interrupts(env):

@@ -108,8 +108,10 @@ With a :class:`~app.core.workers.WorkerRegistry` (the lifespan always
 passes one), ``options["target"]`` can name a connected worker agent
 (``cdui agent start``) or ``any``. Such a run is resolved against the
 WORKER, not this process: its FIFO key is ``<worker>/<device as asked>``
-(``gpu-box/cuda``, ``any/cpu``), a named worker must be connected and offer
-the device at submit (else ``RunSubmitError``), and ``record_outputs`` and
+(``gpu-box/cuda``, ``any/cpu``), a named worker must be one this server has
+seen since it started and offer the device at submit (else
+``RunSubmitError``; one that is away is waited for, #777), and
+``record_outputs`` and
 the interactive lane are refused (the canvas always executes here).
 :class:`~app.core.scheduling.WorkerScheduler` places it on
 ``(worker, device)`` slots, capped per device like a local slot; ``any``
@@ -181,6 +183,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import time
 import weakref
@@ -194,6 +197,7 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Iterable,
     NamedTuple,
 )
 
@@ -713,13 +717,15 @@ MAX_TARGET_DEVICES = 64
 
 
 def worker_not_connected(name: str) -> str:
-    """The refusal for a ``target.worker`` no connected agent answers to.
+    """The refusal for a ``target.worker`` no agent has connected as since
+    this server started (one that connected and went away is waited for).
 
     One function so the REST layer, the CLI and the tests cannot drift
     apart.
     """
-    return (f"worker {name!r} is not connected to this server; start it "
-            "with `cdui agent start`, or target 'local' or 'any'")
+    return (f"worker {name!r} has not connected to this server since it "
+            "started; start it with `cdui agent start`, or target 'local' "
+            "or 'any'")
 
 
 #: Refusals for what a worker run cannot do in this wave.
@@ -1825,28 +1831,15 @@ class RunService:
         whose linkage write was lost is found again. Like a sweep, a study
         child cannot use the interactive lane.
         """
-        if self._shutting_down:
-            raise RunServiceUnavailable("run service is shutting down")
-        normalized_graph = normalize_graph(graph)
-        options = apply_graph_settings(normalized_graph, options)
-        normalized_options = normalize_options(options)
+        normalized_graph, normalized_options, queue_key = self._prepare(
+            graph, options,
+            batch_child=sweep_id is not None or study_id is not None)
         normalized_name = normalize_name(name)
         lane = normalized_options["lane"]
         if session is not None and lane != LANE_INTERACTIVE:
             raise RunSubmitError(
                 f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
                 f"got {lane!r}")
-        if (sweep_id is not None or study_id is not None) \
-                and lane == LANE_INTERACTIVE:
-            # Refused for the same reason a session on the wrong lane is:
-            # _submit_interactive admits against RUN_INTERACTIVE_MAX_CONCURRENT
-            # and REFUSES past it rather than queuing, so a 32-variant
-            # interactive sweep would be two runs and thirty 503s.
-            raise RunSubmitError(
-                f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
-                "are queued, and the interactive lane refuses past its cap "
-                "instead of queuing")
-        queue_key = self._submit_queue_key(normalized_options)
 
         if lane == LANE_INTERACTIVE:
             return await self._submit_interactive(
@@ -1905,6 +1898,58 @@ class RunService:
             status=(STATUS_RUNNING if record.id in self._runs
                     else STATUS_QUEUED))
 
+    def _prepare(
+        self, graph: Any, options: Any, *, batch_child: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        """``(graph, options, queue_key)`` for a submit, or the refusal.
+
+        The one place a submission is validated, shared by :meth:`submit`
+        and :meth:`check_placeable_batch` so the two cannot drift: the
+        shutdown check, the graph and options normalisation (the graph's
+        settings fill what the options leave out), the batch-child lane
+        guard and the queue key, which is where a ``target`` is checked.
+        *batch_child* is a sweep variant or a study child.
+        """
+        if self._shutting_down:
+            raise RunServiceUnavailable("run service is shutting down")
+        normalized_graph = normalize_graph(graph)
+        normalized_options = normalize_options(
+            apply_graph_settings(normalized_graph, options))
+        if batch_child and normalized_options["lane"] == LANE_INTERACTIVE:
+            # Refused for the same reason a session on the wrong lane is:
+            # _submit_interactive admits against RUN_INTERACTIVE_MAX_CONCURRENT
+            # and REFUSES past it rather than queuing, so a 32-variant
+            # interactive sweep would be two runs and thirty 503s.
+            raise RunSubmitError(
+                f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
+                "are queued, and the interactive lane refuses past its cap "
+                "instead of queuing")
+        return (normalized_graph, normalized_options,
+                self._submit_queue_key(normalized_options))
+
+    def check_placeable_batch(self, graphs: Iterable[Any],
+                              options: Any) -> None:
+        """Refuse, before anything is written, what :meth:`submit` would
+        refuse for any child of a sweep or study (#777).
+
+        Every child gets *options*; they differ only in their graph, and
+        of the graph only ``settings`` (device, seed) reaches the options,
+        so each distinct ``settings`` is checked once. Raises
+        ``RunSubmitError`` (or ``RunServiceUnavailable``) with the message
+        ``submit`` would give; returns None when every child could be
+        queued. A ``target`` naming a worker this server has seen but that
+        is away is not refused: its children wait for it, as one run does.
+        """
+        seen: set[str] = set()
+        for graph in graphs:
+            settings_ = graph.get("settings") if isinstance(graph, dict) \
+                else None
+            key = json.dumps(settings_, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            self._prepare(graph, options, batch_child=True)
+
     def _submit_queue_key(self, options: dict[str, Any]) -> str:
         """The FIFO a submitted run joins, or ``RunSubmitError``.
 
@@ -1916,10 +1961,16 @@ class RunService:
         string, so the two families never collide. A worker run's row
         records ``<worker>/<device it got>`` once it starts.
 
-        A named worker must be connected now, offer every device of the
-        set (or the requested device, or one of the requested kind), and
-        the run must be one a worker can do in this wave (no
-        ``record_outputs``, not the interactive lane).
+        A named worker must be one this server has seen since it started
+        (connected now or away: a run for a worker that is away WAITS for
+        it to reconnect, #777), and must offer every device of the set (or
+        the requested device, or one of the requested kind) as it last
+        reported them; ``any`` likewise needs this server or a worker it
+        has seen to offer the device. The run must be one a worker can do
+        in this wave (no ``record_outputs``, not the interactive lane).
+        Only an unknown worker name, a device nobody offers, or one of
+        those two options is refused, so a worker disconnecting halfway
+        through a sweep's or a study's submissions does not fail it.
         """
         worker_id, devices = entry_target(options)
         if worker_id == TARGET_WORKER_LOCAL:
@@ -1934,11 +1985,11 @@ class RunService:
             if can_serve is not None and not can_serve(requested, devices):
                 wanted = ", ".join(devices) if devices else requested
                 raise RunSubmitError(
-                    f"neither this server nor a connected worker offers "
+                    f"neither this server nor a known worker offers "
                     f"{wanted}")
             return f"{TARGET_WORKER_ANY}{WORKER_QUEUE_SEPARATOR}{requested}"
         worker = None if self._workers is None else self._workers.get(worker_id)
-        if worker is None or not worker.online:
+        if worker is None:
             raise RunSubmitError(worker_not_connected(worker_id))
         offered = worker.device_values()
         wanted = devices or []

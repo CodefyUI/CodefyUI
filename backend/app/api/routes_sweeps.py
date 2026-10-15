@@ -225,10 +225,12 @@ class CreateSweepRequest(BaseModel):
     #: a 400 from the wrong validator with the wrong message.
     options: Any = None
     name: str | None = None
-    #: RULING 1. A run carrying options["seed"] takes a PROCESS-WIDE
-    #: exclusive lock, so seeding all 32 variants would serialise the sweep
-    #: regardless of the queue's concurrency AND freeze every interactive
-    #: canvas run for the sweep's whole duration.
+    #: RULING 1. A run carrying options["seed"] that executes in this
+    #: process takes a PROCESS-WIDE exclusive lock, so seeding all 32 local
+    #: variants would serialise the sweep regardless of the queue's
+    #: concurrency AND freeze every interactive canvas run for the sweep's
+    #: whole duration. A variant placed on a worker (#777) runs in a
+    #: subprocess of its own and takes no lock here.
     seed_variants: bool = False
 
 
@@ -454,8 +456,18 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
             max_runs=settings.MAX_SWEEP_RUNS,
             max_params=settings.MAX_SWEEP_PARAMS,
             max_domain=settings.MAX_SWEEP_DOMAIN)
+        # Every variant inherits options.target (#777), so a target the
+        # service would refuse (a worker it has never seen, a device nobody
+        # offers, record_outputs on a worker) is refused HERE, as a 400 with
+        # no rows, rather than at the first child as a 500 and a `failed`
+        # sweep. The service checks each distinct `settings` once; the
+        # variants of one sweep share the base graph's.
+        service.check_placeable_batch(
+            (variant.graph for variant in compiled.variants), options)
     except (RunSubmitError, SweepCompileError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RunServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     _refuse_unrecordable_outputs(request, options, len(compiled.variants))
 
@@ -696,6 +708,13 @@ def _variant_payload(variant: SweepVariant, rank: int | None,
         # as "this run recorded nothing" rather than "this run is no longer
         # here".
         payload["final_metrics"] = metrics.get(variant.run_id, {})
+        # Where the variant was placed (#777), read off the child row like
+        # the Runs list: `worker_id` is `any` and `queue_key` `any/<device>`
+        # until a `target: any` variant starts, then the worker it got and
+        # `<worker>/<device>`; `devices` is the set a worker run holds.
+        payload["worker_id"] = child.worker_id
+        payload["devices"] = child.devices
+        payload["queue_key"] = child.queue_key
     return payload
 
 

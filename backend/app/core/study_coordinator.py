@@ -101,6 +101,7 @@ from .study_store import (
     STUDY_RUNNING,
     STUDY_SUCCEEDED,
     AttemptRecord,
+    IdempotencyConflict,
     NewVariant,
     StudyEventRecord,
     StudyRecord,
@@ -246,7 +247,9 @@ class StudyCoordinator:
         """Persist the study (or find it by idempotency key), then tick.
 
         Raises ``study_store.IdempotencyConflict`` for a key reused with a
-        different request.
+        different request, and ``RunSubmitError`` /
+        ``RunServiceUnavailable`` for a NEW study whose children the run
+        service would refuse (see ``RunService.check_placeable_batch``).
         """
         scrubbed: list[NewVariant] = []
         vaults: list[SecretVault] = []
@@ -257,6 +260,24 @@ class StudyCoordinator:
                                        graph=dict(stored)))
             vaults.append(vault)
         digest = request_digest(spec.identity, [v.graph for v in scrubbed])
+        # The idempotency lookup comes FIRST, so whether a retry gets its
+        # study back (or a 409) never depends on what the workers are doing
+        # now; only a NEW study is checked for placement (#777). The store
+        # repeats the lookup inside its insert transaction, which is what
+        # settles two concurrent submits with one key.
+        if spec.idempotency_key is not None:
+            existing = await self.store.find_by_idempotency_key(
+                spec.idempotency_key)
+            if existing is not None:
+                if existing.request_digest != digest:
+                    raise IdempotencyConflict(spec.idempotency_key,
+                                              existing.id)
+                return existing, False
+        # Every child inherits options.target; refuse what the run service
+        # would refuse for any of them (a worker it has never seen, a device
+        # nobody offers, record_outputs on a worker) before any row exists.
+        self.service.check_placeable_batch(
+            (graph for _label, _ops, graph in spec.variants), spec.options)
         study, created = await self.store.create_study(
             name=spec.name, objective=spec.objective,
             repetitions=spec.repetitions, seed=spec.seed,

@@ -406,7 +406,8 @@ _NOT_CONNECTED = worker_not_connected("gpu-box-1")
 
 
 @pytest.mark.parametrize("target,detail", [
-    # A named worker must be connected at submit (#772).
+    # A named worker must have connected since the server started (#772,
+    # #777: one that connected and went away is waited for instead).
     ({"worker": "gpu-box-1"}, _NOT_CONNECTED),
     ({"worker": "gpu-box-1", "devices": ["cuda:0"]}, _NOT_CONNECTED),
     ({"devices": ["cuda:0", "cpu"]}, "mixes device kinds"),

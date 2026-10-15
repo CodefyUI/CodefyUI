@@ -42,10 +42,12 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 `target.worker` 決定 run 放在哪裡：
 
 - **省略或 `local`**：這台伺服器，排在解析後裝置的佇列上，與沒有 worker 時完全相同。
-- **worker 名稱**：那個 worker。送出時它必須已連線，而且必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
-- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。指定裝置集合時，只有在這台伺服器擁有集合中每一個裝置時才會考慮它。這台伺服器與所有已連線的 worker 都不可能執行的 run，送出時回 `400`。
+- **worker 名稱**：那個 worker。它必須在這台伺服器啟動後連線過，而且依它最後回報的裝置，必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。曾經連線、目前離線的 worker 不會造成拒絕：run 會排入佇列，等它重新連線。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
+- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。指定裝置集合時，只有在這台伺服器擁有集合中每一個裝置時才會考慮它。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
 
 在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。worker 斷線，或連續錯過三次心跳（30 秒）時，它的 run 會以 `interrupted` 結束，並留下類型為 `worker_disconnected` 的 `run_warning`，名額隨即釋放。
+
+worker 上的 seeded run 是**在自己的程序裡**單獨執行：[可重現的執行](./running-graphs#reproducible-runs-seed)中「seeded run 單獨執行」的規則保護的是這台伺服器整個程序共用的亂數狀態，而 worker 的子程序有自己的亂數狀態。因此不同 worker 或不同卡上的 seeded run 可以同時執行，worker 上的 seeded run 既不等待這台伺服器的 run，也不會擋住它們。在這台伺服器上執行的 seeded run（包括落在這裡的 `any` run）仍然一次執行一個。
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
 
@@ -203,7 +205,9 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **`objective.node_id` 指定以哪個節點的 series 排名。** 此欄位可省略；block 內的節點以攤平後的 id（`block/inner`）指定。指定後，每個 variant 的 objective 是該節點記錄的最後一點（`step` 最大者，同 step 取最後寫入者），其他節點記錄同名 series 不會改變這個值。省略時只以名稱選取：只有一個節點記錄該指標時，使用該節點的最後一點。同一個 run 中有多個節點記錄它時，該 variant 沒有 objective 也不排名，其 `ambiguous_producers` 會列出這些節點，`objective_warning` 也會提示指定節點。系統不會替你挑選節點。在 `node_id` 推出前建立的 sweep 依相同的名稱規則處理：已收回的值會保留，之後收回且由多個節點記錄的 variant 不排名。
 
-**`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，也不會有其他 run 同時執行。seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
+**`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，同一個程序裡也不會有其他 run 同時執行。在這台伺服器上的 seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
+
+**`options.target`** 同樣會交給每個 variant（見 [Workers](#workers)）。使用 `"target": {"worker": "any"}` 且不指定 `devices` 時，每個 variant 會在任一已連線的 worker 上（最後才是這台伺服器）取得 sweep 裝置種類的下一個空閒名額；因此在兩個各有一張卡的 agent 上，4 個 variant 的 sweep 會同時執行兩個，哪張卡先空出來就在那張卡上開始下一個。worker 上的 seeded variant 也會並行執行，因為每個都在自己的程序裡。單一 run 會被拒絕的 target（這台伺服器從未見過的 worker、沒有人提供的裝置、在 worker 上使用 `record_outputs`）會讓整個 sweep 在建立任何資料列前以 `400` 拒絕。離線中的 worker 不會讓 sweep 失敗，即使它在 variant 送出途中離線也一樣：它的 variant 會等它重新連線。沒有 target 的 sweep 行為與以往完全相同：每個 variant 都在這台伺服器上該裝置的佇列中等待。
 
 **可以掃描什麼：** 已註冊節點上的 int、float、bool、string 與 select 參數。不支援 preset 實例的內部參數、subgraph 實例的參數、`SECRET` 參數（選中的值會以明文存入 sweep 資料列），也不支援在圖中出現兩次的 node id。
 
@@ -217,7 +221,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 ### 讀取結果 {/* #reading-the-results */}
 
-`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 是執行任務表格的摘要，不用來選取 objective：多個節點記錄同一名稱時，它仍只顯示一個數字。
+`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`、`worker_id`、`devices` 與 `queue_key`（執行的位置；等待中的 `any` variant 在被放置前顯示 `any` 與 `any/<device>`）。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 是執行任務表格的摘要，不用來選取 objective：多個節點記錄同一名稱時，它仍只顯示一個數字。
 
 即使 child run 被移除，結果仍會保留：每次 `GET /api/sweeps/{id}` 與每次取消，都會把每個已結束 variant 的 status 與 objective 複製到 sweep 資料列上，而 retention 會在刪減 run 前對任何尚未讀取的結果做同樣的事。因此，被 retention 刪減的 child 會保留已收回的 `status`、`objective`、`objective_node_id` 與 `ambiguous_producers`，並顯示 `run_exists: false`，不含 `final_metrics`。在任何讀取或取消收回結果之前就以 `DELETE /api/runs/{id}` 刪除的 child，會顯示 `status: "missing"` 與 `objective: null`。兩種情況下，該 variant 的資料列都會保留。
 
@@ -273,7 +277,7 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 
 **冪等性（idempotency）。** 請送出 `Idempotency-Key` header（或 body 欄位 `idempotency_key`；兩者同時送出時必須相同）。以同一個 key 重送相同請求時，會以 `200` 與 `created: false` 回傳同一個 study，且不建立任何 run，因此遺失第一次回覆的用戶端可以放心重送。同一個 key 用於不同請求時回傳 `409`，並指出既有的 study。比對請求時會先清空 `SECRET` 值，因此只有 secret 值不同的重送會被視為同一個請求。
 
-**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。由於每個 child 都指定了種子，child 仍會一次執行一個；較大的值只是讓後面的 child 提早進入佇列。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。用完 `max_runs` 時仍有重複未完成的 study 會以 `failed` 結束。單一 run 的時間上限與總執行時間上限目前尚未實作。
+**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。每個 child 都指定了種子，所以在這台伺服器上執行的 child 仍會一次執行一個，較大的值只是讓後面的 child 提早進入佇列。`options.target` 會像 sweep 的 variant 一樣交給每個 child，建立任何資料列前也套用同樣的 `400` 檢查（使用相同 idempotency key 的重試會先回傳既有的 study 或 `409`，再做這項檢查）；被放到 worker 上的 child 在自己的程序裡執行，因此使用 `"target": {"worker": "any"}` 且有兩張空閒的卡時，`max_parallel_runs: 2` 會同時執行兩個 child。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。用完 `max_runs` 時仍有重複未完成的 study 會以 `failed` 結束。單一 run 的時間上限與總執行時間上限目前尚未實作。
 
 **順序。** child 依重複逐輪送出：先送所有變體的第 0 次重複，再送所有變體的第 1 次重複，依此類推。因此中途停下的 study，所有變體都已在相同的種子上比較過。每個 child 都是一般 run，名稱為 `<study 名稱> / <label> / r<n>`，`GET /api/runs` 的每一列都帶有 `study_id` 與 `study_attempt_id`。
 
@@ -282,7 +286,7 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 `GET /api/studies/{id}` 會回傳 study 的 `status`、`revision`（study 或其 attempt 每次變動都會增加）、目前 attempt 依狀態分類的 `counts`，以及每個變體一筆資料，內容包括：
 
 - `repetitions`：每次重複的種子與目前的 attempt。
-- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`。
+- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`；child run 仍存在時另有 `worker_id`、`devices` 與 `queue_key`（執行的位置，與 sweep variant 相同）。每個重複的 `current` attempt 也帶有這些欄位。
 - `aggregate`：對記錄到目標值的目前 attempt 計算的 `count`、`mean` 與 `std`，以及 `values`，也就是每次重複的原始值（沒有值時為 `null`）。`std` 是樣本標準差，值少於兩個時為 `null`。
 - `eligible`、`ineligible_reasons`、`rank`、`tie` 與 `tied_with`。
 

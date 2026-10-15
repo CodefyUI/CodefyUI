@@ -64,7 +64,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
-| `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。`options.target`（`{worker, devices}`）指定在哪裡執行：`local`、已連線的 worker，或 `any`（[Run 佇列，Worker](/usage/run-queue#workers)）。指定的 worker 未連線或不提供該裝置時回 `400`。 |
+| `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。`options.target`（`{worker, devices}`）指定在哪裡執行：`local`、已連線的 worker，或 `any`（[Run 佇列，Worker](/usage/run-queue#workers)）。指定的 worker 名稱在這台伺服器啟動後從未出現過，或該 worker 不提供該裝置時回 `400`；已知但目前離線的 worker 會讓 run 排入佇列，等它重新連線。 |
 | `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`queue_reason`（排隊中的 run 除了排隊順序之外為何還不能開始，例如 `waiting for worker gpu-box to reconnect`，否則為 `null`）、`active`、`final_metrics`、`fingerprint_digest`、`execution_facts`、`worker_id`（`local`、worker 名稱，或 `any` run 尚未放置前的 `any`）、`devices`（要求的裝置集合或 `null`；在 worker 上的 run 則是它取得的裝置）與 `metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）；response 也包含未分頁的 `total`。 |
 | `/api/runs/{run_id}` | GET | open | 回傳單一 run（欄位與列表的每列相同，包含 `worker_id` 與 `devices`）與 `last_cursor`（client 從這個位置開始輪詢事件），以及 `fingerprint`：其 `fingerprint_digest` 所指的環境文件（run 開始前為 `null`）。 |
 | `/api/workers` | GET | open | 這台伺服器啟動以來見過的所有 worker agent：`{workers: [{id, name, status, draining, version, fingerprint_digest, platform, mounts, devices[{value, kind, index, name, memory}], running, connected_at, last_heartbeat_at}]}`。`status` 為 `online`、`degraded`（心跳延遲）、`draining`（已連線但不接新的 run；另有布林欄位 `draining`）或 `disconnected`；`memory` 是最近一次心跳的 `{total_bytes, free_bytes, source}`，或 `null`。 |
