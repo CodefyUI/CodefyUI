@@ -21,6 +21,7 @@ import {
 } from './sweepParams';
 import { metricProducers, producerLabel, recordedMetricNames } from './sweepObjective';
 import { trapTab } from '../shared/focusTrap';
+import { TargetSelector, useRunTargetChoice } from '../Toolbar/TargetSelector';
 import styles from './NewSweepDialog.module.css';
 
 type DomainMode = 'values' | 'range';
@@ -93,6 +94,11 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const tab = useTabStore((state) =>
     state.tabs.find((candidate) => candidate.id === state.activeTabId) ?? null,
   );
+  const globalDevice = useUIStore((state) => state.globalDevice);
+  // Where the variants run (#777): the Queue on... dialog's target picker.
+  // Left at This server with its default device, the sweep is sent exactly
+  // as before, with the graph's device and no target.
+  const target = useRunTargetChoice(tab?.graphDevice ?? globalDevice, { keepGraphDevice: true });
   // What a blank Name sends, shown as the field's placeholder.
   const defaultName = tabDefaultName(tab);
   // The ROOT graph, flushed exactly as Start serializes it: inside a block the
@@ -232,6 +238,9 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       previewSweepVariants(method, params, method === 'random' ? Number(samples) : null);
       if (!objective.trim()) throw new Error(t('sweeps.new.objectiveRequired'));
       const sweepSeed = seedUsed ? parseSeed(seed) : null;
+      const resolved = target.touched ? target.resolve() : null;
+      // No device: the picker says so beside the devices.
+      if (target.touched && resolved === null) return;
       const store = useTabStore.getState();
       // The child runs need the session key in memory. RunService removes it
       // before persisting each child snapshot; this dialog/store keep no copy.
@@ -242,7 +251,8 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       // only the newest 20 runs, shared with the canvas, and the server
       // refuses record_outputs on a sweep larger than that.
       const options: Record<string, unknown> = {
-        device: graph.settings?.device ?? useUIStore.getState().globalDevice,
+        device: resolved?.device ?? graph.settings?.device ?? useUIStore.getState().globalDevice,
+        ...(resolved ? { target: resolved.target } : {}),
         verbose: active.verboseMode,
         graph_id: active.graphId,
         weights_persistent: active.weightsPersistent,
@@ -295,6 +305,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
               <label>{t('sweeps.new.name')}<input ref={firstRef} value={name} placeholder={defaultName} maxLength={MAX_RUN_NAME_LENGTH} onChange={(event) => setName(event.target.value)} /></label>
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
+            <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
             <div className={styles.pair}>
               <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => {
                 const metric = event.target.value;

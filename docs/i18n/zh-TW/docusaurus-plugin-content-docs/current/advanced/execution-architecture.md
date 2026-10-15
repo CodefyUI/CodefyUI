@@ -96,7 +96,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：伺服器啟動以來從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run，或 worker target 搭配 interactive 通道或 `record_outputs`。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
 
-**Sweep 與 study**（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。`options.target` 會傳到每個子 run。在寫入任何資料列之前，`RunService.check_placeable_batch` 會對每個不同的子 run（子 run 之間只差在圖的 `settings`）套用上面的送出規則，所以 sweep 或 study 要嘛整批被拒絕、要嘛整批被接受；送出子 run 途中有 worker 離線，只會讓它們等待，不會讓整批失敗。只要子 run 還存在，每個 sweep variant 與 study attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。在這台伺服器上帶種子的 run 會占用程序層級的種子閘門而單獨執行；worker run 有自己的隨機狀態，不經過這道閘門，所以在不同 worker 或不同卡上帶種子的子 run 可以同時執行。New Sweep 對話框目前還沒有目標選擇器；請透過 API 設定 `target`。
+**Sweep 與 study**（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。`options.target` 會傳到每個子 run。在寫入任何資料列之前，`RunService.check_placeable_batch` 會對每個不同的子 run（子 run 之間只差在圖的 `settings`）套用上面的送出規則，所以 sweep 或 study 要嘛整批被拒絕、要嘛整批被接受；送出子 run 途中有 worker 離線，只會讓它們等待，不會讓整批失敗。只要子 run 還存在，每個 sweep variant 與 study attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。在這台伺服器上帶種子的 run 會占用程序層級的種子閘門而單獨執行；worker run 有自己的隨機狀態，不經過這道閘門，所以在不同 worker 或不同卡上帶種子的子 run 可以同時執行。**新增掃描**對話框提供與 **Queue on...** 相同的目標選擇器，sweep 檢視會顯示每個 variant 的 Worker 與裝置；study 請透過 API 設定 `target`。
 
 ## 隔離 {/* #isolation */}
 

@@ -10,6 +10,7 @@ const en = {
   'toolbar.queueOn': 'Queue on...',
   'toolbar.queueOn.title': 'Submit this graph as a queued run, on this server or a worker',
   // The Queue on... dialog (#775).
+  'lazyChunk.failed': 'This part of the app could not be loaded. Try again; if it keeps failing, reload the page.',
   'queueRun.title': 'Queue run',
   'queueRun.close': 'Close',
   'queueRun.target': 'Target',
@@ -24,6 +25,8 @@ const en = {
   'queueRun.kind.mps': 'Apple MPS',
   'queueRun.anyHint': 'The run goes to the first connected worker with a free device of this kind, and to this server last.',
   'queueRun.localHint': 'A run on this server uses one device.',
+  'queueRun.serverPicks': 'the server picks its best device',
+  'queueRun.tabDevice': "the tab's device, as set",
   // A card's name inside a run given a device set (#774).
   'queueRun.alias': '{device} -> {alias} in this run',
   'queueRun.name': 'Name',
@@ -1289,7 +1292,9 @@ const en = {
   'sweeps.new.samples': 'Samples',
   'sweeps.new.seed': 'Seed',
   'sweeps.new.seedVariants': 'Seed every variant',
-  'sweeps.new.seedWarning': 'Seeded variants run one at a time and can delay canvas runs.',
+  'sweeps.new.seedWarning': 'Seeded variants on this server run one at a time and can delay canvas runs. On workers they run side by side.',
+  'sweeps.new.anyHint': 'Each variant goes to the next free device of this kind on a connected worker, and to this server last.',
+  'sweeps.new.localHint': 'Every variant runs on this server, on this device.',
   'sweeps.new.preview': '{count} variants',
   'sweeps.new.previewOne': '1 variant',
   // The server's caps are settings a deployment may raise, so these warn and

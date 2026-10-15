@@ -451,6 +451,14 @@ export interface SweepVariant {
   rank?: number | null;
   run_exists?: boolean;
   final_metrics?: Record<string, number>;
+  /**
+   * Where the variant's run is placed (#777), while that run exists:
+   * `local`, a worker's name, or `any` until an `any` variant starts; its
+   * device set (or null); and its queue key (`cpu`, `gpu-box/cuda:0`).
+   */
+  worker_id?: string;
+  devices?: string[] | null;
+  queue_key?: string;
 }
 
 export interface CreateSweepVariant {

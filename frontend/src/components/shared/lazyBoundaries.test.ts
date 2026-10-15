@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
  * `pnpm test`, by reading the sources from disk the way
  * SourceControl.integration.test.tsx reads its stylesheets.
  */
-const BOUNDARIES = ['codemirrorSetup', 'katexRenderer', 'QueueRunDialog', 'WorkersPanel', 'AddWorkerDialog'];
+const BOUNDARIES = ['codemirrorSetup', 'katexRenderer', 'QueueRunDialog', 'WorkersPanel', 'AddWorkerDialog', 'NewSweepDialog'];
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 

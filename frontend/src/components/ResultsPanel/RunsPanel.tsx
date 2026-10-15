@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { friendlyError } from '../../utils/errorMessages';
@@ -16,11 +16,21 @@ import {
 import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
-import { aliasForDevice } from '../../utils/deviceAliases';
+import { deviceAliasLines, runDevice, runDevices, runWorkerLabel } from '../../utils/runPlacement';
 import { LossChart } from './LossChart';
-import { NewSweepDialog } from './NewSweepDialog';
 import { SweepDetail } from './SweepDetail';
+import { lazyRetry } from '../shared/lazyRetry';
 import styles from './RunsPanel.module.css';
+
+/**
+ * The New sweep dialog, in a chunk of its own: it is opened from a button,
+ * and with the target picker (#777) keeping it out of the first paint keeps
+ * the entry chunk under the 500 kB build limit.
+ */
+const NewSweepDialog = lazyRetry(
+  () => import('./NewSweepDialog').then((module) => module.NewSweepDialog),
+  (props) => props.onClose(),
+);
 
 const FILTERS: RunStatusFilter[] = [
   'all',
@@ -103,49 +113,9 @@ export function formatDuration(
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
-/** The device a run is on: what it actually got, else what it asked for. */
-export function runDevice(run: RunSummary): string {
-  if (run.queue_key) return run.queue_key;
-  const requested = run.options?.device;
-  return typeof requested === 'string' && requested ? requested : '-';
-}
-
-/** Where a run executes (#769): `local` for this server and for a row from
- * before #769, a worker's name, or `any` while an `any` run waits. */
-export function runWorker(run: RunSummary): string {
-  return run.worker_id || 'local';
-}
-
-/**
- * The Devices column (#775): the run's device set when it named one, else
- * its device. A worker run's queue key is `<worker>/<device>`; the worker
- * has its own column, so only the device is shown here.
- */
-export function runDevices(run: RunSummary): string {
-  if (run.devices && run.devices.length > 0) return run.devices.join(', ');
-  const device = runDevice(run);
-  return device.slice(device.lastIndexOf('/') + 1);
-}
-
-/**
- * The in-run names of a worker run's CUDA cards (#774), one line each
- * (`cuda:2 -> cuda:1 in this run`), or null when none is renamed. A run on
- * this server is not renumbered: it executes on its first device as named.
- */
-export function deviceAliasLines(
-  run: RunSummary,
-  t: ReturnType<typeof useI18n.getState>['t'],
-): string | null {
-  if (runWorker(run) === 'local' || !run.devices) return null;
-  const devices = run.devices;
-  const lines = devices.flatMap((device) => {
-    const alias = aliasForDevice(devices, device);
-    return alias !== null && alias !== device
-      ? [t('queueRun.alias', { device, alias })]
-      : [];
-  });
-  return lines.length > 0 ? lines.join('\n') : null;
-}
+// The placement cells (#769, #775) are worded by utils/runPlacement, which
+// the sweep view (#777) shares; re-exported for this panel's callers.
+export { deviceAliasLines, runDevice, runDevices, runWorker } from '../../utils/runPlacement';
 
 /**
  * The device the run ASKED for, when the scheduler gave it a different
@@ -552,7 +522,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   const exportCsv = useRunStore((s) => s.exportCsv);
   const selectedSweepId = useSweepStore((s) => s.selectedSweepId);
   const closeSweep = useSweepStore((s) => s.closeSweep);
-  const [newSweepOpen, setNewSweepOpen] = useState(false);
+  // In the sweep store, set on the click, so the canvas shortcuts stand
+  // down before the dialog's chunk has loaded; cleared when this panel
+  // goes, whether or not the dialog ever mounted.
+  const newSweepOpen = useSweepStore((s) => s.newSweepOpen);
+  const setNewSweepOpen = useSweepStore((s) => s.setNewSweepOpen);
+  useEffect(() => () => useSweepStore.getState().setNewSweepOpen(false), []);
   const rootRef = useRef<HTMLDivElement>(null);
   const newSweepRef = useRef<HTMLButtonElement>(null);
   const sweepBackRef = useRef<HTMLButtonElement>(null);
@@ -775,10 +750,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const active = isActiveRun(run.status);
               const expanded = selectedRunId === run.id;
               const toggle = () => void select(expanded ? null : run.id);
-              const worker = runWorker(run);
-              const workerName = worker === 'local'
-                ? t('runs.worker.local')
-                : worker === 'any' ? t('runs.worker.any') : worker;
+              const workerName = runWorkerLabel(run, t);
               // Why a queued run waits beyond its place in line (#772).
               const queueReason = run.status === 'queued' ? run.queue_reason || null : null;
               return (
@@ -897,7 +869,11 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             })
           )}
         </div>
-        {newSweepOpen && <NewSweepDialog onClose={() => setNewSweepOpen(false)} />}
+        {newSweepOpen && (
+          <Suspense fallback={null}>
+            <NewSweepDialog onClose={() => setNewSweepOpen(false)} />
+          </Suspense>
+        )}
       </div>
 
       {selectedRunId !== null && (

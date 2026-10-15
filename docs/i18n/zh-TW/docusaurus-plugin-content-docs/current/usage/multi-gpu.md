@@ -72,7 +72,7 @@ cdui run train.json --target any --device cuda
 
 **run 內的裝置名稱。** worker 上的 run 只看得到自己的卡，並依你列出的順序從 0 重新編號。以 `--devices cuda:2,cuda:0` 為例，run 的 `cuda:0` 是機器的 `cuda:2`，run 的 `cuda:1` 是機器的 `cuda:0`。**device** 參數為 `auto` 的節點跟隨 run 的裝置（第一張卡）；要把節點放到集合中的另一張卡，把它的 **device** 設為那張卡在 run 內的名稱，此例為 `cuda:1`。run 會把對應關係記在 `execution_facts` 的 `visible_devices` 與 `device_aliases`。請參閱[裝置後端](/advanced/device-backends#addressing-one-card-out-of-several)。
 
-**Sweep 與 study。** `POST /api/sweeps` 與 `POST /api/studies` 會把 `options.target` 傳給每個子 run。使用 `"target": {"worker": "any"}` 且不帶 `devices` 時，每個子 run 取下一個符合 sweep 裝置種類的空 slot，所以在兩個各有一張卡的 agent 上，四個 variant 的 sweep 會同時跑兩個；worker 上帶種子的子 run 各在自己的程序中，可以並行。單一 run 會被拒絕的 target，會讓整個 sweep 或 study 在排入任何東西之前以 `400` 被拒絕。每個 variant 與 attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。New Sweep 對話框目前還沒有目標選擇器，會在之後的版本加入，現在請透過 API 設定 `target`。請參閱[執行佇列：Sweep](./run-queue#sweeps)。
+**Sweep 與 study。** `POST /api/sweeps` 與 `POST /api/studies` 會把 `options.target` 傳給每個子 run。使用 `"target": {"worker": "any"}` 且不帶 `devices` 時，每個子 run 取下一個符合 sweep 裝置種類的空 slot，所以在兩個各有一張卡的 agent 上，四個 variant 的 sweep 會同時跑兩個；worker 上帶種子的子 run 各在自己的程序中，可以並行。單一 run 會被拒絕的 target，會讓整個 sweep 或 study 在排入任何東西之前以 `400` 被拒絕。每個 variant 與 attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。**新增掃描**對話框有與 **Queue on...** 相同的目標與裝置選擇器：本伺服器、已連線的 worker 加上裝置集合，或任一可用加上裝置種類。維持本伺服器與分頁的裝置時，sweep 會像以往一樣送出，不帶 target。sweep 檢視會顯示每個 variant 的 Worker 與裝置。study 請透過 API 設定 `target`。請參閱[執行佇列：Sweep](./run-queue#sweeps)。
 
 ## Slot 與上限 {/* #slots-and-limits */}
 

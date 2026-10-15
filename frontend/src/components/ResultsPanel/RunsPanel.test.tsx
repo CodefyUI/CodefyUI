@@ -18,6 +18,7 @@ import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
+import { isAnyModalOpen } from '../../store/modalState';
 import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
@@ -53,7 +54,16 @@ vi.mock('../../api/rest', async (importOriginal) => {
     downloadRunMetricsCsv: vi.fn(),
     getSweep: vi.fn(),
     createSweep: vi.fn(),
+    // The New sweep dialog's target picker (#777) asks for both; they stay
+    // in flight here, so the dialog shows its defaults and nothing updates
+    // after a test.
+    fetchDevices: vi.fn(() => new Promise(() => {})),
   };
+});
+
+vi.mock('../../api/workers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/workers')>();
+  return { ...actual, fetchWorkers: vi.fn(() => new Promise(() => {})) };
 });
 
 const api = vi.mocked(rest);
@@ -1167,10 +1177,23 @@ describe('RunsPanel — sweeps', () => {
     const opener = screen.getByRole('button', { name: /New sweep/i });
     opener.focus();
     fireEvent.click(opener);
-    expect(screen.getByRole('dialog', { name: /New sweep/i })).toBeInTheDocument();
+    // Its own chunk (#777): it renders once the import resolves.
+    expect(await screen.findByRole('dialog', { name: /New sweep/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Close new sweep/i }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(opener);
+  });
+
+  it('stands the canvas shortcuts down on the click, before the dialog chunk loads (#777)', async () => {
+    const { unmount } = await renderPanel([]);
+    fireEvent.click(screen.getByRole('button', { name: /New sweep/i }));
+    // Synchronously, before React.lazy has resolved anything.
+    expect(useSweepStore.getState().newSweepOpen).toBe(true);
+    expect(isAnyModalOpen()).toBe(true);
+    await screen.findByRole('dialog', { name: /New sweep/i });
+    // The panel going away takes the flag with it.
+    unmount();
+    expect(useSweepStore.getState().newSweepOpen).toBe(false);
   });
 
   it('re-reads its sweep and polls it again when the panel comes back', async () => {
