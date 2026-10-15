@@ -2895,7 +2895,8 @@ class RunService:
         that is not active or does not execute on a worker.
         """
         active = self._runs.get(run_id)
-        if active is None or not _on_worker(active) or self._workers is None:
+        if active is None or not on_a_worker(active.placement) \
+                or self._workers is None:
             return None
         worker_id = active.placement.worker_id
         run = self._workers.run_state(worker_id, run_id)

@@ -29,3 +29,7 @@ The enrollment token is shown once; the server keeps only its hash. A used-up, e
 **Re-keying a worker.** A name is taken once enrolled: an ordinary token cannot enroll it again (the server answers `409`). To give a worker a new credential, for a reinstalled machine or a lost credential file, press **Re-key** on its card: the token generated there can enroll that worker only, and the command carries its `--name`. Using it invalidates the old credential. If the machine still has the old credential file, run `cdui agent forget <url>` there first.
 
 Without TLS, the tokens, and the inputs of every run sent to the worker, cross the network unencrypted; the server logs a warning when that happens from another machine.
+
+## When the connection drops
+
+A worker that loses its connection keeps running its runs and keeps their events until this server has them. On this server the runs show `disconnected` and keep their slots for `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes); a reconnect within that time continues them with no gap in their logs, and after it they end `interrupted`. The outcomes, and what a sleeping laptop means for them, are in [When the connection drops](./run-queue#when-the-connection-drops).
