@@ -354,6 +354,29 @@ def _not_found(study_id: str) -> HTTPException:
 # ── routes ────────────────────────────────────────────────────────────────
 
 
+async def _refuse_unplaceable(coordinator: StudyCoordinator,
+                              spec: StudySpec) -> None:
+    """400 for children the run service would refuse, before any row.
+
+    Every child inherits ``options.target`` (#777); a worker that is not
+    connected, a device nobody offers, or ``record_outputs`` on a worker
+    would otherwise fail the study at its first child. Each variant graph is
+    checked, because its own ``settings.device`` can differ from the
+    others'. A retry of a study that already exists under the same
+    idempotency key is not refused: it returns that study, whatever the
+    workers are doing now.
+    """
+    try:
+        for _label, _ops, graph in spec.variants:
+            coordinator.service.check_placeable(graph, spec.options)
+    except RunSubmitError as exc:
+        if spec.idempotency_key is not None and \
+                await coordinator.store.find_by_idempotency_key(
+                    spec.idempotency_key) is not None:
+            return
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("", status_code=201)
 async def create_study(
     body: CreateStudyRequest, request: Request, response: Response,
@@ -385,6 +408,7 @@ async def create_study(
                    "idempotency_key differ; send one, or the same value")
     key = header_key or body.idempotency_key
     spec = _build_spec(body, key)
+    await _refuse_unplaceable(coordinator, spec)
     try:
         study, created = await coordinator.create_study(spec)
     except IdempotencyConflict as exc:

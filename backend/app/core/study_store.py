@@ -591,6 +591,15 @@ class StudyStore:
     async def get_study(self, study_id: str) -> StudyRecord | None:
         return await self.db.run(lambda conn: _select_study(conn, study_id))
 
+    async def find_by_idempotency_key(self, key: str) -> StudyRecord | None:
+        """The study created with idempotency *key*, or None."""
+        def _select(conn: sqlite3.Connection) -> StudyRecord | None:
+            row = conn.execute(
+                f"SELECT {_STUDY_COLUMNS} FROM studies "
+                "WHERE idempotency_key = ?", (key,)).fetchone()
+            return None if row is None else StudyRecord.from_row(row)
+        return await self.db.run(_select)
+
     async def list_studies(
         self, *, status: Sequence[str] | None = None, limit: int = 50,
         offset: int = 0,

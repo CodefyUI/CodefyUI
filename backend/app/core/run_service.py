@@ -1905,6 +1905,22 @@ class RunService:
             status=(STATUS_RUNNING if record.id in self._runs
                     else STATUS_QUEUED))
 
+    def check_placeable(self, graph: Any, options: Any) -> None:
+        """Refuse, before anything is written, what :meth:`submit` would.
+
+        For the callers that submit MANY runs from one request (a sweep's
+        variants, a study's children, #777): a ``target`` naming a worker
+        that is not connected, a device nobody offers, or ``record_outputs``
+        on a worker would otherwise be refused at the first child, after the
+        parent row exists. Raises ``RunSubmitError`` with the same message
+        ``submit`` gives; returns None when the run could be queued. Reads
+        the live worker registry, so it answers for now, as ``submit`` does.
+        """
+        normalized_graph = normalize_graph(graph)
+        normalized_options = normalize_options(
+            apply_graph_settings(normalized_graph, options))
+        self._submit_queue_key(normalized_options)
+
     def _submit_queue_key(self, options: dict[str, Any]) -> str:
         """The FIFO a submitted run joins, or ``RunSubmitError``.
 
