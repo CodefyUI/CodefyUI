@@ -313,13 +313,17 @@ def test_an_unencodable_frame_becomes_a_warning_with_its_seq():
     assert finished.status == "succeeded" and finished.peak_memory is None
 
 
+@pytest.mark.parametrize("status", [401, 403])
 async def test_a_refused_token_is_logged_as_an_error_and_retried(
-        tmp_path, caplog):
+        tmp_path, caplog, status):
+    """Both are errors and retried; only 401 says "refused the token" (the
+    words that make an SSH worker forget its credential, #784). A 403 is
+    every other pre-accept refusal (Host, Origin, no worker registry)."""
     from websockets.datastructures import Headers
     from websockets.http11 import Response
 
     def refuse(connection, request):
-        return Response(403, "Forbidden", Headers(), b"bad token")
+        return Response(status, "No", Headers(), b"no")
 
     server = await websockets.serve(lambda ws: None, "127.0.0.1", 0,
                                     process_request=refuse)
@@ -337,7 +341,10 @@ async def test_a_refused_token_is_logged_as_an_error_and_retried(
         errors = [r.getMessage() for r in caplog.records
                   if r.levelname == "ERROR"]
         assert len(errors) >= 2  # backed off and tried again
-        assert "HTTP 403" in errors[0] and "/x/session.token" in errors[0]
+        assert f"HTTP {status}" in errors[0]
+        assert "/x/session.token" in errors[0]
+        refused = "the control plane refused the token" in errors[0]
+        assert refused is (status == 401)
     finally:
         server.close()
         await server.wait_closed()

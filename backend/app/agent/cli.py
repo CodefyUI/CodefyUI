@@ -218,6 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
         "fingerprint of the control plane's server (leaf) certificate "
         "public key, sha256:<hex>; pins it instead of checking CAs, and "
         "refuses to connect when it does not match"))
+    start.add_argument("--uds", default=None, metavar="PATH", help=t(
+        "經由這個 Unix socket 連到控制面（SSH worker 的通道）；--control "
+        "仍是控制面的網址",
+        "reach the control plane through this Unix socket (an SSH "
+        "worker's tunnel); --control still names the control plane"))
     start.add_argument("--foreground", action="store_true", help=t(
         "在前景執行（systemd 或想看日誌時）",
         "stay in the foreground (systemd, or to watch the log)"))
@@ -496,6 +501,8 @@ def _start_background(args: argparse.Namespace, control: Any,
     env = dict(os.environ)
     if isinstance(control, str):
         argv += ["--control", control]
+    if getattr(args, "uds", None):
+        argv += ["--uds", args.uds]
     if getattr(args, "ca_fingerprint", None):
         argv += ["--ca-fingerprint", args.ca_fingerprint]
     if isinstance(token, str):
@@ -612,7 +619,8 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
                 if callable(token) else f"--token / ${TOKEN_ENV}"),
             trust=trust,
             on_trusted=(fingerprint_recorder(control)
-                        if isinstance(control, str) else None))
+                        if isinstance(control, str) else None),
+            uds=getattr(args, "uds", None))
         return await connection.run(stop)
 
     logger.info("agent %s starting (pid %s); offering %s; mounts %s", name,
@@ -791,7 +799,8 @@ def enroll_now(args: argparse.Namespace, control: str, token: str,
          f"Enrolling as worker {args.name!r} with {control}...")
     worker_id, worker_token = enroll(
         control, token, name=args.name, platform=platform_facts(),
-        devices=[_report(fact).model_dump() for fact in facts], trust=trust)
+        devices=[_report(fact).model_dump() for fact in facts], trust=trust,
+        uds=getattr(args, "uds", None))
     pin = trust.expected if trust is not None else None
     path = save_credential(user_data_dir(), control, worker_id, worker_token,
                            ca_fingerprint=pin)
@@ -835,6 +844,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         existing = running_agent_pid()
         if existing is not None:
             return _report_running(existing)
+    uds = getattr(args, "uds", None)
+    if uds and not (args.control and args.control.strip().lower()
+                    .startswith("http://")):
+        _err("--uds 需要 http:// 的 --control 網址。",
+             "--uds needs an http:// --control URL.")
+        return 2
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
     stored = None
@@ -849,7 +864,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         _err("--ca-fingerprint 需要 https:// 控制面網址。",
              "--ca-fingerprint needs an https:// control URL.")
         return 2
-    if plain_http_to_another_machine(control) and not args.daemonized:
+    if plain_http_to_another_machine(control) and not args.daemonized \
+            and not uds:  # ssh carries the socket across the network
         warn_plain_http(control)
     trust = (build_trust(control, pin, stored)
              if isinstance(control, str) and is_https(control) else None)

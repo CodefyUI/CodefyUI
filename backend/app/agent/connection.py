@@ -169,6 +169,7 @@ class AgentConnection:
         trust: ControlPlaneTrust | None = None,
         on_trusted: Callable[[str], None] | None = None,
         facts: AgentFacts | None = None,
+        uds: str | None = None,
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
@@ -181,13 +182,16 @@ class AgentConnection:
                 base_url=lambda: self._resolve(self._control_url),
                 token=lambda: self._resolve(self._token),
                 cache=InputCache(runner.runs_dir.parent / CACHE_DIRNAME),
-                ssl_context=self._http_tls)
+                ssl_context=self._http_tls, uds=uds)
         #: Every run's frames not acknowledged yet (#783).
         self.spools = spools if spools is not None else SpoolStore(
             runner.runs_dir)
         self.name = name
         self.version = version
         self._control_url = control_url
+        #: An SSH worker's tunnel (#784): dial this Unix socket, not the
+        #: URL's host; the URL still names the control plane.
+        self.uds = uds
         self._token = token
         self._probe_devices = probe_devices
         self.max_message_bytes = max_message_bytes
@@ -360,9 +364,15 @@ class AgentConnection:
                     if self.trust is None:
                         self.trust = ControlPlaneTrust()
                     options["ssl"] = self.trust.context()
-                async with websockets.connect(
+                if self.uds:
+                    dial = websockets.unix_connect(
+                        self.uds, url, max_size=self.max_message_bytes,
+                        open_timeout=WELCOME_TIMEOUT_S, **options)
+                else:
+                    dial = websockets.connect(
                         url, max_size=self.max_message_bytes,
-                        open_timeout=WELCOME_TIMEOUT_S, **options) as ws:
+                        open_timeout=WELCOME_TIMEOUT_S, **options)
+                async with dial as ws:
                     if "ssl" in options:
                         await self._trusted()
                     welcomed = await self._serve(ws, stop)
@@ -380,10 +390,21 @@ class AgentConnection:
                 pass
             except (OSError, WebSocketException, asyncio.TimeoutError,
                     wp.ProtocolError, ValueError) as exc:
-                if _http_status(exc) in (401, 403):
+                status = _http_status(exc)
+                if status == 401:
+                    # Only this status means the credential itself: the
+                    # SSH launcher wipes it on these words (#784).
                     logger.error(
-                        "the control plane refused the token (HTTP %s); "
-                        "token from %s", _http_status(exc), self.token_source)
+                        "the control plane refused the token (HTTP 401); "
+                        "token from %s", self.token_source)
+                elif status == 403:
+                    # Refused for another reason (a Host or Origin check, no
+                    # worker registry yet), or by a control plane that
+                    # answers every refusal with 403: not the token.
+                    logger.error(
+                        "the control plane refused the connection (HTTP "
+                        "403); not a refusal of the token from %s",
+                        self.token_source)
                 else:
                     logger.warning(
                         "connection to the control plane failed: %s", exc)

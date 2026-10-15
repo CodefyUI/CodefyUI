@@ -299,6 +299,35 @@ async def test_a_disconnect_waits_and_a_reconnect_resumes(registry):
     assert [f.seq for f in back.sent if isinstance(f, wp.Ack)][-1] == 3
 
 
+@pytest.mark.parametrize("dropped_first", [True, False])
+async def test_a_worker_stopped_on_purpose_ends_its_runs_at_once(
+        registry, dropped_first):
+    """#784: an SSH worker's Disable / Remove / shutdown. Its runs do not
+    wait out the resume grace: nothing is coming back for them."""
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
+    if dropped_first:
+        # The tunnel went first: the run is waiting for the worker.
+        registry.disconnect(agent.worker, "the connection closed")
+        await _until(lambda: ("connection", False) in recorder.calls)
+        assert not task.done()
+    registry.stopped("box", "SSH worker box was stopped")
+    # ``DELETE /api/workers/ssh/{id}`` forgets the worker right after the
+    # launcher stopped it: the run is not ended a second time.
+    assert registry.run_state("box", "r1") is None
+    registry.forget("box", "the SSH worker was deleted")
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+    assert "SSH worker box was stopped" in outcome.error
+    assert "deleted" not in outcome.error
+    registry.stopped("box", "again")  # forgotten: harmless
+    registry.stopped("nobody", "unknown")
+
+
 async def test_past_the_grace_the_run_is_interrupted_and_late_results_noted(
         registry):
     clock = [100.0]

@@ -5,9 +5,10 @@ real lifespan, so the ``SshLauncher`` there is the one that runs).
 
 ``test_an_ssh_worker_enrolls_runs_and_survives_disable_enable`` puts the
 fake ``ssh`` (``tests/fake_ssh.py``) in ``tunnel`` mode: it really listens
-on the ``-R`` remote port and relays to the server, and runs the remote
-command with ``sh -c`` -- so the command line, the token on stdin, the
-tunnel ``Host`` guard, the enrollment, the stored credential and the stdin
+on the ``-R`` Unix socket and relays to the SSH worker's own listener, and
+runs the remote command with ``sh -c`` -- so the command line, the token
+on stdin, the
+tunnel listener, the enrollment, the stored credential and the stdin
 watchdog are all the real ones. The "remote" ``cdui`` is a shim that runs
 ``python -m app.agent`` with a user-data dir of its own.
 
@@ -21,8 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -69,6 +72,14 @@ def _wait(predicate: Any, what: str, client: httpx.Client, name: str,
                 f"{entry.get('last_error')!r}, tail:\n"
                 + "\n".join(entry.get("tail") or []))
         time.sleep(0.1)
+
+
+def _cp() -> str:
+    """The live server's SSH instance id (its remote directories are
+    ``~/.codefyui-ssh/<id>-<slot>``)."""
+    from app.main import app
+
+    return app.state.ssh_launcher.instance_id
 
 
 def _up(client: httpx.Client, name: str) -> bool:
@@ -132,8 +143,9 @@ def fake_remote(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_SSH_LOG", str(log))
     monkeypatch.setenv("FAKE_SSH_MODE", "tunnel")
     monkeypatch.delenv("CODEFYUI_AGENT_TOKEN", raising=False)
-    remote_home = tmp_path / "remote-home"
-    remote_home.mkdir()
+    # Short: the forward's Unix socket lives under it, and ``sun_path``
+    # holds about 100 bytes (pytest's tmp_path on macOS is longer).
+    remote_home = Path(tempfile.mkdtemp(prefix="cdui-ssh-", dir="/tmp"))
     monkeypatch.setenv("FAKE_SSH_HOME", str(remote_home))
     nodes_dir = tmp_path / "nodes"
     nodes_dir.mkdir()
@@ -157,6 +169,7 @@ def fake_remote(tmp_path, monkeypatch):
             os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
         except (OSError, ValueError):
             pass
+    shutil.rmtree(remote_home, ignore_errors=True)
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -179,7 +192,7 @@ def test_an_ssh_worker_enrolls_runs_and_survives_disable_enable(
         # session token its loopback peer address would also allow.
         assert worker["credential"] == "worker_token"
         assert worker["enrolled"] is True
-        credential_file = remote_home / "agent" / f"127.0.0.1-{port}.token"
+        credential_file = remote_home / "agent" / f"cp-{_cp()}.invalid-{port}.token"
         stored = json.loads(credential_file.read_text())
         assert stored["worker_id"] == NAME
         # The one-time enrollment token was spent and then cleared away.
@@ -189,6 +202,20 @@ def test_an_ssh_worker_enrolls_runs_and_survives_disable_enable(
         for argv in map(json.loads, log.read_text().splitlines()):
             assert stored["worker_token"] not in " ".join(argv)
             assert "--token" not in " ".join(argv)
+        # The forward's far end is a socket only this account can reach,
+        # and through it there is no session bootstrap, whatever the Host.
+        state = remote_home / ".codefyui-ssh" / f"{_cp()}-{port}"
+        assert state.stat().st_mode & 0o777 == 0o700
+        assert state.parent.stat().st_mode & 0o777 == 0o700
+        through = httpx.Client(transport=httpx.HTTPTransport(
+            uds=str(state / "sock")), base_url="http://127.0.0.1", timeout=10)
+        with through:
+            for host in ("127.0.0.1", f"127.0.0.1:{live_server}",
+                         f"127.0.0.1:{port}"):
+                answer = through.get("/api/auth/bootstrap",
+                                     headers={"host": host})
+                assert answer.status_code == 404, host
+                assert session_token() not in answer.text
 
         run = client.post("/api/runs", json={
             "graph": _graph(), "options": {"target": {"worker": NAME}}}).json()
@@ -197,7 +224,7 @@ def test_an_ssh_worker_enrolls_runs_and_survives_disable_enable(
         assert record["worker_id"] == NAME
 
         # Disable: drained, the session ends, the remote agent stops.
-        agent_pid = int((remote_home / ".codefyui-ssh" / str(port) / "pid"
+        agent_pid = int((remote_home / ".codefyui-ssh" / f"{_cp()}-{port}" / "pid"
                          ).read_text())
         assert _pid_alive(agent_pid)
         disabled = client.post(f"/api/workers/ssh/{NAME}/disable").json()
@@ -249,7 +276,7 @@ def test_a_dropped_ssh_session_keeps_the_agent_and_its_run(
         _wait(lambda: _up(client, name), "the SSH worker never came up",
               client, name)
         port = _ssh_entry(client, name)["remote_port"]
-        state = remote_home / ".codefyui-ssh" / str(port)
+        state = remote_home / ".codefyui-ssh" / f"{_cp()}-{port}"
         agent_pid = int((state / "pid").read_text())
         graph = {"nodes": [{"id": "start", "type": "Start",
                             "data": {"params": {}}},
@@ -292,7 +319,7 @@ def test_a_dropped_ssh_session_keeps_the_agent_and_its_run(
         assert entry["remote_pid"] == agent_pid
         argvs = [json.loads(line) for line in log.read_text().splitlines()]
         assert len([a for a in argvs if "-R" in a]) >= 2
-        assert (remote_home / ".codefyui-ssh" / str(port) / "log"
+        assert (remote_home / ".codefyui-ssh" / f"{_cp()}-{port}" / "log"
                 ).read_text().count("Enrolling") <= 1
         events = client.get(f"/api/runs/{run_id}/events").json()["events"]
         kinds = [e["payload"]["kind"] for e in events
@@ -351,8 +378,8 @@ def test_a_transfer_run_goes_through_the_ssh_tunnel(
         fake_remote, live_server, tmp_path, monkeypatch):  # noqa: F811
     """#784 + #785: an SSH worker with no shared folder runs a graph that
     reads an uploaded CSV and writes a checkpoint. The agent fetches the
-    input and uploads the checkpoint through the reverse tunnel (``Host:
-    127.0.0.1:<remote port>``) with its worker token; the tunnel guard lets
+    input and uploads the checkpoint through the reverse tunnel (the SSH
+    worker's own listener) with its worker token; the listener lets
     exactly those routes through."""
     from app.config import settings
 

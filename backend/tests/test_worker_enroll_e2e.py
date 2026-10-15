@@ -138,6 +138,7 @@ def test_an_agent_enrolls_reconnects_with_its_credential_and_is_revoked(
         second_output = _stop(agent)
     assert "Using the stored worker credential" in second_output
     assert "Enrolling" not in second_output
-    assert "refused the token (HTTP 403)" in second_output, second_output
+    # A revoked credential is a 401 (other handshake refusals are 403).
+    assert "refused the token (HTTP 401)" in second_output, second_output
     assert "cdui agent forget" in second_output
     client.close()
