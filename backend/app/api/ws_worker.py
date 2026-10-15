@@ -33,10 +33,12 @@ connection under the same name, but only one that authenticated the same
 way: a session-token agent cannot take over an enrolled worker's name, nor
 an enrolled worker a connected same-host agent's) and answered with ``welcome``; every later
 frame is routed: ``heartbeat`` and ``run_alive`` to the registry, per-run
-frames to their run's inbox. Closing the socket marks the worker
-disconnected; it never cancels a run by itself (the #120/#121 rule for
-``/ws/execution``) -- the worker's runs end ``interrupted`` because nothing
-can report for them any more.
+frames to their run's inbox (pausing the read while one run's inbox is
+far behind, ``WorkerRegistry.backpressure``). Closing the socket marks the
+worker disconnected; it never cancels a run by itself (the #120/#121 rule
+for ``/ws/execution``). The worker's runs wait ``disconnected`` for it to
+reconnect and replay what was not acknowledged, and end ``interrupted``
+only after the resume grace (#783, ``core.workers``).
 """
 
 from __future__ import annotations
@@ -212,6 +214,7 @@ async def websocket_worker(ws: WebSocket) -> None:
                                worker.name)
             else:
                 registry.route(worker, frame)
+                await registry.backpressure(worker, frame)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

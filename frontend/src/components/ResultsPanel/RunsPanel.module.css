@@ -252,6 +252,15 @@
   background: var(--surface-raised);
 }
 
+/* Still running on its worker, which is unreachable (#783): a warning, not
+   yet a loss. */
+.chip_disconnected {
+  color: var(--status-warning);
+  border-color: var(--status-warning);
+  background: var(--warning-wash);
+  border-style: dashed;
+}
+
 .chip_interrupted {
   color: var(--status-interrupted);
   border-color: var(--status-interrupted);

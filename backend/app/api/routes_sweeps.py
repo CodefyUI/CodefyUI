@@ -674,8 +674,8 @@ async def _harvested_sweep(
     return sweep, children, metrics
 
 
-_COUNT_KEYS = ("queued", "running", "succeeded", "failed", "cancelled",
-               "interrupted", _STATUS_MISSING)
+_COUNT_KEYS = ("queued", "running", "disconnected", "succeeded", "failed",
+               "cancelled", "interrupted", _STATUS_MISSING)
 
 
 def _variant_payload(variant: SweepVariant, rank: int | None,

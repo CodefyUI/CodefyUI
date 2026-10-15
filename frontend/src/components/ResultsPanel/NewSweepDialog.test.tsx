@@ -83,7 +83,7 @@ beforeEach(() => {
     sweep_id: 's1', name: null, state: 'running', method: 'grid', seed: null, seed_variants: false,
     objective: { metric: 'train_loss', direction: 'minimize' }, created_at: '2026-10-01T00:00:00Z',
     finished_at: null, error: null,
-    counts: { queued: 2, running: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    counts: { queued: 2, running: 0, disconnected: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [], variants: [], best: null,
   });
   api.getRunMetrics.mockResolvedValue({ run_id: 'r', names: [], metrics: [] });

@@ -180,8 +180,13 @@ def _run_payload(record: RunRecord, *, queue_position: int | None,
                  queue_reason: str | None = None,
                  final_metrics: dict[str, float] | None = None,
                  metric_producers: dict[str, list[str | None]] | None = None,
+                 worker_status: dict[str, Any] | None = None,
                  ) -> dict[str, Any]:
     payload = asdict(record)
+    # Where an active worker run's worker stands (#783): connected, or
+    # disconnected since ``disconnected_at`` (Unix seconds) and waiting for
+    # it until ``resume_deadline``. None for every other run.
+    payload["worker_status"] = worker_status
     payload["queue_position"] = queue_position
     # Why a queued run is not starting beyond its place in line (#772):
     # "waiting for worker X to reconnect". None otherwise.
@@ -334,7 +339,8 @@ async def list_runs(
                          queue_reason=service.queue_reason(record.id),
                          active=service.is_active(record.id),
                          final_metrics=finals.get(record.id),
-                         metric_producers=producers.get(record.id))
+                         metric_producers=producers.get(record.id),
+                         worker_status=service.worker_status(record.id))
             for record in records
         ],
         "total": total,
@@ -366,6 +372,7 @@ async def get_run(run_id: str, request: Request):
         last_cursor=await service.store.latest_cursor(run_id),
         final_metrics=finals.get(record.id),
         metric_producers=producers.get(record.id),
+        worker_status=service.worker_status(run_id),
     )
     payload["fingerprint"] = (
         None if record.fingerprint_digest is None

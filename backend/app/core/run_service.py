@@ -237,6 +237,7 @@ from .executors import (
     ExecutionRequest,
     Executor,
     InProcessExecutor,
+    WARNING_LATE_RESULT,
     RunSinks,
     WorkerExecutor,
 )
@@ -1563,6 +1564,9 @@ class RunService:
             # A worker connecting, draining, undraining or going away is
             # capacity appearing or vanishing somewhere no queue key names.
             workers.add_listener(self.reschedule)
+            # A run that ended here while its worker was away, and that the
+            # worker later reports finished (#783).
+            workers.on_late_result = self._record_late_result
         self._runs: dict[str, _ActiveRun] = {}
         # ── the queue (#123) ─────────────────────────────────────────────
         # One FIFO per resolved device, plus a by-id index so cancel is O(1)
@@ -2849,7 +2853,61 @@ class RunService:
             warn=functools.partial(self._warn, active),
             record_execution_facts=functools.partial(
                 self.store.update_execution_facts, active.run_id),
+            record_worker_connection=functools.partial(
+                self._record_worker_connection, active),
         )
+
+    async def _record_worker_connection(self, active: _ActiveRun,
+                                        connected: bool) -> None:
+        """The row's ``running`` <-> ``disconnected`` (#783). The run keeps
+        its slots either way: they go back when it ends."""
+        if active.terminating:
+            return
+        await self.store.mark_worker_connection(active.run_id, connected)
+        self._wake(active.run_id)
+
+    async def _record_late_result(self, worker: str, run_id: str,
+                                  frame: Any) -> None:
+        """A worker reported how a run ended after it had ended here (#783).
+
+        Recorded as a ``late_result`` warning on the run's log, with the
+        worker's status and error in its detail. The row keeps the status
+        it has: ``mark_finished`` only lands on active rows, and a late
+        report does not overwrite history.
+        """
+        record = await self.store.get_run(run_id)
+        if record is None:
+            logger.info("run %s: late result from worker %s, but the run "
+                        "is gone", run_id, worker)
+            return
+        detail = (f"worker {worker} reported this run {frame.status} after "
+                  f"it had ended here as {record.status}")
+        if frame.error:
+            detail = f"{detail}: {frame.error}"
+        await self._emit(run_id, EVENT_WARNING, {
+            "kind": WARNING_LATE_RESULT, "detail": detail, "node_id": None})
+
+    def worker_status(self, run_id: str) -> dict[str, Any] | None:
+        """Where an active worker run's worker stands (#783), or None.
+
+        ``{"worker_id", "state", "disconnected_at", "resume_deadline"}``:
+        ``state`` is ``connected`` or ``disconnected``; the two times are
+        Unix seconds while it is disconnected, else None. None for a run
+        that is not active or does not execute on a worker.
+        """
+        active = self._runs.get(run_id)
+        if active is None or not _on_worker(active) or self._workers is None:
+            return None
+        worker_id = active.placement.worker_id
+        run = self._workers.run_state(worker_id, run_id)
+        since = None if run is None else run.detached_wall
+        grace = getattr(self._workers, "resume_grace_s", 0.0)
+        return {
+            "worker_id": worker_id,
+            "state": "connected" if since is None else "disconnected",
+            "disconnected_at": since,
+            "resume_deadline": None if since is None else since + grace,
+        }
 
     async def _warn(self, active: _ActiveRun, signal: WarningSignal) -> None:
         """A ``WarningSignal`` a node sent, as a ``run_warning`` event."""

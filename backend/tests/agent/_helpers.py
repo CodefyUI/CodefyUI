@@ -246,3 +246,15 @@ def slow_graph_child(spec: dict[str, Any], events_out: Any,
 def slow_graph() -> dict[str, Any]:
     return {"nodes": [node("start", "Start"), node("slow", "_AgentSlow")],
             "edges": [trigger("start", "slow")]}
+
+
+def ticking_child(spec: dict[str, Any], events_out: Any,
+                  control_in: Any) -> None:
+    """Report progress 40 times, 50 ms apart, then succeed (#783): a run
+    that keeps producing frames across a dropped connection."""
+    for step in range(40):
+        events_out.send((child.MSG_EVENT, "node_status",
+                         {"node_id": "tick", "status": "progress",
+                          "step": step}))
+        time.sleep(0.05)
+    quick_child(spec, events_out, control_in)

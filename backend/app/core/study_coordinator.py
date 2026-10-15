@@ -75,7 +75,7 @@ from .run_service import (
     _Broadcast,
     _swallow_task_result,
 )
-from .run_store import TERMINAL_STATUSES
+from .run_store import STATUS_DISCONNECTED, TERMINAL_STATUSES
 from .secret_params import (
     SecretVault,
     restore_graph_secrets,
@@ -514,8 +514,10 @@ class StudyCoordinator:
                 changed = True
             elif child.status in TERMINAL_STATUSES:
                 terminal.append(child.id)
-            elif child.status == ATTEMPT_RUNNING \
+            elif child.status in (ATTEMPT_RUNNING, STATUS_DISCONNECTED) \
                     and attempt.status == ATTEMPT_QUEUED:
+                # A ``disconnected`` child (#783) started too: its worker
+                # is away, and the attempt stays running while it waits.
                 await self.store.mark_started(attempt.id, child.started_at)
                 changed = True
         if terminal and await self.store.harvest_runs(terminal):

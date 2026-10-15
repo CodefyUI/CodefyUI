@@ -84,9 +84,15 @@ STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 STATUS_INTERRUPTED = "interrupted"
+#: A worker's run whose worker dropped off the network (#783): it may still
+#: be executing there, and it carries on if the worker reconnects in time.
+#: Active: it holds its slots, finishes like ``running``, and a restart
+#: retires it like any other active row.
+STATUS_DISCONNECTED = "disconnected"
 
 #: Not yet finished; cannot survive a server restart.
-ACTIVE_STATUSES: frozenset[str] = frozenset({STATUS_QUEUED, STATUS_RUNNING})
+ACTIVE_STATUSES: frozenset[str] = frozenset({
+    STATUS_QUEUED, STATUS_RUNNING, STATUS_DISCONNECTED})
 #: Finished, one way or another. Only these are eligible for retention.
 TERMINAL_STATUSES: frozenset[str] = frozenset({
     STATUS_SUCCEEDED, STATUS_FAILED, STATUS_CANCELLED, STATUS_INTERRUPTED,
@@ -871,6 +877,24 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def mark_worker_connection(self, run_id: str,
+                                     connected: bool) -> bool:
+        """``running`` -> ``disconnected`` (*connected* False) or back (#783).
+
+        Only between those two: a row that finished, or was never started,
+        is left alone. True when the row moved.
+        """
+        old, new = ((STATUS_DISCONNECTED, STATUS_RUNNING) if connected
+                    else (STATUS_RUNNING, STATUS_DISCONNECTED))
+
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET status = ? WHERE id = ? AND status = ?",
+                (new, run_id, old),
+            ).rowcount
+
+        return await self.db.run(_update) > 0
+
     async def update_execution_facts(
         self, run_id: str, patch: dict[str, Any],
     ) -> bool:
@@ -987,8 +1011,9 @@ class RunStore:
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
-        Call once at startup. Both active states are covered by default —
-        nothing resumes a ``running`` row after a restart, and a ``queued``
+        Call once at startup. Every active state is covered by default —
+        nothing resumes a ``running`` or ``disconnected`` row after a restart
+        (adopting a worker's runs is #793), and a ``queued``
         row would otherwise wait forever on a scheduler that lost its queue.
         Narrow it with *statuses* if a caller can genuinely re-adopt one.
         Idempotent: a second call finds nothing.

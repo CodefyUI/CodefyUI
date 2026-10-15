@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
@@ -98,6 +99,11 @@ class RunSinks:
     #: reports about where the run executes). None: nothing records them.
     record_execution_facts: (
         Callable[[dict[str, Any]], Awaitable[Any]] | None) = None
+    #: ``record_worker_connection(False)`` when the run's worker dropped
+    #: and the run waits for it, ``(True)`` when it is back (#783): the
+    #: row's ``disconnected`` <-> ``running``. None: nothing records it.
+    record_worker_connection: (
+        Callable[[bool], Awaitable[Any]] | None) = None
 
 
 @dataclass
@@ -543,8 +549,18 @@ def _signal_bridge(request: ExecutionRequest) -> Callable[[Any], Any]:
 #: next to a run subprocess's cancel grace.
 CANCEL_POLL_S = 0.2
 
-#: ``run_warning`` kind when a run ends because its worker went away.
+#: ``run_warning`` kinds (#772, #783): the run's worker went away (the run
+#: waits for it, or ends), came back, or reported a run that had already
+#: ended here.
 WARNING_WORKER_DISCONNECTED = "worker_disconnected"
+WARNING_WORKER_RECONNECTED = "worker_reconnected"
+WARNING_LATE_RESULT = "late_result"
+
+#: A worker run's frames are acknowledged (``ack``, #783) once this many
+#: are recorded, or :data:`ACK_INTERVAL_S` after the first unacknowledged
+#: one, whichever comes first; and always on ``run_finished``.
+ACK_EVERY = 64
+ACK_INTERVAL_S = 1.0
 
 
 class WorkerExecutor:
@@ -571,9 +587,21 @@ class WorkerExecutor:
       no stop asked it is ``interrupted``, with the agent's error.
 
     A stop is watched for (``context.should_stop()``) and forwarded as a
-    ``cancel``. A worker that goes away ends the run after a ``run_warning``
-    saying so: ``interrupted``, or ``cancelled`` when a stop had been asked
-    (a user's Stop stays the user's).
+    ``cancel`` (again after a reconnect, in case the first one was lost).
+
+    Frames are acknowledged (``ack``, cumulative) every :data:`ACK_EVERY`
+    recorded frames or :data:`ACK_INTERVAL_S`, and on ``run_finished``;
+    each ack first stores the seq in the row's ``execution_facts.last_seq``
+    (#783). A worker whose connection drops does not end the run: the
+    registry puts ``WORKER_DISCONNECTED`` in the inbox, the run gets a
+    ``worker_disconnected`` warning and its row goes ``disconnected``, and
+    it keeps its slots. ``WORKER_RECONNECTED`` (the worker's ``run_alive``
+    listed it) brings it back to ``running`` with a ``worker_reconnected``
+    warning, and the agent's replay continues the stream (the registry
+    drops what was already delivered). ``WORKER_GONE`` (no reconnect within
+    the grace, or none allowed) ends the run after a ``run_warning``:
+    ``interrupted``, or ``cancelled`` when a stop had been asked (a user's
+    Stop stays the user's).
 
     Every send looks the worker up in the registry AT SEND TIME: a
     reconnect replaces the ``Worker`` object, and a frame sent through the
@@ -593,7 +621,7 @@ class WorkerExecutor:
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         from . import worker_protocol as wp
-        from .workers import WORKER_GONE
+        from .workers import WORKER_DISCONNECTED, WORKER_GONE, WORKER_RECONNECTED
 
         placement = request.placement
         if placement is None:
@@ -616,15 +644,33 @@ class WorkerExecutor:
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
+            acks = _Acks(self, request, worker_id)
             while True:
-                item = await run.inbox.get()
+                try:
+                    item = await asyncio.wait_for(run.inbox.get(),
+                                                  acks.due_in())
+                except asyncio.TimeoutError:
+                    await acks.flush()
+                    continue
                 if isinstance(item, tuple) and item and item[0] is WORKER_GONE:
                     detail = f"worker {worker_id} went away: {item[1]}"
                     await _worker_gone_warning(request, detail)
                     return self._gone(request, detail)
+                if isinstance(item, tuple) and item \
+                        and item[0] is WORKER_DISCONNECTED:
+                    await self._disconnected(request, worker_id, item[1])
+                    continue
+                if isinstance(item, tuple) and item \
+                        and item[0] is WORKER_RECONNECTED:
+                    await self._reconnected(request, worker_id, acks)
+                    continue
                 outcome = await self._deliver(request, item, devices)
+                acks.delivered(item.seq)
                 if outcome is not None:
+                    await acks.flush()
                     return outcome
+                if acks.due():
+                    await acks.flush()
         except asyncio.CancelledError:
             # A hard Task.cancel (shutdown's last resort): tell the worker,
             # best effort, so the subprocess does not outlive its row.
@@ -646,6 +692,30 @@ class WorkerExecutor:
                 watcher.cancel()
             self._registry.close_run(worker_id, request.run_id)
 
+    async def _disconnected(self, request: ExecutionRequest, worker_id: str,
+                            reason: str) -> None:
+        """The worker's connection dropped; the run waits for it (#783)."""
+        grace = getattr(self._registry, "resume_grace_s", 0)
+        await _warning(request, WARNING_WORKER_DISCONNECTED, (
+            f"worker {worker_id} disconnected ({reason}); the run keeps "
+            f"running there and waits up to {grace:.0f} s for it to "
+            "reconnect"))
+        await _record_connection(request, False)
+
+    async def _reconnected(self, request: ExecutionRequest, worker_id: str,
+                           acks: "_Acks") -> None:
+        """The worker is back and still has the run (#783)."""
+        from . import worker_protocol as wp
+
+        await _warning(request, WARNING_WORKER_RECONNECTED,
+                       f"worker {worker_id} reconnected; the run continues")
+        await _record_connection(request, True)
+        # Its replay starts after the last ack it got; tell it what this
+        # side already has, and repeat a stop it may never have received.
+        await acks.resend()
+        if request.context.should_stop():
+            await self._send(worker_id, wp.Cancel(run_id=request.run_id))
+
     @staticmethod
     def _gone(request: ExecutionRequest, detail: str) -> ExecutionOutcome:
         """The outcome of a run whose worker is gone: a stop if one was
@@ -663,10 +733,16 @@ class WorkerExecutor:
         try:
             while not request.context.should_stop():
                 await asyncio.sleep(CANCEL_POLL_S)
-            if not await self._send(worker_id,
-                                    wp.Cancel(run_id=request.run_id)):
-                logger.info("run %s: stop requested, but worker %s is not "
-                            "connected", request.run_id, worker_id)
+            told = False
+            # A worker that is away gets the cancel when it is back (#783).
+            while not await self._send(worker_id,
+                                       wp.Cancel(run_id=request.run_id)):
+                if not told:
+                    told = True
+                    logger.info("run %s: stop requested, but worker %s is "
+                                "not connected; waiting for it",
+                                request.run_id, worker_id)
+                await asyncio.sleep(CANCEL_POLL_S)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- the run ends via WORKER_GONE
@@ -728,14 +804,104 @@ class WorkerExecutor:
 
 
 async def _worker_gone_warning(request: ExecutionRequest, detail: str) -> None:
+    await _warning(request, WARNING_WORKER_DISCONNECTED, detail)
+
+
+async def _warning(request: ExecutionRequest, kind: str, detail: str) -> None:
     try:
         await request.sinks.emit(EVENT_WARNING, {
-            "kind": WARNING_WORKER_DISCONNECTED, "detail": detail,
-            "node_id": None})
+            "kind": kind, "detail": detail, "node_id": None})
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 -- observability
         logger.warning("run %s: could not record %s", request.run_id, detail)
+
+
+async def _record_connection(request: ExecutionRequest,
+                             connected: bool) -> None:
+    record = request.sinks.record_worker_connection
+    if record is None:
+        return
+    try:
+        await record(connected)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- observability
+        logger.warning("run %s: could not record its worker connection",
+                       request.run_id, exc_info=True)
+
+
+class _Acks:
+    """When to acknowledge a worker run's frames, and doing it (#783)."""
+
+    def __init__(self, executor: WorkerExecutor, request: ExecutionRequest,
+                 worker_id: str) -> None:
+        self._executor = executor
+        self._request = request
+        self._worker_id = worker_id
+        #: Highest seq handed to the sinks, and highest acknowledged.
+        self.recorded = 0
+        self.acked = 0
+        #: When the oldest unacknowledged frame was recorded (monotonic).
+        self._since: float | None = None
+
+    def delivered(self, seq: int) -> None:
+        self.recorded = max(self.recorded, seq)
+        if self._since is None and self.recorded > self.acked:
+            self._since = time.monotonic()
+
+    def due(self) -> bool:
+        return self.recorded - self.acked >= ACK_EVERY or (
+            self._since is not None
+            and time.monotonic() - self._since >= ACK_INTERVAL_S)
+
+    def due_in(self) -> float | None:
+        """Seconds until an ack is due; None when nothing waits for one."""
+        if self._since is None:
+            return None
+        return max(0.0, self._since + ACK_INTERVAL_S - time.monotonic())
+
+    async def flush(self) -> None:
+        """Acknowledge everything recorded: persist, then tell the worker."""
+        if self.recorded <= self.acked:
+            self._since = None
+            return
+        seq = self.recorded
+        await self._persist(seq)
+        self.acked = seq
+        self._since = None
+        await self._send(seq)
+
+    async def resend(self) -> None:
+        """Repeat the last ack (its first may not have reached the agent)."""
+        if self.acked:
+            await self._send(self.acked)
+        if self.recorded > self.acked:
+            await self.flush()
+
+    async def _persist(self, seq: int) -> None:
+        record = self._request.sinks.record_execution_facts
+        if record is None:
+            return
+        try:
+            await record({"last_seq": seq})
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- dedupe is in memory too
+            logger.warning("run %s: could not record last_seq %d",
+                           self._request.run_id, seq, exc_info=True)
+
+    async def _send(self, seq: int) -> None:
+        from . import worker_protocol as wp
+
+        try:
+            await self._executor._send(self._worker_id, wp.Ack(
+                run_id=self._request.run_id, seq=seq))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- a lost ack means a replay
+            logger.debug("run %s: ack %d not sent", self._request.run_id,
+                         seq, exc_info=True)
 
 
 def _physical_peak(peak: Any, devices: list[str]) -> Any:

@@ -1100,6 +1100,8 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.status.failed': '失敗',
   'runs.status.cancelled': '已取消',
   'runs.status.interrupted': '已中斷',
+  'runs.status.disconnected': '已斷線',
+  'runs.workerDisconnected': 'worker 已斷線 {elapsed}',
   'runs.action.cancel': '停止',
   'runs.action.reattach': '觀看',
   'runs.action.delete': '刪除',

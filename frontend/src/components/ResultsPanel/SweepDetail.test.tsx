@@ -48,7 +48,7 @@ function sweep(state: SweepState = 'running'): SweepDetailData {
     objective: { metric: 'val_loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null,
     error: 'one child failed', objective_warning: 'metric absent from one run',
-    counts: { queued: 2, running: 1, succeeded: 1, failed: 1, cancelled: 0, interrupted: 0, missing: 1 },
+    counts: { queued: 2, running: 1, disconnected: 0, succeeded: 1, failed: 1, cancelled: 0, interrupted: 0, missing: 1 },
     params: [{ node_id: 'train', param: 'rate', domain: [0.1, 0.2, 0.3] }],
     variants: [variant(0, 'succeeded', 0.4, 1), variant(1, 'missing', null, null), variant(2, 'running', 0.8, 2)],
     best: { index: 0, run_id: 'r0', objective: 0.4 },
@@ -105,7 +105,7 @@ describe('SweepDetail', () => {
     // The server warns whenever nothing is ranked yet, which for real
     // training is every sweep until its first variant ends, hours later.
     const detail = sweep();
-    detail.counts = { queued: 2, running: 1, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 2, running: 1, disconnected: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [variant(0, 'running', null, null), variant(1, 'queued', null, null), variant(2, 'queued', null, null)];
     detail.best = null;
     detail.objective_warning = "no variant recorded a metric named 'val_loss'";
@@ -116,7 +116,7 @@ describe('SweepDetail', () => {
 
   it('warns in the active language once a variant finished without the objective', () => {
     const detail = sweep();
-    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 1, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5, lr: 0.1 } },
       { ...variant(1, 'running', null, null), final_metrics: { train_loss: 0.7 } },
@@ -138,7 +138,7 @@ describe('SweepDetail', () => {
     // Ranks come only once a variant ends, but a live run that logs the
     // objective proves the name right.
     const detail = sweep();
-    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 1, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5 } },
       { ...variant(1, 'running', null, null), final_metrics: { val_loss: 0.9 } },
@@ -151,7 +151,7 @@ describe('SweepDetail', () => {
 
   it('warns when the sweep ended with nothing ranked', () => {
     const detail = sweep('finished');
-    detail.counts = { queued: 0, running: 0, succeeded: 0, failed: 2, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 0, failed: 2, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'failed', null, null), final_metrics: {} },
       { ...variant(1, 'failed', null, null), final_metrics: {} },
@@ -173,7 +173,7 @@ describe('SweepDetail', () => {
 
   it('names the objective node and explains an ambiguous name in each language (#641)', () => {
     const detail = sweep('finished');
-    detail.counts = { queued: 0, running: 0, succeeded: 2, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 2, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'succeeded', 0.4, 1), objective_node_id: 'train' },
       { ...variant(1, 'succeeded', null, null), ambiguous_producers: [null, 'train', 'block/inner'] },
@@ -199,7 +199,7 @@ describe('SweepDetail', () => {
     // would show that the chosen node did.
     const detail = sweep('finished');
     detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'block/inner' };
-    detail.counts = { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [{ ...variant(0, 'succeeded', null, null), final_metrics: { val_loss: 0.3 } }];
     detail.best = null;
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
@@ -211,7 +211,7 @@ describe('SweepDetail', () => {
   it('does not warn by node once the chosen node recorded the objective', () => {
     const detail = sweep('running');
     detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'train' };
-    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 1, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [{ ...variant(0, 'succeeded', 0.2, null), objective_node_id: 'train' }];
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
     view();
@@ -220,7 +220,7 @@ describe('SweepDetail', () => {
 
   it('leaves out a status no variant has', () => {
     const detail = sweep('finished');
-    detail.counts = { queued: 0, running: 0, succeeded: 2, failed: 0, cancelled: 1, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 2, failed: 0, cancelled: 1, interrupted: 0, missing: 0 };
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
     view();
     const summary = screen.getByText('2 succeeded').parentElement!;

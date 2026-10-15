@@ -138,16 +138,34 @@ export async function fetchDevices(): Promise<DevicesResponse> {
   return res.json();
 }
 
+/**
+ * A row's status. `disconnected` (#783) is a worker's run whose worker
+ * dropped off the network: still active, waiting for it to reconnect.
+ * Plugins never see it (`plugins/api.ts` reads it as `running`).
+ */
 export type RunStatus =
   | 'queued'
   | 'running'
+  | 'disconnected'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
   | 'interrupted';
 
 /** Mirrors the backend's `ACTIVE_STATUSES` — a run that still has a future. */
-export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running'];
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running', 'disconnected'];
+
+/**
+ * Where an active worker run's worker stands (#783). The times are Unix
+ * seconds, set while it is disconnected: since when, and until when the
+ * run waits for it before it is marked interrupted.
+ */
+export interface RunWorkerStatus {
+  worker_id: string;
+  state: 'connected' | 'disconnected';
+  disconnected_at: number | null;
+  resume_deadline: number | null;
+}
 
 /** Mirrors the backend's `TERMINAL_STATUSES` — the rows Delete accepts. */
 export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
@@ -242,6 +260,11 @@ export interface RunSummary {
    * a server before #772 does not send it.
    */
   queue_reason?: string | null;
+  /**
+   * An active worker run's connection to its worker (#783); `null` for
+   * every other run. Optional: a server before #783 does not send it.
+   */
+  worker_status?: RunWorkerStatus | null;
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */

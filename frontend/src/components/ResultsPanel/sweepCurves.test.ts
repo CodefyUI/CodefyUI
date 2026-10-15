@@ -12,7 +12,7 @@ function detail(count: number, status: RunStatus = 'succeeded'): SweepDetail {
     seed: null, seed_variants: false,
     objective: { metric: 'loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
-    counts: { queued: 0, running: 0, succeeded: count, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    counts: { queued: 0, running: 0, disconnected: 0, succeeded: count, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [], best: null,
     variants: Array.from({ length: count }, (_, index) => ({
       index, domain_index: index, run_id: `r${index}`, status,

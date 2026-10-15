@@ -16,7 +16,9 @@ import { useUIStore } from '../store/uiStore';
 import { apiFetch } from '../api/_auth';
 import {
   getRun, getRunMetrics, listRuns,
-  type RunInfo, type RunListPage, type RunMetrics, type RunStatus,
+  type RunInfo as HostRunInfo, type RunListPage as HostRunListPage,
+  type RunMetrics, type RunStatus as HostRunStatus,
+  type RunSummary as HostRunSummary,
 } from '../api/rest';
 import type { NodeDefinition, WorkspaceSource } from '../types';
 import { layoutAllTargetIds, layoutFitBounds, layoutTargetsChanged } from '../utils/autoLayout';
@@ -146,6 +148,30 @@ export type WorkspaceEvent =
  */
 const SEGMENT_INSIDE_BLOCK_ERROR =
   'set_segment and remove_segment cannot apply while a block is open';
+
+/**
+ * The run statuses a plugin sees (apiVersion 3+). A `disconnected` row
+ * (#783, a worker run waiting for its worker) reads as `running`: it is
+ * still active, and the published contract has no other word for it, so
+ * the host keeps it to itself rather than break every installed plugin.
+ */
+export type RunStatus = Exclude<HostRunStatus, 'disconnected'>;
+export type RunSummary = Omit<HostRunSummary, 'status'> & { status: RunStatus };
+export type RunInfo = Omit<HostRunInfo, 'status'> & { status: RunStatus };
+export type RunListPage = Omit<HostRunListPage, 'runs'> & { runs: RunSummary[] };
+
+/** *run* as a plugin sees it (see {@link RunStatus}). */
+export function pluginRun<T extends HostRunSummary>(
+  run: T,
+): Omit<T, 'status'> & { status: RunStatus } {
+  return run.status === 'disconnected' ? { ...run, status: 'running' } : { ...run, status: run.status };
+}
+
+/** A plugin's status filter for the server: `running` covers `disconnected`. */
+function hostStatuses(status: readonly RunStatus[] | undefined): HostRunStatus[] | undefined {
+  if (status === undefined) return undefined;
+  return status.includes('running') ? [...status, 'disconnected'] : [...status];
+}
 
 export interface RunListOptions {
   status?: readonly RunStatus[];
@@ -857,8 +883,14 @@ export function buildPluginAPI(
     // holds it. That is a convenience: plugin code runs in the editor page and
     // can reach the token another way (the reference's Trust model).
     runs: {
-      list: (opts = {}) => listRuns(opts),
-      get: (id) => getRun(id),
+      list: async (opts = {}) => {
+        const page = await listRuns({ ...opts, status: hostStatuses(opts.status) });
+        return { ...page, runs: page.runs.map(pluginRun) };
+      },
+      get: async (id) => {
+        const run = await getRun(id);
+        return run === null ? null : pluginRun(run);
+      },
       metrics: (id, name) => getRunMetrics(id, name),
     },
     http: {

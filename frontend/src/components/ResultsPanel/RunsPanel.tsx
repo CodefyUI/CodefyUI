@@ -35,6 +35,7 @@ const NewSweepDialog = lazyRetry(
 const FILTERS: RunStatusFilter[] = [
   'all',
   'running',
+  'disconnected',
   'queued',
   'succeeded',
   'failed',
@@ -61,6 +62,27 @@ function finalLoss(run: RunSummary): number | null {
     .sort()
     .find((name) => name.toLowerCase().includes('loss'));
   return fallback === undefined ? null : metrics[fallback];
+}
+
+/**
+ * Seconds as `mm:ss`, or `h:mm:ss` from an hour on: how long a run's
+ * worker has been away (#783). Negative (clock skew) reads as zero.
+ */
+export function formatElapsed(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const hours = Math.floor(total / 3600);
+  const rest = `${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`;
+  return hours > 0 ? `${hours}:${rest}` : rest;
+}
+
+/** "worker disconnected 00:42 ago" for a `disconnected` run, else null. */
+export function disconnectedNote(
+  run: RunSummary, now: number, t: ReturnType<typeof useI18n.getState>['t'],
+): string | null {
+  const since = run.worker_status?.disconnected_at;
+  if (run.status !== 'disconnected' || typeof since !== 'number') return null;
+  return t('runs.workerDisconnected', { elapsed: formatElapsed(now / 1000 - since) });
 }
 
 function formatClock(iso: string | null): string {
@@ -751,8 +773,11 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const expanded = selectedRunId === run.id;
               const toggle = () => void select(expanded ? null : run.id);
               const workerName = runWorkerLabel(run, t);
-              // Why a queued run waits beyond its place in line (#772).
-              const queueReason = run.status === 'queued' ? run.queue_reason || null : null;
+              // Why a queued run waits beyond its place in line (#772), or
+              // how long a running one has waited for its worker (#783).
+              const queueReason = run.status === 'queued'
+                ? run.queue_reason || null
+                : disconnectedNote(run, clock, t);
               return (
                 // Opening a run is this panel's primary interaction, so the
                 // row is a real control: focusable, Enter/Space activated,

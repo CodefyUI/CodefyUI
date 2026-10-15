@@ -14,10 +14,13 @@ Per connection:
 4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`.
 
 Runs do not depend on the connection. While it is down, their subprocesses
-keep running and the frames they produce are dropped (logged): until #783
-adds a spool, the control plane has already marked those runs
-``interrupted`` by then. ``drain`` refuses new assignments until the next
-``welcome``.
+keep running and every frame they produce is written to the run's spool
+(``agent.spool``, #783); the control plane acknowledges frames with
+``ack`` once it has recorded them, and the spool keeps only the rest.
+After the next ``welcome`` the agent says ``run_alive`` for every run that
+is still running or still has frames to deliver, and replays the
+unacknowledged frames in order before anything else is sent. ``drain``
+refuses new assignments until the next ``welcome``.
 
 Frames from every run's reader thread and from the heartbeat go out through
 :meth:`AgentConnection.send_frame`, one at a time.
@@ -37,7 +40,8 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
-from .runner import Runner
+from .runner import Runner, mark_finished
+from .spool import SpoolStore
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +152,13 @@ class AgentConnection:
         max_message_bytes: int | None = None,
         backoff_min_s: float = BACKOFF_MIN_S,
         token_source: str = "--token",
+        spools: SpoolStore | None = None,
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
+        #: Every run's frames not acknowledged yet (#783).
+        self.spools = spools if spools is not None else SpoolStore(
+            runner.runs_dir)
         self.name = name
         self.version = version
         self._control_url = control_url
@@ -172,20 +180,82 @@ class AgentConnection:
         return self._ws is not None
 
     async def send_frame(self, frame: Any) -> bool:
-        """Send *frame* on the live connection. False when it was dropped."""
+        """Send *frame* on the live connection. False when it was not sent.
+
+        A per-run frame (one with a ``run_id`` and a ``seq``) is spooled
+        first, so one that is not sent now is replayed after the next
+        ``welcome``; any other frame (a heartbeat) is dropped.
+        """
         async with self._send_lock:
-            ws = self._ws
-            if ws is None:
-                logger.debug("not connected; dropped a %s frame",
-                             getattr(frame, "type", "?"))
-                return False
+            run_id = getattr(frame, "run_id", None)
+            seq = getattr(frame, "seq", None)
+            if run_id is None or seq is None:
+                return await self._send_raw(frame, _encode_or_warn(frame))
+            line = _encode_or_warn(frame)
+            spool = self.spools.spool(run_id)
             try:
-                await ws.send(_encode_or_warn(frame))
-                return True
-            except ConnectionClosed:
-                logger.debug("connection closed; dropped a %s frame",
-                             getattr(frame, "type", "?"))
+                spool.append(seq, line,
+                             final=isinstance(frame, wp.RunFinished))
+            except OSError:
+                logger.exception("run %s: could not spool a %s frame",
+                                 run_id, frame.type)
+            if not await self._send_raw(frame, line):
                 return False
+            spool.sent = max(spool.sent, seq)
+            return True
+
+    async def _send_raw(self, frame: Any, line: str) -> bool:
+        """*line* on the live connection; False when there is none. Called
+        with the send lock held."""
+        ws = self._ws
+        if ws is None:
+            logger.debug("not connected; %s frame not sent",
+                         getattr(frame, "type", "?"))
+            return False
+        try:
+            await ws.send(line)
+            return True
+        except ConnectionClosed:
+            logger.debug("connection closed; %s frame not sent",
+                         getattr(frame, "type", "?"))
+            return False
+
+    def alive_entries(self) -> list[wp.RunAliveEntry]:
+        """``run_alive`` for every run still running or still spooled."""
+        last: dict[str, int] = {}
+        for handle in list(self.runner.runs.values()):
+            last[handle.run_id] = handle.seq
+        for spool in self.spools.spools():
+            if spool.pending or spool.run_id in last:
+                last[spool.run_id] = max(last.get(spool.run_id, 0),
+                                         spool.last_seq)
+        return [wp.RunAliveEntry(run_id=run_id, last_seq=seq)
+                for run_id, seq in last.items()]
+
+    async def _resume(self, ws: Any) -> None:
+        """Make *ws* the live connection: ``run_alive``, then every frame
+        the control plane has not acknowledged, in order (#783).
+
+        Under the send lock, so no new frame overtakes the replay.
+        """
+        async with self._send_lock:
+            self._ws = ws
+            entries = self.alive_entries()
+            if not entries:
+                return
+            await ws.send(wp.encode_frame(wp.RunAlive(runs=entries)))
+            replayed = 0
+            for spool in self.spools.spools():
+                spool.sent = spool.acked
+                for seq, line in spool.unacked():
+                    if seq <= spool.acked:  # acked while we were replaying
+                        continue
+                    await ws.send(line)
+                    spool.sent = seq
+                    replayed += 1
+            if replayed:
+                logger.info("replayed %d frame(s) for %d run(s)", replayed,
+                            len(entries))
 
     async def _device_reports(self) -> list[wp.DeviceReport]:
         try:
@@ -275,16 +345,14 @@ class AgentConnection:
         self.runner.draining = False
         logger.info("connected as %s (worker id %s)", self.name,
                     welcome.worker_id)
-        self._ws = ws
         tasks = [
-            asyncio.create_task(self._heartbeats(), name="agent-heartbeat"),
             asyncio.create_task(self._receive(ws), name="agent-receive"),
             asyncio.create_task(stop.wait(), name="agent-stop"),
         ]
         try:
-            if self.runner.runs:
-                await self.send_frame(
-                    wp.RunAlive(runs=self.runner.alive_entries()))
+            await self._resume(ws)
+            tasks.append(asyncio.create_task(self._heartbeats(),
+                                             name="agent-heartbeat"))
             done, _ = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED)
             if stop.is_set():
@@ -335,6 +403,12 @@ class AgentConnection:
         elif isinstance(frame, wp.Drain):
             logger.info("draining: no new runs until the next connection")
             self.runner.draining = True
+        elif isinstance(frame, wp.Ack):
+            if self.spools.ack(frame.run_id, frame.seq) \
+                    and frame.run_id not in self.runner.runs:
+                # A run that never started here (a refused assignment) has
+                # no handle to mark its directory for retention.
+                mark_finished(self.runner.runs_dir / frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

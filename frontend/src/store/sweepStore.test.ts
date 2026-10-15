@@ -46,7 +46,7 @@ function detail(state: SweepState = 'running', id = 's1'): SweepDetail {
     seed_variants: false,
     objective: { metric: 'loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
-    counts: { queued: 1, running: 1, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    counts: { queued: 1, running: 1, disconnected: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [], variants: [], best: null,
   };
 }
@@ -444,7 +444,7 @@ describe('sweepStore', () => {
     }];
     const failedSettled: SweepDetail = {
       ...failedActive,
-      counts: { ...failedActive.counts, running: 0, succeeded: 1 },
+      counts: { ...failedActive.counts, running: 0, disconnected: 0, succeeded: 1 },
       variants: [{ ...failedActive.variants[0], status: 'succeeded', objective: 0.5 }],
     };
     api.getSweep

@@ -52,6 +52,7 @@ from typing import Any, Awaitable, Callable
 
 from ..core import worker_protocol as wp
 from . import child as child_module
+from .spool import SPOOL_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,8 @@ def prune_run_dirs(runs_dir: Path, keep_last: int) -> None:
     """Delete all but the *keep_last* most recently finished run directories.
 
     Same rule as the control plane's run retention (keep the last N),
-    counted by retirement time (:data:`FINISHED_MARKER`). Blocking: call it
+    counted by retirement time (:data:`FINISHED_MARKER`). A directory that
+    still holds a spool (``agent.spool``) is kept. Blocking: call it
     in a thread. Tolerates directories vanishing underneath it.
     """
     if keep_last <= 0:
@@ -246,6 +248,8 @@ def prune_run_dirs(runs_dir: Path, keep_last: int) -> None:
         return
     finished: list[tuple[float, Path]] = []
     for path in candidates:
+        if (path / SPOOL_FILE).exists():
+            continue  # frames the control plane has not acknowledged (#783)
         try:
             finished.append(((path / FINISHED_MARKER).stat().st_mtime, path))
         except OSError:  # no marker (in flight), not a dir, or gone
