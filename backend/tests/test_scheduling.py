@@ -327,3 +327,121 @@ async def test_a_raising_scheduler_leaves_the_run_queued(make_service, store,
     assert service.queue_position(result.run_id) == 1
     assert (await store.get_run(result.run_id)).status == STATUS_QUEUED
     assert "scheduler failed to place" in caplog.text
+
+
+# ── cancelling the front of a line moves the line (#764 wave 10) ──────────
+
+
+class _RaisesForTheFirst:
+    """Raises for the first run it is asked about; then the local rule."""
+
+    def __init__(self) -> None:
+        self.raise_for: str | None = None
+        self._local = LocalScheduler(QueueLimits(cpu=2, gpu=1))
+
+    def place(self, entry: QueuedEntry,
+              taken: Mapping[SlotKey, int]) -> Placement | None:
+        if self.raise_for is None:
+            self.raise_for = entry.run_id
+        if entry.run_id == self.raise_for:
+            raise RuntimeError("scheduler bug")
+        return self._local.place(entry, taken)
+
+
+async def test_cancelling_a_front_run_the_scheduler_raised_on_starts_the_next(
+        make_service, store):
+    service = make_service(scheduler=_RaisesForTheFirst())
+    stuck = await _submit(service, "stuck")
+    behind = await _submit(service, "behind")
+    assert stuck.status == behind.status == STATUS_QUEUED
+    assert service.queue_snapshot() == {"cpu": [stuck.run_id, behind.run_id]}
+
+    await service.cancel(stuck.run_id)
+    assert (await _await_terminal(store, behind.run_id)).status == (
+        STATUS_SUCCEEDED)
+
+
+async def test_cancelling_an_any_set_run_waiting_for_a_worker_starts_the_next(
+        make_service, store):
+    """The front ``any`` set run reserves nothing (its cards are unknown
+    until it is placed), so its cancel must pump the queue by itself."""
+    from app.core import worker_protocol as wp
+    from app.core.scheduling import WorkerScheduler
+    from app.core.workers import Worker, WorkerRegistry
+
+    async def _noop(*_: Any) -> None:
+        return None
+
+    registry = WorkerRegistry()
+    registry._workers["box"] = Worker(
+        id="box", name="box", version="t", fingerprint=None, platform={},
+        mounts={}, devices=[wp.DeviceReport(value=d, kind=d.split(":")[0])
+                            for d in ("cpu", "cuda:0", "cuda:1")],
+        send=_noop, close=_noop, heartbeat_s=10, status="disconnected")
+    service = make_service(
+        workers=registry,
+        scheduler=WorkerScheduler(QueueLimits(cpu=2, gpu=1), registry,
+                                  lambda: ["cpu", "cuda:0", "cuda:1"]))
+    waiting = await service.submit(
+        _graph("set"), name="set",
+        options={"device": "cuda:0",
+                 "target": {"worker": "any",
+                            "devices": ["cuda:0", "cuda:1"]}})
+    behind = await service.submit(
+        _graph("single"), name="single",
+        options={"device": "cuda:0", "target": {"worker": "any"}})
+    assert waiting.status == behind.status == STATUS_QUEUED
+    assert service.queue_snapshot() == {
+        "any/cuda:0": [waiting.run_id, behind.run_id]}
+
+    await service.cancel(waiting.run_id)
+    assert (await _await_terminal(store, behind.run_id)).status == (
+        STATUS_SUCCEEDED)
+    assert (await store.get_run(behind.run_id)).worker_id == WORKER_LOCAL
+
+
+# ── queues sharing one slot take turns (#764 wave 10) ─────────────────────
+
+
+class _OneSharedSlot:
+    """Every queue takes the same single slot, as ``cuda:0``, ``any/cuda``
+    and a same-host worker's ``<worker>/cuda:0`` do."""
+
+    SLOT: SlotKey = ("local", "shared")
+
+    def place(self, entry: QueuedEntry,
+              taken: Mapping[SlotKey, int]) -> Placement | None:
+        if taken.get(self.SLOT, 0) >= 1:
+            return None
+        return Placement("local", (entry.queue_key,), (self.SLOT,))
+
+
+async def test_a_freed_shared_slot_goes_to_the_oldest_waiting_run(
+        make_service, store):
+    """A long line on one queue must not starve another queue on its slot:
+    the releasing queue is not served first, the oldest front is."""
+    service = make_service(scheduler=_OneSharedSlot())
+    gates = {label: _hold(label) for label in ("a1", "b1", "a2")}
+    try:
+        a1 = await _submit(service, "a1", device="cpu")
+        assert a1.status == STATUS_RUNNING
+        await _wait_entered("a1")
+        b1 = await _submit(service, "b1", device="mps")   # older than a2
+        a2 = await _submit(service, "a2", device="cpu")
+        assert b1.status == a2.status == STATUS_QUEUED
+
+        gates["a1"].set()
+        await _await_terminal(store, a1.run_id)
+        await _wait_entered("b1")
+        assert service.is_active(b1.run_id)
+        assert service.is_queued(a2.run_id)
+
+        gates["b1"].set()
+        await _await_terminal(store, b1.run_id)
+        await _wait_entered("a2")
+    finally:
+        for gate in gates.values():
+            gate.set()
+    assert (await _await_terminal(store, a2.run_id)).status == (
+        STATUS_SUCCEEDED)
+    assert service._slots == {}

@@ -20,7 +20,10 @@
    thread waits for each frame to be handed to the connection before it
    reads the next message, so a slow control plane slows the child's pipe
    writes instead of growing a buffer here;
-4. reports how the run ended. The child says so itself (``finished``);
+4. reports how the run ended, once the child process has exited (one that
+   lingers after reporting is terminated, then killed), so the control
+   plane never frees the device slot while the old process still holds
+   it. The child says so itself (``finished``);
    a child that exits without saying is a crash (``failed``, with the exit
    code and the tail of its output) or, after a ``cancel`` it did not
    honour within ``grace_s``, a run this agent terminated
@@ -56,6 +59,8 @@ logger = logging.getLogger(__name__)
 KILL_AFTER_S = 5.0
 #: Seconds a child gets to exit after it reported its outcome.
 EXIT_AFTER_FINISHED_S = 10.0
+#: How often the reader checks a reported child's liveness while draining.
+DRAIN_POLL_S = 0.2
 #: How much of a crashed child's output ``run_finished`` carries.
 STDERR_TAIL_BYTES = 4096
 #: Per-run output file, under ``<runs_dir>/<run_id>/``.
@@ -276,10 +281,20 @@ class RunHandle:
     cancel_requested: bool = False
     terminated: bool = False
     killed: bool = False
+    #: How the run ended is known: the child reported it (the report is
+    #: held until the process exits) or the reader is writing it.
     finished: bool = False
+    #: Pipe messages read and dropped after the child's ``finished``.
+    discarded: int = 0
+    #: The escalation in flight stops the process now (a cancel that came
+    #: after the child had reported), not after a grace period.
+    stopping_now: bool = False
     reader: threading.Thread | None = None
     escalation: asyncio.Task | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    #: Set once the reader has joined the process (it is gone).
+    exited: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Set once the run is retired (its ``run_finished`` has been sent).
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
     def next_seq(self) -> int:
@@ -300,6 +315,7 @@ class Runner:
         send: Send | None = None, keep_last: int = 200,
         default_grace_s: float = wp.DEFAULT_GRACE_S,
         kill_after_s: float = KILL_AFTER_S,
+        exit_after_finished_s: float = EXIT_AFTER_FINISHED_S,
         child_entry: Callable[..., None] = child_module.main,
     ) -> None:
         self.runs_dir = runs_dir
@@ -308,6 +324,7 @@ class Runner:
         self.keep_last = keep_last
         self.default_grace_s = default_grace_s
         self.kill_after_s = kill_after_s
+        self.exit_after_finished_s = exit_after_finished_s
         self.child_entry = child_entry
         self.draining = False
         #: Grace a run gets when the agent itself stops (``cdui agent stop``).
@@ -407,6 +424,7 @@ class Runner:
                     handle.process.kill()
             except Exception:  # noqa: BLE001
                 pass
+            handle.exited.set()
             handle.done.set()
         seq = handle.next_seq() if handle is not None else 1
         await self.send(wp.RunFinished(run_id=run_id, seq=seq,
@@ -457,10 +475,26 @@ class Runner:
     # ── cancel ────────────────────────────────────────────────────────────
 
     async def cancel(self, run_id: str, grace_s: float | None = None) -> bool:
-        """Ask *run_id* to stop; escalate after *grace_s*. False if unknown."""
+        """Ask *run_id* to stop; escalate after *grace_s*. False if unknown.
+
+        A run whose child already reported how it ended, but has not
+        exited yet, is stopped at once (``terminate()``, then ``kill()``):
+        there is nothing left to cancel cooperatively. Its report is not
+        changed; it goes out once the process is gone.
+        """
         handle = self.runs.get(run_id)
-        if handle is None or handle.finished:
+        if handle is None or handle.exited.is_set():
             return False
+        if handle.finished:
+            if not handle.stopping_now:
+                handle.stopping_now = True
+                if handle.escalation is not None:
+                    handle.escalation.cancel()
+                handle.escalation = asyncio.create_task(
+                    self._escalate(handle, 0.0, "was cancelled after "
+                                                "reporting"),
+                    name=f"escalate:{run_id}")
+            return True
         # cancel's grace, else the assignment's, else welcome's (else 30 s).
         grace = next(g for g in (grace_s, handle.grace_s,
                                  self.default_grace_s, wp.DEFAULT_GRACE_S)
@@ -473,32 +507,52 @@ class Runner:
                 pass  # the child is already gone; the reader reports it
         if handle.escalation is None:
             handle.escalation = asyncio.create_task(
-                self._escalate(handle, grace), name=f"escalate:{run_id}")
+                self._escalate(handle, grace, "did not stop"),
+                name=f"escalate:{run_id}")
         return True
 
-    async def _escalate(self, handle: RunHandle, grace_s: float) -> None:
+    def _watch_exit(self, handle: RunHandle) -> None:
+        """The child reported: give it ``exit_after_finished_s`` to exit.
+
+        Runs on the loop (the reader schedules it). An escalation already
+        in flight (a cancel's) is left to finish the job.
+        """
+        if handle.escalation is None or handle.escalation.done():
+            handle.escalation = asyncio.create_task(
+                self._escalate(handle, self.exit_after_finished_s,
+                               "is still alive after reporting"),
+                name=f"exit:{handle.run_id}")
+
+    async def _exits_within(self, handle: RunHandle, timeout_s: float) -> bool:
+        if timeout_s <= 0:
+            return handle.exited.is_set()
         try:
-            await asyncio.wait_for(handle.done.wait(), timeout=grace_s)
-            return
+            await asyncio.wait_for(handle.exited.wait(), timeout=timeout_s)
+            return True
         except asyncio.TimeoutError:
-            pass
-        if not handle.process.is_alive():
+            return False
+
+    async def _escalate(self, handle: RunHandle, grace_s: float,
+                        why: str) -> None:
+        """Stop *handle*'s process: wait *grace_s*, terminate, then kill.
+
+        The one escalation path, for a cancel (after its grace period), for
+        a child that lingers after reporting, and for a cancel of such a
+        child (no grace). ``terminated`` / ``killed`` record what was sent,
+        which is what ``_unreported_end`` reads. Only the reader thread
+        waits on the process; this waits for ``exited``, which it sets.
+        """
+        if await self._exits_within(handle, grace_s):
             return
-        logger.warning("run %s did not stop within %.1f s; terminating",
-                       handle.run_id, grace_s)
+        logger.warning("run %s %s (%.1f s); terminating", handle.run_id, why,
+                       grace_s)
         handle.terminated = True
         handle.process.terminate()
-        try:
-            await asyncio.wait_for(handle.done.wait(),
-                                   timeout=self.kill_after_s)
+        if await self._exits_within(handle, self.kill_after_s):
             return
-        except asyncio.TimeoutError:
-            pass
-        if handle.process.is_alive():
-            logger.warning("run %s survived terminate(); killing",
-                           handle.run_id)
-            handle.killed = True
-            handle.process.kill()
+        logger.warning("run %s survived terminate(); killing", handle.run_id)
+        handle.killed = True
+        handle.process.kill()
 
     async def shutdown(self, grace_s: float | None = None) -> None:
         """Stop every run (cooperatively, then by force) and wait for them."""
@@ -557,7 +611,13 @@ class Runner:
         return None
 
     def _read(self, handle: RunHandle, loop: asyncio.AbstractEventLoop) -> None:
-        """Thread body: forward the child's messages, then report its end."""
+        """Thread body: forward the child's messages, then report its end.
+
+        ``run_finished`` goes out only once the child process is gone,
+        whether it said how the run ended or not. This thread is the only
+        one that waits on the process.
+        """
+        reported: wp.RunFinished | None = None
         while True:
             try:
                 message = handle.events_in.recv()
@@ -566,8 +626,6 @@ class Runner:
             except Exception:  # noqa: BLE001 -- an unpicklable message
                 logger.warning("run %s: unreadable pipe message",
                                handle.run_id, exc_info=True)
-                continue
-            if handle.finished:
                 continue
             try:
                 frame = self._frame(handle, message)
@@ -578,18 +636,34 @@ class Runner:
             if frame is None:
                 continue
             if isinstance(frame, wp.RunFinished):
+                # Held until the child has exited: the control plane frees
+                # the run's device slot on run_finished, and the next run
+                # must not start next to this one's CUDA context.
                 handle.finished = True
+                reported = frame
+                break
             self._forward(loop, frame)
-        handle.process.join(EXIT_AFTER_FINISHED_S if handle.finished else None)
-        if handle.process.is_alive():
-            logger.warning("run %s: subprocess still alive %.0f s after "
-                           "reporting; killing it", handle.run_id,
-                           EXIT_AFTER_FINISHED_S)
-            handle.process.kill()
-            handle.process.join()
-        if not handle.finished:
+        if reported is not None:
+            try:
+                loop.call_soon_threadsafe(self._watch_exit, handle)
+            except RuntimeError:  # the loop is gone: nobody to escalate
+                pass
+            self._drain(handle)
+        handle.process.join()
+        try:
+            loop.call_soon_threadsafe(handle.exited.set)
+        except RuntimeError:
+            pass
+        if reported is None:
+            # Decided before ``finished`` is set, so a cancel landing now
+            # takes the ordinary path and cannot touch the flags it reads.
+            reported = self._unreported_end(handle)
             handle.finished = True
-            self._forward(loop, self._unreported_end(handle))
+        elif handle.discarded:
+            logger.warning("run %s: dropped %d pipe message(s) the subprocess "
+                           "sent after reporting", handle.run_id,
+                           handle.discarded)
+        self._forward(loop, reported)
         for end in (handle.events_in, handle.control_out):
             try:
                 end.close()
@@ -601,6 +675,29 @@ class Runner:
             loop.call_soon_threadsafe(self._retire, handle)
         except RuntimeError:  # the agent's loop is gone: nobody to retire for
             pass
+
+    def _drain(self, handle: RunHandle) -> None:
+        """Read and drop the pipe until EOF or the process exits. Blocking.
+
+        After ``finished`` nothing the child sends is forwarded, but it is
+        still read, so a child still writing cannot block on a full pipe
+        while the escalation waits for it to exit.
+        """
+        while True:
+            try:
+                if handle.events_in.poll(DRAIN_POLL_S):
+                    handle.events_in.recv()
+                    handle.discarded += 1
+                    logger.debug("run %s: dropped a pipe message sent after "
+                                 "reporting", handle.run_id)
+                    continue
+            except (EOFError, OSError):
+                return
+            except Exception:  # noqa: BLE001 -- an unpicklable message
+                handle.discarded += 1
+                continue
+            if not handle.process.is_alive():
+                return
 
     def _unreported_end(self, handle: RunHandle) -> wp.RunFinished:
         """``run_finished`` for a child that exited without saying how.

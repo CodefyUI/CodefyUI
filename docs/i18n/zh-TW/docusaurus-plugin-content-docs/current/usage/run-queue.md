@@ -23,7 +23,7 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 
 **准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。它排在佇列最前面等待時不佔用任何名額，但會**保留**這些卡：在它啟動之前，其他 run 都不能在保留的卡上啟動；已在這些卡上執行的 run 照常結束，結束後它就會啟動。代價是閒置：已經空出的保留卡會一直閒置到集合中其他卡也空出，最長等於那些卡上已在執行的最久的 run。保留依先來後到，因此兩個共用一張卡的裝置集合 run 會依序啟動。`"worker": "any"` 的裝置集合 run 不保留任何卡，因為它要用哪台機器的卡要到啟動時才決定。
 
-與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）；只是從 loopback 連入並不算，因為 SSH 通道也是 loopback。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
+與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）；只是從 loopback 連入並不算，因為 SSH 通道也是 loopback。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。數條佇列共用的名額空出時，由這些佇列最前面的等待 run 中最早送出的那個取得，所以一條很長的佇列不會讓另一條餓死。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
 
 :::note 同一張卡的別名會併成同一條佇列
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
@@ -43,7 +43,7 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 
 - **省略或 `local`**：這台伺服器，排在解析後裝置的佇列上，與沒有 worker 時完全相同。
 - **worker 名稱**：那個 worker。它必須在這台伺服器啟動後連線過，而且依它最後回報的裝置，必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。曾經連線、目前離線的 worker 不會造成拒絕：run 會排入佇列，等它重新連線。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
-- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。指定裝置集合時，只有在這台伺服器擁有集合中每一個裝置時才會考慮它。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
+- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。worker 會重新編號的 CUDA 裝置集合（超過一張卡，或不是 `cuda:0` 的單張卡）不會在這台伺服器上執行：在 worker 上，集合會為該 run 從 `cuda:0` 重新編號，在這台伺服器上則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。這種 run 會等待提供整個集合的 worker。`cpu`、`mps` 或 `["cuda:0"]` 的集合，只要這台伺服器有，仍可在這裡執行。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
 
 在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。worker 斷線，或連續錯過三次心跳（30 秒）時，它的 run 會以 `interrupted` 結束，並留下類型為 `worker_disconnected` 的 `run_warning`，名額隨即釋放。
 

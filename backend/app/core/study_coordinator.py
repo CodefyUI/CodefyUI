@@ -57,6 +57,7 @@ other run whose submitter's process is gone.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -549,13 +550,18 @@ class StudyCoordinator:
                     event_type="study_cancel_requested") or study
             delivered: list[str] = []
             current = current_attempts(await self.store.list_attempts(study_id))
-            for attempt in sorted(current.values(),
-                                  key=lambda a: (a.repetition,
-                                                 a.variant_index)):
-                if attempt.status in ATTEMPT_ACTIVE and attempt.run_id:
-                    outcome = await self.service.cancel(attempt.run_id)
-                    if outcome is not None and outcome.cancelled:
-                        delivered.append(attempt.run_id)
+            # One reschedule after the loop, so cancelling one child does
+            # not start a queued sibling that the next iteration cancels.
+            hold = getattr(self.service, "deferred_reschedule",
+                           contextlib.nullcontext)
+            with hold():
+                for attempt in sorted(current.values(),
+                                      key=lambda a: (a.repetition,
+                                                     a.variant_index)):
+                    if attempt.status in ATTEMPT_ACTIVE and attempt.run_id:
+                        outcome = await self.service.cancel(attempt.run_id)
+                        if outcome is not None and outcome.cancelled:
+                            delivered.append(attempt.run_id)
             await self._reconcile(study_id)
             study = await self._advance(
                 await self.store.get_study(study_id) or study)

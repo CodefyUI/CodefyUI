@@ -443,14 +443,14 @@ CREATE INDEX idx_exec_runs_study_attempt ON exec_runs(study_attempt_id)
 #
 # Part of the control-plane / worker split (#764). Two nullable columns:
 #
-# - ``worker_id``: the worker that runs it. ``local`` (this process) is the
-#   only value written today; NULL is a row from before this migration and
-#   reads back as ``local`` (``RunRecord.from_row``), which is what it was.
-# - ``devices``: the REQUESTED device set as a JSON array
-#   (``target.devices``), or NULL when the run asked for one ``device`` the
-#   way every run did before. In this release only the first entry is used
-#   -- it is the run's device and so its ``queue_key``, which keeps its
-#   meaning -- and the rest is recorded as asked, unchecked.
+# - ``worker_id``: the worker that runs it: ``local`` (this process), a
+#   worker's name, or ``any`` until such a run is placed (#772). NULL is a
+#   row from before this migration and reads back as ``local``
+#   (``RunRecord.from_row``), which is what it was.
+# - ``devices``: the device set as a JSON array (``target.devices`` as
+#   asked, then the devices a worker run was placed on), or NULL when the
+#   run asked for one ``device`` the way every run did before. The first
+#   entry is the run's device and so its ``queue_key``.
 MIGRATION_008 = """
 ALTER TABLE exec_runs ADD COLUMN worker_id TEXT;
 ALTER TABLE exec_runs ADD COLUMN devices TEXT;

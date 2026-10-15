@@ -1420,6 +1420,50 @@ async def test_an_orphaned_running_child_is_counted_in_neither_tally(
     assert (await store.get_run(orphan)).status == "running"
 
 
+class _FrontStuck:
+    """Refuses (raises for) the first run it is asked about, places the rest
+    on ``cpu``: the first child stays at the front, its siblings behind it."""
+
+    def __init__(self) -> None:
+        self.stuck: str | None = None
+
+    def place(self, entry: Any, taken: Any) -> Any:
+        from app.core.scheduling import Placement
+
+        if self.stuck is None:
+            self.stuck = entry.run_id
+        if entry.run_id == self.stuck:
+            raise RuntimeError("front run cannot be placed")
+        slot = ("local", "cpu")
+        if taken.get(slot, 0) >= 2:
+            return None
+        return Placement("local", ("cpu",), (slot,))
+
+
+async def test_cancelling_five_queued_children_starts_none_of_them(
+        make_service, store):
+    """Cancelling the front child must not start the one behind it just for
+    the next iteration of the loop to cancel it (#764)."""
+    make_service(scheduler=_FrontStuck())
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL,
+                           headers={TOKEN_HEADER: session_token()}) as http:
+        created = await http.post("/api/sweeps", json=_body(
+            _values("lr", [0.1, 0.2, 0.3, 0.4, 0.5])))
+        assert created.status_code in (200, 201), created.text
+        sweep_id = created.json()["sweep_id"]
+        children = await store.list_runs_by_sweep(sweep_id)
+        assert [c.status for c in children] == ["queued"] * 5
+
+        response = await http.post(f"/api/sweeps/{sweep_id}/cancel")
+        assert response.status_code == 200, response.text
+        assert response.json()["cancelled"] == 5
+        await asyncio.sleep(0.2)  # the deferred reschedule has run
+        for child in await store.list_runs_by_sweep(sweep_id):
+            assert child.status == "cancelled"
+            assert child.started_at is None
+
+
 async def test_cancelling_an_unknown_sweep_is_a_404(client):
     response = await client.post("/api/sweeps/nope/cancel")
     assert response.status_code == 404
