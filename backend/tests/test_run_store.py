@@ -664,6 +664,58 @@ async def test_mark_running_keeps_the_first_started_at(store):
     assert (await store.get_run(run.id)).started_at == first
 
 
+async def test_update_execution_facts_merges_top_level_keys(store):
+    """#770: the peak-memory patch lands next to what ``_begin`` wrote,
+    replaces only its own key, and an explicit null is stored as null."""
+    run = await _make_run(store)
+    facts = {"schema_version": 1, "resolved": {"device": "cuda:0"},
+             "peak_memory": {"stale": True}}
+    await store.mark_running(run.id, execution_facts=facts)
+
+    peak = {"cuda:0": {"allocated_bytes": 6, "reserved_bytes": 8,
+                       "exact": False}}
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": peak}) is True
+    assert (await store.get_run(run.id)).execution_facts == {
+        "schema_version": 1, "resolved": {"device": "cuda:0"},
+        "peak_memory": peak}
+
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": None}) is True
+    stored = (await store.get_run(run.id)).execution_facts
+    assert "peak_memory" in stored and stored["peak_memory"] is None
+    assert stored["resolved"] == {"device": "cuda:0"}
+
+
+async def test_update_execution_facts_leaves_unrecorded_facts_alone(store):
+    """A NULL column means "not recorded"; a patch must not invent a
+    document holding only itself. Unknown runs report False too."""
+    run = await _make_run(store)
+    await store.mark_running(run.id)
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": None}) is False
+    assert (await store.get_run(run.id)).execution_facts is None
+    assert await store.update_execution_facts(
+        "ghost", {"peak_memory": None}) is False
+    with pytest.raises(TypeError):
+        await store.update_execution_facts(run.id, [])  # type: ignore[arg-type]
+
+
+async def test_update_execution_facts_ignores_a_non_object_document(
+        store, db):
+    run = await _make_run(store)
+    await store.mark_running(run.id, execution_facts={"schema_version": 1})
+
+    def _corrupt(conn):
+        conn.execute("UPDATE exec_runs SET execution_facts = '[1]' "
+                     "WHERE id = ?", (run.id,))
+
+    await db.run(_corrupt)
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": None}) is False
+    assert (await store.get_run(run.id)).execution_facts == [1]
+
+
 async def test_mark_finished_records_terminal_status_and_error(store):
     run = await _make_run(store)
     await store.mark_running(run.id)

@@ -858,6 +858,44 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def update_execution_facts(
+        self, run_id: str, patch: dict[str, Any],
+    ) -> bool:
+        """Merge *patch* into a run's ``execution_facts``, key by key (#770).
+
+        A shallow merge: each top-level key of *patch* replaces the stored
+        one (``{"peak_memory": None}`` stores an explicit null). Read and
+        write happen in one ``BEGIN IMMEDIATE`` transaction, so two patches
+        cannot lose each other's keys.
+
+        False, and nothing written, when the run does not exist or has no
+        facts document: a NULL column means "not recorded" (the run never
+        started, or ``_begin`` could not collect its environment), and a
+        document holding only the patch would read as a recorded one with
+        every other field missing.
+        """
+        if not isinstance(patch, dict):
+            raise TypeError("execution_facts patch must be a dict")
+
+        def _update(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                row = conn.execute(
+                    "SELECT execution_facts FROM exec_runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None or row["execution_facts"] is None:
+                    return 0
+                facts = _loads(row["execution_facts"])
+                if not isinstance(facts, dict):
+                    return 0
+                facts.update(patch)
+                return conn.execute(
+                    "UPDATE exec_runs SET execution_facts = ? WHERE id = ?",
+                    (_dumps(facts), run_id),
+                ).rowcount
+
+        return await self.db.run(_update) > 0
+
     async def get_fingerprint(self, digest: str) -> dict[str, Any] | None:
         """The environment document a ``fingerprint_digest`` names, or None.
 

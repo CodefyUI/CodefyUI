@@ -5,10 +5,12 @@ import {
   RunsPanel,
   formatDuration,
   formatStarted,
+  deviceMemoryEntries,
   requestedDeviceNote,
   runDevice,
 } from './RunsPanel';
 import styles from './RunsPanel.module.css';
+import { formatBytes } from '../../utils/formatBytes';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
@@ -129,6 +131,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// ── peak memory helpers (#770) ────────────────────────────────────────────
+
+describe('deviceMemoryEntries', () => {
+  const withPeak = (peak: unknown) =>
+    makeRun({ id: 'p', execution_facts: { peak_memory: peak } as Record<string, unknown> });
+
+  it('is null when nothing was recorded', () => {
+    expect(deviceMemoryEntries(null)).toBeNull();
+    expect(deviceMemoryEntries(makeRun({ id: 'p' }))).toBeNull();
+    expect(deviceMemoryEntries(withPeak(null))).toBeNull();
+    expect(deviceMemoryEntries(withPeak('6 GiB'))).toBeNull();
+    expect(deviceMemoryEntries(withPeak({}))).toBeNull();
+  });
+
+  it('reads CUDA peaks and MPS held bytes, skipping what the server could not have written', () => {
+    expect(deviceMemoryEntries(withPeak({
+      'cuda:0': null,
+      'cuda:1': { allocated_bytes: '5' },
+      'cuda:2': { allocated_bytes: 9, shared: true },
+      mps: { held_bytes: 7, exact: true },
+    }))).toEqual([
+      { device: 'cuda:2', kind: 'peak', bytes: 9, reserved: null, exact: false, shared: true },
+      { device: 'mps', kind: 'held', bytes: 7, reserved: null, exact: true, shared: false },
+    ]);
+  });
+});
+
 // ── list rendering ────────────────────────────────────────────────────────
 
 describe('RunsPanel — the table', () => {
@@ -153,6 +182,13 @@ describe('RunsPanel — the table', () => {
     // train_loss wins over lr for the loss column.
     expect(within(row).getByText('0.0312')).toBeInTheDocument();
     expect(screen.getByText(t('runs.showing', { shown: 1, total: 7 }))).toBeInTheDocument();
+  });
+
+  it('falls back to any series named like a loss, alphabetically', async () => {
+    await renderPanel([
+      makeRun({ id: 'a', final_metrics: { zz_loss: 0.9, eval_loss: 0.25, acc: 0.8 } }),
+    ]);
+    expect(within(rowOf('a')).getByText('0.2500')).toBeInTheDocument();
   });
 
   it('labels an unnamed run and dashes a run with no loss series', async () => {
@@ -509,6 +545,101 @@ describe('RunsPanel — detail view', () => {
       `${t('runs.detail.environment')} ${digest.slice(0, DIGEST_SHORT_LENGTH)}`,
     );
     expect(chip.getAttribute('title')).toBe(t('runs.detail.environmentTitle', { digest }));
+  });
+
+  // #770: the run's device memory, from execution_facts.peak_memory.
+  const openWithMemory = async (peak: Record<string, unknown>) => {
+    const recorded = { ...liveRun, execution_facts: { peak_memory: peak } };
+    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
+    await renderPanel([recorded]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    return screen.getByTestId('run-peak-memory');
+  };
+
+  it('shows the largest CUDA peak, with every card and the approximation on hover', async () => {
+    const chip = await openWithMemory({
+      'cuda:0': { allocated_bytes: 6.2 * 1024 ** 3, reserved_bytes: 7 * 1024 ** 3, exact: false },
+      'cuda:1': {
+        allocated_bytes: 512 * 1024 ** 2, reserved_bytes: 1024 ** 3, exact: false, shared: true,
+      },
+      'cuda:2': { allocated_bytes: 1024 ** 2, exact: true },
+    });
+    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: formatBytes(6.2 * 1024 ** 3) }));
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:0', allocated: formatBytes(6.2 * 1024 ** 3), reserved: formatBytes(7 * 1024 ** 3),
+      }),
+      `${t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:1', allocated: formatBytes(512 * 1024 ** 2), reserved: formatBytes(1024 ** 3),
+      })} ${t('runs.detail.peakMemoryShared')}`,
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:2', allocated: formatBytes(1024 ** 2) }),
+      t('runs.detail.peakMemoryApproximate'),
+    ].join('\n'));
+  });
+
+  it('labels an MPS reading as memory held at the end, not a peak', async () => {
+    const chip = await openWithMemory({ mps: { held_bytes: 3 * 1024 ** 3, exact: false } });
+    expect(chip.textContent).toBe(t('runs.detail.memoryHeld', { amount: formatBytes(3 * 1024 ** 3) }));
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.memoryHeldDevice', { device: 'mps', held: formatBytes(3 * 1024 ** 3) }),
+      t('runs.detail.peakMemoryApproximate'),
+    ].join('\n'));
+  });
+
+  it('omits the approximation note when every reading is exact', async () => {
+    const chip = await openWithMemory({ 'cuda:0': { allocated_bytes: 1024 ** 3, exact: true } });
+    expect(chip.getAttribute('title')).toBe(
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:0', allocated: formatBytes(1024 ** 3) }),
+    );
+  });
+
+  it('renders every lifecycle line of the log tail', async () => {
+    const ts = '2026-08-01T10:00:00.000000Z';
+    api.getRunEvents.mockReset();
+    api.getRunEvents
+      .mockResolvedValueOnce({
+        run_id: 'r1', status: 'running', active: true, cursor: 9,
+        events: [
+          { cursor: 1, type: 'execution_start', ts, payload: {} },
+          { cursor: 2, type: 'run_warning', ts, payload: { detail: 'slow disk' } },
+          { cursor: 3, type: 'run_warning', ts, payload: {} },
+          { cursor: 4, type: 'execution_error', ts, payload: { error: 'boom' } },
+          { cursor: 5, type: 'execution_error', ts, payload: {} },
+          { cursor: 6, type: 'execution_stopped', ts, payload: { reason: 'interrupted' } },
+          { cursor: 7, type: 'execution_stopped', ts, payload: { reason: 'paused' } },
+          { cursor: 8, type: 'execution_stopped', ts, payload: {} },
+          { cursor: 9, type: 'execution_complete', ts, payload: {} },
+        ],
+      })
+      .mockResolvedValue({
+        run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 9,
+      });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    await waitFor(() =>
+      expect(detail.getByText(t('runs.log.completed'))).toBeInTheDocument(),
+    );
+    expect(detail.getByText(t('runs.log.started'))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: 'slow disk' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: '' }).trim())).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: 'boom' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: '' }).trim())).toBeInTheDocument();
+    expect(detail.getByText(
+      t('runs.log.stopped', { reason: t('runs.status.interrupted') }),
+    )).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.stopped', { reason: 'paused' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.stopped', { reason: '' }))).toBeInTheDocument();
+  });
+
+  it('shows no peak memory for a CPU run (null) or one that recorded none', async () => {
+    const cpu = { ...liveRun, execution_facts: { peak_memory: null } };
+    api.getRun.mockResolvedValue({ ...cpu, last_cursor: 4 });
+    await renderPanel([cpu]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    expect(screen.queryByTestId('run-peak-memory')).toBeNull();
   });
 
   it('shows no environment digest for a run that recorded none', async () => {
