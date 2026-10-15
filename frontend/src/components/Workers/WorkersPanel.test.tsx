@@ -1,23 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { drainWorker, fetchWorkers, undrainWorker, type WorkerInfo } from '../../api/workers';
-import { fetchHealth } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { _resetWorkerStoreForTesting, useWorkerStore } from '../../store/workerStore';
 import { settle } from '../../test/utils';
-import { FINGERPRINT_SHORT_LENGTH, WorkersPanel, formatAge } from './WorkersPanel';
-import { trapTab } from './focusTrap';
+import { rememberAppVersion } from '../../utils/appVersion';
+import { relativeTime } from '../SourceControl/scm';
+import { FINGERPRINT_SHORT_LENGTH, WorkersPanel } from './WorkersPanel';
 
 vi.mock('../../api/workers', () => ({
   fetchWorkers: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
-}));
-
-vi.mock('../../api/rest', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../api/rest')>()),
-  fetchHealth: vi.fn(),
 }));
 
 const NOW_S = 1_800_000_000;
@@ -56,36 +51,13 @@ beforeEach(() => {
   _resetWorkerStoreForTesting();
   vi.spyOn(Date, 'now').mockReturnValue(NOW_S * 1000);
   vi.mocked(fetchWorkers).mockReset().mockResolvedValue([]);
-  vi.mocked(fetchHealth).mockReset().mockResolvedValue({ version: '3.0.2' } as never);
+  rememberAppVersion('3.0.2');
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe('formatAge', () => {
-  it('reads seconds, minutes and hours, and never a negative age', () => {
-    const now = NOW_S * 1000;
-    expect(formatAge(NOW_S - 12, t, now)).toBe('12 s ago');
-    expect(formatAge(NOW_S - 185, t, now)).toBe('3 min ago');
-    expect(formatAge(NOW_S - 2 * 3600 - 5, t, now)).toBe('2 h ago');
-    expect(formatAge(NOW_S + 30, t, now)).toBe('0 s ago');
-  });
-
-  it('defaults to the current time', () => {
-    expect(formatAge(NOW_S - 7, t)).toBe('7 s ago');
-  });
-});
-
-describe('trapTab', () => {
-  it('does nothing without a container or anything focusable in it', () => {
-    const event = { key: 'Tab', shiftKey: false, preventDefault: vi.fn() };
-    trapTab(event as never, null);
-    trapTab(event as never, document.createElement('div'));
-    expect(event.preventDefault).not.toHaveBeenCalled();
-  });
 });
 
 describe('WorkersPanel', () => {
@@ -141,7 +113,7 @@ describe('WorkersPanel', () => {
     const digest = within(card).getByText(DIGEST.slice(0, FINGERPRINT_SHORT_LENGTH));
     expect(digest).toHaveAttribute('title', DIGEST);
     expect(within(card).getByText('data')).toHaveAttribute('title', '/mnt/nas/data');
-    expect(within(card).getByText('4 s ago')).toBeInTheDocument();
+    expect(within(card).getByText(relativeTime(NOW_S - 4, 'en', NOW_S * 1000))).toBeInTheDocument();
     // Run ids reported per worker are listed once, under the worker.
     expect(within(card).getByRole('button', { name: 'run-aaaa' })).toBeInTheDocument();
     expect(within(card).getByText('RTX 4090')).toBeInTheDocument();
@@ -155,7 +127,7 @@ describe('WorkersPanel', () => {
   });
 
   it('says when the version differs, and nothing when the server version is unknown', async () => {
-    vi.mocked(fetchHealth).mockResolvedValue({ version: '3.1.0' } as never);
+    rememberAppVersion('3.1.0');
     const dialog = await openPanel([worker('a')]);
     expect(within(dialog).getByText('differs from this server (3.1.0)')).toBeInTheDocument();
 
@@ -171,7 +143,7 @@ describe('WorkersPanel', () => {
     expect(within(dialog).getByText('no runs')).toBeInTheDocument();
   });
 
-  it('lists run ids per device when the server reports them that way', async () => {
+  it('lists run ids per device when the server reports them that way, and the rest under the worker', async () => {
     const dialog = await openPanel([
       worker('w', {
         running: ['r-one-0000', 'r-two-0000'],
@@ -181,10 +153,35 @@ describe('WorkersPanel', () => {
         ],
       }),
     ]);
-    expect(within(dialog).queryByText('Running')).toBeNull();
-    expect(within(dialog).getByRole('button', { name: 'r-one-00' })).toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: 'r-two-00' })).toBeNull();
+    const deviceRow = within(dialog).getByText('cuda:0').closest('li') as HTMLElement;
+    expect(within(deviceRow).getByRole('button', { name: 'r-one-00' })).toBeInTheDocument();
+    // No device lists r-two, so the worker's own row does; r-one is not repeated.
+    const running = within(dialog).getByText('Running').nextElementSibling as HTMLElement;
+    expect(within(running).getByRole('button', { name: 'r-two-00' })).toBeInTheDocument();
+    expect(within(running).queryByRole('button', { name: 'r-one-00' })).toBeNull();
     expect(within(dialog).getByText('no runs')).toBeInTheDocument();
+  });
+
+  it('has no worker-level Running row when the devices list every run', async () => {
+    const dialog = await openPanel([
+      worker('w', {
+        running: ['r-one-0000'],
+        devices: [
+          { value: 'cuda:0', kind: 'cuda', index: 0, name: 'A', memory: null, running: ['r-one-0000'] },
+        ],
+      }),
+    ]);
+    expect(within(dialog).queryByText('Running')).toBeNull();
+  });
+
+  it('shows a status this build does not know as sent, in a neutral chip', async () => {
+    const dialog = await openPanel([worker('w', { status: 'quarantined' as never })]);
+    expect(within(dialog).getByText('quarantined')).toBeInTheDocument();
+  });
+
+  it('prints a dash for a heartbeat time the server could not give', async () => {
+    const dialog = await openPanel([worker('w', { last_heartbeat_at: 0 })]);
+    expect(within(dialog).getByText('Last heartbeat').nextElementSibling).toHaveTextContent('-');
   });
 
   it('a run link closes the panel, selects the run and asks the dock for the Runs tab', async () => {
@@ -220,10 +217,52 @@ describe('WorkersPanel', () => {
     expect(within(b).getByText('Online')).toBeInTheDocument();
   });
 
-  it('disables the action while one is in flight', async () => {
+  it('marks the action unavailable while one is in flight, and a press then does nothing', async () => {
     const dialog = await openPanel([worker('a')]);
     act(() => useWorkerStore.setState({ busy: { a: true } }));
-    expect(within(dialog).getByRole('button', { name: 'Drain' })).toBeDisabled();
+    const drain = within(dialog).getByRole('button', { name: 'Drain' });
+    expect(drain).toHaveAttribute('aria-disabled', 'true');
+    expect(drain).not.toBeDisabled();
+    fireEvent.click(drain);
+    await settle();
+    expect(drainWorker).not.toHaveBeenCalled();
+  });
+
+  it('keeps the focus on the action after Drain, so Escape still closes the panel', async () => {
+    vi.mocked(drainWorker).mockResolvedValue(worker('a', { draining: true, status: 'draining' }));
+    const dialog = await openPanel([worker('a')]);
+    const drain = within(dialog).getByRole('button', { name: 'Drain' });
+    drain.focus();
+    fireEvent.click(drain);
+    await settle();
+    const undrain = within(dialog).getByRole('button', { name: 'Undrain' });
+    expect(undrain).toHaveFocus();
+    fireEvent.keyDown(undrain, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('puts the focus back on the action when it fell to the page during Drain', async () => {
+    let answer: (value: WorkerInfo) => void = () => {};
+    vi.mocked(drainWorker).mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const dialog = await openPanel([worker('a')]);
+    const drain = within(dialog).getByRole('button', { name: 'Drain' });
+    drain.focus();
+    fireEvent.click(drain);
+    drain.blur();
+    expect(document.body).toHaveFocus();
+    await act(async () => answer(worker('a', { draining: true, status: 'draining' })));
+    expect(within(dialog).getByRole('button', { name: 'Undrain' })).toHaveFocus();
+  });
+
+  it('moves no focus when the panel closed while Drain was in flight', async () => {
+    let answer: (value: WorkerInfo) => void = () => {};
+    vi.mocked(drainWorker).mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const dialog = await openPanel([worker('a')]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Drain' }));
+    act(() => useWorkerStore.getState().closePanel());
+    (document.activeElement as HTMLElement | null)?.blur();
+    await act(async () => answer(worker('a')));
+    expect(document.body).toHaveFocus();
   });
 
   it('Refresh reads the list again', async () => {

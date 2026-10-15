@@ -1,30 +1,28 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { WorkerDevice, WorkerInfo } from '../../api/workers';
+import type { WorkerDevice, WorkerInfo, WorkerStatus } from '../../api/workers';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
 import { friendlyError } from '../../utils/errorMessages';
 import { formatBytes } from '../../utils/formatBytes';
+import { relativeTime } from '../SourceControl/scm';
+import { trapTab } from '../shared/focusTrap';
 import { AddWorkerDialog } from './AddWorkerDialog';
-import { trapTab } from './focusTrap';
 import styles from './WorkersPanel.module.css';
-
-type Translate = ReturnType<typeof useI18n.getState>['t'];
 
 /** Hex characters of the environment digest shown; the tooltip has it all. */
 export const FINGERPRINT_SHORT_LENGTH = 12;
 /** Characters of a run id shown in a link; the tooltip has it all. */
 const RUN_ID_SHORT_LENGTH = 8;
 
-/** How long ago *epochSeconds* was, as "12 s ago" / "3 min ago" / "2 h ago". */
-export function formatAge(epochSeconds: number, t: Translate, now: number = Date.now()): string {
-  const seconds = Math.max(0, Math.round(now / 1000 - epochSeconds));
-  if (seconds < 60) return t('workers.age.seconds', { count: seconds });
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return t('workers.age.minutes', { count: minutes });
-  return t('workers.age.hours', { count: Math.floor(minutes / 60) });
-}
+/**
+ * The statuses this build has a word and a colour for. A newer server may
+ * send another; it is shown as sent, in a neutral chip.
+ */
+const KNOWN_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>([
+  'online', 'degraded', 'disconnected', 'draining', 'offline',
+]);
 
 function RunLinks({ runIds }: { runIds: string[] }) {
   const { t } = useI18n();
@@ -101,44 +99,48 @@ function WorkerCard({ worker, serverVersion, now }: {
   serverVersion: string | null;
   now: number;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const busy = useWorkerStore((s) => Boolean(s.busy[worker.id]));
   const setDraining = useWorkerStore((s) => s.setDraining);
+  const actionRef = useRef<HTMLButtonElement>(null);
   const mounts = Object.entries(worker.mounts);
   // Without per-device run ids from the server, the worker's runs are
-  // listed once, under the worker.
+  // listed once, under the worker. With them, a run no device lists is
+  // still listed there: it is never hidden.
   const perDeviceRuns = worker.devices.some((d) => Array.isArray(d.running));
+  const onDevices = new Set(worker.devices.flatMap((d) => d.running ?? []));
+  const workerRuns = worker.running.filter((id) => !onDevices.has(id));
   const digest = worker.fingerprint_digest;
+  const known = KNOWN_STATUSES.has(worker.status);
+
+  // One button that changes its word, never disabled: a disabled or swapped
+  // button drops the focus to the page, where the dialog's Escape and Tab
+  // trap cannot hear it. A press while one is in flight does nothing.
+  const toggleDrain = async () => {
+    if (busy) return;
+    await setDraining(worker.id, !worker.draining);
+    const button = actionRef.current;
+    if (button !== null && document.activeElement === document.body) button.focus();
+  };
 
   return (
     <article className={styles.card} aria-label={worker.name}>
       <header className={styles.cardHeader}>
         <h3 className={styles.workerName}>{worker.name}</h3>
-        <span className={`${styles.chip} ${styles[`chip_${worker.status}`]}`}>
-          {t(`workers.status.${worker.status}`)}
+        <span className={`${styles.chip} ${known ? styles[`chip_${worker.status}`] : styles.chip_neutral}`}>
+          {known ? t(`workers.status.${worker.status}`) : worker.status}
         </span>
         <span className={styles.spacer} />
-        {worker.draining ? (
-          <button
-            type="button"
-            className={styles.btn}
-            disabled={busy}
-            title={t('workers.undrain.title')}
-            onClick={() => void setDraining(worker.id, false)}
-          >
-            {t('workers.undrain')}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className={styles.btn}
-            disabled={busy}
-            title={t('workers.drain.title')}
-            onClick={() => void setDraining(worker.id, true)}
-          >
-            {t('workers.drain')}
-          </button>
-        )}
+        <button
+          ref={actionRef}
+          type="button"
+          className={styles.btn}
+          aria-disabled={busy}
+          title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
+          onClick={() => void toggleDrain()}
+        >
+          {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
+        </button>
       </header>
       <dl className={styles.facts}>
         <dt>{t('workers.version')}</dt>
@@ -158,11 +160,11 @@ function WorkerCard({ worker, serverVersion, now }: {
               ))}
         </dd>
         <dt>{t('workers.heartbeat')}</dt>
-        <dd>{formatAge(worker.last_heartbeat_at, t, now)}</dd>
-        {!perDeviceRuns && (
+        <dd>{relativeTime(worker.last_heartbeat_at, locale, now) || '-'}</dd>
+        {(!perDeviceRuns || workerRuns.length > 0) && (
           <>
             <dt>{t('workers.running')}</dt>
-            <dd><RunLinks runIds={worker.running} /></dd>
+            <dd><RunLinks runIds={workerRuns} /></dd>
           </>
         )}
       </dl>

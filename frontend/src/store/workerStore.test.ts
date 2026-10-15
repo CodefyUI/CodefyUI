@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { drainWorker, fetchWorkers, undrainWorker, type WorkerInfo } from '../api/workers';
-import { fetchHealth } from '../api/rest';
+import { rememberAppVersion } from '../utils/appVersion';
 import { useToastStore } from './toastStore';
 import { WORKER_POLL_MS, _resetWorkerStoreForTesting, useWorkerStore } from './workerStore';
 
@@ -8,10 +8,6 @@ vi.mock('../api/workers', () => ({
   fetchWorkers: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
-}));
-
-vi.mock('../api/rest', () => ({
-  fetchHealth: vi.fn(),
 }));
 
 function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
@@ -32,13 +28,12 @@ function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
   };
 }
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   _resetWorkerStoreForTesting();
   useToastStore.setState({ toasts: [] });
   vi.mocked(fetchWorkers).mockReset().mockResolvedValue([worker('w1')]);
-  vi.mocked(fetchHealth).mockReset().mockResolvedValue({ version: '3.0.2' } as never);
+  rememberAppVersion('3.0.2');
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
 });
@@ -78,7 +73,6 @@ describe('workerStore', () => {
     const releaseB = useWorkerStore.getState().watch();
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchWorkers).toHaveBeenCalledTimes(1);
-    expect(fetchHealth).toHaveBeenCalledTimes(1);
     expect(useWorkerStore.getState().serverVersion).toBe('3.0.2');
 
     await vi.advanceTimersByTimeAsync(WORKER_POLL_MS);
@@ -94,20 +88,69 @@ describe('workerStore', () => {
     expect(fetchWorkers).toHaveBeenCalledTimes(3);
   });
 
-  it('does not reread the server version once it is known', async () => {
-    useWorkerStore.setState({ serverVersion: '3.0.2' });
-    const release = useWorkerStore.getState().watch();
-    await flush();
-    expect(fetchHealth).not.toHaveBeenCalled();
-    release();
+  it('takes the server version the app last read on every poll, without asking again', async () => {
+    rememberAppVersion(null);
+    await useWorkerStore.getState().refresh();
+    expect(useWorkerStore.getState().serverVersion).toBeNull();
+    rememberAppVersion('3.1.0');
+    vi.mocked(fetchWorkers).mockRejectedValueOnce(new Error('down'));
+    await useWorkerStore.getState().refresh();
+    expect(useWorkerStore.getState().serverVersion).toBe('3.1.0');
   });
 
-  it('leaves the version unknown when health fails', async () => {
-    vi.mocked(fetchHealth).mockRejectedValueOnce(new Error('down'));
-    const release = useWorkerStore.getState().watch();
-    await flush();
-    expect(useWorkerStore.getState().serverVersion).toBeNull();
-    release();
+  it('drops a list read that answers after a newer one', async () => {
+    const answers: Array<(value: WorkerInfo[]) => void> = [];
+    vi.mocked(fetchWorkers).mockImplementation(
+      () => new Promise((resolve) => { answers.push(resolve); }),
+    );
+    const older = useWorkerStore.getState().refresh();
+    const newer = useWorkerStore.getState().refresh();
+    answers[1]([worker('new')]);
+    await newer;
+    answers[0]([worker('old')]);
+    await older;
+    expect(useWorkerStore.getState().workers.map((w) => w.id)).toEqual(['new']);
+  });
+
+  it('drops a failed list read that answers after a newer one', async () => {
+    let fail: (err: Error) => void = () => {};
+    vi.mocked(fetchWorkers).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { fail = reject; }),
+    );
+    const older = useWorkerStore.getState().refresh();
+    await useWorkerStore.getState().refresh();
+    fail(new Error('late'));
+    await older;
+    expect(useWorkerStore.getState().error).toBeNull();
+  });
+
+  it('drops a list read sent before a drain that answers after it', async () => {
+    useWorkerStore.setState({ workers: [worker('w1')] });
+    let answer: (value: WorkerInfo[]) => void = () => {};
+    vi.mocked(fetchWorkers).mockImplementationOnce(
+      () => new Promise((resolve) => { answer = resolve; }),
+    );
+    const read = useWorkerStore.getState().refresh();
+    vi.mocked(drainWorker).mockResolvedValueOnce(worker('w1', { draining: true, status: 'draining' }));
+    await useWorkerStore.getState().setDraining('w1', true);
+    answer([worker('w1')]);
+    await read;
+    expect(useWorkerStore.getState().workers[0].status).toBe('draining');
+  });
+
+  it('drops a drain answer older than a list already applied', async () => {
+    useWorkerStore.setState({ workers: [worker('w1')] });
+    let answer: (value: WorkerInfo) => void = () => {};
+    vi.mocked(drainWorker).mockImplementationOnce(
+      () => new Promise((resolve) => { answer = resolve; }),
+    );
+    const drain = useWorkerStore.getState().setDraining('w1', true);
+    vi.mocked(fetchWorkers).mockResolvedValueOnce([worker('w1', { status: 'degraded' })]);
+    await useWorkerStore.getState().refresh();
+    answer(worker('w1', { draining: true, status: 'draining' }));
+    await drain;
+    expect(useWorkerStore.getState().workers[0].status).toBe('degraded');
+    expect(useWorkerStore.getState().busy).toEqual({});
   });
 
   it('stops after a read that answers once the last watcher left', async () => {
@@ -164,13 +207,14 @@ describe('workerStore', () => {
     expect(drainWorker).not.toHaveBeenCalled();
   });
 
-  it('toasts a failed drain and undrain', async () => {
+  it('toasts a failed drain and undrain under the worker\'s name', async () => {
+    useWorkerStore.setState({ workers: [worker('w1', { name: 'GPU box' })] });
     vi.mocked(drainWorker).mockRejectedValueOnce(new Error('gone'));
     await useWorkerStore.getState().setDraining('w1', true);
     vi.mocked(undrainWorker).mockRejectedValueOnce(new Error('gone'));
-    await useWorkerStore.getState().setDraining('w1', false);
+    await useWorkerStore.getState().setDraining('w2', false);
     const messages = useToastStore.getState().toasts.map((t) => t.message);
-    expect(messages).toEqual(['Could not drain w1: gone', 'Could not undrain w1: gone']);
+    expect(messages).toEqual(['Could not drain GPU box: gone', 'Could not undrain w2: gone']);
     expect(useWorkerStore.getState().busy).toEqual({});
   });
 

@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useI18n } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
-import { trapTab } from './focusTrap';
+import { trapTab } from '../shared/focusTrap';
 import styles from './WorkersPanel.module.css';
 
 /**
