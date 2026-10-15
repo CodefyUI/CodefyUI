@@ -237,7 +237,9 @@ def enroll(control_url: str, token: str, *, name: str,
         headers={"Content-Type": "application/json"})
     handlers: list[Any] = []
     if uds:
-        handlers.append(UnixHTTPHandler(uds))
+        # No proxy: one from ``http_proxy`` would get the request (an
+        # absolute URL, and its Proxy-Authorization) instead of the socket.
+        handlers += [urllib.request.ProxyHandler({}), UnixHTTPHandler(uds)]
     elif url.startswith("https:"):
         trust = trust or ControlPlaneTrust()
         handlers.append(urllib.request.HTTPSHandler(context=trust.context()))

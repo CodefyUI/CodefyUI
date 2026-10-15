@@ -177,7 +177,10 @@ async def websocket_worker(ws: WebSocket) -> None:
         return
     auth = await authorise(ws)
     if auth is None:
-        _note_tunnel_refusal(ws)
+        # Not reported to the SSH launcher, even through a tunnel: this
+        # side cannot tell the agent from another client of the listener.
+        # The launcher acts on the agent's own report instead
+        # (``ssh_launch.TOKEN_REFUSED``).
         await ws.close(code=4401, reason="Missing or invalid token")
         return
     enrolled_as = auth.worker
@@ -310,17 +313,6 @@ async def _record_fingerprint(service: Any, worker: Any) -> None:
     except Exception:  # noqa: BLE001
         logger.warning("could not record worker %s's fingerprint",
                        worker.name, exc_info=True)
-
-
-def _note_tunnel_refusal(ws: WebSocket) -> None:
-    """A credential refused through an SSH worker's tunnel (#784): tell
-    the launcher, which restarts that agent with ``cdui agent forget``.
-    Only this refusal (an unknown or revoked token, 4401) counts; a Host
-    or registry refusal never does."""
-    name = tunnel_of(ws.scope)
-    launcher = getattr(ws.app.state, "ssh_launcher", None)
-    if name is not None and launcher is not None:
-        launcher.note_refused(name)
 
 
 async def _touch(store: Any, hello: wp.Hello | None,

@@ -8,7 +8,10 @@ token, and the main port no longer treats any ``Host`` as tunnel traffic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import sys
 
 import httpx
 import pytest
@@ -184,26 +187,90 @@ async def test_each_tunnel_has_its_own_enrollment_rate_bucket(workers,
                 ).status_code == 401
 
 
-async def test_a_real_listener_serves_the_agent_routes_only(workers):
-    """The listener itself: a uvicorn on an ephemeral loopback port, in
-    this event loop, without the app's lifespan."""
+async def _routes_only(client: httpx.AsyncClient) -> None:
+    for host in HOSTS:
+        response = await client.get("/api/auth/bootstrap",
+                                    headers={"host": host})
+        assert response.status_code == 404, host
+        assert session_token() not in response.text
+    enroll = await client.post("/api/workers/enroll", json={
+        "token": "nope", "name": "gpu-box"})
+    assert enroll.status_code == 401
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets")
+async def test_a_real_listener_is_a_private_unix_socket(workers):
+    """POSIX: a Unix socket in a 0700 directory (only this account can
+    connect), served by a uvicorn in this event loop without the app's
+    lifespan; the directory goes with :meth:`close`."""
     listener = TunnelListener(app, "gpu-box")
-    port = await listener.open()
+    target = await listener.open()
     try:
-        assert listener.port == port and port > 0
+        assert listener.alive and target == listener.path
+        assert listener.port is None
+        assert os.stat(os.path.dirname(target)).st_mode & 0o777 == 0o700
+        assert os.stat(target).st_mode & 0o777 == 0o600
+        assert len(target.encode()) <= 100
+        async with httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(uds=target),
+                base_url="http://127.0.0.1:8000", timeout=10) as client:
+            await _routes_only(client)
+    finally:
+        await listener.close()
+    assert not listener.alive and listener.target is None
+    assert not os.path.exists(os.path.dirname(target))
+    await listener.close()  # twice: harmless
+
+
+async def test_a_real_tcp_listener_serves_the_agent_routes_only(workers):
+    """The Windows form: an ephemeral loopback port."""
+    listener = TunnelListener(app, "gpu-box", use_unix=False)
+    target = await listener.open()
+    port = listener.port
+    try:
+        assert target == f"127.0.0.1:{port}" and port > 0
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}",
                                      timeout=10) as client:
-            for host in HOSTS:
-                response = await client.get("/api/auth/bootstrap",
-                                            headers={"host": host})
-                assert response.status_code == 404, host
-                assert session_token() not in response.text
-            enroll = await client.post("/api/workers/enroll", json={
-                "token": "nope", "name": "gpu-box"})
-            assert enroll.status_code == 401
+            await _routes_only(client)
     finally:
         await listener.close()
     with pytest.raises(httpx.ConnectError):
         async with httpx.AsyncClient(timeout=5) as client:
             await client.get(f"http://127.0.0.1:{port}/api/auth/bootstrap")
-    await listener.close()  # twice: harmless
+
+
+async def test_a_listener_that_fails_to_start_has_no_target(monkeypatch):
+    """Nothing is published before the server has started: a failed start
+    leaves no target (no dead port handed to ssh) and no directory."""
+    import uvicorn
+
+    async def broken(self, sockets=None):
+        raise OSError("cannot serve")
+
+    monkeypatch.setattr(uvicorn.Server, "serve", broken)
+    listener = TunnelListener(app, "gpu-box")
+    with pytest.raises(OSError, match="cannot serve"):
+        await listener.open()
+    assert listener.target is None and listener.port is None
+    assert not listener.alive
+    assert listener._dir is None
+
+
+async def test_a_dead_listener_is_opened_again(workers, tmp_path):
+    """``SshLaunch._listen`` hands ssh a live listener: one whose server
+    stopped is replaced, not reused."""
+    from app.core.ssh_launch import SshLaunch, SshLauncher
+    from app.core.worker_store import SshWorker
+
+    launcher = SshLauncher(None, None, app=app, instance_id="abcd1234")
+    launch = SshLaunch(SshWorker(id="gpu-box", target="a@b"), launcher)
+    first = await launch._listen()
+    assert await launch._listen() == first  # alive: kept
+    dead = launch._listener
+    dead._server.should_exit = True
+    await asyncio.wait_for(dead._task, 10)
+    assert not dead.alive
+    second = await launch._listen()
+    assert launch._listener is not dead and launch._listener.alive
+    assert second != first  # a new private directory
+    await launch._close_listener()

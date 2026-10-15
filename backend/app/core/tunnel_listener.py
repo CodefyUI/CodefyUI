@@ -4,9 +4,10 @@ An SSH worker's agent reaches this server through a reverse forward, and
 everyone who can reach the forward's remote end can send whatever they
 like through it, ``Host`` header included. So the forward never lands on
 the main port. Each SSH worker's launch (``core.ssh_launch``) opens a
-listener of its own on this machine's loopback, an ephemeral port, and
-``-R`` points there. That listener serves the agent routes and nothing
-else (:func:`agent_route`):
+listener of its own (:class:`TunnelListener`: a Unix socket in a private
+directory on POSIX, an ephemeral loopback port on Windows) and ``-R``
+points there. That listener serves the agent routes and nothing else
+(:func:`agent_route`, checked in :class:`TunnelApp` and only there):
 
 - ``WS /ws/worker``, with a worker token (the session token is refused
   here, whatever the peer address);
@@ -32,7 +33,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import shutil
 import socket
+import sys
+import tempfile
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -113,17 +118,65 @@ async def _not_found(kind: str | None, receive: Any, send: Any) -> None:
 
 
 class TunnelListener:
-    """One loopback listener for one SSH worker: :meth:`open`, read
-    :attr:`port`, :meth:`close`."""
+    """One listener for one SSH worker: :meth:`open`, read :attr:`target`
+    (``-R``'s right-hand side), :meth:`close`.
 
-    def __init__(self, app: Any, name: str) -> None:
+    On POSIX it is a Unix socket in a private temporary directory (mode
+    0700, from ``tempfile.mkdtemp``): only this account can connect, so no
+    other local user can reach the agent routes, spend the worker's
+    enrollment attempts or speak to it as the agent. Windows (no
+    ``AF_UNIX`` server in uvicorn's loop there, and ``ssh.exe`` forwarding
+    to a socket is not something to rely on) gets an ephemeral port on
+    127.0.0.1 instead.
+    """
+
+    def __init__(self, app: Any, name: str, *,
+                 use_unix: bool | None = None) -> None:
         self.app = TunnelApp(app, name)
         self.name = name
+        self.use_unix = (use_unix if use_unix is not None
+                         else sys.platform != "win32"
+                         and hasattr(socket, "AF_UNIX"))
+        #: ``-R``'s local end: a socket path, or ``127.0.0.1:<port>``. Set
+        #: only once the server has started; None before and after.
+        self.target: str | None = None
         self.port: int | None = None
+        self.path: str | None = None
+        self._dir: str | None = None
         self._server: Any = None
         self._task: asyncio.Task | None = None
 
-    async def open(self) -> int:
+    @property
+    def alive(self) -> bool:
+        """Started, and still serving."""
+        return (self.target is not None and self._task is not None
+                and not self._task.done())
+
+    def _bind(self) -> socket.socket:
+        if self.use_unix:
+            base = tempfile.gettempdir()
+            if len(base) > 60:  # keep the path well inside ``sun_path``
+                base = "/tmp"
+            self._dir = tempfile.mkdtemp(prefix="cdui-ssh-", dir=base)
+            path = os.path.join(self._dir, "s")
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.bind(path)
+                os.chmod(path, 0o600)
+            except OSError:
+                sock.close()
+                raise
+            self.path = path
+            return sock
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((BIND_HOST, 0))
+        except OSError:
+            sock.close()
+            raise
+        return sock
+
+    async def open(self) -> str:
         import uvicorn
 
         from ..config import settings
@@ -134,46 +187,58 @@ class TunnelListener:
             def capture_signals(self):  # type: ignore[override]
                 yield
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = self._bind()
         try:
-            sock.bind((BIND_HOST, 0))
             sock.listen(64)
             sock.setblocking(False)
-        except OSError:
+            config = uvicorn.Config(
+                self.app, lifespan="off", log_config=None, access_log=False,
+                proxy_headers=False, server_header=False,
+                # The main port's own cap (``cdui start`` hands uvicorn
+                # ``--ws-max-size`` from the same setting).
+                ws_max_size=settings.WS_MAX_MESSAGE_BYTES,
+                timeout_graceful_shutdown=CLOSE_TIMEOUT_S)
+            server = _Server(config)
+            task = asyncio.get_running_loop().create_task(
+                server.serve(sockets=[sock]), name=f"ssh-tunnel-{self.name}")
+            while not server.started and not task.done():
+                await asyncio.sleep(0.01)
+            if task.done():
+                task.result()  # raises what stopped it
+                raise OSError(f"the SSH tunnel listener for {self.name} "
+                              "did not start")
+        except BaseException:
             sock.close()
+            self._cleanup_dir()
             raise
-        config = uvicorn.Config(
-            self.app, lifespan="off", log_config=None, access_log=False,
-            proxy_headers=False, server_header=False,
-            ws_max_size=max(settings.WS_MAX_MESSAGE_BYTES or 0, 16 * 2 ** 20),
-            timeout_graceful_shutdown=CLOSE_TIMEOUT_S)
-        server = _Server(config)
-        self._server = server
-        self.port = sock.getsockname()[1]
-        self._task = asyncio.get_running_loop().create_task(
-            server.serve(sockets=[sock]), name=f"ssh-tunnel-{self.name}")
-        while not server.started and not self._task.done():
-            await asyncio.sleep(0.01)
-        if self._task.done():
-            sock.close()
-            self._task.result()  # raises what stopped it
-            raise OSError(f"the SSH tunnel listener for {self.name} did "
-                          "not start")
-        logger.info("SSH worker %s: tunnel listener on %s:%d", self.name,
-                    BIND_HOST, self.port)
-        return self.port
+        self._server, self._task = server, task
+        if self.path is not None:
+            self.target = self.path
+        else:
+            self.port = sock.getsockname()[1]
+            self.target = f"{BIND_HOST}:{self.port}"
+        logger.info("SSH worker %s: tunnel listener on %s", self.name,
+                    self.target)
+        return self.target
+
+    def _cleanup_dir(self) -> None:
+        if self._dir is not None:
+            shutil.rmtree(self._dir, ignore_errors=True)
+        self._dir = None
 
     async def close(self) -> None:
         server, task = self._server, self._task
         self._server = self._task = None
-        if server is None or task is None:
-            return
-        server.should_exit = True
-        try:
-            await asyncio.wait_for(asyncio.shield(task), CLOSE_TIMEOUT_S * 2)
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-            server.force_exit = True
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        logger.info("SSH worker %s: tunnel listener closed", self.name)
+        self.target = self.port = self.path = None
+        if server is not None and task is not None:
+            server.should_exit = True
+            try:
+                await asyncio.wait_for(asyncio.shield(task),
+                                       CLOSE_TIMEOUT_S * 2)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                server.force_exit = True
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            logger.info("SSH worker %s: tunnel listener closed", self.name)
+        self._cleanup_dir()

@@ -106,7 +106,7 @@ from .core.study_coordinator import StudyCoordinator
 from .core.study_store import StudyStore
 from .core.sweep_store import SweepStore
 from .core.transfer import UPLOAD_PATH_PATTERN
-from .core.tunnel_listener import agent_route, tunnel_of, worker_token_route
+from .core.tunnel_listener import tunnel_of, worker_token_route
 
 logger = logging.getLogger(__name__)
 
@@ -532,16 +532,20 @@ async def _lifespan_body(app: FastAPI):
     # queue (#343). The next boot settles them as interrupted.
     await study_coordinator.shutdown()
     app.state.study_coordinator = None
+    # The SSH workers' sessions BEFORE the run service (#784): ``stop`` on
+    # each ssh's stdin stops its remote agent at once, and the agent's runs
+    # report how they ended (and upload their last files) while the run
+    # service is still here to record them. Bounded by
+    # ``ssh_launch.SHUTDOWN_GRACE_S``; whatever did not report then ends
+    # ``interrupted`` (``WorkerRegistry.stopped``).
+    await ssh_launcher.shutdown()
+    app.state.ssh_launcher = None
     # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
     # only database work in the process that nobody is awaiting, and
     # `Database.close` would otherwise race a run's final writes (#119).
     await run_service.shutdown()
     app.state.run_service = None
     # After the runs: a worker run's stop travels over its worker's socket.
-    # The SSH workers' sessions next (#784): closing ssh's stdin stops each
-    # remote agent in order, before the registry drops their sockets.
-    await ssh_launcher.shutdown()
-    app.state.ssh_launcher = None
     await worker_registry.shutdown()
     app.state.worker_registry = None
     app.state.worker_store = None
@@ -652,12 +656,10 @@ async def host_guard(request: Request, call_next):
     tunnel = tunnel_of(request.scope)
     if tunnel is not None:
         # An SSH worker's own listener (#784), never this server's port:
-        # ``TunnelApp`` let only the agent routes through and set this
-        # mark. The ``Host`` is whatever the far end of the forward sent,
-        # so it decides nothing here.
-        if not agent_route("http", request.method, path):
-            return JSONResponse(status_code=404,
-                                content={"detail": "Not Found"})
+        # ``TunnelApp`` let only the agent routes through (its allow-list
+        # is the one place they are named) and set this mark. The ``Host``
+        # is whatever the far end of the forward sent, so it decides
+        # nothing here.
         if worker_token_route(request.method, path):
             # The transfer backend (#785): only with a worker token, never
             # as the open read it is on the main port.

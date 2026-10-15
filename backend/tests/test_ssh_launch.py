@@ -38,8 +38,12 @@ pytestmark = pytest.mark.skipif(
 FAKE_SSH = Path(__file__).resolve().parent / "fake_ssh.py"
 LOCAL_PORT = 8123
 RANGE = (18000, 18009)
+#: This control plane's instance id in these tests.
+CP = "abcd1234"
 #: The remote directory the fake ssh's prepare answers with, for slot 18000.
-FAKE_DIR = "/home/fake/.codefyui-ssh/18000"
+FAKE_DIR = f"/home/fake/.codefyui-ssh/{CP}-18000"
+#: The address the agent stores its credential under, for slot 18000.
+URL = f"http://cp-{CP}.invalid:18000"
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────
@@ -89,7 +93,7 @@ async def launcher(tmp_path, fake_ssh):
     database.connect()
     store = WorkerStore(database)
     registry = FakeRegistry()
-    launcher = SshLauncher(store, registry, port_range=RANGE,
+    launcher = SshLauncher(store, registry, port_range=RANGE, instance_id=CP,
                            local_port=LOCAL_PORT)
     try:
         yield launcher
@@ -173,7 +177,7 @@ async def test_ssh_gets_the_spec_options_and_the_token_only_on_stdin(
     assert len(argv) == dashes + 3
     assert command.startswith("sh -c '") and command.endswith("'")
     assert ('"$HOME"/CodefyUI/cdui agent start --uds "$d/sock" --foreground '
-            '--control http://127.0.0.1:18000 --name gpu-box') in command
+            f'--control {URL} --name gpu-box') in command
     # The token is an enrollment token, on stdin, never on a command line.
     assert ssh_launch.ENROLL_TTL_S <= 600
     assert all(token not in arg for arg in argv)
@@ -291,12 +295,59 @@ async def test_a_oneshot_that_hangs_is_killed_and_reaped(launcher, fake_ssh,
     assert _calls(fake_ssh) == []
 
 
+async def test_a_cancelled_oneshot_leaves_no_process(launcher, fake_ssh,
+                                                     monkeypatch):
+    """Cancelled while a one-shot ssh hangs (a Disable, a shutdown): the
+    ssh is killed and reaped, not left running."""
+    monkeypatch.setenv("FAKE_SSH_HANG_S", "30")
+    launch = ssh_launch.SshLaunch(_entry(), launcher)
+    task = asyncio.ensure_future(launch._oneshot("true", "test"))
+    pid_file = Path(str(fake_ssh) + ".pid")
+    await _until(pid_file.exists, "the one-shot never started")
+    pid = int(pid_file.read_text().split()[0])
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not _alive(pid)
+
+
+async def test_a_home_with_a_space_is_refused_with_its_reason(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_PREPARE_DIR",
+                       f"/home/al ice/.codefyui-ssh/{CP}-18000")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "a home with a space was not refused")
+    error = launcher.describe("gpu-box")["last_error"]
+    assert "/home/al ice/" in error and "a space" in error
+    assert "AllowStreamLocalForwarding" not in error
+    assert _calls(fake_ssh) == []
+
+
+async def test_a_shutdown_stops_every_session_within_its_own_grace(
+        launcher, fake_ssh, monkeypatch):
+    graces: list[float] = []
+    real = ssh_launch._end_process
+
+    async def spy(proc, grace_s=ssh_launch.STOP_GRACE_S):
+        graces.append(grace_s)
+        await real(proc, grace_s)
+
+    monkeypatch.setattr(ssh_launch, "_end_process", spy)
+    await launcher.add(_entry())
+    await launcher.add(_entry("two-box", target="b@two"))
+    await _until(lambda: len(_tokens(fake_ssh)) == 2, "ssh never ran")
+    await launcher.shutdown()
+    assert graces and set(graces) == {ssh_launch.SHUTDOWN_GRACE_S}
+    assert sorted(launcher.registry.stopped_names) == ["gpu-box", "two-box"]
+
+
 async def test_the_first_launch_on_a_new_port_forgets_and_later_ones_reuse(
         launcher, fake_ssh):
     await launcher.add(_entry())
     await _until(lambda: _tokens(fake_ssh), "ssh never ran")
     # A port this entry never used may hold another worker's credential.
-    assert ('"$HOME"/CodefyUI/cdui agent forget http://127.0.0.1:18000'
+    assert (f'"$HOME"/CodefyUI/cdui agent forget {URL}'
             in _calls(fake_ssh)[0][-1])
     await launcher.set_enabled("gpu-box", False)
     await launcher.set_enabled("gpu-box", True)
@@ -305,18 +356,22 @@ async def test_the_first_launch_on_a_new_port_forgets_and_later_ones_reuse(
     assert "agent forget" not in _calls(fake_ssh)[1][-1]
 
 
-async def test_a_credential_this_server_refuses_restarts_with_forget(
-        launcher, fake_ssh):
+async def test_the_agents_refused_token_restarts_it_with_forget(
+        launcher, fake_ssh, monkeypatch):
+    """The agent reports that this server refused its stored token (its
+    own log line, which only that agent writes): the session restarts
+    once with ``cdui agent forget``. A refusal ``ws_worker`` sees on the
+    listener is not reported here at all (another local client could have
+    caused it)."""
     await launcher.store.add_ssh_worker(_entry(remote_port=18003))
+    monkeypatch.setenv("FAKE_SSH_MODE", "refused")
     await launcher.start_all()
-    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
-    assert "agent forget" not in _calls(fake_ssh)[0][-1]
-    launcher.note_refused("other-box")  # another tunnel: nothing happens
-    launcher.note_refused("gpu-box")
     await _until(lambda: len(_calls(fake_ssh)) >= 2,
                  "the refused agent was not restarted")
-    assert ('"$HOME"/CodefyUI/cdui agent forget http://127.0.0.1:18003'
+    assert "agent forget" not in _calls(fake_ssh)[0][-1]
+    assert (f'"$HOME"/CodefyUI/cdui agent forget http://cp-{CP}.invalid:18003'
             in _calls(fake_ssh)[1][-1])
+    assert not hasattr(launcher, "note_refused")
 
 
 async def test_another_workers_stored_credential_restarts_with_forget(
@@ -327,7 +382,7 @@ async def test_another_workers_stored_credential_restarts_with_forget(
     await _until(lambda: len(_calls(fake_ssh)) >= 2, "not restarted")
     first, second = _calls(fake_ssh)[:2]
     assert "agent forget" not in first[-1]
-    assert "agent forget http://127.0.0.1:18002" in second[-1]
+    assert "agent forget http://cp-abcd1234.invalid:18002" in second[-1]
     assert "is for worker" in (launcher.describe("gpu-box")["last_error"]
                                or "")
 
@@ -396,7 +451,7 @@ async def test_disable_with_the_session_gone_stops_the_agent_over_ssh(
     assert len(oneshots) == 1
     assert "ExitOnForwardFailure=yes" not in oneshots[0]
     assert "kill -TERM $a" in oneshots[0][-1]
-    assert ".codefyui-ssh/18000" in oneshots[0][-1]
+    assert f".codefyui-ssh/{CP}-18000" in oneshots[0][-1]
 
 
 async def test_a_dropped_session_comes_back_on_the_same_socket(
@@ -466,7 +521,8 @@ async def test_the_port_range_can_run_out(tmp_path, fake_ssh):
     database = Database(tmp_path / "small.db")
     database.connect()
     launcher = SshLauncher(WorkerStore(database), FakeRegistry(),
-                           port_range=(18000, 18000), local_port=LOCAL_PORT)
+                           port_range=(18000, 18000), local_port=LOCAL_PORT,
+                           instance_id=CP)
     try:
         await launcher.add(_entry("one"))
         await launcher.add(_entry("two", target="bob@other"))
@@ -478,11 +534,36 @@ async def test_the_port_range_can_run_out(tmp_path, fake_ssh):
         database.close()
 
 
-def test_the_server_port_is_never_a_remote_port():
+def test_a_slot_is_not_a_port():
+    """The server's own port number is a slot like any other: a slot names
+    a state directory, no TCP port."""
     launcher = SshLauncher(None, FakeRegistry(), port_range=(8000, 8002),
-                           local_port=8000)
-    assert launcher.free_port("x") == 8001
-    assert launcher.free_port("x", after=8002) == 8001
+                           local_port=8000, instance_id=CP)
+    assert launcher.free_port("x") == 8000
+
+
+def test_two_control_planes_never_share_a_remote_directory(tmp_path,
+                                                           monkeypatch):
+    """Two control planes on one remote account, both on slot 18000: their
+    directories, sockets, credential addresses and agents differ."""
+    other = "0123abcd"
+    entry = _entry()
+    for cp in (CP, other):
+        where = f".codefyui-ssh/{cp}-18000"
+        assert where in ssh_launch.remote_prepare_command(cp, 18000)
+        assert where in ssh_launch.remote_stop_command(cp, 18000)
+        assert ssh_launch.control_url(cp, 18000) in ssh_launch.remote_command(
+            entry, cp, 18000)
+    assert ssh_launch.control_url(CP, 18000) != ssh_launch.control_url(
+        other, 18000)
+    # The id is made once and kept in the user-data directory.
+    first = ssh_launch.load_instance_id(tmp_path)
+    assert ssh_launch.INSTANCE_ID_PATTERN.fullmatch(first)
+    assert ssh_launch.load_instance_id(tmp_path) == first
+    assert (tmp_path / ssh_launch.INSTANCE_ID_FILE).read_text().strip() \
+        == first
+    (tmp_path / ssh_launch.INSTANCE_ID_FILE).write_text("junk")
+    assert ssh_launch.load_instance_id(tmp_path) != "junk"
 
 
 # ── stop, enable, disable, restart ────────────────────────────────────────
@@ -519,7 +600,7 @@ async def test_restart_relaunches_enabled_rows_and_drains_disabled_ones(
     await store.add_ssh_worker(_entry("off-box", target="bob@off",
                                       enabled=False))
     registry = FakeRegistry()
-    launcher = SshLauncher(store, registry, port_range=RANGE,
+    launcher = SshLauncher(store, registry, port_range=RANGE, instance_id=CP,
                            local_port=LOCAL_PORT)
     try:
         await launcher.start_all()
@@ -528,7 +609,7 @@ async def test_restart_relaunches_enabled_rows_and_drains_disabled_ones(
         # The stored slot is reused (and with it the credential the agent
         # keeps for that address).
         assert argv[argv.index("-R") + 1].startswith(
-            "/home/fake/.codefyui-ssh/18005/sock:")
+            f"/home/fake/.codefyui-ssh/{CP}-18005/sock:")
         assert registry.drained == {"off-box": True}
         assert [v["id"] for v in launcher.describe_all()] == ["off-box",
                                                               "on-box"]
@@ -594,19 +675,20 @@ def remote_home(tmp_path):
     _fake_cdui(home)
     yield home
     # Whatever a test left running: stop it.
-    pid_file = home / ".codefyui-ssh" / "18000" / "pid"
+    pid_file = home / ".codefyui-ssh" / f"{CP}-18000" / "pid"
     if pid_file.exists():
         subprocess.run(["kill", "-TERM", pid_file.read_text().strip()],
                        capture_output=True)
 
 
-def _state(home: Path, port: int = 18000) -> Path:
-    return home / ".codefyui-ssh" / str(port)
+def _state(home: Path, port: int = 18000, cp: str = CP) -> Path:
+    return home / ".codefyui-ssh" / f"{cp}-{port}"
 
 
 def test_the_remote_agent_gets_the_token_in_its_env_and_stop_ends_it(
         remote_home):
-    command = ssh_launch.remote_command(_entry(remote_cdui="~/cdui"), 18000)
+    command = ssh_launch.remote_command(_entry(remote_cdui="~/cdui"), CP,
+                                        18000)
     assert "'" not in command[len("sh -c '"):-1]
     assert "\\" not in command
     proc = _run_remote(remote_home, command)
@@ -616,7 +698,7 @@ def test_the_remote_agent_gets_the_token_in_its_env_and_stop_ends_it(
     args = (remote_home / "args").read_text()
     assert args.strip() == (
         f"agent start --uds {_state(remote_home)}/sock --foreground "
-        "--control http://127.0.0.1:18000 --name gpu-box")
+        "--control http://cp-abcd1234.invalid:18000 --name gpu-box")
     assert "abcdef" not in args
     assert (_wait_file(remote_home / "path").split(":")[:2]
             == [f"{remote_home}/.local/bin", f"{remote_home}/.cargo/bin"])
@@ -637,8 +719,8 @@ def test_the_remote_agent_gets_the_token_in_its_env_and_stop_ends_it(
 
 def test_a_dropped_session_leaves_the_agent_for_the_grace_then_stops_it(
         remote_home):
-    command = ssh_launch.remote_command(_entry(remote_cdui="~/cdui"), 18000,
-                                       grace_s=2)
+    command = ssh_launch.remote_command(_entry(remote_cdui="~/cdui"), CP,
+                                        18000, grace_s=2)
     proc = _run_remote(remote_home, command)
     proc.stdin.write(f"{TOKEN}\n".encode())
     proc.stdin.flush()
@@ -656,7 +738,7 @@ def test_a_new_session_within_the_grace_reattaches_to_the_same_agent(
         remote_home):
     entry = _entry(remote_cdui="~/cdui")
     first = _run_remote(remote_home, ssh_launch.remote_command(
-        entry, 18000, grace_s=2))
+        entry, CP, 18000, grace_s=2))
     first.stdin.write(f"{TOKEN}\n".encode())
     first.stdin.flush()
     pid = int(_wait_file(_state(remote_home) / "pid"))
@@ -664,7 +746,7 @@ def test_a_new_session_within_the_grace_reattaches_to_the_same_agent(
     first.stdin.close()  # dropped
 
     second = _run_remote(remote_home, ssh_launch.remote_command(
-        entry, 18000, grace_s=2, forget_first=True))
+        entry, CP, 18000, grace_s=2, forget_first=True))
     second.stdin.write(f"{TOKEN}\n".encode())
     second.stdin.flush()
     first.wait(timeout=10)  # superseded: it leaves without a kill
@@ -685,7 +767,7 @@ def test_a_new_session_within_the_grace_reattaches_to_the_same_agent(
 
 def test_the_remote_shell_refuses_to_start_without_a_token(remote_home):
     proc = _run_remote(remote_home, ssh_launch.remote_command(
-        _entry(remote_cdui=str(remote_home / "cdui")), 18000))
+        _entry(remote_cdui=str(remote_home / "cdui")), CP, 18000))
     proc.stdin.close()
     assert proc.wait(timeout=10) == ssh_launch.NO_TOKEN_EXIT
     assert not (remote_home / "args").exists()
@@ -694,12 +776,12 @@ def test_the_remote_shell_refuses_to_start_without_a_token(remote_home):
 def test_forget_first_runs_cdui_agent_forget_before_a_fresh_start(
         remote_home):
     proc = _run_remote(remote_home, ssh_launch.remote_command(
-        _entry(remote_cdui="~/cdui"), 18000, forget_first=True))
+        _entry(remote_cdui="~/cdui"), CP, 18000, forget_first=True))
     proc.stdin.write(f"{TOKEN}\n".encode())
     proc.stdin.flush()
     _wait_file(remote_home / "token")
     lines = (remote_home / "args").read_text().splitlines()
-    assert lines[0] == "agent forget http://127.0.0.1:18000"
+    assert lines[0] == "agent forget http://cp-abcd1234.invalid:18000"
     assert lines[1].startswith("agent start --uds ")
     proc.stdin.write(b"stop\n")
     proc.stdin.close()
@@ -708,28 +790,28 @@ def test_forget_first_runs_cdui_agent_forget_before_a_fresh_start(
 
 def test_the_one_shot_stop_ends_a_surviving_agent(remote_home):
     proc = _run_remote(remote_home, ssh_launch.remote_command(
-        _entry(remote_cdui="~/cdui"), 18000, grace_s=60))
+        _entry(remote_cdui="~/cdui"), CP, 18000, grace_s=60))
     proc.stdin.write(f"{TOKEN}\n".encode())
     proc.stdin.flush()
     pid = int(_wait_file(_state(remote_home) / "pid"))
     _wait_file(remote_home / "path")  # the agent is up, its trap set
     proc.stdin.close()  # dropped; the agent waits out its grace
     stop = subprocess.run(["/bin/sh", "-c", ssh_launch.remote_stop_command(
-        18000)], env={**os.environ, "HOME": str(remote_home)},
+        CP, 18000)], env={**os.environ, "HOME": str(remote_home)},
         capture_output=True, text=True, timeout=10)
     assert f"stopped agent pid {pid}" in stop.stdout
     assert _wait_file(remote_home / "got_term").strip() == "term"
     proc.wait(timeout=10)
     # Nothing to stop: still fine.
     again = subprocess.run(["/bin/sh", "-c", ssh_launch.remote_stop_command(
-        18000)], env={**os.environ, "HOME": str(remote_home)},
+        CP, 18000)], env={**os.environ, "HOME": str(remote_home)},
         capture_output=True, text=True, timeout=10)
     assert again.returncode == 0 and again.stdout == ""
 
 
 def test_the_prepare_command_makes_a_private_directory_and_clears_the_socket(
         remote_home):
-    command = ssh_launch.remote_prepare_command(18000)
+    command = ssh_launch.remote_prepare_command(CP, 18000)
     assert "'" not in command[len("sh -c '"):-1] and "\\" not in command
     env = {**os.environ, "HOME": str(remote_home)}
     first = subprocess.run(["/bin/sh", "-c", command], env=env,
@@ -750,31 +832,80 @@ def test_the_prepare_command_makes_a_private_directory_and_clears_the_socket(
     assert state.parent.stat().st_mode & 0o777 == 0o700
 
 
-def test_an_agent_from_before_the_socket_forward_is_replaced(remote_home):
-    """An agent started without ``--uds`` dials a TCP port nothing serves
-    now: the next session stops it and starts one on the socket."""
+def test_a_reused_pid_is_never_taken_for_the_agent(remote_home):
+    """The pid file outlives its agent and the pid may be reused: a process
+    that is not this directory's agent is neither re-attached to nor
+    stopped."""
     state = _state(remote_home)
     state.mkdir(parents=True)
-    script = remote_home / "old-agent"
-    script.write_text("#!/bin/sh\nwhile :; do sleep 0.05; done\n")
-    script.chmod(0o755)
-    old = subprocess.Popen([str(script), "agent", "start", "--foreground"],
-                           start_new_session=True)
+    stranger = subprocess.Popen(["sleep", "30"], start_new_session=True)
     try:
-        (state / "pid").write_text(str(old.pid))
+        (state / "pid").write_text(str(stranger.pid))
+        stop = subprocess.run(
+            ["/bin/sh", "-c", ssh_launch.remote_stop_command(CP, 18000)],
+            env={**os.environ, "HOME": str(remote_home)},
+            capture_output=True, text=True, timeout=10)
+        assert stop.stdout == "" and stranger.poll() is None
         proc = _run_remote(remote_home, ssh_launch.remote_command(
-            _entry(remote_cdui="~/cdui"), 18000))
+            _entry(remote_cdui="~/cdui"), CP, 18000))
         proc.stdin.write(f"{TOKEN}\n".encode())
         proc.stdin.flush()
         _wait_file(remote_home / "token")
-        old.wait(timeout=10)
         assert "agent start --uds" in (remote_home / "args").read_text()
+        assert stranger.poll() is None
         proc.stdin.write(b"stop\n")
         proc.stdin.close()
+        output = proc.stdout.read().decode()
         assert proc.wait(timeout=10) == 0
+        assert "reattached" not in output
     finally:
-        if old.poll() is None:
-            old.kill()
+        stranger.kill()
+        stranger.wait()
+
+
+def test_two_control_planes_on_one_account_keep_their_own_agents(
+        remote_home):
+    """Same account, same slot, two control planes: each starts, stops and
+    prepares only its own agent and socket."""
+    other = "0123abcd"
+    env = {**os.environ, "HOME": str(remote_home)}
+    sessions = {}
+    for cp in (CP, other):
+        prepared = subprocess.run(
+            ["/bin/sh", "-c", ssh_launch.remote_prepare_command(cp, 18000)],
+            env=env, capture_output=True, text=True, timeout=10)
+        assert prepared.returncode == 0
+        (_state(remote_home, cp=cp) / "sock").write_text("live")
+        proc = _run_remote(remote_home, ssh_launch.remote_command(
+            _entry(remote_cdui="~/cdui"), cp, 18000, grace_s=60))
+        proc.stdin.write(f"{TOKEN}\n".encode())
+        proc.stdin.flush()
+        sessions[cp] = (proc, int(_wait_file(_state(remote_home, cp=cp)
+                                             / "pid")))
+    try:
+        assert sessions[CP][1] != sessions[other][1]
+        # Preparing one control plane's session leaves the other's socket.
+        subprocess.run(
+            ["/bin/sh", "-c", ssh_launch.remote_prepare_command(CP, 18000)],
+            env=env, capture_output=True, text=True, timeout=10)
+        assert not (_state(remote_home) / "sock").exists()
+        assert (_state(remote_home, cp=other) / "sock").read_text() == "live"
+        # Stopping one stops its agent only.
+        for proc, _ in sessions.values():
+            proc.stdin.close()  # dropped: the agents wait out their grace
+        stop = subprocess.run(
+            ["/bin/sh", "-c", ssh_launch.remote_stop_command(CP, 18000)],
+            env=env, capture_output=True, text=True, timeout=10)
+        assert f"stopped agent pid {sessions[CP][1]}" in stop.stdout
+        deadline = time.monotonic() + 10
+        while _alive(sessions[CP][1]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _alive(sessions[CP][1])
+        assert _alive(sessions[other][1])
+    finally:
+        for proc, pid in sessions.values():
+            subprocess.run(["kill", "-TERM", str(pid)], capture_output=True)
+            proc.wait(timeout=10)
 
 
 # ── validation ────────────────────────────────────────────────────────────
@@ -835,7 +966,7 @@ async def api(tmp_path, fake_ssh):
     database.connect()
     store = WorkerStore(database)
     registry = WorkerRegistry()
-    launcher = SshLauncher(store, registry, port_range=RANGE,
+    launcher = SshLauncher(store, registry, port_range=RANGE, instance_id=CP,
                            local_port=LOCAL_PORT)
     app.state.db = database
     app.state.worker_store = store

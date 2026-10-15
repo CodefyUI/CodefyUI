@@ -8,6 +8,8 @@ JSON line, to ``$FAKE_SSH_LOG`` and the first stdin line (the token) to
 - ``hold`` (default): print a line, then wait for stdin to end and exit 0
   -- an ssh session whose remote agent ends when its stdin does;
 - ``fail``: print an ssh authentication error and exit 255;
+- ``refused``: print the agent's "the control plane refused the token"
+  error, then hold like ``hold``;
 - ``mismatch``: print the agent's "credential is for worker X" error and
   exit 2, as an agent with another worker's stored credential does;
 - ``forbidden``: refuse every forward with sshd's "administratively
@@ -21,9 +23,10 @@ JSON line, to ``$FAKE_SSH_LOG`` and the first stdin line (the token) to
 
 Without ``-R`` (a one-shot command: prepare, stop) ``tunnel`` mode runs
 the command the same way; the other modes answer the prepare command with
-a made-up directory (``/home/fake/.codefyui-ssh/<slot>``) and exit 0.
+a made-up directory (``/home/fake/.codefyui-ssh/<cp>-<slot>``, or
+``$FAKE_SSH_PREPARE_DIR``) and exit 0.
 
-A ``-R`` whose slot (``.codefyui-ssh/<slot>/sock``) is listed in
+A ``-R`` whose slot (``.codefyui-ssh/<cp>-<slot>/sock``) is listed in
 ``$FAKE_SSH_BUSY_PORTS`` (comma-separated, or ``all``) fails the way
 ``ExitOnForwardFailure=yes`` does, in every mode but ``fail``. In ``hold``
 mode it prints the remote script's pid line.
@@ -62,14 +65,28 @@ def _pipe(source: socket.socket, sink: socket.socket) -> None:
                 pass
 
 
-def _relay(listener: socket.socket, host: str, port: int) -> None:
+def _dial(local: str) -> socket.socket:
+    """``-R``'s local end: a socket path, or ``host:port``."""
+    if local.startswith("/"):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(local)
+        except OSError:
+            sock.close()
+            raise
+        return sock
+    host, _, port = local.rpartition(":")
+    return socket.create_connection((host.strip("[]"), int(port)))
+
+
+def _relay(listener: socket.socket, local: str) -> None:
     while True:
         try:
             client, _ = listener.accept()
         except OSError:
             return
         try:
-            upstream = socket.create_connection((host, port))
+            upstream = _dial(local)
         except OSError:
             client.close()
             continue
@@ -119,18 +136,18 @@ def main() -> int:
             time.sleep(hang)
             return 0
         if mode != "tunnel":
-            slot = re.search(r"\.codefyui-ssh/(\d+)", argv[-1])
-            if "codefyui-ssh: dir" in argv[-1] and slot is not None:
-                print(f"codefyui-ssh: dir /home/fake/.codefyui-ssh/"
-                      f"{slot.group(1)}", flush=True)
+            key = re.search(r"\.codefyui-ssh/([0-9a-f]+-\d+)", argv[-1])
+            if "codefyui-ssh: dir" in argv[-1] and key is not None:
+                where = (os.environ.get("FAKE_SSH_PREPARE_DIR")
+                         or f"/home/fake/.codefyui-ssh/{key.group(1)}")
+                print(f"codefyui-ssh: dir {where}", flush=True)
             return 0
         return subprocess.run(["sh", "-c", argv[-1]], env=_remote_env(),
                               stdin=subprocess.DEVNULL,
                               check=False).returncode
     forward = argv[argv.index("-R") + 1]
     path, rest = forward.split(":", 1)
-    local_host, _, local_port = rest.rpartition(":")
-    slot = re.search(r"\.codefyui-ssh/(\d+)/", path)
+    slot = re.search(r"\.codefyui-ssh/[0-9a-f]+-(\d+)/", path)
     remote_port = slot.group(1) if slot is not None else ""
     if mode == "forbidden":
         print("Warning: remote port forwarding failed for listen path "
@@ -155,8 +172,8 @@ def main() -> int:
                   f"{path}", file=sys.stderr, flush=True)
             return 255
         listener.listen(16)
-        threading.Thread(target=_relay, daemon=True, args=(
-            listener, local_host.strip("[]"), int(local_port))).start()
+        threading.Thread(target=_relay, daemon=True,
+                         args=(listener, rest)).start()
         child = subprocess.Popen(["sh", "-c", argv[-1]], env=_remote_env(),
                                  stdin=subprocess.PIPE)
         threading.Thread(target=_copy_stdin, args=(child,),
@@ -172,6 +189,10 @@ def main() -> int:
               "token", file=sys.stderr, flush=True)
         return 2
     print("codefyui-ssh: agent pid 4242", file=sys.stderr, flush=True)
+    if mode == "refused":
+        print("2026-01-01 00:00:00,000 ERROR app.agent.connection: the "
+              "control plane refused the token (HTTP 403); token from the "
+              "stored credential", file=sys.stderr, flush=True)
     for line in sys.stdin:
         with open(log + ".stdin", "a", encoding="utf-8") as handle:
             handle.write(line)

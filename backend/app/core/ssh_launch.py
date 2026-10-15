@@ -8,10 +8,15 @@ opens a port. This process runs, per ``ssh_workers`` row::
         -o ServerAliveInterval=15 -o ServerAliveCountMax=3
         -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20
         [-p <port>] [-i <identity>]
-        -R <remote $HOME>/.codefyui-ssh/<slot>/sock:127.0.0.1:<listener>
+        -R <remote $HOME>/.codefyui-ssh/<cp>-<slot>/sock:<listener socket>
         -- <target> "sh -c '...cdui agent start --uds <that sock>
-                      --foreground --control http://127.0.0.1:<slot>
+                      --foreground --control http://cp-<cp>.invalid:<slot>
                       --name <id>'"
+
+``<cp>`` is this control plane's instance id (:func:`load_instance_id`,
+eight hex digits kept in its user-data directory), so two control planes that
+use the same account on one GPU host never share a directory, a socket,
+a stored credential or an agent.
 
 and the agent on the remote host dials that Unix socket, which the reverse
 forward carries to this server. Facts that shape it:
@@ -23,7 +28,7 @@ forward carries to this server. Facts that shape it:
   ``accept-new`` unless ``CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes``.
 - **Only this account on the remote host can reach the forward.** It is
   a Unix-domain socket (OpenSSH >= 6.7, sshd ``AllowStreamLocalForwarding``,
-  on by default) in ``~/.codefyui-ssh/<slot>/``, a directory of mode 0700:
+  on by default) in ``~/.codefyui-ssh/<cp>-<slot>/``, a directory of mode 0700:
   another user of a shared GPU host can neither connect to it nor bind it
   first and catch the agent's token, as a loopback TCP port would allow.
   Before each session a one-shot ssh (:func:`remote_prepare_command`)
@@ -32,19 +37,22 @@ forward carries to this server. Facts that shape it:
   option of that name does not reach a ``-R`` forward) and reports the
   absolute path, which ``-R`` needs.
 - **The forward lands on a listener of its own** (``core.tunnel_listener``),
-  an ephemeral port on this machine's loopback opened per SSH worker, never
-  on the server's port. It serves the agent routes only, each with a worker
-  (or enrollment) token, and never the session token; nothing a client
-  sends, ``Host`` included, makes a request on the main port count as
-  tunnelled.
+  opened per SSH worker, never on the server's port: a Unix socket in a
+  private (0700) temporary directory on POSIX, so other users of this
+  machine cannot reach it either (``-R`` forwards socket to socket), and an
+  ephemeral port on 127.0.0.1 on Windows. It serves the agent routes only,
+  each with a worker (or enrollment) token, and never the session token;
+  nothing a client sends, ``Host`` included, makes a request on the main
+  port count as tunnelled.
 - **No token on any command line.** Each launch mints a one-time
   enrollment token (10 minutes, one use; bound to the worker once it is
   enrolled, so it can only re-key that name) and writes it to ssh's
   **stdin**; the remote shell reads it into ``$CODEFYUI_AGENT_TOKEN``. The
   agent uses the worker credential it stored on the remote host when it
   has one for that address (``app.agent.enroll``, keyed by the control URL
-  ``http://127.0.0.1:<slot>``, which names the tunnel; the agent dials the
-  socket, never that TCP port) and enrolls with the token otherwise. The
+  ``http://cp-<cp>.invalid:<slot>``, which names the tunnel and resolves
+  nowhere; the agent dials the socket) and enrolls with the token
+  otherwise. The
   slot (``remote_port``, from ``CODEFYUI_SSH_REMOTE_PORT_RANGE``) is stored
   with the row, so a restart reuses the state directory and the credential
   stored for it. A worker token never leaves either host.
@@ -61,7 +69,9 @@ forward carries to this server. Facts that shape it:
   ``CODEFYUI_WORKER_RESUME_GRACE_S`` with no newer session attached does
   it get SIGTERM. The next launch re-creates the forward at the **same**
   socket path and the remote script finds the agent alive (its pid in
-  ``~/.codefyui-ssh/<slot>/pid``): it starts no second one, it re-attaches,
+  ``~/.codefyui-ssh/<cp>-<slot>/pid``, checked against the agent's own
+  command line so a reused pid is never taken for it): it starts no second
+  one, it re-attaches,
   and the agent reconnects through the new tunnel by itself. Disable with
   no session attached stops the agent with a one-shot ssh
   (:func:`remote_stop_command`).
@@ -69,9 +79,11 @@ forward carries to this server. Facts that shape it:
   server shutdown send ``stop``; the agent stops its runs (their grace),
   uploads what they wrote (a transfer run's interrupt checkpoint) and
   reports each ``run_finished`` before it exits, so ssh is given
-  :data:`STOP_GRACE_S` before it is terminated. A run still attached after
-  that ends at once (``WorkerRegistry.stopped``), not after the resume
-  grace: nothing is coming back for it.
+  :data:`STOP_GRACE_S` before it is terminated (:data:`SHUTDOWN_GRACE_S`
+  at a server shutdown, which stops the SSH workers before the run service
+  so their reports are still recorded). A run still attached after that
+  ends at once (``WorkerRegistry.stopped``), not after the resume grace:
+  nothing is coming back for it.
 - **Retries with backoff** (2 s doubling to 60 s, reset after a minute
   up). A server that refuses the forward (``AllowStreamLocalForwarding`` /
   ``DisableForwarding``: an explicit refusal, or :data:`FORWARD_GIVE_UP`
@@ -81,10 +93,12 @@ forward carries to this server. Facts that shape it:
 - **Stored credentials that do not fit.** The first launch on a slot this
   entry has not used before runs ``cdui agent forget`` first, so a
   credential another worker (or another control plane) left for that
-  address is never presented. When it happens anyway -- this server
-  refuses the credential on that tunnel (``note_refused``, called by
-  ``ws_worker``) or the agent says its credential is for another worker --
-  the session is restarted once with ``cdui agent forget`` first.
+  address is never presented. When it happens anyway -- the agent itself
+  reports that this server refused its token, or that its credential is
+  for another worker (both read from its log, which only that agent
+  writes) -- the session is restarted once with ``cdui agent forget``
+  first. A refusal ``ws_worker`` sees on the listener is not acted on: it
+  cannot tell the agent from another local client.
 - **One action at a time per entry**: add, enable, disable and delete hold
   the entry's lock, so an enable that waits behind a disable ends with the
   tunnel running and a delete is never undone by an enable racing it.
@@ -142,6 +156,12 @@ ENROLL_TTL_S = 600
 #: checkpoint) and reports ``run_finished``: all of that must still find
 #: the tunnel up. An agent with no run exits within a second or two.
 STOP_GRACE_S = 60.0
+#: The same, at a server shutdown: every SSH worker is told to stop at once
+#: and given this long in all. ``cdui stop`` itself kills the server after
+#: about 2 s; then the agents still stop (they got ``stop`` first), ssh
+#: exits once they have, and the runs they could not report are settled
+#: ``interrupted`` by the next start.
+SHUTDOWN_GRACE_S = 25.0
 KILL_GRACE_S = 5.0
 SERVER_ALIVE_INTERVAL_S = 15
 CONNECT_TIMEOUT_S = 20
@@ -159,6 +179,9 @@ FORWARD_GIVE_UP = 3
 #: The agent's words when its stored credential names another worker
 #: (``app.agent.cli.use_stored_credential``; the remote runs in English).
 CREDENTIAL_MISMATCH = "is for worker"
+#: The agent's words when this server refused its token
+#: (``app.agent.connection``, logged on each refused dial).
+TOKEN_REFUSED = "the control plane refused the token"
 #: The remote script's line naming the agent's pid.
 REMOTE_PID = re.compile(r"codefyui-ssh: agent pid (\d+)")
 #: The remote shell's exit status when no token arrived on stdin.
@@ -170,7 +193,13 @@ REMOTE_STATE_DIR = ".codefyui-ssh"
 #: The forward's Unix socket, in that per-slot directory.
 SOCKET_NAME = "sock"
 #: The prepare command's line naming the (absolute) state directory.
-REMOTE_DIR = re.compile(r"codefyui-ssh: dir (/[^\s:]+)")
+REMOTE_DIR = re.compile(r"codefyui-ssh: dir (.*)$")
+#: What a remote state directory may be spelled with: ``-R`` splits on
+#: ``:``, and the remote commands are kept free of quoting surprises.
+SAFE_REMOTE_DIR = re.compile(r"/[A-Za-z0-9._@+/-]+")
+#: The file under this server's user-data directory holding its instance id.
+INSTANCE_ID_FILE = "ssh-instance-id"
+INSTANCE_ID_PATTERN = re.compile(r"[0-9a-f]{8}")
 #: ``sun_path`` holds 108 bytes on Linux, 104 on macOS and the BSDs.
 MAX_SOCKET_PATH = 100
 #: How long a one-shot remote command (prepare, stop) may take.
@@ -260,8 +289,35 @@ def ssh_executable() -> str | None:
 # ── the command ───────────────────────────────────────────────────────────
 
 
-def control_url(remote_port: int) -> str:
-    return f"http://127.0.0.1:{remote_port}"
+def load_instance_id(user_data: Path | None = None) -> str:
+    """This control plane's id among the ones that may share an account on
+    a GPU host: eight hex digits, made once and kept in the user-data
+    directory (``ssh-instance-id``)."""
+    import secrets
+
+    from .auth import _token_dir
+
+    path = (user_data or _token_dir()) / INSTANCE_ID_FILE
+    try:
+        found = path.read_text(encoding="ascii").strip()
+        if INSTANCE_ID_PATTERN.fullmatch(found):
+            return found
+    except (OSError, UnicodeDecodeError):
+        pass
+    made = secrets.token_hex(4)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(made + "\n", encoding="ascii")
+    except OSError:
+        logger.warning("could not keep the SSH instance id in %s; using %s "
+                       "for this run", path, made, exc_info=True)
+    return made
+
+
+def control_url(cp: str, remote_port: int) -> str:
+    """The address the agent stores its credential under. ``.invalid``
+    never resolves: the agent reaches the server through ``--uds`` only."""
+    return f"http://cp-{cp}.invalid:{remote_port}"
 
 
 def _remote_cdui(entry: SshWorker) -> str:
@@ -269,11 +325,28 @@ def _remote_cdui(entry: SshWorker) -> str:
     return '"$HOME"/' + cdui[2:] if cdui.startswith("~/") else cdui
 
 
-def _state_dir(remote_port: int) -> str:
+def state_key(cp: str, remote_port: int) -> str:
+    return f"{cp}-{remote_port}"
+
+
+def _state_dir(cp: str, remote_port: int) -> str:
     """Where the remote script keeps the agent's pid, its log, the attached
-    session's pid and the forward's socket, per slot (per control-plane
-    address)."""
-    return f'"$HOME"/{REMOTE_STATE_DIR}/{remote_port}'
+    session's pid and the forward's socket: one directory per control plane
+    and slot."""
+    return f'"$HOME"/{REMOTE_STATE_DIR}/{state_key(cp, remote_port)}'
+
+
+#: Shell functions the remote scripts share. ``al``: alive and not a zombie
+#: (an exited child stays one until waited). ``own``: alive and the agent
+#: of this state directory -- its command line names this directory's
+#: socket (``/proc``), or at least ``agent start`` where there is no
+#: ``/proc``. A pid file outlives its process, and the pid may be reused.
+_FUNCS = ('al() { ps -p "$1" -o stat= 2>/dev/null | grep -q "^[^Z]"; }; '
+          'own() { [ -n "$1" ] && al "$1" || return 1; '
+          'if [ -r "/proc/$1/cmdline" ]; then '
+          f'grep -qF -- "$d/{SOCKET_NAME}" "/proc/$1/cmdline"; '
+          'else ps -p "$1" -o args= 2>/dev/null | grep -q "agent start"; '
+          "fi; }; ")
 
 
 def _sh(script: str) -> str:
@@ -287,7 +360,7 @@ def resume_grace_s() -> int:
     return max(1, int(settings.WORKER_RESUME_GRACE_S))
 
 
-def remote_command(entry: SshWorker, remote_port: int, *,
+def remote_command(entry: SshWorker, cp: str, remote_port: int, *,
                    forget_first: bool = False,
                    grace_s: int | None = None) -> str:
     """The command ssh runs on the remote host.
@@ -296,10 +369,12 @@ def remote_command(entry: SshWorker, remote_port: int, *,
     so it reads the same to bash, zsh, fish and csh login shells. It reads
     the token from stdin, puts ``~/.local/bin`` on PATH and asks for
     English output (which this module reads). Then, in the per-slot state
-    directory (``~/.codefyui-ssh/<slot>``, where the forward's socket is):
+    directory (``~/.codefyui-ssh/<cp>-<slot>``, where the forward's socket
+    is):
 
     - it records itself as the attached session (``session``);
-    - if the agent named in ``pid`` is alive, it **re-attaches**: no
+    - if the agent named in ``pid`` is alive and is this directory's agent
+      (``own``), it **re-attaches**: no
       second agent; the agent reconnects through this session's tunnel by
       itself. Otherwise it starts one in the foreground (``--uds`` names
       the socket), its output in ``log``, its pid in ``pid``. Either way it
@@ -310,8 +385,8 @@ def remote_command(entry: SshWorker, remote_port: int, *,
       newer session has attached by then.
     """
     cdui = _remote_cdui(entry)
-    url = control_url(remote_port)
-    d = _state_dir(remote_port)
+    url = control_url(cp, remote_port)
+    d = _state_dir(cp, remote_port)
     grace = resume_grace_s() if grace_s is None else max(1, int(grace_s))
     forget = (f"{cdui} agent forget {url} </dev/null >/dev/null 2>&1; "
               if forget_first else "")
@@ -320,27 +395,17 @@ def remote_command(entry: SshWorker, remote_port: int, *,
         "CODEFYUI_AGENT_TOKEN=$t; export CODEFYUI_AGENT_TOKEN; t=; "
         'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; '
         "CODEFYUI_LANG=en; export CODEFYUI_LANG; "
-        f"d={d}; "
-        # Alive and not a zombie (an exited child stays one until waited).
-        'al() { ps -p "$1" -o stat= 2>/dev/null | grep -q "^[^Z]"; }; '
+        f"d={d}; " + _FUNCS +
         'mkdir -p "$d" && chmod 700 "$d" || exit ' + str(NO_STATE_EXIT) + "; "
         'echo $$ > "$d/session"; '
         "exec 3<&0; "
         'a=$(cat "$d/pid" 2>/dev/null); o=; '
-        # An agent from before the socket forward (#784 follow-up) dials a
-        # TCP port nothing serves any more: stop it, start a new one.
-        'if [ -n "$a" ] && ps -p "$a" -o args= 2>/dev/null '
-        '| grep "agent start" | grep -qv "agent start --uds"; then '
-        "kill -TERM $a; a=; fi; "
-        'if [ -n "$a" ] && ps -p "$a" -o args= 2>/dev/null '
-        '| grep -q "agent start --uds"; then '
+        'if own "$a"; then '
         "echo codefyui-ssh: agent pid $a reattached >&2; "
         'tail -n 5 -f "$d/log" >&2 & l=$!; '
         "else "
         + forget
         + ': > "$d/log"; '
-        # ``--uds`` right after ``agent start``: the re-attach check above
-        # reads it there even from a ``ps`` that cuts long lines.
         f'{cdui} agent start --uds "$d/{SOCKET_NAME}" --foreground '
         f"--control {url} --name {entry.id} "
         '</dev/null 3<&- >> "$d/log" 2>&1 & a=$!; o=1; '
@@ -368,24 +433,26 @@ def remote_command(entry: SshWorker, remote_port: int, *,
     return _sh(script)
 
 
-def remote_stop_command(remote_port: int) -> str:
-    """Stop the agent of *remote_port*'s state directory, if it is alive
-    (Disable or Remove while no session is attached)."""
-    d = _state_dir(remote_port)
+def remote_stop_command(cp: str, remote_port: int) -> str:
+    """Stop the agent of this control plane's *remote_port* state
+    directory, if it is alive (Disable or Remove while no session is
+    attached)."""
+    d = _state_dir(cp, remote_port)
     return _sh(
-        f"d={d}; "
+        f"d={d}; " + _FUNCS +
         'a=$(cat "$d/pid" 2>/dev/null); '
-        'if [ -n "$a" ] && ps -p "$a" -o args= 2>/dev/null '
-        '| grep -q "agent start"; then kill -TERM $a; '
+        'if own "$a"; then kill -TERM $a; '
         "echo codefyui-ssh: stopped agent pid $a; fi; exit 0")
 
 
-def remote_prepare_command(remote_port: int) -> str:
+def remote_prepare_command(cp: str, remote_port: int) -> str:
     """Before each session: create *remote_port*'s state directory (mode
     0700, as is ``~/.codefyui-ssh``), remove a socket a dropped session
     left there (``-R`` cannot bind over it), and print the directory's
-    absolute path (``-R`` takes no ``~``)."""
-    d = _state_dir(remote_port)
+    absolute path (``-R`` takes no ``~``). The directory is this control
+    plane's alone (``<cp>-<slot>``): the socket removed is never another's
+    live one."""
+    d = _state_dir(cp, remote_port)
     return _sh(
         f"umask 077; d={d}; "
         f'mkdir -p "$d" && chmod 700 "$HOME"/{REMOTE_STATE_DIR} "$d" '
@@ -413,17 +480,18 @@ def ssh_base_argv(ssh: str, entry: SshWorker) -> list[str]:
     return argv
 
 
-def ssh_argv(ssh: str, entry: SshWorker, remote_port: int, local_port: int,
-             *, remote_dir: str, forget_first: bool = False,
+def ssh_argv(ssh: str, entry: SshWorker, cp: str, remote_port: int,
+             listener: str, *, remote_dir: str, forget_first: bool = False,
              grace_s: int | None = None) -> list[str]:
-    """The session: *remote_dir*'s socket forwarded to *local_port* on this
-    machine's loopback (the SSH worker's own listener)."""
+    """The session: *remote_dir*'s socket forwarded to *listener* on this
+    machine (the SSH worker's own listener: a socket path, or
+    ``127.0.0.1:<port>``)."""
     argv = ssh_base_argv(ssh, entry)
     argv[2:2] = ["-o", "ExitOnForwardFailure=yes"]
-    argv += ["-R", f"{socket_path(remote_dir)}:127.0.0.1:{local_port}",
+    argv += ["-R", f"{socket_path(remote_dir)}:{listener}",
              "--", validate_target(entry.target),
-             remote_command(entry, remote_port, forget_first=forget_first,
-                            grace_s=grace_s)]
+             remote_command(entry, cp, remote_port,
+                            forget_first=forget_first, grace_s=grace_s)]
     return argv
 
 
@@ -499,21 +567,25 @@ class SshLaunch:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def stop(self) -> None:
+    async def stop(self, grace_s: float = STOP_GRACE_S) -> None:
         """End the ssh session: send ``stop`` and close its stdin (the
-        remote agent winds down, its runs report how they ended), then
-        terminate, then kill. Then close the listener and end whatever run
-        of this worker is still waiting for it. The loop does not restart
-        it."""
+        remote agent winds down, its runs report how they ended), wait up
+        to *grace_s*, then terminate, then kill. Then close the listener and
+        end whatever run of this worker is still waiting for it. The loop
+        does not restart it."""
         self._stop.set()
         proc = self._proc
         if proc is not None and proc.returncode is None:
-            await _end_process(proc)
+            await _end_process(proc, grace_s)
         elif self._attached_port is not None:
             # No session to send ``stop`` through: an agent that survived
             # a drop may still run there, waiting out its grace.
-            await self._oneshot(remote_stop_command(self._attached_port),
-                                "stop the remote agent")
+            # Within *grace_s* too: a cancelled one-shot kills its ssh.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._oneshot(
+                    remote_stop_command(self.launcher.instance_id,
+                                        self._attached_port),
+                    "stop the remote agent"), grace_s)
         self._attached_port = None
         if self._task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -534,11 +606,6 @@ class SshLaunch:
         self.pid = None
         self.remote_pid = None
         self.reattached = False
-
-    def note_refused(self) -> None:
-        """This server refused the credential the agent presented on this
-        tunnel: restart it with ``cdui agent forget`` first."""
-        self._refused = True
 
     # ── the loop ──────────────────────────────────────────────────────────
 
@@ -589,15 +656,15 @@ class SshLaunch:
             self._fail(f"no free slot left in {low}-{high} "
                        "(CODEFYUI_SSH_REMOTE_PORT_RANGE)")
             return False
-        local_port = await self._listen()
+        listener = await self._listen()
         remote_dir = await self._prepare(port)
         if remote_dir is None or self._stop.is_set():
             return False
         token = await self._mint_token()
         if self._stop.is_set():
             return False
-        argv = ssh_argv(ssh, self.entry, port, local_port,
-                        remote_dir=remote_dir,
+        argv = ssh_argv(ssh, self.entry, self.launcher.instance_id, port,
+                        listener, remote_dir=remote_dir,
                         forget_first=self._forget_first)
         self.reattached = False
         self._forget_first = False
@@ -606,8 +673,8 @@ class SshLaunch:
         self.remote_pid = None
         self.tail.clear()
         self.state = STATE_CONNECTING
-        logger.info("SSH worker %s: ssh %s (slot %d, forward to 127.0.0.1:%d)",
-                    self.entry.id, self.entry.target, port, local_port)
+        logger.info("SSH worker %s: ssh %s (slot %d, forward to %s)",
+                    self.entry.id, self.entry.target, port, listener)
         kwargs: dict[str, Any] = {}
         if sys.platform != "win32":
             # Not in the server's process group, and no controlling tty: a
@@ -653,9 +720,9 @@ class SshLaunch:
                     self.state = STATE_CONNECTING
                     self.up_since = None
                 if self._refused:
-                    # The credential the agent stored for this address is
-                    # one this server does not accept (another control
-                    # plane's, or revoked): start over with a forget.
+                    # The agent says this server refused the credential it
+                    # stored for this address (another control plane's, or
+                    # revoked): start over with a forget.
                     self._forget_first = True
                     logger.warning(
                         "SSH worker %s: this server refused the agent's "
@@ -729,6 +796,8 @@ class SshLaunch:
                 self._attached_port = self._port
             if CREDENTIAL_MISMATCH in line:
                 self._mismatch = True
+            if TOKEN_REFUSED in line:
+                self._refused = True
             logger.debug("ssh %s: %s", self.entry.id, line)
 
     def _worker_online(self) -> bool:
@@ -740,11 +809,11 @@ class SshLaunch:
     async def _ensure_port(self) -> int | None:
         port = self.entry.remote_port
         if port is None or not self.launcher.port_usable(port, self.entry.id):
-            port = self.launcher.free_port(self.entry.id, after=port)
+            port = self.launcher.free_port(self.entry.id)
             if port is None:
                 return None
             await self._save_port(port)
-        self._hold_port(port)
+        self._port = port
         return port
 
     async def _save_port(self, port: int) -> None:
@@ -757,23 +826,23 @@ class SshLaunch:
         await self.launcher.store.update_ssh_worker(self.entry.id,
                                                     remote_port=port)
 
-    def _hold_port(self, port: int) -> None:
-        self._port = port
-
     # ── the listener and the remote directory ────────────────────────────
 
-    async def _listen(self) -> int:
-        """The local port the forward goes to: this SSH worker's own
-        listener, opened at the first attempt and kept until :meth:`stop`
-        (a launcher without an app, in unit tests, has a fixed port)."""
+    async def _listen(self) -> str:
+        """Where the forward goes on this machine (``-R``'s right-hand
+        side): this SSH worker's own listener, opened at the first attempt
+        and kept until :meth:`stop`, opened again when it has died (a
+        launcher without an app, in unit tests, has a fixed port)."""
+        if self._listener is not None and not self._listener.alive:
+            await self._close_listener()
         if self._listener is None:
-            self._listener = self.launcher.make_listener(self.entry.id)
-        if self._listener is None:
-            return self.launcher.local_port()
-        if self._listener.port is None:
-            await self._listener.open()
-        assert self._listener.port is not None
-        return self._listener.port
+            listener = self.launcher.make_listener(self.entry.id)
+            if listener is None:
+                return f"127.0.0.1:{self.launcher.local_port()}"
+            await listener.open()
+            self._listener = listener
+        assert self._listener.target is not None
+        return self._listener.target
 
     async def _close_listener(self) -> None:
         listener, self._listener = self._listener, None
@@ -783,19 +852,29 @@ class SshLaunch:
     async def _prepare(self, port: int) -> str | None:
         """Run :func:`remote_prepare_command`: the absolute state directory
         on the remote host, or None (the failure is recorded)."""
-        code, lines = await self._oneshot(remote_prepare_command(port),
+        cp = self.launcher.instance_id
+        code, lines = await self._oneshot(remote_prepare_command(cp, port),
                                           "prepare the remote directory")
         found = [m.group(1) for m in map(REMOTE_DIR.search, lines)
                  if m is not None]
         if code != 0 or not found:
             text = "\n".join(lines[-ERROR_LINES:])
             if code == NO_STATE_EXIT:
-                text = (f"could not create ~/{REMOTE_STATE_DIR}/{port} on "
+                text = (f"could not create ~/{REMOTE_STATE_DIR}/"
+                        f"{state_key(cp, port)} on "
                         f"{self.entry.target}\n{text}")
             self._fail(text or f"preparing {self.entry.target} failed "
                        f"(ssh exited with status {code})", code)
             return None
-        remote_dir = found[-1]
+        remote_dir = found[-1].strip()
+        if SAFE_REMOTE_DIR.fullmatch(remote_dir) is None:
+            self._give_up(
+                f"the remote state directory {remote_dir!r} on "
+                f"{self.entry.target} has a character an SSH worker cannot "
+                "use (a space, ':' or a quote, from $HOME): only letters, "
+                "digits and . _ @ + - / are supported. Use an account whose "
+                "home directory is spelled that way.", None)
+            return None
         if len(socket_path(remote_dir).encode()) > MAX_SOCKET_PATH:
             self._give_up(
                 f"the socket path {socket_path(remote_dir)} on "
@@ -880,16 +959,18 @@ class SshLaunch:
             out, _ = await asyncio.wait_for(proc.communicate(),
                                             ONESHOT_TIMEOUT_S)
         except asyncio.TimeoutError:
-            # Not left behind: kill it and reap it.
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.wait(), KILL_GRACE_S)
             message = (f"ssh did not finish within {ONESHOT_TIMEOUT_S:.0f} s "
                        f"trying to {what}")
             logger.warning("SSH worker %s: %s", self.entry.id, message)
             self.tail.append(message)
             return None, [message]
+        finally:
+            if proc.returncode is None:
+                # Timed out, or this task was cancelled: never left behind.
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(proc.wait())
         lines = [line.rstrip() for line in
                  out.decode("utf-8", errors="replace").splitlines()
                  if line.strip()]
@@ -899,16 +980,17 @@ class SshLaunch:
         return proc.returncode, lines
 
 
-async def _end_process(proc: asyncio.subprocess.Process) -> None:
+async def _end_process(proc: asyncio.subprocess.Process,
+                       grace_s: float = STOP_GRACE_S) -> None:
     """Send ``stop`` (the remote agent ends now, not after the resume
-    grace) and close stdin, wait; terminate, wait; kill."""
+    grace) and close stdin, wait *grace_s*; terminate, wait; kill."""
     if proc.stdin is not None:
         with contextlib.suppress(Exception):
             proc.stdin.write(b"stop\n")
             await proc.stdin.drain()
         with contextlib.suppress(Exception):
             proc.stdin.close()
-    for step, grace in (("eof", STOP_GRACE_S), ("terminate", KILL_GRACE_S),
+    for step, grace in (("eof", grace_s), ("terminate", KILL_GRACE_S),
                         ("kill", KILL_GRACE_S)):
         if step == "terminate":
             with contextlib.suppress(ProcessLookupError):
@@ -935,9 +1017,13 @@ class SshLauncher:
                  ssh: str | None = None,
                  port_range: tuple[int, int] | None = None,
                  local_port: int | None = None,
-                 app: Any = None) -> None:
+                 app: Any = None,
+                 instance_id: str | None = None) -> None:
         self.store = store
         self.registry = registry
+        #: This control plane's id on the remote hosts
+        #: (:func:`load_instance_id`).
+        self.instance_id = instance_id or load_instance_id()
         #: The ASGI app each SSH worker's listener serves (its agent routes
         #: only); None in unit tests, which forward to *local_port*.
         self.app = app
@@ -979,30 +1065,20 @@ class SshLauncher:
                 if name != exclude and entry.remote_port is not None}
 
     def port_usable(self, port: int, owner: str) -> bool:
+        """*port* is a slot in the range no other entry holds (a slot names
+        a state directory, not a TCP port)."""
         low, high = self.port_range
-        return (low <= port <= high and port != self.local_port()
-                and port not in self._ports_taken(owner))
+        return low <= port <= high and port not in self._ports_taken(owner)
 
-    def free_port(self, owner: str, after: int | None = None) -> int | None:
-        """The first usable port after *after* (wrapping), or None."""
+    def free_port(self, owner: str) -> int | None:
+        """The first usable slot, or None."""
         low, high = self.port_range
-        span = list(range(low, high + 1))
-        if after is not None and low <= after <= high:
-            start = span.index(after) + 1
-            span = span[start:] + span[:start]
-        for port in span:
+        for port in range(low, high + 1):
             if self.port_usable(port, owner):
                 return port
         return None
 
     # ── events from the socket side ──────────────────────────────────────
-
-    def note_refused(self, name: str) -> None:
-        """``ws_worker`` refused the credential an agent presented through
-        SSH worker *name*'s listener (an unknown or revoked worker token)."""
-        launch = self.launches.get(name)
-        if launch is not None:
-            launch.note_refused()
 
     def worker_connected(self, name: str) -> None:
         """A worker connected: one whose SSH row is disabled stays
@@ -1080,10 +1156,14 @@ class SshLauncher:
             return await self.store.delete_ssh_worker(name)
 
     async def shutdown(self) -> None:
+        """Stop every SSH worker at once: each gets ``stop`` immediately,
+        and :data:`SHUTDOWN_GRACE_S` in all to wind down before its ssh is
+        terminated, then killed (and reaped)."""
         launches = list(self.launches.values())
         if launches:
             logger.info("closing %d SSH worker session(s)", len(launches))
-        await asyncio.gather(*(launch.stop() for launch in launches),
+        await asyncio.gather(*(launch.stop(SHUTDOWN_GRACE_S)
+                               for launch in launches),
                              return_exceptions=True)
 
     # ── the panel's view ──────────────────────────────────────────────────

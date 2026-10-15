@@ -864,7 +864,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         _err("--ca-fingerprint 需要 https:// 控制面網址。",
              "--ca-fingerprint needs an https:// control URL.")
         return 2
-    if plain_http_to_another_machine(control) and not args.daemonized:
+    if plain_http_to_another_machine(control) and not args.daemonized \
+            and not uds:  # ssh carries the socket across the network
         warn_plain_http(control)
     trust = (build_trust(control, pin, stored)
              if isinstance(control, str) and is_https(control) else None)

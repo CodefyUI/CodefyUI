@@ -316,10 +316,15 @@ async def test_a_worker_stopped_on_purpose_ends_its_runs_at_once(
         await _until(lambda: ("connection", False) in recorder.calls)
         assert not task.done()
     registry.stopped("box", "SSH worker box was stopped")
+    # ``DELETE /api/workers/ssh/{id}`` forgets the worker right after the
+    # launcher stopped it: the run is not ended a second time.
+    assert registry.run_state("box", "r1") is None
+    registry.forget("box", "the SSH worker was deleted")
     outcome = await asyncio.wait_for(task, 5)
     assert outcome.status == "interrupted"
     assert "SSH worker box was stopped" in outcome.error
-    registry.stopped("box", "again")  # nothing left: harmless
+    assert "deleted" not in outcome.error
+    registry.stopped("box", "again")  # forgotten: harmless
     registry.stopped("nobody", "unknown")
 
 

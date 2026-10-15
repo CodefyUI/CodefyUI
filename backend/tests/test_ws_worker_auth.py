@@ -360,12 +360,14 @@ class _Launcher:
         self.connected.append(name)
 
 
-async def test_only_a_refused_credential_on_a_tunnel_reaches_the_launcher(
+async def test_a_refused_credential_on_a_tunnel_never_reaches_the_launcher(
         enrolled, monkeypatch, caplog):
-    """#784: the launcher restarts an agent with ``cdui agent forget`` only
-    for a 4401 through its own listener; a Host refusal (4003) on the main
-    port never counts. A tunnelled peer is not warned about plain ws://
-    (the hop across the network is ssh's)."""
+    """#784: a 4401 through an SSH worker's listener is not reported to
+    the launcher (any client of the listener could cause it, and acting on
+    it wipes the agent's credential); neither is a Host refusal (4003) on
+    the main port. The launcher acts on the agent's own log line instead.
+    A tunnelled peer is not warned about plain ws:// (the hop across the
+    network is ssh's)."""
     from httpx import AsyncClient
     from httpx_ws.transport import ASGIWebSocketTransport
 
@@ -385,7 +387,9 @@ async def test_only_a_refused_credential_on_a_tunnel_reaches_the_launcher(
                 async with aconnect_ws(_path("not-a-token"), client):
                     pass
         assert refused.value.code == 4003
-        assert launcher.refused == ["gpu-box"]
+        # Not reported: the listener cannot tell the agent from another
+        # client; the launcher acts on the agent's own report instead.
+        assert launcher.refused == []
 
         monkeypatch.setattr(ws_worker, "_peer_is_loopback", lambda ws: False)
         async with _tunnel("gpu-box") as client, \

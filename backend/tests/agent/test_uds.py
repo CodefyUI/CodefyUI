@@ -111,6 +111,24 @@ def test_enroll_goes_to_the_socket(sock_dir):
     assert request["host"] == "127.0.0.1:18000"
 
 
+def test_enroll_through_the_socket_ignores_a_proxy(sock_dir, monkeypatch):
+    """``http_proxy`` on the GPU host must not take the request: it would
+    get an absolute URL (and a Proxy-Authorization) instead of the socket
+    getting the request."""
+    for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.setenv(name, "http://user:secret@127.0.0.1:9")
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    with UnixControlPlane(sock_dir / "sock") as cp:
+        worker_id, _ = agent_enroll.enroll(
+            "http://cp-abcd1234.invalid:18000", ENROLL_TOKEN, name="gpu-box",
+            platform={}, devices=[], uds=str(sock_dir / "sock"))
+    assert worker_id == "gpu-box"
+    [request] = cp.requests
+    assert request["path"] == "/api/workers/enroll"
+    assert request["host"] == "cp-abcd1234.invalid:18000"
+
+
 def test_enroll_to_a_missing_socket_is_an_enroll_error(sock_dir):
     with pytest.raises(agent_enroll.EnrollError, match="could not reach"):
         agent_enroll.enroll("http://127.0.0.1:18000", ENROLL_TOKEN,
@@ -191,7 +209,7 @@ def test_uds_needs_an_http_control_url(user_data, control, capsys):
 
 
 def test_uds_reaches_the_enrollment_and_the_agent(user_data, sock_dir,
-                                                  monkeypatch):
+                                                  monkeypatch, capsys):
     started: list[Any] = []
 
     def fake_run_agent(args, control, token, facts, token_source=None,
@@ -204,11 +222,13 @@ def test_uds_reaches_the_enrollment_and_the_agent(user_data, sock_dir,
     sock = str(sock_dir / "sock")
     with UnixControlPlane(sock_dir / "sock") as cp:
         code = cli.main(["start", "--foreground", "--uds", sock,
-                         "--control", "http://127.0.0.1:18000",
+                         "--control", "http://cp-abcd1234.invalid:18000",
                          "--name", "gpu-box", "--token", ENROLL_TOKEN])
     assert code == 0
     assert [r["path"] for r in cp.requests] == ["/api/workers/enroll"]
-    assert started == [(sock, "http://127.0.0.1:18000", "w" * 43)]
+    assert started == [(sock, "http://cp-abcd1234.invalid:18000", "w" * 43)]
+    # ssh carries the socket across the network: no plain-HTTP warning.
+    assert "plain HTTP" not in capsys.readouterr().err
 
 
 def test_the_background_agent_keeps_the_socket(user_data, monkeypatch):
