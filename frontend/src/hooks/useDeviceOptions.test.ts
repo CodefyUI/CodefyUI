@@ -3,6 +3,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import {
   useDeviceOptions,
   deviceLabel,
+  deviceOptionLabel,
   isDeviceServed,
   _resetDeviceOptionsForTesting,
 } from './useDeviceOptions';
@@ -68,7 +69,7 @@ describe('deviceLabel', () => {
       .toBe('NVIDIA CUDA · cuda:0');
   });
 
-  describe('memory (#767)', () => {
+  describe('deviceOptionLabel: memory (#767)', () => {
     const GIB = 1024 ** 3;
     const mem = (free: number | null, total: number | null, source = 'nvml') => ({
       free_bytes: free === null ? null : free * GIB,
@@ -80,24 +81,28 @@ describe('deviceLabel', () => {
 
     it('shows free / total GiB for an accelerator', () => {
       useI18n.setState({ locale: 'en' });
-      expect(deviceLabel({ ...MPS, memory: mem(10.24, 16, 'torch.mps') }))
+      expect(deviceOptionLabel({ ...MPS, memory: mem(10.24, 16, 'torch.mps') }))
         .toBe('Apple MPS · 10.2 / 16.0 GiB free');
-      expect(deviceLabel({
+      expect(deviceOptionLabel({
         value: 'cuda:1', label: 'NVIDIA CUDA', detail: 'RTX 4090', available: true,
         memory: mem(20, 24),
       })).toBe('NVIDIA CUDA · cuda:1 · RTX 4090 · 20.0 / 24.0 GiB free');
     });
 
+    it('stays out of deviceLabel, which names a device in sentences', () => {
+      expect(deviceLabel({ ...MPS, memory: mem(8, 16) })).toBe('Apple MPS');
+    });
+
     it('is translated', () => {
       useI18n.setState({ locale: 'zh-TW' });
-      expect(deviceLabel({ ...MPS, memory: mem(8, 16) })).toBe('Apple MPS · 可用 8.0 / 16.0 GiB');
+      expect(deviceOptionLabel({ ...MPS, memory: mem(8, 16) })).toBe('Apple MPS · 可用 8.0 / 16.0 GiB');
     });
 
     it('leaves CPU and unknown memory out', () => {
-      expect(deviceLabel({ ...CPU, memory: mem(4, 32, 'psutil') })).toBe('CPU');
-      expect(deviceLabel({ ...MPS, memory: null })).toBe('Apple MPS');
-      expect(deviceLabel({ ...MPS, memory: mem(null, 16) })).toBe('Apple MPS');
-      expect(deviceLabel({ ...MPS, memory: mem(8, null) })).toBe('Apple MPS');
+      expect(deviceOptionLabel({ ...CPU, memory: mem(4, 32, 'psutil') })).toBe('CPU');
+      expect(deviceOptionLabel({ ...MPS, memory: null })).toBe('Apple MPS');
+      expect(deviceOptionLabel({ ...MPS, memory: mem(null, 16) })).toBe('Apple MPS');
+      expect(deviceOptionLabel({ ...MPS, memory: mem(8, null) })).toBe('Apple MPS');
     });
   });
 });

@@ -69,10 +69,12 @@ CheckpointLoader.grad_scaler_state  →  TrainingLoop.grad_scaler_state
 
 ```
 CPU
-NVIDIA CUDA          （torch 目前指向的那一張）
-NVIDIA CUDA #0       cuda:0
-NVIDIA CUDA #1       cuda:1
+NVIDIA CUDA · 可用 20.1 / 24.0 GiB                     （torch 目前指向的那一張）
+NVIDIA CUDA #0 · cuda:0 · RTX 4090 · 可用 20.1 / 24.0 GiB
+NVIDIA CUDA #1 · cuda:1 · RTX 3060 · 可用 11.4 / 12.0 GiB
 ```
+
+在**設定**與圖工具列的選單中，每個加速器最後會顯示伺服器在頁面載入時讀到的可用與總記憶體（NVIDIA 顯示卡由 NVML 讀取，其他由 PyTorch 讀取）；這只是參考讀數，不會因此拒絕任何 run，伺服器讀不到時就不顯示。
 
 只有一張 GPU 的機器只會顯示 `NVIDIA CUDA`，因為在那裡 `cuda` 和 `cuda:0` 是同一塊硬體，兩個都給等於在請使用者做一個沒有內容的選擇。
 

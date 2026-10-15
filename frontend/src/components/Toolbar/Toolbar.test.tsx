@@ -305,6 +305,23 @@ describe('Toolbar', () => {
       expect(select().value).toBe('');
     });
 
+    it('shows free / total memory on the device rows only, not in "Follow Settings" (#767)', async () => {
+      useUIStore.setState({ globalDevice: 'mps' });
+      const GIB = 1024 ** 3;
+      const withMemory = {
+        ...MPS,
+        memory: { total_bytes: 16 * GIB, free_bytes: 8 * GIB, source: 'torch.mps' },
+      };
+      mockedRest.fetchDevices.mockResolvedValueOnce({ default: 'mps', devices: [CPU, withMemory] });
+      await renderSettled(<Toolbar />);
+      await waitFor(() =>
+        expect(within(select()).getByRole('option', { name: /GiB/ })).toBeInTheDocument(),
+      );
+      expect(within(select()).getAllByRole('option').map((o) => o.textContent)).toEqual([
+        'Follow Settings (Apple MPS)', 'CPU', 'Apple MPS · 8.0 / 16.0 GiB free',
+      ]);
+    });
+
     it('marks the Settings device as unserved when the server does not list it', async () => {
       useUIStore.setState({ globalDevice: 'cuda' });
       await renderSettled(<Toolbar />);

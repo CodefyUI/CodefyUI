@@ -58,20 +58,25 @@ function memoryText(d: DeviceInfo): string | null {
 }
 
 /**
- * Option text for a device. A single-device backend shows its label only
- * ("Apple MPS"); a per-card entry (cuda:1) adds the id and the card name so
- * two cards of one vendor stay distinguishable. An accelerator with memory
- * facts ends with free / total GiB.
+ * Name of a device, for sentences ("Best available device: Apple MPS",
+ * "Follow Settings (CPU)"). A single-device backend shows its label only;
+ * a per-card entry (cuda:1) adds the id and the card name so two cards of
+ * one vendor stay distinguishable.
  */
 export function deviceLabel(d: DeviceInfo): string {
-  const parts = [d.label];
-  if (d.value.includes(':')) {
-    parts.push(d.value);
-    if (d.detail) parts.push(d.detail);
-  }
+  if (!d.value.includes(':')) return d.label;
+  return d.detail ? `${d.label} · ${d.value} · ${d.detail}` : `${d.label} · ${d.value}`;
+}
+
+/**
+ * Text of one device's `<option>` row: {@link deviceLabel} plus, for an
+ * accelerator whose memory the server could read, free / total GiB.
+ * Only the per-device rows carry the figure; a sentence that names a
+ * device stays short.
+ */
+export function deviceOptionLabel(d: DeviceInfo): string {
   const memory = memoryText(d);
-  if (memory) parts.push(memory);
-  return parts.join(' · ');
+  return memory ? `${deviceLabel(d)} · ${memory}` : deviceLabel(d);
 }
 
 /**

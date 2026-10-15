@@ -24,7 +24,7 @@ received — each links to the release it was published as.
 
 ### Added
 
-- **The device dropdowns show each accelerator's free and total memory** ([#767]). `GET /api/system/devices` adds `"memory": {"total_bytes", "free_bytes", "source"}` (or `null`) to every device, read by the new `core/resources.probe_devices()`: NVML for NVIDIA cards, then `torch.cuda.mem_get_info`, `torch.mps` for Apple MPS, and `psutil` for CPU. The Settings and toolbar device selects append `free / total GiB` to accelerators. Display only; nothing admits or refuses a run by it. NVML comes from `nvidia-ml-py`, now a regular dependency so the worker agent sees NVIDIA cards without importing torch; when NVML cannot answer, CUDA memory is read through torch. `probe_devices(allow_torch=False)` never imports torch, for the worker agent.
+- **The device dropdowns show each accelerator's free and total memory** ([#767]). `GET /api/system/devices` adds `"memory": {"total_bytes", "free_bytes", "source"}` (or `null`) to every device, read by the new `core/resources.probe_devices()`: NVML for NVIDIA cards (matched to PyTorch's devices by UUID), PyTorch for ROCm and for any card NVML cannot describe (total only, unless CUDA is already initialised, so the probe never creates a CUDA context), `torch.mps` for Apple MPS (free capped by available system RAM), and `psutil` for CPU. The device rows of the Settings and toolbar selects append `free / total GiB` to accelerators; sentences that name a device do not. Display only; nothing admits or refuses a run by it. `nvidia-ml-py` is a new regular dependency, so the worker agent sees NVIDIA cards without importing torch: `probe_devices(allow_torch=False)` never imports torch.
 
 ## [3.0.2] — 2026-10-14
 

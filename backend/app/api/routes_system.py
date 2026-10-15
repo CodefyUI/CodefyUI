@@ -24,13 +24,17 @@ async def list_devices() -> dict:
 
     Each device entry also carries ``"memory": {"total_bytes",
     "free_bytes", "source"}`` from ``core.resources.probe_devices`` (#767),
-    or ``null`` when no probe could say. Display only. The probe runs off
-    the event loop (NVML and psutil are blocking calls) and is not cached,
-    so the free figure is current as of this request.
+    or ``null`` when no probe could say (``free_bytes`` alone is ``null``
+    when only torch could answer and CUDA is not initialised). Display
+    only, and not cached: the figures are current as of this request.
+    ``describe_accelerator()`` and the probe run together in one worker
+    thread, because both make blocking driver / NVML / psutil calls that do
+    not belong on the event loop.
     """
-    described = describe_accelerator()
-    facts = await asyncio.to_thread(probe_devices)
-    return with_memory(described, facts)
+    def _describe() -> dict:
+        return with_memory(describe_accelerator(), probe_devices())
+
+    return await asyncio.to_thread(_describe)
 
 
 @router.get("/fingerprint")

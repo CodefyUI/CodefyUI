@@ -99,6 +99,30 @@ def cuda_device_count() -> int:
         return 0
 
 
+def cuda_is_rocm() -> bool:
+    """True when torch's ``torch.cuda`` API is backed by AMD ROCm (HIP).
+
+    ROCm and NVIDIA CUDA both surface through ``torch.cuda``; only
+    ``torch.version.hip`` tells them apart. False without torch.
+    """
+    try:
+        import torch
+
+        return getattr(torch.version, "hip", None) is not None
+    except Exception:  # noqa: BLE001 - no torch
+        return False
+
+
+def cuda_device_name(index: int) -> str:
+    """``torch.cuda.get_device_name(index)``, or ``""`` when it cannot say."""
+    try:
+        import torch
+
+        return torch.cuda.get_device_name(index)
+    except Exception:  # noqa: BLE001 - name lookup is best-effort
+        return ""
+
+
 def split_device(device: str) -> tuple[str, int | None]:
     """``"cuda:1"`` -> ``("cuda", 1)``; ``"cuda"`` -> ``("cuda", None)``.
 
@@ -415,20 +439,13 @@ def describe_accelerator() -> dict[str, Any]:
         return {"default": default, "devices": devices}
 
     if torch.cuda.is_available():
-        is_rocm = getattr(torch.version, "hip", None) is not None
-        label = "AMD ROCm" if is_rocm else "NVIDIA CUDA"
+        label = "AMD ROCm" if cuda_is_rocm() else "NVIDIA CUDA"
         count = cuda_device_count()
-
-        def _name(index: int) -> str:
-            try:
-                return torch.cuda.get_device_name(index)
-            except Exception:  # noqa: BLE001 — name lookup is best-effort
-                return ""
 
         devices.append({
             "value": "cuda",
             "label": label,
-            "detail": _name(_current_cuda_index()),
+            "detail": cuda_device_name(_current_cuda_index()),
             "available": True,
         })
         # Per-card entries only when there is a choice to make (core#135).
@@ -439,7 +456,7 @@ def describe_accelerator() -> dict[str, Any]:
             devices.extend({
                 "value": f"cuda:{index}",
                 "label": f"{label} #{index}",
-                "detail": _name(index),
+                "detail": cuda_device_name(index),
                 "available": True,
             } for index in range(count))
         default = "cuda"

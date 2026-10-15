@@ -69,10 +69,12 @@ On a machine with more than one CUDA device, every device dropdown — the selec
 
 ```
 CPU
-NVIDIA CUDA          (whichever card torch is currently pointed at)
-NVIDIA CUDA #0       cuda:0
-NVIDIA CUDA #1       cuda:1
+NVIDIA CUDA · 20.1 / 24.0 GiB free                     (whichever card torch is currently pointed at)
+NVIDIA CUDA #0 · cuda:0 · RTX 4090 · 20.1 / 24.0 GiB free
+NVIDIA CUDA #1 · cuda:1 · RTX 3060 · 11.4 / 12.0 GiB free
 ```
+
+In the **Settings** and graph toolbar selects, each accelerator ends with its free and total memory as the server read it when the page loaded (NVML for NVIDIA cards, PyTorch otherwise); it is a reading for orientation, nothing refuses a run because of it, and it is left out when the server cannot read the figure.
 
 A single-GPU machine shows only `NVIDIA CUDA`, because there `cuda` and `cuda:0` are the same piece of hardware and offering both would be a choice with nothing behind it.
 
