@@ -12,7 +12,7 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 ## 每個裝置一條佇列 {/* #one-queue-per-device */}
 
-每個 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps`。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。解析順序是：run 自己的 `device` 選項、圖檔的 `settings.device`、最後是 `cpu`；只有明確指定 `auto` 才會挑選目前最好的加速器。
+沒有 worker 目標的 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps` — 並在伺服器程序內執行。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。解析順序是：run 自己的 `device` 選項、圖檔的 `settings.device`、最後是 `cpu`；只有明確指定 `auto` 才會挑選目前最好的加速器。
 
 | 佇列 key | 同時執行數（預設） | 為什麼 |
 | --- | --- | --- |
@@ -48,6 +48,8 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。worker 斷線，或連續錯過三次心跳（30 秒）時，它的 run 會以 `interrupted` 結束，並留下類型為 `worker_disconnected` 的 `run_warning`，名額隨即釋放。
 
 worker 上的 seeded run 是**在自己的程序裡**單獨執行：[可重現的執行](./running-graphs#reproducible-runs-seed)中「seeded run 單獨執行」的規則保護的是這台伺服器整個程序共用的亂數狀態，而 worker 的子程序有自己的亂數狀態。因此不同 worker 或不同卡上的 seeded run 可以同時執行，worker 上的 seeded run 既不等待這台伺服器的 run，也不會擋住它們。在這台伺服器上執行的 seeded run（包括落在這裡的 `any` run）仍然一次執行一個。
+
+要在多 GPU 機器上同時執行多個工作、啟動 worker 與選擇裝置，請參閱[多 GPU 執行](./multi-gpu)。
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
 
@@ -231,7 +233,7 @@ sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `erro
 
 `POST /api/sweeps/{id}/cancel` 會要求每個排隊中或執行中的 child 停止 — 每個各送一次協作式取消 — 並回報 `cancelled` 與 `already_finished` 的數量，以及按 index 排列的逐 variant 清單。從未取得 run 的 variant，以及 run 仍顯示 `running` 但取消請求無法送達的 variant（例如由使用同一個資料庫的另一個伺服器行程啟動的 run），都不會計入這兩個數量。只有至少一個 child 當時仍在活動時，sweep 的 state 才會變成 `cancelling`；它永遠不會變成 `cancelled`：前 30 個 variant 完成、最後 2 個停止的 sweep，是一個帶有 2 列 cancelled 的 finished sweep。所有 child 都進入終止狀態後，下一次讀取（如果它們原本都已終止，也就是 cancel 回覆本身）會把 state 確定為 `finished`。重複要求不會有副作用（`cancelled: 0`）。
 
-取消是一個請求，不是保證。停止是協作式的：伺服器立起旗標，節點得自己去讀。訓練、評估與取樣節點每個 batch 都會檢查，因此會在一個 batch 之內停下；從不檢查的節點則會像沒有人要求過一樣一路跑完。這個請求背後沒有強制停止，也沒有逾時：要強加期限，唯一的做法是在訓練步驟中途把 run 砍掉，那會丟掉它已經做完的工作，在 GPU 上還可能讓裝置直到伺服器結束前都無法使用。
+取消是一個請求，不是保證。停止是協作式的：伺服器立起旗標，節點得自己去讀。訓練、評估與取樣節點每個 batch 都會檢查，因此會在一個 batch 之內停下；從不檢查的節點則會像沒有人要求過一樣一路跑完。對伺服器程序內的 run，這個請求背後沒有強制停止，也沒有逾時：要強加期限，唯一的做法是在訓練步驟中途把 run 砍掉，那會丟掉它已經做完的工作，在 GPU 上還可能讓裝置直到伺服器結束前都無法使用。[worker](#workers) 上的 run 有自己的程序，若它在寬限時間（預設 30 秒）內沒有停下，worker 會終止它，結束的只有那個 run 的程序。
 
 所以 `cancelling` 沒有時間上限。它結束於最後一個 child 進入終止狀態，而不是等滿某個時間；重新啟動伺服器也會結束它，因為舊行程遺留的 run 會在啟動過程中被收尾。想知道取消還在等什麼，請讀 `GET /api/sweeps/{id}` 的 `counts.running` 加 `counts.queued`：那些就是已被要求、但還沒停下的 child，`variants` 會指出是哪幾個。sweep 顯示 `cancelling` 已經多久，說明不了任何事。
 
@@ -314,11 +316,13 @@ study 的證據比它的 child 存在得更久。child 結束時，它的目標�
 
 ## 伺服器停止時 {/* #when-the-server-stops */}
 
-佇列不會在伺服器重啟後繼續執行。排程只存在伺服器記憶體中；如果保留等待中的資料列，它會持續等待已不存在的排程器。
+佇列不會在伺服器重啟後繼續執行。佇列只存在伺服器程序的記憶體中（worker 沒有自己的佇列）；如果保留等待中的資料列，它會持續等待已不存在的排程器。
 
 正常關閉會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並給執行中的 run 5 秒以協作方式停止。對[放在反向代理後面](./deployment#a-systemd-unit)中的 unit 執行 `systemctl stop` 就是以這種方式關閉伺服器，因為它會直接對伺服器行程送出 SIGTERM。在 Windows 上，於 `cdui start --foreground` 按一次 Ctrl+C 也是如此；若在 uvicorn 等待連線關閉時再按一次 Ctrl+C，就會略過這些步驟。
 
 在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，並寫入與正常關閉相同的停止事件；若該 run 的事件紀錄已經以結束事件收尾，就不再寫入。因此重新連上的編輯器分頁，以及讀取 `GET /api/runs/{id}/events` 的程式，都會看到這次 run 已結束。兩者都不會繼續執行。
+
+在 [worker](#workers) 上執行的 run，正常關閉時也受到相同處理：停止要求會送到 worker，超過這 5 秒仍在執行的 run 會在那裡被終止，接著伺服器關閉與 worker 的連線。agent 會繼續執行，等伺服器回來後重新連線。強制停止伺服器時，worker 不會收到任何通知：它的 run 子程序會一路跑完，回報的內容會被丟棄，復原程序會像其他 run 一樣把它們的資料列標記為 `interrupted`。
 
 若仍要執行這些工作，請重新送出。
 
@@ -348,5 +352,6 @@ Retention 會在啟動時及每個 run 結束後執行，保留最新的 `KEEP_L
 ## 延伸閱讀 {/* #see-also */}
 
 - [執行圖](./running-graphs) — 單一 run 內部發生了什麼
+- [多 GPU 執行](./multi-gpu) — 多 GPU 機器上的 worker agent、裝置集合與 slot
 - [CLI 圖形執行器](./cli-runner) — 不開伺服器執行一張圖
 - [API 參考](../advanced/api-reference) — `/api/runs`、`/api/sweeps` 與 `/api/studies` 端點

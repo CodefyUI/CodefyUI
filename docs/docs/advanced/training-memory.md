@@ -84,10 +84,10 @@ Each card gets **its own run queue**, so a six-hour job on `cuda:0` never delays
 
 A device string that is not addressable at all — `cuda:`, `cuda:abc` (an unexpanded `${CUDA_INDEX}`, say), `cuda:0:1`, `cuda: 0` — lands in the same place, for the same reason. The `cuda` prefix is still an unambiguous request for a GPU; only the index is wrong. Before this, those strings reached PyTorch verbatim and came back as `RuntimeError: Invalid device string`, which named neither the graph nor the parameter they came from.
 
-:::note Distributed training is out of scope
-A run is single-process and single-device. There is no `DistributedDataParallel`, no multi-card data parallelism, and no multi-node anything — one run uses one card. Several runs can occupy several cards at once, one per card, through the per-device queues.
+:::note Distributed training is not supported yet
+A run executes in one process: the server process by default, or a run subprocess on a worker agent when it targets one. There is no `DistributedDataParallel`, no multi-card data parallelism and no multi-node training. A run in the server process uses one card. A run on a worker can be given a device set and sees those cards as `cuda:0` to `cuda:N-1`, so its nodes can be pinned to different cards, but no node splits one model's training across them. Several runs can occupy several cards at once through the per-device queues; see [Multi-GPU Execution](/usage/multi-gpu).
 
-This is a deliberate boundary rather than a gap waiting to be filled. DDP needs process launching, rendezvous, per-rank logging and per-rank checkpointing, and every one of those touches the run service, the event stream and the artifact store. Half of it would be worse than none.
+DDP needs process launching, rendezvous, per-rank logging and per-rank checkpointing, and each of those touches the run service, the event stream and the artifact store. It is planned as a `TrainingLoop` strategy on top of worker runs ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
 :::
 
 ## When the card runs out anyway

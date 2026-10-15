@@ -51,7 +51,11 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 
 在有一張以上 CUDA 裝置的機器上，每個下拉選單也會逐張列出——`cuda:0`、`cuda:1` 等等——並與單純的 `cuda` 並列，後者代表「torch 目前指向的那一張」。只有一張 GPU 的機器只會顯示 `cuda`，因為在那裡兩者指的是同一塊硬體。
 
-指定了這台機器上不存在的編號時，會退回**目前的 CUDA 裝置**而不是 CPU：一張在工作站上釘在 `cuda:2` 的圖，在筆電上打開時仍然應該用 GPU 訓練。每張卡也各自有自己的執行佇列。完整說明（包含刻意排除在外的分散式訓練）請參閱 **[訓練記憶體](./training-memory)**。
+指定了這台機器上不存在的編號時，會退回**目前的 CUDA 裝置**而不是 CPU：一張在工作站上釘在 `cuda:2` 的圖，在筆電上打開時仍然應該用 GPU 訓練。每張卡也各自有自己的執行佇列。完整說明（包含尚未支援的分散式訓練）請參閱 **[訓練記憶體](./training-memory)**。
+
+:::note 裝置集合
+送到 worker agent 的 queued run 可以指定同一種類的多張卡，也就是 `target.devices`（`cdui run` 的 `--devices cuda:2,cuda:0`）。run 的子程序以 `CUDA_VISIBLE_DEVICES` 拿到這些卡，並依列出的順序看成 `cuda:0` 到 `cuda:N-1`，所以 **device** 設為 `cuda:1` 的節點會在集合中的第二張卡上執行。節點的值從不被改寫，上面的規則在 run 內照樣適用。在伺服器程序內執行的 run 只用集合中的第一個裝置。匯出的腳本只接受一個 `--device`；要讓它使用部分的卡，請在啟動前自行設定 `CUDA_VISIBLE_DEVICES`。請參閱[多 GPU 執行](/usage/multi-gpu#choose-devices)。
+:::
 
 ## float64 + MPS 的限制 {/* #the-float64--mps-constraint */}
 

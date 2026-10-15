@@ -226,4 +226,4 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 
 - **Stage 2 (shipped): [Publish](./publish)** — versioned apps behind `POST /api/apps/{slug}/invoke` with durable API keys, key-protected SQLite run records, a per-image pixel budget, per-app OpenAPI documents, and `cdui start --host/--port` for LAN serving.
 - `cdui call <graph> --input k=v` / `cdui keys` — CLI wrappers over these APIs (fast-follow DX items). Publishing from the command line exists for project directories: `cdui project publish` ([Project Directories](./project-directories#7-publish-records-the-git-commit)).
-- Async job mode (202 + `job.status_url`) reusing the same envelope.
+- Async job mode (202 + `job.status_url`) reusing the same envelope. Until then, `POST /api/runs` covers the long-running case with a session token: it queues the run, returns its `run_id` at once, and with `options.target` executes it on a worker agent ([Run Queue](./run-queue), [Multi-GPU Execution](./multi-gpu)). It returns run events, not this envelope.

@@ -11,7 +11,7 @@ frontend/   React 19 · TypeScript · React Flow 12 · Zustand 5 · Vite 6
 backend/    Python 3.10+ · FastAPI · PyTorch
 ```
 
-單一 uvicorn 行程同時提供 REST API、執行 WebSocket，以及預先建置好的 React 應用程式。預設情況下，它也執行每一個 run。queued run 也可以改以 worker agent（`cdui agent start`）為目標，由它在自己的子程序中執行；這個拆分見[執行架構](./execution-architecture)。
+單一 uvicorn 行程同時提供 REST API、執行 WebSocket，以及預先建置好的 React 應用程式。預設情況下，它也執行每一個 run。queued run 也可以改以 worker agent（`cdui agent start`）為目標，由它在自己的子程序中執行；這個拆分見[執行架構](./execution-architecture)，使用方式見[多 GPU 執行](/usage/multi-gpu)。
 
 ## 核心原則 {/* #core-principles */}
 

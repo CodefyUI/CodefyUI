@@ -226,4 +226,4 @@ curl.exe -s "http://127.0.0.1:8000/api/graph/contract/Api-Function"
 
 - **第二階段（已推出）：[發佈](./publish)** —— 以 `POST /api/apps/{slug}/invoke` 提供版本化應用程式，並包含長效 API key、受 key 保護的 SQLite 執行紀錄、每張圖片的像素預算、每個應用程式各自的 OpenAPI 文件，以及用於區域網路服務的 `cdui start --host/--port`。
 - `cdui call <graph> --input k=v` / `cdui keys` —— 這些 API 的 CLI 包裝（接續的開發體驗項目）。專案目錄已可從命令列發佈：`cdui project publish`（見[專案目錄](./project-directories#7-publish-records-the-git-commit)）。
-- 非同步工作模式（202 + `job.status_url`），沿用同一個封裝格式。
+- 非同步工作模式（202 + `job.status_url`），沿用同一個封裝格式。在那之前，耗時長的情況可以用帶 session token 的 `POST /api/runs`：它把 run 排入佇列、立即回傳 `run_id`，搭配 `options.target` 時會在 worker agent 上執行（[執行佇列](./run-queue)、[多 GPU 執行](./multi-gpu)）。它回傳的是 run 事件，沒有這裡的封裝格式。

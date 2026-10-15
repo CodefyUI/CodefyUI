@@ -122,10 +122,14 @@ class Settings(BaseSettings):
     # ordinary events are a couple of KB.
     RUN_EVENTS_RESPONSE_CAP_BYTES: int = 4 * 1024 * 1024
     # ── Run queue admission (#123) ─────────────────────────────────────
-    # How many QUEUED-lane runs may execute at once on one device. The
-    # queue key is the RESOLVED device string ("cpu", "cuda:0", "mps"), so
-    # every accelerator gets its own FIFO and a six-hour CUDA job never
-    # blocks a CPU run.
+    # How many QUEUED-lane runs may execute at once on one device SLOT: one
+    # device on one machine, keyed (worker, device) (#768, #773). A run with
+    # no worker target queues on its RESOLVED device string ("cpu",
+    # "cuda:0", "mps:0") and holds this server's slot for it, so every
+    # accelerator gets its own FIFO and a six-hour CUDA job never blocks a
+    # CPU run. A run on a worker agent (`cdui agent start`) holds that
+    # worker's slots under the same two defaults; a worker on this machine
+    # shares this server's slot for each physically shared card.
     #
     # One is the honest GPU default: a second concurrent run on the same
     # card competes for the same VRAM, and the usual outcome of guessing
@@ -136,11 +140,13 @@ class Settings(BaseSettings):
     # one run); the two multiply.
     RUN_QUEUE_MAX_CONCURRENT_GPU: int = 1
     RUN_QUEUE_MAX_CONCURRENT_CPU: int = 2
-    # Per-key overrides, e.g. "cuda:0=2,cuda:1=1,cpu=8". A str, not a
-    # dict[str, int]: pydantic mapping env vars demand JSON-in-env quote
-    # hell, the same reason EXTRA_ALLOWED_HOSTS below is a string. Split on
-    # the LAST '=' so a key may contain a colon; malformed entries are
-    # ignored with a warning rather than failing startup.
+    # Per-slot overrides, e.g. "cuda:0=2,cpu=8" for this server's slots and
+    # "gpu-box-1/cuda:0=3" for a worker's (#773; "local/cuda:0" is another
+    # spelling of "cuda:0"). A str, not a dict[str, int]: pydantic mapping
+    # env vars demand JSON-in-env quote hell, the same reason
+    # EXTRA_ALLOWED_HOSTS below is a string. Split on the LAST '=' so a key
+    # may contain a colon; malformed entries are ignored with a warning
+    # rather than failing startup.
     RUN_QUEUE_MAX_CONCURRENT: str = ""
     # Hard ceiling on concurrent INTERACTIVE-lane runs (the canvas). That
     # lane bypasses the per-device FIFO on purpose — a classroom demo must
