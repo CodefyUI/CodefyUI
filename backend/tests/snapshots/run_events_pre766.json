@@ -1,0 +1,219 @@
+{
+ "events": [
+  [
+   "node_status",
+   {
+    "node_id": "mid",
+    "status": "completed",
+    "outputs": [
+     {
+      "output_kind": "image",
+      "port": "image",
+      "image": {
+       "format": "png",
+       "encoding": "base64",
+       "data": "AAAAAAAA"
+      }
+     },
+     {
+      "output_kind": "tensor_summary",
+      "tensor_summary": {
+       "value": {
+        "type": "string",
+        "value": "hi"
+       },
+       "image": {
+        "type": "string",
+        "value": "AAAAAAAA"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "node_status",
+   {
+    "node_id": "boom",
+    "status": "error",
+    "error": "'inner node failed on purpose'",
+    "error_type": "KeyError"
+   }
+  ],
+  [
+   "node_status",
+   {
+    "node_id": "src",
+    "status": "running"
+   }
+  ],
+  [
+   "node_status",
+   {
+    "node_id": "blk",
+    "status": "progress",
+    "inner_node_id": "blk/train",
+    "outputs": [
+     {
+      "output_kind": "progress",
+      "progress": {
+       "event": "epoch",
+       "epoch": 2,
+       "total_epochs": 3,
+       "loss": 0.5,
+       "accuracy": 0.52,
+       "label": "not-a-metric",
+       "converged": false
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "node_status",
+   {
+    "node_id": "mid",
+    "status": "progress",
+    "outputs": [
+     {
+      "output_kind": "progress",
+      "progress": {
+       "loss": 0.25
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "node_status",
+   {
+    "node_id": "mid",
+    "status": "progress",
+    "outputs": [
+     {
+      "output_kind": "progress",
+      "progress": {
+       "event": "batch",
+       "epoch": 1,
+       "batch": 3,
+       "loss": 0.3
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "inner_node_status",
+   {
+    "node_id": "blk/mid",
+    "container_id": "blk",
+    "status": "completed",
+    "outputs": [
+     {
+      "output_kind": "image",
+      "port": "image",
+      "image": {
+       "format": "png",
+       "encoding": "base64",
+       "data": "AAAAAAAA"
+      }
+     },
+     {
+      "output_kind": "tensor_summary",
+      "tensor_summary": {
+       "value": {
+        "type": "string",
+        "value": "hi"
+       },
+       "image": {
+        "type": "string",
+        "value": "AAAAAAAA"
+       }
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "inner_node_status",
+   {
+    "node_id": "blk/p",
+    "container_id": "blk",
+    "status": "running"
+   }
+  ],
+  [
+   "inner_node_status",
+   {
+    "node_id": "blk/boom",
+    "container_id": "blk",
+    "status": "error",
+    "error": "'inner node failed on purpose'",
+    "error_type": "KeyError"
+   }
+  ],
+  [
+   "node_status",
+   {
+    "node_id": "blk",
+    "status": "progress",
+    "inner_node_id": "blk/train",
+    "outputs": [
+     {
+      "output_kind": "progress",
+      "progress": {
+       "step": 9,
+       "acc": 1.0
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "run_warning",
+   {
+    "kind": "dropped_signals",
+    "count": 12,
+    "detail": "progress/metric signals were dropped to keep the run's outbox bounded; the series may have gaps"
+   }
+  ],
+  [
+   "run_warning",
+   {
+    "kind": "node_state_evicted",
+    "detail": "gone",
+    "node_id": "mid"
+   }
+  ]
+ ],
+ "metrics": [
+  [
+   "loss",
+   0.5,
+   2,
+   "blk",
+   null
+  ],
+  [
+   "accuracy",
+   0.52,
+   2,
+   "blk",
+   null
+  ],
+  [
+   "loss",
+   0.25,
+   3,
+   "mid",
+   null
+  ],
+  [
+   "acc",
+   1.0,
+   9,
+   "blk",
+   null
+  ]
+ ]
+}

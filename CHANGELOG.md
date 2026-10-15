@@ -26,6 +26,10 @@ received — each links to the release it was published as.
 
 - **Runs accept a `target` option and record where they execute** ([#769]). `POST /api/runs` takes `options.target` as `{"worker": "local", "devices": ["cuda:0", "cuda:1"]}`, and `cdui run` sends it with `--target NAME` and `--devices cuda:0,cuda:1` and prints a Target line. Only `local` (this server) is accepted for now; another worker name, or `any`, is refused with `400` until remote workers arrive. `devices` must list concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`) with no duplicates; its first entry becomes the run's device when `device` is omitted, `auto`, or only the kind (`cuda` with `["cuda:1"]` runs on `cuda:1`), and any other `device` that differs is refused. Run rows gain `worker_id` (`local`, also for runs from before this change) and `devices` (the requested list, or `null`). In this release only the first device is used, to queue and to execute; the rest is recorded as asked and not checked. `cdui run` no longer accepts abbreviated flags other than `--dev` for `--device`. A run submitted without `target` stores the same options, joins the same queue and emits the same events as before.
 
+### Internal
+
+- **The run service hands a run to an executor instead of calling the engine itself** ([#766]). `RunService._execute` now builds one `ExecutionRequest` and awaits `Executor.run`, which returns an `ExecutionOutcome(status, error)`; the default `InProcessExecutor` (`backend/app/core/executors.py`) is the old `_execute` body, so runs execute exactly as before. The event payloads the three engine bridges built are now pure functions in `backend/app/core/run_events.py`, and persistence goes through `RunSinks` back into the service, so a worker subprocess can later produce the same payloads. No event payload, event order or option changes; an executor that raises or reports an unknown status files the run as failed instead of leaving it unfinished. The unused `run_service.apply_seed` alias is removed.
+
 ## [3.0.2] — 2026-10-14
 
 Fixes the package upgrade 3.0.1 introduced for `cdui plugin sync`: an
@@ -6168,4 +6172,5 @@ Release candidates before 1.0.0 are on the
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
 [#762]: https://github.com/CodefyUI/CodefyUI/pull/762
+[#766]: https://github.com/CodefyUI/CodefyUI/issues/766
 [#769]: https://github.com/CodefyUI/CodefyUI/issues/769
