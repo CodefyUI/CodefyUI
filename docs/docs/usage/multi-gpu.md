@@ -90,9 +90,11 @@ A worker on the same machine shares this server's slot for every card that is ph
 
 Open it with **Workers** in the Runs panel header, or from **Settings → Execution → Workers → Manage**. It refreshes every 5 seconds while open and shows, for each worker:
 
-- its status (**Online**, **Degraded** when a heartbeat is late, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, mount labels (see [Storage: shared filesystem](./run-queue#storage-shared-filesystem)) and the age of its last heartbeat;
+- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Storage: shared filesystem](./run-queue#storage-shared-filesystem)) and the age of its last heartbeat;
 - each device with its free and total memory from the latest heartbeat and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
+
+Agents the server refused (another version, for example) and that have no card are listed under **Refused connections** with the reason ([Remote Workers, Keeping workers in sync](/usage/remote-workers#keeping-workers-in-sync)).
 
 **Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options. **Re-key** gives a worker a new credential, and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)).
 

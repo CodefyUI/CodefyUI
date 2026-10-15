@@ -26,12 +26,20 @@ Handshake checks, before ``accept``:
 A refused handshake closes before ``accept``, which a client sees as
 HTTP 403.
 
-Then: the first frame must be ``hello`` (within :data:`HELLO_TIMEOUT_S`);
-a protocol-version mismatch or a reserved or malformed name gets
-``reject``. Otherwise the worker is registered (replacing an older
-connection under the same name, but only one that authenticated the same
-way: a session-token agent cannot take over an enrolled worker's name, nor
-an enrolled worker a connected same-host agent's) and answered with ``welcome``; every later
+Then: the first frame must be ``hello`` (within :data:`HELLO_TIMEOUT_S`).
+What it must satisfy is decided in ``core.worker_handshake`` (#781): the
+same protocol version and the same CodefyUI version as this server (a
+mismatch is refused naming both), a well-formed unreserved name, and a
+name this credential may use. A refusal is a ``reject`` and a close, and
+is remembered per name for the Workers panel
+(``WorkerRegistry.record_rejection``). Otherwise the worker is registered
+(replacing an older connection under the same name, but only one that
+authenticated the same way: a session-token agent cannot take over an
+enrolled worker's name, nor an enrolled worker a connected same-host
+agent's), its node catalog is compared with this server's (a difference
+makes it ``degraded``), its fingerprint is recorded (on its ``workers``
+row and in ``exec_run_fingerprints``), and it is answered with
+``welcome`` carrying this server's ``capabilities``; every later
 frame is routed: ``heartbeat`` and ``run_alive`` to the registry, per-run
 frames to their run's inbox (pausing the read while one run's inbox is
 far behind, ``WorkerRegistry.backpressure``). Closing the socket marks the
@@ -50,8 +58,10 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ..core import worker_handshake as handshake
 from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity, same_machine
+from ..core.version import get_version
 from ..core.workers import CREDENTIAL_SESSION, CREDENTIAL_WORKER
 from ..core.auth import (
     TOKEN_QUERY_PARAM,
@@ -175,20 +185,45 @@ async def websocket_worker(ws: WebSocket) -> None:
         except Exception:  # noqa: BLE001 -- already closed
             pass
 
+    peer = ws.client.host if ws.client is not None else None
+
+    async def refuse(name: str | None, reason: str) -> None:
+        logger.warning("worker connection refused: %s", reason)
+        if name is not None:
+            registry.record_rejection(name, reason, peer=peer)
+        await send(wp.Reject(reason=reason))
+        await close()
+
     try:
         raw = await asyncio.wait_for(ws.receive_text(), HELLO_TIMEOUT_S)
+    except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError) as exc:
+        logger.warning("a worker connection said no hello: %s", exc)
+        await close()
+        return
+    # The version pair first, off the raw JSON: an agent of another release
+    # may send a hello this build cannot validate, and must still hear why.
+    early = handshake.raw_refusal(raw, control_version=get_version())
+    if early is not None:
+        await refuse(*early)
+        return
+    try:
         hello = wp.decode_agent_frame(raw)
-    except (asyncio.TimeoutError, wp.ProtocolError, WebSocketDisconnect,
-            RuntimeError) as exc:
+    except wp.ProtocolError as exc:
         logger.warning("a worker connection said no valid hello: %s", exc)
         await close()
         return
-    refusal = _refusal(hello) or _identity_refusal(hello, auth, registry)
+    refusal = (handshake.refusal(hello, control_version=get_version())
+               or handshake.identity_refusal(
+                   hello, credential=auth.credential, enrolled_as=enrolled_as,
+                   registry=registry))
     if refusal is not None:
-        logger.warning("worker connection refused: %s", refusal)
-        await send(wp.Reject(reason=refusal))
-        await close()
+        await refuse(hello.name if isinstance(hello, wp.Hello) else None,
+                     refusal)
         return
+    if not hello.node_catalog_hash:
+        logger.warning("worker %s reported no node catalog (its facts helper "
+                       "failed; see the agent's log): its node types are not "
+                       "checked", hello.name)
 
     # ``welcome`` goes out BEFORE the worker is registered (#783): from
     # ``connect`` on, executors send through this socket (a stop that waited
@@ -196,7 +231,8 @@ async def websocket_worker(ws: WebSocket) -> None:
     # worker's id is its name (``WorkerRegistry.connect``).
     await send(wp.Welcome(worker_id=hello.name,
                           heartbeat_s=registry.heartbeat_s,
-                          grace_s=registry.grace_s))
+                          grace_s=registry.grace_s,
+                          capabilities=list(wp.CAPABILITIES)))
     # Same machine needs both (#773, #780): the machine id alone is
     # self-reported, so a remote agent could copy ours; the loopback peer
     # alone is not enough either, since an ``ssh -R`` tunnel or a local
@@ -209,10 +245,11 @@ async def websocket_worker(ws: WebSocket) -> None:
         plain_http=plain_from_another_machine(ws))
     store = getattr(ws.app.state, "worker_store", None)
     if enrolled_as is not None and store is not None:
-        await _touch(store, hello)
+        await _touch(store, hello, fingerprint_digest=worker.fingerprint)
     service = getattr(ws.app.state, "run_service", None)
     if service is not None:
         service.check_worker_overrides(worker)
+        await _record_fingerprint(service, worker)
     if replaced is not None:
         await replaced.close()
     try:
@@ -244,8 +281,24 @@ async def websocket_worker(ws: WebSocket) -> None:
             await _touch(store, None, enrolled_as)
 
 
+async def _record_fingerprint(service: Any, worker: Any) -> None:
+    """Store the worker's fingerprint document, so its digest resolves
+    (``GET /api/system/fingerprints/{digest}``) before any run records it.
+    A failed write is logged; it never costs the connection."""
+    if worker.fingerprint_document is None or worker.fingerprint is None:
+        return
+    try:
+        await service.store.record_fingerprint(worker.fingerprint_document,
+                                               worker.fingerprint)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not record worker %s's fingerprint",
+                       worker.name, exc_info=True)
+
+
 async def _touch(store: Any, hello: wp.Hello | None,
-                 name: str | None = None) -> None:
+                 name: str | None = None, *,
+                 fingerprint_digest: str | None = None) -> None:
+    # On ``hello`` the digest is always written: None clears a stale one.
     """Record an enrolled worker as seen (with its facts, on ``hello``).
     A failed write is logged; it never costs the connection."""
     try:
@@ -256,48 +309,9 @@ async def _touch(store: Any, hello: wp.Hello | None,
                 hello.name, platform=dict(hello.platform),
                 mounts=dict(hello.mounts),
                 devices=[d.model_dump() for d in hello.devices],
-                machine_id=hello.machine_id)
+                machine_id=hello.machine_id,
+                fingerprint_digest=fingerprint_digest)
     except Exception:  # noqa: BLE001
         logger.warning("could not record worker %s as seen",
                        name or (hello.name if hello else "?"), exc_info=True)
 
-
-def _identity_refusal(hello: wp.Hello, auth: Authorised,
-                      registry: Any) -> str | None:
-    """Why *auth* may not register as ``hello.name``, or None.
-
-    A worker token names its worker, so the ``hello`` must use that name.
-    And a connection may replace a live one under the same name only if it
-    authenticated the same way: the session token cannot take over an
-    enrolled worker's name, nor a worker token a live same-host agent's.
-    """
-    if auth.worker is not None and hello.name != auth.worker:
-        return (f"this worker token belongs to worker {auth.worker!r}, not "
-                f"{hello.name!r}; start the agent with --name {auth.worker}, "
-                f"or enroll {hello.name!r} with a new token")
-    existing = registry.get(hello.name)
-    if existing is None:
-        return None
-    if auth.credential == CREDENTIAL_SESSION and existing.enrolled:
-        return (f"worker {hello.name!r} is enrolled; it connects with its "
-                "worker token, not the session token. Pick another --name")
-    if existing.online and existing.credential not in (None,
-                                                       auth.credential):
-        return (f"a worker named {hello.name!r} is connected with another "
-                "kind of credential; stop it first")
-    return None
-
-
-def _refusal(frame: Any) -> str | None:
-    """Why a first frame cannot register a worker, or None."""
-    if not isinstance(frame, wp.Hello):
-        return f"expected hello, got {frame.type}"
-    if frame.protocol_version != wp.PROTOCOL_VERSION:
-        return (f"protocol version {frame.protocol_version} is not this "
-                f"server's {wp.PROTOCOL_VERSION}; update the agent")
-    if wp.WORKER_NAME_PATTERN.fullmatch(frame.name) is None:
-        return (f"worker name {frame.name!r} must be lowercase letters, "
-                "digits and '-', at most 63 characters")
-    if frame.name in wp.RESERVED_WORKER_NAMES:
-        return f"worker name {frame.name!r} is reserved"
-    return None

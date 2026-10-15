@@ -49,6 +49,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
+from .facts import AgentFacts
 from .runner import Runner, mark_finished
 from .spool import SpoolStore
 from .trust import ControlPlaneTrust, TrustError, untrusted_message
@@ -167,6 +168,7 @@ class AgentConnection:
         spools: SpoolStore | None = None,
         trust: ControlPlaneTrust | None = None,
         on_trusted: Callable[[str], None] | None = None,
+        facts: AgentFacts | None = None,
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
@@ -192,6 +194,8 @@ class AgentConnection:
         self.on_trusted = on_trusted
         #: The fingerprint hint for an untrusted certificate was logged.
         self._hinted = False
+        #: The fingerprint and node catalog every ``hello`` carries (#781).
+        self.facts = facts or AgentFacts()
         self.heartbeat_s = wp.DEFAULT_HEARTBEAT_S
         self.worker_id: str | None = None
         self._ws: Any = None
@@ -403,8 +407,17 @@ class AgentConnection:
             untrusted_message, url, exc))
 
     async def _handshake(self, ws: Any) -> wp.Welcome:
+        facts = self.facts
         hello = wp.Hello(
             name=self.name, version=self.version,
+            fingerprint=(None if facts.fingerprint is None
+                         or facts.fingerprint_digest is None
+                         else wp.FingerprintReport(
+                             document=facts.fingerprint,
+                             digest=facts.fingerprint_digest)),
+            node_catalog_hash=facts.node_catalog_hash,
+            node_types=list(facts.node_types),
+            capabilities=list(wp.CAPABILITIES),
             devices=await self._device_reports(), platform=platform_facts(),
             mounts=await asyncio.to_thread(self.runner.available_mounts),
             machine_id=await asyncio.to_thread(machine_identity))
@@ -428,8 +441,9 @@ class AgentConnection:
         self.heartbeat_s = welcome.heartbeat_s
         self.runner.default_grace_s = welcome.grace_s
         self.runner.draining = False
-        logger.info("connected as %s (worker id %s)", self.name,
-                    welcome.worker_id)
+        shared = wp.shared_capabilities(wp.CAPABILITIES, welcome.capabilities)
+        logger.info("connected as %s (worker id %s; capabilities %s)",
+                    self.name, welcome.worker_id, ", ".join(shared) or "none")
         tasks = [
             asyncio.create_task(self._receive(ws), name="agent-receive"),
             asyncio.create_task(stop.wait(), name="agent-stop"),

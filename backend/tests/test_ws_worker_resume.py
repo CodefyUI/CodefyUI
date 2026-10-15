@@ -20,6 +20,7 @@ from httpx_ws import aconnect_ws
 
 from app.agent.spool import Spool
 from app.core import worker_protocol as wp
+from app.core.version import get_version
 
 from . import test_ws_worker
 from .test_ws_worker import (
@@ -248,7 +249,7 @@ async def test_a_stop_waiting_for_the_worker_never_precedes_welcome(env):
         await asyncio.sleep(0.5)  # the stop waits for the worker
         async with aconnect_ws(_path(), client) as ws:
             agent = FakeAgent(ws)
-            await agent.send(wp.Hello(name="box", version="t", devices=[
+            await agent.send(wp.Hello(name="box", version=get_version(), devices=[
                 wp.DeviceReport(value="cpu", kind="cpu")]))
             first = await agent.recv(acks=True)
             assert isinstance(first, wp.Welcome)

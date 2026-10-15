@@ -20,6 +20,7 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from app.core import worker_protocol as wp
+from app.core.version import get_version
 from app.core.auth import TOKEN_HEADER, TOKEN_QUERY_PARAM, session_token
 from app.core.db import Database
 from app.core.run_service import QueueLimits, RunService
@@ -102,7 +103,7 @@ class FakeAgent:
             await self.recv(timeout)
 
     async def hello(self, name: str, devices: tuple = ("cpu",)) -> Any:
-        await self.send(wp.Hello(name=name, version="t", devices=[
+        await self.send(wp.Hello(name=name, version=get_version(), devices=[
             wp.DeviceReport(value=d, kind=d.split(":")[0]) for d in devices]))
         return await self.recv()
 

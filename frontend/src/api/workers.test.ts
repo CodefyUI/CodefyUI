@@ -5,6 +5,7 @@ import {
   deleteEnrollment,
   drainWorker,
   fetchEnrollments,
+  fetchWorkerList,
   fetchWorkers,
   removeWorker,
   undrainWorker,
@@ -59,6 +60,19 @@ describe('fetchWorkers', () => {
   it('falls back to the status text when the error body is not JSON', async () => {
     mockFetch(500, null, true);
     await expect(fetchWorkers()).rejects.toThrow('Workers failed: mock');
+  });
+});
+
+describe('fetchWorkerList', () => {
+  it('reads the workers and the refused handshakes', async () => {
+    const rejection = { name: 'old-box', reason: 'version mismatch', at: 1 };
+    mockFetch(200, { workers: [{ id: 'w1' }], rejections: [rejection] });
+    expect(await fetchWorkerList()).toEqual({ workers: [{ id: 'w1' }], rejections: [rejection] });
+  });
+
+  it('answers empty lists for a body without them', async () => {
+    mockFetch(200, {});
+    expect(await fetchWorkerList()).toEqual({ workers: [], rejections: [] });
   });
 });
 

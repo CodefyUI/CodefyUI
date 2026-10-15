@@ -1,6 +1,12 @@
 import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { WorkerDevice, WorkerInfo, WorkerStatus } from '../../api/workers';
+import type {
+  WorkerDevice,
+  WorkerInfo,
+  WorkerNodeCatalog,
+  WorkerRejection,
+  WorkerStatus,
+} from '../../api/workers';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
@@ -94,11 +100,59 @@ function VersionLine({ version, serverVersion }: { version: string; serverVersio
   );
 }
 
+/**
+ * How the worker's node types compare with this server's (#781). A
+ * mismatch lists the types on each side: a run naming the worker may use
+ * only the types it has, and `any` never picks it.
+ */
+function CatalogLine({ catalog }: { catalog: WorkerNodeCatalog | undefined }) {
+  const { t } = useI18n();
+  if (catalog === undefined || catalog.status === 'unknown') {
+    return <span className={styles.warn}>{t('workers.catalog.unknown')}</span>;
+  }
+  if (catalog.status === 'match') {
+    return <span className={styles.ok}>{t('workers.catalog.matches')}</span>;
+  }
+  return (
+    <span className={styles.catalog}>
+      <span className={styles.warn}>{t('workers.catalog.differs')}</span>
+      {catalog.missing.length > 0 && (
+        <span className={styles.typeList}>
+          {t('workers.catalog.missing', { count: catalog.missing.length })}{' '}
+          <code>{catalog.missing.join(', ')}</code>
+        </span>
+      )}
+      {catalog.extra.length > 0 && (
+        <span className={styles.typeList}>
+          {t('workers.catalog.extra', { count: catalog.extra.length })}{' '}
+          <code>{catalog.extra.join(', ')}</code>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** A refused handshake: why, when, and from where (#781). */
+function RejectionLine({ rejection, now }: { rejection: WorkerRejection; now: number }) {
+  const { t, locale } = useI18n();
+  const when = relativeTime(rejection.at, locale, now) || '-';
+  return (
+    <span className={styles.warn}>
+      {rejection.reason}
+      <span className={styles.muted}>
+        {' '}({rejection.peer ? t('workers.rejected.from', { when, peer: rejection.peer }) : when})
+      </span>
+    </span>
+  );
+}
+
 /** Statuses whose worker has no live connection: removing one ends nothing. */
 const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
 
-function WorkerCard({ worker, serverVersion, now, onRemoved, onRekey }: {
+function WorkerCard({ worker, rejection, serverVersion, now, onRemoved, onRekey }: {
   worker: WorkerInfo;
+  /** Its name's last refused handshake, if the server remembers one (#781). */
+  rejection: WorkerRejection | undefined;
   serverVersion: string | null;
   now: number;
   /** Called after this card's worker was removed, to keep the focus in the dialog. */
@@ -195,6 +249,14 @@ function WorkerCard({ worker, serverVersion, now, onRemoved, onRekey }: {
             ? <code title={digest}>{digest.slice(0, FINGERPRINT_SHORT_LENGTH)}</code>
             : <span className={styles.muted}>{t('workers.fingerprint.none')}</span>}
         </dd>
+        <dt>{t('workers.catalog')}</dt>
+        <dd><CatalogLine catalog={worker.node_catalog} /></dd>
+        {rejection && (
+          <>
+            <dt>{t('workers.rejected')}</dt>
+            <dd><RejectionLine rejection={rejection} now={now} /></dd>
+          </>
+        )}
         <dt>{t('workers.mounts')}</dt>
         <dd>
           {mounts.length === 0
@@ -247,6 +309,7 @@ function WorkersDialog() {
   const { t } = useI18n();
   const titleId = useId();
   const workers = useWorkerStore((s) => s.workers);
+  const rejections = useWorkerStore((s) => s.rejections);
   const loaded = useWorkerStore((s) => s.loaded);
   const error = useWorkerStore((s) => s.error);
   const serverVersion = useWorkerStore((s) => s.serverVersion);
@@ -277,16 +340,25 @@ function WorkersDialog() {
   };
 
   const now = Date.now();
+  // A refusal of another agent's attempt to take a connected worker's name
+  // is not that worker's own: it is listed with the refused attempts.
+  const own = rejections.filter((r) => !r.live_owner);
+  const rejectionOf = new Map(own.map((r) => [r.name, r]));
+  // A refused name with no card is an agent that never appeared: listed on
+  // its own, so the user sees why (#781).
+  const names = new Set(workers.map((w) => w.name));
+  const refusedOnly = rejections.filter((r) => r.live_owner || !names.has(r.name));
   let content;
   if (!loaded) {
     content = <p className={styles.muted}>{t('workers.loading')}</p>;
-  } else if (workers.length === 0 && error === null) {
+  } else if (workers.length === 0 && refusedOnly.length === 0 && error === null) {
     content = <p className={styles.muted}>{t('workers.empty')}</p>;
   } else {
     content = workers.map((worker) => (
       <WorkerCard
         key={worker.id}
         worker={worker}
+        rejection={rejectionOf.get(worker.name)}
         serverVersion={serverVersion}
         now={now}
         onRemoved={() => closeRef.current?.focus()}
@@ -336,6 +408,20 @@ function WorkersDialog() {
         <div className={styles.body}>
           {error !== null && <div className={styles.error} role="alert">{friendlyError(error)}</div>}
           {content}
+          {loaded && refusedOnly.length > 0 && (
+            <section className={styles.rejections} aria-label={t('workers.rejections.title')}>
+              <h3 className={styles.workerName}>{t('workers.rejections.title')}</h3>
+              <p className={styles.muted}>{t('workers.rejections.intro')}</p>
+              <dl className={styles.facts}>
+                {refusedOnly.map((rejection) => (
+                  <div key={rejection.name} className={styles.rejection}>
+                    <dt>{rejection.name}</dt>
+                    <dd><RejectionLine rejection={rejection} now={now} /></dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
         </div>
       </div>
       {adding !== null && (

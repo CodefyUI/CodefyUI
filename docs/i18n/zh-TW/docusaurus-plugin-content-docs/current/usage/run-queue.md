@@ -42,8 +42,8 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 `target.worker` 決定 run 放在哪裡：
 
 - **省略或 `local`**：這台伺服器，排在解析後裝置的佇列上，與沒有 worker 時完全相同。
-- **worker 名稱**：那個 worker。它必須在這台伺服器啟動後連線過，而且依它最後回報的裝置，必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。曾經連線、目前離線的 worker 不會造成拒絕：run 會排入佇列，等它重新連線。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
-- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。worker 會重新編號的 CUDA 裝置集合（超過一張卡，或不是 `cuda:0` 的單張卡）不會在這台伺服器上執行：在 worker 上，集合會為該 run 從 `cuda:0` 重新編號，在這台伺服器上則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。這種 run 會等待提供整個集合的 worker。`cpu`、`mps` 或 `["cuda:0"]` 的集合，只要這台伺服器有，仍可在這裡執行。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
+- **worker 名稱**：那個 worker。它必須在這台伺服器啟動後連線過，而且依它最後回報的裝置，必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。降級的 worker（節點型別與這台伺服器不同）只接受它擁有全部節點型別的圖；其他圖會回 `400` 並列出缺少的型別（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。曾經連線、目前離線的 worker 不會造成拒絕：run 會排入佇列，等它重新連線。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
+- **`any`**：依名稱順序，第一個已連線、未 drain、該裝置有空位，且不缺少這台伺服器有的節點型別的 worker（缺少型別或未回報節點目錄的 worker 會被略過），最後才是這台伺服器。worker 會重新編號的 CUDA 裝置集合（超過一張卡，或不是 `cuda:0` 的單張卡）不會在這台伺服器上執行：在 worker 上，集合會為該 run 從 `cuda:0` 重新編號，在這台伺服器上則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。這種 run 會等待提供整個集合的 worker。`cpu`、`mps` 或 `["cuda:0"]` 的集合，只要這台伺服器有，仍可在這裡執行。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
 
 在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。
 

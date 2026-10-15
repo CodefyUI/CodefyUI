@@ -123,8 +123,17 @@ placement decides the executor (``WorkerExecutor`` for a worker,
 device), and what the row records once the run starts: ``queue_key``
 ``<worker>/<device>`` and the ``worker_id`` / ``devices`` it got. A worker
 run does not take this process's seed gate (its subprocess has RNGs of its
-own) and records no environment fingerprint (#781). A worker connecting,
-draining, undraining or going away calls :meth:`RunService.reschedule`.
+own) and records the WORKER's environment fingerprint, the one its
+``hello`` carried (#781). A worker whose node catalog differs from this
+server's is ``degraded``. ``any`` skips a worker that LACKS types this
+server has, or reported no catalog; a run naming a degraded worker is
+refused at submit unless it has every node type the graph uses
+(``worker_handshake.catalog_refusal``). The type set is computed once at
+submit, in a thread, for every run that targets a worker, and travels with
+the queued run to ``WorkerExecutor``, which checks it again before
+``assign`` against the worker as it is then. A worker
+connecting, draining, undraining or going away calls
+:meth:`RunService.reschedule`.
 A run without a target never meets any of this.
 
 ``interactive`` runs BYPASS the FIFO entirely — a classroom demo must not
@@ -302,6 +311,7 @@ from .secret_params import (
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
+from .worker_handshake import catalog_refusal, graph_node_types
 from .worker_protocol import (
     TARGET_ANY,
     TARGET_LOCAL,
@@ -1420,6 +1430,9 @@ class _QueuedRun:
     #: scheduler places it only where its mount is. None for a local run.
     #: In memory only, like the entry itself: a restart retires the queue.
     needs: dict[str, Any] | None = None
+    #: The node types the run executes (``graph_node_types``), for a run
+    #: that targets a worker (#781); None for a local one.
+    node_types: frozenset[str] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails.
@@ -1458,6 +1471,9 @@ class _ActiveRun:
     row_queue_key: str = CPU_QUEUE_KEY
     session: "InteractiveSession | None" = None
     record_outputs: bool = False
+    #: The node types it executes, computed at submit for a run that
+    #: targets a worker (#781); the executor's pre-assignment check.
+    node_types: frozenset[str] | None = None
     #: True once this run's admission — its device slot, or its interactive
     #: slot and session key — has been given back. Released EARLY (see
     #: ``_release_admission``), so the flag is what keeps ``_drive``'s
@@ -1867,6 +1883,15 @@ class RunService:
             graph, options,
             batch_child=sweep_id is not None or study_id is not None,
             needs=needs)
+        node_types = None
+        if needs is not None:
+            # A run that targets a worker (``_prepare`` leaves ``needs`` None
+            # only for a local one): the node types it runs, once, off the
+            # loop (#781). Checked here for a named worker and carried to the
+            # executor, which checks them again before ``assign``.
+            node_types = frozenset(await asyncio.to_thread(
+                graph_node_types, normalized_graph))
+            self._check_worker_catalog(normalized_options, node_types)
         normalized_name = normalize_name(name)
         lane = normalized_options["lane"]
         if session is not None and lane != LANE_INTERACTIVE:
@@ -1925,7 +1950,7 @@ class RunService:
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
                            options=normalized_options, signal=_Broadcast(),
                            seq=next(self._submit_seq),
-                           needs=needs)
+                           needs=needs, node_types=node_types)
         self._enqueue(entry)
         self._pump(queue_key)
         return SubmitResult(
@@ -1975,6 +2000,22 @@ class RunService:
         self._check_storage(normalized_options, needs)
         return normalized_graph, normalized_options, queue_key, needs
 
+    def _check_worker_catalog(self, options: dict[str, Any],
+                              node_types: frozenset[str]) -> None:
+        """Refuse a run naming a worker whose node catalog differs from this
+        server's and that lacks a type the run uses (#781). ``any`` is not
+        checked here: placement skips the workers that lack types, and the
+        executor checks the one it picked."""
+        worker_id, _devices = entry_target(options)
+        if worker_id in (TARGET_WORKER_LOCAL, TARGET_WORKER_ANY) \
+                or self._workers is None:
+            return
+        worker = self._workers.get(worker_id)
+        refusal = (None if worker is None
+                   else catalog_refusal(worker, node_types))
+        if refusal is not None:
+            raise RunSubmitError(refusal)
+
     @staticmethod
     def _needs_of(graph: dict[str, Any]) -> dict[str, Any]:
         from .run_needs import needs as run_needs
@@ -2011,8 +2052,18 @@ class RunService:
             if entry_target(child_options)[0] == TARGET_WORKER_LOCAL:
                 result.append(None)
                 continue
-            child_needs = self._needs_of(normalize_graph(graph))
+            child_graph = normalize_graph(graph)
+            child_needs = self._needs_of(child_graph)
             self._check_storage(child_options, child_needs)
+            # Per child, not per ``settings``: a variant may change what
+            # runs (a Map's preset, a bypass) (#781). Only a named worker
+            # whose catalog differs is checked, so the common case costs
+            # nothing.
+            worker = (None if self._workers is None
+                      else self._workers.get(entry_target(child_options)[0]))
+            if worker is not None and worker.catalog.degraded:
+                self._check_worker_catalog(
+                    child_options, frozenset(graph_node_types(child_graph)))
             result.append(child_needs)
         return result
 
@@ -2398,7 +2449,8 @@ class RunService:
                         queue_key=queue_key, lane=entry.options.get(
                             "lane", DEFAULT_LANE),
                         placement=placement,
-                        signal=entry.signal, subscribers=entry.subscribers)
+                        signal=entry.signal, subscribers=entry.subscribers,
+                        node_types=entry.node_types)
         except Exception:
             # Two things must not happen here, and both did before this
             # guard. The entry must not be LOST — it has already left
@@ -2425,6 +2477,7 @@ class RunService:
         session: InteractiveSession | None = None,
         signal: _Broadcast | None = None,
         subscribers: set[RunSubscription] | None = None,
+        node_types: frozenset[str] | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -2507,6 +2560,7 @@ class RunService:
             session=session,
             record_outputs=bool(options.get("record_outputs")),
             subscribers=set() if subscribers is None else subscribers,
+            node_types=node_types,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -2729,16 +2783,21 @@ class RunService:
         on_worker = on_a_worker(active.placement)
         if on_worker:
             # This process's environment is not the one executing the run:
-            # no fingerprint (the worker's is #781's; NULL reads as "not
-            # recorded", which is true) and only the facts that do not
-            # depend on this process. The worker's ``run_started`` merges in
-            # the rest (``WorkerExecutor``).
-            fingerprint = None
+            # the worker's fingerprint, as its ``hello`` reported it (#781;
+            # None, which reads as "not recorded", when it reported none),
+            # and only the facts that do not depend on this process. The
+            # worker's ``run_started`` merges in the rest (``WorkerExecutor``).
+            worker = (None if self._workers is None
+                      else self._workers.get(active.placement.worker_id))
+            fingerprint = (None if worker is None
+                           else worker.fingerprint_document)
+            digest = None if worker is None else worker.fingerprint
             facts = worker_execution_facts(
                 options=options or {}, graph=graph,
                 worker_id=active.placement.worker_id,
                 devices=list(active.placement.devices))
         else:
+            digest = None
             fingerprint, facts = await self._environment_record(
                 active, graph, options)
         started = await self.store.mark_running(
@@ -2748,7 +2807,8 @@ class RunService:
             worker_id=(active.placement.worker_id
                        if active.placement is not None else None),
             devices=list(active.placement.devices) if on_worker else None,
-            fingerprint=fingerprint, execution_facts=facts)
+            fingerprint=fingerprint, fingerprint_digest=digest,
+            execution_facts=facts)
         if not started:
             logger.warning("run %s vanished before it could start",
                            active.run_id)
@@ -2806,6 +2866,7 @@ class RunService:
                 sinks=self._sinks(active),
                 explicit_metric_nodes=active.explicit_metric_nodes,
                 placement=active.placement,
+                node_types=active.node_types,
             ))
         except asyncio.CancelledError:
             raise

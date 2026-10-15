@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { fetchWorkers } from '../../api/workers';
+import { fetchWorkerList, fetchWorkers } from '../../api/workers';
 import { useI18n } from '../../i18n';
 import { _resetWorkerStoreForTesting, useWorkerStore } from '../../store/workerStore';
 import { settle } from '../../test/utils';
@@ -14,6 +14,7 @@ vi.mock('./AddWorkerDialog', () => {
 
 vi.mock('../../api/workers', () => ({
   fetchWorkers: vi.fn(),
+  fetchWorkerList: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
@@ -23,6 +24,7 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   _resetWorkerStoreForTesting();
   vi.mocked(fetchWorkers).mockResolvedValue([]);
+  vi.mocked(fetchWorkerList).mockReset().mockImplementation(async () => ({ workers: await fetchWorkers(), rejections: [] }));
 });
 
 describe('WorkersPanel when the Add worker chunk cannot load', () => {

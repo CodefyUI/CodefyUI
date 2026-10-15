@@ -63,6 +63,10 @@ STATE_EXPIRED = "expired"
 STATE_USED = "used"
 
 
+#: ``touch(fingerprint_digest=...)`` default: leave the stored digest.
+KEEP = object()
+
+
 def hash_secret(secret: str) -> str:
     """sha256 hex of *secret*: the only form a credential is stored in."""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
@@ -116,6 +120,8 @@ class KnownWorker:
     devices: list[dict[str, Any]]
     created_at: str
     last_seen_at: str | None
+    #: Its last connection's environment fingerprint digest (#781).
+    fingerprint_digest: str | None = None
 
 
 def _loads(raw: str | None, default: Any) -> Any:
@@ -296,8 +302,13 @@ class WorkerStore:
                     platform: dict[str, str] | None = None,
                     mounts: dict[str, str] | None = None,
                     devices: list[dict[str, Any]] | None = None,
-                    machine_id: str | None = None) -> None:
-        """Record that *name* was seen now, with the facts it reported."""
+                    machine_id: str | None = None,
+                    fingerprint_digest: Any = KEEP) -> None:
+        """Record that *name* was seen now, with the facts it reported.
+        A None fact leaves the stored one, except *fingerprint_digest*: a
+        ``hello`` passes it always, and its None (the agent reported no
+        fingerprint) clears the stored digest rather than keep a stale one
+        (#781); :data:`KEEP`, the default, leaves it."""
         def _touch(conn: sqlite3.Connection) -> None:
             sets, values = ["last_seen_at = ?"], [utc_now_iso()]
             for column, value in (("platform", platform),
@@ -309,6 +320,9 @@ class WorkerStore:
             if machine_id is not None:
                 sets.append("machine_id = ?")
                 values.append(machine_id)
+            if fingerprint_digest is not KEEP:
+                sets.append("fingerprint_digest = ?")
+                values.append(fingerprint_digest)
             conn.execute(f"UPDATE workers SET {', '.join(sets)} WHERE id = ?",
                          (*values, name))
 
@@ -332,6 +346,7 @@ class WorkerStore:
                 mounts=_loads(row["mounts_json"], {}),
                 devices=_loads(row["devices_json"], []),
                 created_at=row["created_at"],
-                last_seen_at=row["last_seen_at"]) for row in rows]
+                last_seen_at=row["last_seen_at"],
+                fingerprint_digest=row["fingerprint_digest"]) for row in rows]
 
         return await self.db.run(_list)

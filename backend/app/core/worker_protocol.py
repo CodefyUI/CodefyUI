@@ -31,6 +31,27 @@ plane never connects to a worker.
 5. control plane -> ``cancel`` / ``drain`` at any time.
 6. control plane -> ``ack`` for a run's frames once they are recorded.
 
+Versions and additive features (#781)
+-------------------------------------
+The policy (#781). Both ends run the SAME CodefyUI version:
+``hello.version`` must equal the control plane's, or the agent gets
+``reject`` naming both (#764); the control plane reads the version off the
+raw JSON first, so even a ``hello`` it cannot parse is refused that way.
+Within that rule the protocol grows by addition, and from version 3 on an
+addition never bumps :data:`PROTOCOL_VERSION`:
+
+- every frame model IGNORES a field it does not know (``extra="ignore"``),
+  so a frame carrying a new optional field still parses on a reader that
+  predates it;
+- ``hello`` and ``welcome`` each list the optional features their sender
+  speaks (:data:`CAPABILITIES`: ``"ack"``, ``"mounts"``; next
+  ``"transfer"``). A new feature declares its name there, and is used only
+  when both lists name it (:func:`shared_capabilities`).
+
+:data:`PROTOCOL_VERSION` is bumped only for a change a peer would misread
+(a field changing meaning or type, a frame becoming mandatory). It is 3:
+2 added ``ack`` (#783) and 3 the mount fields (#782), before this rule.
+
 Per-run frames carry ``seq``: 1 for the first frame the agent sends about a
 run, +1 for every frame after it, ``run_finished`` included. The agent
 writes every per-run frame to the run's spool before it sends it
@@ -72,16 +93,25 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Iterable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 #: Bumped on any change a peer of the previous version would misread. Sent
-#: in ``hello`` and ``welcome``; #781 refuses a mismatch. 2: ``ack`` and the
-#: spool replay (#783). 3: storage mounts (#782): ``assign.storage``,
-#: ``artifact.mount_label`` and ``heartbeat.mounts``. Each is optional,
-#: but a peer of version 2 refuses the unknown field (``extra="forbid"``).
+#: in ``hello`` and ``welcome``; a mismatch is refused (#781). 2: ``ack`` and
+#: the spool replay (#783). 3: storage mounts (#782): ``assign.storage``,
+#: ``artifact.mount_label`` and ``heartbeat.mounts``. From 3 on, frames
+#: ignore unknown fields and an additive feature declares a capability
+#: instead of a bump (see the module docstring).
 PROTOCOL_VERSION = 3
+
+#: The optional protocol features this build speaks, sent in ``hello`` (the
+#: agent's) and ``welcome`` (the control plane's). ``ack`` (#783) and
+#: ``mounts`` (#782) came with PROTOCOL_VERSION 2 and 3, before the
+#: capability rule, and are listed for the record: every peer of version 3
+#: speaks both. Every additive feature from now on (#784's tunnel, #785's
+#: ``transfer`` storage) adds its name here instead of bumping the version.
+CAPABILITIES: tuple[str, ...] = ("ack", "mounts")
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -162,10 +192,16 @@ RunId = Annotated[str, Field(pattern=f"^{RUN_ID_PATTERN.pattern}$")]
 Seq = Annotated[int, Field(ge=1)]
 
 
+def shared_capabilities(mine: Iterable[str], theirs: Iterable[str]) -> list[str]:
+    """The features both peers listed, sorted: the ones a connection uses."""
+    return sorted(set(mine) & set(theirs))
+
+
 class _Frame(BaseModel):
-    # Both ends run the same version (#764), so an unknown field is a bug,
-    # not a newer peer: refuse it rather than drop it silently.
-    model_config = ConfigDict(extra="forbid")
+    # Additive growth (#781): a field this build does not know is dropped,
+    # not refused, so a newer optional field never breaks an older reader.
+    # A field whose meaning changes bumps PROTOCOL_VERSION instead.
+    model_config = ConfigDict(extra="ignore")
 
 
 class _RunFrame(_Frame):
@@ -210,16 +246,36 @@ class RunAliveEntry(_Frame):
 # ── agent -> control plane ────────────────────────────────────────────────
 
 
+class FingerprintReport(_Frame):
+    """A worker's environment fingerprint (``core.env_fingerprint``)."""
+
+    #: ``collect_fingerprint()``'s document, as the worker computed it.
+    document: dict[str, Any]
+    #: Its ``fingerprint_digest``. The control plane recomputes the digest
+    #: from *document* and keeps its own (they agree unless the document
+    #: was altered on the way).
+    digest: str
+
+
 class Hello(_Frame):
     type: Literal["hello"] = HELLO
     protocol_version: int = PROTOCOL_VERSION
     name: str
+    #: ``core.version.get_version()``; must equal the control plane's.
     version: str
-    #: ``env_fingerprint`` digest. ``None`` in this wave: computing it
-    #: imports torch, which the agent process may not; #781 fills it.
-    fingerprint: str | None = None
-    #: Same reason and owner as ``fingerprint``.
+    #: The agent's environment (#781), collected once at agent start by a
+    #: short-lived helper subprocess (the agent itself never imports
+    #: torch). None when that helper failed.
+    fingerprint: FingerprintReport | None = None
+    #: ``node_registry.node_catalog().hash`` on the worker (#781): which
+    #: node types it can execute, and how each is defined. None with
+    #: ``fingerprint``.
     node_catalog_hash: str | None = None
+    #: The node types behind ``node_catalog_hash``, sorted, so the control
+    #: plane can say which differ.
+    node_types: list[str] = Field(default_factory=list)
+    #: Optional features this agent speaks (:data:`CAPABILITIES`).
+    capabilities: list[str] = Field(default_factory=list)
     devices: list[DeviceReport] = Field(default_factory=list)
     #: Storage label -> path on this worker (#782).
     mounts: dict[str, str] = Field(default_factory=dict)
@@ -310,6 +366,8 @@ class Welcome(_Frame):
     type: Literal["welcome"] = WELCOME
     protocol_version: int = PROTOCOL_VERSION
     worker_id: str
+    #: Optional features the control plane speaks (:data:`CAPABILITIES`).
+    capabilities: list[str] = Field(default_factory=list)
     heartbeat_s: float = Field(default=DEFAULT_HEARTBEAT_S, gt=0)
     grace_s: float = Field(default=DEFAULT_GRACE_S, ge=0)
 

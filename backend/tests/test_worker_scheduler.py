@@ -510,3 +510,101 @@ async def test_a_heartbeat_updates_the_mounts_and_wakes_the_queue():
         assert worker.mounts == {"data": "/n"} and woken == [1]
     finally:
         await registry.shutdown()
+
+
+
+# ── node catalogs (#781) ─────────────────────────────────────────────────
+
+
+def _cataloged(name: str, *devices: str, status: str = "mismatch",
+               missing: tuple = ("X",), extra: tuple = (),
+               has: tuple = ("Start",)) -> Worker:
+    """A connected worker of a registry that compares catalogs."""
+    from app.core.worker_handshake import CatalogCheck
+
+    worker = _worker(name, *devices)
+    worker.catalog_checked = True
+    worker.node_types = tuple(has)
+    worker.catalog = CatalogCheck(status, None if status == "unknown"
+                                  else "h", missing=missing, extra=extra)
+    return worker
+
+
+def test_any_skips_a_worker_lacking_types_and_says_why_it_waits():
+    scheduler = _scheduler(_cataloged("a-box", "cpu", "cuda:0"),
+                           _worker("b-box", "cpu"))
+    entry = _Entry("r1", "any/cpu", _target("any"))
+    assert scheduler.place(entry, {}).worker_id == "b-box"
+    # Only that worker offers the card: the run waits, and says so.
+    cuda = _Entry("r2", "any/cuda", _target("any", "cuda"))
+    assert scheduler.place(cuda, {}) is None
+    assert scheduler.can_serve_any("cuda", None, connected_only=True)
+    assert not scheduler.can_serve_any("cuda", None, connected_only=True,
+                                       usable_only=True)
+    assert scheduler.explain(cuda) == (
+        "waiting for a worker that offers cuda: a-box is skipped by `any` "
+        "(node types missing, or not reported)")
+
+
+def test_any_skips_a_worker_without_a_catalog_but_not_a_superset_one():
+    unknown = _cataloged("a-box", "cpu", status="unknown", missing=())
+    superset = _cataloged("b-box", "cpu", missing=(), extra=("mine:Only",))
+    entry = _Entry("r1", "any/cpu", _target("any"))
+    assert _scheduler(unknown, superset).place(entry, {}).worker_id == "b-box"
+    assert unknown.skipped_by_any and not superset.skipped_by_any
+    # A registry that compares nothing skips nothing.
+    unknown.catalog_checked = False
+    assert _scheduler(unknown).place(entry, {}).worker_id == "a-box"
+
+
+def test_a_named_worker_lacking_types_is_placed():
+    """Its submit was checked (and the executor checks again): placement
+    itself does not refuse a run that names it."""
+    scheduler = _scheduler(_cataloged("box", "cpu"))
+    entry = _Entry("r1", "box/cpu", _target("box"))
+    assert scheduler.place(entry, {}).worker_id == "box"
+    assert scheduler.explain(entry) is None
+
+
+def test_submit_to_a_degraded_worker_needs_every_node_type_it_uses():
+    service = _service(_registry_with(
+        _cataloged("box", "cpu", has=("Start", "Print")),
+        _cataloged("more", "cpu", missing=(), has=("Start",)),
+        _cataloged("blind", "cpu", status="unknown", missing=()),
+        _worker("full", "cpu")))
+    check = service._check_worker_catalog
+    check(_options(worker="box"), frozenset({"Start", "Print"}))
+    with pytest.raises(RunSubmitError) as refused:
+        check(_options(worker="box"),
+              frozenset({"Start", "foundations:Edu-KNN", "Print"}))
+    assert str(refused.value).startswith(
+        "worker 'box' does not have the node type(s) this graph uses: "
+        "foundations:Edu-KNN.")
+    # A superset worker is still checked per run.
+    with pytest.raises(RunSubmitError, match="Print"):
+        check(_options(worker="more"), frozenset({"Start", "Print"}))
+    # A matching worker, one without a catalog, any, local: not checked.
+    for target in ("full", "blind", "any", "local"):
+        check(_options(worker=target), frozenset({"foundations:Edu-KNN"}))
+
+
+def test_a_batch_is_checked_per_child_not_per_settings():
+    """Two children with the same settings but different node types: the
+    second is refused for a worker that lacks its type (#781)."""
+    def chain(*types: str) -> dict[str, Any]:
+        nodes = [{"id": "s", "type": "Start", "data": {"params": {}}}]
+        edges = []
+        for i, node_type in enumerate(types):
+            nodes.append({"id": f"n{i}", "type": node_type,
+                          "data": {"params": {}}})
+            edges.append({"id": f"e{i}", "source": "s", "target": f"n{i}",
+                          "sourceHandle": "trigger", "type": "trigger"})
+        return {"nodes": nodes, "edges": edges, "settings": {"seed": 1}}
+
+    service = _service(_registry_with(
+        _cataloged("box", "cpu", has=("Start", "Print"))))
+    options = {"target": {"worker": "box"}}
+    service.check_placeable_batch([chain("Print"), chain("Print")], options)
+    with pytest.raises(RunSubmitError, match="foundations:Edu-KNN"):
+        service.check_placeable_batch(
+            [chain("Print"), chain("foundations:Edu-KNN")], options)

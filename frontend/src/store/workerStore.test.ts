@@ -1,11 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { drainWorker, fetchWorkers, removeWorker, undrainWorker, type WorkerInfo } from '../api/workers';
+import {
+  drainWorker,
+  fetchWorkerList,
+  fetchWorkers,
+  removeWorker,
+  undrainWorker,
+  type WorkerInfo,
+} from '../api/workers';
 import { rememberAppVersion } from '../utils/appVersion';
 import { useToastStore } from './toastStore';
 import { WORKER_POLL_MS, _resetWorkerStoreForTesting, useWorkerStore } from './workerStore';
 
 vi.mock('../api/workers', () => ({
   fetchWorkers: vi.fn(),
+  fetchWorkerList: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
@@ -34,6 +42,7 @@ beforeEach(() => {
   _resetWorkerStoreForTesting();
   useToastStore.setState({ toasts: [] });
   vi.mocked(fetchWorkers).mockReset().mockResolvedValue([worker('w1')]);
+  vi.mocked(fetchWorkerList).mockReset().mockImplementation(async () => ({ workers: await fetchWorkers(), rejections: [] }));
   rememberAppVersion('3.0.2');
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();

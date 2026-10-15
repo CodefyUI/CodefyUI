@@ -43,6 +43,34 @@ export interface WorkerDevice {
   running?: string[];
 }
 
+/**
+ * The worker's node catalog against this server's (#781): `match`, or
+ * `mismatch` with the node types this server has and the worker lacks
+ * (`missing`) and the other way round (`extra`), or `unknown` when the
+ * worker reported none.
+ */
+export interface WorkerNodeCatalog {
+  status: 'match' | 'mismatch' | 'unknown';
+  hash: string | null;
+  missing: string[];
+  extra: string[];
+}
+
+/** A worker name's last refused handshake (#781), kept in server memory. */
+export interface WorkerRejection {
+  name: string;
+  reason: string;
+  /** Epoch seconds. */
+  at: number;
+  /** The refused client's address, when known. */
+  peer?: string | null;
+  /**
+   * A connected worker holds the name: the refusal was another agent's
+   * attempt to take it, not that worker's own.
+   */
+  live_owner?: boolean;
+}
+
 export interface WorkerInfo {
   id: string;
   name: string;
@@ -70,6 +98,16 @@ export interface WorkerInfo {
    * secrets in its runs cross the network unencrypted (#786).
    */
   plain_http?: boolean;
+  /** Its node catalog against this server's (#781). */
+  node_catalog?: WorkerNodeCatalog;
+  /** Why `status` reads `degraded`: `node_catalog`, `heartbeat` (#781). */
+  degraded_reasons?: string[];
+}
+
+/** `GET /api/workers`: the workers and each name's last refused handshake. */
+export interface WorkerList {
+  workers: WorkerInfo[];
+  rejections: WorkerRejection[];
 }
 
 /** `pending` can still enroll; `expired` and `used` are listed until deleted. */
@@ -119,12 +157,20 @@ async function failure(res: Response, fallback: string): Promise<Error> {
   return new Error(typeof body.detail === 'string' ? body.detail : `${fallback}: ${res.statusText}`);
 }
 
-/** Every worker the server knows, connected or recently disconnected. */
-export async function fetchWorkers(): Promise<WorkerInfo[]> {
+/** The worker list with the handshakes the server refused (#781). */
+export async function fetchWorkerList(): Promise<WorkerList> {
   const res = await fetch(BASE_URL);
   if (!res.ok) throw await failure(res, 'Workers failed');
   const body = await res.json();
-  return Array.isArray(body.workers) ? body.workers : [];
+  return {
+    workers: Array.isArray(body.workers) ? body.workers : [],
+    rejections: Array.isArray(body.rejections) ? body.rejections : [],
+  };
+}
+
+/** Every worker the server knows, connected or recently disconnected. */
+export async function fetchWorkers(): Promise<WorkerInfo[]> {
+  return (await fetchWorkerList()).workers;
 }
 
 async function setDraining(workerId: string, action: 'drain' | 'undrain'): Promise<WorkerInfo> {

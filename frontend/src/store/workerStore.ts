@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import { drainWorker, fetchWorkers, removeWorker, undrainWorker, type WorkerInfo } from '../api/workers';
+import {
+  drainWorker,
+  fetchWorkerList,
+  removeWorker,
+  undrainWorker,
+  type WorkerInfo,
+  type WorkerRejection,
+} from '../api/workers';
 import { cachedAppVersion } from '../utils/appVersion';
 import { useI18n } from '../i18n';
 import { useToastStore } from './toastStore';
@@ -26,6 +33,8 @@ export const WORKER_POLL_MS = 5000;
 
 interface WorkerState {
   workers: WorkerInfo[];
+  /** Each worker name's last refused handshake, newest first (#781). */
+  rejections: WorkerRejection[];
   /** False until the first read answered (or failed). */
   loaded: boolean;
   error: string | null;
@@ -87,6 +96,7 @@ async function tick() {
 
 export const useWorkerStore = create<WorkerState>((set, get) => ({
   workers: [],
+  rejections: [],
   loaded: false,
   error: null,
   serverVersion: null,
@@ -100,9 +110,9 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
   refresh: async () => {
     const seq = nextSeq++;
     try {
-      const workers = await fetchWorkers();
+      const { workers, rejections } = await fetchWorkerList();
       if (!claim(seq)) return;
-      set({ workers, loaded: true, error: null, serverVersion: cachedAppVersion() });
+      set({ workers, rejections, loaded: true, error: null, serverVersion: cachedAppVersion() });
     } catch (err) {
       if (!claim(seq)) return;
       set({ loaded: true, error: errorMessage(err), serverVersion: cachedAppVersion() });
@@ -188,6 +198,7 @@ export function _resetWorkerStoreForTesting(): void {
   pollTimer = null;
   useWorkerStore.setState({
     workers: [],
+    rejections: [],
     loaded: false,
     error: null,
     serverVersion: null,

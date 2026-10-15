@@ -42,6 +42,27 @@ worker still executes that nothing here tracks (and that did not just
 finish here) is told to stop at once, so it does not hold a card the
 scheduler has handed on.
 
+A connected worker whose node catalog differs from this server's (#781,
+``core.worker_handshake.check_catalog``) also reads ``degraded``, with
+``node_catalog`` saying which types are missing or extra; ``degraded_reasons``
+lists why (``node_catalog``, ``heartbeat``). Unlike a late heartbeat, a
+catalog that LACKS types this server has keeps the worker out of
+``target: any`` placement (:attr:`Worker.skipped_by_any`), and so does a
+catalog the worker never reported; a worker that only has more types
+stays eligible. A run on a worker whose catalog differs must use only
+types it has (checked at submit for a named target and before ``assign``).
+The comparison is redone whenever this server's own catalog changes (a
+plugin installed or reloaded here), on the next lookup. A registry built
+without a ``node_catalog`` source compares nothing and skips nothing.
+
+A ``hello`` refused at the handshake (another CodefyUI version, a name the
+credential does not allow) is remembered per name, in memory
+(:meth:`WorkerRegistry.record_rejection`, with the peer address), so the
+Workers panel can say why a worker never appeared; a later successful
+connection under the name clears it. A refusal of an attempt to take the
+name of a CONNECTED worker is marked ``live_owner`` so the panel lists it
+as a refused attempt, never as that worker's own refusal.
+
 Runs: :class:`WorkerRun` is one assigned run's inbox. The socket handler
 routes every per-run frame into it and ``WorkerExecutor`` reads it; a
 worker that goes away puts :data:`WORKER_GONE` in each inbox, which the
@@ -67,10 +88,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from . import worker_protocol as wp
+from .worker_handshake import (
+    CATALOG_UNKNOWN,
+    CatalogCheck,
+    check_catalog,
+    verified_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +119,11 @@ MISSED_HEARTBEATS = 3
 INBOX_HIGH_WATER = 10_000
 #: How often a paused socket checks whether the inbox drained.
 INBOX_DRAIN_POLL_S = 0.05
+#: Names whose last handshake refusal is remembered; the oldest is dropped.
+MAX_REJECTIONS = 100
+#: ``degraded_reasons`` entries.
+DEGRADED_NODE_CATALOG = "node_catalog"
+DEGRADED_HEARTBEAT = "heartbeat"
 
 #: Seconds a disconnected worker's runs wait for it (#783).
 DEFAULT_RESUME_GRACE_S = 300.0
@@ -142,6 +175,7 @@ class Worker:
     id: str
     name: str
     version: str
+    #: Its environment fingerprint digest (#781), or None.
     fingerprint: str | None
     platform: dict[str, str]
     mounts: dict[str, str]
@@ -181,10 +215,49 @@ class Worker:
     #: same-host agent, a TLS proxy on this machine, or an SSH tunnel's
     #: local end.
     plain_http: bool = False
+    #: The fingerprint document behind :attr:`fingerprint` (#781): what a
+    #: run on this worker records as its environment.
+    fingerprint_document: dict[str, Any] | None = None
+    #: ``hello.node_catalog_hash`` and ``hello.node_types`` (#781).
+    node_catalog_hash: str | None = None
+    node_types: tuple[str, ...] = ()
+    #: Its catalog against this server's, as last compared (#781).
+    catalog: CatalogCheck = field(default_factory=CatalogCheck)
+    #: The server catalog hash :attr:`catalog` was compared with.
+    catalog_against: str | None = None
+    #: Its registry compares catalogs (it has a ``node_catalog`` source).
+    catalog_checked: bool = False
 
     @property
     def online(self) -> bool:
         return self.status not in (STATUS_DISCONNECTED, STATUS_OFFLINE)
+
+    @property
+    def skipped_by_any(self) -> bool:
+        """``target: any`` does not place runs here (#781): its catalog lacks
+        node types this server has, or it reported none."""
+        return self.catalog_checked and (
+            self.catalog.lacks_types
+            or self.catalog.status == CATALOG_UNKNOWN)
+
+    def degraded_reasons(self) -> list[str]:
+        if not self.online:
+            return []
+        reasons = []
+        if self.catalog.degraded:
+            reasons.append(DEGRADED_NODE_CATALOG)
+        if self.status == STATUS_DEGRADED:
+            reasons.append(DEGRADED_HEARTBEAT)
+        return reasons
+
+    def api_status(self) -> str:
+        """``status`` as the API reports it: ``draining`` first (it decides
+        whether a run can go there), then ``degraded`` for either reason."""
+        if self.online and self.draining:
+            return STATUS_DRAINING
+        if self.degraded_reasons():
+            return STATUS_DEGRADED
+        return self.status
 
     @property
     def accepts_runs(self) -> bool:
@@ -204,9 +277,10 @@ class Worker:
         return {
             "id": self.id,
             "name": self.name,
-            "status": (STATUS_DRAINING if self.draining and self.online
-                       else self.status),
+            "status": self.api_status(),
             "draining": self.draining,
+            "degraded_reasons": self.degraded_reasons(),
+            "node_catalog": self.catalog.describe(),
             "same_host": self.same_host,
             "version": self.version,
             "fingerprint_digest": self.fingerprint,
@@ -256,8 +330,15 @@ class WorkerRegistry:
                  missed_heartbeats: int = MISSED_HEARTBEATS,
                  clock: Callable[[], float] = time.monotonic,
                  local_devices: Callable[[], list[Any]] | None = None,
-                 resume_grace_s: float = DEFAULT_RESUME_GRACE_S) -> None:
+                 resume_grace_s: float = DEFAULT_RESUME_GRACE_S,
+                 node_catalog: Callable[[], Any] | None = None) -> None:
         self._local_devices_source = local_devices
+        #: This server's ``node_registry.node_catalog`` (#781); without it
+        #: no worker's catalog is compared (every one reads ``unknown``).
+        self._node_catalog = node_catalog
+        #: Name -> ``{"name", "reason", "at"}``: each name's last refused
+        #: handshake, oldest first (#781).
+        self._rejections: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._local_devices_cache: list[Any] | None = None
         #: ``(worker, device, uuid)`` already logged as not shared.
         self._unshared_logged: set[tuple[str, str, str | None]] = set()
@@ -287,10 +368,73 @@ class WorkerRegistry:
     # ── queries ───────────────────────────────────────────────────────────
 
     def get(self, worker_id: str) -> Worker | None:
-        return self._workers.get(worker_id)
+        worker = self._workers.get(worker_id)
+        if worker is not None:
+            self._check_catalog(worker)
+        return worker
 
     def workers(self) -> list[Worker]:
-        return sorted(self._workers.values(), key=lambda w: w.name)
+        workers = sorted(self._workers.values(), key=lambda w: w.name)
+        for worker in workers:
+            self._check_catalog(worker)
+        return workers
+
+    # ── node catalogs and refusals (#781) ────────────────────────────────
+
+    def _control_catalog(self) -> Any:
+        if self._node_catalog is None:
+            return None
+        try:
+            return self._node_catalog()
+        except Exception:  # noqa: BLE001 -- a check degrades, never fails
+            logger.exception("could not compute this server's node catalog")
+            return None
+
+    def _check_catalog(self, worker: Worker) -> None:
+        """Compare *worker*'s catalog with this server's when either changed.
+
+        Cheap when nothing did: the server's catalog is cached per node
+        registry generation, and the comparison only reruns for a new hash.
+        """
+        if not worker.node_catalog_hash:
+            return
+        control = self._control_catalog()
+        if control is None or control.hash == worker.catalog_against:
+            return
+        before = worker.catalog.status
+        worker.catalog = check_catalog(control, worker.node_catalog_hash,
+                                       worker.node_types)
+        worker.catalog_against = control.hash
+        if worker.catalog.degraded:
+            logger.warning(
+                "worker %s is degraded: its node catalog differs from this "
+                "server's (missing %d type(s): %s; extra %d)", worker.name,
+                len(worker.catalog.missing),
+                ", ".join(worker.catalog.missing[:10]) or "-",
+                len(worker.catalog.extra))
+        elif before != worker.catalog.status:
+            logger.info("worker %s: node catalog matches this server's",
+                        worker.name)
+
+    def record_rejection(self, name: str, reason: str, *,
+                         peer: str | None = None) -> None:
+        """Remember why a ``hello`` under *name* was refused (in memory).
+
+        ``live_owner`` says a connected worker holds the name: the refusal
+        was someone else's attempt, not that worker's own (#781).
+        """
+        name = str(name)[:63]
+        owner = self._workers.get(name)
+        self._rejections.pop(name, None)
+        self._rejections[name] = {
+            "name": name, "reason": reason, "at": time.time(), "peer": peer,
+            "live_owner": owner is not None and owner.online}
+        while len(self._rejections) > MAX_REJECTIONS:
+            self._rejections.popitem(last=False)
+
+    def rejections(self) -> list[dict[str, Any]]:
+        """Each name's last refused handshake, newest first."""
+        return [dict(entry) for entry in reversed(self._rejections.values())]
 
     def run_state(self, worker_id: str, run_id: str) -> WorkerRun | None:
         """The run *worker_id* is executing as *run_id*, or None."""
@@ -391,15 +535,23 @@ class WorkerRegistry:
         caller closes the old socket (``replaced.close``).
         """
         old = self._workers.get(hello.name)
+        document, digest = verified_fingerprint(hello.fingerprint,
+                                                worker=hello.name)
         worker = Worker(
             id=hello.name, name=hello.name, version=hello.version,
-            fingerprint=hello.fingerprint, platform=dict(hello.platform),
+            fingerprint=digest, platform=dict(hello.platform),
             mounts=dict(hello.mounts), devices=list(hello.devices),
             send=send, close=close, heartbeat_s=self.heartbeat_s,
             last_heartbeat=self._clock(), same_host=same_host,
             credential=credential, plain_http=plain_http,
-            enrolled=enrolled or (old is not None and old.enrolled))
+            enrolled=enrolled or (old is not None and old.enrolled),
+            fingerprint_document=document,
+            node_catalog_hash=hello.node_catalog_hash,
+            node_types=tuple(hello.node_types),
+            catalog_checked=self._node_catalog is not None)
         worker.shared = self._shared_devices(worker)
+        self._rejections.pop(hello.name, None)
+        self._check_catalog(worker)
         replaced = None
         if old is not None:
             worker.draining = old.draining
@@ -452,7 +604,8 @@ class WorkerRegistry:
                                    "could not be read; left out", entry.name)
             seen = iso_to_epoch(entry.last_seen_at)
             worker = Worker(
-                id=entry.name, name=entry.name, version="", fingerprint=None,
+                id=entry.name, name=entry.name, version="",
+                fingerprint=getattr(entry, "fingerprint_digest", None),
                 platform=dict(entry.platform), mounts=dict(entry.mounts),
                 devices=devices, send=_not_connected, close=_nothing,
                 heartbeat_s=self.heartbeat_s, status=STATUS_OFFLINE,

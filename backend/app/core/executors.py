@@ -136,6 +136,9 @@ class ExecutionRequest:
     #: Where the scheduler put the run (#768); ``WorkerExecutor`` reads its
     #: worker and devices. None on the interactive lane.
     placement: "Placement | None" = None
+    #: The node types the run executes, computed once at submit for a run
+    #: that targets a worker (#781); None when not computed.
+    node_types: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -610,6 +613,11 @@ class WorkerExecutor:
     ``interrupted``, or ``cancelled`` when a stop had been asked (a user's
     Stop stays the user's).
 
+    Before ``assign``, a degraded worker (its node catalog differs from
+    this server's, #781) must have every node type the graph uses, else
+    the run fails with ``worker_handshake.catalog_refusal``'s message and
+    nothing is sent.
+
     Every send looks the worker up in the registry AT SEND TIME: a
     reconnect replaces the ``Worker`` object, and a frame sent through the
     old one would go to a closed socket.
@@ -640,6 +648,11 @@ class WorkerExecutor:
             detail = f"worker {worker_id} is not connected"
             await _worker_gone_warning(request, detail)
             return self._gone(request, detail)
+        # The submit-time check again, against the worker as it is now: it
+        # may have reconnected with fewer node types since (#781).
+        refusal = await self._catalog_refusal(request, worker)
+        if refusal is not None:
+            return ExecutionOutcome(STATUS_FAILED, refusal)
         devices = list(placement.devices)
         run = self._registry.open_run(worker, request.run_id)
         watcher: asyncio.Task | None = None
@@ -729,6 +742,32 @@ class WorkerExecutor:
         await acks.resend()
         if request.context.should_stop():
             await self._send(worker_id, wp.Cancel(run_id=request.run_id))
+
+    @staticmethod
+    async def _catalog_refusal(request: ExecutionRequest,
+                               worker: Any) -> str | None:
+        """Why *worker* cannot run *request*'s node types (#781), or None.
+
+        The types were computed at submit (``request.node_types``); a run
+        without them (none was computed) has them computed here, off the
+        loop. A failure to compute is logged and refuses nothing: the
+        worker reports an unknown type itself.
+        """
+        from .worker_handshake import catalog_refusal, graph_node_types
+
+        if not getattr(getattr(worker, "catalog", None), "degraded", False):
+            return None
+        try:
+            types = request.node_types
+            if types is None:
+                types = frozenset(await asyncio.to_thread(
+                    graph_node_types, request.graph))
+            return catalog_refusal(worker, types)
+        except Exception:  # noqa: BLE001
+            logger.warning("run %s: could not check its node types against "
+                           "worker %s", request.run_id, worker.name,
+                           exc_info=True)
+            return None
 
     @staticmethod
     def _gone(request: ExecutionRequest, detail: str) -> ExecutionOutcome:

@@ -4,7 +4,9 @@ The app runs under uvicorn on a free loopback port in a thread (its real
 lifespan: instance lock, node discovery, the worker registry); the agent
 runs as ``python -m app.agent start --foreground`` in a subprocess. One
 tiny seeded CPU graph runs here and then on the agent; the two event logs
-must agree on ``(type, node_id, status)``.
+must agree on ``(type, node_id, status)``. A second agent without the
+``foundations`` plugin pack is ``degraded`` and refused a graph using it
+(#781).
 """
 
 from __future__ import annotations
@@ -98,6 +100,58 @@ def _steps(client: httpx.Client, run_id: str) -> list[tuple]:
             if e["type"] != "metric"]
 
 
+
+#: How long an agent has to connect: it first runs its facts helper
+#: (#781), which imports torch and discovers every node.
+CONNECT_TIMEOUT_S = 120
+
+
+def _start_agent(base: str, user_data: Path, name: str) -> subprocess.Popen:
+    """``cdui agent start --foreground`` with its own (empty) user data
+    directory: no plugin pack is installed for it."""
+    env = {**os.environ, "PYTHONPATH": str(BACKEND_DIR),
+           "CODEFYUI_USER_DATA_DIR": str(user_data),
+           "CODEFYUI_AGENT_TOKEN": session_token()}
+    return subprocess.Popen(
+        [sys.executable, "-m", "app.agent", "start", "--foreground",
+         "--control", base, "--name", name, "--devices", "cpu"],
+        cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def _wait_connected(client: httpx.Client, agent: subprocess.Popen,
+                    name: str) -> dict[str, Any]:
+    deadline = time.monotonic() + CONNECT_TIMEOUT_S
+    while True:
+        workers = client.get("/api/workers").json()["workers"]
+        for worker in workers:
+            if worker["name"] == name and worker["status"] in (
+                    "online", "degraded"):
+                return worker
+        if time.monotonic() > deadline or agent.poll() is not None:
+            raise AssertionError(f"the agent never connected: {workers}")
+        time.sleep(0.1)
+
+
+def _stop_agent(client: httpx.Client, agent: subprocess.Popen,
+                name: str) -> None:
+    agent.terminate()
+    try:
+        output, _ = agent.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        agent.kill()
+        output, _ = agent.communicate()
+    # The agent's own exit is seen by the server: the socket closed.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        statuses = {w["name"]: w["status"]
+                    for w in client.get("/api/workers").json()["workers"]}
+        if statuses.get(name) == "disconnected":
+            break
+        time.sleep(0.1)
+    assert statuses.get(name) == "disconnected", output
+
+
 def test_a_graph_runs_on_a_real_agent_like_it_runs_here(live_server,
                                                        tmp_path):
     base = f"http://127.0.0.1:{live_server}"
@@ -107,25 +161,9 @@ def test_a_graph_runs_on_a_real_agent_like_it_runs_here(live_server,
     local_record = _wait_terminal(client, local["run_id"])
     assert local_record["status"] == "succeeded"
 
-    env = {**os.environ, "PYTHONPATH": str(BACKEND_DIR),
-           "CODEFYUI_USER_DATA_DIR": str(tmp_path),
-           "CODEFYUI_AGENT_TOKEN": session_token()}
-    agent = subprocess.Popen(
-        [sys.executable, "-m", "app.agent", "start", "--foreground",
-         "--control", base, "--name", "e2e-box", "--devices", "cpu"],
-        cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    agent = _start_agent(base, tmp_path, "e2e-box")
     try:
-        deadline = time.monotonic() + 30
-        while True:
-            workers = client.get("/api/workers").json()["workers"]
-            if any(w["name"] == "e2e-box" and w["status"] == "online"
-                   for w in workers):
-                break
-            if time.monotonic() > deadline or agent.poll() is not None:
-                raise AssertionError("the agent never connected")
-            time.sleep(0.1)
-
+        _wait_connected(client, agent, "e2e-box")
         remote = client.post("/api/runs", json={
             "graph": _graph(),
             "options": {"target": {"worker": "e2e-box"}}}).json()
@@ -136,21 +174,90 @@ def test_a_graph_runs_on_a_real_agent_like_it_runs_here(live_server,
         assert _steps(client, remote["run_id"]) == _steps(
             client, local["run_id"])
     finally:
-        agent.terminate()
-        try:
-            output, _ = agent.communicate(timeout=30)
-        except subprocess.TimeoutExpired:
-            agent.kill()
-            output, _ = agent.communicate()
-    # The agent's own exit is seen by the server: the socket closed.
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        statuses = {w["name"]: w["status"]
-                    for w in client.get("/api/workers").json()["workers"]}
-        if statuses.get("e2e-box") == "disconnected":
-            break
-        time.sleep(0.1)
-    assert statuses.get("e2e-box") == "disconnected", output
+        _stop_agent(client, agent, "e2e-box")
+    client.close()
+
+
+def _ensure_knn_registered() -> None:
+    """Make this server know ``foundations:Edu-KNN``.
+
+    The suite registers the in-repo packs, but an earlier test may have
+    rediscovered from an empty lockfile and purged the plugin namespace, so
+    the node module is loaded from its file and registered directly.
+    """
+    import importlib.util
+
+    from app.core.node_base import BaseNode
+    from app.core.node_registry import registry
+
+    if registry.get("foundations:Edu-KNN") is not None:
+        return
+    path = (BACKEND_DIR.parent / "plugins" / "foundations" / "nodes"
+            / "edu_knn_node.py")
+    spec = importlib.util.spec_from_file_location("_e2e_edu_knn_node", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    [node] = [obj for obj in vars(module).values()
+              if isinstance(obj, type) and issubclass(obj, BaseNode)
+              and getattr(obj, "NODE_NAME", "") == "Edu-KNN"]
+    registry.register(node, plugin_id="foundations")
+
+
+def _knn_graph() -> dict[str, Any]:
+    """A graph using a node of the ``foundations`` plugin pack."""
+    return {
+        "nodes": [{"id": "start", "type": "Start", "data": {"params": {}}},
+                  {"id": "knn", "type": "foundations:Edu-KNN",
+                   "data": {"params": {}}}],
+        "edges": [{"id": "t", "source": "start", "target": "knn",
+                   "sourceHandle": "trigger", "type": "trigger"}],
+    }
+
+
+def test_a_worker_without_a_plugin_is_degraded_and_refused_its_nodes(
+        live_server, tmp_path):
+    """#781 end to end: this server has the ``foundations`` pack (the test
+    suite registers it); the agent's user data has no plugin installed, so
+    its node catalog lacks the pack's types. It connects ``degraded`` with
+    those types listed, a graph using one of them is refused naming it, a
+    plain graph runs there, and that run records the WORKER's fingerprint.
+    """
+    base = f"http://127.0.0.1:{live_server}"
+    client = httpx.Client(base_url=base, timeout=30,
+                          headers={TOKEN_HEADER: session_token()})
+    _ensure_knn_registered()
+    assert "foundations:Edu-KNN" in {
+        n["node_name"] for n in client.get("/api/nodes").json()}
+    agent = _start_agent(base, tmp_path, "bare-box")
+    try:
+        worker = _wait_connected(client, agent, "bare-box")
+        assert worker["status"] == "degraded"
+        assert "node_catalog" in worker["degraded_reasons"]
+        assert worker["node_catalog"]["status"] == "mismatch"
+        assert "foundations:Edu-KNN" in worker["node_catalog"]["missing"]
+        digest = worker["fingerprint_digest"]
+        assert digest and len(digest) == 64
+        # The digest resolves to the worker's document already.
+        recorded = client.get(f"/api/system/fingerprints/{digest}")
+        assert recorded.status_code == 200
+        assert recorded.json()["fingerprint"]["codefyui"]["version"] \
+            == worker["version"]
+
+        refused = client.post("/api/runs", json={
+            "graph": _knn_graph(),
+            "options": {"target": {"worker": "bare-box"}}})
+        assert refused.status_code == 400, refused.text
+        assert "foundations:Edu-KNN" in refused.json()["detail"]
+
+        plain = client.post("/api/runs", json={
+            "graph": _graph(),
+            "options": {"target": {"worker": "bare-box"}}}).json()
+        record = _wait_terminal(client, plain["run_id"])
+        assert record["status"] == "succeeded", record
+        assert record["fingerprint_digest"] == digest
+        assert record["execution_facts"]["worker_id"] == "bare-box"
+    finally:
+        _stop_agent(client, agent, "bare-box")
     client.close()
 
 
@@ -206,12 +313,9 @@ def test_a_dropped_connection_does_not_end_a_real_run(live_server, tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     output = ""
     try:
-        deadline = time.monotonic() + 30
-        while not any(w["name"] == "drop-box" and w["status"] == "online"
-                      for w in client.get("/api/workers").json()["workers"]):
-            if time.monotonic() > deadline or agent.poll() is not None:
-                raise AssertionError("the agent never connected")
-            time.sleep(0.1)
+        # Degraded: its custom node directory has a node this server lacks
+        # (#781); a run naming it may use that node, which it has.
+        _wait_connected(client, agent, "drop-box")
         graph = {"nodes": [{"id": "start", "type": "Start",
                             "data": {"params": {}}},
                            {"id": "tick", "type": "E2ETicker",
@@ -352,15 +456,9 @@ def test_a_run_on_a_shared_mount_reads_the_upload_and_lists_the_checkpoint(
         cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        deadline = time.monotonic() + 30
-        while True:
-            workers = {w["name"]: w for w in
-                       client.get("/api/workers").json()["workers"]}
-            if workers.get("nas-box", {}).get("status") == "online":
-                break
-            if time.monotonic() > deadline or agent.poll() is not None:
-                raise AssertionError("the agent never connected")
-            time.sleep(0.1)
+        # Online or degraded (#781): its catalog depends on what the test
+        # server has registered.
+        workers = {"nas-box": _wait_connected(client, agent, "nas-box")}
         # GET /api/workers shows the label.
         assert workers["nas-box"]["mounts"] == {"data": str(mount_point)}
 

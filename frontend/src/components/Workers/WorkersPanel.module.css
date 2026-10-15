@@ -372,3 +372,29 @@
   border-top: 1px solid var(--border-subtle);
   font-size: var(--fs-sm);
 }
+
+/* Node types that differ from this server's (#781). */
+.catalog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.typeList {
+  overflow-wrap: anywhere;
+}
+
+/* Agents the server refused that have no card (#781). */
+.rejections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.rejection {
+  display: contents;
+}
