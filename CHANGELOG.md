@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A node `device` set to a specific card (`cuda:1`, `mps:0`) now runs and exports** ([#802]). On a machine with more than one CUDA card the node config panel offers `cuda:0`, `cuda:1`, ... for every node-level `device` param, but graph validation compared the value with the param's static options (`auto`, `cpu`, `cuda`, `mps`) and refused the run or the Python export with "value 'cuda:1' is not one of its options". Validation now also accepts `cuda:N` and `mps:N` on those params; any other value is refused with the same message as before, and the generated script of a graph that already validated is unchanged.
+
 ## [3.0.2] — 2026-10-14
 
 Fixes the package upgrade 3.0.1 introduced for `cdui plugin sync`: an
@@ -6164,3 +6168,4 @@ Release candidates before 1.0.0 are on the
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
 [#762]: https://github.com/CodefyUI/CodefyUI/pull/762
+[#802]: https://github.com/CodefyUI/CodefyUI/issues/802
