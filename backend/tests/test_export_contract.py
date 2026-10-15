@@ -352,12 +352,15 @@ def _grader_env(home: Path) -> dict[str, str]:
 
 
 def _run_like_a_grader(script: str, folder: Path, home: Path,
-                       extra_args: Sequence[str] = ()) -> _Run:
+                       extra_args: Sequence[str] = (),
+                       stdout_encoding: str = "utf-8") -> _Run:
     """``python <file>.py`` inside *folder*, the way the grader runs it.
 
     *extra_args* follow the file name. A grader passes none; the export
     parity suite (test_export_run_parity.py) adds ``--device cpu`` and
-    ``--verbose``.
+    ``--verbose``. *stdout_encoding* is what stdout is decoded with,
+    strictly; the parity suite passes the encoding the child actually
+    wrote, which on Windows is the locale code page.
     """
     # Bytes, so the file is exactly what the browser would save.
     (folder / SCRIPT_NAME).write_bytes(script.encode("utf-8"))
@@ -378,7 +381,7 @@ def _run_like_a_grader(script: str, folder: Path, home: Path,
         returncode=completed.returncode,
         # Strict on stdout, which the grader parses; stderr only carries
         # diagnostics, and a temp path in it need not be ASCII.
-        stdout=completed.stdout.decode("utf-8"),
+        stdout=completed.stdout.decode(stdout_encoding),
         stderr=completed.stderr.decode("utf-8", errors="replace"),
     )
 

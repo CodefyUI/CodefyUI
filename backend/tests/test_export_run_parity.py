@@ -25,10 +25,15 @@ in-process smoke suite (``test_builtin_examples.py``) executes:
      endings are normalised (text-mode output ends lines in CRLF on
      Windows).
 
-The script's stdout is decoded as UTF-8, strictly, as the contract test
-does. Every example here prints ASCII only; one that printed other text on
-Windows, where a ``-I`` run writes the locale code page, would fail that
-decode, and that is a finding about the exported file rather than noise.
+Encoding. On POSIX the script's stdout is decoded as UTF-8, strictly, as
+the contract test does. On Windows a ``python -I`` child writes a piped
+stdout in the locale code page (cp1252 on the CI runners), so a character
+outside it comes out as ``?``: Toy-Sampling's Print label "untrained ->
+noise" with a real arrow is one. That is what the script really prints on
+Windows, so the script is left alone. The module asks a ``python -I`` child,
+under the same environment, for ``sys.stdout.encoding`` once, decodes the
+script's stdout with that, strictly, and passes the in-process text through
+the same encoding (``errors="replace"``) before comparing.
 
 What the in-process side does not share with the script: the conftest's
 node registry (the test packs are loaded) and its user data and upload
@@ -53,7 +58,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,7 +73,13 @@ from app.core.execution_context import ExecutionContext
 from app.core.graph_engine import build_preset_fallback, execute_graph
 from tests._example_graphs import graph_nodes
 from tests.test_builtin_examples import _SLOW_NODE_TYPES
-from tests.test_export_contract import _answer_line, _export, _run_like_a_grader
+from tests.test_export_contract import (
+    RUN_TIMEOUT_S,
+    _answer_line,
+    _export,
+    _grader_env,
+    _run_like_a_grader,
+)
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _EXAMPLES_ROOT = _BACKEND_DIR.parent / "examples"
@@ -162,6 +176,35 @@ def _stage_folder(folder: Path) -> None:
         shutil.copyfile(source, target)
 
 
+@pytest.fixture(scope="module")
+def child_stdout_encoding(tmp_path_factory) -> str:
+    """The encoding a ``python -I`` child writes a piped stdout in.
+
+    UTF-8 on POSIX, kept strict there. On Windows it is asked of a child
+    started exactly like the script (same interpreter, ``-I``, same
+    environment), because that is the only answer that cannot drift from
+    what the script does.
+    """
+    if os.name != "nt":
+        return "utf-8"
+    home = tmp_path_factory.mktemp("encoding-probe")
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c", "import sys; print(sys.stdout.encoding)"],
+        cwd=home,
+        env=_grader_env(home),
+        capture_output=True,
+        timeout=RUN_TIMEOUT_S,
+        check=True,
+    )
+    return probe.stdout.decode("ascii").strip()
+
+
+def _as_the_child_wrote_it(text: str, encoding: str) -> str:
+    """*text* after a round trip through *encoding*: what the child's stdout
+    turns a character outside its code page into."""
+    return text.encode(encoding, errors="replace").decode(encoding)
+
+
 def _lf(text: str) -> str:
     """Text-mode stdout and stderr end lines in CRLF on Windows; the engine
     side, read through capsys, ends them in LF."""
@@ -207,7 +250,8 @@ def _engine_answer(graph: dict, results: dict) -> dict:
 
 @pytest.mark.parametrize("example", PARITY_EXAMPLES)
 async def test_exported_example_matches_the_engine(
-        example, test_client, tmp_path, monkeypatch, capsys):
+        example, test_client, tmp_path, monkeypatch, capsys,
+        child_stdout_encoding):
     if example in TOO_SLOW_FOR_CI:
         pytest.skip(TOO_SLOW_FOR_CI[example])
 
@@ -223,7 +267,8 @@ async def test_exported_example_matches_the_engine(
     if own_seed is None:
         extra_args += ["--seed", str(FALLBACK_SEED)]
     run = await asyncio.to_thread(
-        _run_like_a_grader, script, grader_folder, home, extra_args)
+        _run_like_a_grader, script, grader_folder, home, extra_args,
+        child_stdout_encoding)
     stdout, stderr = _lf(run.stdout), _lf(run.stderr)
     assert run.returncode == 0, f"exit {run.returncode}\nstderr:\n{stderr}"
     assert re.search(r"completed on cpu \(\d+ node results\)\.$", stderr,
@@ -238,7 +283,8 @@ async def test_exported_example_matches_the_engine(
     monkeypatch.chdir(engine_folder)
     capsys.readouterr()
     results, engine_order = await asyncio.to_thread(_engine_run, graph, seed)
-    engine_stdout = _lf(capsys.readouterr().out)
+    engine_stdout = _as_the_child_wrote_it(
+        _lf(capsys.readouterr().out), child_stdout_encoding)
 
     exported_order = _RUNNING_LINE.findall(stderr)
     assert exported_order == engine_order, (
@@ -246,6 +292,10 @@ async def test_exported_example_matches_the_engine(
 
     if has_output:
         answer = json.loads(_answer_line(SimpleNamespace(stdout=stdout, stderr=stderr)))
-        assert answer == _engine_answer(graph, results)
+        expected = json.loads(_as_the_child_wrote_it(
+            json.dumps(_engine_answer(graph, results), ensure_ascii=False,
+                       sort_keys=True),
+            child_stdout_encoding))
+        assert answer == expected
     else:
         assert stdout == engine_stdout
