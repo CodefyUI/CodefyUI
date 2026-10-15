@@ -10,6 +10,9 @@
  *
  * Returns `null` when `physical` is not a CUDA card of the set. Non-CUDA
  * devices (`cpu`, `mps`) have no alias: they are not renumbered.
+ *
+ * Assumes no card is listed twice: the server refuses such a set (the
+ * submit API and the worker agent both do), so it never reaches a run.
  */
 const CUDA_CARD = /^cuda:(\d+)$/;
 

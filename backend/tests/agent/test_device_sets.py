@@ -103,7 +103,7 @@ def test_a_single_card_run_is_cuda_0_inside_the_child(cuda_runtime):
     """Acceptance: targeted at ["cuda:1"], current_device() == 0 and
     visible_devices == "1"."""
     env = child_environment("cuda:1", ["cuda:1"])
-    assert run_facts(env, ["cuda:1"]) == {
+    assert run_facts(env) == {
         "visible_devices": "1", "device_aliases": {"cuda:1": "cuda:0"}}
     run_device = _enter_run("cuda:1", ["cuda:1"])
     assert run_device == "cuda:0"
@@ -160,7 +160,7 @@ def test_a_physical_name_outside_the_aliases_does_not_reach_that_card(
 ])
 def test_cpu_and_mps_runs_see_no_card(cuda_runtime, device, devices):
     env = child_environment(device, devices)
-    assert run_facts(env, devices or [device]) == {
+    assert run_facts(env) == {
         "visible_devices": "", "device_aliases": {}}
     child.apply_environment(env)
     assert torch.cuda.device_count() == 0
@@ -168,14 +168,50 @@ def test_cpu_and_mps_runs_see_no_card(cuda_runtime, device, devices):
 
 def test_a_bare_cuda_with_no_set_records_the_inherited_visibility():
     env = child_environment("cuda", [])
-    assert run_facts(env, ["cuda"]) == {
+    assert run_facts(env) == {
         "visible_devices": None, "device_aliases": {}}
 
 
 def test_a_run_with_no_set_is_its_own_device():
     env = child_environment("cuda:3", [])
-    assert run_facts(env, ["cuda:3"]) == {
+    assert run_facts(env) == {
         "visible_devices": "3", "device_aliases": {"cuda:3": "cuda:0"}}
+
+
+def test_one_alias_rule_for_the_environment_the_device_and_the_facts():
+    devices = ["cuda:3", "cuda:1", "cuda:2"]
+    aliases = device_aliases(devices)
+    env = child_environment("cuda:3", devices)
+    assert env["devices"] == devices
+    assert env["set"]["CUDA_VISIBLE_DEVICES"] == "3,1,2"
+    assert run_facts(env)["device_aliases"] == aliases
+    for physical, alias in aliases.items():
+        assert child_device(physical, devices) == alias
+    # The effective set of a run with no set is its own device.
+    assert child_environment("cuda:2", [])["devices"] == ["cuda:2"]
+
+
+# ── what an assignment's set may look like ────────────────────────────────
+
+
+@pytest.mark.parametrize("device, devices, reason", [
+    ("cuda:1", ["cuda:1", "cuda:01"], "twice"),
+    ("cuda:0", ["cuda:0", "cuda:2", "cuda:0"], "twice"),
+    ("cuda:2", ["cuda:0", "cuda:2"], "not the first device"),
+    ("cuda", ["cuda:1"], "not the first device"),
+])
+async def test_a_set_lists_each_card_once_and_starts_with_the_run_device(
+        tmp_path: Path, device, devices, reason):
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path / "agent-runs", send=sink,
+                    offered_devices={"cpu", "cuda:0", "cuda:1", "cuda:2"},
+                    child_entry=h.quick_child)
+    await runner.assign(wp.Assign(run_id="bad", graph={"nodes": []},
+                                  device=device, devices=devices))
+    finished = sink.finished("bad")
+    assert finished is not None and finished.status == "failed"
+    assert reason in finished.error
+    assert [type(f) for f in sink.frames] == [wp.RunFinished]
 
 
 # ── run_started carries the facts ─────────────────────────────────────────

@@ -48,10 +48,9 @@ DEVICE_PARAM_OPTIONS: tuple[str, ...] = ("auto", "cpu", "cuda", "mps")
 #: ``cuda:0..N-1`` in the order listed, because the run subprocess gets them
 #: as ``CUDA_VISIBLE_DEVICES``; a node's value is never rewritten.
 DEVICE_PARAM_DESCRIPTION = (
-    "Device for this node. 'auto' follows the run's device (the first device "
-    "of its target). A run that was given several devices may pin a node to "
-    "any of them; the alias inside the run is cuda:0..N-1 in the order the "
-    "devices were listed."
+    "Device for this node. 'auto' follows the run's device. A run sent to a "
+    "worker with several devices sees them as cuda:0..N-1 in the order they "
+    "were listed, so a node can be pinned to any of them by that position."
 )
 
 

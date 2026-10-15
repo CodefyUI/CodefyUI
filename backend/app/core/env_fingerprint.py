@@ -426,7 +426,12 @@ def collect_with_digest() -> tuple[dict[str, Any], str]:
 
 
 #: Bump with :data:`SCHEMA_VERSION`'s rule, for ``execution_facts``.
-EXECUTION_FACTS_VERSION = 1
+#:
+#: 2 adds keys merged in after the run starts: ``peak_memory`` (#770, at
+#: finish) and, for a run on a worker, ``visible_devices`` and
+#: ``device_aliases`` (#774, from ``run_started``). A key a run never got
+#: is absent, as in version 1.
+EXECUTION_FACTS_VERSION = 2
 
 
 def numerics_settings() -> dict[str, Any]:

@@ -388,10 +388,10 @@ def test_the_device_description_explains_the_in_run_aliases():
     """The text every device param shows, as #774 specifies it. The old one
     said a graph runs on one device; a run given a set may use several."""
     assert DEVICE_PARAM_DESCRIPTION == (
-        "Device for this node. 'auto' follows the run's device (the first "
-        "device of its target). A run that was given several devices may pin "
-        "a node to any of them; the alias inside the run is cuda:0..N-1 in "
-        "the order the devices were listed."
+        "Device for this node. 'auto' follows the run's device. A run sent to "
+        "a worker with several devices sees them as cuda:0..N-1 in the order "
+        "they were listed, so a node can be pinned to any of them by that "
+        "position."
     )
 
 

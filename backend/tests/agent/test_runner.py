@@ -131,8 +131,9 @@ def test_a_new_runner_marks_leftover_directories(tmp_path):
     (_assign("r1", device="tpu:0"), "unknown device"),
     (_assign("r1", device="cuda:0"), "not offered"),
     (_assign("r1", device="cuda"), "not offered"),
-    (_assign("r1", device="mps", devices=["cpu"]), "not in the assigned set"),
-    (_assign("r1", device="cpu", devices=["mps:0"]), "not in the assigned set"),
+    (_assign("r1", device="mps", devices=["cpu"]), "not the first device"),
+    (_assign("r1", device="cpu", devices=["mps:0"]), "not the first device"),
+    (_assign("r1", device="mps", devices=["mps", "mps:0"]), "twice"),
 ])
 async def test_refused_assignments_finish_failed_at_once(tmp_path, assign,
                                                          reason):
@@ -280,13 +281,13 @@ async def test_child_gets_the_assigned_environment(tmp_path, monkeypatch):
     runner = _runner(tmp_path, sink, child_entry=h.env_child,
                      offered_devices={"cpu", "cuda:2", "cuda:5"})
     await runner.assign(_assign("env1", device="cuda:5",
-                                devices=["cuda:2", "cuda:5"]))
+                                devices=["cuda:5", "cuda:2"]))
     event = await sink.wait_for(lambda f: isinstance(f, wp.Event))
     assert event.payload["env"] == {
-        "CUDA_VISIBLE_DEVICES": "2,5", "HIP_VISIBLE_DEVICES": None,
+        "CUDA_VISIBLE_DEVICES": "5,2", "HIP_VISIBLE_DEVICES": None,
         "ROCR_VISIBLE_DEVICES": None, "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
         "CODEFYUI_DB_PATH": None, "CODEFYUI_AGENT_TOKEN": None}
-    assert event.payload["device"] == "cuda:1"
+    assert event.payload["device"] == "cuda:0"
     assert event.payload["torch_loaded"] is False
     await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
     assert (tmp_path / "agent-runs" / "env1").is_dir()
