@@ -10,6 +10,11 @@ a run's log would depend on where it ran. So the two halves are split:
 - **this module** turns engine callback arguments into payloads. No I/O, no
   database, no event loop, no ``RunService``: every function here is a plain
   function of its arguments, which is what lets a worker import it.
+  One caveat for that worker: the output entries come from
+  ``core.output_entries``, which reads ``settings`` and the node registry
+  (media detection, path rules). A worker builds the same bytes only if it
+  runs with the same settings and the same registered node types as the
+  control plane.
 - **persistence** (``cap_event_payload``, the event append, the metric
   batcher, the artifact row) stays in ``run_service``, reached through the
   ``RunSinks`` an executor is given (``core.executors``).
@@ -31,6 +36,13 @@ from .execution_context import (
 )
 from .output_entries import OUTPUT_KIND_TEXT, build_node_output_entries
 from .run_store import ArtifactRecord, MetricPoint
+
+#: ``graph_engine.execute_graph``'s error policy when a run does not name
+#: one. Defined here (#766) because two modules need it: ``run_service``
+#: validates and stores options against it, and the executor passes it to
+#: the engine. ``run_service`` imports ``executors``, so neither of those can
+#: own it without a cycle.
+DEFAULT_ERROR_MODE = "fail_fast"
 
 #: ``declared_media_ports`` of a run's nodes: node id -> media kind -> port
 #: names. Read when a frame is built, because the run adds the nodes inside

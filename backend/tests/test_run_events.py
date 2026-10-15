@@ -8,14 +8,15 @@ changing a byte of what they produce. Two kinds of test pin that:
    ``_RunMetrics``' epoch frames, ``_RunLogMetrics``' explicit metrics and
    checkpoint artifact) and the error frame shape ``test_inner_node_status``
    drives. Key ORDER is asserted where it is part of the stored JSON.
-2. A round trip: the raw engine callbacks of a graph, rebuilt with these
-   functions, equal the ``node_status`` payloads ``RunService`` stores for
-   the same graph, compared as serialized JSON.
+2. A golden file captured from the pre-#766 bridges
+   (``snapshots/run_events_pre766.json``): the new bridges, fed the same
+   callbacks, must serialize to exactly those bytes.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,7 +29,6 @@ from app.core.execution_context import (
     MetricSignal,
     WarningSignal,
 )
-from app.core.graph_engine import execute_graph
 from app.core.node_registry import registry
 from app.core.output_entries import (
     OUTPUT_KIND_TEXT,
@@ -46,12 +46,9 @@ from app.core.run_events import (
     node_status_payload,
     warning_payload,
 )
-from app.core.run_service import RunService
-from app.core.run_store import ArtifactRecord, MetricPoint, RunStore
+from app.core.run_store import ArtifactRecord, MetricPoint
 from tests.test_run_service import (
     _TEST_NODES,
-    _await_terminal,
-    _graph,
     _RunImageNode,
 )
 
@@ -283,55 +280,71 @@ def test_warning_payload():
     assert list(warning_payload(signal)) == ["kind", "detail", "node_id"]
 
 
-# ── round trip against what RunService stores ─────────────────────────────
+# ── golden: the payloads the pre-#766 bridges produced ─────────────────────
+#
+# ``snapshots/run_events_pre766.json`` was captured ONCE from
+# ``RunService._progress_bridge`` / ``_inner_status_bridge`` /
+# ``_signal_bridge`` / ``_collect_metrics`` as they were on ``remote-exec``
+# before #766, fed exactly the calls below. It is a fixed expectation, not
+# something this suite regenerates: if a builder's output changes by one
+# byte or one key position, this fails.
+
+GOLDEN = Path(__file__).parent / "snapshots" / "run_events_pre766.json"
 
 
-@pytest.fixture
-def store(tmp_path):
-    from app.core.db import Database
+async def test_the_bridges_reproduce_the_pre_766_payloads_byte_for_byte():
+    from app.core.executors import (
+        ExecutionRequest,
+        RunSinks,
+        _inner_status_bridge,
+        _progress_bridge,
+        _signal_bridge,
+    )
 
-    database = Database(tmp_path / "codefyui.db")
-    database.connect()
-    try:
-        yield RunStore(database)
-    finally:
-        database.close()
+    events: list[list[Any]] = []
+    metrics: list[MetricPoint] = []
 
+    async def emit(event_type, payload):
+        events.append([event_type, payload])
 
-@pytest.mark.parametrize("middle,params", [
-    ("_RunImage", {"size": 8}),
-    ("_RunMetrics", {"epochs": 2}),
-    ("_RunBoom", {}),
-])
-async def test_rebuilt_callbacks_equal_the_stored_node_status_events(
-        store, middle, params):
-    graph = _graph(middle, params=params)
+    async def record_metrics(points):
+        metrics.extend(points)
 
-    calls: list[tuple[Any, ...]] = []
+    async def warn(signal):
+        events.append([run_events.EVENT_WARNING, warning_payload(signal)])
 
-    async def record(node_id, status, result, inner_node_id=None):
-        calls.append((node_id, status, result, inner_node_id))
+    async def record_artifact(signal):  # pragma: no cover - not driven
+        raise AssertionError("no artifact in this sequence")
 
-    try:
-        await execute_graph(graph["nodes"], graph["edges"],
-                            on_progress=record,
-                            context=ExecutionContext())
-    except Exception:
-        pass  # _RunBoom fails the graph; its frames are what we compare
-    media_ports = declared_media_ports(graph["nodes"])
-    rebuilt = [node_status_payload(n, s, r, media_ports, inner_node_id=i)
-               for n, s, r, i in calls]
+    request = ExecutionRequest(
+        run_id="r", graph={}, options={}, context=ExecutionContext(),
+        session=None, output_store=None, record_outputs=False,
+        sinks=RunSinks(emit=emit, record_metrics=record_metrics,
+                       record_artifact=record_artifact, warn=warn),
+        explicit_metric_nodes=set())
+    image = _image_result()
+    media = dict(_image_media_ports())
+    media["blk/mid"] = media["mid"]
+    on_progress = _progress_bridge(request, media)
+    on_inner = _inner_status_bridge(request, on_progress, media)
+    on_signal = _signal_bridge(request)
 
-    service = RunService(store, shutdown_grace_s=2.0)
-    try:
-        submitted = await service.submit(graph)
-        await _await_terminal(store, submitted.run_id)
-    finally:
-        await service.shutdown()
-    stored = [e.payload for e in await store.get_events(submitted.run_id)
-              if e.type == run_events.EVENT_NODE_STATUS]
+    await on_progress("mid", "completed", image)
+    await on_progress("boom", "error", ERROR_FRAME)
+    await on_progress("src", "running", None)
+    await on_progress("blk", "progress", EPOCH_FRAME,
+                      inner_node_id="blk/train")
+    await on_progress("mid", "progress", {"loss": 0.25})
+    await on_progress("mid", "progress", {"event": "batch", "epoch": 1,
+                                          "batch": 3, "loss": 0.3})
+    await on_inner("blk/mid", "blk", "completed", image)
+    await on_inner("blk/p", "blk", "running", {"__log__": "hello"})
+    await on_inner("blk/boom", "blk", "error", ERROR_FRAME)
+    await on_inner("blk/train", "blk", "progress", {"step": 9, "acc": 1.0})
+    await on_signal(DroppedSignal(count=12))
+    await on_signal(WarningSignal(kind="node_state_evicted", detail="gone",
+                                  node_id="mid"))
 
-    assert rebuilt, "the engine reported nothing"
-    assert [json.dumps(p, sort_keys=False) for p in stored] == [
-        json.dumps(json.loads(json.dumps(p)), sort_keys=False)
-        for p in rebuilt]
+    actual = json.dumps({"events": events,
+                         "metrics": [list(p) for p in metrics]}, indent=1)
+    assert actual + "\n" == GOLDEN.read_text(encoding="utf-8")

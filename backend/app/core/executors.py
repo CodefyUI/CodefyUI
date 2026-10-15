@@ -41,6 +41,7 @@ from .execution_context import (
 from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
 from .output_entries import declared_media_ports
 from .run_events import (
+    DEFAULT_ERROR_MODE,
     EVENT_INNER_NODE_STATUS,
     EVENT_NODE_STATUS,
     EVENT_WARNING,
@@ -63,16 +64,7 @@ from .seeding import seed_rngs
 if TYPE_CHECKING:  # pragma: no cover - typing only; run_service imports us
     from .run_service import InteractiveSession
 
-#: The run service's logger, by name. These lines were ``run_service``'s
-#: before #766 moved them here, and a log filter keyed on that name must keep
-#: matching them.
-logger = logging.getLogger("app.core.run_service")
-
-#: ``graph_engine.execute_graph``'s default error policy. Mirrors
-#: ``run_service.DEFAULT_ERROR_MODE``, which ``normalize_options`` validates
-#: against; not imported from there because ``run_service`` imports this
-#: module.
-DEFAULT_ERROR_MODE = "fail_fast"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -153,6 +145,11 @@ class InProcessExecutor:
         media_ports = declared_media_ports(graph["nodes"])
         on_progress = _progress_bridge(request, media_ports)
         try:
+            # The RUN-level baseline (``seeding.seed_rngs``): anything that
+            # draws outside a node's ``execute`` (preset expansion, a
+            # validator) is covered by it. What makes a run reproducible is
+            # the per-node derivation in ``graph_engine`` (#134); this call
+            # is process-global, as it always was.
             seed_rngs(options.get("seed"))
             # Determinism is NOT applied here any more: ``execute_graph``
             # owns it through ``deterministic_scope``, which also takes it

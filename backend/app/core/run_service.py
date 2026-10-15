@@ -146,6 +146,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import time
@@ -176,6 +177,7 @@ from .execution_context import (
     WarningSignal,
 )
 from .executors import (
+    ExecutionOutcome,
     ExecutionRequest,
     Executor,
     InProcessExecutor,
@@ -183,6 +185,7 @@ from .executors import (
 )
 from .node_state_store import NodeStateStore
 from .run_events import (
+    DEFAULT_ERROR_MODE,
     EVENT_ARTIFACT,
     EVENT_METRIC,
     EVENT_RUN_COMPLETED,
@@ -222,7 +225,6 @@ from .secret_params import (
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
-from .seeding import seed_rngs
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +239,12 @@ logger = logging.getLogger(__name__)
 #: and this key carries the same fact into the replay log.
 STOP_REASON_CANCELLED = "cancelled"
 STOP_REASON_INTERRUPTED = "interrupted"
+
+#: What an executor may report (``ExecutionOutcome.status``). Anything else
+#: is filed as a failure naming the bad value (#766): an executor's bug must
+#: not leave a row in a status the rest of the service does not expect.
+EXECUTOR_STATUSES = frozenset({STATUS_SUCCEEDED, STATUS_FAILED,
+                               STATUS_CANCELLED})
 
 #: The frames that END a run's log: a client replaying it over the WS
 #: attach view (the canvas) takes one of them as the run's end.
@@ -298,8 +306,9 @@ MAX_SEED = SEEDING_MAX_SEED
 #: the same reason ``device`` is: a typo'd ``"fail-fast"`` would silently
 #: become "continue past every failure" and the run would report success
 #: over a graph half of which never executed.
+#: ``DEFAULT_ERROR_MODE`` is defined in ``run_events`` (#766) because the
+#: executor that passes it to the engine needs it too, and imported above.
 ERROR_MODES = frozenset({"fail_fast", "continue", "retry"})
-DEFAULT_ERROR_MODE = "fail_fast"
 
 #: Retry ceiling. ``retry`` mode re-runs a failing node ``max_retries``
 #: times; unbounded, one client typo parks a worker thread forever.
@@ -903,25 +912,6 @@ def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
             if key in payload:
                 marker[key] = payload[key]
     return marker
-
-
-def apply_seed(seed: int | None) -> None:
-    """Seed the RNGs a run might touch, before the graph starts.
-
-    Thin alias for :func:`app.core.seeding.seed_rngs`, kept because it is
-    this module's published name for the operation. It sets the RUN-level
-    baseline: anything that draws outside a node's ``execute`` (preset
-    expansion, a validator) is covered by it.
-
-    It is no longer what makes a run reproducible. That is the per-node
-    derivation in ``graph_engine`` — this call alone leaves the answer
-    dependent on the order in which concurrently-scheduled nodes happened to
-    draw, which is exactly the bug #134 fixed. Still PROCESS-GLOBAL, so two
-    runs with different seeds executing at once do not get independent
-    streams; the per-node seeding narrows that window to one node's execute
-    but does not close it.
-    """
-    seed_rngs(seed)
 
 
 # ── run exclusion ─────────────────────────────────────────────────────────
@@ -1830,10 +1820,10 @@ class RunService:
             backward_mode=bool(options.get("backward_mode")),
             auto_backward=bool(options.get("auto_backward")),
             # Reproducibility (#134). The seed reaching the CONTEXT — not
-            # just ``apply_seed`` before the graph starts — is what lets the
-            # engine derive a per-node seed and lets a node build its own
-            # generator, which is the difference between "seeded" and
-            # "actually reproducible".
+            # just the executor's ``seed_rngs`` before the graph starts — is
+            # what lets the engine derive a per-node seed and lets a node
+            # build its own generator, which is the difference between
+            # "seeded" and "actually reproducible".
             seed=options.get("seed"),
             deterministic=bool(options.get("deterministic")),
             # A server-owned run is an isolated, reproducible unit by
@@ -2077,20 +2067,37 @@ class RunService:
         ``_stopped_status`` turns that into ``interrupted`` when the server
         asked rather than a user.
         """
-        outcome = await self._executor.run(ExecutionRequest(
-            run_id=active.run_id,
-            graph=graph,
-            options=options,
-            context=active.context,
-            session=session,
-            output_store=self._output_store,
-            record_outputs=active.record_outputs,
-            sinks=self._sinks(active),
-            explicit_metric_nodes=active.explicit_metric_nodes,
-        ))
-        if outcome.status == STATUS_CANCELLED:
-            return self._stopped_status(active), outcome.error
-        return outcome.status, outcome.error
+        try:
+            outcome = await self._executor.run(ExecutionRequest(
+                run_id=active.run_id,
+                graph=graph,
+                options=options,
+                context=active.context,
+                session=session,
+                output_store=self._output_store,
+                record_outputs=active.record_outputs,
+                sinks=self._sinks(active),
+                explicit_metric_nodes=active.explicit_metric_nodes,
+            ))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The executor is supposed to classify every failure itself;
+            # one that raises anyway must still leave a terminal row and a
+            # closing event, so the run is FAILED rather than abandoned.
+            logger.warning("run %s: the executor raised: %s", active.run_id,
+                           exc, exc_info=True)
+            outcome = ExecutionOutcome(STATUS_FAILED, str(exc))
+        status = getattr(outcome, "status", None)
+        if status not in EXECUTOR_STATUSES:
+            logger.warning("run %s: the executor reported status %r",
+                           active.run_id, status)
+            return STATUS_FAILED, (
+                f"the executor reported an unknown status {status!r}")
+        if status == STATUS_CANCELLED:
+            # A stop carries no error, whatever the executor attached.
+            return self._stopped_status(active), None
+        return status, outcome.error
 
     async def _finalize(
         self, active: _ActiveRun, status: str, error: str | None,
@@ -2150,22 +2157,16 @@ class RunService:
 
     def _sinks(self, active: _ActiveRun) -> RunSinks:
         """The ``RunSinks`` one run's executor reports into."""
-        run_id = active.run_id
+        return RunSinks(
+            emit=functools.partial(self._emit, active.run_id),
+            record_metrics=functools.partial(self._record_metrics, active),
+            record_artifact=functools.partial(self._record_artifact, active),
+            warn=functools.partial(self._warn, active),
+        )
 
-        async def emit(event_type: str, payload: Any) -> None:
-            await self._emit(run_id, event_type, payload)
-
-        async def record_metrics(points: list[MetricPoint]) -> None:
-            await self._record_metrics(active, points)
-
-        async def record_artifact(signal: ArtifactSignal) -> None:
-            await self._record_artifact(active, signal)
-
-        async def warn(signal: WarningSignal) -> None:
-            await self._emit(run_id, EVENT_WARNING, warning_payload(signal))
-
-        return RunSinks(emit=emit, record_metrics=record_metrics,
-                        record_artifact=record_artifact, warn=warn)
+    async def _warn(self, active: _ActiveRun, signal: WarningSignal) -> None:
+        """A ``WarningSignal`` a node sent, as a ``run_warning`` event."""
+        await self._emit(active.run_id, EVENT_WARNING, warning_payload(signal))
 
     async def _record_metrics(
         self, active: _ActiveRun, points: list[MetricPoint],

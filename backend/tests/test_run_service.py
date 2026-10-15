@@ -2009,13 +2009,6 @@ def test_the_default_executor_is_in_process(store):
     assert isinstance(RunService(store)._executor, InProcessExecutor)
 
 
-def test_the_executor_default_error_mode_matches_the_option_default():
-    from app.core import executors
-    from app.core import run_service as run_service_module
-
-    assert executors.DEFAULT_ERROR_MODE == run_service_module.DEFAULT_ERROR_MODE
-
-
 async def test_a_recording_executor_gets_one_request_per_run(store):
     from app.core.executors import ExecutionOutcome, RunSinks
 
@@ -2145,3 +2138,62 @@ async def test_a_cancelled_outcome_is_interrupted_when_the_server_stops(
     finally:
         await svc.shutdown()
     assert record.status == STATUS_CANCELLED
+
+
+async def test_an_executor_that_raises_still_files_a_failed_run(store):
+    """``_finalize`` runs whatever the executor does: the row is FAILED with
+    the exception's message, and the log has its closing frame."""
+
+    class _Raises:
+        async def run(self, request):
+            raise RuntimeError("executor exploded")
+
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Raises())
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_FAILED
+    assert record.error == "executor exploded"
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].type == EVENT_RUN_FAILED
+    assert events[-1].payload == {"error": "executor exploded"}
+
+
+@pytest.mark.parametrize("bad", ["running", "queued", "interrupted", "", None])
+async def test_an_unknown_executor_status_is_filed_as_failed(store, bad):
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(ExecutionOutcome(bad, None))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_FAILED
+    assert record.error == f"the executor reported an unknown status {bad!r}"
+
+
+async def test_a_cancelled_outcome_stores_no_error(store):
+    """A stop is not a failure: whatever text the executor attached, the
+    row's error stays empty, as it did before #766."""
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(
+        ExecutionOutcome(STATUS_CANCELLED, "stopped at epoch 3"))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_CANCELLED
+    assert record.error is None
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].type == EVENT_RUN_STOPPED
+    assert events[-1].payload == {"reason": STOP_REASON_CANCELLED}
