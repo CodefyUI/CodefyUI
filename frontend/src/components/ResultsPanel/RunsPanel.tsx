@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { friendlyError } from '../../utils/errorMessages';
@@ -18,9 +18,17 @@ import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
 import { aliasForDevice } from '../../utils/deviceAliases';
 import { LossChart } from './LossChart';
-import { NewSweepDialog } from './NewSweepDialog';
 import { SweepDetail } from './SweepDetail';
 import styles from './RunsPanel.module.css';
+
+/**
+ * The New sweep dialog, in a chunk of its own: it is opened from a button,
+ * and with the target picker (#777) keeping it out of the first paint keeps
+ * the entry chunk under the 500 kB build limit.
+ */
+const NewSweepDialog = lazy(() =>
+  import('./NewSweepDialog').then((module) => ({ default: module.NewSweepDialog })),
+);
 
 const FILTERS: RunStatusFilter[] = [
   'all',
@@ -897,7 +905,11 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             })
           )}
         </div>
-        {newSweepOpen && <NewSweepDialog onClose={() => setNewSweepOpen(false)} />}
+        {newSweepOpen && (
+          <Suspense fallback={null}>
+            <NewSweepDialog onClose={() => setNewSweepOpen(false)} />
+          </Suspense>
+        )}
       </div>
 
       {selectedRunId !== null && (

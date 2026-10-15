@@ -1289,7 +1289,9 @@ const en = {
   'sweeps.new.samples': 'Samples',
   'sweeps.new.seed': 'Seed',
   'sweeps.new.seedVariants': 'Seed every variant',
-  'sweeps.new.seedWarning': 'Seeded variants run one at a time and can delay canvas runs.',
+  'sweeps.new.seedWarning': 'Seeded variants on this server run one at a time and can delay canvas runs. On workers they run side by side.',
+  'sweeps.new.anyHint': 'Each variant goes to the next free device of this kind on a connected worker, and to this server last.',
+  'sweeps.new.localHint': 'Every variant runs on this server, on this device.',
   'sweeps.new.preview': '{count} variants',
   'sweeps.new.previewOne': '1 variant',
   // The server's caps are settings a deployment may raise, so these warn and

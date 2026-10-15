@@ -1,0 +1,63 @@
+/* The target picker shared by the Queue on... and New sweep dialogs. */
+.field,
+.devices legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-control-sm);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: var(--fw-normal);
+}
+
+.devices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.check input {
+  margin: 0;
+}
+
+.deviceId {
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.alias {
+  color: var(--accent);
+  font-family: monospace;
+  font-size: var(--fs-xs);
+}
+
+.hint,
+.muted {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}

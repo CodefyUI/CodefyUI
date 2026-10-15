@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import * as rest from '../../api/rest';
+import * as workersApi from '../../api/workers';
+import type { WorkerInfo } from '../../api/workers';
+import { _resetDeviceOptionsForTesting } from '../../hooks/useDeviceOptions';
 import { NewSweepDialog } from './NewSweepDialog';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useI18n } from '../../i18n';
@@ -14,10 +17,19 @@ import type { NodeDefinition } from '../../types';
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof rest>();
-  return { ...actual, createSweep: vi.fn(), getSweep: vi.fn(), getRunMetrics: vi.fn() };
+  return { ...actual, createSweep: vi.fn(), getSweep: vi.fn(), getRunMetrics: vi.fn(), fetchDevices: vi.fn() };
+});
+
+vi.mock('../../api/workers', async (importOriginal) => {
+  const actual = await importOriginal<typeof workersApi>();
+  return { ...actual, fetchWorkers: vi.fn() };
 });
 
 const api = vi.mocked(rest);
+const workersMock = vi.mocked(workersApi);
+/** A request that stays in flight, so a test that does not look at the
+ * target picker sees it with its defaults and no late update. */
+const pending = <T,>() => new Promise<T>(() => {});
 // Some tests install a vi.fn() action with setState, which the store reset
 // does not undo; the real one goes back before every test.
 const realCreateSweep = useSweepStore.getState().createSweep;
@@ -75,6 +87,9 @@ beforeEach(() => {
     params: [], variants: [], best: null,
   });
   api.getRunMetrics.mockResolvedValue({ run_id: 'r', names: [], metrics: [] });
+  _resetDeviceOptionsForTesting();
+  api.fetchDevices.mockImplementation(() => pending());
+  workersMock.fetchWorkers.mockImplementation(() => pending());
 });
 
 afterEach(() => {
@@ -317,6 +332,8 @@ describe('NewSweepDialog', () => {
     // Captured outputs are kept for only 20 runs, shared with the canvas, and
     // the server refuses record_outputs on a larger sweep.
     expect(request.options).not.toHaveProperty('record_outputs');
+    // The target picker left at its default sends the sweep as before (#777).
+    expect(request.options).not.toHaveProperty('target');
     // Each child needs the key to execute, so the request carries it; the
     // store, which outlives the request, holds nothing that does.
     expect((request.base_graph.nodes as Array<{ data: { params: Record<string, unknown> } }>)[0].data.params.api_key)
@@ -532,5 +549,102 @@ describe('NewSweepDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: '開始掃描' }));
     });
     expect(screen.getByRole('alert')).toHaveTextContent('「2.5」必須是整數。');
+  });
+});
+
+// ── #777: where the variants run ──────────────────────────────────────────
+
+function gpuBox(partial: Partial<WorkerInfo> = {}): WorkerInfo {
+  return {
+    id: 'gpu-box', name: 'gpu-box', status: 'online', draining: false, version: '3.0.2',
+    fingerprint_digest: null, platform: {}, mounts: {},
+    devices: [
+      { value: 'cuda:0', kind: 'cuda', index: 0, name: 'A100', memory: null },
+      { value: 'cuda:1', kind: 'cuda', index: 1, name: 'A100', memory: null },
+    ],
+    running: [], connected_at: 0, last_heartbeat_at: 0,
+    ...partial,
+  };
+}
+
+describe('NewSweepDialog: target (#777)', () => {
+  beforeEach(() => {
+    api.fetchDevices.mockResolvedValue({
+      default: 'cpu',
+      devices: [
+        { value: 'cpu', label: 'CPU', detail: '', available: true },
+        { value: 'mps', label: 'Apple MPS', detail: '', available: true },
+      ],
+    });
+    workersMock.fetchWorkers.mockResolvedValue([gpuBox()]);
+  });
+
+  async function openSettled() {
+    const onClose = vi.fn();
+    render(<NewSweepDialog onClose={onClose} />);
+    await screen.findByRole('option', { name: /gpu-box/ });
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    return onClose;
+  }
+
+  async function start(onClose: ReturnType<typeof vi.fn>) {
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    return api.createSweep.mock.calls[0][0].options as Record<string, unknown>;
+  }
+
+  const target = () => screen.getByRole('combobox', { name: 'Target' });
+
+  it('offers the Queue on... targets, with sweep wording under the devices', async () => {
+    await openSettled();
+    expect(within(target()).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'This server', 'gpu-box (Online): cuda:0, cuda:1', 'Any available',
+    ]);
+    expect(screen.getByText('Every variant runs on this server, on this device.')).toBeInTheDocument();
+    fireEvent.change(target(), { target: { value: 'any' } });
+    expect(screen.getByText(/Each variant goes to the next free device of this kind/)).toBeInTheDocument();
+  });
+
+  it('sends target any with the chosen device kind to every variant', async () => {
+    const onClose = await openSettled();
+    fireEvent.change(target(), { target: { value: 'any' } });
+    expect(screen.getByRole('radio', { name: 'CUDA GPU' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'CUDA GPU' }));
+    const options = await start(onClose);
+    expect(options).toMatchObject({ target: { worker: 'any' }, device: 'cuda' });
+  });
+
+  it('sends a named worker with its device set, the first card as the device', async () => {
+    const onClose = await openSettled();
+    fireEvent.change(target(), { target: { value: 'gpu-box' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /cuda:1/ }));
+    const options = await start(onClose);
+    expect(options).toMatchObject({
+      target: { worker: 'gpu-box', devices: ['cuda:0', 'cuda:1'] }, device: 'cuda:0',
+    });
+  });
+
+  it('sends this server with the device the user picked', async () => {
+    const onClose = await openSettled();
+    // The tab follows Settings (cpu); picking another device is a choice.
+    expect(screen.getByRole('radio', { name: /cpu/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: /mps/ }));
+    const options = await start(onClose);
+    expect(options).toMatchObject({ target: { worker: 'local', devices: ['mps'] }, device: 'mps' });
+  });
+
+  it('refuses a worker with no device ticked, and a new target clears the error', async () => {
+    await openSettled();
+    fireEvent.change(target(), { target: { value: 'gpu-box' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /cuda:0/ }));
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose at least one device.');
+    expect(api.createSweep).not.toHaveBeenCalled();
+    fireEvent.change(target(), { target: { value: 'local' } });
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

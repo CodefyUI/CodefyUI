@@ -323,6 +323,25 @@ describe('SweepDetail', () => {
     expect(onOpenRun).toHaveBeenCalledWith('r0');
   });
 
+  it('shows where each variant runs: its worker and devices (#777)', () => {
+    const detail = sweep('running');
+    detail.variants = [
+      { ...variant(0, 'running', null, null), worker_id: 'gpu-box', devices: ['cuda:0', 'cuda:1'], queue_key: 'gpu-box/cuda:0' },
+      { ...variant(1, 'missing', null, null) },
+      { ...variant(2, 'queued', null, null), worker_id: 'any', devices: null, queue_key: 'any/cuda' },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    const cells = (index: number) => within(screen.getByTestId(`sweep-variant-${index}`)).getAllByRole('cell')
+      .map((cell) => cell.textContent);
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
+    const worker = headers.indexOf('Worker');
+    expect(headers[worker + 1]).toBe('Devices');
+    expect(cells(0).slice(worker, worker + 2)).toEqual(['gpu-box', 'cuda:0, cuda:1']);
+    expect(cells(1).slice(worker, worker + 2)).toEqual(['-', '-']);
+    expect(cells(2).slice(worker, worker + 2)).toEqual(['any', 'cuda']);
+  });
+
   it('heads a swept param by node label and param, with the full address as its title', () => {
     // Palette ids are UUIDs: as a header the id alone named nothing, and two
     // params of one node read the same once the column cut it short.

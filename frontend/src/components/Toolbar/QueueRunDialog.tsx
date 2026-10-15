@@ -1,29 +1,15 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { submitRun, type RunTarget } from '../../api/rest';
-import { fetchWorkers, type WorkerInfo } from '../../api/workers';
-import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { submitRun } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
-import { aliasForDevice } from '../../utils/deviceAliases';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
-import {
-  TARGET_ANY,
-  TARGET_LOCAL,
-  anyKinds,
-  connectedWorkers,
-  defaultDevices,
-  defaultKind,
-  localDeviceChoices,
-  toggleDevice,
-  workerDeviceChoices,
-  type DeviceChoice,
-} from './queueTargets';
+import { TargetSelector, useRunTargetChoice } from './TargetSelector';
 import styles from './QueueRunDialog.module.css';
 
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -70,35 +56,17 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   const baseId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstRef = useRef<HTMLSelectElement>(null);
-  const { devices: localDevices } = useDeviceOptions();
   const globalDevice = useUIStore((state) => state.globalDevice);
   // Mounted by the Toolbar, which exists only while a tab is active.
   const tab = useTabStore((state) => state.tabs.find((candidate) => candidate.id === state.activeTabId)!);
   const graphDevice = tab.graphDevice ?? globalDevice;
 
-  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
-  const [workersError, setWorkersError] = useState<string | null>(null);
-  const [target, setTarget] = useState(TARGET_LOCAL);
-  // null: not chosen yet, so the target's default applies.
-  const [chosenDevices, setChosenDevices] = useState<string[] | null>(null);
-  const [chosenKind, setChosenKind] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [seed, setSeed] = useState(() => (tab.seed == null ? '' : String(tab.seed)));
   const [deterministic, setDeterministic] = useState(tab.deterministic);
   const [recordOutputs, setRecordOutputs] = useState(tab.recordOutputs);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // The worker list is read when the dialog opens: who is connected now is
-  // what a submission can name.
-  useEffect(() => {
-    let live = true;
-    fetchWorkers().then(
-      (listed) => { if (live) setWorkers(listed); },
-      (err: unknown) => { if (live) setWorkersError(err instanceof Error ? err.message : String(err)); },
-    );
-    return () => { live = false; };
-  }, []);
 
   // The open flag lives in uiStore (so the canvas shortcuts stand down);
   // however the dialog goes away, the flag goes with it.
@@ -112,27 +80,8 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     };
   }, []);
 
-  const online = useMemo(() => connectedWorkers(workers), [workers]);
-  const worker = online.find((candidate) => candidate.id === target) ?? null;
-  const isWorker = target !== TARGET_LOCAL;
-  const localChoices = useMemo(() => localDeviceChoices(localDevices), [localDevices]);
-  const choices: DeviceChoice[] = useMemo(
-    () => (worker ? workerDeviceChoices(worker) : localChoices),
-    [worker, localChoices],
-  );
-  const kinds = useMemo(() => anyKinds(localChoices, online), [localChoices, online]);
-  const selected = chosenDevices ?? defaultDevices(choices, graphDevice);
-  // A set is kept in the worker's own (physical) order, so the in-run names
-  // depend on which cards are ticked, never on the order they were ticked.
-  const choiceOrder = useMemo(() => choices.map((c) => c.value), [choices]);
-  const kind = chosenKind ?? defaultKind(kinds, graphDevice);
-
-  const changeTarget = (next: string) => {
-    setTarget(next);
-    setChosenDevices(null);
-    setChosenKind(null);
-    setError(null);
-  };
+  const choice = useRunTargetChoice(graphDevice, () => setError(null));
+  const isWorker = choice.isWorker;
 
   const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -162,7 +111,8 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       setError(t('queueRun.error.seed'));
       return;
     }
-    if (target !== TARGET_ANY && selected.length === 0) {
+    const resolved = choice.resolve();
+    if (resolved === null) {
       setError(t('queueRun.error.noDevice'));
       return;
     }
@@ -171,12 +121,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     // RunService removes it before persisting the snapshot.
     const graph = store.getSerializedGraph({ keepSecrets: true });
     const active = store.getActiveTab();
-    const runTarget: RunTarget = target === TARGET_ANY
-      ? { worker: TARGET_ANY }
-      : { worker: target, devices: selected };
-    const options: Record<string, unknown> & { target: RunTarget } = {
-      target: runTarget,
-      device: target === TARGET_ANY ? kind : selected[0],
+    const options = {
+      target: resolved.target,
+      device: resolved.device,
       record_outputs: !isWorker && recordOutputs,
       verbose: active.verboseMode,
       graph_id: active.graphId,
@@ -213,66 +160,6 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     onClose();
   };
 
-  const workerLabel = (candidate: WorkerInfo): string => {
-    const devices = candidate.devices.map((d) => d.value).join(', ') || t('queueRun.noDevices');
-    return t('queueRun.target.worker', {
-      name: candidate.name,
-      status: t(`workers.status.${candidate.status}`),
-      devices,
-    });
-  };
-
-  const deviceList = (
-    <fieldset className={styles.devices}>
-      <legend>{t('queueRun.devices')}</legend>
-      {target === TARGET_ANY ? (
-        <>
-          {kinds.map((option) => (
-            <label key={option} className={styles.check}>
-              <input
-                type="radio"
-                name={`${baseId}-kind`}
-                value={option}
-                checked={kind === option}
-                onChange={() => setChosenKind(option)}
-              />
-              {t(`queueRun.kind.${option}` as 'queueRun.kind.cpu')}
-            </label>
-          ))}
-          <p className={styles.hint}>{t('queueRun.anyHint')}</p>
-        </>
-      ) : choices.length === 0 ? (
-        <p className={styles.muted}>{t('queueRun.noDevices')}</p>
-      ) : (
-        choices.map((choice) => {
-          const checked = selected.includes(choice.value);
-          // In-run name of a card (#774): a worker run sees its set as
-          // CUDA_VISIBLE_DEVICES, renumbered from cuda:0 in the listed order.
-          const alias = isWorker && checked ? aliasForDevice(selected, choice.value) : null;
-          return (
-            <label key={choice.value} className={styles.check}>
-              <input
-                type={isWorker ? 'checkbox' : 'radio'}
-                name={`${baseId}-device`}
-                value={choice.value}
-                checked={checked}
-                onChange={() => setChosenDevices(isWorker ? toggleDevice(selected, choice.value, choiceOrder) : [choice.value])}
-              />
-              <span className={styles.deviceId}>{choice.value}</span>
-              {choice.detail && <span>{choice.detail}</span>}
-              {alias !== null && (
-                <span className={styles.alias}>
-                  {t('queueRun.alias', { device: choice.value, alias })}
-                </span>
-              )}
-            </label>
-          );
-        })
-      )}
-      {!isWorker && <p className={styles.hint}>{t('queueRun.localHint')}</p>}
-    </fieldset>
-  );
-
   return createPortal(
     <div className={styles.backdrop} onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
@@ -295,23 +182,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
           </header>
 
           <div className={styles.body}>
-            <label className={styles.field}>
-              {t('queueRun.target')}
-              <select ref={firstRef} value={target} onChange={(event) => changeTarget(event.target.value)}>
-                <option value={TARGET_LOCAL}>{t('queueRun.target.local')}</option>
-                {online.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id} disabled={candidate.status === 'draining'}>
-                    {workerLabel(candidate)}
-                  </option>
-                ))}
-                {online.length > 0 && <option value={TARGET_ANY}>{t('queueRun.target.any')}</option>}
-              </select>
-            </label>
-            {workersError !== null && (
-              <p className={styles.hint}>{t('queueRun.workersError', { error: workersError })}</p>
-            )}
-
-            {deviceList}
+            <TargetSelector choice={choice} selectRef={firstRef} />
 
             <div className={styles.pair}>
               <label className={styles.field}>

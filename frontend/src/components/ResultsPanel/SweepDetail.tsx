@@ -7,6 +7,7 @@ import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart } from './LossChart';
 import { producerLabel } from './sweepObjective';
+import { variantDevices, variantWorker } from './sweepPlacement';
 import { sweepParamTitle } from './sweepParams';
 import styles from './SweepDetail.module.css';
 
@@ -229,6 +230,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
             {columns.map((column) => <th key={column.address} title={column.address}>{column.title}</th>)}
             <SortableHeader label={t('sweeps.col.objective')} active={sortKey === 'objective'} direction={sortDirection} onSort={() => setSort('objective')} />
             <th>{t('sweeps.col.metrics')}</th>
+            <th>{t('runs.col.worker')}</th>
+            <th>{t('runs.col.devices')}</th>
             <th>{t('sweeps.col.run')}</th>
           </tr></thead>
           <tbody>{rows.map(({ variant }) => {
@@ -245,6 +248,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
                 ? <span title={variant.ambiguous_producers.map(nodeName).join(', ')}>{t('sweeps.detail.ambiguous')}</span>
                 : formatValue(variant.objective)}</td>
               <td>{formatMetrics(variant.final_metrics)}</td>
+              <td>{variantWorker(variant)}</td>
+              <td>{variantDevices(variant)}</td>
               <td>{variant.run_id && variant.run_exists !== false
                 ? <button type="button" onClick={() => onOpenRun(variant.run_id!)}>{t('sweeps.detail.openRun')}</button>
                 : <button type="button" disabled>{t('sweeps.detail.unavailable')}</button>}</td>
