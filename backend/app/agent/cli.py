@@ -24,6 +24,13 @@ stores the worker credential it gets (``app.agent.enroll``,
 or without ``--token``, and asks for nothing; ``cdui agent forget URL``
 deletes it so the next start enrolls again.
 
+``--mount LABEL=PATH`` (repeatable, #782) declares a shared directory, e.g.
+``--mount data=/nas/lab/codefyui/data``: the control plane sends runs that
+need files only to workers holding its label, and the run subprocesses
+derive their data directories from it. Mounts are saved in
+``<user-data>/agent.json`` (``agent_config``), so a later ``cdui agent
+start`` keeps them; ``--mount LABEL=`` removes one.
+
 Background by default, like ``cdui start``: the agent is re-launched as a
 detached ``--foreground`` process, its pid in ``<user-data>/agent.pid`` and
 its log in ``<user-data>/agent.log``. ``--foreground`` keeps it attached
@@ -189,6 +196,13 @@ def build_parser() -> argparse.ArgumentParser:
         "提供給控制面的裝置，逗號分隔，例如 cuda:0,cuda:1（預設：全部）",
         "devices to offer, comma-separated, e.g. cuda:0,cuda:1 "
         "(default: all)"))
+    start.add_argument("--mount", action="append", default=None,
+                       metavar="LABEL=PATH", help=t(
+        "共用儲存：LABEL=PATH，例如 data=/nas/lab/codefyui/data（可重複；"
+        "會保存，下次啟動沿用；LABEL= 移除）",
+        "shared storage: LABEL=PATH, e.g. data=/nas/lab/codefyui/data "
+        "(repeatable; saved and reused by later starts; LABEL= removes "
+        "one)"))
     start.add_argument("--foreground", action="store_true", help=t(
         "在前景執行（systemd 或想看日誌時）",
         "stay in the foreground (systemd, or to watch the log)"))
@@ -240,6 +254,48 @@ def offered_reports(facts: list[Any], wanted: list[str] | None) -> list[Any]:
             f"(found: {', '.join(sorted(known))})"))
     return [fact for fact in facts
             if fact.value in wanted or fact.kind == "cpu"]
+
+
+def resolve_mounts(flags: list[str] | None) -> dict[str, str]:
+    """The agent's mounts: the saved ones updated by *flags*, saved back when
+    they changed. ``ValueError`` (bilingual) for a malformed flag, a path a
+    flag sets that is not a directory, or a configuration that cannot be
+    saved. A SAVED path that is not a directory (a share not mounted yet)
+    is only warned about: the agent starts without offering that label and
+    offers it once the directory appears (``Runner.available_mounts``)."""
+    from . import agent_config
+
+    config = agent_config.load(user_data_dir())
+    saved = agent_config.saved_mounts(config)
+    try:
+        mounts = agent_config.merge_mounts(saved, flags)
+    except ValueError as exc:
+        raise ValueError(t(f"--mount 格式錯誤：{exc}", str(exc))) from None
+    flagged = {label: path for label, path in mounts.items()
+               if saved.get(label) != path}
+    missing = agent_config.missing_dirs(flagged)
+    if missing:
+        raise ValueError(t(
+            f"掛載路徑不是資料夾：{', '.join(missing)}（先掛上共用儲存，或用 "
+            "--mount LABEL= 移除）",
+            f"mount path is not a directory: {', '.join(missing)} (mount "
+            "the shared storage first, or remove it with --mount LABEL=)"))
+    waiting = agent_config.missing_dirs(mounts)
+    if waiting:
+        _err(f"警告：已儲存的掛載路徑目前不是資料夾：{', '.join(waiting)}；"
+             "agent 會在它出現後才提供這個 label",
+             f"warning: saved mount path is not a directory now: "
+             f"{', '.join(waiting)}; the agent offers that label once it "
+             "appears")
+    if mounts != saved:
+        try:
+            agent_config.save(user_data_dir(), {**config, "mounts": mounts})
+        except OSError as exc:
+            raise ValueError(t(
+                f"無法儲存 agent 設定 {agent_config.config_path(user_data_dir())}：{exc}",
+                f"could not save the agent configuration "
+                f"{agent_config.config_path(user_data_dir())}: {exc}")) from None
+    return mounts
 
 
 def _interactive() -> bool:
@@ -460,7 +516,8 @@ def _install_stop_handlers(loop: asyncio.AbstractEventLoop,
 
 
 def run_agent(args: argparse.Namespace, control: Any, token: Any,
-              devices: list[Any], token_source: str | None = None) -> int:
+              devices: list[Any], token_source: str | None = None,
+              mounts: dict[str, str] | None = None) -> int:
     """The agent itself: connect and serve until stopped."""
     from ..config import settings
     from ..core import worker_protocol as wp
@@ -472,6 +529,7 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     wanted = parse_devices(args.devices)
     offered = {report.value for report in devices}
     runner = Runner(runs_dir=runs_dir(), offered_devices=offered,
+                    mounts=mounts,
                     keep_last=settings.RUN_RETENTION_KEEP_LAST)
 
     def probe() -> list[wp.DeviceReport]:
@@ -490,8 +548,10 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
                 if callable(token) else f"--token / ${TOKEN_ENV}"))
         return await connection.run(stop)
 
-    logger.info("agent %s starting (pid %s); offering %s", name, os.getpid(),
-                ", ".join(sorted(offered)))
+    logger.info("agent %s starting (pid %s); offering %s; mounts %s", name,
+                os.getpid(), ", ".join(sorted(offered)),
+                ", ".join(f"{k}={v}" for k, v in sorted(
+                    (mounts or {}).items())) or "none")
     try:
         return asyncio.run(serve())
     finally:
@@ -607,11 +667,21 @@ def cmd_start(args: argparse.Namespace) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
     # process and in every run subprocess (``core.resources``).
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    # A running agent read its mounts when it started: changing them now
+    # would save a configuration it does not use. Refused, nothing saved.
+    if args.mount and not args.daemonized \
+            and running_agent_pid() is not None:
+        print(t("錯誤：agent 執行中時不能變更 --mount；請先執行 cdui agent stop。",
+                "Error: --mount cannot change while the agent is running; "
+                "stop the agent first (cdui agent stop)."), file=sys.stderr)
+        return 1
     explicit_name = args.name
     try:
         args.name = validate_name(args.name or default_name())
         wanted = parse_devices(args.devices)
         facts = offered_reports(_probe_facts(), wanted)
+        # Saved here, so the background process started below reads them.
+        mounts = resolve_mounts(args.mount)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -666,7 +736,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not args.foreground:
         return _start_background(args, control, token)
     _setup_logging(args.daemonized)
-    return run_agent(args, control, token, facts, token_source=token_source)
+    return run_agent(args, control, token, facts, token_source=token_source,
+                     mounts=mounts)
 
 
 def main(argv: list[str] | None = None) -> int:

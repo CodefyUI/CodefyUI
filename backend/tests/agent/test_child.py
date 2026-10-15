@@ -157,7 +157,8 @@ async def test_pipe_sinks_write_one_message_each():
         (child.MSG_METRICS, [{"name": "loss", "value": 0.5, "step": 3,
                               "node_id": "a"}]),
         (child.MSG_ARTIFACT, {"kind": "checkpoint", "path": "/tmp/c.pt",
-                              "meta": {"epoch": 1}, "node_id": "a"}),
+                              "meta": {"epoch": 1}, "node_id": "a",
+                              "mount_label": None}),
         (child.MSG_WARNING, {"kind": "evicted", "detail": "weights dropped",
                              "node_id": "a"}),
     ]

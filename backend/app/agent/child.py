@@ -24,9 +24,20 @@ Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
 
 - ``("event", event_type, payload)``
 - ``("metrics", [{"name", "value", "step", "node_id"}, ...])`` (never empty)
-- ``("artifact", {"kind", "path", "meta", "node_id"})``
+- ``("artifact", {"kind", "path", "meta", "node_id", "mount_label"})``:
+  ``path`` relative to the run's mount (``spec["mount"]``, #782) when the
+  file is under it, with ``mount_label`` naming it; else absolute, with
+  ``mount_label`` None.
 - ``("warning", {"kind", "detail", "node_id"})``
 - ``("finished", {"status", "error", "peak_memory"})``, last.
+
+Paths on a shared mount (#782) are mapped at exactly two places, both fed
+by the assignment (``spec["mount"]``, built once by ``Runner.storage_plan``):
+in, the data settings are derived from the mount root before anything
+imports ``app.config`` (``runner.child_environment``), so the graph's own
+paths (an upload's bare name, ``models/x.pt``) resolve unchanged and the
+graph is never rewritten; out, every artifact path goes through
+:func:`artifact_location`, the one place a path becomes relative.
 
 Agent -> child: ``("cancel",)``. The pipe closing means the agent is gone,
 which is treated as a cancel: nobody is left to report to.
@@ -167,8 +178,27 @@ def wire_payload(payload: Any, cap_bytes: int) -> Any:
     return json.loads(json.dumps(capped, allow_nan=False, default=str))
 
 
-def _pipe_sinks(send: Send, cap_bytes: int | None = None) -> Any:
-    """A ``RunSinks`` whose callables write pipe messages."""
+def artifact_location(path: str, mount: dict[str, Any] | None
+                      ) -> tuple[str, str | None]:
+    """``(path, mount_label)`` an artifact is reported with (#782).
+
+    Relative to the run's mount when *path* is under its root, so the
+    control plane can find it at its own path for the same label; else
+    *path* as produced, with no label.
+    """
+    if mount and mount.get("root") and mount.get("label"):
+        from ..core.mounts import relative_to_mount
+
+        relative = relative_to_mount(path, mount["root"])
+        if relative is not None:
+            return relative, str(mount["label"])
+    return path, None
+
+
+def _pipe_sinks(send: Send, cap_bytes: int | None = None,
+                mount: dict[str, Any] | None = None) -> Any:
+    """A ``RunSinks`` whose callables write pipe messages. *mount* is the
+    run's ``{"label", "root"}`` (#782), or None."""
     import logging
 
     from ..config import settings
@@ -206,8 +236,10 @@ def _pipe_sinks(send: Send, cap_bytes: int | None = None) -> Any:
         except (TypeError, ValueError, RecursionError) as exc:
             log.warning("an artifact's meta could not be encoded: %s", exc)
             meta = None
-        send((MSG_ARTIFACT, {"kind": signal.kind, "path": signal.path,
-                             "meta": meta, "node_id": signal.node_id}))
+        path, mount_label = artifact_location(signal.path, mount)
+        send((MSG_ARTIFACT, {"kind": signal.kind, "path": path,
+                             "meta": meta, "node_id": signal.node_id,
+                             "mount_label": mount_label}))
 
     async def warn(signal: Any) -> None:
         send((MSG_WARNING, {"kind": signal.kind, "detail": signal.detail,
@@ -271,7 +303,7 @@ def run_assignment(spec: dict[str, Any], send: Send,
             session=None,
             output_store=None,
             record_outputs=False,
-            sinks=_pipe_sinks(send),
+            sinks=_pipe_sinks(send, mount=spec.get("mount")),
             explicit_metric_nodes=set(),
         )
         # This process runs this one run and nothing else, so its peak

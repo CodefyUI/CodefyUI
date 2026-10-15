@@ -62,6 +62,7 @@ from uuid import uuid4
 
 from ..config import settings
 from .db import Database, transaction, utc_now_iso
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
 from .worker_protocol import TARGET_LOCAL
@@ -124,7 +125,8 @@ _RUN_COLUMNS = (
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
-_ARTIFACT_COLUMNS = "id, run_id, kind, path, meta, created_at"
+_ARTIFACT_COLUMNS = ("id, run_id, kind, path, meta, created_at, backend, "
+                     "mount_label, worker_id")
 
 #: Last value of every series in ONE run, by index seeks only — see
 #: ``RunStore.latest_metrics`` for why this is not a ``GROUP BY``.
@@ -453,20 +455,49 @@ class EventRecord:
 
 @dataclass(frozen=True)
 class ArtifactRecord:
-    """A file a run produced: checkpoint, export, image."""
+    """A file a run produced: checkpoint, export, image.
+
+    ``path`` is where the file is on THIS control plane: for a ``mount``
+    row (#782) the stored relative path joined onto this server's root for
+    ``mount_label`` (``core.mounts.translate``), else the stored absolute
+    path. It is None for a ``mount`` row this server cannot place (a label
+    it does not hold, a stored path that leaves the mount): a relative
+    path is never handed out as a local one. ``stored_path`` is the column
+    as written (relative for a ``mount`` row). ``backend`` is ``local`` for every row written before
+    #782. ``worker_id`` is the worker whose run wrote it (``local``: this
+    process, and every row from before #782).
+    """
 
     id: int
     run_id: str
     kind: str
-    path: str
+    path: str | None
     meta: Any
     created_at: str
+    backend: str = BACKEND_LOCAL
+    mount_label: str | None = None
+    stored_path: str | None = None
+    worker_id: str = WORKER_LOCAL
+
+    @classmethod
+    def build(cls, *, id: int, run_id: str, kind: str, stored_path: str,
+              meta: Any, created_at: str, backend: str | None,
+              mount_label: str | None,
+              worker_id: str | None = None) -> "ArtifactRecord":
+        backend = backend or BACKEND_LOCAL
+        return cls(id=id, run_id=run_id, kind=kind,
+                   path=translate(backend, mount_label, stored_path),
+                   meta=meta, created_at=created_at, backend=backend,
+                   mount_label=mount_label, stored_path=stored_path,
+                   worker_id=worker_id or WORKER_LOCAL)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ArtifactRecord":
-        return cls(id=row["id"], run_id=row["run_id"], kind=row["kind"],
-                   path=row["path"], meta=_loads(row["meta"]),
-                   created_at=row["created_at"])
+        return cls.build(id=row["id"], run_id=row["run_id"], kind=row["kind"],
+                         stored_path=row["path"], meta=_loads(row["meta"]),
+                         created_at=row["created_at"], backend=row["backend"],
+                         mount_label=row["mount_label"],
+                         worker_id=row["worker_id"])
 
 
 @dataclass(frozen=True)
@@ -1443,12 +1474,22 @@ class RunStore:
 
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
+        backend: str = BACKEND_LOCAL, mount_label: str | None = None,
+        worker_id: str = WORKER_LOCAL,
     ) -> ArtifactRecord:
         """Register a file a run produced. *kind* is an open vocabulary.
 
         *meta* is sanitized once and both stored and returned from that
         copy, so the returned record always equals what a re-read gives.
+        A ``mount`` row (#782) stores *path* relative to the mount
+        *mount_label* names; the record returned carries this server's path
+        for it, as :meth:`list_artifacts` does. *worker_id* is the worker
+        whose run wrote the file (``local``: this process).
         """
+        if backend not in BACKENDS:
+            raise ValueError(f"unknown artifact backend {backend!r}")
+        if backend == BACKEND_MOUNT and not mount_label:
+            raise ValueError("a mount artifact needs its mount_label")
         created_at = utc_now_iso()
         meta = _json_safe(meta)
         encoded = None if meta is None else _dumps(meta)
@@ -1456,16 +1497,22 @@ class RunStore:
         def _insert(conn: sqlite3.Connection) -> int:
             cur = conn.execute(
                 "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
-                "created_at) VALUES (?, ?, ?, ?, ?)",
-                (run_id, kind, path, encoded, created_at),
+                "created_at, backend, mount_label, worker_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, kind, path, encoded, created_at, backend,
+                 mount_label if backend == BACKEND_MOUNT else None,
+                 worker_id),
             )
             # lastrowid is Optional in the driver's typing; after a
             # successful single-row INSERT it is always the new rowid.
             return int(cur.lastrowid or 0)
 
         artifact_id = await self.db.run(_insert)
-        return ArtifactRecord(id=artifact_id, run_id=run_id, kind=kind,
-                              path=path, meta=meta, created_at=created_at)
+        return ArtifactRecord.build(
+            id=artifact_id, run_id=run_id, kind=kind, stored_path=path,
+            meta=meta, created_at=created_at, backend=backend,
+            mount_label=mount_label if backend == BACKEND_MOUNT else None,
+            worker_id=worker_id)
 
     async def list_artifacts(
         self, run_id: str, *, kind: str | None = None,
@@ -1623,25 +1670,38 @@ class RunStore:
                 # never collected for unlinking -- see the docstring's
                 # "Runs left interrupted" section. The row itself is NOT
                 # exempted: it still goes with the ordinary DELETE below.
+                # A mount row's file is found at this server's path for it
+                # (#782), the same translation ``list_artifacts`` applies.
+                # A row this server cannot place (None) has no file here.
+                checkpoint_rows = conn.execute(
+                    "SELECT path, backend, mount_label FROM "
+                    "exec_run_artifacts WHERE kind = ? "
+                    "AND run_id IN (SELECT id FROM exec_runs WHERE "
+                    f"{where_clause} AND status != ?)",
+                    (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
+                ).fetchall()
                 doomed_paths = [
-                    row["path"] for row in conn.execute(
-                        "SELECT path FROM exec_run_artifacts WHERE kind = ? "
-                        "AND run_id IN (SELECT id FROM exec_runs WHERE "
-                        f"{where_clause} AND status != ?)",
-                        (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
-                    ).fetchall()
+                    path for path in (
+                        translate(row["backend"], row["mount_label"],
+                                  row["path"]) for row in checkpoint_rows)
+                    if path is not None
                 ]
                 # No interrupted exemption here (#196), and ``run_id`` comes
                 # along because the ownership guard needs it: the directory
                 # a row may name is the one THIS run's writer would have
                 # built, not any directory of the right shape.
+                logdir_rows = conn.execute(
+                    "SELECT run_id, path, backend, mount_label FROM "
+                    "exec_run_artifacts WHERE "
+                    "kind = ? AND run_id IN (SELECT id FROM exec_runs "
+                    f"WHERE {where_clause})",
+                    (ARTIFACT_KIND_TENSORBOARD, *params),
+                ).fetchall()
                 doomed_logdirs = [
-                    (row["run_id"], row["path"]) for row in conn.execute(
-                        "SELECT run_id, path FROM exec_run_artifacts WHERE "
-                        "kind = ? AND run_id IN (SELECT id FROM exec_runs "
-                        f"WHERE {where_clause})",
-                        (ARTIFACT_KIND_TENSORBOARD, *params),
-                    ).fetchall()
+                    (row["run_id"], path) for row, path in (
+                        (row, translate(row["backend"], row["mount_label"],
+                                        row["path"])) for row in logdir_rows)
+                    if path is not None
                 ]
                 # A sweep's results must outlive its children (#140,
                 # RULING 4). Deferred import, in the method body, for the

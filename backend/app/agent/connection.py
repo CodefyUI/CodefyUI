@@ -343,6 +343,7 @@ class AgentConnection:
         hello = wp.Hello(
             name=self.name, version=self.version,
             devices=await self._device_reports(), platform=platform_facts(),
+            mounts=await asyncio.to_thread(self.runner.available_mounts),
             machine_id=await asyncio.to_thread(machine_identity))
         await ws.send(wp.encode_frame(hello))
         raw = await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S)
@@ -400,7 +401,11 @@ class AgentConnection:
         while True:
             await self.send_frame(wp.Heartbeat(
                 devices=await self._device_reports(),
-                running=self.runner.running_ids()))
+                running=self.runner.running_ids(),
+                # Re-checked every beat (#782): a share mounted after the
+                # agent started is offered from the next one.
+                mounts=await asyncio.to_thread(
+                    self.runner.available_mounts)))
             await asyncio.sleep(self.heartbeat_s)
 
     async def _receive(self, ws: Any) -> None:

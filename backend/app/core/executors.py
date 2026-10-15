@@ -74,6 +74,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; run_service imports us
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class MountedArtifactSignal(ArtifactSignal):
+    """An ``ArtifactSignal`` from a worker whose ``path`` is relative to the
+    mount ``mount_label`` names (#782). ``RunService`` stores it as a
+    ``mount`` row. A subclass, so ``ArtifactSignal`` itself (part of the
+    runtime exported scripts import) stays as it is."""
+
+    mount_label: str | None = None
+
+
 @dataclass
 class RunSinks:
     """Where one run's reports land. Loop-side, owned by ``RunService``.
@@ -639,7 +649,7 @@ class WorkerExecutor:
             await worker.send(wp.Assign(
                 run_id=request.run_id, graph=request.graph,
                 options=request.options, device=devices[0],
-                devices=devices))
+                devices=devices, storage=assignment_storage(worker)))
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
@@ -777,9 +787,15 @@ class WorkerExecutor:
                 MetricPoint(name=p.name, value=p.value, step=p.step,
                             node_id=p.node_id) for p in frame.points])
         elif isinstance(frame, wp.Artifact):
-            await sinks.record_artifact(ArtifactSignal(
-                kind=frame.kind, path=frame.path, meta=frame.meta,
-                node_id=frame.node_id))
+            if frame.mount_label:
+                signal: ArtifactSignal = MountedArtifactSignal(
+                    kind=frame.kind, path=frame.path, meta=frame.meta,
+                    node_id=frame.node_id, mount_label=frame.mount_label)
+            else:
+                signal = ArtifactSignal(
+                    kind=frame.kind, path=frame.path, meta=frame.meta,
+                    node_id=frame.node_id)
+            await sinks.record_artifact(signal)
         elif isinstance(frame, wp.RunWarning):
             await sinks.warn(WarningSignal(kind=frame.kind,
                                            detail=frame.detail,
@@ -805,6 +821,26 @@ class WorkerExecutor:
             return ExecutionOutcome(STATUS_INTERRUPTED, error,
                                     peak_memory=peak)
         return ExecutionOutcome(STATUS_FAILED, error, peak_memory=peak)
+
+
+def assignment_storage(worker: Any) -> Any:
+    """``assign.storage`` for *worker* (#782).
+
+    Always this server's mount label. For a worker this server lends its
+    data directories to (``mounts.lends_mount``: same host, no directory of
+    its own for the label) also those directories, as configured here. A
+    same-host worker's files are on this machine, so it reports them with
+    their absolute path (``relative_artifacts`` off): they become ``local``
+    rows, never ``mount`` rows.
+    """
+    from . import worker_protocol as wp
+    from .mounts import control_plane_label, lends_mount, lent_dirs
+
+    label = control_plane_label()
+    return wp.Storage(
+        mount=label,
+        dirs=lent_dirs() if lends_mount(worker, label) else None,
+        relative_artifacts=not getattr(worker, "same_host", False))
 
 
 async def _worker_gone_warning(request: ExecutionRequest, detail: str) -> None:

@@ -1124,6 +1124,7 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.detail.artifacts': '產出檔案',
   'runs.detail.noArtifacts': '尚無產出檔案。',
   'runs.detail.copyPath': '複製路徑',
+  'runs.detail.notOnThisServer': '位於共用掛載「{label}」，這台伺服器沒有該掛載，因此沒有本機路徑',
   'runs.detail.copied': '已複製路徑',
   'runs.detail.copyFailed': '無法複製路徑',
   'runs.detail.error': '錯誤',

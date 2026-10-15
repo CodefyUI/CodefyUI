@@ -69,6 +69,7 @@ from uuid import uuid4
 from .run_service import (
     MAX_NAME_LENGTH,
     MAX_SEED,
+    NEEDS_UNKNOWN,
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
@@ -183,6 +184,10 @@ class StudyCoordinator:
         self._locks: dict[str, asyncio.Lock] = {}
         self._signals: dict[str, _Broadcast] = {}
         self._secrets: dict[tuple[str, int], SecretVault] = {}
+        #: Each variant's storage needs (#782) from the placement check, by
+        #: ``(study id, variant index)``; a child submitted without one (a
+        #: study resumed after a restart) has them computed at submit.
+        self._needs: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
         service.add_terminal_listener(self._on_terminal)
@@ -241,6 +246,7 @@ class StudyCoordinator:
             if still:
                 await asyncio.gather(*still, return_exceptions=True)
         self._secrets.clear()
+        self._needs.clear()
 
     # ── submission ───────────────────────────────────────────────────────
 
@@ -277,7 +283,7 @@ class StudyCoordinator:
         # Every child inherits options.target; refuse what the run service
         # would refuse for any of them (a worker it has never seen, a device
         # nobody offers, record_outputs on a worker) before any row exists.
-        self.service.check_placeable_batch(
+        variant_needs = self.service.check_placeable_batch(
             (graph for _label, _ops, graph in spec.variants), spec.options)
         study, created = await self.store.create_study(
             name=spec.name, objective=spec.objective,
@@ -292,6 +298,8 @@ class StudyCoordinator:
             for index, vault in enumerate(vaults):
                 if vault:
                     self._secrets[(study.id, index)] = vault
+            for index, needs in enumerate(variant_needs):
+                self._needs[(study.id, index)] = needs
             self._notify(study.id)
             study = await self.tick(study.id) or study
         return study, created
@@ -441,7 +449,9 @@ class StudyCoordinator:
                 graph, options=options,
                 name=_child_name(study, label, attempt.repetition),
                 run_id=run_id, study_id=study.id,
-                study_attempt_id=attempt.id)
+                study_attempt_id=attempt.id,
+                needs=self._needs.get((study.id, attempt.variant_index),
+                                      NEEDS_UNKNOWN))
         except RunSubmitError as exc:
             await self.store.mark_lost(
                 attempt.id, f"the run service refused the child: {exc}")

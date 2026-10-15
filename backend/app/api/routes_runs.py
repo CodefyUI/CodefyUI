@@ -613,6 +613,13 @@ async def get_run_artifacts(
     ``kind`` is not validated against a whitelist — the vocabulary is open
     by design (``ARTIFACT_KIND_*`` are conveniences, not a constraint), so
     an unknown kind is an empty list rather than a 400.
+
+    ``path`` is where the file is on this server. A file a worker wrote
+    under a shared mount (#782) is stored relative to it and reported here
+    translated: ``backend`` is ``mount``, ``mount_label`` names the mount
+    and ``relative_path`` is the stored path. Every other row is ``local``
+    with its absolute path and no ``relative_path``. ``worker_id`` names
+    the worker whose run wrote the file (``local``: this server).
     """
     service = _get_service(request)
     await _require_run(service, run_id)
@@ -621,7 +628,11 @@ async def get_run_artifacts(
         "run_id": run_id,
         "artifacts": [
             {"id": record.id, "kind": record.kind, "path": record.path,
-             "meta": record.meta, "created_at": record.created_at}
+             "meta": record.meta, "created_at": record.created_at,
+             "backend": record.backend, "mount_label": record.mount_label,
+             "worker_id": record.worker_id,
+             "relative_path": (record.stored_path
+                               if record.backend == "mount" else None)}
             for record in artifacts
         ],
     }

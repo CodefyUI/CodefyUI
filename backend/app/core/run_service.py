@@ -240,6 +240,7 @@ from .executors import (
     RunSinks,
     WorkerExecutor,
 )
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, holds_mount
 from .node_state_store import NodeStateStore
 from .run_events import (
     DEFAULT_ERROR_MODE,
@@ -291,6 +292,7 @@ from .scheduling import (
     WorkerScheduler,
     candidate_devices,
     entry_target,
+    no_mount,
     on_a_worker,
     renumbered_on_a_worker,
 )
@@ -698,6 +700,9 @@ class InteractiveSession:
     changed_nodes: tuple[str, ...] = ()
     node_state_store: NodeStateStore | None = None
 
+
+#: ``submit(needs=...)`` default: compute the run's storage needs (#782).
+NEEDS_UNKNOWN = object()
 
 #: The worker that is this control-plane process: what a run without a
 #: target runs on, and the string ``run_store`` writes for one.
@@ -1411,6 +1416,10 @@ class _QueuedRun:
     #: Submit order across EVERY queue (``RunService._submit_seq``):
     #: ``reschedule`` offers a freed slot to the oldest front first.
     seq: int = 0
+    #: ``run_needs.needs`` for a run that targets a worker (#782): the
+    #: scheduler places it only where its mount is. None for a local run.
+    #: In memory only, like the entry itself: a restart retires the queue.
+    needs: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails.
@@ -1801,6 +1810,7 @@ class RunService:
         run_id: str | None = None,
         study_id: str | None = None,
         study_attempt_id: str | None = None,
+        needs: Any = NEEDS_UNKNOWN,
     ) -> SubmitResult:
         """Persist a run, then SCHEDULE it. Raises ``RunSubmitError`` on input.
 
@@ -1848,10 +1858,15 @@ class RunService:
         attempt BEFORE calling this, and the stamp on the row is how a child
         whose linkage write was lost is found again. Like a sweep, a study
         child cannot use the interactive lane.
+
+        *needs* is this run's ``run_needs.needs`` when the caller already
+        has it (:meth:`check_placeable_batch` computes it for every child
+        of a sweep or study), so it is not computed twice (#782).
         """
-        normalized_graph, normalized_options, queue_key = self._prepare(
+        normalized_graph, normalized_options, queue_key, needs = self._prepare(
             graph, options,
-            batch_child=sweep_id is not None or study_id is not None)
+            batch_child=sweep_id is not None or study_id is not None,
+            needs=needs)
         normalized_name = normalize_name(name)
         lane = normalized_options["lane"]
         if session is not None and lane != LANE_INTERACTIVE:
@@ -1909,7 +1924,8 @@ class RunService:
         # start.
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
                            options=normalized_options, signal=_Broadcast(),
-                           seq=next(self._submit_seq))
+                           seq=next(self._submit_seq),
+                           needs=needs)
         self._enqueue(entry)
         self._pump(queue_key)
         return SubmitResult(
@@ -1919,15 +1935,23 @@ class RunService:
 
     def _prepare(
         self, graph: Any, options: Any, *, batch_child: bool = False,
-    ) -> tuple[dict[str, Any], dict[str, Any], str]:
-        """``(graph, options, queue_key)`` for a submit, or the refusal.
+        needs: Any = NEEDS_UNKNOWN,
+    ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any] | None]:
+        """``(graph, options, queue_key, needs)`` for a submit, or the refusal.
 
         The one place a submission is validated, shared by :meth:`submit`
         and :meth:`check_placeable_batch` so the two cannot drift: the
         shutdown check, the graph and options normalisation (the graph's
         settings fill what the options leave out), the batch-child lane
         guard and the queue key, which is where a ``target`` is checked.
-        *batch_child* is a sweep variant or a study child.
+        *batch_child* is a sweep variant or a study child. ``needs`` is
+        ``run_needs.needs`` for a run that targets a worker (#782) and None
+        for a local one, which never computes it: the 3.0 path unchanged.
+        The queue key's refusals (an unknown worker, a device nobody
+        offers, ``record_outputs``) come first; only a run they let through
+        has its graph read for storage (:meth:`_check_storage`). A *needs*
+        given by the caller (anything but :data:`NEEDS_UNKNOWN`) is used as
+        it is.
         """
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
@@ -1943,31 +1967,54 @@ class RunService:
                 f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
                 "are queued, and the interactive lane refuses past its cap "
                 "instead of queuing")
-        return (normalized_graph, normalized_options,
-                self._submit_queue_key(normalized_options))
+        queue_key = self._submit_queue_key(normalized_options)
+        if entry_target(normalized_options)[0] == TARGET_WORKER_LOCAL:
+            return normalized_graph, normalized_options, queue_key, None
+        if needs is NEEDS_UNKNOWN:
+            needs = self._needs_of(normalized_graph)
+        self._check_storage(normalized_options, needs)
+        return normalized_graph, normalized_options, queue_key, needs
+
+    @staticmethod
+    def _needs_of(graph: dict[str, Any]) -> dict[str, Any]:
+        from .run_needs import needs as run_needs
+
+        return run_needs(graph)
 
     def check_placeable_batch(self, graphs: Iterable[Any],
-                              options: Any) -> None:
+                              options: Any) -> list[dict[str, Any] | None]:
         """Refuse, before anything is written, what :meth:`submit` would
         refuse for any child of a sweep or study (#777).
 
         Every child gets *options*; they differ only in their graph, and
         of the graph only ``settings`` (device, seed) reaches the options,
-        so each distinct ``settings`` is checked once. Raises
-        ``RunSubmitError`` (or ``RunServiceUnavailable``) with the message
-        ``submit`` would give; returns None when every child could be
-        queued. A ``target`` naming a worker this server has seen but that
+        so the options and the queue key are checked once per distinct
+        ``settings``. Storage (#782) depends on the whole graph (a variant
+        may switch ``checkpoint_every`` on), so each child's needs are
+        computed and checked; they are returned in order, for the caller
+        to hand to :meth:`submit` (``needs=``) instead of computing them
+        again. None for a child that runs here. Raises ``RunSubmitError``
+        (or ``RunServiceUnavailable``) with the message ``submit`` would
+        give. A ``target`` naming a worker this server has seen but that
         is away is not refused: its children wait for it, as one run does.
         """
-        seen: set[str] = set()
+        checked: dict[str, dict[str, Any]] = {}
+        result: list[dict[str, Any] | None] = []
         for graph in graphs:
             settings_ = graph.get("settings") if isinstance(graph, dict) \
                 else None
             key = json.dumps(settings_, sort_keys=True, default=str)
-            if key in seen:
+            if key not in checked:
+                _, checked[key], _, _ = self._prepare(
+                    graph, options, batch_child=True, needs=None)
+            child_options = checked[key]
+            if entry_target(child_options)[0] == TARGET_WORKER_LOCAL:
+                result.append(None)
                 continue
-            seen.add(key)
-            self._prepare(graph, options, batch_child=True)
+            child_needs = self._needs_of(normalize_graph(graph))
+            self._check_storage(child_options, child_needs)
+            result.append(child_needs)
+        return result
 
     def _submit_queue_key(self, options: dict[str, Any]) -> str:
         """The FIFO a submitted run joins, or ``RunSubmitError``.
@@ -1993,6 +2040,7 @@ class RunService:
         Only an unknown worker name, a device nobody offers, or one of
         those two options is refused, so a worker disconnecting halfway
         through a sweep's or a study's submissions does not fail it.
+        Storage is checked after this, by :meth:`_check_storage`.
         """
         worker_id, devices = entry_target(options)
         if worker_id == TARGET_WORKER_LOCAL:
@@ -2029,6 +2077,37 @@ class RunService:
                 f"worker {worker_id!r} does not offer {', '.join(missing)} "
                 f"(it offers {', '.join(offered) or 'nothing'})")
         return f"{worker_id}{WORKER_QUEUE_SEPARATOR}{requested}"
+
+    def _check_storage(self, options: dict[str, Any],
+                       needs: Mapping[str, Any] | None) -> None:
+        """Refuse a worker run whose *needs* name a mount nobody it may go
+        to holds (#782).
+
+        A named worker must hold the mount, as it last reported its mounts
+        (``mounts.holds_mount``: a same-host worker holds this server's
+        label without declaring it). For ``any``, this server or a known
+        worker holding the mount must offer the device; this server always
+        holds its own label. Called after :meth:`_submit_queue_key`, so the
+        worker is known and offers the device.
+        """
+        mount = needs.get("mount") if isinstance(needs, Mapping) else None
+        if not mount:
+            return
+        worker_id, devices = entry_target(options)
+        requested = str(options.get("device") or "cpu")
+        if worker_id == TARGET_WORKER_ANY:
+            can_serve = getattr(self._scheduler, "can_serve_any", None)
+            if can_serve is not None and not can_serve(
+                    requested, devices, mount=mount):
+                wanted = ", ".join(devices) if devices else requested
+                raise RunSubmitError(
+                    f"this run reads or writes files under the `{mount}` "
+                    f"mount, and neither this server nor a known worker "
+                    f"with that mount offers {wanted}")
+            return
+        worker = None if self._workers is None else self._workers.get(worker_id)
+        if worker is not None and not holds_mount(worker, mount):
+            raise RunSubmitError(no_mount(worker_id, mount))
 
     async def _submit_interactive(
         self, graph: dict[str, Any], options: dict[str, Any],
@@ -2931,10 +3010,23 @@ class RunService:
 
         Store first: an ``artifact`` event pointing at a row that failed to
         insert would send a client looking for something that is not there.
+
+        A signal carrying a ``mount_label`` (a worker child's file under a
+        shared mount, #782) is stored as a ``mount`` row whose path is
+        relative to that mount; every other one as before, a ``local`` row
+        with the path as produced. Either way the row names the worker that
+        produced it (``local`` for this process), so a path from another
+        machine is never mistaken for one of this machine's.
         """
+        mount_label = getattr(signal, "mount_label", None)
+        placement = active.placement
         record = await self.store.add_artifact(
             active.run_id, signal.kind, signal.path,
-            meta=artifact_meta(signal))
+            meta=artifact_meta(signal),
+            backend=BACKEND_MOUNT if mount_label else BACKEND_LOCAL,
+            mount_label=mount_label or None,
+            worker_id=(placement.worker_id if placement is not None
+                       else LOCAL_WORKER_ID))
         await self._emit(active.run_id, EVENT_ARTIFACT,
                          artifact_payload(record, signal.node_id))
 

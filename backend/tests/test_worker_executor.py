@@ -496,3 +496,53 @@ async def test_any_frame_keeps_a_worker_alive(registry):
     clock[0] += 31
     registry.check()
     assert agent.worker.status == "disconnected"
+# ── storage (#782) ───────────────────────────────────────────────────────
+
+
+async def test_assign_names_the_mount_and_a_mounted_artifact_keeps_it(
+        registry, monkeypatch):
+    from app.config import settings
+    from app.core.executors import MountedArtifactSignal
+
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    recorder = _Recorder()
+    frames = [
+        wp.Artifact(run_id="r1", seq=1, kind="checkpoint",
+                    path="models/periodic/a.pt", mount_label="data"),
+        wp.RunFinished(run_id="r1", seq=2, status="succeeded"),
+    ]
+    _, assign, _ = await _run(registry, recorder, frames)
+    # Another machine: the label only, never this server's path.
+    assert assign.storage == wp.Storage(mount="data")
+    signal = recorder.calls[0][1]
+    assert isinstance(signal, MountedArtifactSignal)
+    assert (signal.path, signal.mount_label) == ("models/periodic/a.pt",
+                                                 "data")
+
+
+async def test_a_same_host_worker_without_a_mount_borrows_this_servers_path(
+        registry, monkeypatch, tmp_path):
+    from app.config import settings
+    from app.core.executors import assignment_storage
+
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    # Configured directories that do not share one parent: what is lent is
+    # what is configured, not a layout derived from MODELS_DIR.parent.
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(settings, "IMAGES_DIR", tmp_path / "pics")
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "m" / "models")
+    monkeypatch.setattr(settings, "MEDIA_DIR", tmp_path / "media")
+    agent = _Agent(registry)
+    agent.worker.same_host = True
+    resolved = tmp_path.resolve()
+    assert assignment_storage(agent.worker) == wp.Storage(
+        mount="data", relative_artifacts=False, dirs={
+            "CODEFYUI_DATA_FILES_DIR": str(resolved / "uploads"),
+            "CODEFYUI_IMAGES_DIR": str(resolved / "pics"),
+            "CODEFYUI_MODELS_DIR": str(resolved / "m" / "models"),
+            "CODEFYUI_MEDIA_DIR": str(resolved / "media")})
+    # Its own directory for the label wins: nothing is lent, and its files
+    # are still on this machine (absolute paths).
+    agent.worker.mounts = {"data": "/mnt/own"}
+    assert assignment_storage(agent.worker) == wp.Storage(
+        mount="data", relative_artifacts=False)

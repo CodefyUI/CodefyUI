@@ -268,3 +268,126 @@ def test_a_dropped_connection_does_not_end_a_real_run(live_server, tmp_path):
             output, _ = agent.communicate()
         client.close()
     assert "replayed" in output, output
+# ── a shared data mount (#782) ───────────────────────────────────────────
+
+
+def _csv_and_checkpoint_graph() -> dict[str, Any]:
+    """Reads an uploaded CSV and trains one epoch with ``checkpoint_every``:
+    a run that needs the ``data`` mount on both counts."""
+    def node(node_id: str, node_type: str, **params: Any) -> dict[str, Any]:
+        return {"id": node_id, "type": node_type, "data": {"params": params}}
+
+    def trigger(target: str) -> dict[str, Any]:
+        return {"id": f"t-{target}", "source": "start", "target": target,
+                "sourceHandle": "trigger", "type": "trigger"}
+
+    def wire(source: str, out: str, target: str, port: str) -> dict[str, Any]:
+        return {"id": f"e-{source}-{target}-{port}", "source": source,
+                "sourceHandle": out, "target": target, "targetHandle": port}
+
+    return {
+        "nodes": [
+            node("start", "Start"),
+            node("csv", "CSVReader", path="train.csv",
+                 target_column="label"),
+            node("show", "Print", label="csv"),
+            node("data", "SyntheticShapes", n_samples=16, image_size=28),
+            node("loader", "DataLoader", batch_size=8),
+            node("model", "SequentialModel"),
+            node("opt", "Optimizer", type="Adam"),
+            node("loss", "Loss"),
+            node("train", "TrainingLoop", epochs=1, checkpoint_every=1,
+                 device="cpu"),
+        ],
+        "edges": [
+            trigger("csv"), trigger("data"), trigger("model"),
+            trigger("loss"),
+            wire("csv", "tensor", "show", "value"),
+            wire("data", "dataset", "loader", "dataset"),
+            wire("model", "model", "opt", "model"),
+            wire("model", "model", "train", "model"),
+            wire("opt", "optimizer", "train", "optimizer"),
+            wire("loader", "dataloader", "train", "dataloader"),
+            wire("loss", "loss_fn", "train", "loss_fn"),
+        ],
+        "settings": {"seed": 0},
+    }
+
+
+def test_a_run_on_a_shared_mount_reads_the_upload_and_lists_the_checkpoint(
+        live_server, tmp_path, monkeypatch):
+    """Acceptance (#782): this server's data directory and the agent's
+    ``--mount data=`` are the same directory (here reached through a
+    symlink, as an NFS mount point would be: another path, the same
+    files). The run reads the CSV uploaded here and its checkpoint is
+    listed at THIS server's path, stored relative to the mount."""
+    shared = tmp_path / "shared"
+    (shared / "files").mkdir(parents=True)
+    (shared / "files" / "train.csv").write_text(
+        "a,b,label\n1,2,0\n3,4,1\n5,6,0\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    for name, sub in (("DATA_FILES_DIR", "files"), ("IMAGES_DIR", "images"),
+                      ("MODELS_DIR", "models"), ("MEDIA_DIR", "media")):
+        monkeypatch.setattr(settings, name, shared / sub)
+    mount_point = tmp_path / "nas"
+    mount_point.symlink_to(shared, target_is_directory=True)
+    # The agent runs here, but is taken for another machine: a same-host
+    # worker's files are local rows, and this test is about mount rows.
+    import app.api.ws_worker as ws_worker
+
+    monkeypatch.setattr(ws_worker, "machine_identity",
+                        lambda: "not-this-agents-machine")
+
+    base = f"http://127.0.0.1:{live_server}"
+    client = httpx.Client(base_url=base, timeout=30,
+                          headers={TOKEN_HEADER: session_token()})
+    env = {**os.environ, "PYTHONPATH": str(BACKEND_DIR),
+           "CODEFYUI_USER_DATA_DIR": str(tmp_path / "agent-data"),
+           "CODEFYUI_AGENT_TOKEN": session_token()}
+    agent = subprocess.Popen(
+        [sys.executable, "-m", "app.agent", "start", "--foreground",
+         "--control", base, "--name", "nas-box", "--devices", "cpu",
+         "--mount", f"data={mount_point}"],
+        cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            workers = {w["name"]: w for w in
+                       client.get("/api/workers").json()["workers"]}
+            if workers.get("nas-box", {}).get("status") == "online":
+                break
+            if time.monotonic() > deadline or agent.poll() is not None:
+                raise AssertionError("the agent never connected")
+            time.sleep(0.1)
+        # GET /api/workers shows the label.
+        assert workers["nas-box"]["mounts"] == {"data": str(mount_point)}
+
+        submitted = client.post("/api/runs", json={
+            "graph": _csv_and_checkpoint_graph(),
+            "options": {"target": {"worker": "nas-box"}}})
+        assert submitted.status_code in (200, 201, 202), submitted.text
+        run_id = submitted.json()["run_id"]
+        record = _wait_terminal(client, run_id, timeout=180)
+        assert record["status"] == "succeeded", record
+        assert record["worker_id"] == "nas-box"
+
+        artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()[
+            "artifacts"]
+        [checkpoint] = [a for a in artifacts if a["kind"] == "checkpoint"]
+        assert checkpoint["backend"] == "mount"
+        assert checkpoint["mount_label"] == "data"
+        assert checkpoint["worker_id"] == "nas-box"
+        relative = checkpoint["relative_path"]
+        assert relative.startswith("models/periodic/")
+        assert checkpoint["path"] == str(shared.resolve() / relative)
+        assert Path(checkpoint["path"]).is_file()
+    finally:
+        agent.terminate()
+        try:
+            agent.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            agent.kill()
+            agent.communicate()
+        client.close()

@@ -161,6 +161,25 @@ async def test_send_frame_while_disconnected_is_dropped(tmp_path):
 # ── against the fake control plane ───────────────────────────────────────
 
 
+async def test_hello_and_heartbeats_carry_the_mounts_that_exist(tmp_path):
+    """``--mount`` labels reach the control plane in ``hello`` (#782); a
+    saved mount whose directory is missing is left out, and offered by the
+    next heartbeat once it appears."""
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    later = tmp_path / "later"
+    async with FakeControlPlane() as cp, Agent(
+            tmp_path, cp.url,
+            mounts={"data": str(nas), "scratch": str(later)}) as agent:
+        agent.connection.heartbeat_s = 0.05
+        hello = await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        assert hello.mounts == {"data": str(nas)}
+        later.mkdir()
+        beat = await cp.wait_for(lambda n, f: isinstance(f, wp.Heartbeat)
+                                 and "scratch" in (f.mounts or {}))
+        assert beat.mounts == {"data": str(nas), "scratch": str(later)}
+
+
 async def test_hello_heartbeats_and_a_run_match_in_process(tmp_path):
     """Acceptance: connect, hello, heartbeats, a tiny CPU graph in a child,
     and event frames byte-identical to InProcessExecutor's."""

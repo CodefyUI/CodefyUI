@@ -335,3 +335,178 @@ def test_a_heartbeat_that_changes_the_devices_reschedules():
                                       uuid="def", free_bytes=10)]
     registry.heartbeat(worker, wp.Heartbeat(devices=swapped))
     assert calls == [None, None]
+# ── the mount constraint (#782) ──────────────────────────────────────────
+
+NEEDS_DATA = {"mount": "data", "files": ["train.csv"]}
+
+
+@dataclass
+class _NeedyEntry(_Entry):
+    needs: dict[str, Any] | None = None
+
+
+def _mounted(worker: Worker, **mounts: str) -> Worker:
+    worker.mounts = dict(mounts)
+    return worker
+
+
+@pytest.fixture
+def data_label(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+
+
+def test_a_run_that_needs_the_mount_goes_only_to_a_worker_holding_it(
+        data_label):
+    bare = _worker("bare", "cpu")
+    nas = _mounted(_worker("nas", "cpu"), data="/mnt/nas")
+    scheduler = _scheduler(bare, nas)
+    needy = _NeedyEntry("r1", "bare/cpu", _target("bare"), NEEDS_DATA)
+    assert scheduler.place(needy, {}) is None
+    assert scheduler.reservation(_NeedyEntry(
+        "r1", "bare/cpu", _target("bare", "cpu", ["cpu", "cpu"]),
+        NEEDS_DATA)) is None
+    assert scheduler.explain(needy) == (
+        "worker bare has no `data` mount; add `--mount data=...` or use the "
+        "transfer backend (#785)")
+    assert scheduler.place(_NeedyEntry("r2", "nas/cpu", _target("nas"),
+                                       NEEDS_DATA), {}).worker_id == "nas"
+    # A run that needs nothing goes anywhere, as before.
+    assert scheduler.place(_NeedyEntry("r3", "bare/cpu", _target("bare"),
+                                       {"mount": None, "files": []}),
+                           {}).worker_id == "bare"
+
+
+def test_any_skips_the_workers_without_the_mount_and_falls_back_here(
+        data_label):
+    scheduler = _scheduler(_worker("a-bare", "cpu"),
+                           _mounted(_worker("b-nas", "cpu"), data="/n"))
+    entry = _NeedyEntry("r1", "any/cpu", _target("any"), NEEDS_DATA)
+    assert scheduler.place(entry, {}).worker_id == "b-nas"
+    # This process always holds its own data directory.
+    assert scheduler.place(entry, {("b-nas", "cpu"): 2}).worker_id == "local"
+
+
+def test_a_same_host_worker_holds_the_control_planes_label(data_label):
+    near = _worker("near", "cpu")
+    near.same_host = True
+    scheduler = _scheduler(near)
+    entry = _NeedyEntry("r1", "near/cpu", _target("near"), NEEDS_DATA)
+    assert scheduler.place(entry, {}).worker_id == "near"
+    # Only the control plane's own label: another one it must declare.
+    other = _NeedyEntry("r2", "near/cpu", _target("near"),
+                        {"mount": "scratch", "files": []})
+    assert scheduler.place(other, {}) is None
+
+
+def test_any_explains_a_wait_for_a_mounted_worker(data_label):
+    scheduler = _scheduler(_worker("gpu", "cpu", "cuda:0"))
+    entry = _NeedyEntry("r1", "any/cuda", _target("any", "cuda"), NEEDS_DATA)
+    assert scheduler.place(entry, {}) is None
+    assert scheduler.explain(entry) == (
+        "waiting for a worker that offers cuda and has the `data` mount")
+
+
+def test_submit_refuses_a_named_worker_without_the_mount(data_label):
+    bare = _worker("gpu-box-1", "cpu", "cuda:0")
+    nas = _mounted(_worker("nas-box", "cpu"), data="/n")
+    away = _mounted(_worker("away-box", "cpu", status="disconnected"),
+                    data="/n")
+    service = _service(_registry_with(bare, nas, away))
+    check = service._check_storage
+    with pytest.raises(RunSubmitError) as refused:
+        check(_options(worker="gpu-box-1"), NEEDS_DATA)
+    assert str(refused.value) == (
+        "worker gpu-box-1 has no `data` mount; add `--mount data=...` or "
+        "use the transfer backend (#785)")
+    # A pure-tensor graph is accepted there.
+    check(_options(worker="gpu-box-1"), {"mount": None, "files": []})
+    check(_options(worker="nas-box"), NEEDS_DATA)
+    # #777's rule still holds: a known worker that is away is waited for.
+    check(_options(worker="away-box"), NEEDS_DATA)
+    # any: this server holds the mount, so a cpu run is fine...
+    check(_options(worker="any"), NEEDS_DATA)
+    # ...but only gpu-box-1 offers cuda, and it has no mount.
+    with pytest.raises(RunSubmitError, match="`data` mount"):
+        check(_options(worker="any", device="cuda"), NEEDS_DATA)
+
+
+def test_prepare_computes_needs_only_for_a_worker_run(data_label):
+    """The 3.0 path never reads the graph for storage; a worker run's
+    needs are what submit checks and the queue entry carries."""
+    service = _service(_registry_with(_worker("gpu-box-1", "cpu")))
+    graph = {"nodes": [
+        {"id": "s", "type": "Start", "data": {"params": {}}},
+        {"id": "c", "type": "CSVReader",
+         "data": {"params": {"path": "train.csv"}}}],
+        "edges": [{"id": "t", "source": "s", "target": "c",
+                   "sourceHandle": "trigger", "type": "trigger"}]}
+    *_, needs = service._prepare(graph, {"device": "cpu"})
+    assert needs is None
+    with pytest.raises(RunSubmitError, match="has no `data` mount"):
+        service._prepare(graph, {"target": {"worker": "gpu-box-1"}})
+    *_, needs = service._prepare(graph, {"target": {"worker": "any"}})
+    assert needs == {"mount": "data", "files": ["train.csv"]}
+
+
+def test_cheap_refusals_come_before_the_graph_is_read(data_label,
+                                                      monkeypatch):
+    service = _service(_registry_with(_worker("gpu-box-1", "cpu")))
+
+    def never(_graph):
+        raise AssertionError("run_needs must not run for a refused submit")
+
+    monkeypatch.setattr(service, "_needs_of", never)
+    graph = {"nodes": [{"id": "s", "type": "Start", "data": {"params": {}}}]}
+    with pytest.raises(RunSubmitError, match="has not connected"):
+        service._prepare(graph, {"target": {"worker": "nobody"}})
+    with pytest.raises(RunSubmitError, match="record_outputs"):
+        service._prepare(graph, {"target": {"worker": "gpu-box-1"},
+                                 "record_outputs": True})
+
+
+def test_a_batch_check_returns_each_childs_needs(data_label):
+    """Needs depend on the whole graph, so every child is read once and
+    its needs handed back for submit; settings-only checks stay per
+    distinct settings."""
+    service = _service(_registry_with(_mounted(_worker("nas", "cpu"),
+                                               data="/n")))
+
+    def graph(path: str) -> dict:
+        nodes = [{"id": "s", "type": "Start", "data": {"params": {}}}]
+        edges = []
+        if path:
+            nodes.append({"id": "c", "type": "CSVReader",
+                          "data": {"params": {"path": path}}})
+            edges.append({"id": "t", "source": "s", "target": "c",
+                          "sourceHandle": "trigger", "type": "trigger"})
+        return {"nodes": nodes, "edges": edges}
+
+    result = service.check_placeable_batch(
+        [graph("a.csv"), graph(""), graph("b.csv")],
+        {"target": {"worker": "nas"}})
+    assert result == [{"mount": "data", "files": ["a.csv"]},
+                      {"mount": None, "files": []},
+                      {"mount": "data", "files": ["b.csv"]}]
+    assert service.check_placeable_batch([graph("a.csv")], {}) == [None]
+
+
+async def test_a_heartbeat_updates_the_mounts_and_wakes_the_queue():
+    """A share that appears on a worker after it connected (#782) is
+    placeable from its next heartbeat: the registry's listeners re-pump."""
+    registry = WorkerRegistry()
+    try:
+        woken: list[int] = []
+        registry.add_listener(lambda: woken.append(1))
+        worker, _ = registry.connect(
+            wp.Hello(name="box", version="t", mounts={}), send=_noop,
+            close=_noop)
+        woken.clear()
+        registry.heartbeat(worker, wp.Heartbeat(mounts={"data": "/n"}))
+        assert worker.mounts == {"data": "/n"} and woken == [1]
+        registry.heartbeat(worker, wp.Heartbeat())  # None: unchanged
+        registry.heartbeat(worker, wp.Heartbeat(mounts={"data": "/n"}))
+        assert worker.mounts == {"data": "/n"} and woken == [1]
+    finally:
+        await registry.shutdown()

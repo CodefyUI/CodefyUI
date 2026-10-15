@@ -314,11 +314,20 @@ def artifact_payload(
     Built from the STORED record: an ``artifact`` event must describe the
     row a client will find.
     """
-    return {
+    payload = {
         "artifact_id": record.id, "kind": record.kind,
         "path": record.path, "meta": record.meta,
         "node_id": node_id,
     }
+    if getattr(record, "backend", None) == "mount":
+        # A file on a shared mount (#782): where it is under the mount, so
+        # a client can name it when this server has no path for it
+        # (``path`` None). Absent from every other row's event, which stays
+        # byte for byte what it was.
+        payload.update(backend="mount", mount_label=record.mount_label,
+                       relative_path=record.stored_path,
+                       worker_id=record.worker_id)
+    return payload
 
 
 def dropped_signals_payload(signal: DroppedSignal) -> dict[str, Any]:

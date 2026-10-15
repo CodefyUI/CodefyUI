@@ -303,6 +303,14 @@ class Settings(BaseSettings):
     # explicitly provided (env/init) — see _derive_project_roots.
     PROJECT_DIR: Path | None = None
 
+    # ── Storage mount label (#782) ─────────────────────────────────────
+    # The name this server gives its data directory (the project directory
+    # in project mode) when worker agents share it over a network
+    # filesystem: an agent started with `--mount data=/nas/...` holds the
+    # same files, so runs that read uploads or write checkpoints may go
+    # there. See core/mounts.py. Only read when workers are in use.
+    MOUNT_LABEL: str = "data"
+
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"
     # Third-party downloads + lockfile. Resolved per-instance so the

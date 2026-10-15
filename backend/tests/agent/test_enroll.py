@@ -93,7 +93,8 @@ def started(monkeypatch):
     """Replace the agent loop: record what it would have connected with."""
     calls: list[dict[str, Any]] = []
 
-    def fake_run_agent(args, control, token, facts, token_source=None):
+    def fake_run_agent(args, control, token, facts, token_source=None,
+                       mounts=None):
         calls.append({"control": control, "token": token, "name": args.name,
                       "token_source": token_source})
         return 0

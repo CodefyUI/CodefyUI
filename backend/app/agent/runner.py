@@ -14,7 +14,13 @@
    keep the order the assignment lists them in, so the run's ``cuda:K`` is
    the K-th device of its set; ``run_started`` carries that mapping as an
    ``execution_facts`` patch (:func:`run_facts`, #774). Node ``device``
-   params are not rewritten: ``CUDA_VISIBLE_DEVICES`` is what renumbers;
+   params are not rewritten: ``CUDA_VISIBLE_DEVICES`` is what renumbers.
+   With a directory for the control plane's mount label (``--mount``),
+   the child's ``CODEFYUI_*`` data directories are derived from it
+   (``core.mounts.data_root_env``, #782) and, unless the worker is on the
+   control plane's machine, the files it reports under it are reported
+   relative to it; a same-host worker without one gets the control plane's
+   own directories as ``assign.storage.dirs`` (:meth:`Runner.storage_plan`);
 3. reads the child's pipe on a thread of its own and forwards every message
    as a protocol frame, in order, stamped with the run's next ``seq``. The
    thread waits for each frame to be handed to the connection before it
@@ -50,6 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from ..core import mounts as mounts_module
 from ..core import worker_protocol as wp
 from . import child as child_module
 from .spool import SPOOL_FILE
@@ -154,7 +161,9 @@ CHILD_UNSET_ENV = ("CODEFYUI_DB_PATH", "CODEFYUI_AGENT_TOKEN",
                    "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
 
 
-def child_environment(device: str, devices: list[str]) -> dict[str, Any]:
+def child_environment(device: str, devices: list[str],
+                      data_env: tuple[dict[str, str], list[str]] | None = None
+                      ) -> dict[str, Any]:
     """``{"set", "unset", "devices"}`` for ``child.apply_environment``.
 
     ``devices`` is the effective set: *devices*, or ``[device]`` when the
@@ -163,6 +172,10 @@ def child_environment(device: str, devices: list[str]) -> dict[str, Any]:
     (a ``cpu`` or ``mps`` run). A bare ``cuda`` with no set keeps the
     visibility the agent inherited. ``apply_environment`` reads only
     ``set`` and ``unset``.
+
+    *data_env* is ``(set, unset)`` for the run's data settings (#782,
+    :meth:`Runner.storage_plan`). Without it the child keeps the data
+    settings the agent has.
     """
     env: dict[str, str] = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
     effective = list(devices) or [device]
@@ -172,7 +185,12 @@ def child_environment(device: str, devices: list[str]) -> dict[str, Any]:
             physical.split(":", 1)[1] for physical in aliases)
     elif "cuda" not in {split_device(d)[0] for d in effective}:
         env["CUDA_VISIBLE_DEVICES"] = ""
-    return {"set": env, "unset": list(CHILD_UNSET_ENV), "devices": effective}
+    unset = list(CHILD_UNSET_ENV)
+    if data_env is not None:
+        derived, cleared = data_env
+        env.update(derived)
+        unset.extend(cleared)
+    return {"set": env, "unset": unset, "devices": effective}
 
 
 def run_facts(env: dict[str, Any]) -> dict[str, Any]:
@@ -316,6 +334,7 @@ class Runner:
 
     def __init__(
         self, *, runs_dir: Path, offered_devices: set[str],
+        mounts: dict[str, str] | None = None,
         send: Send | None = None, keep_last: int = 200,
         default_grace_s: float = wp.DEFAULT_GRACE_S,
         kill_after_s: float = KILL_AFTER_S,
@@ -324,6 +343,10 @@ class Runner:
     ) -> None:
         self.runs_dir = runs_dir
         self.offered_devices = {canonical_device(d) for d in offered_devices}
+        #: ``--mount`` label -> directory on this machine (#782), sent in
+        #: ``hello.mounts``.
+        self.mounts: dict[str, str] = dict(mounts or {})
+        self._missing_logged: set[str] = set()
         self.send: Send = send if send is not None else _drop
         self.keep_last = keep_last
         self.default_grace_s = default_grace_s
@@ -441,17 +464,68 @@ class Runner:
         await self.send(wp.RunFinished(run_id=run_id, seq=seq,
                                        status=wp.FINISHED_FAILED, error=error))
 
+    def available_mounts(self) -> dict[str, str]:
+        """The configured mounts whose directory exists now (#782).
+
+        What ``hello`` and every ``heartbeat`` advertise: a saved mount
+        whose share is not mounted yet is left out until it appears, so
+        the control plane never places a run that needs it here.
+        """
+        available: dict[str, str] = {}
+        for label, path in sorted(self.mounts.items()):
+            if not Path(path).is_dir():
+                if label not in self._missing_logged:
+                    self._missing_logged.add(label)
+                    logger.warning("mount %s=%s is not a directory; not "
+                                   "offering it until it is", label, path)
+                continue
+            available[label] = path
+            if label in self._missing_logged:
+                self._missing_logged.discard(label)
+                logger.info("mount %s=%s is available now", label, path)
+        return available
+
+    def storage_plan(self, storage: wp.Storage | None
+                     ) -> tuple[tuple[dict[str, str], list[str]] | None,
+                                dict[str, str] | None]:
+        """``(data_env, report_mount)`` for a run assigned with *storage*.
+
+        The one place an assignment's storage becomes the child's paths
+        (#782). ``data_env`` is the ``(set, unset)`` of the child's data
+        settings: derived from this agent's own directory for the control
+        plane's label (``--mount``), else the control plane's directories
+        it lends a same-host worker (``storage.dirs``), else None.
+        ``report_mount`` is ``{"label", "root"}`` when the child reports
+        files under the mount relative to it: only for this agent's own
+        mount, and not when the control plane asks for absolute paths
+        (``relative_artifacts`` off: a same-host worker). Without
+        ``storage`` (a peer from before #782) the label is ``data``.
+        """
+        label = storage.mount if storage is not None else \
+            mounts_module.DEFAULT_LABEL
+        own = self.available_mounts().get(label)
+        if own:
+            report = (storage is None or storage.relative_artifacts)
+            return (mounts_module.data_root_env(own),
+                    {"label": label, "root": own} if report else None)
+        if storage is not None and storage.dirs:
+            return (dict(storage.dirs), ["CODEFYUI_PROJECT_DIR"]), None
+        return None, None
+
     async def _start(self, frame: wp.Assign, device: str,
                      devices: list[str]) -> None:
         run_dir = self.runs_dir / frame.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / OUTPUT_LOG
-        env = child_environment(frame.device, devices)
+        # Off the loop: the mount check stats a network share.
+        data_env, mount = await asyncio.to_thread(self.storage_plan,
+                                                  frame.storage)
+        env = child_environment(frame.device, devices, data_env)
         facts = run_facts(env)
         spec = {
             "run_id": frame.run_id, "graph": frame.graph,
             "options": frame.options, "device": device,
-            "env": env, "log_path": str(log_path),
+            "env": env, "log_path": str(log_path), "mount": mount,
         }
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)

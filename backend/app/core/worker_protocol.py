@@ -54,7 +54,9 @@ What the frames carry
   poke the batcher, so the consumer should poke its own batcher (call
   ``record_metrics([])``) on every ``event`` frame.
 - ``artifact`` / ``warning``: an ``ArtifactSignal`` / ``WarningSignal``'s
-  fields, for ``RunSinks.record_artifact`` / ``RunSinks.warn``.
+  fields, for ``RunSinks.record_artifact`` / ``RunSinks.warn``. An
+  ``artifact`` under the run's mount carries ``mount_label`` and a path
+  relative to that mount (#782); ``assign.storage`` names the mount.
 - ``run_finished.status``: ``succeeded``, ``failed`` or ``cancelled`` as an
   ``ExecutionOutcome`` reports them, or ``interrupted``: after a ``cancel``
   the subprocess ended without reporting, because the agent terminated it
@@ -76,8 +78,10 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 #: Bumped on any change a peer of the previous version would misread. Sent
 #: in ``hello`` and ``welcome``; #781 refuses a mismatch. 2: ``ack`` and the
-#: spool replay (#783).
-PROTOCOL_VERSION = 2
+#: spool replay (#783). 3: storage mounts (#782): ``assign.storage``,
+#: ``artifact.mount_label`` and ``heartbeat.mounts``. Each is optional,
+#: but a peer of version 2 refuses the unknown field (``extra="forbid"``).
+PROTOCOL_VERSION = 3
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -231,6 +235,10 @@ class Heartbeat(_Frame):
     type: Literal["heartbeat"] = HEARTBEAT
     devices: list[DeviceReport] = Field(default_factory=list)
     running: list[str] = Field(default_factory=list)
+    #: The labels the agent can serve now (#782): a configured mount whose
+    #: directory is missing (a share not mounted yet) is left out until it
+    #: appears. None: unchanged since ``hello``.
+    mounts: dict[str, str] | None = None
 
 
 class RunStarted(_RunFrame):
@@ -261,9 +269,12 @@ class Metrics(_RunFrame):
 class Artifact(_RunFrame):
     type: Literal["artifact"] = ARTIFACT
     kind: str
+    #: Absolute on the worker, or, with ``mount_label``, relative to that
+    #: mount (#782): the control plane then records a ``mount`` row.
     path: str
     meta: dict[str, Any] | None = None
     node_id: str | None = None
+    mount_label: str | None = None
 
 
 class RunWarning(_RunFrame):
@@ -303,6 +314,32 @@ class Welcome(_Frame):
     grace_s: float = Field(default=DEFAULT_GRACE_S, ge=0)
 
 
+class Storage(_Frame):
+    """Where an assigned run's files are (#782, ``assign.storage``).
+
+    ``mount`` is the label the control plane gives its data directory: the
+    run subprocess derives its data directories from the worker's own
+    directory for that label (``--mount``).
+
+    ``dirs`` is set only when the control plane LENDS its directories to a
+    same-host worker (#773) that declared none for the label
+    (``core.mounts.lends_mount``): ``CODEFYUI_<NAME>`` -> path for
+    ``DATA_FILES_DIR``, ``IMAGES_DIR``, ``MODELS_DIR``, ``MEDIA_DIR``,
+    exactly as the control plane has them configured, which the run
+    subprocess sets as they are.
+
+    ``relative_artifacts``: report a file under the mount relative to it
+    (with ``artifact.mount_label``). Off for a same-host worker: its files
+    are on the control plane's machine, recorded as ``local`` rows with
+    their absolute path.
+    """
+
+    backend: Literal["mount"] = "mount"
+    mount: str
+    dirs: dict[str, str] | None = None
+    relative_artifacts: bool = True
+
+
 class Assign(_Frame):
     type: Literal["assign"] = ASSIGN
     run_id: RunId
@@ -319,6 +356,9 @@ class Assign(_Frame):
     devices: list[str] = Field(default_factory=list)
     #: Overrides ``welcome.grace_s`` for this run's cancel.
     grace_s: float | None = Field(default=None, ge=0)
+    #: The control plane's mount label (and, for a same-host worker without
+    #: one, its path); None from a peer before #782.
+    storage: Storage | None = None
 
 
 class Cancel(_Frame):

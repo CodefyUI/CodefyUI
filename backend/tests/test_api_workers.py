@@ -128,7 +128,16 @@ async def test_every_device_carries_its_slots_and_this_server_is_listed(
         assert [(d["shared_with"], d["slots"]) for d in here["devices"]] == [
             ("local", {"limit": 1, "taken": 1}),
             (None, {"limit": 1, "taken": 0})]
-        assert body["local"] == {"id": "local", "devices": [
+        # Mounts (#782): this server's label and path; the same-host
+        # worker, which declared none, holds this server's; the far one
+        # holds nothing.
+        from app.core.mounts import control_plane_mounts
+
+        assert far["mounts"] == {}
+        assert here["mounts"] == control_plane_mounts()
+        assert body["local"] == {"id": "local",
+                                 "mounts": control_plane_mounts(),
+                                 "devices": [
             {"value": "cpu", "kind": "cpu",
              "slots": {"limit": 2, "taken": 0}},
             {"value": "cuda:0", "kind": "cuda",

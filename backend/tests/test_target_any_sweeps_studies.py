@@ -441,8 +441,10 @@ async def test_the_batch_check_runs_once_per_distinct_settings(env,
               {**_graph(), "settings": {"device": "cpu"}},
               {**_graph(), "settings": {"device": "cpu"}}]
     service.check_placeable_batch(graphs, {})
-    assert calls == [(None, {"batch_child": True}),
-                     ({"device": "cpu"}, {"batch_child": True})]
+    # needs=None: the per-settings check reads no storage; each child's
+    # needs are computed once, separately (#782).
+    assert calls == [(None, {"batch_child": True, "needs": None}),
+                     ({"device": "cpu"}, {"batch_child": True, "needs": None})]
 
     async with _client() as client:
         calls.clear()
@@ -454,7 +456,8 @@ async def test_the_batch_check_runs_once_per_distinct_settings(env,
         # Two distinct settings among three variants: two checks, before
         # any child was submitted.
         assert [c[0] for c in calls[:2]] == [None, {"device": "cpu"}]
-        assert all(c[1] == {"batch_child": True} for c in calls[:2])
+        assert all(c[1] == {"batch_child": True, "needs": None}
+                   for c in calls[:2])
 
 
 async def test_the_batch_check_refuses_an_interactive_lane_and_a_shutdown(
