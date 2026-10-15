@@ -45,7 +45,17 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 - **worker 名稱**：那個 worker。它必須在這台伺服器啟動後連線過，而且依它最後回報的裝置，必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。曾經連線、目前離線的 worker 不會造成拒絕：run 會排入佇列，等它重新連線。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
 - **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。worker 會重新編號的 CUDA 裝置集合（超過一張卡，或不是 `cuda:0` 的單張卡）不會在這台伺服器上執行：在 worker 上，集合會為該 run 從 `cuda:0` 重新編號，在這台伺服器上則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。這種 run 會等待提供整個集合的 worker。`cpu`、`mps` 或 `["cuda:0"]` 的集合，只要這台伺服器有，仍可在這裡執行。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
 
-在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。worker 斷線，或連續錯過三次心跳（30 秒）時，它的 run 會以 `interrupted` 結束，並留下類型為 `worker_disconnected` 的 `run_warning`，名額隨即釋放。
+在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。
+
+#### 連線中斷時 {/* #when-the-connection-drops */}
+
+worker 的連線關閉，或連續錯過三次心跳（30 秒）時，即視為斷線。它的 run 會在 worker 上繼續執行，worker 把事件存在磁碟上，直到這台伺服器確認已經記錄。每個 run 的狀態變成 `disconnected`，並留下類型為 `worker_disconnected` 的 `run_warning`；名額仍然保留，執行任務面板會顯示 worker 已斷線多久（`GET /api/runs/{id}` 以 `worker_status` 回報）。接下來會是三種情形之一：
+
+- **worker 在寬限時間內重新連線**（`CODEFYUI_WORKER_RESUME_GRACE_S`，5 分鐘）：它依序補送這台伺服器尚未記錄的事件，run 回到 `running`，並留下類型為 `worker_reconnected` 的 `run_warning`。事件紀錄沒有缺漏，也沒有重複。
+- **沒有重新連線**：run 以 `interrupted` 結束，名額釋放。如果 worker 之後回來且 run 仍在執行，會被要求立即停止，讓這張卡留給下一個 run；run 在 worker 上的結束方式會記錄為 run 的 `late_result`（`{status, error, worker_id, at}`，見 `GET /api/runs/{id}` 與 `execution_facts`），狀態與事件紀錄維持原樣。
+- **這台伺服器在這段期間重新啟動**：run 會在啟動時以 `interrupted` 結束，與其他執行中的 run 相同。
+
+以筆電當伺服器時：休眠會關閉連線，螢幕蓋上超過寬限時間，worker 上的 run 就會以 `interrupted` 結束。需要較長的休眠時請調高 `CODEFYUI_WORKER_RESUME_GRACE_S`；設為 `0` 則 worker 一斷線就結束它的 run。
 
 worker 上的 seeded run 是**在自己的程序裡**單獨執行：[可重現的執行](./running-graphs#reproducible-runs-seed)中「seeded run 單獨執行」的規則保護的是這台伺服器整個程序共用的亂數狀態，而 worker 的子程序有自己的亂數狀態。因此不同 worker 或不同卡上的 seeded run 可以同時執行，worker 上的 seeded run 既不等待這台伺服器的 run，也不會擋住它們。在這台伺服器上執行的 seeded run（包括落在這裡的 `any` run）仍然一次執行一個。
 
@@ -338,6 +348,7 @@ study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後�
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_CPU` | `2` | `cpu` 佇列的並行 run 數 |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(空)* | 個別名額的覆寫。只寫裝置時指這台伺服器（`cuda:0=2,cpu=8`）；`<worker>/<device>` 指該 worker（`gpu-box-1/cuda:0=2`），不影響這台伺服器。優先於上面兩個預設值。 |
 | `CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT` | `2` | 畫布 run 的並行上限 |
+| `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | 斷線 worker 的 run 等它重新連線的秒數，逾時以 `interrupted` 結束（見[連線中斷時](#when-the-connection-drops)）。`0` 表示立即結束。 |
 | `CODEFYUI_MAX_PARALLEL_NODES` | `4` | 單一 run 內同時執行的節點數 |
 | `CODEFYUI_RUN_RETENTION_KEEP_LAST` | `200` | 保留幾筆已結束的 run。`0` 表示完全不保留；負值會停用 retention。 |
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | 儲存及分送的單一事件 payload 上限；超過上限的輸出項目會換成省略標記，但仍會指出它的 port。`0` 或更小的值會停用上限。 |

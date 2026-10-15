@@ -41,6 +41,7 @@ def test_every_frame_type_round_trips():
         wp.Cancel(run_id="r1", grace_s=3),
         wp.Drain(),
         wp.Reject(reason="no"),
+        wp.Ack(run_id="r1", seq=4),
     ]
     assert {f.type for f in control_frames} == set(wp.CONTROL_FRAME_TYPES)
     for frame in control_frames:

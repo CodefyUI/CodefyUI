@@ -85,8 +85,12 @@ class FakeAgent:
         await self.ws.send_text(wp.encode_frame(frame))
 
     async def recv(self, timeout: float = 10.0) -> Any:
-        raw = await asyncio.wait_for(self.ws.receive_text(), timeout)
-        return wp.decode_control_frame(raw)
+        """The next control frame, skipping ``ack`` (#783)."""
+        while True:
+            raw = await asyncio.wait_for(self.ws.receive_text(), timeout)
+            frame = wp.decode_control_frame(raw)
+            if not isinstance(frame, wp.Ack):
+                return frame
 
     async def assignment(self, timeout: float = 10.0) -> wp.Assign:
         frame = await self.recv(timeout)

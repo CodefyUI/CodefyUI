@@ -9,6 +9,7 @@ must agree on ``(type, node_id, status)``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import subprocess
@@ -151,3 +152,119 @@ def test_a_graph_runs_on_a_real_agent_like_it_runs_here(live_server,
         time.sleep(0.1)
     assert statuses.get("e2e-box") == "disconnected", output
     client.close()
+
+
+#: A node the agent's run subprocess discovers from
+#: ``CODEFYUI_CUSTOM_NODES_DIR``: three seconds of one metric point per
+#: tenth of a second, long enough to drop the connection in the middle.
+TICKER_NODE = '''
+import time
+
+from app.core.node_base import BaseNode, DataType, PortDefinition
+
+
+class E2ETicker(BaseNode):
+    NODE_NAME = "E2ETicker"
+    CATEGORY = "Test"
+
+    @classmethod
+    def define_inputs(cls):
+        return []
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params, *, context=None):
+        for step in range(30):
+            if context is not None:
+                context.log_metric("tick", float(step), step=step)
+            time.sleep(0.1)
+        return {"value": 30}
+'''
+
+
+def test_a_dropped_connection_does_not_end_a_real_run(live_server, tmp_path):
+    """#783 acceptance with a real agent and a real run subprocess: the
+    server closes the worker's socket mid-run; the subprocess keeps
+    running, the agent reconnects and replays its spool, and the run ends
+    ``succeeded`` with every metric point, after a ``disconnected`` spell."""
+    base = f"http://127.0.0.1:{live_server}"
+    client = httpx.Client(base_url=base, timeout=30,
+                          headers={TOKEN_HEADER: session_token()})
+    nodes_dir = tmp_path / "nodes"
+    nodes_dir.mkdir()
+    (nodes_dir / "e2e_ticker.py").write_text(TICKER_NODE)
+    env = {**os.environ, "PYTHONPATH": str(BACKEND_DIR),
+           "CODEFYUI_USER_DATA_DIR": str(tmp_path / "data"),
+           "CODEFYUI_CUSTOM_NODES_DIR": str(nodes_dir),
+           "CODEFYUI_AGENT_TOKEN": session_token()}
+    agent = subprocess.Popen(
+        [sys.executable, "-m", "app.agent", "start", "--foreground",
+         "--control", base, "--name", "drop-box", "--devices", "cpu"],
+        cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    output = ""
+    try:
+        deadline = time.monotonic() + 30
+        while not any(w["name"] == "drop-box" and w["status"] == "online"
+                      for w in client.get("/api/workers").json()["workers"]):
+            if time.monotonic() > deadline or agent.poll() is not None:
+                raise AssertionError("the agent never connected")
+            time.sleep(0.1)
+        graph = {"nodes": [{"id": "start", "type": "Start",
+                            "data": {"params": {}}},
+                           {"id": "tick", "type": "E2ETicker",
+                            "data": {"params": {}}}],
+                 "edges": [{"id": "t", "source": "start", "target": "tick",
+                            "sourceHandle": "trigger", "type": "trigger"}]}
+        run_id = client.post("/api/runs", json={
+            "graph": graph,
+            "options": {"target": {"worker": "drop-box"}}}).json()["run_id"]
+        deadline = time.monotonic() + 60
+        while not client.get(f"/api/runs/{run_id}/metrics").json().get(
+                "metrics"):
+            if time.monotonic() > deadline:
+                raise AssertionError("the run never produced a metric")
+            time.sleep(0.05)
+
+        # The network drops: the server closes the worker's socket.
+        registry = app.state.worker_registry
+        loop = registry._watchdog.get_loop()
+        worker = registry.get("drop-box")
+        asyncio.run_coroutine_threadsafe(worker.close(), loop).result(10)
+
+        seen_row = seen_status = False
+        record: dict[str, Any] = {}
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            record = client.get(f"/api/runs/{run_id}").json()
+            # The row follows the executor; ``worker_status`` follows the
+            # registry, which learns of the reconnect first. Each is seen
+            # disconnected at some point, not necessarily in one read.
+            seen_row = seen_row or record["status"] == "disconnected"
+            seen_status = seen_status or (
+                record.get("worker_status") or {}).get("state") == (
+                    "disconnected")
+            if record["status"] in TERMINAL:
+                break
+            time.sleep(0.05)
+        assert seen_row and seen_status
+        assert record["status"] == "succeeded", record
+        assert agent.poll() is None  # the agent never restarted
+        points = client.get(f"/api/runs/{run_id}/metrics").json()["metrics"]
+        assert sorted(p["step"] for p in points
+                      if p["name"] == "tick") == list(range(30))
+        events = client.get(f"/api/runs/{run_id}/events").json()["events"]
+        kinds = [e["payload"]["kind"] for e in events
+                 if e["type"] == "run_warning"]
+        assert kinds == ["worker_disconnected", "worker_reconnected"]
+    finally:
+        agent.terminate()
+        try:
+            output, _ = agent.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            agent.kill()
+            output, _ = agent.communicate()
+        client.close()
+    assert "replayed" in output, output

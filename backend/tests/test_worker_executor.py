@@ -34,9 +34,13 @@ class _Recorder:
         async def facts(patch):
             self.calls.append(("facts", patch))
 
+        async def connection(connected):
+            self.calls.append(("connection", connected))
+
         return RunSinks(emit=emit, record_metrics=record_metrics,
                         record_artifact=record_artifact, warn=warn,
-                        record_execution_facts=facts)
+                        record_execution_facts=facts,
+                        record_worker_connection=connection)
 
 
 class _Agent:
@@ -74,6 +78,15 @@ class _Agent:
 @pytest.fixture
 async def registry():
     registry = WorkerRegistry()
+    yield registry
+    await registry.shutdown()
+
+
+@pytest.fixture
+async def no_grace():
+    """A registry whose disconnected workers' runs end at once (#783's
+    ``CODEFYUI_WORKER_RESUME_GRACE_S=0``, the behaviour before it)."""
+    registry = WorkerRegistry(resume_grace_s=0)
     yield registry
     await registry.shutdown()
 
@@ -123,6 +136,9 @@ async def test_frames_become_sink_calls_in_order(registry):
     kinds = [call[0] for call in recorder.calls]
     assert kinds == ["facts", "emit", "metrics", "metrics", "artifact",
                      "warn"]
+    # Acknowledged once recorded (#783).
+    acks = [f for f in agent.sent if isinstance(f, wp.Ack)]
+    assert [(a.run_id, a.seq) for a in acks] == [("r1", 6)]
     assert recorder.calls[0] == ("facts", {"visible_devices": "2,5"})
     assert recorder.calls[3][1][0].name == "loss"
     assert recorder.calls[4][1].path == "/c.pt"
@@ -150,7 +166,8 @@ async def test_run_finished_maps_to_an_outcome(registry, finished, status,
     assert (outcome.status, outcome.error) == (status, error)
 
 
-async def test_a_worker_that_goes_away_interrupts_with_a_warning(registry):
+async def test_a_worker_that_goes_away_interrupts_with_a_warning(no_grace):
+    registry = no_grace
     recorder = _Recorder()
     agent = _Agent(registry)
     task = asyncio.create_task(WorkerExecutor(registry).run(
@@ -176,7 +193,8 @@ async def test_after_a_stop_the_agents_interrupted_is_a_stop(registry):
     assert (await asyncio.wait_for(task, 5)).status == "cancelled"
 
 
-async def test_a_worker_gone_after_a_stop_is_still_a_stop(registry):
+async def test_a_worker_gone_after_a_stop_is_still_a_stop(no_grace):
+    registry = no_grace
     recorder = _Recorder()
     agent = _Agent(registry)
     request = _request(recorder)
@@ -238,3 +256,243 @@ async def test_duplicate_and_stray_frames_are_dropped(registry):
     registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
     registry.route(agent.worker, wp.RunStarted(run_id="other", seq=1))
     assert run.inbox.qsize() == 1
+
+
+# ── disconnected, resume, late results (#783) ────────────────────────────
+
+
+async def test_a_disconnect_waits_and_a_reconnect_resumes(registry):
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await agent.wait_for(wp.Assign)
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
+    registry.disconnect(agent.worker, "the connection closed")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    assert not task.done()
+    warning = [c for c in recorder.calls if c[0] == "emit"][-1]
+    assert warning[2]["kind"] == "worker_disconnected"
+    assert "waits up to 300 s" in warning[2]["detail"]
+    state = registry.run_state("box", "r1")
+    assert state.detached_wall is not None
+
+    back = _Agent(registry)  # same name, after the drop
+    registry.run_alive(back.worker, wp.RunAlive(runs=[
+        wp.RunAliveEntry(run_id="r1", last_seq=3)]))
+    await _until(lambda: ("connection", True) in recorder.calls)
+    assert registry.run_state("box", "r1").detached_wall is None
+    # The replay overlaps what arrived before the drop: seq 1 is dropped.
+    for frame in (wp.RunStarted(run_id="r1", seq=1),
+                  wp.Event(run_id="r1", seq=2, event_type="node_status",
+                           payload={"node_id": "a", "status": "running"}),
+                  wp.RunFinished(run_id="r1", seq=3, status="succeeded")):
+        registry.route(back.worker, frame)
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "succeeded"
+    kinds = [c[2]["kind"] for c in recorder.calls
+             if c[0] == "emit" and c[1] == "run_warning"]
+    assert kinds == ["worker_disconnected", "worker_reconnected"]
+    node_events = [c for c in recorder.calls
+                   if c[0] == "emit" and c[1] == "node_status"]
+    assert len(node_events) == 1
+    assert [f.seq for f in back.sent if isinstance(f, wp.Ack)][-1] == 3
+
+
+async def test_past_the_grace_the_run_is_interrupted_and_late_results_noted(
+        registry):
+    clock = [100.0]
+    registry._clock = lambda: clock[0]
+    late: list[tuple] = []
+
+    async def on_late(worker, run_id, frame):
+        late.append((worker, run_id, frame.status))
+
+    registry.on_late_result = on_late
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
+    registry.disconnect(agent.worker, "test")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    clock[0] += 299
+    registry.check()
+    assert not task.done()
+    clock[0] += 2
+    registry.check()
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+    assert "did not reconnect within 300 s" in outcome.error
+
+    back = _Agent(registry)
+    registry.run_alive(back.worker, wp.RunAlive(runs=[
+        wp.RunAliveEntry(run_id="r1", last_seq=5)]))
+    # Its slots went back: the worker is told to stop it at once.
+    cancel = await back.wait_for(wp.Cancel)
+    assert (cancel.run_id, cancel.grace_s) == ("r1", 0)
+    registry.route(back.worker, wp.RunStarted(run_id="r1", seq=1))  # dup
+    registry.route(back.worker, wp.RunFinished(run_id="r1", seq=5,
+                                               status="succeeded"))
+    await _until(lambda: late)
+    assert late == [("box", "r1", "succeeded")]
+    await _until(lambda: any(isinstance(f, wp.Ack) for f in back.sent))
+    assert [f.seq for f in back.sent if isinstance(f, wp.Ack)] == [5]
+    # Reported once: a replayed run_finished is acknowledged, not recorded.
+    registry.route(back.worker, wp.RunFinished(run_id="r1", seq=5,
+                                               status="succeeded"))
+    await asyncio.sleep(0.05)
+    assert len(late) == 1
+
+
+async def test_a_stop_while_disconnected_reaches_the_worker_when_back(
+        registry):
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await agent.wait_for(wp.Assign)
+    registry.disconnect(agent.worker, "test")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    request.context.cancel()
+    await asyncio.sleep(0.5)
+    back = _Agent(registry)
+    registry.run_alive(back.worker, wp.RunAlive(runs=[
+        wp.RunAliveEntry(run_id="r1", last_seq=0)]))
+    cancel = await back.wait_for(wp.Cancel)
+    assert cancel.run_id == "r1"
+    registry.route(back.worker, wp.RunFinished(run_id="r1", seq=1,
+                                               status="cancelled"))
+    assert (await asyncio.wait_for(task, 5)).status == "cancelled"
+
+
+async def test_acks_come_every_n_frames_and_after_a_quiet_second(
+        registry, monkeypatch):
+    from app.core import executors
+
+    monkeypatch.setattr(executors, "ACK_EVERY", 3)
+    monkeypatch.setattr(executors, "ACK_INTERVAL_S", 0.2)
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    for seq in range(1, 5):
+        registry.route(agent.worker, wp.Event(
+            run_id="r1", seq=seq, event_type="node_status",
+            payload={"node_id": "a", "status": "progress"}))
+    await _until(lambda: [f.seq for f in agent.sent
+                          if isinstance(f, wp.Ack)] == [3, 4], timeout=3)
+    registry.route(agent.worker, wp.RunFinished(run_id="r1", seq=5,
+                                                status="succeeded"))
+    assert (await asyncio.wait_for(task, 5)).status == "succeeded"
+    assert [f.seq for f in agent.sent if isinstance(f, wp.Ack)] == [3, 4, 5]
+
+
+async def test_orphan_frames_are_acknowledged(registry):
+    agent = _Agent(registry)
+    registry.route(agent.worker, wp.Event(
+        run_id="ghost", seq=64, event_type="node_status", payload={}))
+    registry.route(agent.worker, wp.RunFinished(run_id="ghost", seq=65,
+                                                status="failed"))
+    await _until(lambda: len([f for f in agent.sent
+                              if isinstance(f, wp.Ack)]) == 2)
+
+
+async def _until(predicate: Any, timeout: float = 5.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() > deadline:
+            raise AssertionError("condition not met")
+        await asyncio.sleep(0.01)
+
+
+async def test_a_heartbeat_naming_an_untracked_run_stops_it(registry):
+    """Architecture review of #772: a subprocess nothing here tracks would
+    keep its card while the scheduler hands it to another run."""
+    agent = _Agent(registry)
+    registry.open_run(agent.worker, "tracked")
+    registry.heartbeat(agent.worker, wp.Heartbeat(running=["tracked",
+                                                           "stray"]))
+    cancel = await agent.wait_for(wp.Cancel)
+    assert (cancel.run_id, cancel.grace_s) == ("stray", 0)
+    await asyncio.sleep(0.05)
+    assert [f.run_id for f in agent.sent if isinstance(f, wp.Cancel)] == [
+        "stray"]
+    registry.close_run("box", "tracked")
+
+
+async def test_a_gap_in_seq_is_logged_and_the_frame_kept(registry, caplog):
+    agent = _Agent(registry)
+    run = registry.open_run(agent.worker, "r1")
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
+    with caplog.at_level("WARNING", logger="app.core.workers"):
+        registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=4))
+    assert "frames 2-3 never arrived" in caplog.text
+    assert run.inbox.qsize() == 2 and run.last_seq == 4
+
+
+async def test_a_long_replay_pauses_the_socket_until_the_inbox_drains(
+        registry, monkeypatch):
+    from app.core import workers
+
+    monkeypatch.setattr(workers, "INBOX_HIGH_WATER", 10)
+    monkeypatch.setattr(workers, "INBOX_DRAIN_POLL_S", 0.01)
+    agent = _Agent(registry)
+    run = registry.open_run(agent.worker, "r1")
+    frame = None
+    for seq in range(1, 9):
+        frame = wp.RunStarted(run_id="r1", seq=seq)
+        registry.route(agent.worker, frame)
+    await asyncio.wait_for(registry.backpressure(agent.worker, frame), 1)
+    for seq in range(9, 13):
+        frame = wp.RunStarted(run_id="r1", seq=seq)
+        registry.route(agent.worker, frame)
+    waiter = asyncio.create_task(registry.backpressure(agent.worker, frame))
+    await asyncio.sleep(0.05)
+    assert not waiter.done()  # 12 queued: past the mark, reading pauses
+    while run.inbox.qsize() > 5:
+        run.inbox.get_nowait()
+    await asyncio.wait_for(waiter, 1)
+    registry.close_run("box", "r1")
+
+
+async def test_a_run_that_just_finished_here_is_not_a_stray(registry):
+    """Review of #783: a heartbeat may still list a run whose subprocess
+    is exiting after its run_finished; that is no reason to cancel it."""
+    clock = [500.0]
+    registry._clock = lambda: clock[0]
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.route(agent.worker, wp.RunFinished(run_id="r1", seq=1,
+                                                status="succeeded"))
+    assert (await asyncio.wait_for(task, 5)).status == "succeeded"
+    registry.heartbeat(agent.worker, wp.Heartbeat(running=["r1"]))
+    await asyncio.sleep(0.05)
+    assert not any(isinstance(f, wp.Cancel) for f in agent.sent)
+    clock[0] += 61  # long past its exit: a stray after all
+    registry.heartbeat(agent.worker, wp.Heartbeat(running=["r1"]))
+    cancel = await agent.wait_for(wp.Cancel)
+    assert (cancel.run_id, cancel.grace_s) == ("r1", 0)
+
+
+async def test_any_frame_keeps_a_worker_alive(registry):
+    """Review of #783: a long replay must not read as missed heartbeats."""
+    clock = [100.0]
+    registry._clock = lambda: clock[0]
+    agent = _Agent(registry)
+    clock[0] += 25
+    registry.touch(agent.worker)  # a replayed frame, say
+    clock[0] += 25
+    registry.check()
+    assert agent.worker.status == "degraded"  # late, not gone
+    registry.touch(agent.worker)
+    assert agent.worker.status == "online"
+    clock[0] += 31
+    registry.check()
+    assert agent.worker.status == "disconnected"

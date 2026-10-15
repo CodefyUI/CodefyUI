@@ -531,6 +531,73 @@ async def test_restart_marks_running_rows_interrupted(store):
     assert await fresh.recover_interrupted() == 0
 
 
+async def test_disconnected_is_an_active_status_between_running_ones(store):
+    """``running`` <-> ``disconnected`` (#783): only between those two, a
+    disconnected row finishes like a running one, and a restart retires
+    it like any other active row."""
+    from app.core.run_store import (
+        ACTIVE_STATUSES,
+        STATUS_DISCONNECTED,
+        TERMINAL_STATUSES,
+    )
+
+    assert STATUS_DISCONNECTED in ACTIVE_STATUSES
+    assert STATUS_DISCONNECTED not in TERMINAL_STATUSES
+    run = await store.create_run(graph_snapshot=_graph(), options={},
+                                 provenance=RunProvenance())
+    # A queued row never ran: it cannot lose a worker.
+    assert await store.mark_worker_connection(run.id, False) is False
+    await store.mark_running(run.id)
+    assert await store.mark_worker_connection(run.id, True) is False
+    assert await store.mark_worker_connection(run.id, False) is True
+    assert (await store.get_run(run.id)).status == STATUS_DISCONNECTED
+    assert await store.mark_worker_connection(run.id, False) is False
+    assert await store.mark_worker_connection(run.id, True) is True
+    assert (await store.get_run(run.id)).status == STATUS_RUNNING
+    await store.mark_worker_connection(run.id, False)
+    assert await store.mark_finished(run.id, "succeeded") is True
+    # A finished row stays finished.
+    assert await store.mark_worker_connection(run.id, True) is False
+    assert (await store.get_run(run.id)).status == "succeeded"
+
+    orphan = await store.create_run(graph_snapshot=_graph(), options={},
+                                    provenance=RunProvenance())
+    await store.mark_running(orphan.id)
+    await store.mark_worker_connection(orphan.id, False)
+    assert await RunService(store).recover_interrupted() == 1
+    assert (await store.get_run(orphan.id)).status == STATUS_INTERRUPTED
+    listed = await store.list_runs(status=[STATUS_DISCONNECTED])
+    assert listed == []
+
+
+async def test_a_late_result_is_a_warning_and_never_a_status(store):
+    """#783: a worker's report for a run that already ended here."""
+    from app.core import worker_protocol as wp
+    from app.core.workers import WorkerRegistry
+
+    registry = WorkerRegistry()
+    service = RunService(store, workers=registry)
+    assert registry.on_late_result == service._record_late_result
+    run = await store.create_run(graph_snapshot=_graph(), options={},
+                                 provenance=RunProvenance())
+    await store.mark_running(run.id, execution_facts={"schema_version": 2})
+    await store.mark_finished(run.id, STATUS_INTERRUPTED, error="away")
+    await service._record_late_result("box", run.id, wp.RunFinished(
+        run_id=run.id, seq=9, status="failed", error="boom"))
+    await service._record_late_result("box", "gone", wp.RunFinished(
+        run_id="gone", seq=1, status="succeeded"))
+    row = await store.get_run(run.id)
+    assert (row.status, row.error) == (STATUS_INTERRUPTED, "away")
+    late = row.execution_facts["late_result"]
+    assert (late["status"], late["error"], late["worker_id"]) == (
+        "failed", "boom", "box")
+    assert late["at"].endswith("Z")
+    # Never an event: the log already ended with its terminal one.
+    assert await store.get_events(run.id) == []
+    assert service.worker_status(run.id) is None
+    await registry.shutdown()
+
+
 async def test_recovery_refuses_to_run_with_live_runs(store, service):
     """Recovery is a STARTUP call; running it mid-flight would falsify rows."""
     await service.submit(_graph("_RunSlow", params={"seconds": 0.2}))

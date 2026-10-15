@@ -4385,7 +4385,8 @@ RUN_POLL_WAIT_S = 5.0
 #: Statuses that mean the run is over. Mirrors run_store.TERMINAL_STATUSES —
 #: not imported from it because this command must work when the backend
 #: package cannot be imported (no venv yet), and the vocabulary is the REST
-#: contract either way.
+#: contract either way. ``disconnected`` (#783) is not one of them: the
+#: run waits for its worker to come back, and so does ``--wait``.
 RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled",
                                    "interrupted"})
 
@@ -4625,7 +4626,7 @@ def _run_status_color(status: str) -> str:
         return GREEN
     if status == "failed":
         return RED
-    if status in ("cancelled", "interrupted"):
+    if status in ("cancelled", "interrupted", "disconnected"):
         return YELLOW
     return CYAN
 

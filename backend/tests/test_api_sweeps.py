@@ -1277,7 +1277,8 @@ async def test_cancelling_a_sweep_stops_queued_and_running_children(
         # arrived while the final node was working. The partial result
         # survives the flip -- that is acceptance criterion 3, and it is why
         # a cancelled variant is ranked rather than blanked.
-        assert after["counts"] == {"queued": 0, "running": 0, "succeeded": 0,
+        assert after["counts"] == {"queued": 0, "running": 0, "disconnected": 0,
+                                   "succeeded": 0,
                                    "failed": 0, "cancelled": 5,
                                    "interrupted": 0, "missing": 0}
         # A container, never a run: `cancelled` is not a sweep state.

@@ -833,8 +833,8 @@ async def test_count_runs_ignores_paging(store):
 def test_status_constants_partition_the_vocabulary():
     assert ACTIVE_STATUSES | TERMINAL_STATUSES == RUN_STATUSES
     assert not (ACTIVE_STATUSES & TERMINAL_STATUSES)
-    assert RUN_STATUSES == {"queued", "running", "succeeded", "failed",
-                            "cancelled", "interrupted"}
+    assert RUN_STATUSES == {"queued", "running", "disconnected", "succeeded",
+                            "failed", "cancelled", "interrupted"}
 
 
 async def test_sweep_id_is_null_for_a_run_created_outside_a_sweep(store):

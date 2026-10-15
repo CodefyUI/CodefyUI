@@ -29,10 +29,17 @@ plane never connects to a worker.
    exactly one ``run_finished``. A refused assignment is a ``run_finished``
    with status ``failed`` and no ``run_started``.
 5. control plane -> ``cancel`` / ``drain`` at any time.
+6. control plane -> ``ack`` for a run's frames once they are recorded.
 
 Per-run frames carry ``seq``: 1 for the first frame the agent sends about a
-run, +1 for every frame after it, ``run_finished`` included. #783 acks and
-replays by it; until then it lets a reader prove a stream has no gaps.
+run, +1 for every frame after it, ``run_finished`` included. The agent
+writes every per-run frame to the run's spool before it sends it
+(``agent.spool``, #783); ``ack{run_id, seq}`` says every frame of the run
+up to ``seq`` is durable on the control plane, so the agent drops them.
+After a reconnect the agent lists its runs in ``run_alive`` (``last_seq``:
+the last frame it produced) and replays every frame not yet acknowledged,
+in order; the control plane drops a frame whose ``seq`` it has already
+seen, so a replay that overlaps what arrived before the drop is harmless.
 
 What the frames carry
 ---------------------
@@ -68,8 +75,9 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 #: Bumped on any change a peer of the previous version would misread. Sent
-#: in ``hello`` and ``welcome``; #781 refuses a mismatch.
-PROTOCOL_VERSION = 1
+#: in ``hello`` and ``welcome``; #781 refuses a mismatch. 2: ``ack`` and the
+#: spool replay (#783).
+PROTOCOL_VERSION = 2
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -91,10 +99,11 @@ ASSIGN = "assign"
 CANCEL = "cancel"
 DRAIN = "drain"
 REJECT = "reject"
+ACK = "ack"
 
 AGENT_FRAME_TYPES = (HELLO, HEARTBEAT, RUN_STARTED, EVENT, METRICS, ARTIFACT,
                      WARNING, RUN_FINISHED, RUN_ALIVE)
-CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT)
+CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK)
 
 #: Seconds between heartbeats unless ``welcome`` says otherwise.
 DEFAULT_HEARTBEAT_S = 10.0
@@ -329,13 +338,26 @@ class Reject(_Frame):
     reason: str
 
 
+class Ack(_Frame):
+    """Every frame of *run_id* up to and including *seq* is recorded (#783).
+
+    Cumulative: an ``ack`` covers every earlier one. The agent truncates the
+    run's spool to the frames after *seq*, and deletes it once the frame
+    acknowledged is the run's ``run_finished``.
+    """
+
+    type: Literal["ack"] = ACK
+    run_id: RunId
+    seq: Seq
+
+
 AgentFrame = Annotated[
     Union[Hello, Heartbeat, RunStarted, Event, Metrics, Artifact, RunWarning,
           RunFinished, RunAlive],
     Field(discriminator="type"),
 ]
 ControlFrame = Annotated[
-    Union[Welcome, Assign, Cancel, Drain, Reject],
+    Union[Welcome, Assign, Cancel, Drain, Reject, Ack],
     Field(discriminator="type"),
 ]
 

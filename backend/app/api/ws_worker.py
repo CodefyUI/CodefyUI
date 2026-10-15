@@ -33,10 +33,12 @@ connection under the same name, but only one that authenticated the same
 way: a session-token agent cannot take over an enrolled worker's name, nor
 an enrolled worker a connected same-host agent's) and answered with ``welcome``; every later
 frame is routed: ``heartbeat`` and ``run_alive`` to the registry, per-run
-frames to their run's inbox. Closing the socket marks the worker
-disconnected; it never cancels a run by itself (the #120/#121 rule for
-``/ws/execution``) -- the worker's runs end ``interrupted`` because nothing
-can report for them any more.
+frames to their run's inbox (pausing the read while one run's inbox is
+far behind, ``WorkerRegistry.backpressure``). Closing the socket marks the
+worker disconnected; it never cancels a run by itself (the #120/#121 rule
+for ``/ws/execution``). The worker's runs wait ``disconnected`` for it to
+reconnect and replay what was not acknowledged, and end ``interrupted``
+only after the resume grace (#783, ``core.workers``).
 """
 
 from __future__ import annotations
@@ -174,6 +176,13 @@ async def websocket_worker(ws: WebSocket) -> None:
         await close()
         return
 
+    # ``welcome`` goes out BEFORE the worker is registered (#783): from
+    # ``connect`` on, executors send through this socket (a stop that waited
+    # for the worker, an ack), and nothing may precede ``welcome``. The
+    # worker's id is its name (``WorkerRegistry.connect``).
+    await send(wp.Welcome(worker_id=hello.name,
+                          heartbeat_s=registry.heartbeat_s,
+                          grace_s=registry.grace_s))
     # Same machine needs both (#773, #780): the machine id alone is
     # self-reported, so a remote agent could copy ours; the loopback peer
     # alone is not enough either, since an ``ssh -R`` tunnel or a local
@@ -191,12 +200,11 @@ async def websocket_worker(ws: WebSocket) -> None:
         service.check_worker_overrides(worker)
     if replaced is not None:
         await replaced.close()
-    await send(wp.Welcome(worker_id=worker.id,
-                          heartbeat_s=registry.heartbeat_s,
-                          grace_s=registry.grace_s))
     try:
         while True:
             raw = await ws.receive_text()
+            # Any frame says the worker is alive (#783).
+            registry.touch(worker)
             try:
                 frame = wp.decode_agent_frame(raw)
             except wp.ProtocolError as exc:
@@ -212,6 +220,7 @@ async def websocket_worker(ws: WebSocket) -> None:
                                worker.name)
             else:
                 registry.route(worker, frame)
+                await registry.backpressure(worker, frame)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

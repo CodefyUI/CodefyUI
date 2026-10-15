@@ -46,7 +46,7 @@ function detail(state: SweepState = 'running', id = 's1'): SweepDetail {
     seed_variants: false,
     objective: { metric: 'loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
-    counts: { queued: 1, running: 1, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    counts: { queued: 1, running: 1, disconnected: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [], variants: [], best: null,
   };
 }
@@ -434,6 +434,18 @@ describe('sweepStore', () => {
     expect(api.getSweep).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps polling a failed sweep while a child waits for its worker (#783)', async () => {
+    vi.useFakeTimers();
+    const failedAway = detail('failed');
+    failedAway.counts = { ...failedAway.counts, queued: 0, running: 0, disconnected: 1 };
+    useSweepStore.setState({ selectedSweepId: 's1', detail: failedAway });
+    api.getSweep.mockResolvedValue(failedAway);
+
+    useSweepStore.getState().startPolling();
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 2);
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+  });
+
   it('loads the final objective point before polling stops on a same-state failed sweep', async () => {
     vi.useFakeTimers();
     const failedActive = detail('failed');
@@ -444,7 +456,7 @@ describe('sweepStore', () => {
     }];
     const failedSettled: SweepDetail = {
       ...failedActive,
-      counts: { ...failedActive.counts, running: 0, succeeded: 1 },
+      counts: { ...failedActive.counts, running: 0, disconnected: 0, succeeded: 1 },
       variants: [{ ...failedActive.variants[0], status: 'succeeded', objective: 0.5 }],
     };
     api.getSweep

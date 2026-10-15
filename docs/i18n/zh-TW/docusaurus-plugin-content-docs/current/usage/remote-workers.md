@@ -29,3 +29,7 @@ Enrollment token 只顯示一次，伺服器只保存它的雜湊值。已用完
 **重新核發憑證。** 名稱一經加入即被占用：一般 token 無法再次加入該名稱（伺服器回 `409`）。要讓某個 worker 換新憑證（重灌機器、遺失憑證檔），請按它卡片上的 **重新核發**：在那裡產生的 token 只能加入該 worker，指令也會帶上它的 `--name`。使用後舊憑證即失效。若該機器上還留有舊憑證檔，請先在那裡執行 `cdui agent forget <url>`。
 
 沒有 TLS 時，token 以及送到 worker 的每個 run 的輸入都會以明文經過網路；若發生在其他機器的連線上，伺服器會記錄警告。
+
+## 連線中斷時 {/* #when-the-connection-drops */}
+
+連線中斷的 worker 會繼續執行它的 run，並保留事件直到這台伺服器收到為止。在這台伺服器上，這些 run 顯示為 `disconnected`，並在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內保留名額；在此期間重新連線，run 會接續執行，紀錄沒有缺漏，超過時間則以 `interrupted` 結束。各種結果，以及筆電休眠的影響，見[連線中斷時](./run-queue#when-the-connection-drops)。

@@ -84,7 +84,8 @@ SWEEP_STATE_RUNNING = "running"
 #: How a READER tells a slow stop from a stuck one: never by how long the
 #: state has been showing. ``GET /api/sweeps/{id}`` returns per-variant
 #: ``status`` and the ``counts`` tally built from it, so
-#: ``counts["running"] + counts["queued"]`` is exactly what the stop is
+#: ``counts["running"] + counts["disconnected"] + counts["queued"]`` is
+#: exactly what the stop is
 #: still waiting on, by name and by run id. A client that renders
 #: ``cancelling`` as a spinner with no such count is promising something
 #: this state does not.

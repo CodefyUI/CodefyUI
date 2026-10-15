@@ -25,6 +25,7 @@ interface SweepDetailProps {
 /** A variant's status as the Runs list words it; `missing` is the sweep's own. */
 const STATUS_KEY: Record<string, TranslationKey> = {
   running: 'runs.status.running',
+  disconnected: 'runs.status.disconnected',
   queued: 'runs.status.queued',
   succeeded: 'runs.status.succeeded',
   failed: 'runs.status.failed',
@@ -34,7 +35,7 @@ const STATUS_KEY: Record<string, TranslationKey> = {
 };
 
 /** Live work first, then outcomes, so a status sort reads the same in every language. */
-const STATUS_ORDER = ['running', 'queued', 'succeeded', 'failed', 'cancelled', 'interrupted', 'missing'];
+const STATUS_ORDER = ['running', 'disconnected', 'queued', 'succeeded', 'failed', 'cancelled', 'interrupted', 'missing'];
 
 /** The summary's counts, in that order; one with no variants is left out. */
 const COUNT_KEYS: Array<[keyof SweepDetailData['counts'], TranslationKey]> = [
@@ -118,7 +119,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
     </section>
   );
 
-  const activeOrQueued = (detail.counts.running ?? 0) + (detail.counts.queued ?? 0);
+  const activeOrQueued = (detail.counts.running ?? 0) + (detail.counts.disconnected ?? 0)
+    + (detail.counts.queued ?? 0);
   const canCancel = detail.state === 'running'
     || (detail.state === 'failed' && activeOrQueued > 0);
   // Finished is not success: a stopped or partly failed sweep finishes too.

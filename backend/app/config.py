@@ -156,6 +156,13 @@ class Settings(BaseSettings):
     # user in front of it who can retry, and a silently queued click looks
     # exactly like a hang.
     RUN_INTERACTIVE_MAX_CONCURRENT: int = 2
+    # Seconds a worker's run waits, ``disconnected``, for its worker to
+    # reconnect before it is marked ``interrupted`` (#783). The run's
+    # subprocess keeps running on the worker meanwhile and the agent spools
+    # its events; a reconnect within the grace replays them and the run
+    # carries on. Five minutes is Kubernetes' pod eviction timeout. 0 ends
+    # the runs at once, as before #783.
+    WORKER_RESUME_GRACE_S: float = 300.0
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real

@@ -396,7 +396,9 @@ async def _lifespan_body(app: FastAPI):
     # Worker agents (#772) register here when they connect to /ws/worker.
     # With none connected, the run service behaves exactly as without it:
     # a run without a target is placed and executed in this process.
-    worker_registry = WorkerRegistry(local_devices=_local_device_facts)
+    worker_registry = WorkerRegistry(
+        local_devices=_local_device_facts,
+        resume_grace_s=settings.WORKER_RESUME_GRACE_S)
     app.state.worker_registry = worker_registry
     # Enrolled workers (#780) are known before they dial in, as offline, so
     # a run can target one and wait. None enrolled: nothing changes.

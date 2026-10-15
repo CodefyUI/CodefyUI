@@ -75,13 +75,23 @@ def _client(token: bool = True) -> AsyncClient:
 class FakeAgent:
     def __init__(self, ws: Any) -> None:
         self.ws = ws
+        #: ``ack`` frames received (#783); :meth:`recv` sets them aside.
+        self.acks: list[wp.Ack] = []
 
     async def send(self, frame: Any) -> None:
         await self.ws.send_text(wp.encode_frame(frame))
 
-    async def recv(self, timeout: float = 10.0) -> Any:
-        raw = await asyncio.wait_for(self.ws.receive_text(), timeout)
-        return wp.decode_control_frame(raw)
+    async def recv(self, timeout: float = 10.0, *, acks: bool = False) -> Any:
+        """The next control frame; ``ack`` frames are collected in
+        :attr:`acks` and skipped unless *acks*."""
+        while True:
+            raw = await asyncio.wait_for(self.ws.receive_text(), timeout)
+            frame = wp.decode_control_frame(raw)
+            if isinstance(frame, wp.Ack):
+                self.acks.append(frame)
+                if not acks:
+                    continue
+            return frame
 
     async def hello(self, name: str = "box", devices: tuple = ("cpu",),
                     **kw: Any) -> Any:
@@ -291,7 +301,9 @@ async def test_stop_is_forwarded_and_the_workers_answer_ends_the_run(env):
 
 
 async def test_a_worker_that_goes_away_interrupts_its_runs(env):
+    """With no resume grace (#783's ``CODEFYUI_WORKER_RESUME_GRACE_S=0``)."""
     service, registry = env
+    registry.resume_grace_s = 0
     async with _client() as client:
         async with aconnect_ws(_path(), client) as ws:
             agent = FakeAgent(ws)
@@ -333,6 +345,7 @@ async def test_a_worker_that_goes_away_interrupts_its_runs(env):
 
 async def test_heartbeat_timeout_disconnects_and_interrupts(env):
     service, registry = env
+    registry.resume_grace_s = 0
     clock = [1000.0]
     registry._clock = lambda: clock[0]
     async with _client() as client, aconnect_ws(_path(), client) as ws:
@@ -457,6 +470,7 @@ async def test_any_on_a_same_host_worker_shares_this_process_slots(
 
 async def test_a_queued_run_says_which_worker_it_waits_for(env):
     service, registry = env
+    registry.resume_grace_s = 0
     async with _client() as client:
         async with aconnect_ws(_path(), client) as ws:
             agent = FakeAgent(ws)

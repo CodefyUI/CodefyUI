@@ -52,6 +52,7 @@ from typing import Any, Awaitable, Callable
 
 from ..core import worker_protocol as wp
 from . import child as child_module
+from .spool import SPOOL_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,8 @@ def prune_run_dirs(runs_dir: Path, keep_last: int) -> None:
     """Delete all but the *keep_last* most recently finished run directories.
 
     Same rule as the control plane's run retention (keep the last N),
-    counted by retirement time (:data:`FINISHED_MARKER`). Blocking: call it
+    counted by retirement time (:data:`FINISHED_MARKER`). A directory that
+    still holds a spool (``agent.spool``) is kept. Blocking: call it
     in a thread. Tolerates directories vanishing underneath it.
     """
     if keep_last <= 0:
@@ -246,6 +248,8 @@ def prune_run_dirs(runs_dir: Path, keep_last: int) -> None:
         return
     finished: list[tuple[float, Path]] = []
     for path in candidates:
+        if (path / SPOOL_FILE).exists():
+            continue  # frames the control plane has not acknowledged (#783)
         try:
             finished.append(((path / FINISHED_MARKER).stat().st_mtime, path))
         except OSError:  # no marker (in flight), not a dir, or gone
@@ -330,6 +334,9 @@ class Runner:
         #: Grace a run gets when the agent itself stops (``cdui agent stop``).
         self.shutdown_grace_s = 10.0
         self.runs: dict[str, RunHandle] = {}
+        #: Runs refused at assignment whose ``run_finished`` is still to be
+        #: acknowledged: they have no handle to retire their directory.
+        self._refused: set[str] = set()
         self._ctx = multiprocessing.get_context("spawn")
         self._housekeeping: set[asyncio.Future] = set()
         mark_leftovers(runs_dir)
@@ -340,9 +347,12 @@ class Runner:
     def running_ids(self) -> list[str]:
         return list(self.runs)
 
-    def alive_entries(self) -> list[wp.RunAliveEntry]:
-        return [wp.RunAliveEntry(run_id=h.run_id, last_seq=h.seq)
-                for h in self.runs.values()]
+    def take_refused(self, run_id: str) -> bool:
+        """True (once) when *run_id* was refused at assignment."""
+        if run_id in self._refused:
+            self._refused.discard(run_id)
+            return True
+        return False
 
     # ── assign ────────────────────────────────────────────────────────────
 
@@ -403,6 +413,7 @@ class Runner:
         except AssignmentRefused as exc:
             logger.warning("run %s refused: %s", frame.run_id, exc)
             if frame.run_id not in self.runs:  # never talk over a live run
+                self._refused.add(frame.run_id)
                 await self.send(wp.RunFinished(
                     run_id=frame.run_id, seq=1, status=wp.FINISHED_FAILED,
                     error=str(exc)))

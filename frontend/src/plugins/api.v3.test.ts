@@ -198,7 +198,20 @@ describe('runs facade', () => {
   it('list() forwards status, limit and offset', async () => {
     const fetchMock = mockFetch(PAGE);
     await freshApi().runs.list({ status: ['running'], limit: 5, offset: 10 });
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/runs?status=running&limit=5&offset=10');
+    // `running` covers the host's `disconnected` (#783), which plugins never see.
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/runs?status=running&status=disconnected&limit=5&offset=10');
+    await freshApi().runs.list({ status: ['failed'] });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/runs?status=failed');
+  });
+
+  it('a disconnected run reads as running to a plugin (#783)', async () => {
+    const away = { id: 'r1', status: 'disconnected' };
+    mockFetch({ ...PAGE, runs: [away, { id: 'r2', status: 'failed' }] });
+    const page = await freshApi().runs.list();
+    expect(page.runs.map((run) => run.status)).toEqual(['running', 'failed']);
+    mockFetch(away);
+    expect((await freshApi().runs.get('r1'))?.status).toBe('running');
   });
 
   it('get() proxies one run, and answers null for an unknown id', async () => {

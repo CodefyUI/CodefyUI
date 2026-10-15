@@ -40,7 +40,7 @@ type WsHandlerEntry = {
  * Run statuses that are worth re-attaching to on page load. Everything else
  * has a terminal row and nothing left to stream.
  */
-const RESUMABLE = new Set(['running', 'queued']);
+const RESUMABLE = new Set(['running', 'queued', 'disconnected']);
 
 /** What a finished run's status means for the tab that was watching it. */
 const TERMINAL_TAB_STATUS: Record<string, ExecutionStatus> = {
@@ -674,7 +674,8 @@ export function useGraphExecution() {
       // closing frame), so this ack ends it, and holds against the replay.
       const onAttached = (raw: unknown) => {
         const data = raw as { run_id?: unknown; status?: unknown };
-        if (data.status === 'running' || data.status === 'queued') {
+        // `disconnected` (#783) is a running run whose worker is away.
+        if (typeof data.status === 'string' && RESUMABLE.has(data.status)) {
           useTabStore.getState().setTabStatus(tabId, 'running');
           // A run that has not started yet may be waiting (#680). An ack
           // that says `queued` is asked about at once; `running` is what a

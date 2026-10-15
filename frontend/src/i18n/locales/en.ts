@@ -1235,6 +1235,8 @@ const en = {
   'runs.status.failed': 'Failed',
   'runs.status.cancelled': 'Cancelled',
   'runs.status.interrupted': 'Interrupted',
+  'runs.status.disconnected': 'Disconnected',
+  'runs.workerDisconnected': 'worker disconnected {elapsed} ago',
   'runs.action.cancel': 'Stop',
   'runs.action.reattach': 'Watch',
   'runs.action.delete': 'Delete',

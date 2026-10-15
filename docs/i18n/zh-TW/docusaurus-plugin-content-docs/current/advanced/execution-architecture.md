@@ -76,7 +76,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | 方向 | Frame |
 |-----------|--------|
 | agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊、machine id、裝置、mount、平台）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished` |
-| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain` |
+| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄） |
 
 ## 排程 {/* #scheduling */}
 
@@ -106,7 +106,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **取消。** 對 worker run 按 Stop 會轉送為 `cancel`。agent 往 pipe 送 `("cancel",)`，子程序把它轉成 `ExecutionContext.cancel()`，與 in-process run 相同的協作式停止。若子程序在 `grace_s`（預設 30 秒）後仍未結束，agent 會 terminate 它，5 秒後再 kill；控制面把這個 run 記為停止，與 in-process 取消相同。`cdui agent stop` 以同樣方式要求每個執行中的 run 停止，寬限 10 秒。
 
-**斷線。** 關閉 `/ws/worker` 本身從不取消 run。socket 關閉、或連續錯過三次心跳的 worker 會被標為 `disconnected`；它正在執行的每個 run 以 `interrupted` 結束，附帶一個 kind 為 `worker_disconnected` 的 `run_warning`，其 slot 也會釋放。同名的第二條連線會取代第一條；舊連線上仍在進行的 run，若新連線在 `run_alive` 中列出就繼續，否則以 `interrupted` 結束。讓 run 撐過較長的中斷是 [#783](https://github.com/CodefyUI/CodefyUI/issues/783)。
+**斷線。** 關閉 `/ws/worker` 本身從不取消 run。socket 關閉、或連續錯過三次心跳的 worker 會被標為 `disconnected`。agent 送出每個 run 的 frame 前先寫入 `agent-runs/<run id>/spool.jsonl`，控制面確認（`ack`，每記錄 64 個 frame 或 1 秒一次；已確認的 seq 只存在記憶體中）後即丟棄。斷線 worker 的每個 run 變成 `disconnected`（附帶 kind 為 `worker_disconnected` 的 `run_warning`），slot 保留。同名連線若在 `CODEFYUI_WORKER_RESUME_GRACE_S`（300 秒）內於 `run_alive` 列出它，就依序補送未確認的 frame；registry 丟棄已見過的 `seq` 並記錄缺漏，run 回到 `running`（`worker_reconnected`）。逾時則以 `interrupted` 結束並釋放 slot；worker 仍回報但這裡未追蹤的 run 會收到 `grace_s` 為 0 的 `cancel`，它的 `run_finished` 記錄為 `execution_facts.late_result`，不會在結束事件之後再加事件。worker 送來的任何 frame 都算存活訊號，agent 在補送期間也持續送心跳。單一 run 的 inbox 超過 10,000 個 frame 時暫停讀取 socket，讓補送由 TCP 控制速度。見[連線中斷時](../usage/run-queue#when-the-connection-drops)。
 
 **留在程序內的部分。** 在控制面內執行的 run 與 3.0 相同，共用一個程序與一個 CUDA context。因此它們的 `peak_memory` 項目標為 `exact: false`；worker run 的 CUDA 項目則是 `exact: true`，因為它的子程序只裝著那一個 run。
 

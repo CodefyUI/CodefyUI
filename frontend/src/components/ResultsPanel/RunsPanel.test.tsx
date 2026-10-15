@@ -4,6 +4,7 @@ import {
   DIGEST_SHORT_LENGTH,
   RunsPanel,
   formatDuration,
+  formatElapsed,
   formatStarted,
   deviceMemoryEntries,
   requestedDeviceNote,
@@ -264,6 +265,38 @@ describe('RunsPanel — the table', () => {
     ]);
     expect(within(rowOf('q')).getByText('This server')).not.toHaveAttribute('title');
     expect(within(rowOf('r')).queryByText('stale')).toBeNull();
+  });
+
+  it('says how long a disconnected run has waited for its worker (#783)', async () => {
+    const since = Date.now() / 1000 - 42;
+    await renderPanel([
+      makeRun({
+        id: 'd', name: 'away', status: 'disconnected', worker_id: 'gpu-box', finished_at: null,
+        worker_status: {
+          worker_id: 'gpu-box', state: 'disconnected',
+          disconnected_at: since, resume_deadline: since + 300,
+        },
+      }),
+      makeRun({ id: 'n', name: 'no status', status: 'disconnected', finished_at: null }),
+    ]);
+    const row = rowOf('d');
+    expect(within(row).getByText(t('runs.status.disconnected'), { selector: 'span' }))
+      .toHaveClass(styles.chip_disconnected);
+    expect(within(row).getByText(/^worker disconnected 00:4\d ago$/)).toBeInTheDocument();
+    // Still active: it can be stopped and watched.
+    expect(within(row).getByText(t('runs.action.cancel'))).toBeInTheDocument();
+    expect(within(rowOf('n')).queryByText(/worker disconnected/)).toBeNull();
+    // A filter of its own.
+    fireEvent.click(screen.getByRole('button', { name: t('runs.status.disconnected') }));
+    await waitFor(() =>
+      expect(api.listRuns).toHaveBeenCalledWith(expect.objectContaining({ status: ['disconnected'] })),
+    );
+  });
+
+  it('formats a wait as mm:ss, or h:mm:ss from an hour on', () => {
+    expect(formatElapsed(42.9)).toBe('00:42');
+    expect(formatElapsed(-3)).toBe('00:00');
+    expect(formatElapsed(3600 + 61)).toBe('1:01:01');
   });
 
   it('falls back to the requested device when the run has not been scheduled yet', async () => {
@@ -1130,7 +1163,7 @@ function sweepDetail(state: SweepState): SweepDetail {
     sweep_id: 's1', name: 'Search', state, method: 'grid', seed: null, seed_variants: false,
     objective: { metric: 'train_loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
-    counts: { queued: 0, running: done ? 0 : 1, succeeded: done ? 1 : 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    counts: { queued: 0, running: done ? 0 : 1, disconnected: 0, succeeded: done ? 1 : 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [{ node_id: 'train', param: 'epochs', domain: [2] }],
     variants: [{
       index: 0, domain_index: 0, run_id: 'child', status: done ? 'succeeded' : 'running',

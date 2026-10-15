@@ -1069,7 +1069,7 @@ describe('download endpoints', () => {
 
 describe('run endpoints', () => {
   it('exposes status vocabularies that mirror the backend', () => {
-    expect([...ACTIVE_RUN_STATUSES]).toEqual(['queued', 'running']);
+    expect([...ACTIVE_RUN_STATUSES]).toEqual(['queued', 'running', 'disconnected']);
     expect([...TERMINAL_RUN_STATUSES]).toEqual([
       'succeeded', 'failed', 'cancelled', 'interrupted',
     ]);
