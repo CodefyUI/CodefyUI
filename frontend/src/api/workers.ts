@@ -13,7 +13,8 @@ const BASE_URL = '/api/workers';
 
 /**
  * `draining` is reported for a connected worker that has the flag set;
- * `offline` arrives with persisted workers (#780).
+ * `offline` is an enrolled worker that has not connected since the server
+ * started (#780).
  */
 export type WorkerStatus = 'online' | 'degraded' | 'disconnected' | 'draining' | 'offline';
 
@@ -56,10 +57,49 @@ export interface WorkerInfo {
   devices: WorkerDevice[];
   /** Run ids the worker is executing. */
   running: string[];
-  /** Epoch seconds. */
-  connected_at: number;
-  /** Epoch seconds. */
-  last_heartbeat_at: number;
+  /** Epoch seconds; `null` for an `offline` worker. */
+  connected_at: number | null;
+  /** Epoch seconds; `null` for an enrolled worker never seen. */
+  last_heartbeat_at: number | null;
+  /** It holds a worker credential the server can revoke (#780). */
+  enrolled?: boolean;
+  /** How its connection authenticated: `worker_token` or `session_token`. */
+  credential?: string | null;
+}
+
+/** `pending` can still enroll; `expired` and `used` are listed until deleted. */
+export type EnrollmentState = 'pending' | 'expired' | 'used';
+
+/** An enrollment token as listed: never the secret itself. */
+export interface Enrollment {
+  /** The token's public half (the six characters before the dot). */
+  id: string;
+  label: string | null;
+  /** The worker a re-key token is bound to, or `null`. */
+  worker: string | null;
+  /** ISO-8601 UTC. */
+  created_at: string;
+  /** ISO-8601 UTC. */
+  expires_at: string;
+  uses_left: number;
+  state: EnrollmentState;
+}
+
+/** A new enrollment token: the only response that carries the secret. */
+export interface CreatedEnrollment extends Enrollment {
+  token: string;
+  control_url: string;
+  command: string;
+}
+
+export interface EnrollmentList {
+  enrollments: Enrollment[];
+  /** This server as the browser reached it (scheme and Host). */
+  control_url: string;
+  /** Whitelisted addresses another machine could dial. */
+  other_machine_urls: string[];
+  /** The server is bound to a loopback address: no other machine reaches it. */
+  listening_on_loopback: boolean;
 }
 
 async function failure(res: Response, fallback: string): Promise<Error> {
@@ -91,4 +131,46 @@ export function drainWorker(workerId: string): Promise<WorkerInfo> {
 /** Let the worker take new runs again. */
 export function undrainWorker(workerId: string): Promise<WorkerInfo> {
   return setDraining(workerId, 'undrain');
+}
+
+/** Revoke the worker's credential, disconnect it and forget it (#780). */
+export async function removeWorker(workerId: string): Promise<void> {
+  const res = await apiFetch(`${BASE_URL}/${encodeURIComponent(workerId)}`, { method: 'DELETE' });
+  if (!res.ok) throw await failure(res, 'Remove failed');
+}
+
+/** The enrollment tokens and the addresses the dialog offers (#780). */
+export async function fetchEnrollments(): Promise<EnrollmentList> {
+  // A GET the server guards with the session token.
+  const res = await apiFetch(`${BASE_URL}/enrollments`, {}, { authenticate: true });
+  if (!res.ok) throw await failure(res, 'Enrollment tokens failed');
+  return res.json();
+}
+
+/**
+ * A new enrollment token, valid for `ttl_s` seconds and `uses` agents.
+ * With `worker`, a re-key token: it can enroll that worker only.
+ */
+export async function createEnrollment(
+  options: { ttl_s: number; uses: number; worker?: string },
+): Promise<CreatedEnrollment> {
+  const res = await apiFetch(`${BASE_URL}/enrollments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  });
+  if (!res.ok) throw await failure(res, 'Generate token failed');
+  return res.json();
+}
+
+/** Revoke (or clear away) an enrollment token. */
+export async function deleteEnrollment(id: string): Promise<void> {
+  const res = await apiFetch(`${BASE_URL}/enrollments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw await failure(res, 'Revoke failed');
+}
+
+/** The command a worker machine runs to enroll with *controlUrl*. */
+export function agentEnrollCommand(controlUrl: string, token: string, name?: string | null): string {
+  const command = `cdui agent start --control ${controlUrl} --token ${token}`;
+  return name ? `${command} --name ${name}` : command;
 }

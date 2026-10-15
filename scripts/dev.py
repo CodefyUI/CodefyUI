@@ -139,13 +139,17 @@
                 離開碼：0 完成、1 取消或刪不掉、2 拒絕執行（參數錯誤、無法確認）、
                 3 伺服器執行中（圖可能正在讀這些檔），130 Ctrl+C 取消。
 
-    agent <start|stop> ...
+    agent <start|stop|forget> ...
                 Worker agent：連到控制面的 /ws/worker，每個 run 在自己的子程序執行。
                 同機模式不需參數：位址與 token 取自上次 cdui start 的伺服器。
+                另一台機器：用 Workers 面板「新增 worker」產生的指令加入（一次性
+                enrollment token 換成長期 worker 憑證，存於本機，重啟時沿用）。
                     cdui agent start                     # 背景執行（pidfile、agent.log）
                     cdui agent start --foreground        # 前景（systemd）
                     cdui agent start --control http://127.0.0.1:8000 --name gpu-box
+                    cdui agent start --control http://192.168.1.5:8000 --token abcdef.0123456789abcdef
                     cdui agent start --devices cuda:0,cuda:1
+                    cdui agent forget http://192.168.1.5:8000   # 刪掉存下的憑證
                     cdui agent stop
 
 環境變數：
@@ -5211,7 +5215,7 @@ def _dispatch_packs_subcommand() -> int:
 
 
 def _dispatch_agent_subcommand() -> int:
-    """Hand off `cdui agent <start|stop> ...` to scripts/agent.py (#771).
+    """Hand off `cdui agent <start|stop|forget> ...` to scripts/agent.py (#771).
 
     Same venv hop as the other subgroups: the agent is `app.agent`. No
     `_ensure_uv()`, like `cache`: an agent spawns no package manager, and it

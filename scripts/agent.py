@@ -1,4 +1,4 @@
-"""``cdui agent <start|stop> ...``: hands off to ``app.agent`` in the venv.
+"""``cdui agent <start|stop|forget> ...``: hands off to ``app.agent`` in the venv.
 
 ``scripts/dev.py`` routes the ``agent`` group here after hopping into the
 backend venv and applying the dev user-data dir

@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { drainWorker, fetchWorkers, undrainWorker, type WorkerInfo } from '../../api/workers';
+import {
+  drainWorker,
+  fetchEnrollments,
+  fetchWorkers,
+  removeWorker,
+  undrainWorker,
+  type WorkerInfo,
+} from '../../api/workers';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { _resetWorkerStoreForTesting, useWorkerStore } from '../../store/workerStore';
@@ -13,6 +20,11 @@ vi.mock('../../api/workers', () => ({
   fetchWorkers: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
+  removeWorker: vi.fn(),
+  fetchEnrollments: vi.fn(),
+  createEnrollment: vi.fn(),
+  deleteEnrollment: vi.fn(),
+  agentEnrollCommand: (url: string, token: string) => `cdui agent start --control ${url} --token ${token}`,
 }));
 
 const NOW_S = 1_800_000_000;
@@ -54,6 +66,13 @@ beforeEach(() => {
   rememberAppVersion('3.0.2');
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
+  vi.mocked(removeWorker).mockReset().mockResolvedValue(undefined);
+  vi.mocked(fetchEnrollments).mockReset().mockResolvedValue({
+    enrollments: [],
+    control_url: 'http://192.168.1.5:8000',
+    other_machine_urls: [],
+    listening_on_loopback: false,
+  });
 });
 
 afterEach(() => {
@@ -336,10 +355,79 @@ describe('WorkersPanel', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add worker' }));
     // The dialog is a lazy chunk of its own: it arrives a tick later.
     const add = await screen.findByRole('dialog', { name: 'Add a worker' });
+    await settle();
+    // It opens on the other-machine tab (#780); the same-host one is a press away.
+    expect(add).toHaveAttribute('data-mode', 'remote');
+    expect(within(add).getByRole('button', { name: 'Generate token' })).toBeInTheDocument();
+    fireEvent.click(within(add).getByRole('button', { name: 'This machine' }));
     expect(within(add).getByText('cdui agent start')).toBeInTheDocument();
     fireEvent.keyDown(add, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Workers' })).toBeInTheDocument();
+  });
+
+  it('removes a worker that is away at once', async () => {
+    const dialog = await openPanel([worker('gone', { status: 'offline', connected_at: null }), worker('b')]);
+    vi.mocked(fetchWorkers).mockResolvedValue([worker('b')]);
+    const card = within(dialog).getByRole('article', { name: 'gone' });
+    expect(within(card).getByText('Offline')).toBeInTheDocument();
+    const remove = within(card).getByRole('button', { name: 'Remove' });
+    remove.focus();
+    await act(async () => fireEvent.click(remove));
+    expect(removeWorker).toHaveBeenCalledWith('gone');
+    expect(within(dialog).queryByRole('article', { name: 'gone' })).toBeNull();
+    // The pressed button left with its card: the focus stays in the dialog.
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+
+  it('asks again before removing a connected worker', async () => {
+    const dialog = await openPanel([worker('live')]);
+    const card = within(dialog).getByRole('article', { name: 'live' });
+    const remove = within(card).getByRole('button', { name: 'Remove' });
+    await act(async () => fireEvent.click(remove));
+    expect(removeWorker).not.toHaveBeenCalled();
+    expect(remove).toHaveTextContent('Confirm remove');
+    expect(remove).toHaveAttribute('title', expect.stringMatching(/end interrupted/));
+    // Leaving the button drops the question.
+    fireEvent.blur(remove);
+    expect(remove).toHaveTextContent('Remove');
+    await act(async () => fireEvent.click(remove));
+    await act(async () => fireEvent.click(remove));
+    expect(removeWorker).toHaveBeenCalledWith('live');
+  });
+
+  it('keeps the focus where it is when the remove failed', async () => {
+    vi.mocked(removeWorker).mockRejectedValue(new Error('boom'));
+    const dialog = await openPanel([worker('gone', { status: 'disconnected' })]);
+    const remove = within(dialog).getByRole('button', { name: 'Remove' });
+    remove.focus();
+    await act(async () => fireEvent.click(remove));
+    expect(remove).toHaveFocus();
+    expect(within(dialog).getByRole('article', { name: 'gone' })).toBeInTheDocument();
+  });
+
+  it('ignores a second remove while one is in flight', async () => {
+    let answer: () => void = () => {};
+    vi.mocked(removeWorker).mockImplementation(() => new Promise<void>((resolve) => { answer = resolve; }));
+    const dialog = await openPanel([worker('gone', { status: 'offline' })]);
+    const remove = within(dialog).getByRole('button', { name: 'Remove' });
+    fireEvent.click(remove);
+    expect(remove).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => fireEvent.click(remove));
+    expect(removeWorker).toHaveBeenCalledTimes(1);
+    await act(async () => answer());
+  });
+
+  it('says never for a worker never seen, and opens a re-key dialog for it', async () => {
+    const dialog = await openPanel([worker('new-box', { status: 'offline', connected_at: null, last_heartbeat_at: null })]);
+    const card = within(dialog).getByRole('article', { name: 'new-box' });
+    expect(within(card).getByText('never')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Re-key' }));
+    const add = await screen.findByRole('dialog', { name: 'Add a worker' });
+    await settle();
+    expect(within(add).getByText(/Re-key new-box/)).toBeInTheDocument();
+    fireEvent.keyDown(add, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();
   });
 
   it('renders in zh-TW', async () => {

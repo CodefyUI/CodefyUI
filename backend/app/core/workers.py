@@ -3,9 +3,11 @@
 A worker agent (``cdui agent start``, #771) dials ``/ws/worker`` and says
 ``hello``; :class:`WorkerRegistry` is where it is then known: its devices,
 its heartbeat, the runs it is executing and the connection to reach it.
-In memory in this wave (enrollment and a ``workers`` table arrive with
-#780), so a restarted control plane starts with no workers and each agent
-re-registers on its next dial.
+Enrolled workers (#780) are also rows of the ``workers`` table: the
+lifespan loads them at boot (:meth:`WorkerRegistry.load_known`) as
+``offline``, so a run can target one and queue until it dials in. A worker
+that authenticated with the session token (a same-host agent) is known in
+memory only, as before.
 
 Identity: a worker's id IS its name (``[a-z0-9][a-z0-9-]{0,62}``, the
 ``target.worker`` alphabet, ``local`` and ``any`` reserved). A name is
@@ -15,7 +17,8 @@ the id stable across reconnects, which is what slots
 
 Status: ``online`` -> ``degraded`` (a heartbeat is late) -> ``disconnected``
 (the socket closed, or :data:`MISSED_HEARTBEATS` heartbeats in a row
-missed). Draining is a separate flag (no new assignments); the API's
+missed). ``offline`` is an enrolled worker that has not connected since
+this server started. Draining is a separate flag (no new assignments); the API's
 ``status`` reads ``draining`` for a connected worker that has it, because
 that is what decides whether a run can go there, and keeps the
 ``draining`` flag beside it. On ``disconnected`` every run the worker was
@@ -55,6 +58,11 @@ STATUS_ONLINE = "online"
 STATUS_DEGRADED = "degraded"
 STATUS_DISCONNECTED = "disconnected"
 STATUS_DRAINING = "draining"
+STATUS_OFFLINE = "offline"
+
+#: How the worker's connection authenticated (``Worker.credential``).
+CREDENTIAL_SESSION = "session_token"
+CREDENTIAL_WORKER = "worker_token"
 
 #: Heartbeats a worker may miss before it is ``disconnected``: 3 x 10 s.
 MISSED_HEARTBEATS = 3
@@ -108,15 +116,24 @@ class Worker:
     shared: dict[str, str] = field(default_factory=dict)
     connected_at: float = field(default_factory=time.time)
     last_heartbeat: float = field(default_factory=time.monotonic)
-    last_heartbeat_at: float = field(default_factory=time.time)
+    #: Epoch seconds of its last heartbeat (or, for a worker known from the
+    #: table, when it was last seen); None for one never seen.
+    last_heartbeat_at: float | None = field(default_factory=time.time)
     running: dict[str, WorkerRun] = field(default_factory=dict)
     #: When runs inherited from a replaced connection stop waiting for
     #: ``run_alive`` (monotonic), or None.
     alive_deadline: float | None = None
+    #: It has a row in the ``workers`` table (#780): its credential can be
+    #: revoked and it survives a restart of this server.
+    enrolled: bool = False
+    #: How its current (or last) connection authenticated:
+    #: :data:`CREDENTIAL_WORKER`, :data:`CREDENTIAL_SESSION`, or None for
+    #: an enrolled worker that has not connected since this server started.
+    credential: str | None = None
 
     @property
     def online(self) -> bool:
-        return self.status != STATUS_DISCONNECTED
+        return self.status not in (STATUS_DISCONNECTED, STATUS_OFFLINE)
 
     @property
     def accepts_runs(self) -> bool:
@@ -152,8 +169,11 @@ class Worker:
                     "free_bytes": d.free_bytes, "source": d.source},
             } for d in self.devices],
             "running": sorted(self.running),
-            "connected_at": self.connected_at,
+            "connected_at": (None if self.status == STATUS_OFFLINE
+                             else self.connected_at),
             "last_heartbeat_at": self.last_heartbeat_at,
+            "enrolled": self.enrolled,
+            "credential": self.credential,
         }
 
 
@@ -283,12 +303,16 @@ class WorkerRegistry:
 
     def connect(self, hello: wp.Hello, *, send: Send,
                 close: Callable[[], Awaitable[None]],
-                same_host: bool = False) -> tuple[Worker, Worker | None]:
+                same_host: bool = False,
+                credential: str | None = None,
+                enrolled: bool = False) -> tuple[Worker, Worker | None]:
         """Register *hello*'s worker. Returns ``(worker, replaced)``.
 
         *same_host*: the worker's machine identity equals this process's
         (``ws_worker``), so the cards it shares with this process (see
-        :meth:`_shared_devices`) share their slots.
+        :meth:`_shared_devices`) share their slots. *credential* says how
+        the connection authenticated; *enrolled* that the worker has a
+        ``workers`` row (a known worker keeps the flag either way).
 
         A worker already registered under the name is replaced: its runs
         move to the new connection and wait for ``run_alive``, and the
@@ -300,7 +324,9 @@ class WorkerRegistry:
             fingerprint=hello.fingerprint, platform=dict(hello.platform),
             mounts=dict(hello.mounts), devices=list(hello.devices),
             send=send, close=close, heartbeat_s=self.heartbeat_s,
-            last_heartbeat=self._clock(), same_host=same_host)
+            last_heartbeat=self._clock(), same_host=same_host,
+            credential=credential,
+            enrolled=enrolled or (old is not None and old.enrolled))
         worker.shared = self._shared_devices(worker)
         replaced = None
         if old is not None and old.online:
@@ -327,6 +353,68 @@ class WorkerRegistry:
                     worker.version, worker.device_values())
         self._changed()
         return worker, replaced
+
+    # ── known workers (#780) ──────────────────────────────────────────────
+
+    def load_known(self, known: list[Any]) -> list[Worker]:
+        """Add enrolled workers that are not connected, as ``offline``.
+
+        *known* holds ``worker_store.KnownWorker``-like objects (``name``,
+        ``platform``, ``mounts``, ``devices`` as dicts, ``last_seen_at``
+        ISO text). A name already registered is left as it is. The devices
+        are the ones it last reported, so a run can target it and wait.
+        """
+        from .db import iso_to_epoch
+
+        added = []
+        for entry in known:
+            if entry.name in self._workers:
+                continue
+            devices = []
+            for raw in entry.devices:
+                try:
+                    devices.append(wp.DeviceReport.model_validate(raw))
+                except ValueError:
+                    logger.warning("worker %s: a stored device report "
+                                   "could not be read; left out", entry.name)
+            seen = iso_to_epoch(entry.last_seen_at)
+            worker = Worker(
+                id=entry.name, name=entry.name, version="", fingerprint=None,
+                platform=dict(entry.platform), mounts=dict(entry.mounts),
+                devices=devices, send=_not_connected, close=_nothing,
+                heartbeat_s=self.heartbeat_s, status=STATUS_OFFLINE,
+                connected_at=seen or 0.0, last_heartbeat_at=seen,
+                enrolled=True)
+            self._workers[entry.name] = worker
+            added.append(worker)
+        if added:
+            logger.info("%d enrolled worker(s) known, offline until they "
+                        "connect: %s", len(added),
+                        ", ".join(w.name for w in added))
+            self._changed()
+        return added
+
+    def forget(self, worker_id: str,
+               reason: str = "the worker was removed") -> Worker | None:
+        """Drop *worker_id*: a connected one is disconnected (its runs end
+        ``interrupted``) and its socket closed. Returns the dropped worker."""
+        worker = self._workers.get(worker_id)
+        if worker is None:
+            return None
+        if worker.online:
+            self.disconnect(worker, reason)
+            self._spawn(_close_quietly(worker))
+        del self._workers[worker_id]
+        logger.info("worker %s removed", worker_id)
+        self._changed()
+        return worker
+
+    def kick(self, worker_id: str, reason: str) -> None:
+        """Disconnect *worker_id*'s live connection, if any, keeping it known."""
+        worker = self._workers.get(worker_id)
+        if worker is not None and worker.online:
+            self.disconnect(worker, reason)
+            self._spawn(_close_quietly(worker))
 
     def disconnect(self, worker: Worker, reason: str = "the connection closed") -> None:
         """Mark *worker* disconnected and end its runs. Idempotent.
@@ -499,6 +587,14 @@ class WorkerRegistry:
                     pass
                 self.disconnect(worker, "the control plane is shutting down")
                 await _close_quietly(worker)
+
+
+async def _not_connected(_frame: Any) -> None:
+    raise ConnectionError("the worker is not connected")
+
+
+async def _nothing() -> None:
+    return None
 
 
 async def _close_quietly(worker: Worker) -> None:

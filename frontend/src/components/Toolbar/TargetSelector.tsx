@@ -10,6 +10,7 @@ import {
   anyKinds,
   connectedWorkers,
   defaultDevices,
+  targetableWorkers,
   defaultKind,
   deviceKind,
   localDeviceChoices,
@@ -32,6 +33,11 @@ export interface RunTargetChoice {
   workers: WorkerInfo[];
   workersError: string | null;
   online: WorkerInfo[];
+  /** The workers a run can name: the connected ones and the enrolled
+   * offline ones, for which it waits (#780). */
+  listed: WorkerInfo[];
+  /** The chosen worker, when the target is one. */
+  worker: WorkerInfo | null;
   target: string;
   isWorker: boolean;
   choices: DeviceChoice[];
@@ -93,7 +99,8 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
   }, []);
 
   const online = useMemo(() => connectedWorkers(workers), [workers]);
-  const worker = online.find((candidate) => candidate.id === target) ?? null;
+  const listed = useMemo(() => targetableWorkers(workers), [workers]);
+  const worker = listed.find((candidate) => candidate.id === target) ?? null;
   const isWorker = target !== TARGET_LOCAL;
   const localChoices = useMemo(() => localDeviceChoices(localDevices), [localDevices]);
   const herePicks = useMemo(() => {
@@ -117,6 +124,8 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
     workers,
     workersError,
     online,
+    listed,
+    worker,
     target,
     isWorker,
     choices,
@@ -166,7 +175,7 @@ export function TargetSelector({
 }: TargetSelectorProps) {
   const { t } = useI18n();
   const baseId = useId();
-  const { online, target, isWorker, choices, kinds, selected, kind } = choice;
+  const { online, listed, worker, target, isWorker, choices, kinds, selected, kind } = choice;
 
   const workerLabel = (candidate: WorkerInfo): string => {
     const devices = candidate.devices.map((d) => d.value).join(', ') || t('queueRun.noDevices');
@@ -183,7 +192,7 @@ export function TargetSelector({
         {t('queueRun.target')}
         <select ref={selectRef} value={target} onChange={(event) => choice.changeTarget(event.target.value)}>
           <option value={TARGET_LOCAL}>{t('queueRun.target.local')}</option>
-          {online.map((candidate) => (
+          {listed.map((candidate) => (
             <option key={candidate.id} value={candidate.id} disabled={candidate.status === 'draining'}>
               {workerLabel(candidate)}
             </option>
@@ -191,6 +200,9 @@ export function TargetSelector({
           {online.length > 0 && <option value={TARGET_ANY}>{t('queueRun.target.any')}</option>}
         </select>
       </label>
+      {worker?.status === 'offline' && (
+        <p className={styles.hint}>{t('queueRun.offlineHint', { name: worker.name })}</p>
+      )}
       {choice.workersError !== null && (
         <p className={styles.hint}>{t('queueRun.workersError', { error: choice.workersError })}</p>
       )}

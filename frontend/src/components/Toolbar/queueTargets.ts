@@ -62,6 +62,13 @@ export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
   return workers.filter((w) => w.status !== 'disconnected' && w.status !== 'offline');
 }
 
+/** The workers a run can name in the dialog: the connected ones, and the
+ * enrolled ones that are `offline` (#780), for which the run waits in the
+ * queue until the worker connects. */
+export function targetableWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
+  return workers.filter((w) => w.status !== 'disconnected');
+}
+
 const ACCELERATORS = ['cuda', 'mps'];
 
 /**

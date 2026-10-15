@@ -23,7 +23,7 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 
 **准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。它排在佇列最前面等待時不佔用任何名額，但會**保留**這些卡：在它啟動之前，其他 run 都不能在保留的卡上啟動；已在這些卡上執行的 run 照常結束，結束後它就會啟動。代價是閒置：已經空出的保留卡會一直閒置到集合中其他卡也空出，最長等於那些卡上已在執行的最久的 run。保留依先來後到，因此兩個共用一張卡的裝置集合 run 會依序啟動。`"worker": "any"` 的裝置集合 run 不保留任何卡，因為它要用哪台機器的卡要到啟動時才決定。
 
-與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）；只是從 loopback 連入並不算，因為 SSH 通道也是 loopback。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。數條佇列共用的名額空出時，由這些佇列最前面的等待 run 中最早送出的那個取得，所以一條很長的佇列不會讓另一條餓死。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
+與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 從 loopback 位址連入，且回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）。兩者缺一不可：SSH 通道也是 loopback，而 machine id 是 agent 自己回報的。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。數條佇列共用的名額空出時，由這些佇列最前面的等待 run 中最早送出的那個取得，所以一條很長的佇列不會讓另一條餓死。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
 
 :::note 同一張卡的別名會併成同一條佇列
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
@@ -37,7 +37,7 @@ run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"targ
 
 ### Worker {/* #workers */}
 
-Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。這個版本的 agent 必須與伺服器在同一台機器上。`GET /api/workers` 列出各 agent 與其裝置，每個裝置附上 `slots`（`limit`、`taken`）；回應的 `local` 欄位以相同格式列出這台伺服器的裝置，`same_host: true` 標示在這台機器上的 agent。這種 agent 中屬於這台伺服器的裝置會帶有 `shared_with: "local"`，其 `slots` 就是這台伺服器那張卡的名額（同一個計數與上限），加總用量時只能算一次。`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
+Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。它可以與伺服器在同一台機器上，也可以在另一台機器上，以 Workers 面板產生的 token 加入（見[遠端 Worker](/usage/remote-workers#adding-a-worker)）；已加入的 worker 在連線前列為 `offline`，這段期間 run 仍可指定它（**Queue on...** 也可以）並在佇列中等待。移除 worker 時，仍在佇列中等它的 run 會失敗。`GET /api/workers` 列出各 agent 與其裝置，每個裝置附上 `slots`（`limit`、`taken`）；回應的 `local` 欄位以相同格式列出這台伺服器的裝置，`same_host: true` 標示在這台機器上的 agent。這種 agent 中屬於這台伺服器的裝置會帶有 `shared_with: "local"`，其 `slots` 就是這台伺服器那張卡的名額（同一個計數與上限），加總用量時只能算一次。`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
 
 `target.worker` 決定 run 放在哪裡：
 

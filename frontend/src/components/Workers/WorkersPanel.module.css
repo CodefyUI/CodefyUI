@@ -275,3 +275,95 @@
   border-color: var(--border-base);
   background: var(--surface-raised);
 }
+
+.chip_pending {
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: var(--success-wash);
+}
+
+.chip_expired,
+.chip_used {
+  color: var(--text-muted);
+  border-color: var(--border-base);
+  background: var(--surface-raised);
+}
+
+/* ── remove (#780) ── */
+
+.danger {
+  color: var(--status-error);
+  border-color: var(--status-error);
+}
+
+/* ── Add worker: another machine (#780) ── */
+
+.modeSwitch {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.modeSwitch [aria-pressed='true'] {
+  color: var(--accent-deep);
+  border-color: var(--accent-glow);
+  background: var(--accent-wash);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.fieldRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.input {
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.inputUrl {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.inputUses {
+  width: 5em;
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.tokens {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tokenRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { drainWorker, fetchWorkers, undrainWorker, type WorkerInfo } from '../api/workers';
+import { drainWorker, fetchWorkers, removeWorker, undrainWorker, type WorkerInfo } from '../api/workers';
 import { rememberAppVersion } from '../utils/appVersion';
 import { useToastStore } from './toastStore';
 import { WORKER_POLL_MS, _resetWorkerStoreForTesting, useWorkerStore } from './workerStore';
@@ -8,6 +8,7 @@ vi.mock('../api/workers', () => ({
   fetchWorkers: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
+  removeWorker: vi.fn(),
 }));
 
 function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
@@ -36,6 +37,7 @@ beforeEach(() => {
   rememberAppVersion('3.0.2');
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
+  vi.mocked(removeWorker).mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -216,6 +218,43 @@ describe('workerStore', () => {
     const messages = useToastStore.getState().toasts.map((t) => t.message);
     expect(messages).toEqual(['Could not drain GPU box: gone', 'Could not undrain w2: gone']);
     expect(useWorkerStore.getState().busy).toEqual({});
+  });
+
+  it('removes a worker from the list once the server revoked it', async () => {
+    useWorkerStore.setState({ workers: [worker('w1'), worker('w2')] });
+    await useWorkerStore.getState().remove('w1');
+    expect(removeWorker).toHaveBeenCalledWith('w1');
+    expect(useWorkerStore.getState().workers.map((w) => w.id)).toEqual(['w2']);
+    expect(useWorkerStore.getState().busy).toEqual({});
+  });
+
+  it('ignores a remove while another action on the worker is in flight', async () => {
+    useWorkerStore.setState({ busy: { w1: true } });
+    await useWorkerStore.getState().remove('w1');
+    expect(removeWorker).not.toHaveBeenCalled();
+  });
+
+  it('keeps a list read newer than the remove', async () => {
+    useWorkerStore.setState({ workers: [worker('w1')] });
+    let answer: () => void = () => {};
+    vi.mocked(removeWorker).mockImplementationOnce(() => new Promise<void>((resolve) => { answer = resolve; }));
+    const removing = useWorkerStore.getState().remove('w1');
+    vi.mocked(fetchWorkers).mockResolvedValueOnce([worker('w1'), worker('w3')]);
+    await useWorkerStore.getState().refresh();
+    answer();
+    await removing;
+    expect(useWorkerStore.getState().workers.map((w) => w.id)).toEqual(['w1', 'w3']);
+  });
+
+  it('toasts a failed remove under the worker\'s name', async () => {
+    useWorkerStore.setState({ workers: [worker('w1', { name: 'GPU box' })] });
+    vi.mocked(removeWorker).mockRejectedValueOnce(new Error('gone'));
+    await useWorkerStore.getState().remove('w1');
+    vi.mocked(removeWorker).mockRejectedValueOnce('plain');
+    await useWorkerStore.getState().remove('w9');
+    const messages = useToastStore.getState().toasts.map((t) => t.message);
+    expect(messages).toEqual(['Could not remove GPU box: gone', 'Could not remove w9: plain']);
+    expect(useWorkerStore.getState().workers).toHaveLength(1);
   });
 
   it('revealRuns closes the panel and bumps the reveal counter', () => {

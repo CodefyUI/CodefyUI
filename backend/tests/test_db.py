@@ -26,7 +26,7 @@ def test_connect_migrates_empty_file(tmp_path):
     db.connect()
     try:
         assert db._conn.execute("PRAGMA user_version").fetchone()[0] \
-            == len(MIGRATIONS) == 8
+            == len(MIGRATIONS) == 9
         names = {
             r[0] for r in db._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -38,6 +38,8 @@ def test_connect_migrates_empty_file(tmp_path):
         # schema assertions live with each subsystem (test_provenance /
         # test_run_store).
         assert {"apps", "app_versions", "api_keys", "runs"} <= names
+        # Worker enrollment (009, #780).
+        assert {"workers", "worker_enrollments"} <= names
         assert {"exec_runs", "exec_run_metrics", "exec_run_events",
                 "exec_run_artifacts", "sweeps"} <= names
     finally:
