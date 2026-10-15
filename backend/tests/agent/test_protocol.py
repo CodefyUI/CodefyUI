@@ -20,7 +20,9 @@ def test_every_frame_type_round_trips():
             wp.DeviceReport(value="cuda:0", kind="cuda", index=0)],
             mounts={"data": "/mnt/data"}, platform={"system": "Linux"}),
         wp.Heartbeat(devices=[], running=["r1"]),
-        wp.RunStarted(run_id="r1", seq=1, pid=42),
+        wp.RunStarted(run_id="r1", seq=1, pid=42, execution_facts={
+            "visible_devices": "2,0",
+            "device_aliases": {"cuda:2": "cuda:0", "cuda:0": "cuda:1"}}),
         wp.Event(run_id="r1", seq=2, event_type="node_status",
                  payload={"node_id": "a", "status": "running"}),
         wp.Metrics(run_id="r1", seq=3, points=[

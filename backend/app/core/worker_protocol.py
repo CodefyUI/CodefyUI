@@ -216,9 +216,13 @@ class RunStarted(_RunFrame):
     type: Literal["run_started"] = RUN_STARTED
     #: The run subprocess's pid, for the worker's own logs and the UI.
     pid: int | None = None
-    #: Facts about where the run executes, merged into the run's
-    #: ``execution_facts`` (e.g. #774's ``visible_devices`` /
-    #: ``device_aliases``).
+    #: A patch for the run's ``execution_facts`` (#774), merged key by key
+    #: the way ``peak_memory`` is (``RunStore.update_execution_facts``):
+    #: ``{"visible_devices": "2,0", "device_aliases": {"cuda:2": "cuda:0",
+    #: "cuda:0": "cuda:1"}}``. ``visible_devices`` is the subprocess's
+    #: ``CUDA_VISIBLE_DEVICES`` as set (``""``: no card; ``None``: left as
+    #: the agent inherited it); ``device_aliases`` maps each physical card
+    #: of the set to its in-run name, which is its position in the set.
     execution_facts: dict[str, Any] | None = None
 
 

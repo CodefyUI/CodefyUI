@@ -44,11 +44,13 @@ DEVICE_PATTERN = re.compile(r"^(cpu|auto|cuda(:\d+)?|mps(:\d+)?)$")
 DEVICE_PARAM_OPTIONS: tuple[str, ...] = ("auto", "cpu", "cuda", "mps")
 
 #: The description every node-level ``device`` param shows.
+#: A run given several devices (``target.devices``, #774) sees them as
+#: ``cuda:0..N-1`` in the order listed, because the run subprocess gets them
+#: as ``CUDA_VISIBLE_DEVICES``; a node's value is never rewritten.
 DEVICE_PARAM_DESCRIPTION = (
-    "Device for this node. Leave it on 'auto' to use the graph's device "
-    "(the toolbar assignment, or Settings when the graph has none). "
-    "A graph runs on one device; if part of the work needs a different one, "
-    "split it into two graphs."
+    "Device for this node. 'auto' follows the run's device. A run sent to a "
+    "worker with several devices sees them as cuda:0..N-1 in the order they "
+    "were listed, so a node can be pinned to any of them by that position."
 )
 
 

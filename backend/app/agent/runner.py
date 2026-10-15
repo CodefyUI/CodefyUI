@@ -10,7 +10,11 @@
    cards as ``CUDA_VISIBLE_DEVICES`` / ``HIP_VISIBLE_DEVICES``,
    ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` so the indices this agent reports
    (``core.resources``, NVML order) are the ones the child's torch uses,
-   and no ``CODEFYUI_DB_PATH``: the child never opens SQLite;
+   and no ``CODEFYUI_DB_PATH``: the child never opens SQLite. The cards
+   keep the order the assignment lists them in, so the run's ``cuda:K`` is
+   the K-th device of its set; ``run_started`` carries that mapping as an
+   ``execution_facts`` patch (:func:`run_facts`, #774). Node ``device``
+   params are not rewritten: ``CUDA_VISIBLE_DEVICES`` is what renumbers;
 3. reads the child's pipe on a thread of its own and forwards every message
    as a protocol frame, in order, stamped with the run's next ``seq``. The
    thread waits for each frame to be handed to the connection before it
@@ -93,6 +97,22 @@ def cuda_indices(devices: list[str]) -> list[int]:
     return indices
 
 
+def device_aliases(devices: list[str]) -> dict[str, str]:
+    """Physical CUDA card -> its name inside the run, for *devices* (#774).
+
+    The one statement of the alias rule; :func:`child_environment` and
+    :func:`child_device` both read it. The run subprocess gets the cards
+    as ``CUDA_VISIBLE_DEVICES`` in the order listed and the CUDA runtime
+    numbers them in that order, so with ``["cuda:2", "cuda:0"]`` the run's
+    ``cuda:0`` is this machine's ``cuda:2`` and its ``cuda:1`` is
+    ``cuda:0``: the alias is the card's position in *devices*, which is
+    why the order of a device set matters. Assumes no card is listed twice
+    (``Runner._check`` refuses that). ``{}`` when the set names no card.
+    """
+    return {f"cuda:{index}": f"cuda:{position}"
+            for position, index in enumerate(cuda_indices(devices))}
+
+
 def child_device(device: str, devices: list[str]) -> str:
     """*device* renumbered for a child that sees only *devices*' cards.
 
@@ -101,13 +121,14 @@ def child_device(device: str, devices: list[str]) -> str:
     could not reach it.
     """
     kind, index = split_device(device)
-    visible = cuda_indices(devices)
-    if kind != "cuda" or index is None or not visible:
+    aliases = device_aliases(devices)
+    if kind != "cuda" or index is None or not aliases:
         return device
-    if index not in visible:
+    alias = aliases.get(f"cuda:{index}")
+    if alias is None:
         raise AssignmentRefused(
             f"device {device!r} is not in the assigned set {devices}")
-    return f"cuda:{visible.index(index)}"
+    return alias
 
 
 def canonical_device(device: str) -> str:
@@ -128,22 +149,40 @@ CHILD_UNSET_ENV = ("CODEFYUI_DB_PATH", "CODEFYUI_AGENT_TOKEN",
 
 
 def child_environment(device: str, devices: list[str]) -> dict[str, Any]:
-    """``{"set", "unset"}`` for ``child.apply_environment``.
+    """``{"set", "unset", "devices"}`` for ``child.apply_environment``.
 
-    The run sees only its own devices: the CUDA cards of its set (or of
-    *device* when the set is empty) as ``CUDA_VISIBLE_DEVICES``, and no
-    card at all when it names none (a ``cpu`` or ``mps`` run). A bare
-    ``cuda`` with no set keeps the visibility the agent inherited.
+    ``devices`` is the effective set: *devices*, or ``[device]`` when the
+    set is empty. The run sees only its cards, as ``CUDA_VISIBLE_DEVICES``
+    in :func:`device_aliases` order, and no card at all when it names none
+    (a ``cpu`` or ``mps`` run). A bare ``cuda`` with no set keeps the
+    visibility the agent inherited. ``apply_environment`` reads only
+    ``set`` and ``unset``.
     """
     env: dict[str, str] = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
     effective = list(devices) or [device]
-    kinds = {split_device(d)[0] for d in effective}
-    indices = cuda_indices(effective)
-    if indices:
-        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in indices)
-    elif "cuda" not in kinds:
+    aliases = device_aliases(effective)
+    if aliases:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(
+            physical.split(":", 1)[1] for physical in aliases)
+    elif "cuda" not in {split_device(d)[0] for d in effective}:
         env["CUDA_VISIBLE_DEVICES"] = ""
-    return {"set": env, "unset": list(CHILD_UNSET_ENV)}
+    return {"set": env, "unset": list(CHILD_UNSET_ENV), "devices": effective}
+
+
+def run_facts(env: dict[str, Any]) -> dict[str, Any]:
+    """What the run subprocess sees of this machine's devices (#774).
+
+    *env* is :func:`child_environment`'s result. Merged into the run's
+    ``execution_facts`` by the control plane from ``run_started``.
+    ``visible_devices`` is ``CUDA_VISIBLE_DEVICES`` exactly as the
+    subprocess gets it (``""`` for a run that sees no card, ``None`` when
+    the agent left the inherited value in place); ``device_aliases`` is
+    :func:`device_aliases` of the same effective set.
+    """
+    return {
+        "visible_devices": (env.get("set") or {}).get("CUDA_VISIBLE_DEVICES"),
+        "device_aliases": device_aliases(env.get("devices") or []),
+    }
 
 
 def read_tail(path: Path, limit: int = STDERR_TAIL_BYTES) -> str:
@@ -294,8 +333,10 @@ class Runner:
         """``(child device, devices)`` for *frame*, or ``AssignmentRefused``.
 
         Every device is compared in canonical form (``mps`` is ``mps:0``).
-        The run's own ``device`` must be offered too, and, when the
-        assignment names a set, belong to it.
+        The run's own ``device`` must be offered too. A set lists each
+        device once, and the run's ``device`` is its first entry (the
+        control plane always sends that): the run's device is the set's
+        ``cuda:0``.
         """
         if self.draining:
             raise AssignmentRefused(REFUSE_DRAINING)
@@ -311,6 +352,10 @@ class Runner:
                 raise AssignmentRefused(
                     f"device {device!r} is not offered by this worker "
                     f"(offered: {sorted(offered)})")
+        for position, canonical in enumerate(canonical_set):
+            if canonical in canonical_set[:position]:
+                raise AssignmentRefused(
+                    f"the assigned set {devices} lists {canonical!r} twice")
         device = canonical_device(frame.device)
         kind, index = split_device(device)
         if index is None:  # a bare kind: any card of that kind will do
@@ -322,15 +367,10 @@ class Runner:
             raise AssignmentRefused(
                 f"device {frame.device!r} is not offered by this worker "
                 f"(offered: {sorted(offered)})")
-        if canonical_set and index is not None and device not in canonical_set:
+        if canonical_set and device != canonical_set[0]:
             raise AssignmentRefused(
-                f"device {frame.device!r} is not in the assigned set "
-                f"{devices}")
-        if canonical_set and index is None and not any(
-                split_device(d)[0] == kind for d in canonical_set):
-            raise AssignmentRefused(
-                f"device {frame.device!r} is not in the assigned set "
-                f"{devices}")
+                f"device {frame.device!r} is not the first device of the "
+                f"assigned set {devices}")
         named = device if kind == "cuda" else frame.device.strip().lower()
         return child_device(named, canonical_set), canonical_set
 
@@ -377,11 +417,12 @@ class Runner:
         run_dir = self.runs_dir / frame.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / OUTPUT_LOG
+        env = child_environment(frame.device, devices)
+        facts = run_facts(env)
         spec = {
             "run_id": frame.run_id, "graph": frame.graph,
             "options": frame.options, "device": device,
-            "env": child_environment(frame.device, devices),
-            "log_path": str(log_path),
+            "env": env, "log_path": str(log_path),
         }
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)
@@ -406,7 +447,8 @@ class Runner:
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
         await self.send(wp.RunStarted(run_id=frame.run_id,
-                                      seq=handle.next_seq(), pid=process.pid))
+                                      seq=handle.next_seq(), pid=process.pid,
+                                      execution_facts=facts))
         handle.reader = threading.Thread(
             target=self._read, args=(handle, self._loop),
             name=f"run-reader-{frame.run_id}", daemon=True)
