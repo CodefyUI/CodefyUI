@@ -25,6 +25,7 @@ received — each links to the release it was published as.
 ### Added
 
 - **Runs accept a `target` option and record where they execute** ([#769]). `POST /api/runs` takes `options.target` as `{"worker": "local", "devices": ["cuda:0", "cuda:1"]}`, and `cdui run` sends it with `--target NAME` and `--devices cuda:0,cuda:1` and prints a Target line. Only `local` (this server) is accepted for now; another worker name, or `any`, is refused with `400` until remote workers arrive. `devices` must list concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`) with no duplicates; its first entry becomes the run's device when `device` is omitted, `auto`, or only the kind (`cuda` with `["cuda:1"]` runs on `cuda:1`), and any other `device` that differs is refused. Run rows gain `worker_id` (`local`, also for runs from before this change) and `devices` (the requested list, or `null`). In this release only the first device is used, to queue and to execute; the rest is recorded as asked and not checked. `cdui run` no longer accepts abbreviated flags other than `--dev` for `--device`. A run submitted without `target` stores the same options, joins the same queue and emits the same events as before.
+- **The device dropdowns show each accelerator's free and total memory** ([#767]). `GET /api/system/devices` adds `"memory": {"total_bytes", "free_bytes", "source"}` (or `null`) to every device, read by the new `core/resources.probe_devices()`: NVML for NVIDIA cards (matched to PyTorch's devices by UUID), PyTorch for ROCm and for any card NVML cannot describe (total only, unless this process has already initialised CUDA), `torch.mps` for Apple MPS (free capped by available system RAM), and `psutil` for CPU. The device rows of the Settings and toolbar selects append `free / total GiB` to accelerators; sentences that name a device do not. Display only; nothing admits or refuses a run by it. `nvidia-ml-py` is a new regular dependency, so the worker agent sees NVIDIA cards without importing torch: `probe_devices(allow_torch=False)` never imports torch.
 
 ### Internal
 
@@ -6173,4 +6174,5 @@ Release candidates before 1.0.0 are on the
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
 [#762]: https://github.com/CodefyUI/CodefyUI/pull/762
 [#766]: https://github.com/CodefyUI/CodefyUI/issues/766
+[#767]: https://github.com/CodefyUI/CodefyUI/issues/767
 [#769]: https://github.com/CodefyUI/CodefyUI/issues/769

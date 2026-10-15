@@ -28,7 +28,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 |----------|--------|------|-------------|
 | `/api/health` | GET | open | 健康探測，包含 `status`、`version`、`boot_id`（用來讓 client 偵測伺服器重新啟動的行程識別碼）、`nodes_loaded`、`presets_loaded`、`caches`（各記憶體內 store 目前使用的位元組與上限；請參閱[訓練記憶體](./training-memory)），以及伺服器以 `--project` 執行時的 `project`（專案目錄絕對路徑）。 |
 | `/api/auth/bootstrap` | GET | open | 對任何 Host 獲准的請求回傳 `{"token": "..."}`——前端取得 session token 的方式。 |
-| `/api/system/devices` | GET | open | 可用於執行圖表的運算裝置：最佳可用的 `default`，加上一份能區分 NVIDIA CUDA、AMD ROCm 與 Apple MPS 的具名 `devices` 清單。支援編輯器的裝置選擇器。 |
+| `/api/system/devices` | GET | open | 可用於執行圖表的運算裝置：最佳可用的 `default`，加上一份能區分 NVIDIA CUDA、AMD ROCm 與 Apple MPS 的具名 `devices` 清單。每個裝置另帶 `memory`：請求當下讀到的 `{total_bytes, free_bytes, source}`（`source` 為 `nvml`、`torch.cuda`、`torch.mps` 或 `psutil`），讀不到時為 `null`。NVIDIA 顯示卡透過 NVML（`nvidia-ml-py`）讀取，讀不到時改用 torch。支援編輯器的裝置選擇器，加速器會顯示可用 / 總共 GiB。 |
 | `/api/system/fingerprint` | GET | open | 此伺服器目前的環境指紋與摘要：`{fingerprint, digest}`。見[執行環境](#run-environment)。 |
 | `/api/system/fingerprints/{digest}` | GET | open | 依摘要取回某個 run 記錄過的指紋；沒有 run 記錄過時回傳 404。run 刪除後仍可查詢。 |
 

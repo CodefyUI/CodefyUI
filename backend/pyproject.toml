@@ -105,6 +105,16 @@ dependencies = [
     # Cross-platform system metrics for `cdui status` (CPU / memory / disk /
     # process table). dev.py falls back to a stdlib-only view when it's absent.
     "psutil>=5.9.0",
+    # Per-card CUDA memory without importing torch (#767). The worker agent
+    # process cannot import torch (only its run subprocess may initialise
+    # CUDA) and must still see its cards, so NVML has to be present on every
+    # GPU install. One small pure-Python package (ctypes over libnvidia-ml,
+    # loaded only on `nvmlInit()`, so harmless without an NVIDIA driver) is
+    # cheaper than an install-variant extra every GPU install path would
+    # have to remember. `core/resources.py` still degrades (to torch, then
+    # null) when it fails. Also read by `core/env_fingerprint.py` for the
+    # driver version.
+    "nvidia-ml-py>=12.535",
     # LLM provider proxy (/api/llm/*) upstream HTTP + SSE streaming. Also in
     # the dev extra for tests; listed here because the proxy is runtime code.
     "httpx>=0.27.0",

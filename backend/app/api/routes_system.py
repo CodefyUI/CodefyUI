@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..core.device_utils import describe_accelerator
 from ..core.env_fingerprint import collect_with_digest
+from ..core.resources import probe_devices, with_memory
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -20,8 +21,20 @@ async def list_devices() -> dict:
     ``devices`` list with human-friendly labels that distinguish NVIDIA CUDA
     from AMD ROCm and label Apple MPS. Every device dropdown (Settings, the
     graph toolbar, node params) renders this one list.
+
+    Each device entry also carries ``"memory": {"total_bytes",
+    "free_bytes", "source"}`` from ``core.resources.probe_devices`` (#767),
+    or ``null`` when no probe could say (``free_bytes`` alone is ``null``
+    when only torch could answer and CUDA is not initialised). Display
+    only, and not cached: the figures are current as of this request.
+    ``describe_accelerator()`` and the probe run together in one worker
+    thread, because both make blocking driver / NVML / psutil calls that do
+    not belong on the event loop.
     """
-    return describe_accelerator()
+    def _describe() -> dict:
+        return with_memory(describe_accelerator(), probe_devices())
+
+    return await asyncio.to_thread(_describe)
 
 
 @router.get("/fingerprint")

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
-import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
+import { useDeviceOptions, deviceLabel, deviceOptionLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
@@ -826,7 +826,7 @@ export function Toolbar() {
             <option value={storedDevice as string} disabled>{storedDevice}</option>
           )}
           {devices.map((d) => (
-            <option key={d.value} value={d.value}>{deviceLabel(d)}</option>
+            <option key={d.value} value={d.value}>{deviceOptionLabel(d)}</option>
           ))}
         </select>
         {/* Every separator is the LAST CHILD of the cluster it trails, never
