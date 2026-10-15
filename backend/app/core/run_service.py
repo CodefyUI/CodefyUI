@@ -1455,6 +1455,12 @@ class _ActiveRun:
     #: training loop that logs ``val_loss`` and also puts ``val_loss`` in its
     #: epoch payload would write the same point twice.
     explicit_metric_nodes: set[str] = field(default_factory=set)
+    #: True once an executor reported an outcome for this run, and the
+    #: ``peak_memory`` it reported (#770). ``_finalize`` records the peak
+    #: only for a run that executed: one stopped before its first node, or
+    #: whose snapshot was unusable, has no number to report, not a null one.
+    executed: bool = False
+    peak_memory: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -2302,6 +2308,10 @@ class RunService:
             logger.warning("run %s: the executor raised: %s", active.run_id,
                            exc, exc_info=True)
             outcome = ExecutionOutcome(STATUS_FAILED, str(exc))
+        active.executed = True
+        peak_memory = getattr(outcome, "peak_memory", None)
+        active.peak_memory = (peak_memory if isinstance(peak_memory, dict)
+                              else None)
         status = getattr(outcome, "status", None)
         if status not in EXECUTOR_STATUSES:
             logger.warning("run %s: the executor reported status %r",
@@ -2332,10 +2342,16 @@ class RunService:
         The run's ADMISSION goes back in the same breath, and before the
         terminal event rather than after it — see ``_release_admission`` for
         the window that closes.
+
+        A run that executed has its peak device memory merged into
+        ``execution_facts`` after the metric flush (#770, see
+        ``_record_peak_memory``).
         """
         active.terminating = True
         self._release_admission(active)
         await self._flush_metrics(active, force=True)
+        if active.executed:
+            await self._record_peak_memory(active)
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
         elif status == STATUS_FAILED:
@@ -2361,6 +2377,24 @@ class RunService:
         else:
             await self._notify_terminal(active.run_id, status)
         await self.prune_retention()
+
+    async def _record_peak_memory(self, active: _ActiveRun) -> None:
+        """Merge the executor's peak memory into ``execution_facts`` (#770).
+
+        Before the terminal event, so a reader woken by it finds the number
+        on the row. ``null`` is a recorded answer (a CPU run, no torch);
+        a facts document that was never written stays unwritten (see
+        ``RunStore.update_execution_facts``). Never raises but cancel: a
+        run must not fail because the thing describing it did.
+        """
+        try:
+            await self.store.update_execution_facts(
+                active.run_id, {"peak_memory": active.peak_memory})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("run %s: could not record its peak memory",
+                           active.run_id, exc_info=True)
 
     # ── sinks (#766) ──────────────────────────────────────────────────────
     #

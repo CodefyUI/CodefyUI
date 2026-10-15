@@ -120,6 +120,46 @@ export function requestedDeviceNote(run: RunSummary | null): string | null {
   return requested === run.queue_key ? null : requested;
 }
 
+/** `6.2 GiB`, or `512 MiB` under one GiB so a small run does not read 0.0. */
+export function formatBytes(bytes: number): string {
+  const mib = bytes / 1024 ** 2;
+  if (mib < 1024) return `${Math.round(mib)} MiB`;
+  return `${(mib / 1024).toFixed(1)} GiB`;
+}
+
+export interface PeakMemoryEntry {
+  device: string;
+  allocated: number;
+  reserved: number | null;
+  exact: boolean;
+}
+
+/**
+ * The run's recorded peak device memory (#770), one entry per device, or
+ * `null` when there is nothing to show: a CPU run (`peak_memory: null`), a
+ * run that has not finished, or one from before the server recorded it.
+ * Entries the server could not have written are skipped rather than shown
+ * as zero.
+ */
+export function peakMemoryEntries(run: RunSummary | null): PeakMemoryEntry[] | null {
+  const peak = run?.execution_facts?.peak_memory;
+  if (!peak || typeof peak !== 'object') return null;
+  const entries: PeakMemoryEntry[] = [];
+  for (const [device, raw] of Object.entries(peak as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const { allocated_bytes: allocated, reserved_bytes: reserved, exact } =
+      raw as Record<string, unknown>;
+    if (typeof allocated !== 'number') continue;
+    entries.push({
+      device,
+      allocated,
+      reserved: typeof reserved === 'number' ? reserved : null,
+      exact: exact === true,
+    });
+  }
+  return entries.length ? entries : null;
+}
+
 /** How many hex characters of an environment digest the header shows. */
 export const DIGEST_SHORT_LENGTH = 12;
 
@@ -239,6 +279,28 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
   // whole digest on hover -- it is what a reader compares across runs.
   const digest = run?.fingerprint_digest ?? null;
   const requestedDevice = requestedDeviceNote(run);
+  // #770: the header shows the largest card's peak; the hover names every
+  // device and says when the number is shared with other in-process runs.
+  const peakEntries = peakMemoryEntries(run);
+  const peakTitle = peakEntries
+    ? [
+        ...peakEntries.map((entry) =>
+          entry.reserved === null
+            ? t('runs.detail.peakMemoryDevice', {
+                device: entry.device,
+                allocated: formatBytes(entry.allocated),
+              })
+            : t('runs.detail.peakMemoryDeviceReserved', {
+                device: entry.device,
+                allocated: formatBytes(entry.allocated),
+                reserved: formatBytes(entry.reserved),
+              }),
+        ),
+        ...(peakEntries.every((entry) => entry.exact)
+          ? []
+          : [t('runs.detail.peakMemoryApproximate')]),
+      ].join('\n')
+    : '';
 
   return (
     <div className={styles.detail} data-testid="run-detail">
@@ -276,6 +338,17 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
             title={t('runs.detail.environmentTitle', { digest })}
           >
             {t('runs.detail.environment')} {digest.slice(0, DIGEST_SHORT_LENGTH)}
+          </span>
+        )}
+        {peakEntries && (
+          <span
+            className={styles.detailMeta}
+            data-testid="run-peak-memory"
+            title={peakTitle}
+          >
+            {t('runs.detail.peakMemory', {
+              amount: formatBytes(Math.max(...peakEntries.map((entry) => entry.allocated))),
+            })}
           </span>
         )}
         <button

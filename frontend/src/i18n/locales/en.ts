@@ -1141,6 +1141,12 @@ const en = {
   'runs.detail.environment': 'Env',
   'runs.detail.environmentTitle':
     'Environment fingerprint (sha256) of the server that started this run: {digest}',
+  'runs.detail.peakMemory': 'Peak memory {amount}',
+  'runs.detail.peakMemoryDevice': '{device}: {allocated} held at the end of the run',
+  'runs.detail.peakMemoryDeviceReserved':
+    '{device}: {allocated} peak allocated, {reserved} peak reserved',
+  'runs.detail.peakMemoryApproximate':
+    'Approximate: runs in the same server process share the device, so a concurrent run on it changes this number.',
   'runs.detail.close': 'Close detail',
   'runs.nodeStatus.running': 'running',
   'runs.nodeStatus.completed': 'completed',

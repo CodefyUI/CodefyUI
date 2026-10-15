@@ -1009,6 +1009,11 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.detail.requestedDevice': '要求的裝置：{device}',
   'runs.detail.environment': '環境',
   'runs.detail.environmentTitle': '啟動此執行的伺服器環境指紋（sha256）：{digest}',
+  'runs.detail.peakMemory': '峰值記憶體 {amount}',
+  'runs.detail.peakMemoryDevice': '{device}：執行結束時佔用 {allocated}',
+  'runs.detail.peakMemoryDeviceReserved': '{device}：峰值配置 {allocated}，峰值保留 {reserved}',
+  'runs.detail.peakMemoryApproximate':
+    '近似值：同一個伺服器行程中的執行共用此裝置，同時在該裝置上的其他執行會改變這個數字。',
   'runs.detail.close': '關閉詳細資訊',
   'runs.nodeStatus.running': '執行中',
   'runs.nodeStatus.completed': '已完成',

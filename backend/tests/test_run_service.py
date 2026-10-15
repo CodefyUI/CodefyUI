@@ -2265,3 +2265,286 @@ async def test_a_cancelled_outcome_stores_no_error(store):
     events = await store.get_events(submitted.run_id)
     assert events[-1].type == EVENT_RUN_STOPPED
     assert events[-1].payload == {"reason": STOP_REASON_CANCELLED}
+
+
+# ── peak memory (#770) ────────────────────────────────────────────────────
+#
+# The executor reads the allocator off ``sys.modules["torch"]``, so a fake
+# namespace stands in for torch there: no CUDA card needed, and the code
+# under test never imports torch itself.
+
+
+class _FakeCuda:
+    def __init__(self, *, available=True, initialized=True, current=0,
+                 allocated=6 * 1024 ** 3, reserved=7 * 1024 ** 3,
+                 fail=False) -> None:
+        self.available = available
+        self.initialized = initialized
+        self.current = current
+        self.allocated = allocated
+        self.reserved = reserved
+        self.fail = fail
+        self.calls: list[tuple[str, int]] = []
+
+    def is_available(self):
+        return self.available
+
+    def is_initialized(self):
+        if self.fail:
+            raise RuntimeError("driver gone")
+        return self.initialized
+
+    def current_device(self):
+        return self.current
+
+    def reset_peak_memory_stats(self, index):
+        self.calls.append(("reset", index))
+
+    def max_memory_allocated(self, index):
+        if self.fail:
+            raise RuntimeError("driver gone")
+        self.calls.append(("allocated", index))
+        return self.allocated
+
+    def max_memory_reserved(self, index):
+        self.calls.append(("reserved", index))
+        return self.reserved
+
+
+def _fake_torch(cuda=None, *, mps_available=False, mps_bytes=0,
+                mps_backend=True):
+    from types import SimpleNamespace
+
+    backends = SimpleNamespace()
+    if mps_backend:
+        backends.mps = SimpleNamespace(is_available=lambda: mps_available)
+    return SimpleNamespace(
+        cuda=cuda or _FakeCuda(available=False),
+        backends=backends,
+        mps=SimpleNamespace(driver_allocated_memory=lambda: mps_bytes),
+    )
+
+
+async def _run_in_process(monkeypatch, device, outcome=None):
+    """``InProcessExecutor.run`` with the graph part stubbed out."""
+    from types import SimpleNamespace
+
+    from app.core.execution_context import ExecutionContext
+    from app.core.executors import ExecutionOutcome, InProcessExecutor
+
+    executor = InProcessExecutor()
+
+    async def _execute(request):
+        return outcome or ExecutionOutcome(STATUS_SUCCEEDED)
+
+    monkeypatch.setattr(executor, "_execute", _execute)
+    request = SimpleNamespace(run_id="r",
+                              context=ExecutionContext(device=device))
+    return await executor.run(request)
+
+
+async def test_in_process_cuda_peak_is_reset_then_read(monkeypatch):
+    import sys
+
+    from app.core.executors import ExecutionOutcome
+
+    cuda = _FakeCuda()
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(
+        monkeypatch, "cuda:1", ExecutionOutcome(STATUS_FAILED, "CUDA OOM"))
+
+    # Any outcome carries the peak: the OOM run is the one that needs it.
+    assert (outcome.status, outcome.error) == (STATUS_FAILED, "CUDA OOM")
+    assert outcome.peak_memory == {"cuda:1": {
+        "allocated_bytes": 6 * 1024 ** 3, "reserved_bytes": 7 * 1024 ** 3,
+        "exact": False}}
+    assert cuda.calls == [("reset", 1), ("allocated", 1), ("reserved", 1)]
+
+
+async def test_a_bare_cuda_device_reads_the_current_card(monkeypatch):
+    import sys
+
+    cuda = _FakeCuda(current=2)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(monkeypatch, "cuda")
+    assert list(outcome.peak_memory) == ["cuda:2"]
+    assert cuda.calls[0] == ("reset", 2)
+
+
+async def test_an_uninitialised_cuda_context_is_not_created(monkeypatch):
+    """Resetting would create the context; the counters read zero anyway."""
+    import sys
+
+    cuda = _FakeCuda(initialized=False, allocated=0, reserved=0)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(monkeypatch, "cuda:0")
+    assert ("reset", 0) not in cuda.calls
+    assert outcome.peak_memory == {"cuda:0": {
+        "allocated_bytes": 0, "reserved_bytes": 0, "exact": False}}
+
+
+@pytest.mark.parametrize("device", ["cpu", "", "cuda:x"])
+async def test_cpu_and_unusable_devices_record_null(monkeypatch, device):
+    import sys
+
+    cuda = _FakeCuda(available=False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(monkeypatch, device)
+    assert outcome.peak_memory is None
+    assert not any(call[0] == "reset" for call in cuda.calls)
+
+
+async def test_no_torch_loaded_records_null_and_imports_nothing(monkeypatch):
+    import sys
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    for device in ("cuda:0", "mps"):
+        outcome = await _run_in_process(monkeypatch, device)
+        assert outcome.peak_memory is None
+    assert "torch" not in sys.modules
+
+
+async def test_unavailable_or_broken_cuda_records_null(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch",
+                        _fake_torch(_FakeCuda(available=False)))
+    assert (await _run_in_process(monkeypatch, "cuda:0")).peak_memory is None
+
+    monkeypatch.setitem(sys.modules, "torch",
+                        _fake_torch(_FakeCuda(fail=True)))
+    outcome = await _run_in_process(monkeypatch, "cuda:0")
+    assert outcome.status == STATUS_SUCCEEDED
+    assert outcome.peak_memory is None
+
+
+async def test_mps_records_driver_memory_at_the_end(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(
+        mps_available=True, mps_bytes=3 * 1024 ** 3))
+    outcome = await _run_in_process(monkeypatch, "mps:0")
+    assert outcome.peak_memory == {"mps": {
+        "allocated_bytes": 3 * 1024 ** 3, "exact": False}}
+
+    for torch in (_fake_torch(mps_available=False),
+                  _fake_torch(mps_backend=False)):
+        monkeypatch.setitem(sys.modules, "torch", torch)
+        assert (await _run_in_process(monkeypatch, "mps")).peak_memory is None
+
+
+def test_read_peak_memory_reports_exact_as_told(monkeypatch):
+    import sys
+
+    from app.core.executors import read_peak_memory
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(_FakeCuda()))
+    assert read_peak_memory("cuda:0", exact=True)["cuda:0"]["exact"] is True
+
+
+async def test_a_cpu_run_stores_peak_memory_null(store, service):
+    """The real in-process executor end to end: a CPU run's facts carry an
+    explicit ``peak_memory: null`` next to what ``_begin`` recorded."""
+    submitted = await service.submit(_graph(), options={"device": "cpu"})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED
+    assert "peak_memory" in record.execution_facts
+    assert record.execution_facts["peak_memory"] is None
+    assert record.execution_facts["resolved"]["device"] == "cpu"
+
+
+async def test_the_executors_peak_memory_lands_in_the_facts(
+        store, monkeypatch):
+    """Merged before the terminal event, so a reader woken by it sees it."""
+    from app.core.executors import ExecutionOutcome
+
+    peak = {"cuda:0": {"allocated_bytes": 5, "reserved_bytes": 9,
+                       "exact": True}}
+    seen_at_terminal: list[Any] = []
+    original_emit = RunService._emit
+
+    async def _spy(self, run_id, event_type, payload):
+        if event_type == EVENT_RUN_COMPLETED:
+            row = await self.store.get_run(run_id)
+            seen_at_terminal.append(row.execution_facts.get("peak_memory"))
+        return await original_emit(self, run_id, event_type, payload)
+
+    monkeypatch.setattr(RunService, "_emit", _spy)
+    executor = _RecordingExecutor(
+        ExecutionOutcome(STATUS_SUCCEEDED, None, peak_memory=peak))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.execution_facts["peak_memory"] == peak
+    assert seen_at_terminal == [peak]
+    types = [e.type for e in await store.get_events(submitted.run_id)]
+    assert types == [EVENT_RUN_STARTED, EVENT_RUN_COMPLETED]
+
+
+@pytest.mark.parametrize("kind", ["raises", "not_a_dict", "legacy"])
+async def test_an_unusable_peak_is_stored_as_null(store, kind):
+    from types import SimpleNamespace
+
+    from app.core.executors import ExecutionOutcome
+
+    class _Raises:
+        async def run(self, request):
+            raise RuntimeError("executor exploded")
+
+    executor = {
+        "raises": _Raises(),
+        "not_a_dict": _RecordingExecutor(ExecutionOutcome(
+            STATUS_SUCCEEDED, None, peak_memory=[1, 2])),  # type: ignore[arg-type]
+        # An outcome object without ``peak_memory`` at all.
+        "legacy": _RecordingExecutor(
+            SimpleNamespace(status=STATUS_SUCCEEDED, error=None)),
+    }[kind]
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert "peak_memory" in record.execution_facts
+    assert record.execution_facts["peak_memory"] is None
+
+
+async def test_a_run_that_never_executed_records_no_peak(store):
+    """Finalized without an executor outcome (stopped before its first
+    node, an unusable snapshot): no number, and not a null one either."""
+    from app.core.execution_context import ExecutionContext
+    from app.core.run_service import _ActiveRun, _Broadcast
+
+    run = await store.create_run(graph_snapshot=_graph())
+    await store.mark_running(run.id, execution_facts={"schema_version": 1})
+    svc = RunService(store, shutdown_grace_s=2.0)
+    try:
+        active = _ActiveRun(run_id=run.id, context=ExecutionContext(),
+                            signal=_Broadcast())
+        await svc._finalize(active, STATUS_CANCELLED, None)
+    finally:
+        await svc.shutdown()
+    record = await store.get_run(run.id)
+    assert record.status == STATUS_CANCELLED
+    assert record.execution_facts == {"schema_version": 1}
+
+
+async def test_a_failing_facts_write_does_not_fail_the_run(store, monkeypatch):
+    from app.core.executors import ExecutionOutcome
+
+    async def _boom(run_id, patch):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "update_execution_facts", _boom)
+    executor = _RecordingExecutor(ExecutionOutcome(STATUS_SUCCEEDED))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert record.status == STATUS_SUCCEEDED

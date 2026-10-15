@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from .execution_context import (
@@ -120,6 +121,13 @@ class ExecutionOutcome:
 
     status: str
     error: str | None = None
+    #: The run's device memory high-water mark (#770), merged into the row's
+    #: ``execution_facts.peak_memory`` by ``RunService._finalize``. A map of
+    #: device to ``{"allocated_bytes", "reserved_bytes", "exact"}``
+    #: (``reserved_bytes`` is CUDA only); None for a CPU run, a run without
+    #: torch loaded, or when the allocator could not be read. See
+    #: :func:`read_peak_memory`.
+    peak_memory: dict[str, Any] | None = None
 
 
 class Executor(Protocol):
@@ -138,6 +146,19 @@ class InProcessExecutor:
     """
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
+        """Run the graph, classify the outcome and attach its peak memory.
+
+        Never raises but cancel. The peak is read whatever the outcome: a
+        run that failed with an out-of-memory error is the one whose number
+        matters most. ``exact`` is False here: see :func:`read_peak_memory`.
+        """
+        device = request.context.device
+        reset_peak_memory(device)
+        outcome = await self._execute(request)
+        return replace(outcome,
+                       peak_memory=read_peak_memory(device, exact=False))
+
+    async def _execute(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph and classify the outcome. Never raises but cancel."""
         graph = request.graph
         options = request.options
@@ -198,6 +219,112 @@ class InProcessExecutor:
             logger.warning("run %s failed: %s", request.run_id, exc,
                            exc_info=True)
             return ExecutionOutcome(STATUS_FAILED, str(exc))
+
+
+# ── peak memory (#770) ────────────────────────────────────────────────────
+#
+# torch is read off ``sys.modules`` rather than imported: this module never
+# imported it, and a run that never loaded torch has allocated no device
+# memory, so "not loaded" is the honest null rather than a reason to pay
+# for the import. A CUDA or MPS run has loaded it long before this point
+# (device resolution does).
+
+
+def _device_kind_index(device: str | None) -> tuple[str, int | None]:
+    """``("cuda", 1)`` for ``"cuda:1"``, ``("mps", None)`` for ``"mps"``."""
+    kind, _, index = (device or "").partition(":")
+    try:
+        return kind, int(index) if index else None
+    except ValueError:
+        return kind, None
+
+
+def _cuda_index(torch: Any, index: int | None) -> int | None:
+    """The CUDA index to read, or None when CUDA is not usable."""
+    if not torch.cuda.is_available():
+        return None
+    return int(torch.cuda.current_device()) if index is None else index
+
+
+def reset_peak_memory(device: str | None) -> None:
+    """Start a fresh CUDA high-water mark on *device*. Never raises.
+
+    Only for a CUDA device whose context already exists: resetting an
+    uninitialised one would create the context for a run that may never
+    touch the card, and its counters are zero anyway. MPS has no peak
+    counter to reset; CPU has nothing to read.
+
+    The counters are per process and per card, so this also restarts the
+    peak of any other in-process run on the same card (and the "peak this
+    process" figure of an out-of-memory digest): one reason in-process
+    numbers are recorded as ``exact: false``.
+    """
+    kind, index = _device_kind_index(device)
+    if kind != "cuda":
+        return
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    try:
+        if not torch.cuda.is_initialized():
+            return
+        resolved = _cuda_index(torch, index)
+        if resolved is not None:
+            torch.cuda.reset_peak_memory_stats(resolved)
+    except Exception:  # noqa: BLE001 - observability never fails a run
+        logger.debug("could not reset the CUDA peak memory statistics",
+                     exc_info=True)
+
+
+def read_peak_memory(
+    device: str | None, *, exact: bool,
+) -> dict[str, Any] | None:
+    """The run's peak device memory, as ``execution_facts.peak_memory``.
+
+    - CUDA: ``{"cuda:N": {"allocated_bytes", "reserved_bytes", "exact"}}``
+      from ``max_memory_allocated`` / ``max_memory_reserved`` since
+      :func:`reset_peak_memory`.
+    - MPS: ``{"mps": {"allocated_bytes", "exact"}}`` from
+      ``torch.mps.driver_allocated_memory()`` at the END of the run. MPS
+      has no peak counter, so this is what the driver still holds when the
+      run ends, a lower bound on the peak.
+    - CPU, torch never loaded, or any read failing: None.
+
+    *exact* is the caller's to say. In-process runs share one CUDA context
+    (and one MPS driver allocation) with everything else in this process,
+    so a concurrent run on the same card inflates the number, and that
+    run's own reset can lower it: those pass ``exact=False``. A run alone
+    in its own process (the worker subprocess, #771) passes True.
+    """
+    kind, index = _device_kind_index(device)
+    if kind not in ("cuda", "mps"):
+        return None
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        if kind == "cuda":
+            resolved = _cuda_index(torch, index)
+            if resolved is None:
+                return None
+            return {f"cuda:{resolved}": {
+                "allocated_bytes": int(
+                    torch.cuda.max_memory_allocated(resolved)),
+                "reserved_bytes": int(
+                    torch.cuda.max_memory_reserved(resolved)),
+                "exact": bool(exact),
+            }}
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is None or not mps_backend.is_available():
+            return None
+        return {"mps": {
+            "allocated_bytes": int(torch.mps.driver_allocated_memory()),
+            "exact": bool(exact),
+        }}
+    except Exception:  # noqa: BLE001 - observability never fails a run
+        logger.debug("could not read the %s peak memory", kind,
+                     exc_info=True)
+        return None
 
 
 # ── engine bridges ────────────────────────────────────────────────────────

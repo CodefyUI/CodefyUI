@@ -3,8 +3,10 @@ import { render, screen, fireEvent, waitFor, within, act, createEvent } from '@t
 import {
   DIGEST_SHORT_LENGTH,
   RunsPanel,
+  formatBytes,
   formatDuration,
   formatStarted,
+  peakMemoryEntries,
   requestedDeviceNote,
   runDevice,
 } from './RunsPanel';
@@ -129,6 +131,38 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// ── peak memory helpers (#770) ────────────────────────────────────────────
+
+describe('formatBytes', () => {
+  it('prints MiB under one GiB and one-decimal GiB from there', () => {
+    expect(formatBytes(0)).toBe('0 MiB');
+    expect(formatBytes(300 * 1024 ** 2)).toBe('300 MiB');
+    expect(formatBytes(1024 ** 3)).toBe('1.0 GiB');
+    expect(formatBytes(6.2 * 1024 ** 3)).toBe('6.2 GiB');
+  });
+});
+
+describe('peakMemoryEntries', () => {
+  const withPeak = (peak: unknown) =>
+    makeRun({ id: 'p', execution_facts: { peak_memory: peak } as Record<string, unknown> });
+
+  it('is null when nothing was recorded', () => {
+    expect(peakMemoryEntries(null)).toBeNull();
+    expect(peakMemoryEntries(makeRun({ id: 'p' }))).toBeNull();
+    expect(peakMemoryEntries(withPeak(null))).toBeNull();
+    expect(peakMemoryEntries(withPeak('6 GiB'))).toBeNull();
+    expect(peakMemoryEntries(withPeak({}))).toBeNull();
+  });
+
+  it('skips entries the server could not have written', () => {
+    expect(peakMemoryEntries(withPeak({
+      'cuda:0': null,
+      'cuda:1': { allocated_bytes: '5' },
+      mps: { allocated_bytes: 7 },
+    }))).toEqual([{ device: 'mps', allocated: 7, reserved: null, exact: false }]);
+  });
+});
+
 // ── list rendering ────────────────────────────────────────────────────────
 
 describe('RunsPanel — the table', () => {
@@ -153,6 +187,13 @@ describe('RunsPanel — the table', () => {
     // train_loss wins over lr for the loss column.
     expect(within(row).getByText('0.0312')).toBeInTheDocument();
     expect(screen.getByText(t('runs.showing', { shown: 1, total: 7 }))).toBeInTheDocument();
+  });
+
+  it('falls back to any series named like a loss, alphabetically', async () => {
+    await renderPanel([
+      makeRun({ id: 'a', final_metrics: { zz_loss: 0.9, eval_loss: 0.25, acc: 0.8 } }),
+    ]);
+    expect(within(rowOf('a')).getByText('0.2500')).toBeInTheDocument();
   });
 
   it('labels an unnamed run and dashes a run with no loss series', async () => {
@@ -509,6 +550,98 @@ describe('RunsPanel — detail view', () => {
       `${t('runs.detail.environment')} ${digest.slice(0, DIGEST_SHORT_LENGTH)}`,
     );
     expect(chip.getAttribute('title')).toBe(t('runs.detail.environmentTitle', { digest }));
+  });
+
+  // #770: the run's peak device memory, from execution_facts.peak_memory.
+  it('shows the peak memory with every device and the approximation on hover', async () => {
+    const recorded = {
+      ...liveRun,
+      execution_facts: {
+        peak_memory: {
+          'cuda:0': { allocated_bytes: 6.2 * 1024 ** 3, reserved_bytes: 7 * 1024 ** 3, exact: false },
+          'cuda:1': { allocated_bytes: 512 * 1024 ** 2, reserved_bytes: 1024 ** 3, exact: true },
+        },
+      },
+    };
+    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
+    await renderPanel([recorded]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    const chip = screen.getByTestId('run-peak-memory');
+    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: '6.2 GiB' }));
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:0', allocated: '6.2 GiB', reserved: '7.0 GiB',
+      }),
+      t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:1', allocated: '512 MiB', reserved: '1.0 GiB',
+      }),
+      t('runs.detail.peakMemoryApproximate'),
+    ].join('\n'));
+  });
+
+  it('shows an exact MPS reading without the approximation note', async () => {
+    const recorded = {
+      ...liveRun,
+      execution_facts: { peak_memory: { mps: { allocated_bytes: 3 * 1024 ** 3, exact: true } } },
+    };
+    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
+    await renderPanel([recorded]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    const chip = screen.getByTestId('run-peak-memory');
+    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: '3.0 GiB' }));
+    expect(chip.getAttribute('title')).toBe(
+      t('runs.detail.peakMemoryDevice', { device: 'mps', allocated: '3.0 GiB' }),
+    );
+  });
+
+  it('renders every lifecycle line of the log tail', async () => {
+    const ts = '2026-08-01T10:00:00.000000Z';
+    api.getRunEvents.mockReset();
+    api.getRunEvents
+      .mockResolvedValueOnce({
+        run_id: 'r1', status: 'running', active: true, cursor: 9,
+        events: [
+          { cursor: 1, type: 'execution_start', ts, payload: {} },
+          { cursor: 2, type: 'run_warning', ts, payload: { detail: 'slow disk' } },
+          { cursor: 3, type: 'run_warning', ts, payload: {} },
+          { cursor: 4, type: 'execution_error', ts, payload: { error: 'boom' } },
+          { cursor: 5, type: 'execution_error', ts, payload: {} },
+          { cursor: 6, type: 'execution_stopped', ts, payload: { reason: 'interrupted' } },
+          { cursor: 7, type: 'execution_stopped', ts, payload: { reason: 'paused' } },
+          { cursor: 8, type: 'execution_stopped', ts, payload: {} },
+          { cursor: 9, type: 'execution_complete', ts, payload: {} },
+        ],
+      })
+      .mockResolvedValue({
+        run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 9,
+      });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    await waitFor(() =>
+      expect(detail.getByText(t('runs.log.completed'))).toBeInTheDocument(),
+    );
+    expect(detail.getByText(t('runs.log.started'))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: 'slow disk' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: '' }).trim())).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: 'boom' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: '' }).trim())).toBeInTheDocument();
+    expect(detail.getByText(
+      t('runs.log.stopped', { reason: t('runs.status.interrupted') }),
+    )).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.stopped', { reason: 'paused' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.stopped', { reason: '' }))).toBeInTheDocument();
+  });
+
+  it('shows no peak memory for a CPU run (null) or one that recorded none', async () => {
+    const cpu = { ...liveRun, execution_facts: { peak_memory: null } };
+    api.getRun.mockResolvedValue({ ...cpu, last_cursor: 4 });
+    await renderPanel([cpu]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    expect(screen.queryByTestId('run-peak-memory')).toBeNull();
   });
 
   it('shows no environment digest for a run that recorded none', async () => {
