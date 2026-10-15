@@ -237,7 +237,6 @@ from .executors import (
     ExecutionRequest,
     Executor,
     InProcessExecutor,
-    WARNING_LATE_RESULT,
     RunSinks,
     WorkerExecutor,
 )
@@ -2870,22 +2869,22 @@ class RunService:
                                   frame: Any) -> None:
         """A worker reported how a run ended after it had ended here (#783).
 
-        Recorded as a ``late_result`` warning on the run's log, with the
-        worker's status and error in its detail. The row keeps the status
-        it has: ``mark_finished`` only lands on active rows, and a late
-        report does not overwrite history.
+        Recorded as ``execution_facts.late_result`` (``{status, error,
+        at}``) and logged. Never as an event: the run's log already ended
+        with its terminal event, and a reader that stops there must not
+        find more. Never as a status: ``mark_finished`` only lands on
+        active rows, and a late report does not overwrite history.
         """
         record = await self.store.get_run(run_id)
         if record is None:
             logger.info("run %s: late result from worker %s, but the run "
                         "is gone", run_id, worker)
             return
-        detail = (f"worker {worker} reported this run {frame.status} after "
-                  f"it had ended here as {record.status}")
-        if frame.error:
-            detail = f"{detail}: {frame.error}"
-        await self._emit(run_id, EVENT_WARNING, {
-            "kind": WARNING_LATE_RESULT, "detail": detail, "node_id": None})
+        logger.warning("run %s ended here as %s; worker %s reports it %s",
+                       run_id, record.status, worker, frame.status)
+        await self.store.update_execution_facts(run_id, {"late_result": {
+            "status": frame.status, "error": frame.error,
+            "worker_id": worker, "at": utc_now_iso()}})
 
     def worker_status(self, run_id: str) -> dict[str, Any] | None:
         """Where an active worker run's worker stands (#783), or None.

@@ -434,6 +434,18 @@ describe('sweepStore', () => {
     expect(api.getSweep).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps polling a failed sweep while a child waits for its worker (#783)', async () => {
+    vi.useFakeTimers();
+    const failedAway = detail('failed');
+    failedAway.counts = { ...failedAway.counts, queued: 0, running: 0, disconnected: 1 };
+    useSweepStore.setState({ selectedSweepId: 's1', detail: failedAway });
+    api.getSweep.mockResolvedValue(failedAway);
+
+    useSweepStore.getState().startPolling();
+    await vi.advanceTimersByTimeAsync(SWEEP_POLL_MS * 2);
+    expect(api.getSweep).toHaveBeenCalledTimes(2);
+  });
+
   it('loads the final objective point before polling stops on a same-state failed sweep', async () => {
     vi.useFakeTimers();
     const failedActive = detail('failed');

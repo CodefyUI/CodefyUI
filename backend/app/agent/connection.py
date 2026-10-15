@@ -50,6 +50,8 @@ BACKOFF_MIN_S = 1.0
 BACKOFF_MAX_S = 30.0
 #: How long the control plane has to answer ``hello``.
 WELCOME_TIMEOUT_S = 10.0
+#: Frames read from a spool at a time during a replay.
+REPLAY_BATCH = 256
 
 
 def _encode_or_warn(frame: Any) -> str:
@@ -183,25 +185,29 @@ class AgentConnection:
         """Send *frame* on the live connection. False when it was not sent.
 
         A per-run frame (one with a ``run_id`` and a ``seq``) is spooled
-        first, so one that is not sent now is replayed after the next
-        ``welcome``; any other frame (a heartbeat) is dropped.
+        first, in a thread, and goes out now only when it is the next one
+        the connection owes that run; otherwise the replay sends it, in
+        order. Any other frame (a heartbeat) is dropped when there is no
+        connection.
         """
+        run_id = getattr(frame, "run_id", None)
+        seq = getattr(frame, "seq", None)
+        line = _encode_or_warn(frame)
         async with self._send_lock:
-            run_id = getattr(frame, "run_id", None)
-            seq = getattr(frame, "seq", None)
             if run_id is None or seq is None:
-                return await self._send_raw(frame, _encode_or_warn(frame))
-            line = _encode_or_warn(frame)
-            spool = self.spools.spool(run_id)
+                return await self._send_raw(frame, line)
+            spool = await asyncio.to_thread(self.spools.spool, run_id)
             try:
-                spool.append(seq, line,
-                             final=isinstance(frame, wp.RunFinished))
+                await asyncio.to_thread(spool.append, seq, line,
+                                        isinstance(frame, wp.RunFinished))
             except OSError:
                 logger.exception("run %s: could not spool a %s frame",
                                  run_id, frame.type)
+            if seq != spool.sent + 1:
+                return False  # a replay is catching up; it sends this one
             if not await self._send_raw(frame, line):
                 return False
-            spool.sent = max(spool.sent, seq)
+            spool.sent = seq
             return True
 
     async def _send_raw(self, frame: Any, line: str) -> bool:
@@ -232,30 +238,45 @@ class AgentConnection:
         return [wp.RunAliveEntry(run_id=run_id, last_seq=seq)
                 for run_id, seq in last.items()]
 
-    async def _resume(self, ws: Any) -> None:
-        """Make *ws* the live connection: ``run_alive``, then every frame
-        the control plane has not acknowledged, in order (#783).
+    async def _announce(self, ws: Any) -> None:
+        """Make *ws* the live connection and say ``run_alive`` (#783).
 
-        Under the send lock, so no new frame overtakes the replay.
+        Every spool owes the new connection everything after its last
+        ack. Under the send lock, so no frame goes out before it.
         """
         async with self._send_lock:
             self._ws = ws
-            entries = self.alive_entries()
-            if not entries:
-                return
-            await ws.send(wp.encode_frame(wp.RunAlive(runs=entries)))
-            replayed = 0
             for spool in self.spools.spools():
                 spool.sent = spool.acked
-                for seq, line in spool.unacked():
-                    if seq <= spool.acked:  # acked while we were replaying
-                        continue
-                    await ws.send(line)
-                    spool.sent = seq
-                    replayed += 1
-            if replayed:
-                logger.info("replayed %d frame(s) for %d run(s)", replayed,
-                            len(entries))
+            entries = self.alive_entries()
+            if entries:
+                await ws.send(wp.encode_frame(wp.RunAlive(runs=entries)))
+
+    async def _replay(self, ws: Any) -> None:
+        """Send every unacknowledged frame, in order, in bounded batches.
+
+        The send lock is taken per frame, so heartbeats go out in between;
+        a run's new frames wait for its replay (``send_frame`` sends only
+        the frame after the last one sent).
+        """
+        replayed = 0
+        for spool in self.spools.spools():
+            while True:
+                batch = await asyncio.to_thread(spool.read_after, spool.sent,
+                                                REPLAY_BATCH)
+                if not batch:
+                    break
+                for seq, line in batch:
+                    async with self._send_lock:
+                        if self._ws is not ws:
+                            return
+                        if seq <= spool.sent:
+                            continue
+                        await ws.send(line)
+                        spool.sent = seq
+                        replayed += 1
+        if replayed:
+            logger.info("replayed %d frame(s)", replayed)
 
     async def _device_reports(self) -> list[wp.DeviceReport]:
         try:
@@ -349,10 +370,16 @@ class AgentConnection:
             asyncio.create_task(self._receive(ws), name="agent-receive"),
             asyncio.create_task(stop.wait(), name="agent-stop"),
         ]
+        background: list[asyncio.Task] = []
         try:
-            await self._resume(ws)
+            await self._announce(ws)
+            # Heartbeats first: a long replay must not read as silence.
             tasks.append(asyncio.create_task(self._heartbeats(),
                                              name="agent-heartbeat"))
+            # Not a reason to stop serving when it is done; a closed socket
+            # ends the receive task, which is.
+            background.append(asyncio.create_task(self._replay(ws),
+                                                  name="agent-replay"))
             done, _ = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED)
             if stop.is_set():
@@ -364,9 +391,9 @@ class AgentConnection:
                     raise task.exception()  # type: ignore[misc]
         finally:
             self._ws = None
-            for task in tasks:
+            for task in tasks + background:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, *background, return_exceptions=True)
         return True
 
     async def _heartbeats(self) -> None:
@@ -404,11 +431,13 @@ class AgentConnection:
             logger.info("draining: no new runs until the next connection")
             self.runner.draining = True
         elif isinstance(frame, wp.Ack):
-            if self.spools.ack(frame.run_id, frame.seq) \
-                    and frame.run_id not in self.runner.runs:
-                # A run that never started here (a refused assignment) has
-                # no handle to mark its directory for retention.
-                mark_finished(self.runner.runs_dir / frame.run_id)
+            done = await asyncio.to_thread(self.spools.ack, frame.run_id,
+                                           frame.seq)
+            if done and self.runner.take_refused(frame.run_id):
+                # A refused assignment has no handle to mark its directory
+                # for retention; a run that started is marked when it ends.
+                await asyncio.to_thread(
+                    mark_finished, self.runner.runs_dir / frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

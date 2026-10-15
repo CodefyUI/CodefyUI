@@ -119,7 +119,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
     </section>
   );
 
-  const activeOrQueued = (detail.counts.running ?? 0) + (detail.counts.queued ?? 0);
+  const activeOrQueued = (detail.counts.running ?? 0) + (detail.counts.disconnected ?? 0)
+    + (detail.counts.queued ?? 0);
   const canCancel = detail.state === 'running'
     || (detail.state === 'failed' && activeOrQueued > 0);
   // Finished is not success: a stopped or partly failed sweep finishes too.

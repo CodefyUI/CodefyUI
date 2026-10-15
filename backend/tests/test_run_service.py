@@ -580,7 +580,7 @@ async def test_a_late_result_is_a_warning_and_never_a_status(store):
     assert registry.on_late_result == service._record_late_result
     run = await store.create_run(graph_snapshot=_graph(), options={},
                                  provenance=RunProvenance())
-    await store.mark_running(run.id)
+    await store.mark_running(run.id, execution_facts={"schema_version": 2})
     await store.mark_finished(run.id, STATUS_INTERRUPTED, error="away")
     await service._record_late_result("box", run.id, wp.RunFinished(
         run_id=run.id, seq=9, status="failed", error="boom"))
@@ -588,12 +588,12 @@ async def test_a_late_result_is_a_warning_and_never_a_status(store):
         run_id="gone", seq=1, status="succeeded"))
     row = await store.get_run(run.id)
     assert (row.status, row.error) == (STATUS_INTERRUPTED, "away")
-    events = await store.get_events(run.id)
-    assert [(e.type, e.payload["kind"]) for e in events] == [
-        ("run_warning", "late_result")]
-    assert events[0].payload["detail"] == (
-        "worker box reported this run failed after it had ended here as "
-        "interrupted: boom")
+    late = row.execution_facts["late_result"]
+    assert (late["status"], late["error"], late["worker_id"]) == (
+        "failed", "boom", "box")
+    assert late["at"].endswith("Z")
+    # Never an event: the log already ended with its terminal one.
+    assert await store.get_events(run.id) == []
     assert service.worker_status(run.id) is None
     await registry.shutdown()
 

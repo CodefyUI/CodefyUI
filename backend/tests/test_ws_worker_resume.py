@@ -6,7 +6,9 @@ producing frames into the spool, reconnects, says ``run_alive`` and
 replays what the control plane has not acknowledged. Within the resume
 grace the run carries on to a complete, gap-free event log and a
 ``succeeded`` row; past it the run is ``interrupted`` and the worker's
-eventual ``run_finished`` is recorded as a late result.
+eventual ``run_finished`` is recorded as a late result in
+``execution_facts`` (never as an event after the terminal one). A stop
+that waited for the worker cannot reach it before ``welcome``.
 """
 
 from __future__ import annotations
@@ -84,7 +86,7 @@ class SpoolingAgent:
         self.agent = agent
         await agent.send(wp.RunAlive(runs=[wp.RunAliveEntry(
             run_id=self.run_id, last_seq=self.seq)]))
-        for _seq, line in self.spool.unacked():
+        for _seq, line in self.spool.read_after(self.spool.acked, 10**6):
             await agent.ws.send_text(line)
 
 
@@ -162,7 +164,6 @@ async def test_a_drop_within_the_grace_resumes_to_a_gap_free_log(env,
     assert kinds == ["worker_disconnected", "worker_reconnected"]
     assert [e.cursor for e in events] == list(range(1, len(events) + 1))
     assert events[-1].type == "execution_complete"
-    assert record.execution_facts["last_seq"] == final.seq
     assert service.worker_status(run_id) is None
     assert service._slots == {}
 
@@ -202,14 +203,9 @@ async def test_past_the_grace_the_run_is_interrupted_and_a_late_result_noted(
             await spooler.resume(agent)
             await _drain_acks(spooler, final.seq)
 
-            async def late_noted() -> bool:
-                events = await service.store.get_events(run_id)
-                return any(e.type == "run_warning"
-                           and e.payload["kind"] == "late_result"
-                           for e in events)
-
             for _ in range(200):
-                if await late_noted():
+                row = await _status(client, run_id)
+                if row["late_result"] is not None:
                     break
                 await asyncio.sleep(0.02)
     assert spooler.spool.complete  # acknowledged, so the agent lets go
@@ -219,11 +215,48 @@ async def test_past_the_grace_the_run_is_interrupted_and_a_late_result_noted(
     assert [(c.run_id, c.grace_s) for c in cancels] == [(run_id, 0)]
     record = await service.store.get_run(run_id)
     assert record.status == "interrupted"  # not overwritten
+    late = row["late_result"]
+    assert (late["status"], late["error"], late["worker_id"]) == (
+        "succeeded", None, "box")
+    assert late["at"]
+    assert record.execution_facts["late_result"] == late
     events = await service.store.get_events(run_id)
-    late = [e.payload for e in events if e.type == "run_warning"
-            and e.payload["kind"] == "late_result"]
-    assert len(late) == 1
-    assert "reported this run succeeded" in late[0]["detail"]
-    assert "as interrupted" in late[0]["detail"]
-    # The late frames were not delivered as events of the ended run.
+    # Nothing after the terminal event: neither the late frames nor a note.
+    assert events[-1].type == "execution_stopped"
     assert not any(e.type == "node_status" for e in events)
+
+
+async def test_a_stop_waiting_for_the_worker_never_precedes_welcome(env):
+    """Review of #783: once a reconnecting worker is registered, executors
+    send through its socket; ``welcome`` must already be out."""
+    service, registry = env
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            run_id = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+                ).json()["run_id"]
+            await agent.recv()
+            await agent.send(wp.RunStarted(run_id=run_id, seq=1))
+        for _ in range(250):
+            if (await _status(client, run_id))["status"] == "disconnected":
+                break
+            await asyncio.sleep(0.02)
+        assert (await client.post(f"/api/runs/{run_id}/cancel")
+                ).status_code == 200
+        await asyncio.sleep(0.5)  # the stop waits for the worker
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.send(wp.Hello(name="box", version="t", devices=[
+                wp.DeviceReport(value="cpu", kind="cpu")]))
+            first = await agent.recv(acks=True)
+            assert isinstance(first, wp.Welcome)
+            await agent.send(wp.RunAlive(runs=[
+                wp.RunAliveEntry(run_id=run_id, last_seq=1)]))
+            cancel = await agent.recv(acks=False)
+            assert isinstance(cancel, wp.Cancel) and cancel.run_id == run_id
+            await agent.send(wp.RunFinished(run_id=run_id, seq=2,
+                                            status="cancelled"))
+            record = await _terminal(service, run_id)
+    assert record.status == "cancelled"

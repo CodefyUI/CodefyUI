@@ -135,9 +135,8 @@ async def test_frames_become_sink_calls_in_order(registry):
         "cuda:2", ["cuda:2", "cuda:5"], {"seed": 1})
     kinds = [call[0] for call in recorder.calls]
     assert kinds == ["facts", "emit", "metrics", "metrics", "artifact",
-                     "warn", "facts"]
-    # Acknowledged once recorded, the seq stored first (#783).
-    assert recorder.calls[-1] == ("facts", {"last_seq": 6})
+                     "warn"]
+    # Acknowledged once recorded (#783).
     acks = [f for f in agent.sent if isinstance(f, wp.Ack)]
     assert [(a.run_id, a.seq) for a in acks] == [("r1", 6)]
     assert recorder.calls[0] == ("facts", {"visible_devices": "2,5"})
@@ -385,8 +384,6 @@ async def test_acks_come_every_n_frames_and_after_a_quiet_second(
             payload={"node_id": "a", "status": "progress"}))
     await _until(lambda: [f.seq for f in agent.sent
                           if isinstance(f, wp.Ack)] == [3, 4], timeout=3)
-    assert ("facts", {"last_seq": 3}) in recorder.calls
-    assert ("facts", {"last_seq": 4}) in recorder.calls
     registry.route(agent.worker, wp.RunFinished(run_id="r1", seq=5,
                                                 status="succeeded"))
     assert (await asyncio.wait_for(task, 5)).status == "succeeded"
@@ -460,3 +457,42 @@ async def test_a_long_replay_pauses_the_socket_until_the_inbox_drains(
         run.inbox.get_nowait()
     await asyncio.wait_for(waiter, 1)
     registry.close_run("box", "r1")
+
+
+async def test_a_run_that_just_finished_here_is_not_a_stray(registry):
+    """Review of #783: a heartbeat may still list a run whose subprocess
+    is exiting after its run_finished; that is no reason to cancel it."""
+    clock = [500.0]
+    registry._clock = lambda: clock[0]
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.route(agent.worker, wp.RunFinished(run_id="r1", seq=1,
+                                                status="succeeded"))
+    assert (await asyncio.wait_for(task, 5)).status == "succeeded"
+    registry.heartbeat(agent.worker, wp.Heartbeat(running=["r1"]))
+    await asyncio.sleep(0.05)
+    assert not any(isinstance(f, wp.Cancel) for f in agent.sent)
+    clock[0] += 61  # long past its exit: a stray after all
+    registry.heartbeat(agent.worker, wp.Heartbeat(running=["r1"]))
+    cancel = await agent.wait_for(wp.Cancel)
+    assert (cancel.run_id, cancel.grace_s) == ("r1", 0)
+
+
+async def test_any_frame_keeps_a_worker_alive(registry):
+    """Review of #783: a long replay must not read as missed heartbeats."""
+    clock = [100.0]
+    registry._clock = lambda: clock[0]
+    agent = _Agent(registry)
+    clock[0] += 25
+    registry.touch(agent.worker)  # a replayed frame, say
+    clock[0] += 25
+    registry.check()
+    assert agent.worker.status == "degraded"  # late, not gone
+    registry.touch(agent.worker)
+    assert agent.worker.status == "online"
+    clock[0] += 31
+    registry.check()
+    assert agent.worker.status == "disconnected"

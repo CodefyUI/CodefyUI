@@ -35,9 +35,12 @@ seen. After the grace the run ends ``interrupted`` and its slots are freed.
 A run that ended while it may still be running on its worker is
 remembered: when the worker later reports it finished, the
 ``run_finished`` goes to :attr:`WorkerRegistry.on_late_result`, which
-records it as a ``late_result`` warning without changing the run's status.
-Frames for a run nothing waits for are acknowledged anyway, so the agent
-does not keep them forever.
+records it as ``execution_facts.late_result`` without changing the run's
+status or its event log. Frames for a run nothing waits for are
+acknowledged anyway, so the agent does not keep them forever; a run the
+worker still executes that nothing here tracks (and that did not just
+finish here) is told to stop at once, so it does not hold a card the
+scheduler has handed on.
 
 Runs: :class:`WorkerRun` is one assigned run's inbox. The socket handler
 routes every per-run frame into it and ``WorkerExecutor`` reads it; a
@@ -103,8 +106,11 @@ WORKER_GONE = object()
 #: waits for it to come back: ``(WORKER_DISCONNECTED, reason)`` (#783).
 WORKER_DISCONNECTED = object()
 #: Put in a run's inbox when a reconnected worker confirmed it:
-#: ``(WORKER_RECONNECTED, last_seq)`` (#783).
+#: ``(WORKER_RECONNECTED,)`` (#783).
 WORKER_RECONNECTED = object()
+#: Seconds a run that finished here is not "untracked": its worker may
+#: still list it while the subprocess exits (#783).
+RECENTLY_CLOSED_S = 60.0
 
 
 Send = Callable[[Any], Awaitable[None]]
@@ -255,6 +261,9 @@ class WorkerRegistry:
         #: ``(worker name, run id)`` -> last seq seen, for each run that
         #: ended here while it may still be running on its worker (#783).
         self._late: dict[tuple[str, str], int] = {}
+        #: Run id -> when its worker reported it finished (monotonic), for
+        #: :data:`RECENTLY_CLOSED_S`.
+        self._recently_closed: dict[str, float] = {}
         #: Awaited as ``on_late_result(worker_name, run_id, run_finished)``
         #: when such a run reports its end (``RunService`` records it).
         self.on_late_result: Callable[[str, str, Any], Awaitable[Any]] | None \
@@ -548,16 +557,20 @@ class WorkerRegistry:
         on every ``run_alive`` and heartbeat that lists it; the agent
         ignores a cancel for a run it already stopped.
         """
+        now = self._clock()
         for run_id in run_ids:
             if run_id in worker.running:
                 continue
+            closed = self._recently_closed.get(run_id)
+            if closed is not None and now - closed < RECENTLY_CLOSED_S:
+                continue  # finished here; its subprocess is exiting
             logger.warning("worker %s is running %s, which nothing here "
                            "tracks; telling it to stop", worker.name, run_id)
             self._spawn(worker.send(wp.Cancel(run_id=run_id, grace_s=0)))
 
     def run_alive(self, worker: Worker, frame: wp.RunAlive) -> None:
         """Keep the inherited runs the agent lists; end the rest."""
-        alive = {entry.run_id: entry.last_seq for entry in frame.runs}
+        alive = {entry.run_id for entry in frame.runs}
         for run in list(worker.running.values()):
             if not run.awaiting_alive:
                 continue
@@ -567,8 +580,7 @@ class WorkerRegistry:
                             worker.name)
                 if run.detached_at is not None:
                     run.detached_at = run.detached_wall = None
-                    run.inbox.put_nowait(
-                        (WORKER_RECONNECTED, alive[run.run_id]))
+                    run.inbox.put_nowait((WORKER_RECONNECTED,))
             else:
                 self._end(worker, run, "the reconnected agent does not have it")
         worker.alive_deadline = None
@@ -592,10 +604,27 @@ class WorkerRegistry:
         worker.running[run_id] = run
         return run
 
-    def close_run(self, worker_id: str, run_id: str) -> None:
+    def close_run(self, worker_id: str, run_id: str, *,
+                  finished: bool = False) -> None:
+        """*run_id* ended here. *finished*: its worker reported the end
+        (``run_finished``), so a heartbeat that still lists it for a moment
+        is not a stray run (:meth:`_cancel_untracked`)."""
         worker = self._workers.get(worker_id)
         if worker is not None:
             worker.running.pop(run_id, None)
+        if finished:
+            now = self._clock()
+            self._recently_closed[run_id] = now
+            for stale in [r for r, at in self._recently_closed.items()
+                          if now - at >= RECENTLY_CLOSED_S]:
+                del self._recently_closed[stale]
+
+    def touch(self, worker: Worker) -> None:
+        """Any frame from *worker* says it is alive (#783): a long replay
+        must not read as missed heartbeats."""
+        worker.last_heartbeat = self._clock()
+        if worker.status == STATUS_DEGRADED:
+            worker.status = STATUS_ONLINE
 
     def route(self, worker: Worker, frame: Any) -> None:
         """Deliver a per-run frame to its run's inbox, dropping duplicates."""

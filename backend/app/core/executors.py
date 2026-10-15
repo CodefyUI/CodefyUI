@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
@@ -550,11 +549,9 @@ def _signal_bridge(request: ExecutionRequest) -> Callable[[Any], Any]:
 CANCEL_POLL_S = 0.2
 
 #: ``run_warning`` kinds (#772, #783): the run's worker went away (the run
-#: waits for it, or ends), came back, or reported a run that had already
-#: ended here.
+#: waits for it, or ends), or came back.
 WARNING_WORKER_DISCONNECTED = "worker_disconnected"
 WARNING_WORKER_RECONNECTED = "worker_reconnected"
-WARNING_LATE_RESULT = "late_result"
 
 #: A worker run's frames are acknowledged (``ack``, #783) once this many
 #: are recorded, or :data:`ACK_INTERVAL_S` after the first unacknowledged
@@ -590,9 +587,9 @@ class WorkerExecutor:
     ``cancel`` (again after a reconnect, in case the first one was lost).
 
     Frames are acknowledged (``ack``, cumulative) every :data:`ACK_EVERY`
-    recorded frames or :data:`ACK_INTERVAL_S`, and on ``run_finished``;
-    each ack first stores the seq in the row's ``execution_facts.last_seq``
-    (#783). A worker whose connection drops does not end the run: the
+    recorded frames or :data:`ACK_INTERVAL_S` after the first one not yet
+    acknowledged (one ``call_later`` timer puts a marker in the inbox), and
+    on ``run_finished`` (#783). A worker whose connection drops does not end the run: the
     registry puts ``WORKER_DISCONNECTED`` in the inbox, the run gets a
     ``worker_disconnected`` warning and its row goes ``disconnected``, and
     it keeps its slots. ``WORKER_RECONNECTED`` (the worker's ``run_alive``
@@ -636,6 +633,8 @@ class WorkerExecutor:
         devices = list(placement.devices)
         run = self._registry.open_run(worker, request.run_id)
         watcher: asyncio.Task | None = None
+        acks: _Acks | None = None
+        finished = False
         try:
             await worker.send(wp.Assign(
                 run_id=request.run_id, graph=request.graph,
@@ -644,12 +643,13 @@ class WorkerExecutor:
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
-            acks = _Acks(self, request, worker_id)
+            acks = _Acks(self, request, worker_id, run.inbox)
             while True:
                 try:
-                    item = await asyncio.wait_for(run.inbox.get(),
-                                                  acks.due_in())
-                except asyncio.TimeoutError:
+                    item = run.inbox.get_nowait()
+                except asyncio.QueueEmpty:
+                    item = await run.inbox.get()
+                if item is _ACK_DUE:
                     await acks.flush()
                     continue
                 if isinstance(item, tuple) and item and item[0] is WORKER_GONE:
@@ -667,9 +667,10 @@ class WorkerExecutor:
                 outcome = await self._deliver(request, item, devices)
                 acks.delivered(item.seq)
                 if outcome is not None:
+                    finished = True
                     await acks.flush()
                     return outcome
-                if acks.due():
+                if acks.recorded - acks.acked >= ACK_EVERY:
                     await acks.flush()
         except asyncio.CancelledError:
             # A hard Task.cancel (shutdown's last resort): tell the worker,
@@ -690,7 +691,10 @@ class WorkerExecutor:
         finally:
             if watcher is not None:
                 watcher.cancel()
-            self._registry.close_run(worker_id, request.run_id)
+            if acks is not None:
+                acks.cancel_timer()
+            self._registry.close_run(worker_id, request.run_id,
+                                     finished=finished)
 
     async def _disconnected(self, request: ExecutionRequest, worker_id: str,
                             reason: str) -> None:
@@ -831,65 +835,53 @@ async def _record_connection(request: ExecutionRequest,
                        request.run_id, exc_info=True)
 
 
+#: Put in a run's inbox by the ack timer: acknowledge what is recorded.
+_ACK_DUE = object()
+
+
 class _Acks:
-    """When to acknowledge a worker run's frames, and doing it (#783)."""
+    """When to acknowledge a worker run's frames, and doing it (#783).
+
+    The seq stays in memory; a restarted control plane has no run to
+    resume yet (#793).
+    """
 
     def __init__(self, executor: WorkerExecutor, request: ExecutionRequest,
-                 worker_id: str) -> None:
+                 worker_id: str, inbox: asyncio.Queue) -> None:
         self._executor = executor
         self._request = request
         self._worker_id = worker_id
+        self._inbox = inbox
         #: Highest seq handed to the sinks, and highest acknowledged.
         self.recorded = 0
         self.acked = 0
-        #: When the oldest unacknowledged frame was recorded (monotonic).
-        self._since: float | None = None
+        self._timer: asyncio.TimerHandle | None = None
 
     def delivered(self, seq: int) -> None:
         self.recorded = max(self.recorded, seq)
-        if self._since is None and self.recorded > self.acked:
-            self._since = time.monotonic()
+        if self._timer is None and self.recorded > self.acked:
+            self._timer = asyncio.get_running_loop().call_later(
+                ACK_INTERVAL_S, self._inbox.put_nowait, _ACK_DUE)
 
-    def due(self) -> bool:
-        return self.recorded - self.acked >= ACK_EVERY or (
-            self._since is not None
-            and time.monotonic() - self._since >= ACK_INTERVAL_S)
-
-    def due_in(self) -> float | None:
-        """Seconds until an ack is due; None when nothing waits for one."""
-        if self._since is None:
-            return None
-        return max(0.0, self._since + ACK_INTERVAL_S - time.monotonic())
+    def cancel_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
 
     async def flush(self) -> None:
-        """Acknowledge everything recorded: persist, then tell the worker."""
+        """Acknowledge everything recorded."""
+        self.cancel_timer()
         if self.recorded <= self.acked:
-            self._since = None
             return
-        seq = self.recorded
-        await self._persist(seq)
-        self.acked = seq
-        self._since = None
-        await self._send(seq)
+        self.acked = self.recorded
+        await self._send(self.acked)
 
     async def resend(self) -> None:
         """Repeat the last ack (its first may not have reached the agent)."""
-        if self.acked:
-            await self._send(self.acked)
         if self.recorded > self.acked:
             await self.flush()
-
-    async def _persist(self, seq: int) -> None:
-        record = self._request.sinks.record_execution_facts
-        if record is None:
-            return
-        try:
-            await record({"last_seq": seq})
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 -- dedupe is in memory too
-            logger.warning("run %s: could not record last_seq %d",
-                           self._request.run_id, seq, exc_info=True)
+        elif self.acked:
+            await self._send(self.acked)
 
     async def _send(self, seq: int) -> None:
         from . import worker_protocol as wp

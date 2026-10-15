@@ -176,6 +176,13 @@ async def websocket_worker(ws: WebSocket) -> None:
         await close()
         return
 
+    # ``welcome`` goes out BEFORE the worker is registered (#783): from
+    # ``connect`` on, executors send through this socket (a stop that waited
+    # for the worker, an ack), and nothing may precede ``welcome``. The
+    # worker's id is its name (``WorkerRegistry.connect``).
+    await send(wp.Welcome(worker_id=hello.name,
+                          heartbeat_s=registry.heartbeat_s,
+                          grace_s=registry.grace_s))
     # Same machine needs both (#773, #780): the machine id alone is
     # self-reported, so a remote agent could copy ours; the loopback peer
     # alone is not enough either, since an ``ssh -R`` tunnel or a local
@@ -193,12 +200,11 @@ async def websocket_worker(ws: WebSocket) -> None:
         service.check_worker_overrides(worker)
     if replaced is not None:
         await replaced.close()
-    await send(wp.Welcome(worker_id=worker.id,
-                          heartbeat_s=registry.heartbeat_s,
-                          grace_s=registry.grace_s))
     try:
         while True:
             raw = await ws.receive_text()
+            # Any frame says the worker is alive (#783).
+            registry.touch(worker)
             try:
                 frame = wp.decode_agent_frame(raw)
             except wp.ProtocolError as exc:

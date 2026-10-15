@@ -374,6 +374,11 @@ async def get_run(run_id: str, request: Request):
         metric_producers=producers.get(record.id),
         worker_status=service.worker_status(run_id),
     )
+    # How the run ended on its worker after it had ended here (#783),
+    # ``{status, error, worker_id, at}``, or None.
+    facts = record.execution_facts if isinstance(
+        record.execution_facts, dict) else {}
+    payload["late_result"] = facts.get("late_result")
     payload["fingerprint"] = (
         None if record.fingerprint_digest is None
         else await service.store.get_fingerprint(record.fingerprint_digest))

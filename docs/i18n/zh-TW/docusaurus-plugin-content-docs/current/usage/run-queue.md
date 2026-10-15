@@ -52,7 +52,7 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 worker 的連線關閉，或連續錯過三次心跳（30 秒）時，即視為斷線。它的 run 會在 worker 上繼續執行，worker 把事件存在磁碟上，直到這台伺服器確認已經記錄。每個 run 的狀態變成 `disconnected`，並留下類型為 `worker_disconnected` 的 `run_warning`；名額仍然保留，執行任務面板會顯示 worker 已斷線多久（`GET /api/runs/{id}` 以 `worker_status` 回報）。接下來會是三種情形之一：
 
 - **worker 在寬限時間內重新連線**（`CODEFYUI_WORKER_RESUME_GRACE_S`，5 分鐘）：它依序補送這台伺服器尚未記錄的事件，run 回到 `running`，並留下類型為 `worker_reconnected` 的 `run_warning`。事件紀錄沒有缺漏，也沒有重複。
-- **沒有重新連線**：run 以 `interrupted` 結束，名額釋放。如果 worker 之後回來且 run 仍在執行，會被要求立即停止，讓這張卡留給下一個 run；run 在 worker 上的結束方式會以類型為 `late_result` 的 `run_warning` 加進它的紀錄，狀態維持 `interrupted`。
+- **沒有重新連線**：run 以 `interrupted` 結束，名額釋放。如果 worker 之後回來且 run 仍在執行，會被要求立即停止，讓這張卡留給下一個 run；run 在 worker 上的結束方式會記錄為 run 的 `late_result`（`{status, error, worker_id, at}`，見 `GET /api/runs/{id}` 與 `execution_facts`），狀態與事件紀錄維持原樣。
 - **這台伺服器在這段期間重新啟動**：run 會在啟動時以 `interrupted` 結束，與其他執行中的 run 相同。
 
 以筆電當伺服器時：休眠會關閉連線，螢幕蓋上超過寬限時間，worker 上的 run 就會以 `interrupted` 結束。需要較長的休眠時請調高 `CODEFYUI_WORKER_RESUME_GRACE_S`；設為 `0` 則 worker 一斷線就結束它的 run。

@@ -7,13 +7,14 @@ BEFORE it is sent, and stays there until the control plane acknowledges it:
 
     <runs_dir>/<run_id>/spool.jsonl      one encoded frame per line
 
-- ``ack{run_id, seq}`` (cumulative) drops every frame up to ``seq``: the
-  file is cut down to the frames after it. Acks arrive every few dozen
-  frames or once a second, so what is left is short while connected.
-- After a reconnect, :meth:`Spool.unacked` yields every frame not yet
-  acknowledged, in the order they were produced, and the connection
-  replays them after ``run_alive``. The control plane drops the ones it
-  had already seen (by ``seq``).
+- ``ack{run_id, seq}`` (cumulative) moves the acknowledged offset past
+  every frame up to ``seq``. The file is compacted (the acknowledged prefix
+  cut off) only once that prefix is :data:`COMPACT_BYTES` or half the file,
+  so an ack costs no I/O most of the time.
+- After a reconnect, :meth:`Spool.read_after` hands the frames after a seq
+  back in bounded batches, in the order they were produced, and the
+  connection replays them after ``run_alive``. The control plane drops the
+  ones it had already seen (by ``seq``).
 - Once the frame acknowledged is the run's ``run_finished`` the spool is
   complete: the file is deleted.
 
@@ -23,22 +24,29 @@ finish those runs. :class:`SpoolStore` deletes such files when it starts;
 the control plane ends the runs ``interrupted`` (the reconnected agent
 does not list them).
 
-Not fsynced: the spool protects against a network drop, not against the
-agent itself dying, which ends the runs anyway. Event-loop only.
+Every method that touches the file blocks: the connection calls them in a
+thread (``asyncio.to_thread``). A lock per spool keeps an ack's compaction
+from moving the file under a concurrent append or read. Not fsynced: the
+spool protects against a network drop, not against the agent itself
+dying, which ends the runs anyway.
 """
 
 from __future__ import annotations
 
+import bisect
 import logging
 import os
+import threading
 from pathlib import Path
-
 
 logger = logging.getLogger(__name__)
 
 #: The spool's file name inside a run's directory. A run directory that
 #: holds one is never pruned by retention (``runner.prune_run_dirs``).
 SPOOL_FILE = "spool.jsonl"
+#: The acknowledged prefix is cut off the file once it is this large, or
+#: half the file, whichever comes first.
+COMPACT_BYTES = 4 * 1024 * 1024
 
 
 class Spool:
@@ -52,135 +60,147 @@ class Spool:
         self.acked = 0
         #: Highest seq appended.
         self.last_seq = 0
-        #: Highest seq sent on the current connection.
+        #: Highest seq sent, in order, on the current connection. Owned by
+        #: the connection (event loop); reset to :attr:`acked` on reconnect.
         self.sent = 0
         #: The ``run_finished`` frame's seq, once it is spooled.
         self.final_seq: int | None = None
-        #: ``(seq, end offset)`` of every line in the file, in file order.
-        self._lines: list[tuple[int, int]] = []
+        #: Seq and end offset of every line in the file, in file order;
+        #: ``_first`` is the index of the first unacknowledged one.
+        self._seqs: list[int] = []
+        self._ends: list[int] = []
+        self._first = 0
         self._size = 0
+        self._lock = threading.Lock()
         run_dir.mkdir(parents=True, exist_ok=True)
         self._handle = open(self.path, "wb")  # noqa: SIM115 -- held open
 
     @property
     def pending(self) -> int:
         """Frames not acknowledged yet."""
-        return len(self._lines)
+        return len(self._seqs) - self._first
 
     @property
     def complete(self) -> bool:
         """True once the run's ``run_finished`` was acknowledged."""
         return self.final_seq is not None and self.acked >= self.final_seq
 
-    def append(self, seq: int, line: str, *, final: bool = False) -> None:
+    def append(self, seq: int, line: str, final: bool = False) -> None:
         """Spool one encoded frame. *final*: it is the ``run_finished``."""
         data = line.encode("utf-8") + b"\n"
-        self._handle.write(data)
-        self._handle.flush()
-        self._size += len(data)
-        self._lines.append((seq, self._size))
-        self.last_seq = max(self.last_seq, seq)
-        if final:
-            self.final_seq = seq
+        with self._lock:
+            self._handle.write(data)
+            self._handle.flush()
+            self._size += len(data)
+            self._seqs.append(seq)
+            self._ends.append(self._size)
+            self.last_seq = max(self.last_seq, seq)
+            if final:
+                self.final_seq = seq
 
     def ack(self, seq: int) -> bool:
-        """Drop every frame up to *seq*. True when the spool is complete."""
-        if seq <= self.acked:
+        """Every frame up to *seq* is recorded. True when complete."""
+        with self._lock:
+            if seq > self.acked:
+                self.acked = seq
+                self._first = bisect.bisect_right(self._seqs, seq,
+                                                  lo=self._first)
+                self._maybe_compact()
             return self.complete
-        self.acked = seq
-        self.sent = max(self.sent, seq)
-        cut_index = 0
-        while cut_index < len(self._lines) \
-                and self._lines[cut_index][0] <= seq:
-            cut_index += 1
-        if cut_index:
-            self._truncate(cut_index)
-        return self.complete
 
-    def _truncate(self, count: int) -> None:
-        """Remove the first *count* lines from the file."""
-        cut = self._lines[count - 1][1]
-        remaining = self._lines[count:]
+    def _acked_bytes(self) -> int:
+        return self._ends[self._first - 1] if self._first else 0
+
+    def _maybe_compact(self) -> None:
+        cut = self._acked_bytes()
+        if cut == 0 or (cut < COMPACT_BYTES and cut * 2 < self._size):
+            return
         self._handle.close()
-        if not remaining:
+        if self._first == len(self._seqs):
             self._handle = open(self.path, "wb")  # noqa: SIM115
         else:
-            with open(self.path, "rb") as source:
-                source.seek(cut)
-                rest = source.read()
             temporary = self.path.with_suffix(".tmp")
-            with open(temporary, "wb") as target:
-                target.write(rest)
+            with open(self.path, "rb") as source, \
+                    open(temporary, "wb") as target:
+                source.seek(cut)
+                while chunk := source.read(1024 * 1024):
+                    target.write(chunk)
             os.replace(temporary, self.path)
             self._handle = open(self.path, "ab")  # noqa: SIM115
-        self._lines = [(s, end - cut) for s, end in remaining]
+        self._seqs = self._seqs[self._first:]
+        self._ends = [end - cut for end in self._ends[self._first:]]
+        self._first = 0
         self._size -= cut
 
-    def unacked(self) -> list[tuple[int, str]]:
-        """``(seq, line)`` for every frame not acknowledged, in order.
-
-        Read in one go: an ``ack`` arriving while the caller replays them
-        rewrites the file underneath.
-        """
-        self._handle.flush()
-        lines = list(self._lines)
-        with open(self.path, "rb") as source:
-            data = source.read(lines[-1][1] if lines else 0)
-        out: list[tuple[int, str]] = []
-        start = 0
-        for seq, end in lines:
-            out.append((seq, data[start:end].rstrip(b"\n").decode("utf-8")))
-            start = end
-        return out
+    def read_after(self, seq: int, limit: int) -> list[tuple[int, str]]:
+        """Up to *limit* ``(seq, line)`` after *seq* and after the
+        acknowledged ones, in order. Streams: one batch in memory."""
+        with self._lock:
+            self._handle.flush()
+            start_index = bisect.bisect_right(self._seqs, seq,
+                                              lo=self._first)
+            stop_index = min(start_index + limit, len(self._seqs))
+            if start_index >= stop_index:
+                return []
+            start = self._ends[start_index - 1] if start_index else 0
+            with open(self.path, "rb") as source:
+                source.seek(start)
+                data = source.read(self._ends[stop_index - 1] - start)
+            out: list[tuple[int, str]] = []
+            previous = 0
+            for index in range(start_index, stop_index):
+                end = self._ends[index] - start
+                out.append((self._seqs[index], data[previous:end]
+                            .rstrip(b"\n").decode("utf-8")))
+                previous = end
+            return out
 
     def close(self, *, delete: bool) -> None:
-        try:
-            self._handle.close()
-        except OSError:
-            pass
-        if delete:
-            self.path.unlink(missing_ok=True)
+        with self._lock:
+            try:
+                self._handle.close()
+            except OSError:
+                pass
+            if delete:
+                self.path.unlink(missing_ok=True)
 
 
 class SpoolStore:
-    """Every run's spool on this agent, by run id."""
+    """Every run's spool on this agent, by run id. Thread-safe."""
 
     def __init__(self, runs_dir: Path) -> None:
         self.runs_dir = runs_dir
         self._spools: dict[str, Spool] = {}
+        self._lock = threading.Lock()
         discard_stale_spools(runs_dir)
 
-    def get(self, run_id: str) -> Spool | None:
-        return self._spools.get(run_id)
-
     def spool(self, run_id: str) -> Spool:
-        """*run_id*'s spool, created on its first frame."""
-        spool = self._spools.get(run_id)
-        if spool is None:
-            spool = Spool(self.runs_dir / run_id, run_id)
-            self._spools[run_id] = spool
-        return spool
+        """*run_id*'s spool, created on its first frame. Blocking."""
+        with self._lock:
+            spool = self._spools.get(run_id)
+            if spool is None:
+                spool = Spool(self.runs_dir / run_id, run_id)
+                self._spools[run_id] = spool
+            return spool
 
     def spools(self) -> list[Spool]:
-        return list(self._spools.values())
+        with self._lock:
+            return list(self._spools.values())
 
     def ack(self, run_id: str, seq: int) -> bool:
-        """Apply an ``ack``. True when it completed (and deleted) the spool."""
-        spool = self._spools.get(run_id)
+        """Apply an ``ack``. True when it completed (and deleted) the
+        spool. Blocking."""
+        with self._lock:
+            spool = self._spools.get(run_id)
         if spool is None:
             logger.debug("ack for run %s, which has no spool", run_id)
             return False
         if not spool.ack(seq):
             return False
         spool.close(delete=True)
-        del self._spools[run_id]
+        with self._lock:
+            self._spools.pop(run_id, None)
         return True
-
-    def close(self) -> None:
-        """Close every file, keeping them (the agent is stopping)."""
-        for spool in self._spools.values():
-            spool.close(delete=False)
-        self._spools.clear()
 
 
 def discard_stale_spools(runs_dir: Path) -> int:
@@ -191,9 +211,8 @@ def discard_stale_spools(runs_dir: Path) -> int:
     except OSError:
         return 0
     for path in candidates:
-        spool = path / SPOOL_FILE
         try:
-            spool.unlink()
+            (path / SPOOL_FILE).unlink()
         except OSError:
             continue
         removed += 1

@@ -273,6 +273,14 @@ describe('SweepDetail', () => {
     expect(cancelSweep).toHaveBeenCalledTimes(1);
   });
 
+  it('counts a child waiting for its worker as active (#783)', () => {
+    const detail = sweep('failed');
+    detail.counts = { queued: 0, running: 0, disconnected: 1, succeeded: 1, failed: 1, cancelled: 0, interrupted: 0, missing: 0 };
+    useSweepStore.setState({ detail, selectedSweepId: 's1', cancelSweep: vi.fn() });
+    view();
+    expect(screen.getByRole('button', { name: /^Stop sweep$/i })).toBeInTheDocument();
+  });
+
   it('holds Stop while a stop is in flight and keeps the focus in the view', () => {
     const cancelSweep = vi.fn(async () => {
       useSweepStore.setState({ cancelPending: true });
