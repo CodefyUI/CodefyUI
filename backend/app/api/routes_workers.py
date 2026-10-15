@@ -574,14 +574,19 @@ async def enable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
 
 @router.post("/ssh/{name}/disable")
 async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
-    """Drain the worker, then end its ssh session (the remote agent stops;
-    a run still on it ends ``interrupted``)."""
+    """Drain the worker, then end its ssh session. The remote agent stops
+    the runs still on it (they end ``cancelled`` when they stop within
+    their grace, ``interrupted`` when it has to terminate them or when they
+    are unreported once the session has ended); its credential and state
+    directory stay for Enable."""
     return await _set_ssh_enabled(request, name, False)
 
 
 @router.delete("/ssh/{name}")
 async def delete_ssh_worker(request: Request, name: str) -> dict[str, Any]:
-    """Stop the SSH worker and delete its row. Its enrollment stays (remove
+    """Stop the SSH worker, remove its state directory and stored
+    credential on the remote host (best effort: an unreachable host is
+    logged, not an error), and delete its row. Its enrollment stays (remove
     the worker itself to revoke it). It is dropped from the registry too:
     its session is gone, so every run on it, including a run waiting for it
     to reconnect, ends ``interrupted`` now instead of waiting forever."""

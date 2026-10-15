@@ -253,6 +253,10 @@ def test_an_ssh_worker_enrolls_runs_and_survives_disable_enable(
     assert removed.status_code == 200, removed.text
     assert removed.json()["revoked"] is True
     assert _ssh_entry(client, NAME) is None
+    # Remove cleaned up on the "remote host" too (#829): the credential the
+    # agent stored for this control plane and the slot's directory.
+    assert not credential_file.exists()
+    assert not state.exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -336,8 +340,25 @@ def test_a_dropped_ssh_session_keeps_the_agent_and_its_run(
         while _pid_alive(agent_pid) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert not _pid_alive(agent_pid)
+        # Both sessions' remote scripts are gone with their ``tail -f`` of
+        # the agent's log, the dropped one included (#829).
+        deadline = time.monotonic() + 15
+        while _tails(remote_home) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert _tails(remote_home) == []
     finally:
         client.delete(f"/api/workers/{name}")
+
+
+def _tails(remote_home: Path) -> list[str]:
+    """``tail`` processes still following a log under *remote_home*."""
+    import subprocess
+
+    out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
+                         capture_output=True, text=True).stdout
+    return [line for line in out.splitlines()
+            if line.split(None, 1)[1:2] and str(remote_home) in line
+            and line.split(None, 1)[1].startswith("tail ")]
 
 
 @pytest.mark.skipif(not os.environ.get("CODEFYUI_SSH_E2E_TARGET"),

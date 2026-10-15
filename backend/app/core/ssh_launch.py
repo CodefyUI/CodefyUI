@@ -84,6 +84,19 @@ forward carries to this server. Facts that shape it:
   so their reports are still recorded). A run still attached after that
   ends at once (``WorkerRegistry.stopped``), not after the resume grace:
   nothing is coming back for it.
+- **Delete cleans up on the remote host; Disable does not.** After the
+  session has ended, Delete runs one more one-shot ssh
+  (:func:`remote_remove_command`) that forgets the credential the agent
+  stored for this control plane's address and removes the slot's state
+  directory, best effort and within :data:`REMOVE_TIMEOUT_S`: an
+  unreachable host does not stop the Delete, and what was left behind is
+  logged. Disable keeps both, so Enable reconnects with the same
+  credential.
+- **The remote script leaves no process behind.** Whatever ends it (the
+  agent exiting, ``stop``, a newer session taking over, a signal) ends its
+  ``tail`` of the log and its grace timer too; once its output is in
+  place it writes nothing more, so a session gone (its stderr a broken
+  pipe) cannot kill it before it has (#829).
 - **Retries with backoff** (2 s doubling to 60 s, reset after a minute
   up). A server that refuses the forward (``AllowStreamLocalForwarding`` /
   ``DisableForwarding``: an explicit refusal, or :data:`FORWARD_GIVE_UP`
@@ -408,6 +421,11 @@ def remote_command(entry: SshWorker, cp: str, remote_port: int, *,
         f"d={d}; " + _FUNCS +
         'mkdir -p "$d" && chmod 700 "$d" || exit ' + str(NO_STATE_EXIT) + "; "
         'echo $$ > "$d/session"; '
+        # Whatever ends this shell ends its ``tail`` too (#829): a signal
+        # (HUP, TERM, PIPE) runs the EXIT trap. Its children get the
+        # default actions back.
+        "l=; ct() { [ -z \"$l\" ] || kill $l 2>/dev/null; l=; }; trap ct EXIT; "
+        'trap "exit 129" HUP; trap "exit 141" PIPE; trap "exit 143" TERM; '
         "exec 3<&0; "
         'a=$(cat "$d/pid" 2>/dev/null); o=; '
         'if own "$a"; then '
@@ -425,18 +443,25 @@ def remote_command(entry: SshWorker, cp: str, remote_port: int, *,
         "echo codefyui-ssh: agent pid $a >&2; "
         'tail -n +1 -f "$d/log" >&2 & l=$!; '
         "fi; "
+        # From here on this shell writes nothing. Once the session is gone
+        # its stderr is a broken pipe, and a shell that reports a job it
+        # killed (bash does: "Terminated") would die of SIGPIPE writing
+        # that, before it ends its ``tail`` (#829).
+        "exec >/dev/null 2>&1; "
         "( while IFS= read -r m; do "
         'if [ "$m" = stop ]; then kill -TERM $a; exit 0; fi; done; '
-        f"sleep {grace}; "
+        # The grace's ``sleep`` ends with this watcher when it is killed.
+        "z=; kz() { kill $z 2>/dev/null; exit 0; }; trap kz TERM; "
+        f"sleep {grace} & z=$!; wait $z; "
         'if [ "$(cat "$d/session" 2>/dev/null)" = "$$" ]; then '
         "kill -TERM $a; exit 0; fi; exit 3 ) <&3 >/dev/null 2>&1 & w=$!; "
         "exec 3<&-; "
         "while al $a && al $w; do sleep 1; done; "
         "if al $w; then kill $w 2>/dev/null; ws=0; "
         "else wait $w; ws=$?; fi; "
-        '[ "$ws" = 3 ] && { kill $l 2>/dev/null; exit 0; }; '
+        '[ "$ws" = 3 ] && exit 0; '
         "while al $a; do sleep 1; done; "
-        "kill $l 2>/dev/null; s=0; "
+        "ct; s=0; "
         '[ -n "$o" ] && { wait $a; s=$?; }; '
         '[ "$(cat "$d/session" 2>/dev/null)" = "$$" ] '
         '&& rm -f "$d/pid"; '
@@ -455,6 +480,51 @@ def remote_stop_command(cp: str, remote_port: int) -> str:
         'a=$(cat "$d/pid" 2>/dev/null); '
         'if own "$a"; then kill -TERM $a; '
         "echo codefyui-ssh: stopped agent pid $a; fi; exit 0")
+
+
+#: The remove command's lines: what it cleaned, and what it could not.
+REMOVED_DIR = "codefyui-ssh: removed"
+FORGOT = "codefyui-ssh: forgot"
+#: How long the remove command waits for a still-running agent to exit.
+REMOVE_AGENT_WAIT_S = 10
+#: Delete waits this long for the remove one-shot (an unreachable host:
+#: ssh's own ``ConnectTimeout`` is 20 s), then deletes the row anyway.
+REMOVE_TIMEOUT_S = 30.0
+
+
+def remote_remove_command(entry: SshWorker, cp: str, remote_port: int) -> str:
+    """Delete (#829), after the session has ended: stop this state
+    directory's agent if it still runs, forget the credential the agent
+    stored for this control plane's address (``cdui agent forget``), and
+    remove the directory (``~/.codefyui-ssh/<cp>-<slot>``; this control
+    plane's alone, never another's), then ``~/.codefyui-ssh`` itself when
+    nothing else is left in it. A session still attached there, or an
+    agent that does not exit within :data:`REMOVE_AGENT_WAIT_S`, keeps the
+    directory (and says so). Each step prints what it did."""
+    cdui = _remote_cdui(entry)
+    url = control_url(cp, remote_port)
+    d = _state_dir(cp, remote_port)
+    key = state_key(cp, remote_port)
+    return _sh(
+        'PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH; '
+        "CODEFYUI_LANG=en; export CODEFYUI_LANG; "
+        f"d={d}; " + _FUNCS +
+        'a=$(cat "$d/pid" 2>/dev/null); k=1; '
+        'if own "$a"; then kill -TERM $a; i=0; '
+        f"while al $a && [ $i -lt {REMOVE_AGENT_WAIT_S} ]; do "
+        "sleep 1; i=$((i+1)); done; "
+        'if al $a; then k=; echo "codefyui-ssh: agent pid $a still runs; '
+        'kept $d"; fi; fi; '
+        's=$(cat "$d/session" 2>/dev/null); '
+        f'if [ -n "$s" ] && al "$s" && has "$s" ".codefyui-ssh/{key};"; '
+        'then k=; echo "codefyui-ssh: session pid $s still attached; '
+        'kept $d"; fi; '
+        f"if {cdui} agent forget {url} </dev/null >/dev/null 2>&1; then "
+        f'echo "{FORGOT} {url}"; else '
+        f'echo "codefyui-ssh: could not forget {url}"; fi; '
+        f'if [ -n "$k" ] && rm -rf "$d"; then echo "{REMOVED_DIR} $d"; '
+        "rmdir \"$HOME\"/" + REMOTE_STATE_DIR + " 2>/dev/null; fi; "
+        "exit 0")
 
 
 def remote_prepare_command(cp: str, remote_port: int) -> str:
@@ -1181,14 +1251,59 @@ class SshLauncher:
             return self.describe(name)
 
     async def remove(self, name: str) -> bool:
-        """Stop *name* and delete its row. The worker's enrollment is left
-        to ``DELETE /api/workers/{id}``."""
+        """Stop *name*, clean up after it on the remote host
+        (:meth:`_clean_remote`) and delete its row. The worker's enrollment
+        is left to ``DELETE /api/workers/{id}``."""
         async with self._lock(name):
             launch = self.launches.pop(name, None)
             if launch is not None:
                 await launch.stop()
-            self.entries.pop(name, None)
+            entry = self.entries.pop(name, None)
+            if entry is not None:
+                await self._clean_remote(entry, launch)
             return await self.store.delete_ssh_worker(name)
+
+    async def _clean_remote(self, entry: SshWorker,
+                            launch: SshLaunch | None) -> None:
+        """Best effort, within :data:`REMOVE_TIMEOUT_S`: run
+        :func:`remote_remove_command` for *entry*'s slot, so neither its
+        state directory nor the credential its agent stored stays on the
+        remote host. Disable never does this (Enable reuses both). Whatever
+        could not be removed (an unreachable host) is logged, and Delete
+        goes on."""
+        port = entry.remote_port
+        if port is None:
+            return  # never launched: nothing was made there
+        cp = self.instance_id
+        where = f"~/{REMOTE_STATE_DIR}/{state_key(cp, port)}/"
+        url = control_url(cp, port)
+        helper = launch if launch is not None else SshLaunch(entry, self)
+        helper.entry = entry
+        code: int | None = None
+        lines: list[str] = []
+        try:
+            code, lines = await asyncio.wait_for(helper._oneshot(
+                remote_remove_command(entry, cp, port),
+                "remove the remote state"), REMOVE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            lines = [f"no answer within {REMOVE_TIMEOUT_S:.0f} s"]
+        except Exception as exc:  # noqa: BLE001 -- Delete goes on
+            lines = [str(exc) or type(exc).__name__]
+        left = []
+        if not any(REMOVED_DIR in line for line in lines):
+            left.append(where)
+        if not any(FORGOT in line for line in lines):
+            left.append(f"the credential stored for {url} (cdui agent "
+                        f"forget {url})")
+        if left:
+            reason = " | ".join(lines[-ERROR_LINES:]) or (
+                f"ssh exited with status {code}")
+            logger.warning(
+                "SSH worker %s deleted, but on %s these were left behind: "
+                "%s (%s)", entry.id, entry.target, "; ".join(left), reason)
+        else:
+            logger.info("SSH worker %s: removed %s and the credential for "
+                        "%s on %s", entry.id, where, url, entry.target)
 
     async def shutdown(self) -> None:
         """Stop every SSH worker at once: each gets ``stop`` immediately,

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -582,6 +583,83 @@ def test_two_control_planes_never_share_a_remote_directory(tmp_path,
     assert ssh_launch.load_instance_id(tmp_path) != "junk"
 
 
+# ── delete cleans up on the remote host (#829) ────────────────────────────
+
+
+def _removes(log: Path) -> list[list[str]]:
+    return [argv for argv in _oneshots(log) if "rm -rf" in argv[-1]]
+
+
+async def test_delete_removes_the_slot_and_the_credential_disable_does_not(
+        launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["remote_pid"] == 4242,
+                 "the session never attached")
+    # Disable and Enable keep both: Enable reuses the stored credential.
+    await launcher.set_enabled("gpu-box", False)
+    await launcher.set_enabled("gpu-box", True)
+    await _until(lambda: len(_tokens(fake_ssh)) == 2, "never relaunched")
+    assert _removes(fake_ssh) == []
+    assert await launcher.remove("gpu-box") is True
+    [remove] = _removes(fake_ssh)
+    # After the session ended (its ``stop`` went first), its own slot only.
+    assert _stdin(fake_ssh)[-1] == "stop"
+    assert _all_calls(fake_ssh)[-1] == remove
+    assert "ExitOnForwardFailure=yes" not in remove and "-R" not in remove
+    command = remove[-1]
+    assert f'd="$HOME"/.codefyui-ssh/{CP}-18000;' in command
+    assert f'"$HOME"/CodefyUI/cdui agent forget {URL} ' in command
+    assert 'rm -rf "$d"' in command
+    assert await launcher.store.list_ssh_workers() == []
+
+
+async def test_delete_of_a_disabled_or_never_launched_entry(launcher,
+                                                            fake_ssh):
+    await launcher.store.add_ssh_worker(_entry(enabled=False,
+                                               remote_port=18004))
+    await launcher.store.add_ssh_worker(_entry("new-box", target="b@new",
+                                               enabled=False))
+    await launcher.start_all()
+    assert await launcher.remove("gpu-box") is True
+    [remove] = _removes(fake_ssh)
+    assert f".codefyui-ssh/{CP}-18004;" in remove[-1]
+    # No slot was ever taken: nothing was made on the remote host.
+    assert await launcher.remove("new-box") is True
+    assert len(_removes(fake_ssh)) == 1
+
+
+async def test_delete_succeeds_when_the_host_is_unreachable(
+        launcher, fake_ssh, monkeypatch, caplog):
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    monkeypatch.setenv("FAKE_SSH_MODE", "fail")
+    with caplog.at_level("WARNING", logger="app.core.ssh_launch"):
+        assert await launcher.remove("gpu-box") is True
+    assert len(_removes(fake_ssh)) == 1
+    assert await launcher.store.list_ssh_workers() == []
+    [warning] = [r.getMessage() for r in caplog.records
+                 if "left behind" in r.getMessage()]
+    assert f"~/.codefyui-ssh/{CP}-18000/" in warning
+    assert f"cdui agent forget {URL}" in warning
+    assert "Permission denied" in warning
+
+
+async def test_a_hanging_delete_cleanup_is_bounded(launcher, fake_ssh,
+                                                   monkeypatch):
+    await launcher.store.add_ssh_worker(_entry(enabled=False,
+                                               remote_port=18000))
+    await launcher.start_all()
+    monkeypatch.setattr(ssh_launch, "REMOVE_TIMEOUT_S", 0.5)
+    monkeypatch.setenv("FAKE_SSH_HANG_S", "30")
+    began = time.monotonic()
+    assert await launcher.remove("gpu-box") is True
+    assert time.monotonic() - began < 10
+    pid = int(Path(str(fake_ssh) + ".pid").read_text().split()[0])
+    assert not _alive(pid)
+    assert await launcher.store.list_ssh_workers() == []
+
+
+
 # ── stop, enable, disable, restart ────────────────────────────────────────
 
 
@@ -1023,6 +1101,222 @@ def test_two_control_planes_on_one_account_keep_their_own_agents(
         for proc, pid in sessions.values():
             subprocess.run(["kill", "-TERM", str(pid)], capture_output=True)
             proc.wait(timeout=10)
+
+
+def _remove(home: Path, cp: str = CP) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["/bin/sh", "-c", ssh_launch.remote_remove_command(
+            _entry(remote_cdui="~/cdui"), cp, 18000)],
+        env={**os.environ, "HOME": str(home)}, capture_output=True,
+        text=True, timeout=30)
+
+
+def test_the_remove_command_cleans_only_this_control_planes_slot(
+        remote_home):
+    command = ssh_launch.remote_remove_command(
+        _entry(remote_cdui="~/cdui"), CP, 18000)
+    assert "'" not in command[len("sh -c '"):-1] and "\\" not in command
+    other = "0123abcd"
+    for cp in (CP, other):
+        state = _state(remote_home, cp=cp)
+        state.mkdir(parents=True)
+        for name in ("log", "sock", "pid", "session"):
+            (state / name).write_text("99999999")
+    result = _remove(remote_home)
+    assert result.returncode == 0, result.stderr
+    assert f"codefyui-ssh: forgot http://cp-{CP}.invalid:18000" \
+        in result.stdout
+    assert f"codefyui-ssh: removed {_state(remote_home)}" in result.stdout
+    assert not _state(remote_home).exists()
+    assert (_state(remote_home, cp=other) / "log").exists()
+    assert (remote_home / "args").read_text().splitlines() == [
+        f"agent forget http://cp-{CP}.invalid:18000"]
+    # The last one out removes ~/.codefyui-ssh too.
+    result = _remove(remote_home, cp=other)
+    assert result.returncode == 0
+    assert not (remote_home / ".codefyui-ssh").exists()
+    # Nothing there any more: still fine.
+    assert _remove(remote_home).returncode == 0
+
+
+def test_the_remove_command_stops_a_surviving_agent_first(remote_home):
+    proc = _run_remote(remote_home, ssh_launch.remote_command(
+        _entry(remote_cdui="~/cdui"), CP, 18000, grace_s=60))
+    proc.stdin.write(f"{TOKEN}\n".encode())
+    proc.stdin.flush()
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    _wait_file(remote_home / "path")
+    proc.stdin.close()  # dropped; the agent waits out its grace
+    try:
+        assert _alive(pid)
+        result = _remove(remote_home)
+        assert _wait_file(remote_home / "got_term").strip() == "term"
+        assert not _alive(pid)
+        assert "codefyui-ssh: removed" in result.stdout
+        assert not _state(remote_home).exists()
+    finally:
+        proc.wait(timeout=15)
+
+
+def test_the_remove_command_keeps_the_directory_of_an_attached_session(
+        remote_home):
+    proc = _run_remote(remote_home, ssh_launch.remote_command(
+        _entry(remote_cdui="~/cdui"), CP, 18000, grace_s=60))
+    proc.stdin.write(f"{TOKEN}\n".encode())
+    proc.stdin.flush()
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    _wait_file(remote_home / "path")
+    try:
+        # An agent that will not stop, under a session still attached.
+        subprocess.run(["kill", "-STOP", str(pid)], check=True)
+        result = _remove(remote_home)
+        assert "still attached; kept" in result.stdout
+        assert "still runs; kept" in result.stdout
+        assert "codefyui-ssh: removed" not in result.stdout
+        assert _state(remote_home).exists()
+    finally:
+        subprocess.run(["kill", "-CONT", str(pid)], capture_output=True)
+        proc.stdin.write(b"stop\n")
+        proc.stdin.close()
+        proc.wait(timeout=15)
+
+
+# ── the remote script leaves no process behind (#829) ─────────────────────
+
+
+def _shells() -> list[str]:
+    """The shells the remote script is run with here: ``/bin/sh`` (bash on
+    macOS, dash on Debian/Ubuntu), and bash, dash and BusyBox ``sh`` where
+    they are installed. bash reports a job it killed on stderr."""
+    found = ["/bin/sh"]
+    for name in ("bash", "dash", "busybox"):
+        if shutil.which(name):
+            found.append(name)
+    return found
+
+
+def _run_with(shell: str, home: Path, command: str) -> subprocess.Popen:
+    """*command*'s script (``sh -c '<script>'``) run by *shell*, in a
+    process group of its own (its id is the shell's pid)."""
+    assert command.startswith("sh -c '") and command.endswith("'")
+    argv = [shell, "sh"] if shell == "busybox" else [shell]
+    return subprocess.Popen(
+        [*argv, "-c", command[len("sh -c '"):-1]],
+        env={**os.environ, "HOME": str(home)}, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        start_new_session=True)
+
+
+def _group(pgid: int) -> list[str]:
+    """The live processes of process group *pgid*: ``pid command``."""
+    out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat=,command="],
+                         capture_output=True, text=True).stdout
+    left = []
+    for line in out.splitlines():
+        fields = line.split(None, 3)
+        if (len(fields) == 4 and fields[1] == str(pgid)
+                and not fields[2].startswith("Z")):
+            left.append(f"{fields[0]} {fields[3]}")
+    return left
+
+
+def _tails(pgid: int) -> list[str]:
+    """The ``tail`` processes of process group *pgid*."""
+    return [p for p in _group(pgid) if p.split(" ", 1)[1].startswith("tail ")]
+
+
+def _settles(predicate: Any, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+@pytest.fixture
+def shell_home(tmp_path):
+    """A "remote" home for the process tests; whatever they leave in their
+    process groups is killed by the tests themselves."""
+    home = tmp_path / "rh"
+    home.mkdir()
+    _fake_cdui(home)
+    yield home
+    for pid_file in (home / ".codefyui-ssh").glob("*/pid"):
+        subprocess.run(["kill", "-TERM", pid_file.read_text().strip()],
+                       capture_output=True)
+
+
+@pytest.mark.parametrize("shell", _shells())
+def test_a_superseded_session_leaves_no_tail_once_its_ssh_is_gone(
+        shell_home, shell):
+    """The leak #829 found: a session drops (ssh gone: no more input, its
+    output a broken pipe), a newer one re-attaches, then the agent stops.
+    The first session's shell kills its grace watcher; bash reports that on
+    stderr, which used to kill the shell with SIGPIPE before it ended its
+    ``tail -f``, orphaned for good (and the watcher's ``sleep``)."""
+    entry = _entry(remote_cdui="~/cdui")
+    first = _run_with(shell, shell_home, ssh_launch.remote_command(
+        entry, CP, 18000, grace_s=60))
+    second = None
+    try:
+        first.stdin.write(f"{TOKEN}\n".encode())
+        first.stdin.flush()
+        pid = int(_wait_file(_state(shell_home) / "pid"))
+        _wait_file(_state(shell_home) / "log", text="hello")
+        assert _tails(first.pid)
+        first.stdin.close()
+        first.stdout.close()  # ssh is gone: whatever the shell writes, EPIPE
+        second = _run_with(shell, shell_home, ssh_launch.remote_command(
+            entry, CP, 18000, grace_s=60))
+        second.stdin.write(f"{TOKEN}\n".encode())
+        second.stdin.flush()
+        _wait_file(_state(shell_home) / "session", text=str(second.pid))
+        time.sleep(0.5)
+        assert _alive(pid) and first.poll() is None
+        second.stdin.write(b"stop\n")
+        second.stdin.close()
+        second.wait(timeout=15)
+        first.wait(timeout=15)
+        assert not _alive(pid)
+        for proc in (first, second):
+            assert _settles(lambda p=proc: not _group(p.pid)), (
+                f"left behind: {_group(proc.pid)}")
+    finally:
+        for proc in (first, second):
+            if proc is None:
+                continue
+            subprocess.run(["kill", "-9", f"-{proc.pid}"],
+                           capture_output=True)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+@pytest.mark.parametrize("signal_name", ["HUP", "TERM"])
+@pytest.mark.parametrize("shell", _shells())
+def test_a_signalled_session_shell_takes_its_tail_with_it(shell_home, shell,
+                                                         signal_name):
+    """The session's shell itself killed (sshd hanging up on it, a
+    ``kill``): its ``tail`` goes with it. The agent stays for the resume
+    grace, as on any dropped session."""
+    proc = _run_with(shell, shell_home, ssh_launch.remote_command(
+        _entry(remote_cdui="~/cdui"), CP, 18000, grace_s=60))
+    try:
+        proc.stdin.write(f"{TOKEN}\n".encode())
+        proc.stdin.flush()
+        pid = int(_wait_file(_state(shell_home) / "pid"))
+        _wait_file(_state(shell_home) / "log", text="hello")
+        subprocess.run(["kill", f"-{signal_name}", str(proc.pid)],
+                       check=True)
+        proc.wait(timeout=15)
+        assert _settles(lambda: not _tails(proc.pid)), _group(proc.pid)
+        assert _alive(pid)
+    finally:
+        subprocess.run(["kill", "-9", f"-{proc.pid}"], capture_output=True)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 # ── validation ────────────────────────────────────────────────────────────
