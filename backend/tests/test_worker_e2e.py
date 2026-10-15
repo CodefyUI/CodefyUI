@@ -489,3 +489,137 @@ def test_a_run_on_a_shared_mount_reads_the_upload_and_lists_the_checkpoint(
             agent.kill()
             agent.communicate()
         client.close()
+
+
+# ── no shared filesystem: the transfer backend (#785) ─────────────────────
+
+
+def _transfer_events(client: httpx.Client, run_id: str) -> list[str]:
+    events = client.get(f"/api/runs/{run_id}/events").json()["events"]
+    return [e["payload"]["detail"] for e in events
+            if e["type"] == "run_warning"
+            and e["payload"].get("kind") == "transfer_progress"]
+
+
+def test_a_run_without_shared_storage_ships_its_input_and_its_checkpoint(
+        live_server, tmp_path, monkeypatch):
+    """Acceptance (#785): this server and the agent share no directory
+    (two separate data roots, no ``--mount``). The run's uploaded CSV is
+    fetched into the agent's cache and its periodic checkpoint uploaded
+    here, listed as a ``transfer`` row and downloadable; a second run finds
+    the CSV in the cache; pruning both runs removes what they uploaded."""
+    import hashlib
+
+    control = tmp_path / "control"
+    (control / "files").mkdir(parents=True)
+    csv_bytes = b"a,b,label\n1,2,0\n3,4,1\n5,6,0\n"
+    (control / "files" / "train.csv").write_bytes(csv_bytes)
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    for name, sub in (("DATA_FILES_DIR", "files"), ("IMAGES_DIR", "images"),
+                      ("MODELS_DIR", "models"), ("MEDIA_DIR", "media")):
+        monkeypatch.setattr(settings, name, control / sub)
+    import app.api.ws_worker as ws_worker
+
+    # Taken for another machine: a same-host worker borrows this server's
+    # directories, and this test is about having none in common.
+    monkeypatch.setattr(ws_worker, "machine_identity",
+                        lambda: "not-this-agents-machine")
+
+    base = f"http://127.0.0.1:{live_server}"
+    client = httpx.Client(base_url=base, timeout=30,
+                          headers={TOKEN_HEADER: session_token()})
+    agent_data = tmp_path / "agent-data"
+    env = {**os.environ, "PYTHONPATH": str(BACKEND_DIR),
+           "CODEFYUI_USER_DATA_DIR": str(agent_data),
+           "CODEFYUI_AGENT_TOKEN": session_token()}
+    agent = subprocess.Popen(
+        [sys.executable, "-m", "app.agent", "start", "--foreground",
+         "--control", base, "--name", "bare-box", "--devices", "cpu"],
+        cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    output = ""
+    try:
+        # Online or degraded (#781): its catalog depends on what the test
+        # environment has installed; the graph uses built-in nodes only.
+        worker = _wait_connected(client, agent, "bare-box")
+        assert worker["mounts"] == {}
+
+        def graph() -> dict[str, Any]:
+            # Plus a ModelSaver: a writer whose file lands in this
+            # server's own models folder, as on a local run.
+            built = _csv_and_checkpoint_graph()
+            built["nodes"].append({"id": "save", "type": "ModelSaver",
+                                   "data": {"params": {
+                                       "path": "e2e_saved.pt"}}})
+            built["edges"].append({
+                "id": "e-train-save", "source": "train",
+                "sourceHandle": "model", "target": "save",
+                "targetHandle": "model"})
+            return built
+
+        def submit() -> str:
+            submitted = client.post("/api/runs", json={
+                "graph": graph(),
+                "options": {"target": {"worker": "bare-box"}}})
+            assert submitted.status_code in (200, 201, 202), submitted.text
+            run_id = submitted.json()["run_id"]
+            record = _wait_terminal(client, run_id, timeout=180)
+            assert record["status"] == "succeeded", record
+            assert record["worker_id"] == "bare-box"
+            return run_id
+
+        first = submit()
+        progress = _transfer_events(client, first)
+        assert progress and "train.csv" in progress[-1] \
+            and "fetched" in progress[-1], progress
+        cached = agent_data / "agent-cache" / hashlib.sha256(
+            csv_bytes).hexdigest()
+        assert cached.read_bytes() == csv_bytes
+
+        artifacts = client.get(f"/api/runs/{first}/artifacts").json()[
+            "artifacts"]
+        [checkpoint] = [a for a in artifacts if a["kind"] == "checkpoint"]
+        assert checkpoint["backend"] == "transfer"
+        assert checkpoint["worker_id"] == "bare-box"
+        assert checkpoint["relative_path"].startswith(
+            f"runs/{first}/checkpoint/")
+        stored = Path(checkpoint["path"])
+        assert stored == control.resolve() / checkpoint["relative_path"]
+        assert stored.is_file()
+        downloaded = client.get(
+            f"/api/runs/{first}/artifacts/{checkpoint['id']}/download")
+        assert downloaded.status_code == 200
+        assert downloaded.content == stored.read_bytes()
+
+        [saved] = [a for a in artifacts if a["kind"] == "output"]
+        assert saved["relative_path"] == "models/e2e_saved.pt"
+        assert (control / "models" / "e2e_saved.pt").is_file()
+
+        second = submit()
+        progress = _transfer_events(client, second)
+        assert progress and "cached" in progress[-1], progress
+
+        # Retention: keep only the newest run, so both of these go, and
+        # with them every file they uploaded here.
+        assert (control / "runs" / first).is_dir()
+        app.state.run_service._retention_keep_last = 1
+        last = client.post("/api/runs", json={"graph": _graph()}).json()
+        _wait_terminal(client, last["run_id"])
+        deadline = time.monotonic() + 15
+        while (control / "runs" / first).exists() \
+                or (control / "runs" / second).exists():
+            assert time.monotonic() < deadline, "retention kept the files"
+            time.sleep(0.1)
+        assert client.get(f"/api/runs/{first}").status_code == 404
+        # The writer's file is the user's: retention left it.
+        assert (control / "models" / "e2e_saved.pt").is_file()
+    finally:
+        agent.terminate()
+        try:
+            output, _ = agent.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            agent.kill()
+            output, _ = agent.communicate()
+        client.close()
+    assert "Traceback" not in output, output

@@ -328,6 +328,19 @@ class Settings(BaseSettings):
     # there. See core/mounts.py. Only read when workers are in use.
     MOUNT_LABEL: str = "data"
 
+    # ── Transfer storage backend (#785) ────────────────────────────────
+    # A run that reads uploads or writes files may go to a worker WITHOUT
+    # the mount above: this server ships the uploads it reads (by content
+    # hash; the agent caches them) and receives what it writes (stored
+    # under <data root>/runs/<run_id>/, removed by run retention). A
+    # worker holding the mount is still preferred. On by default because it
+    # only ever applies to a run that targets a worker; 0 restores #782's
+    # refusal. See core/transfer.py.
+    TRANSFER_ENABLED: bool = True
+    # The most a run's inputs may add up to (bytes). A run over it can use
+    # only a worker with the mount; with none, it is refused at submit.
+    TRANSFER_MAX_INPUT_BYTES: int = 2 * 1024 * 1024 * 1024
+
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"
     # Third-party downloads + lockfile. Resolved per-instance so the

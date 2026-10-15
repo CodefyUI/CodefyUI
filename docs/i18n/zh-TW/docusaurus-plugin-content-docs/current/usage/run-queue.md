@@ -63,7 +63,8 @@ worker 的連線關閉，或連續錯過三次心跳（30 秒）時，即視為�
 
 | Run | 有 `data` 掛載的 worker | 沒有掛載的 worker |
 | --- | --- | --- |
-| 使用檔案 | 可排入 | 指定該 worker：送出時 `400`，``worker gpu-box-1 has no `data` mount; add `--mount data=...` or use the transfer backend (#785)``。`any`：略過 |
+| 使用檔案，且全是在檔案欄位中選取的上傳檔 | 可排入（優先） | 可排入：檔案經 HTTP 傳送（[儲存：沒有共用檔案系統](./remote-workers#storage-no-shared-filesystem)）。`any` 在有掛載的 worker 之後才考慮它 |
+| 以其他方式使用檔案（一般路徑、這台伺服器沒有的上傳檔、輸入超過 `CODEFYUI_TRANSFER_MAX_INPUT_BYTES`），或 `CODEFYUI_TRANSFER_ENABLED=0` | 可排入 | 指定該 worker：送出時 `400`，``worker gpu-box-1 has no `data` mount; add `--mount data=...` to its agent, or make the run fit the transfer backend: <reason>``。`any`：略過 |
 | 不使用檔案（純 tensor 的圖） | 可排入 | 可排入 |
 
 在 worker 上，run 的資料夾依 `backend/data` 的結構由掛載路徑推得（`files/`、`images/`、`models/`、`media/`、`graphs/`、`presets/`）；路徑中有 `codefyui.project.toml` 時則視為該專案。run 記錄的檔案（checkpoint、TensorBoard 資料夾）以相對於掛載點的路徑儲存（`backend: "mount"`），`GET /api/runs/{id}/artifacts` 與執行任務面板列出的是這台伺服器上的路徑；這台伺服器沒有該掛載的資料列 `path` 為 `null`，以 label 與相對路徑表示。與伺服器在同一台機器上的 agent 不需要 `--mount` 就擁有 `data`：它的 run 直接使用這台伺服器設定的資料夾，產出的檔案列為一般的本機檔案，`GET /api/workers` 會以伺服器的路徑顯示該 label。agent 啟動時已儲存的掛載資料夾若不存在（共用資料夾尚未掛上），在資料夾出現前不會提供該 label；agent 每次心跳都會重新檢查。agent 執行中不能變更 `--mount`，請先停止它。使用 `--project` 時，上傳的資料檔仍在安裝目錄的 `data/files`，不在專案內，因此不會共用。

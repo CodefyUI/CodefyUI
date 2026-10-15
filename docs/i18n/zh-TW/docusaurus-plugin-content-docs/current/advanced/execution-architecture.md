@@ -117,7 +117,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 **規劃中。** 遠端 worker 需要能找到 run 的輸入檔，並把 run 寫出的東西送回。設計參考 Kubernetes volume 與 Argo 的 artifact repository：
 
 - **Mount**（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）：worker 為共享檔案系統宣告標籤（`data` → `/mnt/nas/data`），控制面在自己與 worker 的路徑之間轉換，排程器只把 run 放到擁有所需標籤的 worker。`hello` 與 `GET /api/workers` 中的 `mounts` 欄位已為此保留。
-- **Transfer 後端**（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）：沒有共享檔案系統時，由控制面擔任 artifact repository，檔案以內容定址的方式透過 HTTP 搬運。
+- **Transfer 後端**（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)，已在程式碼中）：沒有共享檔案系統時，由控制面擔任 artifact repository，檔案以內容定址的方式透過 HTTP 搬運。`assign.storage` 的 `backend` 為 `"transfer"`，並以 SHA-256 列出 run 用到的上傳檔（雜湊值存在 `file_hashes` 表，檔案大小或 mtime 改變時重新計算）；agent 從下載路徑取得 `agent-cache` 中沒有的檔案，給 run 一個專屬的資料夾，並在 `run_finished` 之前，以獨立的執行緒把 run 寫出的檔案上傳到 `POST /api/runs/{id}/artifacts/upload`，中斷 checkpoint 最後上傳。這些資料列為 `backend: "transfer"`：artifact 存放於 `<資料夾>/runs/<run id>/`，由 run 保留機制與刪除一併移除；writer 節點的檔案放在資料夾中相同的相對路徑，會保留下來。有掛載的 worker 優先。見[儲存：沒有共用檔案系統](../usage/remote-workers#storage-no-shared-filesystem)。
 
 ## 安全 {/* #security */}
 
@@ -137,7 +137,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **節點目錄與指紋**（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）。agent 永遠不 import torch，所以啟動時由一個短暫的輔助子程序以 run 的方式探索節點，計算節點目錄（`node_registry.node_catalog`：每個節點型別連同 `GET /api/nodes` 提供的定義的 sha256；參數選項採宣告值，不依機器的裝置縮減，所以硬體不影響它）與環境指紋。`hello` 帶著這兩者。節點目錄雜湊與伺服器不同時，worker 會標為 `degraded`，並列出雙方各自缺少的型別；伺服器自己的節點目錄改變時會重新比對。以 worker 為目標的 run，會在送出時於另一個執行緒中計算一次它的節點型別（`worker_handshake.graph_node_types`：準備好的圖，加上 Map 執行的每個已安裝 preset 中的節點）；指定的 worker 若節點目錄不同，就必須擁有全部型別，`WorkerExecutor` 在 `assign` 前也會再檢查一次。指紋文件與 run 的指紋存在同一處（`exec_run_fingerprints`），摘要記在 `workers` 那一列，worker 執行的每個 run 也以它作為 `fingerprint_digest`。
 
-**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack` 與 `mounts`）；只有雙方清單都列出的功能才會使用。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；接下來新增的功能（tunnel、`transfer` 後端）改為宣告 capability。
+**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack`、`mounts` 與 `transfer`）；只有雙方清單都列出的功能才會使用，因此只有 `hello` 列出 `transfer` 的 worker 才會收到經 transfer 後端的 run。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；新增的功能改為宣告 capability。
 
 **TLS。** Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 

@@ -106,6 +106,7 @@ from .core.run_store import RunStore
 from .core.study_coordinator import StudyCoordinator
 from .core.study_store import StudyStore
 from .core.sweep_store import SweepStore
+from .core.transfer import UPLOAD_PATH_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,14 @@ _AUTH_EXEMPT_PATHS = frozenset({
 _AUTH_EXEMPT_ROUTES = frozenset({
     ("POST", routes_workers.ENROLL_PATH),
 })
+
+# The same, for a path with a run id in it: a worker uploads its run's
+# outputs (#785) with its worker token, which the route checks itself
+# (``routes_runs._uploader``: the session token, or the token of the worker
+# the run is on). POST only; every other method at the path is guarded.
+_AUTH_EXEMPT_ROUTE_PATTERNS = (
+    ("POST", UPLOAD_PATH_PATTERN),
+)
 
 # Router prefixes whose routes carry their OWN route-level auth dependency
 # (exactly one each — enforced by tests/test_auth_drift.py). auth_guard
@@ -598,7 +607,9 @@ async def auth_guard(request: Request, call_next):
     """
     path = request.url.path
     if path in _AUTH_EXEMPT_PATHS \
-            or (request.method, path) in _AUTH_EXEMPT_ROUTES:
+            or (request.method, path) in _AUTH_EXEMPT_ROUTES \
+            or any(request.method == method and pattern.fullmatch(path)
+                   for method, pattern in _AUTH_EXEMPT_ROUTE_PATTERNS):
         return await call_next(request)
     if _prefix_exempt(path):
         # /api/apps + /api/keys routes each declare exactly one explicit

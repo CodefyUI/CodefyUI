@@ -20,12 +20,19 @@
    (``core.mounts.data_root_env``, #782) and, unless the worker is on the
    control plane's machine, the files it reports under it are reported
    relative to it; a same-host worker without one gets the control plane's
-   own directories as ``assign.storage.dirs`` (:meth:`Runner.storage_plan`);
+   own directories as ``assign.storage.dirs`` (:meth:`Runner.storage_plan`).
+   An assignment with ``storage.backend == "transfer"`` (#785) first gets a
+   data directory of its own under the run's folder, filled with its
+   inputs from the control plane (``agent.transfer``) by a task, so the
+   connection keeps serving meanwhile; a cancel during the fetch ends the
+   run ``cancelled`` without a subprocess;
 3. reads the child's pipe on a thread of its own and forwards every message
    as a protocol frame, in order, stamped with the run's next ``seq``. The
    thread waits for each frame to be handed to the connection before it
    reads the next message, so a slow control plane slows the child's pipe
    writes instead of growing a buffer here;
+   For a transfer run, every ``artifact`` message is uploaded first and
+   forwarded with the control plane's key (``agent.transfer.RunTransfer``);
 4. reports how the run ended, once the child process has exited (one that
    lingers after reporting is terminated, then killed), so the control
    plane never frees the device slot while the old process still holds
@@ -33,7 +40,9 @@
    a child that exits without saying is a crash (``failed``, with the exit
    code and the tail of its output) or, after a ``cancel`` it did not
    honour within ``grace_s``, a run this agent terminated
-   (``interrupted``, naming the last node seen running).
+   (``interrupted``, naming the last node seen running). A transfer run's
+   other outputs, then its held-back interrupt checkpoint, are uploaded
+   between the exit and that report.
 
 Cancel is cooperative first: ``("cancel",)`` down the pipe, which the child
 turns into ``ExecutionContext.cancel()``. ``grace_s`` later the process is
@@ -48,6 +57,7 @@ import asyncio
 import dataclasses
 import logging
 import multiprocessing
+import queue
 import re
 import shutil
 import signal
@@ -58,7 +68,9 @@ from typing import Any, Awaitable, Callable
 
 from ..core import mounts as mounts_module
 from ..core import worker_protocol as wp
+from ..core.transfer import WARNING_TRANSFER_FAILED, WARNING_TRANSFER_PROGRESS
 from . import child as child_module
+from . import transfer as transfer_module
 from .spool import SPOOL_FILE
 
 logger = logging.getLogger(__name__)
@@ -78,6 +90,8 @@ REFUSE_RECORD_OUTPUTS = ("record_outputs is not supported on workers yet "
                          "(#789); submit without it")
 REFUSE_DRAINING = "this worker is draining and takes no new runs"
 REFUSE_DUPLICATE = "this worker is already running {run_id}"
+REFUSE_NO_TRANSFER = ("this agent cannot fetch input files from the control "
+                      "plane (no transfer client)")
 
 _DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
 
@@ -292,6 +306,8 @@ class RunHandle:
     """One run in flight on this agent."""
 
     run_id: str
+    #: None while a transfer run's inputs are being fetched (#785): no
+    #: subprocess yet.
     process: Any
     events_in: Any
     control_out: Any
@@ -313,6 +329,14 @@ class RunHandle:
     stopping_now: bool = False
     reader: threading.Thread | None = None
     escalation: asyncio.Task | None = None
+    #: A transfer run's outputs (#785); None for every other run.
+    transfer: transfer_module.RunTransfer | None = None
+    #: The reader thread has joined the process: it is gone and reaped, so
+    #: nothing may signal its pid again (the escalation checks this).
+    reaped: bool = False
+    #: A cancel came while a transfer run's last uploads were going: send
+    #: nothing more, say so in a warning.
+    uploads_cancelled: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
     #: Set once the reader has joined the process (it is gone).
     exited: asyncio.Event = field(default_factory=asyncio.Event)
@@ -340,8 +364,12 @@ class Runner:
         kill_after_s: float = KILL_AFTER_S,
         exit_after_finished_s: float = EXIT_AFTER_FINISHED_S,
         child_entry: Callable[..., None] = child_module.main,
+        transfer: transfer_module.TransferClient | None = None,
     ) -> None:
         self.runs_dir = runs_dir
+        #: Fetches inputs and uploads outputs for ``transfer`` runs (#785);
+        #: ``AgentConnection`` provides one when none is given.
+        self.transfer = transfer
         self.offered_devices = {canonical_device(d) for d in offered_devices}
         #: ``--mount`` label -> directory on this machine (#782), sent in
         #: ``hello.mounts``.
@@ -394,6 +422,8 @@ class Runner:
             raise AssignmentRefused(REFUSE_DUPLICATE.format(run_id=frame.run_id))
         if frame.options.get("record_outputs"):
             raise AssignmentRefused(REFUSE_RECORD_OUTPUTS)
+        if _transfers(frame) and self.transfer is None:
+            raise AssignmentRefused(REFUSE_NO_TRANSFER)
         offered = self.offered_devices
         devices = list(frame.devices)
         canonical_set = [canonical_device(device) for device in devices]
@@ -440,6 +470,21 @@ class Runner:
                 await self.send(wp.RunFinished(
                     run_id=frame.run_id, seq=1, status=wp.FINISHED_FAILED,
                     error=str(exc)))
+            return
+        if _transfers(frame):
+            # The fetch can take minutes: a task of its own, so this
+            # connection keeps reading cancels and acks meanwhile.
+            handle = RunHandle(
+                run_id=frame.run_id, process=None, events_in=None,
+                control_out=None,
+                log_path=self.runs_dir / frame.run_id / OUTPUT_LOG,
+                grace_s=frame.grace_s)
+            self.runs[frame.run_id] = handle
+            task = asyncio.create_task(
+                self._start_transfer(frame, device, devices, handle),
+                name=f"transfer:{frame.run_id}")
+            self._housekeeping.add(task)
+            task.add_done_callback(self._housekeeping.discard)
             return
         try:
             await self._start(frame, device, devices)
@@ -512,14 +557,83 @@ class Runner:
             return (dict(storage.dirs), ["CODEFYUI_PROJECT_DIR"]), None
         return None, None
 
+    async def _start_transfer(self, frame: wp.Assign, device: str,
+                              devices: list[str], handle: RunHandle) -> None:
+        """Fetch a transfer run's inputs into its own data directory, then
+        start it (#785). Never raises: a failure, or a cancel while
+        fetching, ends the run here with its ``run_finished``."""
+        storage = frame.storage
+        assert storage is not None and self.transfer is not None
+        loop = asyncio.get_running_loop()
+        run_dir = self.runs_dir / frame.run_id
+
+        def progress(detail: str) -> None:
+            self._forward(loop, wp.RunWarning(
+                run_id=frame.run_id, seq=handle.next_seq(),
+                kind=WARNING_TRANSFER_PROGRESS, detail=detail))
+
+        def cancelled() -> bool:
+            return handle.cancel_requested
+
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            root = await asyncio.to_thread(transfer_module.run_data_root,
+                                           run_dir, _own_data_root())
+            placed = await asyncio.to_thread(
+                transfer_module.prepare_inputs, self.transfer,
+                list(storage.inputs or []), root, progress, cancelled)
+        except transfer_module.TransferCancelled:
+            await self._end_unstarted(handle, wp.FINISHED_CANCELLED, None)
+            return
+        except Exception as exc:  # noqa: BLE001 -- the run's failure
+            logger.warning("run %s: inputs not fetched: %s", frame.run_id,
+                           exc)
+            await self._end_unstarted(
+                handle, wp.FINISHED_FAILED,
+                f"could not fetch the run's input files: {exc}")
+            return
+        if handle.cancel_requested:
+            await self._end_unstarted(handle, wp.FINISHED_CANCELLED, None)
+            return
+        handle.transfer = transfer_module.RunTransfer(
+            run_id=frame.run_id, root=root, client=self.transfer,
+            max_upload_bytes=storage.max_upload_bytes, inputs=placed,
+            stop=lambda: handle.uploads_cancelled)
+        try:
+            await self._start(frame, device, devices, handle=handle,
+                              storage_env=(mounts_module.data_root_env(root),
+                                           None))
+        except Exception as exc:  # noqa: BLE001 -- reported, agent keeps serving
+            logger.exception("run %s: could not start", frame.run_id)
+            await self._abandon(frame.run_id, f"could not start the run "
+                                              f"subprocess: {exc}")
+
+    async def _end_unstarted(self, handle: RunHandle, status: str,
+                             error: str | None) -> None:
+        """Report a run that ended before its subprocess started, and retire
+        it."""
+        handle.finished = True
+        handle.exited.set()
+        await self.send(wp.RunFinished(run_id=handle.run_id,
+                                       seq=handle.next_seq(), status=status,
+                                       error=error))
+        self._retire(handle)
+
     async def _start(self, frame: wp.Assign, device: str,
-                     devices: list[str]) -> None:
+                     devices: list[str], *, handle: RunHandle | None = None,
+                     storage_env: tuple[Any, Any] | None = None) -> None:
+        """Start the run subprocess. *handle* is the one a transfer run
+        registered while it fetched, *storage_env* its ``(data_env,
+        mount)``; without them :meth:`storage_plan` decides."""
         run_dir = self.runs_dir / frame.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / OUTPUT_LOG
-        # Off the loop: the mount check stats a network share.
-        data_env, mount = await asyncio.to_thread(self.storage_plan,
-                                                  frame.storage)
+        if storage_env is None:
+            # Off the loop: the mount check stats a network share.
+            data_env, mount = await asyncio.to_thread(self.storage_plan,
+                                                      frame.storage)
+        else:
+            data_env, mount = storage_env
         env = child_environment(frame.device, devices, data_env)
         facts = run_facts(env)
         spec = {
@@ -542,10 +656,14 @@ class Runner:
         # reader see EOF when the child exits, however it exits.
         events_out.close()
         control_in.close()
-        handle = RunHandle(
-            run_id=frame.run_id, process=process, events_in=events_in,
-            control_out=control_out, log_path=log_path,
-            grace_s=frame.grace_s)
+        if handle is None:
+            handle = RunHandle(
+                run_id=frame.run_id, process=process, events_in=events_in,
+                control_out=control_out, log_path=log_path,
+                grace_s=frame.grace_s)
+        else:
+            handle.process, handle.events_in = process, events_in
+            handle.control_out = control_out
         self.runs[frame.run_id] = handle
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
@@ -570,6 +688,16 @@ class Runner:
         handle = self.runs.get(run_id)
         if handle is None or handle.exited.is_set():
             return False
+        if handle.process is None:
+            # A transfer run still fetching its inputs (#785): the fetch
+            # sees the flag and ends the run ``cancelled``.
+            handle.cancel_requested = True
+            return True
+        if handle.reaped:
+            # A transfer run whose process is gone, uploading its last
+            # outputs (#785): stop sending what is not sent yet.
+            handle.uploads_cancelled = True
+            return True
         if handle.finished:
             if not handle.stopping_now:
                 handle.stopping_now = True
@@ -627,13 +755,14 @@ class Runner:
         which is what ``_unreported_end`` reads. Only the reader thread
         waits on the process; this waits for ``exited``, which it sets.
         """
-        if await self._exits_within(handle, grace_s):
-            return
+        if await self._exits_within(handle, grace_s) or handle.reaped:
+            return  # reaped: gone, a transfer run still uploading (#785)
         logger.warning("run %s %s (%.1f s); terminating", handle.run_id, why,
                        grace_s)
         handle.terminated = True
         handle.process.terminate()
-        if await self._exits_within(handle, self.kill_after_s):
+        if await self._exits_within(handle, self.kill_after_s) \
+                or handle.reaped:
             return
         logger.warning("run %s survived terminate(); killing", handle.run_id)
         handle.killed = True
@@ -660,40 +789,36 @@ class Runner:
             logger.debug("could not forward a frame", exc_info=True)
 
     def _frame(self, handle: RunHandle, message: Any) -> Any:
-        """The protocol frame for one pipe message, or None to skip it."""
+        """The protocol frame for one pipe message, or None to skip it.
+
+        Built and validated first, numbered after: a malformed message
+        raises without taking a ``seq``, so the run's frames stay
+        contiguous (the spool sends live only the next one).
+        """
         if not isinstance(message, tuple) or not message:
             return None
         kind = message[0]
         run_id = handle.run_id
+        frame: Any
         if kind == child_module.MSG_EVENT:
             _, event_type, payload = message
+            frame = wp.Event(run_id=run_id, seq=1, event_type=event_type,
+                             payload=payload)
             if (event_type == "node_status" and isinstance(payload, dict)
                     and payload.get("status") in ("running", "progress")):
                 handle.last_node = payload.get("node_id")
-            return wp.Event(run_id=run_id, seq=handle.next_seq(),
-                            event_type=event_type, payload=payload)
-        if kind == child_module.MSG_METRICS:
-            return wp.Metrics(run_id=run_id, seq=handle.next_seq(),
-                              points=message[1])
-        if kind == child_module.MSG_ARTIFACT:
-            return wp.Artifact(run_id=run_id, seq=handle.next_seq(),
-                               **message[1])
-        if kind == child_module.MSG_WARNING:
-            return wp.RunWarning(run_id=run_id, seq=handle.next_seq(),
-                                 **message[1])
-        if kind == child_module.MSG_FINISHED:
-            body = message[1]
-            status = body.get("status")
-            if status not in ("succeeded", "failed", "cancelled"):
-                status, error = wp.FINISHED_FAILED, (
-                    f"the run subprocess reported an unknown status {status!r}")
-            else:
-                error = body.get("error")
-            return wp.RunFinished(
-                run_id=run_id, seq=handle.next_seq(), status=status,
-                error=error, peak_memory=_as_dict(body.get("peak_memory")))
-        logger.debug("run %s: ignoring pipe message %r", run_id, kind)
-        return None
+        elif kind == child_module.MSG_METRICS:
+            frame = wp.Metrics(run_id=run_id, seq=1, points=message[1])
+        elif kind == child_module.MSG_ARTIFACT:
+            frame = wp.Artifact(run_id=run_id, seq=1, **message[1])
+        elif kind == child_module.MSG_WARNING:
+            frame = wp.RunWarning(run_id=run_id, seq=1, **message[1])
+        elif kind == child_module.MSG_FINISHED:
+            frame = self._reported_end(handle, message[1], 1)
+        else:
+            logger.debug("run %s: ignoring pipe message %r", run_id, kind)
+            return None
+        return _numbered(handle, frame)
 
     def _read(self, handle: RunHandle, loop: asyncio.AbstractEventLoop) -> None:
         """Thread body: forward the child's messages, then report its end.
@@ -703,6 +828,20 @@ class Runner:
         one that waits on the process.
         """
         reported: wp.RunFinished | None = None
+        #: A transfer run's ``finished`` message (#785): turned into its
+        #: frame only after the last uploads, so its ``seq`` comes last.
+        finish_message: Any = None
+        #: A transfer run's messages go to its uploader thread, in order
+        #: (#785): uploads never hold up this thread, so the subprocess
+        #: never waits on a full pipe for the network.
+        outbox: queue.Queue | None = None
+        uploader: threading.Thread | None = None
+        if handle.transfer is not None:
+            outbox = queue.Queue()
+            uploader = threading.Thread(
+                target=self._upload_loop, args=(handle, loop, outbox),
+                name=f"run-uploader-{handle.run_id}", daemon=True)
+            uploader.start()
         while True:
             try:
                 message = handle.events_in.recv()
@@ -711,6 +850,14 @@ class Runner:
             except Exception:  # noqa: BLE001 -- an unpicklable message
                 logger.warning("run %s: unreadable pipe message",
                                handle.run_id, exc_info=True)
+                continue
+            if outbox is not None:
+                if isinstance(message, tuple) and message \
+                        and message[0] == child_module.MSG_FINISHED:
+                    handle.finished = True
+                    finish_message = message
+                    break
+                outbox.put(message)
                 continue
             try:
                 frame = self._frame(handle, message)
@@ -728,14 +875,34 @@ class Runner:
                 reported = frame
                 break
             self._forward(loop, frame)
-        if reported is not None:
+        if reported is not None or finish_message is not None:
             try:
                 loop.call_soon_threadsafe(self._watch_exit, handle)
             except RuntimeError:  # the loop is gone: nobody to escalate
                 pass
             self._drain(handle)
         handle.process.join()
+        handle.reaped = True
+        if outbox is not None and uploader is not None:
+            # How the run ended is decided now, from the flags as they are;
+            # it is numbered after the last upload.
+            # (seq 1 stands in until then: none is taken out of turn.)
+            ending: wp.RunFinished | None = None
+            if finish_message is not None:
+                try:
+                    ending = self._reported_end(handle, finish_message[1], 1)
+                except Exception:  # noqa: BLE001 -- a malformed report
+                    logger.warning("run %s: dropped a malformed report",
+                                   handle.run_id, exc_info=True)
+            if ending is None:
+                ending = self._unreported_end(handle, seq=1)
+            handle.finished = True
+            outbox.put(_LAST_UPLOADS)
+            uploader.join()
+            reported = ending.model_copy(update={"seq": handle.next_seq()})
         try:
+            # After a transfer run's last uploads: until then a cancel is
+            # one of the uploads' (``uploads_cancelled``).
             loop.call_soon_threadsafe(handle.exited.set)
         except RuntimeError:
             pass
@@ -761,6 +928,103 @@ class Runner:
         except RuntimeError:  # the agent's loop is gone: nobody to retire for
             pass
 
+    def _upload_loop(self, handle: RunHandle, loop: asyncio.AbstractEventLoop,
+                     outbox: queue.Queue) -> None:
+        """Thread body for a transfer run (#785): turn its pipe messages into
+        frames, in order, uploading each artifact's file first; on
+        :data:`_LAST_UPLOADS`, the final uploads. A bad message is logged
+        and dropped; nothing here ends the thread early."""
+        run = handle.transfer
+        assert run is not None
+        try:
+            while True:
+                message = outbox.get()
+                if message is _LAST_UPLOADS:
+                    break
+                try:
+                    if isinstance(message, tuple) and len(message) == 2 \
+                            and message[0] == child_module.MSG_ARTIFACT \
+                            and isinstance(message[1], dict):
+                        frames = self._uploaded(handle, message[1])
+                    else:
+                        frame = self._frame(handle, message)
+                        frames = [] if frame is None else [frame]
+                except Exception:  # noqa: BLE001 -- a malformed message
+                    logger.warning("run %s: dropped a malformed pipe "
+                                   "message", handle.run_id, exc_info=True)
+                    continue
+                for frame in frames:
+                    self._forward(loop, frame)
+            try:
+                self._final_uploads(handle, lambda f: self._forward(loop, f))
+            except Exception:  # noqa: BLE001 -- the report still goes out
+                logger.warning("run %s: the last uploads failed",
+                               handle.run_id, exc_info=True)
+        finally:
+            run.close()
+
+    def _uploaded(self, handle: RunHandle, body: dict[str, Any]
+                  ) -> list[Any]:
+        """The frames for one ``artifact`` message of a transfer run: its
+        file uploaded first (#785). An interrupt checkpoint is held back
+        for :meth:`_final_uploads`. Blocking (the uploader thread)."""
+        run = handle.transfer
+        assert run is not None
+        if transfer_module.is_interrupt_checkpoint(body):
+            run.held.append(body)
+            return []
+        uploaded, warning = run.upload_artifact(body)
+        return self._artifact_frames(handle, uploaded, warning)
+
+    def _artifact_frames(self, handle: RunHandle,
+                         body: dict[str, Any] | None,
+                         warning: str | None) -> list[Any]:
+        frames: list[Any] = []
+        if warning is not None:
+            node_id = (body or {}).get("node_id")
+            frames.append(wp.RunWarning(
+                run_id=handle.run_id, seq=1, kind=WARNING_TRANSFER_FAILED,
+                detail=warning,
+                node_id=node_id if isinstance(node_id, str) else None))
+        if body is not None:
+            frames.append(wp.Artifact(run_id=handle.run_id, seq=1, **body))
+        # Validated, so numbered: none of them takes a seq and fails.
+        return [_numbered(handle, frame) for frame in frames]
+
+    def _final_uploads(self, handle: RunHandle,
+                       forward: Callable[[Any], None]) -> None:
+        """After a transfer run's subprocess exited: upload what it wrote
+        without reporting it, then its interrupt checkpoint(s), last
+        (#785), forwarding each frame as it is ready. A cancel now
+        (``uploads_cancelled``) stops what is not sent yet, with one
+        ``transfer_failed`` warning saying how much. Blocking (the
+        uploader thread)."""
+        run = handle.transfer
+        assert run is not None
+        try:
+            outputs = run.unreported_outputs()
+        except OSError:
+            logger.warning("run %s: could not list its outputs",
+                           handle.run_id, exc_info=True)
+            outputs = []
+        work: list[tuple[str, Any]] = [("output", p) for p in outputs]
+        work += [("held", body) for body in run.held]
+        for index, (what, item) in enumerate(work):
+            if handle.uploads_cancelled:
+                skipped = len(work) - index
+                forward(wp.RunWarning(
+                    run_id=handle.run_id, seq=handle.next_seq(),
+                    kind=WARNING_TRANSFER_FAILED,
+                    detail=(f"{skipped} file(s) not uploaded: the uploads "
+                            "were cancelled; they stay on the worker")))
+                return
+            if what == "output":
+                body, warning = run.upload_output(item)
+            else:
+                body, warning = run.upload_artifact(item)
+            for frame in self._artifact_frames(handle, body, warning):
+                forward(frame)
+
     def _drain(self, handle: RunHandle) -> None:
         """Read and drop the pipe until EOF or the process exits. Blocking.
 
@@ -784,7 +1048,22 @@ class Runner:
             if not handle.process.is_alive():
                 return
 
-    def _unreported_end(self, handle: RunHandle) -> wp.RunFinished:
+    @staticmethod
+    def _reported_end(handle: RunHandle, body: dict[str, Any],
+                      seq: int) -> wp.RunFinished:
+        """``run_finished`` for the child's own ``finished`` *body*."""
+        status = body.get("status")
+        if status not in ("succeeded", "failed", "cancelled"):
+            status, error = wp.FINISHED_FAILED, (
+                f"the run subprocess reported an unknown status {status!r}")
+        else:
+            error = body.get("error")
+        return wp.RunFinished(
+            run_id=handle.run_id, seq=seq, status=status, error=error,
+            peak_memory=_as_dict(body.get("peak_memory")))
+
+    def _unreported_end(self, handle: RunHandle,
+                        seq: int | None = None) -> wp.RunFinished:
         """``run_finished`` for a child that exited without saying how.
 
         ``interrupted`` only when the exit is the one a stop explains: the
@@ -806,12 +1085,14 @@ class Runner:
             error = "the run subprocess exited while stopping"
         else:
             return wp.RunFinished(
-                run_id=handle.run_id, seq=handle.next_seq(),
+                run_id=handle.run_id,
+                seq=handle.next_seq() if seq is None else seq,
                 status=wp.FINISHED_FAILED, exit_code=code,
                 error=f"run subprocess exited with code {code}",
                 stderr_tail=tail, last_node=handle.last_node)
         return wp.RunFinished(
-            run_id=handle.run_id, seq=handle.next_seq(),
+            run_id=handle.run_id,
+            seq=handle.next_seq() if seq is None else seq,
             status=wp.FINISHED_INTERRUPTED, exit_code=code, error=error,
             stderr_tail=tail, last_node=handle.last_node)
 
@@ -829,6 +1110,31 @@ class Runner:
         """Mark *run_dir* finished and apply retention. Blocking."""
         mark_finished(run_dir)
         prune_run_dirs(self.runs_dir, self.keep_last)
+
+
+def _numbered(handle: RunHandle, frame: Any) -> Any:
+    """*frame* (built with a placeholder ``seq``) with the run's next one."""
+    return frame.model_copy(update={"seq": handle.next_seq()})
+
+
+#: Tells a transfer run's uploader thread the subprocess has exited.
+_LAST_UPLOADS = object()
+
+
+def _own_data_root() -> Path | None:
+    """This agent's own data directory (its ``MODELS_DIR``'s parent), whose
+    caches a transfer run shares (``transfer.SHARED_DIRS``)."""
+    try:
+        from ..config import settings
+
+        return Path(settings.MODELS_DIR).parent.resolve()
+    except Exception:  # noqa: BLE001 -- no shared cache, nothing worse
+        return None
+
+
+def _transfers(frame: wp.Assign) -> bool:
+    """Whether *frame* assigns a run through the transfer backend (#785)."""
+    return frame.storage is not None and frame.storage.backend == "transfer"
 
 
 async def _drop(frame: Any) -> None:  # pragma: no cover - placeholder sink

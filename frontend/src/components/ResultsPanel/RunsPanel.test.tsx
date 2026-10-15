@@ -855,6 +855,45 @@ describe('RunsPanel — detail view', () => {
     expect(screen.queryByTitle(t('runs.detail.copyPath'))).toBeNull();
   });
 
+  it('offers a download for a file a worker uploaded here (#785)', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 12, kind: 'checkpoint', path: '/data/runs/r1/checkpoint/a.pt',
+        meta: null, created_at: '2026-10-15T00:00:00Z', backend: 'transfer',
+        relative_path: 'runs/r1/checkpoint/a.pt', worker_id: 'gpu-box-1',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const link = await screen.findByTitle(t('runs.detail.download'));
+    expect(link).toHaveAttribute('href', '/api/runs/r1/artifacts/12/download');
+    expect(link).toHaveAttribute('download');
+    // Still a path on this server, so it can be copied too.
+    expect(screen.getByTitle(t('runs.detail.copyPath'))).toBeInTheDocument();
+  });
+
+  it('offers no download for a transfer row known only by an event-log key', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 'cursor:7', kind: 'checkpoint', path: '/data/runs/r1/checkpoint/a.pt',
+        meta: null, created_at: '2026-10-15T00:00:00Z', backend: 'transfer',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTitle(t('runs.detail.copyPath'));
+    expect(screen.queryByTitle(t('runs.detail.download'))).toBeNull();
+  });
+
+  it('offers no download for a file that is only at its path', async () => {
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTitle(t('runs.detail.copyPath'));
+    expect(screen.queryByTitle(t('runs.detail.download'))).toBeNull();
+  });
+
   it('reports a clipboard the browser refused', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

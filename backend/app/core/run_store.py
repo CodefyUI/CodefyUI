@@ -65,7 +65,7 @@ from .db import Database, transaction, utc_now_iso
 from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
-from .worker_protocol import TARGET_LOCAL
+from .worker_protocol import TARGET_ANY, TARGET_LOCAL
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,12 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 #: The worker id of a run executed by this process (#769). Also what a
 #: pre-MIGRATION_008 row's NULL ``worker_id`` reads back as.
 WORKER_LOCAL = TARGET_LOCAL
+#: The worker id an ``any`` run carries until it is placed (#772).
+WORKER_ANY = TARGET_ANY
+
+#: SQL: an artifact row that is not a ``transfer`` row (#785), whose file
+#: retention removes with its run's directory instead.
+_NOT_TRANSFER = "(backend IS NULL OR backend != 'transfer')"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
@@ -1688,7 +1694,8 @@ class RunStore:
 
         def _prune(
             conn: sqlite3.Connection,
-        ) -> tuple[int, list[str], list[tuple[str, str]]]:
+        ) -> tuple[int, list[str], list[tuple[str, str]],
+                   list[tuple[str, bool]]]:
             with transaction(conn):
                 # Excludes STATUS_INTERRUPTED so its checkpoint file is
                 # never collected for unlinking -- see the docstring's
@@ -1697,9 +1704,12 @@ class RunStore:
                 # A mount row's file is found at this server's path for it
                 # (#782), the same translation ``list_artifacts`` applies.
                 # A row this server cannot place (None) has no file here.
+                # A ``transfer`` row's file goes with its run's directory
+                # below (#785), not one by one.
                 checkpoint_rows = conn.execute(
                     "SELECT path, backend, mount_label FROM "
                     "exec_run_artifacts WHERE kind = ? "
+                    f"AND {_NOT_TRANSFER} "
                     "AND run_id IN (SELECT id FROM exec_runs WHERE "
                     f"{where_clause} AND status != ?)",
                     (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
@@ -1717,7 +1727,8 @@ class RunStore:
                 logdir_rows = conn.execute(
                     "SELECT run_id, path, backend, mount_label FROM "
                     "exec_run_artifacts WHERE "
-                    "kind = ? AND run_id IN (SELECT id FROM exec_runs "
+                    f"kind = ? AND {_NOT_TRANSFER} "
+                    "AND run_id IN (SELECT id FROM exec_runs "
                     f"WHERE {where_clause})",
                     (ARTIFACT_KIND_TENSORBOARD, *params),
                 ).fetchall()
@@ -1776,12 +1787,38 @@ class RunStore:
                         "retention: could not copy the evidence of study "
                         "children about to be deleted onto their attempts; "
                         "the delete proceeds", exc_info=True)
+                # Every file a worker uploaded for a run is under the run's
+                # own directory (#785), so a worker run's directory goes as
+                # a whole; an interrupted one keeps its checkpoints, as a
+                # local run's do above.
+                worker_runs = [
+                    (row["id"], row["status"] == STATUS_INTERRUPTED)
+                    for row in conn.execute(
+                        "SELECT id, status FROM exec_runs WHERE "
+                        f"{where_clause} AND worker_id IS NOT NULL "
+                        "AND worker_id NOT IN (?, ?)",
+                        (*params, WORKER_LOCAL, WORKER_ANY)).fetchall()]
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
-                return deleted, doomed_paths, doomed_logdirs
+                return deleted, doomed_paths, doomed_logdirs, worker_runs
 
-        deleted, doomed_paths, doomed_logdirs = await self.db.run(_prune)
+        deleted, doomed_paths, doomed_logdirs, worker_runs = \
+            await self.db.run(_prune)
+        if worker_runs:
+            from .transfer import remove_run_files
+
+            def _remove_runs(runs: list[tuple[str, bool]]) -> list[str]:
+                return [run_id for run_id, interrupted in runs
+                        if remove_run_files(run_id,
+                                            keep_checkpoints=interrupted)]
+
+            removed_runs = await asyncio.to_thread(_remove_runs, worker_runs)
+            if removed_runs:
+                logger.info(
+                    "run retention: removed the received files of %d "
+                    "worker run(s): %s", len(removed_runs),
+                    ", ".join(removed_runs))
         if doomed_paths:
             from .checkpoints import unlink_checkpoint
 

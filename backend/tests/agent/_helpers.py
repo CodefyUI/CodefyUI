@@ -281,3 +281,57 @@ def ticking_child(spec: dict[str, Any], events_out: Any,
                           "step": step}))
         time.sleep(0.05)
     quick_child(spec, events_out, control_in)
+
+
+def transfer_child(spec: dict[str, Any], events_out: Any,
+                   control_in: Any) -> None:
+    """A transfer run (#785) in miniature: read the fetched input from the
+    run's own ``DATA_FILES_DIR``, report a periodic checkpoint, write a
+    saved model without reporting it, report an interrupt checkpoint, and
+    end ``cancelled``."""
+    from pathlib import Path
+
+    env = (spec.get("env") or {}).get("set") or {}
+    files = Path(env["CODEFYUI_DATA_FILES_DIR"])
+    models = Path(env["CODEFYUI_MODELS_DIR"])
+    events_out.send((child.MSG_EVENT, "input", {
+        "text": (files / "train.csv").read_text(encoding="utf-8")}))
+    periodic = models / "periodic" / "p1.pt"
+    periodic.parent.mkdir(parents=True)
+    periodic.write_bytes(b"periodic")
+    events_out.send((child.MSG_ARTIFACT, {
+        "kind": "checkpoint", "path": str(periodic),
+        "meta": {"reason": "periodic"}, "node_id": "train",
+        "mount_label": None}))
+    (models / "saved.pt").write_bytes(b"saved")
+    stopped = models / "interrupted" / "i1.pt"
+    stopped.parent.mkdir(parents=True)
+    stopped.write_bytes(b"interrupted")
+    events_out.send((child.MSG_ARTIFACT, {
+        "kind": "checkpoint", "path": str(stopped),
+        "meta": {"reason": "interrupted", "epoch": 1, "batch": 2},
+        "node_id": "train", "mount_label": None}))
+    events_out.send((child.MSG_FINISHED, {"status": "cancelled",
+                                          "error": None, "peak_memory": None}))
+
+
+def slow_upload_child(spec: dict[str, Any], events_out: Any,
+                      control_in: Any) -> None:
+    """A transfer run (#785) whose reported file uploads slowly: report a
+    periodic checkpoint, write a saved model without reporting it, send two
+    messages the agent cannot use, and succeed at once."""
+    from pathlib import Path
+
+    models = Path((spec.get("env") or {}).get("set", {})[
+        "CODEFYUI_MODELS_DIR"])
+    periodic = models / "periodic" / "p1.pt"
+    periodic.parent.mkdir(parents=True)
+    periodic.write_bytes(b"periodic")
+    events_out.send((child.MSG_ARTIFACT, {
+        "kind": "checkpoint", "path": str(periodic),
+        "meta": {"reason": "periodic"}, "node_id": "train",
+        "mount_label": None}))
+    (models / "saved.pt").write_bytes(b"saved")
+    events_out.send((child.MSG_ARTIFACT, {"kind": "x", "bogus": 1}))
+    events_out.send(("nonsense",))
+    quick_child(spec, events_out, control_in)
