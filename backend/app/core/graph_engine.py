@@ -37,6 +37,7 @@ from .execution_context import (
     MetricSignal,
     ProgressSignal,
 )
+from .device_utils import DEVICE_PARAM_OPTIONS, DEVICE_PATTERN
 from .node_base import BaseNode, ParamType
 from .node_registry import registry
 from .param_defaults import fill_missing_params
@@ -1578,6 +1579,24 @@ def drop_notes(
     )
 
 
+def _is_served_device_value(param_def: Any, value: Any) -> bool:
+    """True for a per-card ``cuda:N`` / ``mps:N`` on a node ``device`` param.
+
+    A node-level ``device`` param declares the static
+    ``DEVICE_PARAM_OPTIONS`` (auto, cpu, cuda, mps), while the node API
+    serves the machine's list through ``device_options``, which adds the
+    per-card forms. The SELECT check accepts those forms so a choice the UI
+    offers is not refused at run or export time (#802). Only already
+    normalised spellings match, the same ones the UI serves.
+    """
+    return (
+        param_def.name == "device"
+        and tuple(param_def.options) == DEVICE_PARAM_OPTIONS
+        and isinstance(value, str)
+        and DEVICE_PATTERN.match(value) is not None
+    )
+
+
 def validate_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -1788,7 +1807,8 @@ def validate_graph(
                 # A misspelt option used to pass here and either fail at run
                 # time or be read as some other option (#698). A SELECT with
                 # no options lists its choices elsewhere, so it is skipped.
-                if param_def.options and value not in param_def.options:
+                if (param_def.options and value not in param_def.options
+                        and not _is_served_device_value(param_def, value)):
                     allowed = ", ".join(param_def.options)
                     errors.append(validation_issue(
                         "param_not_an_option",
