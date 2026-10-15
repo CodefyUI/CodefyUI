@@ -74,6 +74,8 @@ from .core.auth import (
     local_interface_ips,
     session_token,
     tunnel_host_allows,
+    tunnel_port,
+    tunnel_token_route,
     write_token_file,
 )
 from .core.body_limit import BodySizeLimitMiddleware, RequestBodyTooLarge
@@ -106,6 +108,7 @@ from .core.run_store import RunStore
 from .core.study_coordinator import StudyCoordinator
 from .core.study_store import StudyStore
 from .core.sweep_store import SweepStore
+from .core.transfer import UPLOAD_PATH_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +139,14 @@ _AUTH_EXEMPT_PATHS = frozenset({
 _AUTH_EXEMPT_ROUTES = frozenset({
     ("POST", routes_workers.ENROLL_PATH),
 })
+
+# The same, for a path with a run id in it: a worker uploads its run's
+# outputs (#785) with its worker token, which the route checks itself
+# (``routes_runs._uploader``: the session token, or the token of the worker
+# the run is on). POST only; every other method at the path is guarded.
+_AUTH_EXEMPT_ROUTE_PATTERNS = (
+    ("POST", UPLOAD_PATH_PATTERN),
+)
 
 # Router prefixes whose routes carry their OWN route-level auth dependency
 # (exactly one each — enforced by tests/test_auth_drift.py). auth_guard
@@ -598,7 +609,9 @@ async def auth_guard(request: Request, call_next):
     """
     path = request.url.path
     if path in _AUTH_EXEMPT_PATHS \
-            or (request.method, path) in _AUTH_EXEMPT_ROUTES:
+            or (request.method, path) in _AUTH_EXEMPT_ROUTES \
+            or any(request.method == method and pattern.fullmatch(path)
+                   for method, pattern in _AUTH_EXEMPT_ROUTE_PATTERNS):
         return await call_next(request)
     if _prefix_exempt(path):
         # /api/apps + /api/keys routes each declare exactly one explicit
@@ -629,14 +642,30 @@ async def host_guard(request: Request, call_next):
     ``Host: attacker.com`` (the browser doesn't know about the rebinding).
     """
     host = request.headers.get("host", "")
-    if not host_is_allowed(host) and not tunnel_host_allows(
-            host, request.url.path):
-        logger.warning("rejected request with Host=%r path=%s", host, request.url.path)
+    path = request.url.path
+    if host_is_allowed(host) or tunnel_host_allows(host, path):
+        return await call_next(request)
+    if tunnel_port(host) is not None \
+            and tunnel_token_route(request.method, path):
+        # The transfer backend through an SSH worker's tunnel (#785): only
+        # with a worker token, never as the open read it is on the LAN.
+        store = getattr(request.app.state, "worker_store", None)
+        provided = request.headers.get(TOKEN_HEADER)
+        if store is not None and provided \
+                and await store.authenticate(provided) is not None:
+            return await call_next(request)
+        logger.warning("refused %s %s through an SSH tunnel without a "
+                       "worker token", request.method, path)
         return JSONResponse(
-            status_code=421,
-            content={"detail": "Misdirected Request (Host not allowed)"},
+            status_code=403,
+            content={"detail": "a worker token is required through an "
+                               "SSH tunnel"},
         )
-    return await call_next(request)
+    logger.warning("rejected request with Host=%r path=%s", host, path)
+    return JSONResponse(
+        status_code=421,
+        content={"detail": "Misdirected Request (Host not allowed)"},
+    )
 
 
 @app.exception_handler(RequestBodyTooLarge)

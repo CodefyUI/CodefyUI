@@ -1,10 +1,15 @@
 """What storage a run needs, read off its graph at submit (#782).
 
-``needs(graph)`` answers ``{"mount": <label> | None, "files":
-[...]}``: whether the run reads or writes files under the data directory
-(so it may only run where that directory is mounted, see
-``scheduling.WorkerScheduler``), and which stored uploads it reads (what the
-``transfer`` backend of #785 will have to ship).
+``needs(graph)`` answers ``{"mount": <label> | None, "files": [...],
+"inputs": [...], "paths": [...]}``: whether the run reads or writes files
+under the data directory (so it may only run where that directory is
+mounted, see ``scheduling.WorkerScheduler``), and which files it reads.
+``files`` is every one of them as the graph spells it. The ``transfer``
+backend (#785) splits them: ``inputs`` are the ones a typed param names
+(``{"kind": "data_file" | "image" | "model", "name"}``), stored uploads it
+can ship by content hash; ``paths`` are the ones a node rule found in a
+plain string param (a ``FileReader`` path, an image folder), which it
+cannot, so a run with any of them needs the mount itself.
 
 Only a run that targets a worker is asked: a local run is on the data
 directory by definition, so the 3.0 submit path never calls this.
@@ -55,6 +60,11 @@ from .node_base import ParamType, is_param_visible
 #: Param types whose value names a stored upload.
 FILE_PARAM_TYPES = (ParamType.DATA_FILE, ParamType.IMAGE_FILE,
                     ParamType.MODEL_FILE)
+
+#: Typed param -> the ``transfer`` input kind (#785) its upload store is.
+INPUT_KINDS = {ParamType.DATA_FILE: "data_file",
+               ParamType.IMAGE_FILE: "image",
+               ParamType.MODEL_FILE: "model"}
 
 #: Paths that resolve against the install (every host has them), not the
 #: data directory: the bundled samples.
@@ -153,8 +163,10 @@ COVERAGE: dict[str, str] = {
 }
 
 
-def _typed_files(node_cls: Any, params: dict[str, Any]) -> list[str]:
-    files: list[str] = []
+def _typed_files(node_cls: Any, params: dict[str, Any]
+                 ) -> list[tuple[str, str]]:
+    """``(kind, value)`` for every typed file param with a value."""
+    files: list[tuple[str, str]] = []
     try:
         definitions = node_cls.define_params()
     except Exception:  # noqa: BLE001 -- a broken plugin node: no typed param
@@ -166,7 +178,7 @@ def _typed_files(node_cls: Any, params: dict[str, Any]) -> list[str]:
             continue
         value = _text(params.get(definition.name))
         if value and not _bundled(value):
-            files.append(value)
+            files.append((INPUT_KINDS[definition.param_type], value))
     return files
 
 
@@ -196,9 +208,9 @@ def _every_node(value: Any) -> Iterator[dict[str, Any]]:
             yield from _every_node(child)
 
 
-def node_needs(node_type: str, params: dict[str, Any]) -> list[str] | None:
-    """One node's need: ``None``, or the stored files it reads (``[]`` for
-    a writer)."""
+def _node_needs(node_type: str, params: dict[str, Any]
+                ) -> tuple[list[tuple[str, str]], list[str]] | None:
+    """One node's need: ``None``, or ``(typed inputs, ruled paths)``."""
     from .node_registry import registry
 
     from .param_defaults import fill_missing_params
@@ -206,19 +218,28 @@ def node_needs(node_type: str, params: dict[str, Any]) -> list[str] | None:
     node_cls = registry.get(node_type)
     if node_cls is not None:
         params = fill_missing_params(node_cls, params)
-    files = _typed_files(node_cls, params) if node_cls is not None else []
+    typed = _typed_files(node_cls, params) if node_cls is not None else []
     rule = NODE_RULES.get(node_type)
     ruled = rule(params) if rule is not None else None
-    if ruled is not None:
-        files.extend(ruled)
-    if files or ruled is not None or node_type in WRITERS:
-        return files
+    if typed or ruled is not None or node_type in WRITERS:
+        return typed, list(ruled or [])
     return None
+
+
+def node_needs(node_type: str, params: dict[str, Any]) -> list[str] | None:
+    """One node's need: ``None``, or the stored files it reads (``[]`` for
+    a writer)."""
+    found = _node_needs(node_type, params)
+    if found is None:
+        return None
+    typed, ruled = found
+    return [value for _, value in typed] + ruled
 
 
 def needs(graph: dict[str, Any], *,
           label: str | None = None) -> dict[str, Any]:
-    """``{"mount": label | None, "files": [...]}`` for a run of *graph*.
+    """``{"mount": label | None, "files": [...], "inputs": [...],
+    "paths": [...]}`` for a run of *graph* (see the module docstring).
 
     *label* is the mount a need names (the control plane's,
     ``core.mounts.control_plane_label()``, by default).
@@ -228,18 +249,23 @@ def needs(graph: dict[str, Any], *,
 
         label = control_plane_label()
     mounted = False
-    files: list[str] = []
+    inputs: set[tuple[str, str]] = set()
+    paths: set[str] = set()
     for node in _executable_nodes(graph):
         node_type = node.get("type")
         data = node.get("data")
         params = data.get("params") if isinstance(data, dict) else None
         if not isinstance(node_type, str):
             continue
-        found = node_needs(node_type, params if isinstance(params, dict)
-                           else {})
+        found = _node_needs(node_type, params if isinstance(params, dict)
+                            else {})
         if found is None:
             continue
         mounted = True
-        files.extend(found)
+        inputs.update(found[0])
+        paths.update(found[1])
     return {"mount": label if mounted else None,
-            "files": sorted(set(files))}
+            "files": sorted({name for _, name in inputs} | paths),
+            "inputs": [{"kind": kind, "name": name}
+                       for kind, name in sorted(inputs)],
+            "paths": sorted(paths)}

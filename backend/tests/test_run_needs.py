@@ -163,9 +163,13 @@ def _pure_tensor_graph() -> dict[str, Any]:
                        "sourceHandle": "trigger", "type": "trigger"}]}
 
 
+def _csv_inputs(*names: str) -> list[dict[str, str]]:
+    return [{"kind": "data_file", "name": name} for name in names]
+
+
 def test_a_pure_tensor_graph_needs_nothing():
     assert run_needs.needs(_pure_tensor_graph(), label="data") == {
-        "mount": None, "files": []}
+        "mount": None, "files": [], "inputs": [], "paths": []}
 
 
 def test_a_csv_graph_needs_the_mount_and_lists_its_upload():
@@ -174,7 +178,26 @@ def test_a_csv_graph_needs_the_mount_and_lists_its_upload():
     _triggered(graph, _node("csv2", "CSVReader", path="a.csv"))
     _triggered(graph, _node("csv3", "CSVReader", path="a.csv"))
     assert run_needs.needs(graph, label="nas") == {
-        "mount": "nas", "files": ["a.csv", "b.csv"]}
+        "mount": "nas", "files": ["a.csv", "b.csv"],
+        "inputs": _csv_inputs("a.csv", "b.csv"), "paths": []}
+
+
+def test_typed_uploads_are_inputs_and_ruled_paths_are_paths():
+    """#785: what the transfer backend can ship (a typed upload, by kind)
+    is told apart from a path a node rule found, which it cannot."""
+    graph = _pure_tensor_graph()
+    _triggered(graph, _node("csv", "CSVReader", path="t.csv"))
+    _triggered(graph, _node("img", "ImageReader", path="cat.png"))
+    _triggered(graph, _node("ck", "CheckpointLoader", path="periodic/x.pt"))
+    _triggered(graph, _node("fr", "FileReader", path="files/notes.txt"))
+    found = run_needs.needs(graph, label="data")
+    assert found["inputs"] == [
+        {"kind": "data_file", "name": "t.csv"},
+        {"kind": "image", "name": "cat.png"},
+        {"kind": "model", "name": "periodic/x.pt"}]
+    assert found["paths"] == ["files/notes.txt"]
+    assert found["files"] == sorted(["t.csv", "cat.png", "periodic/x.pt",
+                                     "files/notes.txt"])
 
 
 def _triggered(graph: dict[str, Any], node: dict[str, Any]) -> None:
@@ -191,7 +214,7 @@ def test_a_bypassed_or_unreachable_reader_is_not_a_need():
     _triggered(graph, reader)
     graph["nodes"].append(_node("draft", "CSVReader", path="d.csv"))
     assert run_needs.needs(graph, label="data") == {
-        "mount": None, "files": []}
+        "mount": None, "files": [], "inputs": [], "paths": []}
 
 
 def test_a_node_inside_a_subgraph_counts():
@@ -203,7 +226,8 @@ def test_a_node_inside_a_subgraph_counts():
         "nodes": [_node("c", "CSVReader", path="in.csv")], "edges": [],
         "interface": {"inputs": [], "outputs": [], "triggerTargets": ["c"]}}]
     assert run_needs.needs(graph, label="data") == {
-        "mount": "data", "files": ["in.csv"]}
+        "mount": "data", "files": ["in.csv"],
+        "inputs": _csv_inputs("in.csv"), "paths": []}
 
 
 def test_a_graph_that_does_not_prepare_is_read_node_by_node():
@@ -211,7 +235,8 @@ def test_a_graph_that_does_not_prepare_is_read_node_by_node():
              "edges": [{"id": "bad", "source": "csv", "target": "ghost",
                         "sourceHandle": "tensor", "targetHandle": "x"}]}
     assert run_needs.needs(graph, label="data") == {
-        "mount": "data", "files": ["x.csv"]}
+        "mount": "data", "files": ["x.csv"],
+        "inputs": _csv_inputs("x.csv"), "paths": []}
 
 
 def test_the_label_defaults_to_the_control_planes(monkeypatch):

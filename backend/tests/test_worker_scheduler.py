@@ -368,8 +368,8 @@ def test_a_run_that_needs_the_mount_goes_only_to_a_worker_holding_it(
         "r1", "bare/cpu", _target("bare", "cpu", ["cpu", "cpu"]),
         NEEDS_DATA)) is None
     assert scheduler.explain(needy) == (
-        "worker bare has no `data` mount; add `--mount data=...` or use the "
-        "transfer backend (#785)")
+        "worker bare has no `data` mount; add `--mount data=...` to its "
+        "agent")
     assert scheduler.place(_NeedyEntry("r2", "nas/cpu", _target("nas"),
                                        NEEDS_DATA), {}).worker_id == "nas"
     # A run that needs nothing goes anywhere, as before.
@@ -418,8 +418,8 @@ def test_submit_refuses_a_named_worker_without_the_mount(data_label):
     with pytest.raises(RunSubmitError) as refused:
         check(_options(worker="gpu-box-1"), NEEDS_DATA)
     assert str(refused.value) == (
-        "worker gpu-box-1 has no `data` mount; add `--mount data=...` or "
-        "use the transfer backend (#785)")
+        "worker gpu-box-1 has no `data` mount; add `--mount data=...` to "
+        "its agent")
     # A pure-tensor graph is accepted there.
     check(_options(worker="gpu-box-1"), {"mount": None, "files": []})
     check(_options(worker="nas-box"), NEEDS_DATA)
@@ -432,9 +432,15 @@ def test_submit_refuses_a_named_worker_without_the_mount(data_label):
         check(_options(worker="any", device="cuda"), NEEDS_DATA)
 
 
-def test_prepare_computes_needs_only_for_a_worker_run(data_label):
+def test_prepare_computes_needs_only_for_a_worker_run(data_label, tmp_path,
+                                                      monkeypatch):
     """The 3.0 path never reads the graph for storage; a worker run's
     needs are what submit checks and the queue entry carries."""
+    from app.config import settings
+
+    # An upload store of its own: whatever the install's holds is not this
+    # test's business.
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", tmp_path / "files")
     service = _service(_registry_with(_worker("gpu-box-1", "cpu")))
     graph = {"nodes": [
         {"id": "s", "type": "Start", "data": {"params": {}}},
@@ -444,10 +450,16 @@ def test_prepare_computes_needs_only_for_a_worker_run(data_label):
                    "sourceHandle": "trigger", "type": "trigger"}]}
     *_, needs = service._prepare(graph, {"device": "cpu"})
     assert needs is None
-    with pytest.raises(RunSubmitError, match="has no `data` mount"):
+    # train.csv is not an upload here, so the transfer backend (#785)
+    # cannot ship it either, and the refusal says so.
+    with pytest.raises(RunSubmitError, match=(
+            "has no `data` mount; add `--mount data=...` to its agent, or "
+            "make the run fit the transfer backend: `train.csv` is not an "
+            "upload on this server")):
         service._prepare(graph, {"target": {"worker": "gpu-box-1"}})
     *_, needs = service._prepare(graph, {"target": {"worker": "any"}})
-    assert needs == {"mount": "data", "files": ["train.csv"]}
+    assert needs["mount"] == "data" and needs["files"] == ["train.csv"]
+    assert needs["transfer"]["ok"] is False
 
 
 def test_cheap_refusals_come_before_the_graph_is_read(data_label,
@@ -486,9 +498,10 @@ def test_a_batch_check_returns_each_childs_needs(data_label):
     result = service.check_placeable_batch(
         [graph("a.csv"), graph(""), graph("b.csv")],
         {"target": {"worker": "nas"}})
-    assert result == [{"mount": "data", "files": ["a.csv"]},
-                      {"mount": None, "files": []},
-                      {"mount": "data", "files": ["b.csv"]}]
+    assert [None if r is None else (r["mount"], r["files"])
+            for r in result] == [("data", ["a.csv"]), (None, []),
+                                 ("data", ["b.csv"])]
+    assert "transfer" in result[0] and "transfer" not in result[1]
     assert service.check_placeable_batch([graph("a.csv")], {}) == [None]
 
 

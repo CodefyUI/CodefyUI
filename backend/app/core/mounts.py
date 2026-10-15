@@ -54,8 +54,9 @@ from typing import Any
 
 #: ``exec_run_artifacts.backend`` values. ``local``: an absolute path on this
 #: machine (every row before #782). ``mount``: ``path`` is relative to the
-#: mount ``mount_label`` names. ``transfer`` (#785) and ``s3`` (#791) are
-#: reserved for the backends that move files.
+#: mount ``mount_label`` names. ``transfer`` (#785): a worker uploaded the
+#: file to this server; ``path`` is its key under the data root
+#: (``core.transfer``). ``s3`` (#791) is reserved.
 BACKEND_LOCAL = "local"
 BACKEND_MOUNT = "mount"
 BACKEND_TRANSFER = "transfer"
@@ -204,7 +205,17 @@ def translate(backend: str | None, mount_label: str | None,
     absolute or climbs out of the mount, there is no local path: None, and
     the caller keeps the relative path and the label instead. A relative
     string is never handed out as if it were a path on this machine.
+
+    A ``transfer`` row (#785) names a file a worker uploaded here by its
+    key (``runs/<run_id>/<kind>/<name>``, or ``models/...`` for a writer's
+    file placed in this server's data folders): ``core.transfer.key_location``
+    maps it; None for a key of neither shape.
     """
+    if backend == BACKEND_TRANSFER:
+        from .transfer import key_location
+
+        location = key_location(path)
+        return None if location is None else str(location)
     if backend != BACKEND_MOUNT:
         return path
     if not mount_label or mount_label != control_plane_label():

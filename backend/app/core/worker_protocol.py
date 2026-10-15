@@ -77,7 +77,16 @@ What the frames carry
 - ``artifact`` / ``warning``: an ``ArtifactSignal`` / ``WarningSignal``'s
   fields, for ``RunSinks.record_artifact`` / ``RunSinks.warn``. An
   ``artifact`` under the run's mount carries ``mount_label`` and a path
-  relative to that mount (#782); ``assign.storage`` names the mount.
+  relative to that mount (#782); ``assign.storage`` names the mount. An
+  ``artifact`` the agent uploaded to the control plane (the ``transfer``
+  backend, #785) carries ``backend: "transfer"`` and the key the upload
+  answered with (``runs/<run_id>/<kind>/<name>``) as its ``path``.
+- ``assign.storage.backend == "transfer"`` (#785): the worker holds no
+  directory for the control plane's mount. ``storage.inputs`` lists the
+  uploads the run reads, by content hash; the agent fetches the ones its
+  cache lacks over HTTP before it starts the run subprocess, reporting
+  ``warning`` frames of kind ``transfer_progress`` (these may come before
+  ``run_started``), and uploads what the run writes before ``run_finished``.
 - ``run_finished.status``: ``succeeded``, ``failed`` or ``cancelled`` as an
   ``ExecutionOutcome`` reports them, or ``interrupted``: after a ``cancel``
   the subprocess ended without reporting, because the agent terminated it
@@ -111,7 +120,14 @@ PROTOCOL_VERSION = 3
 #: capability rule, and are listed for the record: every peer of version 3
 #: speaks both. Every additive feature from now on (#784's tunnel, #785's
 #: ``transfer`` storage) adds its name here instead of bumping the version.
-CAPABILITIES: tuple[str, ...] = ("ack", "mounts")
+#: ``transfer`` (#785): ``assign.storage.backend == "transfer"`` with
+#: ``inputs`` and ``max_upload_bytes``, and ``artifact.backend``; the control
+#: plane sends a run through the transfer backend only to a worker that
+#: lists it.
+CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer")
+
+#: The capability name of the transfer storage backend (#785).
+CAPABILITY_TRANSFER = "transfer"
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -331,6 +347,10 @@ class Artifact(_RunFrame):
     meta: dict[str, Any] | None = None
     node_id: str | None = None
     mount_label: str | None = None
+    #: ``transfer`` (#785): the file was uploaded to the control plane and
+    #: ``path`` is the key it is stored under there. None: a path on the
+    #: worker (absolute, or relative to ``mount_label``).
+    backend: Literal["transfer"] | None = None
 
 
 class RunWarning(_RunFrame):
@@ -372,6 +392,21 @@ class Welcome(_Frame):
     grace_s: float = Field(default=DEFAULT_GRACE_S, ge=0)
 
 
+#: ``TransferInput.kind`` -> the run's data setting its file goes under.
+TRANSFER_KINDS = ("data_file", "image", "model")
+
+
+class TransferInput(_Frame):
+    """One upload a ``transfer`` run reads (#785): where it goes in the
+    run's data directories (``kind`` + ``name``, the name the graph uses)
+    and what it must hash to."""
+
+    kind: Literal["data_file", "image", "model"]
+    name: str = Field(min_length=1, max_length=1024)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bytes: int = Field(ge=0)
+
+
 class Storage(_Frame):
     """Where an assigned run's files are (#782, ``assign.storage``).
 
@@ -390,12 +425,27 @@ class Storage(_Frame):
     (with ``artifact.mount_label``). Off for a same-host worker: its files
     are on the control plane's machine, recorded as ``local`` rows with
     their absolute path.
+
+    ``backend == "transfer"`` (#785): the worker holds no directory for
+    ``mount``, so nothing is shared. The run gets a fresh data directory of
+    its own on the worker, holding ``inputs`` (fetched by content hash from
+    the control plane's download endpoints, cached per worker), and every
+    file it reports or writes there is uploaded to the control plane. See
+    ``core.transfer`` (the control plane's half) and ``agent.transfer``.
     """
 
-    backend: Literal["mount"] = "mount"
+    backend: Literal["mount", "transfer"] = "mount"
     mount: str
     dirs: dict[str, str] | None = None
     relative_artifacts: bool = True
+    #: ``transfer`` only (#785): the uploads the run reads, which the agent
+    #: fetches into its cache by ``sha256`` and links into the run's own
+    #: data directory under ``name``.
+    inputs: list[TransferInput] | None = None
+    #: ``transfer`` only: the largest file the control plane accepts on
+    #: ``POST /api/runs/{id}/artifacts/upload`` (its ``MAX_UPLOAD_SIZE``),
+    #: so the agent does not send a file that would be refused.
+    max_upload_bytes: int | None = Field(default=None, ge=0)
 
 
 class Assign(_Frame):

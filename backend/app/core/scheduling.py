@@ -56,8 +56,15 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from .mounts import holds_mount
+from .transfer import refusal as transfer_refusal
+from .transfer import transferable
 from .run_store import WORKER_LOCAL
-from .worker_protocol import TARGET_ANY, TARGET_LOCAL, canonical_device
+from .worker_protocol import (
+    CAPABILITY_TRANSFER,
+    TARGET_ANY,
+    TARGET_LOCAL,
+    canonical_device,
+)
 
 #: ``(worker_id, device)``, e.g. ``("local", "cuda:0")``.
 SlotKey = tuple[str, str]
@@ -104,6 +111,28 @@ def entry_mount(entry: Any) -> str | None:
     needs = getattr(entry, "needs", None)
     mount = needs.get("mount") if isinstance(needs, Mapping) else None
     return mount if isinstance(mount, str) and mount else None
+
+
+def entry_transfers(entry: Any) -> bool:
+    """Whether *entry*'s run may use the ``transfer`` backend (#785):
+    ``needs["transfer"]``, decided at submit by ``core.transfer``."""
+    return transferable(getattr(entry, "needs", None))
+
+
+def speaks_transfer(worker: Any) -> bool:
+    """Whether *worker*'s agent listed the ``transfer`` capability in its
+    ``hello`` (#781's rule: an additive feature is used only when both ends
+    name it)."""
+    return CAPABILITY_TRANSFER in (getattr(worker, "capabilities", None) or ())
+
+
+def reaches(worker: Any, entry: Any) -> bool:
+    """Whether *worker* can serve *entry*'s files: the run needs none, the
+    worker holds the mount (#782), or the run can use the transfer backend
+    and the worker speaks it (#785)."""
+    mount = entry_mount(entry)
+    return (mount is None or holds_mount(worker, mount)
+            or (entry_transfers(entry) and speaks_transfer(worker)))
 
 
 class SlotLimits(Protocol):
@@ -269,9 +298,14 @@ class WorkerScheduler:
     on a worker, and starts only when all of them are free.
 
     Storage (#782): a run whose ``needs`` name a mount (``run_needs``) goes
-    only to a worker that holds it (``mounts.holds_mount``: it declared the
-    label, or it is a same-host worker and the label is this server's);
-    ``any`` skips the others, and this process always holds its own.
+    to a worker that holds it (``mounts.holds_mount``: it declared the
+    label, or it is a same-host worker and the label is this server's),
+    or, when the run can use the ``transfer`` backend (#785,
+    ``needs["transfer"]``), to one that does not: the files travel over
+    HTTP instead. The mount is preferred: ``any`` tries the workers that
+    hold it first, then the others through the transfer backend, then this
+    process (which always holds its own). A run the transfer backend cannot
+    serve goes only where the mount is (:func:`reaches`).
 
     :meth:`explain` says why a run that :meth:`place` refused cannot start
     for a reason other than a busy slot (the Runs list shows it).
@@ -295,17 +329,24 @@ class WorkerScheduler:
             worker = self._registry.get(worker_id)
             if worker is None or not worker.accepts_runs:
                 return None
-            if mount is not None and not holds_mount(worker, mount):
+            if not reaches(worker, entry):
                 return None
             return self._place_on(worker, requested, devices, taken)
-        for worker in self._registry.workers():
-            # A worker that lacks node types this server has, or
-            # reported no catalog, takes only runs that name it (#781).
-            if worker.accepts_runs and not _skipped_by_any(worker) \
-                    and (mount is None or holds_mount(worker, mount)):
-                placement = self._place_on(worker, requested, devices, taken)
-                if placement is not None:
-                    return placement
+        workers = [w for w in self._registry.workers() if w.accepts_runs
+                   # A worker that lacks node types this server has, or
+                   # reported no catalog, takes only runs that name it (#781).
+                   and not _skipped_by_any(w)]
+        # The mount first (#785): a worker that holds it, then one that
+        # gets the files through the transfer backend.
+        ordered = [w for w in workers
+                   if mount is None or holds_mount(w, mount)]
+        if mount is not None and entry_transfers(entry):
+            ordered += [w for w in workers
+                        if not holds_mount(w, mount) and speaks_transfer(w)]
+        for worker in ordered:
+            placement = self._place_on(worker, requested, devices, taken)
+            if placement is not None:
+                return placement
         return self._place_here(requested, devices, taken)
 
     def reservation(self, entry: QueuedEntry) -> tuple[SlotKey, ...] | None:
@@ -328,8 +369,7 @@ class WorkerScheduler:
         if worker is None or not worker.accepts_runs \
                 or not all(worker.offers(d) for d in devices):
             return None
-        mount = entry_mount(entry)
-        if mount is not None and not holds_mount(worker, mount):
+        if not reaches(worker, entry):
             return None
         return tuple(slot_for(worker, d) for d in devices)
 
@@ -346,13 +386,16 @@ class WorkerScheduler:
                 return f"waiting for worker {worker_id} to reconnect"
             if worker.draining:
                 return f"worker {worker_id} is draining"
-            if mount is not None and not holds_mount(worker, mount):
-                return no_mount(worker_id, mount)
+            if not reaches(worker, entry):
+                return no_mount(worker_id, mount or "",
+                                transfer_refusal(getattr(entry, "needs",
+                                                         None)))
             return None
         wanted = ", ".join(devices) if devices else requested
         if not self.can_serve_any(requested, devices, connected_only=True,
-                                  mount=mount):
-            if mount is not None:
+                                  mount=mount,
+                                  transfer=entry_transfers(entry)):
+            if mount is not None and not entry_transfers(entry):
                 return (f"waiting for a worker that offers {wanted} and "
                         f"has the `{mount}` mount")
             return f"waiting for a worker that offers {wanted}"
@@ -371,7 +414,8 @@ class WorkerScheduler:
     def can_serve_any(self, requested: str, devices: list[str] | None,
                       *, connected_only: bool = False,
                       mount: str | None = None,
-                      usable_only: bool = False) -> bool:
+                      usable_only: bool = False,
+                      transfer: bool = False) -> bool:
         """Whether this process or a worker could ever run it.
 
         This process does not count for a device set a worker would
@@ -380,7 +424,8 @@ class WorkerScheduler:
         device is away waits for it to reconnect rather than being refused.
         *connected_only* asks about the workers connected now, which is
         what a waiting run's reason describes. With *mount* (#782), a
-        worker counts only when it holds that mount; this process always
+        worker counts only when it holds that mount, or, with *transfer*
+        (#785), when it speaks the transfer backend; this process always
         does. *usable_only* leaves out the workers ``any`` skips (#781:
         one that lacks node types, or reported no catalog).
         """
@@ -388,7 +433,8 @@ class WorkerScheduler:
                 and _serves(self._local_devices(), requested, devices):
             return True
         return any((w.online or not connected_only)
-                   and (mount is None or holds_mount(w, mount))
+                   and (mount is None or holds_mount(w, mount)
+                        or (transfer and speaks_transfer(w)))
                    and not (usable_only and _skipped_by_any(w))
                    and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
@@ -429,11 +475,17 @@ class WorkerScheduler:
         return None
 
 
-def no_mount(worker_id: str, mount: str) -> str:
+def no_mount(worker_id: str, mount: str, why_not_transfer: str | None = None
+             ) -> str:
     """Why a run that needs *mount* cannot go to *worker_id* (#782): the
-    submit refusal and the waiting reason, one sentence."""
-    return (f"worker {worker_id} has no `{mount}` mount; add "
-            f"`--mount {mount}=...` or use the transfer backend (#785)")
+    submit refusal and the waiting reason, one sentence. *why_not_transfer*
+    is why the transfer backend (#785) cannot serve it instead."""
+    message = (f"worker {worker_id} has no `{mount}` mount; add "
+               f"`--mount {mount}=...` to its agent")
+    if why_not_transfer:
+        message += (f", or make the run fit the transfer backend: "
+                    f"{why_not_transfer}")
+    return message
 
 
 def _skipped_by_any(worker: Any) -> bool:

@@ -30,6 +30,36 @@ The enrollment token is shown once; the server keeps only its hash. A used-up, e
 
 Without TLS, the tokens, and the inputs of every run sent to the worker, cross the network unencrypted; the server logs a warning when that happens from another machine. [Trust between agent and control plane](#trust-between-agent-and-control-plane) covers what each end checks.
 
+## Storage: no shared filesystem
+
+A run that reads uploads or writes files can go to a worker that shares no folder with this server. The server then acts as the file store: it sends the run's uploaded inputs to the worker and receives what the run writes. A worker that has the shared folder ([Storage: shared filesystem](./run-queue#storage-shared-filesystem)) is still preferred; this applies when the run targets a worker without one, or when `any` finds none free.
+
+**Inputs.** The files a run can take this way are the uploads picked in a file field: CSVReader and the other data-file fields, ImageReader, ModelLoader, CheckpointLoader. At assignment the server names each one by its SHA-256 hash. The agent keeps every file it fetched in `<user-data>/agent-cache/<sha256>`, so a later run that uses the same file does not download it again; a missing one is downloaded from the server's own download routes with the worker's token, and its hash is checked. While it fetches, the Runs panel's log shows `fetching inputs 2/3: train.csv (1.2 MiB, fetched)` (a `run_warning` of kind `transfer_progress`); `cached` instead of `fetched` means it came from the cache. A Stop during the fetch ends the run `cancelled`.
+
+**Where the run works.** Each run gets a data folder of its own on the worker, `<user-data>/agent-runs/<run id>/data`, laid out like `backend/data` (`files/`, `images/`, `models/`, `media/`), with a copy of each input under the name the graph uses (a node that writes over its input cannot touch the cache). The worker's own data folder is not touched, except that runs share its `cache/` folder (LMTokenizedDataset's token blocks). Datasets downloaded by Dataset or HuggingFaceDataset still go to the worker's own cache, as they do on the server.
+
+**Outputs.** The agent uploads, before the run's end reaches the server:
+
+- every file the run records as an artifact (a periodic checkpoint, a TensorBoard folder file by file), as the run reports it, into `<data folder>/runs/<run id>/<kind>/<name>`;
+- after the run ends, every other file it wrote under `models/`, `media/` or `output/` (CheckpointSaver, ModelSaver, VideoWrite, ImageWriter), and any input it wrote over, into this server's own data folders at the same relative path, where the same node writes on a local run (`models/best.pt` in `CODEFYUI_MODELS_DIR`). A different file already there is kept and the new one gets a suffix (`best-1.pt`); the same content is not stored twice. They are listed with kind `output`;
+- last, the checkpoint a stopped training loop writes, into the run's folder, so a cancelled run's resume point is on the server.
+
+The uploads run beside the run, so a slow network never holds the run up; its end is reported once they are done. `GET /api/runs/{id}/artifacts` lists them with `backend: "transfer"` and their path on this server, and the Runs panel offers **Download** next to each one (`GET /api/runs/{id}/artifacts/{artifact_id}/download`). A file larger than this server's upload limit (`CODEFYUI_MAX_UPLOAD_SIZE`, 500 MB) stays on the worker, listed at its path there, with a `transfer_failed` warning. A Stop that arrives while the last uploads are going stops the ones not sent yet, with one `transfer_failed` warning saying how many stay on the worker.
+
+**Clean-up.** The run's own folder belongs to the run: when run retention (`CODEFYUI_RUN_RETENTION_KEEP_LAST`) or **Delete** removes the run, its `runs/<run id>` folder goes too. Download or copy what you want to keep. A run that retention removes after it ended `interrupted` keeps its `checkpoint` folder, as a local run keeps its resume point. Files placed in the data folders are yours, as a local run's are: neither removes them. On the worker, the run's folder follows the agent's own run retention; the cache is never cleaned automatically, and deleting `agent-cache` is safe (files are fetched again).
+
+**Limits.**
+
+| Setting (on the server) | Default | Meaning |
+| --- | --- | --- |
+| `CODEFYUI_TRANSFER_ENABLED` | `1` | `0` turns this off: a run that uses files then needs a worker with the shared folder, as before |
+| `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` | 2 GiB | The most a run's inputs may add up to |
+| `CODEFYUI_MAX_UPLOAD_SIZE` | 500 MB | The largest single output a worker may upload |
+
+A run this cannot serve is refused at submit when it names a worker without the shared folder, and the message says why: a reader given a plain path (FileReader, ImageFolderDataset, ImageBatchReader, VideoLoad, DocumentLoader reading a folder) rather than an upload, an upload this server does not have, or inputs over the limit. For example: ``worker gpu-box-1 has no `data` mount; add `--mount data=...` to its agent, or make the run fit the transfer backend: its inputs add up to 3.10 GiB, over the transfer limit of 2.00 GiB (CODEFYUI_TRANSFER_MAX_INPUT_BYTES)``.
+
+Inputs and outputs go to the same address as the agent's connection, with its worker token and the same certificate check (a pinned certificate is pinned for them too): without TLS they cross the network unencrypted.
+
 ## When the connection drops
 
 A worker that loses its connection keeps running its runs and keeps their events until this server has them. On this server the runs show `disconnected` and keep their slots for `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes); a reconnect within that time continues them with no gap in their logs, and after it they end `interrupted`. The outcomes, and what a sleeping laptop means for them, are in [When the connection drops](./run-queue#when-the-connection-drops).
@@ -127,7 +157,7 @@ The remote command puts `~/.local/bin` on PATH first: a non-interactive ssh shel
 
 **Security.**
 
-- The tunnel listens on the remote host's loopback only (`-R 127.0.0.1:...`). Every user of that host can still connect to that port, so requests through it reach `/ws/worker` and `POST /api/workers/enroll` only; every other path answers `421`, and both of those need a token.
+- The tunnel listens on the remote host's loopback only (`-R 127.0.0.1:...`). Every user of that host can still connect to that port, so requests through it reach `/ws/worker` and `POST /api/workers/enroll`, and, with a valid worker token, the routes the transfer backend uses ([Storage: no shared filesystem](#storage-no-shared-filesystem)): the three input downloads (`GET /api/files/download/...`, `/api/images/download/...`, `/api/models/download/...`) and `POST /api/runs/{id}/artifacts/upload`. Those downloads are open reads on the LAN, but through a tunnel one without a worker token answers `403`. Every other path answers `421`.
 - `StrictHostKeyChecking=accept-new` trusts a host the first time and refuses a changed key. Set `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes` to require that the host is already in the server account's `known_hosts`.
 - The server uses the SSH access of the OS user that runs it, as the Source Control tab does with git. Anyone who controls this server can start an SSH worker on every host that user reaches.
 - The agent behind the tunnel connects from `127.0.0.1`, but it counts as a worker on this machine only when its machine id equals the server's, so a GPU server is never mistaken for the server's own machine. It authenticates with its worker token.

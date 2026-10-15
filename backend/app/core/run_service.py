@@ -249,7 +249,7 @@ from .executors import (
     RunSinks,
     WorkerExecutor,
 )
-from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, holds_mount
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_TRANSFER, holds_mount
 from .node_state_store import NodeStateStore
 from .run_events import (
     DEFAULT_ERROR_MODE,
@@ -727,6 +727,15 @@ TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
 #: Upper bound on ``target.devices``. A device set names cards on ONE
 #: host; the cap keeps a stored row bounded like every other option.
 MAX_TARGET_DEVICES = 64
+
+
+def _content_index(store: Any) -> Any:
+    """The transfer backend's hash index over *store*'s database (#785),
+    or None for a store without one (a test double)."""
+    from .transfer import ContentIndex
+
+    db = getattr(store, "db", None)
+    return None if db is None else ContentIndex(db)
 
 
 def worker_not_connected(name: str) -> str:
@@ -1466,6 +1475,9 @@ class _ActiveRun:
     #: given back on release. ``None`` on the interactive lane, which holds
     #: no device slot.
     placement: Placement | None = None
+    #: ``run_needs.needs`` of a run that targets a worker (#782), handed to
+    #: ``WorkerExecutor``, which picks the storage backend from it (#785).
+    needs: dict[str, Any] | None = None
     #: What ``exec_runs.queue_key`` records once the run starts: the device
     #: for a run in this process, ``<worker>/<device>`` on a worker (#772).
     row_queue_key: str = CPU_QUEUE_KEY
@@ -1554,7 +1566,8 @@ class RunService:
         # ``WorkerExecutor``; a run without a target never meets either.
         self._workers = workers
         self._worker_executor: Executor | None = (
-            None if workers is None else WorkerExecutor(workers))
+            None if workers is None else WorkerExecutor(
+                workers, content_index=_content_index(store)))
         # Where a run's graph executes (#766). In this process unless a
         # caller hands over another executor; the service schedules, records
         # and fans out the same way whichever one it is.
@@ -1674,6 +1687,14 @@ class RunService:
 
     def is_active(self, run_id: str) -> bool:
         return run_id in self._runs
+
+    def running_on(self, run_id: str) -> str | None:
+        """The worker *run_id* is executing on now, or None: not active
+        here, or running in this process. What the transfer upload route
+        (#785) checks a worker's upload against."""
+        active = self._runs.get(run_id)
+        placement = None if active is None else active.placement
+        return placement.worker_id if on_a_worker(placement) else None
 
     def pending_secret_count(self) -> int:
         """How many runs this process is holding SECRET params for (#251).
@@ -2018,9 +2039,12 @@ class RunService:
 
     @staticmethod
     def _needs_of(graph: dict[str, Any]) -> dict[str, Any]:
+        """``run_needs.needs``, with the transfer backend's verdict
+        (``needs["transfer"]``, #785) when the run names a mount."""
         from .run_needs import needs as run_needs
+        from .transfer import annotate
 
-        return run_needs(graph)
+        return annotate(run_needs(graph))
 
     def check_placeable_batch(self, graphs: Iterable[Any],
                               options: Any) -> list[dict[str, Any] | None]:
@@ -2132,33 +2156,43 @@ class RunService:
     def _check_storage(self, options: dict[str, Any],
                        needs: Mapping[str, Any] | None) -> None:
         """Refuse a worker run whose *needs* name a mount nobody it may go
-        to holds (#782).
+        to holds (#782), unless the transfer backend can ship its files
+        instead (#785).
 
         A named worker must hold the mount, as it last reported its mounts
         (``mounts.holds_mount``: a same-host worker holds this server's
-        label without declaring it). For ``any``, this server or a known
-        worker holding the mount must offer the device; this server always
-        holds its own label. Called after :meth:`_submit_queue_key`, so the
-        worker is known and offers the device.
+        label without declaring it), or the run must fit the transfer
+        backend (``needs["transfer"]``, decided by ``core.transfer``). For
+        ``any``, this server or a known worker that can serve the files
+        must offer the device; this server always holds its own label.
+        Called after :meth:`_submit_queue_key`, so the worker is known and
+        offers the device.
         """
+        from .transfer import refusal, transferable
+
         mount = needs.get("mount") if isinstance(needs, Mapping) else None
         if not mount:
             return
+        transfer = transferable(needs)
         worker_id, devices = entry_target(options)
         requested = str(options.get("device") or "cpu")
         if worker_id == TARGET_WORKER_ANY:
             can_serve = getattr(self._scheduler, "can_serve_any", None)
             if can_serve is not None and not can_serve(
-                    requested, devices, mount=mount):
+                    requested, devices, mount=mount, transfer=transfer):
                 wanted = ", ".join(devices) if devices else requested
+                why = refusal(needs)
                 raise RunSubmitError(
                     f"this run reads or writes files under the `{mount}` "
                     f"mount, and neither this server nor a known worker "
-                    f"with that mount offers {wanted}")
+                    f"with that mount offers {wanted}"
+                    + (f" (the transfer backend cannot ship them: {why})"
+                       if why else ""))
             return
         worker = None if self._workers is None else self._workers.get(worker_id)
-        if worker is not None and not holds_mount(worker, mount):
-            raise RunSubmitError(no_mount(worker_id, mount))
+        if worker is not None and not holds_mount(worker, mount) \
+                and not transfer:
+            raise RunSubmitError(no_mount(worker_id, mount, refusal(needs)))
 
     async def _submit_interactive(
         self, graph: dict[str, Any], options: dict[str, Any],
@@ -2450,7 +2484,8 @@ class RunService:
                             "lane", DEFAULT_LANE),
                         placement=placement,
                         signal=entry.signal, subscribers=entry.subscribers,
-                        node_types=entry.node_types)
+                        node_types=entry.node_types,
+                        needs=entry.needs)
         except Exception:
             # Two things must not happen here, and both did before this
             # guard. The entry must not be LOST — it has already left
@@ -2478,6 +2513,7 @@ class RunService:
         signal: _Broadcast | None = None,
         subscribers: set[RunSubscription] | None = None,
         node_types: frozenset[str] | None = None,
+        needs: dict[str, Any] | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -2561,6 +2597,7 @@ class RunService:
             record_outputs=bool(options.get("record_outputs")),
             subscribers=set() if subscribers is None else subscribers,
             node_types=node_types,
+            needs=needs,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -2867,6 +2904,7 @@ class RunService:
                 explicit_metric_nodes=active.explicit_metric_nodes,
                 placement=active.placement,
                 node_types=active.node_types,
+                needs=active.needs,
             ))
         except asyncio.CancelledError:
             raise
@@ -3081,10 +3119,25 @@ class RunService:
         """
         mount_label = getattr(signal, "mount_label", None)
         placement = active.placement
+        if getattr(signal, "backend", None) == BACKEND_TRANSFER:
+            # Uploaded here by the worker (#785): the path is the key the
+            # upload answered with, and only one of this run's own keys is
+            # recorded (a row that pointed elsewhere would let retention
+            # delete it).
+            from .transfer import key_path
+
+            if key_path(active.run_id, signal.path) is None:
+                logger.warning("run %s: ignoring a transferred artifact "
+                               "outside the run's directory: %r",
+                               active.run_id, signal.path)
+                return
+            backend = BACKEND_TRANSFER
+        else:
+            backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
         record = await self.store.add_artifact(
             active.run_id, signal.kind, signal.path,
             meta=artifact_meta(signal),
-            backend=BACKEND_MOUNT if mount_label else BACKEND_LOCAL,
+            backend=backend,
             mount_label=mount_label or None,
             worker_id=(placement.worker_id if placement is not None
                        else LOCAL_WORKER_ID))

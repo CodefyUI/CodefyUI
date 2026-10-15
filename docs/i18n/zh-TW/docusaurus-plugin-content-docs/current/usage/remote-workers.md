@@ -30,6 +30,36 @@ Enrollment token 只顯示一次，伺服器只保存它的雜湊值。已用完
 
 沒有 TLS 時，token 以及送到 worker 的每個 run 的輸入都會以明文經過網路；若發生在其他機器的連線上，伺服器會記錄警告。[Agent 與控制面之間的信任](#trust-between-agent-and-control-plane) 說明兩端各自檢查什麼。
 
+## 儲存：沒有共用檔案系統 {/* #storage-no-shared-filesystem */}
+
+會讀取上傳檔或寫出檔案的 run，也可以交給與這台伺服器沒有任何共用資料夾的 worker。此時伺服器就是檔案庫：把 run 用到的上傳檔送給 worker，並接收 run 寫出的檔案。有共用資料夾的 worker（[儲存：共用檔案系統](./run-queue#storage-shared-filesystem)）仍然優先；只有 run 指定的 worker 沒有共用資料夾，或 `any` 找不到有空的此類 worker 時，才會走這條路。
+
+**輸入。** 能用這種方式送過去的，是在檔案欄位中選取的上傳檔：CSVReader 等資料檔欄位、ImageReader、ModelLoader、CheckpointLoader。指派時，伺服器以 SHA-256 雜湊值標示每個檔案。Agent 把下載過的檔案存在 `<user-data>/agent-cache/<sha256>`，之後使用同一個檔案的 run 不會再下載；快取中沒有的檔案，以 worker 的 token 從伺服器既有的下載路徑取得，並核對雜湊值。下載期間，執行任務面板的紀錄會顯示 `fetching inputs 2/3: train.csv (1.2 MiB, fetched)`（kind 為 `transfer_progress` 的 `run_warning`）；顯示 `cached` 而非 `fetched` 表示取自快取。下載期間按停止，run 以 `cancelled` 結束。
+
+**Run 的工作資料夾。** 每個 run 在 worker 上有自己的資料夾 `<user-data>/agent-runs/<run id>/data`，結構與 `backend/data` 相同（`files/`、`images/`、`models/`、`media/`），每個輸入檔以圖中使用的名稱複製一份放在裡面（節點覆寫輸入檔也碰不到快取）。Worker 自己的資料夾不會被動到，只有 `cache/` 資料夾（LMTokenizedDataset 的 token 區塊）由各 run 共用。Dataset、HuggingFaceDataset 下載的資料集仍放在 worker 自己的快取，與在伺服器上相同。
+
+**輸出。** 在 run 的結束訊息送到伺服器之前，agent 會上傳：
+
+- run 記錄為 artifact 的每個檔案（定期 checkpoint、TensorBoard 資料夾則逐檔上傳），在 run 回報時上傳到 `<資料夾>/runs/<run id>/<kind>/<name>`；
+- run 結束後，它在 `models/`、`media/`、`output/` 底下寫出的其他檔案（CheckpointSaver、ModelSaver、VideoWrite、ImageWriter），以及被它覆寫的輸入檔，上傳到這台伺服器自己的資料夾、相同的相對路徑，也就是同一個節點在本機 run 時寫入的位置（`CODEFYUI_MODELS_DIR` 中的 `models/best.pt`）。該處已有不同的檔案時會保留原檔，新檔加上後綴（`best-1.pt`）；內容相同則不重複存放。這些檔案的 kind 為 `output`；
+- 最後是被停止的訓練迴圈寫出的 checkpoint，存到 run 的資料夾，讓已取消 run 的續訓點留在伺服器上。
+
+上傳與 run 並行，網路慢不會拖住 run；上傳完成後才回報 run 結束。`GET /api/runs/{id}/artifacts` 以 `backend: "transfer"` 和這台伺服器上的路徑列出，執行任務面板在每一筆旁提供 **下載**（`GET /api/runs/{id}/artifacts/{artifact_id}/download`）。超過這台伺服器上傳上限（`CODEFYUI_MAX_UPLOAD_SIZE`，500 MB）的檔案會留在 worker 上，以它在 worker 上的路徑列出，並附上 `transfer_failed` 警告。在最後一批上傳期間按停止，尚未送出的檔案就不再上傳，並以一則 `transfer_failed` 警告說明有幾個留在 worker 上。
+
+**清理。** run 自己的資料夾屬於該 run：run 保留機制（`CODEFYUI_RUN_RETENTION_KEEP_LAST`）或 **刪除** 移除 run 時，它的 `runs/<run id>` 資料夾也一起刪除。想保留的檔案請下載或另行複製。以 `interrupted` 結束、之後被保留機制移除的 run 會保留 `checkpoint` 資料夾，與本機 run 保留續訓點的做法相同。放進資料夾的檔案屬於你，與本機 run 相同：兩者都不會刪除它們。在 worker 上，run 的資料夾跟著 agent 自己的 run 保留機制；快取不會自動清理，刪除 `agent-cache` 是安全的（需要時會重新下載）。
+
+**限制。**
+
+| 設定（在伺服器上） | 預設值 | 說明 |
+| --- | --- | --- |
+| `CODEFYUI_TRANSFER_ENABLED` | `1` | 設為 `0` 即關閉：使用檔案的 run 必須交給有共用資料夾的 worker，與先前相同 |
+| `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` | 2 GiB | 一個 run 的輸入檔總大小上限 |
+| `CODEFYUI_MAX_UPLOAD_SIZE` | 500 MB | worker 可上傳的單一輸出檔上限 |
+
+無法以此方式處理的 run，若指定了沒有共用資料夾的 worker，會在送出時被拒絕，訊息會說明原因：讀取節點用的是一般路徑而非上傳檔（FileReader、ImageFolderDataset、ImageBatchReader、VideoLoad、讀取資料夾的 DocumentLoader）、這台伺服器上沒有該上傳檔，或輸入超過上限。例如：``worker gpu-box-1 has no `data` mount; add `--mount data=...` to its agent, or make the run fit the transfer backend: its inputs add up to 3.10 GiB, over the transfer limit of 2.00 GiB (CODEFYUI_TRANSFER_MAX_INPUT_BYTES)``。
+
+輸入與輸出送往 agent 連線的同一個位址，帶著它的 worker token，並做相同的憑證檢查（釘選的憑證對它們同樣生效）：沒有 TLS 時，它們會以明文經過網路。
+
 ## 連線中斷時 {/* #when-the-connection-drops */}
 
 連線中斷的 worker 會繼續執行它的 run，並保留事件直到這台伺服器收到為止。在這台伺服器上，這些 run 顯示為 `disconnected`，並在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內保留名額；在此期間重新連線，run 會接續執行，紀錄沒有缺漏，超過時間則以 `interrupted` 結束。各種結果，以及筆電休眠的影響，見[連線中斷時](./run-queue#when-the-connection-drops)。
@@ -127,7 +157,7 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
 
 **安全性。**
 
-- 通道只監聽遠端主機的 loopback（`-R 127.0.0.1:...`）。該主機上的每個使用者仍可連到那個埠，因此經由它的請求只能到達 `/ws/worker` 與 `POST /api/workers/enroll`；其他路徑一律回 `421`，而這兩個端點都需要 token。
+- 通道只監聽遠端主機的 loopback（`-R 127.0.0.1:...`）。該主機上的每個使用者仍可連到那個埠，因此經由它的請求只能到達 `/ws/worker` 與 `POST /api/workers/enroll`，以及在帶有有效 worker token 時，transfer 後端使用的路徑（[儲存：沒有共用檔案系統](#storage-no-shared-filesystem)）：三個輸入下載路徑（`GET /api/files/download/...`、`/api/images/download/...`、`/api/models/download/...`）與 `POST /api/runs/{id}/artifacts/upload`。這些下載路徑在區網上是公開讀取，但經由通道時沒有 worker token 會回 `403`。其他路徑一律回 `421`。
 - `StrictHostKeyChecking=accept-new` 會在第一次見到主機時信任它，金鑰改變時拒絕連線。設定 `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes` 則要求主機已在伺服器帳號的 `known_hosts` 中。
 - 伺服器使用執行它的作業系統使用者的 SSH 存取權，就像 Source Control 分頁使用 git 一樣。能操作這台伺服器的人，就能在該使用者連得到的每台主機上啟動 SSH worker。
 - 通道後面的 agent 從 `127.0.0.1` 連線，但只有在它的 machine id 與伺服器相同時才會被視為這台機器上的 worker，所以 GPU 伺服器不會被誤認為伺服器本機。它以自己的 worker token 驗證身分。

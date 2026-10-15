@@ -566,11 +566,32 @@ CREATE TABLE ssh_workers (
 );
 """
 
+# ── Migration 013: the transfer backend's content index (#785) ───────────
+#
+# A run sent to a worker without the shared mount names each upload it
+# reads by its sha256, so the worker can cache it by content. Hashing a
+# 2 GiB model on every assignment is not free, so the hash is kept here
+# per stored file and recomputed only when the file's size or mtime moved
+# (``core.transfer.ContentIndex``): ``(kind, name)`` is the upload store
+# (``data_file`` / ``image`` / ``model``) and the name the graph uses;
+# ``mtime`` is ``st_mtime_ns``. A cache, not a record: a row may name a
+# file that is gone, and nothing but the next lookup refreshes it.
+MIGRATION_013 = """
+CREATE TABLE file_hashes (
+  kind    TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  sha256  TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  mtime   INTEGER NOT NULL,
+  PRIMARY KEY (kind, name)
+);
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
-                         MIGRATION_012]
+                         MIGRATION_012, MIGRATION_013]
 
 
 def _is_comment_only(statement: str) -> bool:

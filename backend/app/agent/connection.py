@@ -172,6 +172,16 @@ class AgentConnection:
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
+        if runner.transfer is None:
+            # The transfer backend's HTTP side (#785): the same control
+            # plane and token as this socket, read per request.
+            from .transfer import CACHE_DIRNAME, InputCache, TransferClient
+
+            runner.transfer = TransferClient(
+                base_url=lambda: self._resolve(self._control_url),
+                token=lambda: self._resolve(self._token),
+                cache=InputCache(runner.runs_dir.parent / CACHE_DIRNAME),
+                ssl_context=self._http_tls)
         #: Every run's frames not acknowledged yet (#783).
         self.spools = spools if spools is not None else SpoolStore(
             runner.runs_dir)
@@ -200,6 +210,18 @@ class AgentConnection:
         self.worker_id: str | None = None
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
+
+    def _http_tls(self) -> ssl.SSLContext | None:
+        """The TLS context the transfer backend's HTTP requests use (#785):
+        the one this socket verifies the control plane with (#786), so a
+        pinned certificate is pinned for file transfers too. None over
+        plain http."""
+        if not str(self._resolve(self._control_url)).lower().startswith(
+                "https:"):
+            return None
+        if self.trust is None:
+            self.trust = ControlPlaneTrust()
+        return self.trust.context()
 
     # ── sending ───────────────────────────────────────────────────────────
 

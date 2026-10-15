@@ -715,10 +715,17 @@ export interface RunArtifact {
   path: string | null;
   meta: Record<string, unknown> | null;
   created_at: string;
-  /** `local` (an absolute path) or `mount` (a file on a shared mount). */
+  /**
+   * `local` (an absolute path), `mount` (a file on a shared mount) or
+   * `transfer` (a worker uploaded it to this server, #785: downloadable
+   * from `/api/runs/{id}/artifacts/{artifact_id}/download`).
+   */
   backend?: string;
   mount_label?: string | null;
-  /** The stored path under `mount_label`, for a `mount` row. */
+  /**
+   * The stored path under `mount_label`, for a `mount` row; the key under
+   * this server's data root, for a `transfer` row.
+   */
   relative_path?: string | null;
   /** The worker whose run wrote the file; `local` is this server. */
   worker_id?: string;

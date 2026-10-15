@@ -244,9 +244,11 @@ async def test_welcome_lists_this_servers_capabilities(env):
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         welcome = await FakeAgent(ws).hello(capabilities=["ack", "future"],
                                             **_catalog())
-        assert welcome.capabilities == list(wp.CAPABILITIES) == ["ack",
-                                                                 "mounts"]
+        assert welcome.capabilities == list(wp.CAPABILITIES) == [
+            "ack", "mounts", "transfer"]
         assert registry.get("box").online
+        # The registry keeps what the agent listed (#785 reads it).
+        assert registry.get("box").capabilities == ("ack", "future")
 
 
 def test_unknown_fields_are_ignored_not_refused():

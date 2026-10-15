@@ -1313,6 +1313,7 @@ const en = {
   'runs.detail.artifacts': 'Artifacts',
   'runs.detail.noArtifacts': 'No artifacts yet.',
   'runs.detail.copyPath': 'Copy path',
+  'runs.detail.download': 'Download',
   'runs.detail.notOnThisServer': 'On the shared mount "{label}", which this server does not hold: no path here',
   'runs.detail.copied': 'Path copied to clipboard',
   'runs.detail.copyFailed': 'Could not copy the path',

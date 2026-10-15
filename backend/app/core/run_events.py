@@ -327,6 +327,11 @@ def artifact_payload(
         payload.update(backend="mount", mount_label=record.mount_label,
                        relative_path=record.stored_path,
                        worker_id=record.worker_id)
+    elif getattr(record, "backend", None) == "transfer":
+        # Uploaded here by a worker without the mount (#785): its key under
+        # this server's data root, which the download route serves.
+        payload.update(backend="transfer", relative_path=record.stored_path,
+                       worker_id=record.worker_id)
     return payload
 
 

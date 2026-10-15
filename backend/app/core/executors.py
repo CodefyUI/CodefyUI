@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
@@ -82,6 +83,16 @@ class MountedArtifactSignal(ArtifactSignal):
     runtime exported scripts import) stays as it is."""
 
     mount_label: str | None = None
+
+
+@dataclass(frozen=True)
+class TransferredArtifactSignal(ArtifactSignal):
+    """An ``ArtifactSignal`` for a file a worker uploaded to this server
+    (#785): ``path`` is the key the upload answered with
+    (``core.transfer.key_location``). ``RunService`` stores a ``transfer``
+    row. A subclass, like :class:`MountedArtifactSignal`."""
+
+    backend: str = "transfer"
 
 
 @dataclass
@@ -139,6 +150,9 @@ class ExecutionRequest:
     #: The node types the run executes, computed once at submit for a run
     #: that targets a worker (#781); None when not computed.
     node_types: frozenset[str] | None = None
+    #: ``run_needs.needs`` of a worker run (#782): which storage backend
+    #: its assignment uses (#785). None for a run here.
+    needs: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -623,8 +637,13 @@ class WorkerExecutor:
     old one would go to a closed socket.
     """
 
-    def __init__(self, registry: "WorkerRegistry") -> None:
+    def __init__(self, registry: "WorkerRegistry",
+                 content_index: Any = None) -> None:
         self._registry = registry
+        #: ``core.transfer.ContentIndex``: the inputs' hashes for a run
+        #: that uses the transfer backend (#785). None: no such run is
+        #: assigned (it fails with a message instead).
+        self._content_index = content_index
 
     async def _send(self, worker_id: str, frame: Any) -> bool:
         """Send *frame* to *worker_id*'s current connection. False if none."""
@@ -654,6 +673,17 @@ class WorkerExecutor:
         if refusal is not None:
             return ExecutionOutcome(STATUS_FAILED, refusal)
         devices = list(placement.devices)
+        storage = assignment_storage(worker)
+        if uses_transfer(worker, request.needs):
+            try:
+                storage = await transfer_storage(
+                    storage.mount, request.needs, self._content_index)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
+                return ExecutionOutcome(STATUS_FAILED, (
+                    f"cannot send this run's input files to worker "
+                    f"{worker_id}: {exc}"))
         run = self._registry.open_run(worker, request.run_id)
         watcher: asyncio.Task | None = None
         acks: _Acks | None = None
@@ -662,7 +692,7 @@ class WorkerExecutor:
             await worker.send(wp.Assign(
                 run_id=request.run_id, graph=request.graph,
                 options=request.options, device=devices[0],
-                devices=devices, storage=assignment_storage(worker)))
+                devices=devices, storage=storage))
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
@@ -826,8 +856,12 @@ class WorkerExecutor:
                 MetricPoint(name=p.name, value=p.value, step=p.step,
                             node_id=p.node_id) for p in frame.points])
         elif isinstance(frame, wp.Artifact):
-            if frame.mount_label:
-                signal: ArtifactSignal = MountedArtifactSignal(
+            if frame.backend == "transfer":
+                signal: ArtifactSignal = TransferredArtifactSignal(
+                    kind=frame.kind, path=frame.path, meta=frame.meta,
+                    node_id=frame.node_id)
+            elif frame.mount_label:
+                signal = MountedArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
                     node_id=frame.node_id, mount_label=frame.mount_label)
             else:
@@ -880,6 +914,41 @@ def assignment_storage(worker: Any) -> Any:
         mount=label,
         dirs=lent_dirs() if lends_mount(worker, label) else None,
         relative_artifacts=not getattr(worker, "same_host", False))
+
+
+def uses_transfer(worker: Any, needs: Any) -> bool:
+    """Whether a run with *needs* goes to *worker* through the transfer
+    backend (#785): it needs the mount, *worker* does not hold it, and the
+    backend can serve it, and the worker speaks it (its ``transfer``
+    capability, #781). The scheduler placed it there for that reason
+    (``scheduling.reaches``); a run that fits neither is assigned the
+    mount as before."""
+    from .mounts import holds_mount
+    from .scheduling import speaks_transfer
+    from .transfer import transferable
+
+    mount = needs.get("mount") if isinstance(needs, Mapping) else None
+    return bool(mount) and not holds_mount(worker, mount) \
+        and transferable(needs) and speaks_transfer(worker)
+
+
+async def transfer_storage(label: str, needs: Mapping[str, Any],
+                           content_index: Any) -> Any:
+    """``assign.storage`` for a transfer run (#785): the inputs named by
+    content hash (``ContentIndex.manifest``, which refuses a file gone or
+    a total over the cap) and the largest upload this server takes."""
+    from . import worker_protocol as wp
+    from ..config import settings
+    from .transfer import TransferRefused
+
+    inputs = list(needs.get("inputs") or [])
+    if inputs and content_index is None:
+        raise TransferRefused("this server has no content index")
+    manifest = await content_index.manifest(inputs) if inputs else []
+    return wp.Storage(
+        backend="transfer", mount=label, relative_artifacts=False,
+        inputs=[wp.TransferInput(**entry) for entry in manifest],
+        max_upload_bytes=int(settings.MAX_UPLOAD_SIZE))
 
 
 async def _worker_gone_warning(request: ExecutionRequest, detail: str) -> None:

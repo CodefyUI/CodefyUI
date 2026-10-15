@@ -221,6 +221,9 @@ class Worker:
     #: ``hello.node_catalog_hash`` and ``hello.node_types`` (#781).
     node_catalog_hash: str | None = None
     node_types: tuple[str, ...] = ()
+    #: The optional protocol features its ``hello`` listed (#781); the
+    #: transfer storage backend goes only to one naming ``transfer`` (#785).
+    capabilities: tuple[str, ...] = ()
     #: Its catalog against this server's, as last compared (#781).
     catalog: CatalogCheck = field(default_factory=CatalogCheck)
     #: The server catalog hash :attr:`catalog` was compared with.
@@ -548,6 +551,7 @@ class WorkerRegistry:
             fingerprint_document=document,
             node_catalog_hash=hello.node_catalog_hash,
             node_types=tuple(hello.node_types),
+            capabilities=tuple(hello.capabilities),
             catalog_checked=self._node_catalog is not None)
         worker.shared = self._shared_devices(worker)
         self._rejections.pop(hello.name, None)
