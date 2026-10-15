@@ -178,7 +178,6 @@ import asyncio
 import contextlib
 import functools
 import logging
-import re
 import time
 import weakref
 from collections import deque
@@ -201,6 +200,7 @@ from .db import utc_now_iso
 #: decision, and #135 gave ``device_utils`` a second copy of it for the
 #: index-validation fallback. Two copies of a policy drift.
 from .device_utils import (
+    get_available_devices,
     DEVICE_PATTERN,
     _current_cuda_index,
     graph_settings_device,
@@ -208,7 +208,11 @@ from .device_utils import (
     resolve_device,
     split_device,
 )
-from .env_fingerprint import collect_fingerprint, execution_facts
+from .env_fingerprint import (
+    collect_fingerprint,
+    execution_facts,
+    worker_execution_facts,
+)
 from .execution_context import (
     ArtifactSignal,
     ExecutionContext,
@@ -268,7 +272,6 @@ from .run_store import (
     json_safe,
 )
 from .scheduling import (
-    LOCAL_WORKER_ID,
     LocalScheduler,
     Placement,
     Scheduler,
@@ -276,6 +279,7 @@ from .scheduling import (
     WorkerScheduler,
     candidate_devices,
     entry_target,
+    on_a_worker,
 )
 from .secret_params import (
     SecretVault,
@@ -283,6 +287,7 @@ from .secret_params import (
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
+from .worker_protocol import TARGET_ANY, WORKER_NAME_PATTERN
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .workers import WorkerRegistry
@@ -426,10 +431,20 @@ def _local_queue_key(device: Any) -> str:
     return canonical_queue_key(resolve_device(device))
 
 
+def _local_device_values() -> list[str]:
+    """This process's devices as queue keys (``cpu``, ``cuda:0``, ``mps:0``):
+    what an ``any`` run can be placed on here (#772)."""
+    values: list[str] = []
+    for device in get_available_devices():
+        key = canonical_queue_key(device)
+        if key not in values:
+            values.append(key)
+    return values
+
+
 def _on_worker(active: Any) -> bool:
     """Whether *active* was placed on a worker agent rather than here."""
-    placement = getattr(active, "placement", None)
-    return placement is not None and placement.worker_id != LOCAL_WORKER_ID
+    return on_a_worker(getattr(active, "placement", None))
 
 
 def canonical_queue_key(device: str) -> str:
@@ -620,11 +635,11 @@ class InteractiveSession:
 TARGET_WORKER_LOCAL = WORKER_LOCAL
 #: "Place it wherever there is room": the connected workers first, then
 #: this process (#772).
-TARGET_WORKER_ANY = "any"
+TARGET_WORKER_ANY = TARGET_ANY
 #: Worker names (#769), matched with ``fullmatch``. ``local`` and ``any``
 #: match it too; they are the two reserved names a worker cannot enroll
 #: under.
-TARGET_WORKER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
 #: Upper bound on ``target.devices``. A device set names cards on ONE
 #: host; the cap keeps a stored row bounded like every other option.
 MAX_TARGET_DEVICES = 64
@@ -1464,7 +1479,7 @@ class RunService:
         if scheduler is None:
             scheduler = (LocalScheduler(self._limits) if workers is None
                          else WorkerScheduler(self._limits, workers,
-                                              _local_queue_key))
+                                              _local_device_values))
         self._scheduler: Scheduler = scheduler
         if workers is not None:
             # A worker connecting, draining, undraining or going away is
@@ -1572,6 +1587,24 @@ class RunService:
             if waiting.run_id == run_id:
                 return index
         return None  # pragma: no cover - as above
+
+    def queue_reason(self, run_id: str) -> str | None:
+        """Why a waiting run cannot start, beyond a busy slot, or None.
+
+        The scheduler's word (``WorkerScheduler.explain``, #772): "waiting
+        for worker X to reconnect", "worker X is draining". None for a run
+        that is not waiting, or that waits only for its turn.
+        """
+        entry = self._pending_by_id.get(run_id)
+        explain = getattr(self._scheduler, "explain", None)
+        if entry is None or explain is None:
+            return None
+        try:
+            return explain(entry)
+        except Exception:  # noqa: BLE001 -- a description, never an error
+            logger.debug("could not explain run %s's wait", run_id,
+                         exc_info=True)
+            return None
 
     def queue_snapshot(self) -> dict[str, list[str]]:
         """``{queue_key: [run_id, ...]}`` in service order. Waiting runs only.
@@ -1783,6 +1816,12 @@ class RunService:
             raise RunSubmitError(WORKER_REFUSES_RECORD_OUTPUTS)
         requested = str(options.get("device") or "cpu")
         if worker_id == TARGET_WORKER_ANY:
+            can_serve = getattr(self._scheduler, "can_serve_any", None)
+            if can_serve is not None and not can_serve(requested, devices):
+                wanted = ", ".join(devices) if devices else requested
+                raise RunSubmitError(
+                    f"neither this server nor a connected worker offers "
+                    f"{wanted}")
             return f"{TARGET_WORKER_ANY}{WORKER_QUEUE_SEPARATOR}{requested}"
         worker = None if self._workers is None else self._workers.get(worker_id)
         if worker is None or not worker.online:
@@ -2049,8 +2088,7 @@ class RunService:
         # for a run placed in this process by ``LocalScheduler`` that is its
         # queue key, as it always was -- else (the interactive lane) the
         # queue key.
-        on_worker = (placement is not None
-                     and placement.worker_id != LOCAL_WORKER_ID)
+        on_worker = on_a_worker(placement)
         device = (placement.devices[0]
                   if placement is not None and placement.devices
                   and lane != LANE_INTERACTIVE else queue_key)
@@ -2291,14 +2329,21 @@ class RunService:
         never fails the run; a failure is logged and leaves the columns
         NULL, which reads as "not recorded" rather than as a wrong answer.
         """
-        fingerprint, facts = await self._environment_record(
-            active, graph, options)
         on_worker = _on_worker(active)
         if on_worker:
-            # This process's environment is not the one executing the run;
-            # the worker's own fingerprint is #781's. NULL reads as "not
-            # recorded", which is true.
+            # This process's environment is not the one executing the run:
+            # no fingerprint (the worker's is #781's; NULL reads as "not
+            # recorded", which is true) and only the facts that do not
+            # depend on this process. The worker's ``run_started`` merges in
+            # the rest (``WorkerExecutor``).
             fingerprint = None
+            facts = worker_execution_facts(
+                options=options or {}, graph=graph,
+                worker_id=active.placement.worker_id,
+                devices=list(active.placement.devices))
+        else:
+            fingerprint, facts = await self._environment_record(
+                active, graph, options)
         started = await self.store.mark_running(
             active.run_id, queue_key=active.row_queue_key,
             # The worker it got (an ``any`` run's row said ``any``); a local
@@ -2391,9 +2436,9 @@ class RunService:
         if status == STATUS_CANCELLED:
             # A stop carries no error, whatever the executor attached.
             return self._stopped_status(active), None
-        if status == STATUS_INTERRUPTED:
-            # Nobody asked: the run's worker went away (#772).
-            return STATUS_INTERRUPTED, None
+        # ``interrupted`` (#772) falls through with its error: nobody here
+        # asked for the stop -- the run's worker went away, or ended it on
+        # its own -- and the error says which.
         return status, outcome.error
 
     async def _finalize(

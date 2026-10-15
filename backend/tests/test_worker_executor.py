@@ -95,7 +95,7 @@ async def _run(registry, recorder, frames, **kw):
         _request(recorder)))
     assign = await agent.wait_for(wp.Assign)
     for frame in frames:
-        await registry.route(agent.worker, frame)
+        registry.route(agent.worker, frame)
     outcome = await asyncio.wait_for(task, 5)
     return agent, assign, outcome
 
@@ -135,7 +135,9 @@ async def test_frames_become_sink_calls_in_order(registry):
 
 @pytest.mark.parametrize("finished, status, error", [
     (dict(status="cancelled"), "cancelled", None),
-    (dict(status="interrupted"), "cancelled", None),
+    # No stop was asked here: the agent's own ``interrupted`` stands.
+    (dict(status="interrupted", error="exited while stopping"),
+     "interrupted", "exited while stopping"),
     (dict(status="failed", error="boom"), "failed", "boom"),
     (dict(status="failed", error="run subprocess exited with code 3",
           stderr_tail="Traceback"), "failed",
@@ -161,6 +163,47 @@ async def test_a_worker_that_goes_away_interrupts_with_a_warning(registry):
     assert recorder.calls[-1][2]["kind"] == "worker_disconnected"
 
 
+async def test_after_a_stop_the_agents_interrupted_is_a_stop(registry):
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await agent.wait_for(wp.Assign)
+    request.context.cancel()
+    await agent.wait_for(wp.Cancel)
+    registry.route(agent.worker, wp.RunFinished(
+        run_id="r1", seq=1, status="interrupted", error="terminated"))
+    assert (await asyncio.wait_for(task, 5)).status == "cancelled"
+
+
+async def test_a_worker_gone_after_a_stop_is_still_a_stop(registry):
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await agent.wait_for(wp.Assign)
+    request.context.cancel()
+    registry.disconnect(agent.worker, "test")
+    assert (await asyncio.wait_for(task, 5)).status == "cancelled"
+
+
+async def test_cancel_reaches_the_replacing_connection(registry):
+    """The stop goes to the worker's CURRENT socket, not the assign's."""
+    recorder = _Recorder()
+    old = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await old.wait_for(wp.Assign)
+    new = _Agent(registry)  # same name: replaces, inherits the run
+    request.context.cancel()
+    cancel = await new.wait_for(wp.Cancel)
+    assert cancel.run_id == "r1"
+    assert not any(isinstance(f, wp.Cancel) for f in old.sent)
+    registry.route(new.worker, wp.RunFinished(run_id="r1", seq=1,
+                                              status="cancelled"))
+    assert (await asyncio.wait_for(task, 5)).status == "cancelled"
+
+
 async def test_an_unreachable_or_unknown_worker_interrupts(registry):
     recorder = _Recorder()
     _Agent(registry, fail=True)
@@ -182,7 +225,7 @@ async def test_a_stop_is_forwarded_as_cancel(registry):
     request.context.cancel()
     cancel = await agent.wait_for(wp.Cancel)
     assert cancel.run_id == "r1" and cancel.grace_s is None
-    await registry.route(agent.worker, wp.RunFinished(
+    registry.route(agent.worker, wp.RunFinished(
         run_id="r1", seq=1, status="cancelled"))
     assert (await asyncio.wait_for(task, 5)).status == "cancelled"
 
@@ -190,8 +233,8 @@ async def test_a_stop_is_forwarded_as_cancel(registry):
 async def test_duplicate_and_stray_frames_are_dropped(registry):
     agent = _Agent(registry)
     run = registry.open_run(agent.worker, "r1")
-    await registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=2))
-    await registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=2))
-    await registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
-    await registry.route(agent.worker, wp.RunStarted(run_id="other", seq=1))
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=2))
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=2))
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
+    registry.route(agent.worker, wp.RunStarted(run_id="other", seq=1))
     assert run.inbox.qsize() == 1

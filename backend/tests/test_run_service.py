@@ -2260,7 +2260,7 @@ async def test_an_interrupted_outcome_is_filed_interrupted(store):
         await svc.shutdown()
 
     assert record.status == "interrupted"
-    assert record.error is None
+    assert record.error == "gone"
     events = await store.get_events(submitted.run_id)
     assert events[-1].payload == {"reason": "interrupted"}
 

@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from .run_store import WORKER_LOCAL
+from .worker_protocol import TARGET_ANY, TARGET_LOCAL, canonical_device
 
 #: ``(worker_id, device)``, e.g. ``("local", "cuda:0")``.
 SlotKey = tuple[str, str]
@@ -53,6 +54,11 @@ class Placement:
     worker_id: str
     devices: tuple[str, ...]
     slots: tuple[SlotKey, ...]
+
+
+def on_a_worker(placement: "Placement | None") -> bool:
+    """Whether *placement* puts a run on a worker agent rather than here."""
+    return placement is not None and placement.worker_id != LOCAL_WORKER_ID
 
 
 class QueuedEntry(Protocol):
@@ -102,9 +108,6 @@ class LocalScheduler:
         return Placement(LOCAL_WORKER_ID, (queue_key,), (slot,))
 
 
-#: ``target.worker`` values with a meaning of their own (#769).
-TARGET_LOCAL = LOCAL_WORKER_ID
-TARGET_ANY = "any"
 
 
 def entry_target(options: Mapping[str, Any]) -> tuple[str, list[str] | None]:
@@ -126,20 +129,26 @@ class WorkerScheduler:
       such as ``cuda``, or ``auto``) the first device of that kind it
       offers with a free slot;
     - ``any``: the first connected, non-draining worker that can take it
-      the same way, in name order, and this process last (on the device
-      *resolve_local* gives the request, under the local cap).
+      the same way, in name order, and this process last, judged the same
+      way against *local_devices* (this process's devices, canonical).
+      With a device set, this process qualifies only when it has every
+      device of the set; it then executes on the set's first device, as a
+      local run with a set does.
 
     Every worker slot is ``(worker_id, device)`` capped by
-    ``limits.for_key(device)``; a device set takes one slot per device and
-    starts only when all of them are free. A local run keeps the one slot
-    it has always taken.
+    ``limits.for_key(device)``; a device set takes one slot per device on
+    a worker and starts only when all of them are free. A local run keeps
+    the one slot it has always taken.
+
+    :meth:`explain` says why a run that :meth:`place` refused cannot start
+    for a reason other than a busy slot (the Runs list shows it).
     """
 
     def __init__(self, limits: SlotLimits, registry: Any,
-                 resolve_local: Callable[[str], str]) -> None:
+                 local_devices: Callable[[], list[str]]) -> None:
         self._limits = limits
         self._registry = registry
-        self._resolve_local = resolve_local
+        self._local_devices = local_devices
         self._local = LocalScheduler(limits)
 
     def place(self, entry: QueuedEntry,
@@ -158,14 +167,51 @@ class WorkerScheduler:
                 placement = self._place_on(worker, requested, devices, taken)
                 if placement is not None:
                     return placement
-        local = self._resolve_local(requested)
-        slot: SlotKey = (LOCAL_WORKER_ID, local)
-        if taken.get(slot, 0) >= self._limits.for_key(local):
+        return self._place_here(requested, devices, taken)
+
+    def explain(self, entry: QueuedEntry) -> str | None:
+        """Why *entry* is waiting, when it is not just a busy slot."""
+        worker_id, devices = entry_target(entry.options)
+        if worker_id == TARGET_LOCAL:
             return None
-        return Placement(LOCAL_WORKER_ID, (local,), (slot,))
+        requested = str(entry.options.get("device") or "cpu")
+        if worker_id != TARGET_ANY:
+            worker = self._registry.get(worker_id)
+            if worker is None or not worker.online:
+                return f"waiting for worker {worker_id} to reconnect"
+            if worker.draining:
+                return f"worker {worker_id} is draining"
+            return None
+        if not self.can_serve_any(requested, devices):
+            wanted = ", ".join(devices) if devices else requested
+            return f"waiting for a worker that offers {wanted}"
+        return None
+
+    def can_serve_any(self, requested: str,
+                      devices: list[str] | None) -> bool:
+        """Whether this process or a connected worker could ever run it."""
+        if _serves(self._local_devices(), requested, devices):
+            return True
+        return any(w.online and _serves(w.device_values(), requested, devices)
+                   for w in self._registry.workers())
 
     def _free(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> bool:
         return taken.get(slot, 0) < self._limits.for_key(slot[1])
+
+    def _place_here(self, requested: str, devices: list[str] | None,
+                    taken: Mapping[SlotKey, int]) -> Placement | None:
+        offered = self._local_devices()
+        if devices:
+            if not _serves(offered, requested, devices):
+                return None
+            candidates = [canonical_device(devices[0])]
+        else:
+            candidates = candidate_devices(offered, requested)
+        for device in candidates:
+            slot: SlotKey = (LOCAL_WORKER_ID, device)
+            if self._free(slot, taken):
+                return Placement(LOCAL_WORKER_ID, (device,), (slot,))
+        return None
 
     def _place_on(self, worker: Any, requested: str,
                   devices: list[str] | None,
@@ -184,6 +230,14 @@ class WorkerScheduler:
         return None
 
 
+def _serves(offered: list[str], requested: str,
+            devices: list[str] | None) -> bool:
+    """Whether a host offering *offered* can run the request at all."""
+    if devices:
+        return all(canonical_device(d) in offered for d in devices)
+    return bool(candidate_devices(offered, requested))
+
+
 def candidate_devices(offered: list[str], requested: str) -> list[str]:
     """The devices of *offered* that can serve *requested*, best first.
 
@@ -196,8 +250,10 @@ def candidate_devices(offered: list[str], requested: str) -> list[str]:
         order = ("cuda", "mps", "cpu")
         return sorted((d for d in offered if d.split(":")[0] in order),
                       key=lambda d: order.index(d.split(":")[0]))
-    if requested == "mps":
-        requested = "mps:0"
+    try:
+        requested = canonical_device(requested)
+    except ValueError:
+        return []
     if ":" in requested or requested == "cpu":
         return [requested] if requested in offered else []
     return [d for d in offered if d.split(":")[0] == requested]

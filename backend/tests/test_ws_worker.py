@@ -216,6 +216,11 @@ async def test_a_run_targeting_a_worker_executes_there(env):
     assert record.execution_facts["device_aliases"] == {"cuda:0": "cuda:0"}
     assert record.execution_facts["peak_memory"] == {"cuda:0": {"peak": 1}}
     assert record.fingerprint_digest is None  # not this process's environment
+    facts = record.execution_facts
+    assert (facts["facts_source"], facts["worker_id"]) == ("worker", "box")
+    assert facts["resolved"]["device"] == "cuda:0"
+    assert facts["resolved"]["devices"] == ["cuda:0"]
+    assert "numerics" not in facts["resolved"]  # this process's switches
     events = await service.store.get_events(run_id)
     warnings = [e.payload["kind"] for e in events if e.type == "run_warning"]
     assert warnings == ["k"]
@@ -363,13 +368,15 @@ async def test_drain_holds_runs_and_undrain_releases_them(env):
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         agent = FakeAgent(ws)
         await agent.hello()
-        assert (await client.post("/api/workers/box/drain")).json()[
-            "draining"] is True
+        drained = (await client.post("/api/workers/box/drain")).json()
+        assert (drained["draining"], drained["status"]) == (True, "draining")
         run_id = (await client.post("/api/runs", json={
             "graph": _graph(), "options": {"target": {"worker": "box"}}})
             ).json()["run_id"]
         await asyncio.sleep(0.1)
-        assert (await service.store.get_run(run_id)).status == "queued"
+        row = (await client.get(f"/api/runs/{run_id}")).json()
+        assert (row["status"], row["queue_reason"]) == (
+            "queued", "worker box is draining")
         assert (await client.post("/api/workers/box/undrain")).json()[
             "draining"] is False
         assign = await agent.recv()
@@ -397,3 +404,59 @@ async def test_any_prefers_a_worker_and_falls_back_to_this_process(env):
         for run_id in ids[:2]:
             record = await _terminal(service, run_id)
             assert (record.queue_key, record.worker_id) == ("box/cpu", "box")
+
+
+async def test_a_queued_run_says_which_worker_it_waits_for(env):
+    service, registry = env
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            first = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+                ).json()["run_id"]
+            second = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+                ).json()["run_id"]
+            third = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+                ).json()["run_id"]
+            await agent.recv()
+            await agent.recv()
+            row = (await client.get(f"/api/runs/{third}")).json()
+            assert (row["queue_position"], row["queue_reason"]) == (1, None)
+        await _terminal(service, first)
+        await _terminal(service, second)
+        listed = {r["id"]: r for r in
+                  (await client.get("/api/runs")).json()["runs"]}
+        assert listed[third]["status"] == "queued"
+        assert listed[third]["queue_reason"] == (
+            "waiting for worker box to reconnect")
+        # It starts once the worker is back.
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            assign = await agent.recv()
+            assert assign.run_id == third
+            await agent.finish_run(assign)
+            assert (await _terminal(service, third)).status == "succeeded"
+
+
+async def test_a_slow_run_does_not_starve_heartbeats(env):
+    """Per-run inboxes never block the socket's read loop (#772 review)."""
+    service, registry = env
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+        worker = registry.get("box")
+        run = registry.open_run(worker, "slowrun")  # nobody consumes it
+        for seq in range(1, 2001):
+            await agent.send(wp.Event(run_id="slowrun", seq=seq,
+                                      event_type="node_status",
+                                      payload={"node_id": "x",
+                                               "status": "progress"}))
+        await agent.send(wp.Heartbeat(devices=[wp.DeviceReport(
+            value="cpu", kind="cpu", free_bytes=123, source="psutil")]))
+        await _until(lambda: worker.devices[0].free_bytes == 123)
+        assert run.inbox.qsize() == 2000
+        registry.close_run("box", "slowrun")

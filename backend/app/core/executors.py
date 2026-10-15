@@ -526,6 +526,8 @@ class WorkerExecutor:
     worker has no vault), then turns the worker's frames for the run into
     the same sink calls ``InProcessExecutor`` makes:
 
+    - ``run_started`` -> its ``execution_facts`` (where the run executes,
+      #774) merged into the row's;
     - ``event`` -> ``sinks.emit`` (``RunService._emit`` caps and sanitises
       it again, which changes nothing: the run subprocess applied the same
       policy), then ``sinks.record_metrics([])``, the batcher's clock check
@@ -534,18 +536,31 @@ class WorkerExecutor:
       ``sinks.record_artifact``; ``warning`` -> ``sinks.warn``;
     - ``run_finished`` -> the outcome. ``succeeded`` / ``failed`` /
       ``cancelled`` map one to one (a crash's output tail is appended to its
-      error); the agent's ``interrupted`` (it had to terminate the run after
-      the grace period) is a stop like ``cancelled``, so the service's
-      ``_stopped_status`` decides between cancelled and interrupted.
+      error). The agent's ``interrupted`` (the subprocess ended without
+      reporting, after a cancel) is a stop when THIS server asked for one,
+      so ``cancelled`` and the service's ``_stopped_status`` decides; with
+      no stop asked it is ``interrupted``, with the agent's error.
 
     A stop is watched for (``context.should_stop()``) and forwarded as a
-    ``cancel``; the run then ends when the worker reports. A worker that
-    goes away ends the run ``interrupted`` at once, after a
-    ``run_warning`` saying so.
+    ``cancel``. A worker that goes away ends the run after a ``run_warning``
+    saying so: ``interrupted``, or ``cancelled`` when a stop had been asked
+    (a user's Stop stays the user's).
+
+    Every send looks the worker up in the registry AT SEND TIME: a
+    reconnect replaces the ``Worker`` object, and a frame sent through the
+    old one would go to a closed socket.
     """
 
     def __init__(self, registry: "WorkerRegistry") -> None:
         self._registry = registry
+
+    async def _send(self, worker_id: str, frame: Any) -> bool:
+        """Send *frame* to *worker_id*'s current connection. False if none."""
+        worker = self._registry.get(worker_id)
+        if worker is None or not worker.online:
+            return False
+        await worker.send(frame)
+        return True
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         from . import worker_protocol as wp
@@ -555,11 +570,12 @@ class WorkerExecutor:
         if placement is None:
             return ExecutionOutcome(STATUS_FAILED,
                                     "a worker run needs a placement")
-        worker = self._registry.get(placement.worker_id)
+        worker_id = placement.worker_id
+        worker = self._registry.get(worker_id)
         if worker is None or not worker.online:
-            await _worker_gone_warning(
-                request, f"worker {placement.worker_id} is not connected")
-            return ExecutionOutcome(STATUS_INTERRUPTED)
+            detail = f"worker {worker_id} is not connected"
+            await _worker_gone_warning(request, detail)
+            return self._gone(request, detail)
         devices = list(placement.devices)
         run = self._registry.open_run(worker, request.run_id)
         watcher: asyncio.Task | None = None
@@ -569,14 +585,14 @@ class WorkerExecutor:
                 options=request.options, device=devices[0],
                 devices=devices))
             watcher = asyncio.create_task(
-                self._forward_cancel(request, worker),
+                self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
             while True:
                 item = await run.inbox.get()
                 if isinstance(item, tuple) and item and item[0] is WORKER_GONE:
-                    await _worker_gone_warning(
-                        request, f"worker {worker.name} went away: {item[1]}")
-                    return ExecutionOutcome(STATUS_INTERRUPTED)
+                    detail = f"worker {worker_id} went away: {item[1]}"
+                    await _worker_gone_warning(request, detail)
+                    return self._gone(request, detail)
                 outcome = await self._deliver(request, item, devices)
                 if outcome is not None:
                     return outcome
@@ -584,28 +600,49 @@ class WorkerExecutor:
             # A hard Task.cancel (shutdown's last resort): tell the worker,
             # best effort, so the subprocess does not outlive its row.
             try:
-                await worker.send(wp.Cancel(run_id=request.run_id, grace_s=0))
+                await self._send(worker_id, wp.Cancel(
+                    run_id=request.run_id, grace_s=0))
             except Exception:  # noqa: BLE001
-                pass
+                logger.warning("run %s: could not tell worker %s to stop",
+                               request.run_id, worker_id, exc_info=True)
             raise
         except Exception as exc:  # noqa: BLE001 -- e.g. the socket closed under send
             logger.warning("run %s: worker %s failed: %s", request.run_id,
-                           worker.name, exc, exc_info=True)
-            await _worker_gone_warning(
-                request, f"could not reach worker {worker.name}: {exc}")
-            return ExecutionOutcome(STATUS_INTERRUPTED)
+                           worker_id, exc, exc_info=True)
+            detail = f"could not reach worker {worker_id}: {exc}"
+            await _worker_gone_warning(request, detail)
+            return self._gone(request, detail)
         finally:
             if watcher is not None:
                 watcher.cancel()
-            self._registry.close_run(worker.id, request.run_id)
+            self._registry.close_run(worker_id, request.run_id)
 
     @staticmethod
-    async def _forward_cancel(request: ExecutionRequest, worker: Any) -> None:
+    def _gone(request: ExecutionRequest, detail: str) -> ExecutionOutcome:
+        """The outcome of a run whose worker is gone: a stop if one was
+        asked (``_stopped_status`` keeps a user's Stop ``cancelled``),
+        else ``interrupted``."""
+        if request.context.should_stop():
+            return ExecutionOutcome(STATUS_CANCELLED, None)
+        return ExecutionOutcome(STATUS_INTERRUPTED, detail)
+
+    async def _forward_cancel(self, request: ExecutionRequest,
+                              worker_id: str) -> None:
+        """Watcher task: forward the run's stop as ``cancel``. Never raises."""
         from . import worker_protocol as wp
 
-        while not request.context.should_stop():
-            await asyncio.sleep(CANCEL_POLL_S)
-        await worker.send(wp.Cancel(run_id=request.run_id))
+        try:
+            while not request.context.should_stop():
+                await asyncio.sleep(CANCEL_POLL_S)
+            if not await self._send(worker_id,
+                                    wp.Cancel(run_id=request.run_id)):
+                logger.info("run %s: stop requested, but worker %s is not "
+                            "connected", request.run_id, worker_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- the run ends via WORKER_GONE
+            logger.warning("run %s: could not forward the stop to worker %s",
+                           request.run_id, worker_id, exc_info=True)
 
     async def _deliver(self, request: ExecutionRequest, frame: Any,
                        devices: list[str]) -> ExecutionOutcome | None:
@@ -639,19 +676,25 @@ class WorkerExecutor:
                                            detail=frame.detail,
                                            node_id=frame.node_id))
         elif isinstance(frame, wp.RunFinished):
-            return self._outcome(frame, devices)
+            return self._outcome(frame, devices,
+                                 stop_asked=request.context.should_stop())
         return None
 
     @staticmethod
-    def _outcome(frame: Any, devices: list[str]) -> ExecutionOutcome:
+    def _outcome(frame: Any, devices: list[str], *,
+                 stop_asked: bool) -> ExecutionOutcome:
         peak = _physical_peak(frame.peak_memory, devices)
         if frame.status == STATUS_SUCCEEDED:
             return ExecutionOutcome(STATUS_SUCCEEDED, None, peak_memory=peak)
-        if frame.status in (STATUS_CANCELLED, STATUS_INTERRUPTED):
+        if frame.status == STATUS_CANCELLED or (
+                frame.status == STATUS_INTERRUPTED and stop_asked):
             return ExecutionOutcome(STATUS_CANCELLED, None, peak_memory=peak)
         error = frame.error or "the run failed on its worker"
         if frame.stderr_tail:
             error = f"{error}\n--- output tail ---\n{frame.stderr_tail}"
+        if frame.status == STATUS_INTERRUPTED:
+            return ExecutionOutcome(STATUS_INTERRUPTED, error,
+                                    peak_memory=peak)
         return ExecutionOutcome(STATUS_FAILED, error, peak_memory=peak)
 
 

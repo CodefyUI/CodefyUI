@@ -58,8 +58,8 @@ class _Registry:
 LIMITS = QueueLimits()
 
 
-def _scheduler(*workers: Worker) -> WorkerScheduler:
-    return WorkerScheduler(LIMITS, _Registry(*workers), lambda d: "cpu")
+def _scheduler(*workers: Worker, here: tuple = ("cpu",)) -> WorkerScheduler:
+    return WorkerScheduler(LIMITS, _Registry(*workers), lambda: list(here))
 
 
 def _target(worker: str, device: str = "cpu",
@@ -134,12 +134,38 @@ def test_any_tries_workers_in_name_order_then_this_process():
     assert scheduler.place(entry, {**full, ("local", "cpu"): 2}) is None
 
 
+def test_any_with_a_device_set_falls_back_here_only_with_every_device():
+    entry = _Entry("r1", "any/cuda:0",
+                   _target("any", "cuda:0", ["cuda:0", "cuda:1"]))
+    only_one = _scheduler(here=("cpu", "cuda:0"))
+    assert only_one.place(entry, {}) is None
+    assert only_one.explain(entry) == (
+        "waiting for a worker that offers cuda:0, cuda:1")
+    both = _scheduler(here=("cpu", "cuda:0", "cuda:1"))
+    assert both.place(entry, {}) == Placement(
+        "local", ("cuda:0",), (("local", "cuda:0"),))
+    assert both.explain(entry) is None
+
+
+def test_explain_names_the_worker_a_run_waits_for():
+    scheduler = _scheduler(_worker("box", "cpu", draining=True),
+                           _worker("gone", "cpu", status="disconnected"))
+    assert scheduler.explain(_Entry("r", "box/cpu", _target("box"))) == (
+        "worker box is draining")
+    for name in ("gone", "nobody"):
+        assert scheduler.explain(_Entry("r", f"{name}/cpu", _target(name))) \
+            == f"waiting for worker {name} to reconnect"
+    assert scheduler.explain(_Entry("r", "cpu", {"device": "cpu"})) is None
+
+
 def test_candidate_devices():
     offered = ["cpu", "cuda:0", "cuda:1", "mps:0"]
     assert candidate_devices(offered, "cuda:1") == ["cuda:1"]
     assert candidate_devices(offered, "cuda:7") == []
     assert candidate_devices(offered, "cuda") == ["cuda:0", "cuda:1"]
     assert candidate_devices(offered, "mps") == ["mps:0"]
+    assert candidate_devices(offered, "CUDA:01") == ["cuda:1"]
+    assert candidate_devices(offered, "tpu") == []
     assert candidate_devices(offered, "auto") == ["cuda:0", "cuda:1",
                                                   "mps:0", "cpu"]
 
@@ -148,7 +174,10 @@ def test_candidate_devices():
 
 
 def _service(registry: Any = None) -> RunService:
-    return RunService(store=None, workers=registry)  # type: ignore[arg-type]
+    scheduler = (None if registry is None
+                 else WorkerScheduler(LIMITS, registry, lambda: ["cpu"]))
+    return RunService(store=None, workers=registry,  # type: ignore[arg-type]
+                      scheduler=scheduler)
 
 
 def _registry_with(*workers: Worker) -> WorkerRegistry:
@@ -173,7 +202,12 @@ def test_submit_keys_and_refusals():
     assert key(_options(worker="box")) == "box/cpu"
     assert key(_options(worker="box", device="cuda")) == "box/cuda"
     assert key(_options(worker="box", devices=["cuda:0"])) == "box/cuda:0"
-    assert key(_options(worker="any", device="cuda:3")) == "any/cuda:3"
+    assert key(_options(worker="any", device="cuda")) == "any/cuda"
+    assert key(_options(worker="any", devices=["cuda:0"])) == "any/cuda:0"
+    with pytest.raises(RunSubmitError, match="neither this server"):
+        key(_options(worker="any", device="cuda:3"))
+    with pytest.raises(RunSubmitError, match="neither this server"):
+        key(_options(worker="any", devices=["cuda:0", "cuda:1"]))
     assert key(_options(worker="local")) == "cpu"
     with pytest.raises(RunSubmitError, match="not connected"):
         key(_options(worker="nobody"))

@@ -41,8 +41,6 @@ from ..core.auth import (
     host_is_allowed,
     session_token,
 )
-from ..core.run_service import TARGET_WORKER_PATTERN
-from ..core.workers import RESERVED_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +131,7 @@ async def websocket_worker(ws: WebSocket) -> None:
                 logger.warning("worker %s said hello twice; ignored",
                                worker.name)
             else:
-                await registry.route(worker, frame)
+                registry.route(worker, frame)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
@@ -147,9 +145,9 @@ def _refusal(frame: Any) -> str | None:
     if frame.protocol_version != wp.PROTOCOL_VERSION:
         return (f"protocol version {frame.protocol_version} is not this "
                 f"server's {wp.PROTOCOL_VERSION}; update the agent")
-    if TARGET_WORKER_PATTERN.fullmatch(frame.name) is None:
+    if wp.WORKER_NAME_PATTERN.fullmatch(frame.name) is None:
         return (f"worker name {frame.name!r} must be lowercase letters, "
                 "digits and '-', at most 63 characters")
-    if frame.name in RESERVED_NAMES:
+    if frame.name in wp.RESERVED_WORKER_NAMES:
         return f"worker name {frame.name!r} is reserved"
     return None

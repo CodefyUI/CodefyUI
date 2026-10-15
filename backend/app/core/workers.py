@@ -15,14 +15,22 @@ the id stable across reconnects, which is what slots
 
 Status: ``online`` -> ``degraded`` (a heartbeat is late) -> ``disconnected``
 (the socket closed, or :data:`MISSED_HEARTBEATS` heartbeats in a row
-missed). ``draining`` is ``online`` minus new assignments. On
-``disconnected`` every run the worker was executing ends ``interrupted``
-at once (no grace, spool or resume until #783), and its slots are freed.
+missed). Draining is a separate flag (no new assignments); the API's
+``status`` reads ``draining`` for a connected worker that has it, because
+that is what decides whether a run can go there, and keeps the
+``draining`` flag beside it. On ``disconnected`` every run the worker was
+executing ends ``interrupted`` at once (no grace, spool or resume until
+#783), and its slots are freed.
 
 Runs: :class:`WorkerRun` is one assigned run's inbox. The socket handler
 routes every per-run frame into it and ``WorkerExecutor`` reads it; a
 worker that goes away puts :data:`WORKER_GONE` in each inbox, which the
-executor turns into ``interrupted``.
+executor turns into ``interrupted``. An inbox is UNBOUNDED and never
+waited on: the socket's read loop also carries the heartbeats and control
+frames of every other run, so one run whose consumer is slow (a stalled
+database write) must not hold them up; past :data:`INBOX_HIGH_WATER`
+queued frames a warning is logged once per run. The agent's own pipe
+backpressure bounds how fast one run can produce.
 
 When a replacing connection arrives while runs are still in flight on the
 old one, those runs move to the new connection and wait for its
@@ -50,15 +58,12 @@ STATUS_DRAINING = "draining"
 
 #: Heartbeats a worker may miss before it is ``disconnected``: 3 x 10 s.
 MISSED_HEARTBEATS = 3
-#: A per-run inbox's depth. Full, the socket reader waits, which slows the
-#: agent's sends (TCP) instead of buffering a runaway run here.
-RUN_INBOX_SIZE = 4096
+#: Queued frames in one run's inbox past which a warning is logged.
+INBOX_HIGH_WATER = 10_000
 
 #: Put in a run's inbox when its worker is gone.
 WORKER_GONE = object()
 
-#: Worker names a connection may not take: the two reserved targets.
-RESERVED_NAMES = frozenset({"local", "any"})
 
 Send = Callable[[Any], Awaitable[None]]
 
@@ -68,14 +73,14 @@ class WorkerRun:
     """One run assigned to a worker: its frame inbox and its last ``seq``."""
 
     run_id: str
-    inbox: asyncio.Queue = field(
-        default_factory=lambda: asyncio.Queue(RUN_INBOX_SIZE))
+    inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
     #: The highest ``seq`` delivered; anything at or below it is a
     #: duplicate (#783 replays after reconnects).
     last_seq: int = 0
     #: True while a replacing connection has not confirmed it (run_alive).
     awaiting_alive: bool = False
     gone: bool = False
+    high_water_logged: bool = False
 
 
 @dataclass(eq=False)
@@ -111,18 +116,21 @@ class Worker:
         return self.online and not self.draining
 
     def device_values(self) -> list[str]:
-        """The devices this worker offers, canonical (``mps`` is ``mps:0``)."""
-        return [canonical_device(d.value) for d in self.devices]
+        """The devices this worker offers, canonical (``mps`` is ``mps:0``);
+        a report this side cannot parse is left out."""
+        values = (_canonical_or_none(d.value) for d in self.devices)
+        return [v for v in values if v is not None]
 
     def offers(self, device: str) -> bool:
-        return canonical_device(device) in self.device_values()
+        return _canonical_or_none(device) in self.device_values()
 
     def describe(self) -> dict[str, Any]:
         """The ``GET /api/workers`` entry."""
         return {
             "id": self.id,
             "name": self.name,
-            "status": self.status,
+            "status": (STATUS_DRAINING if self.draining and self.online
+                       else self.status),
             "draining": self.draining,
             "version": self.version,
             "fingerprint_digest": self.fingerprint,
@@ -141,19 +149,11 @@ class Worker:
         }
 
 
-def canonical_device(device: str) -> str:
-    """``mps`` -> ``mps:0``, ``cuda:01`` -> ``cuda:1``; anything else as is."""
-    value = device.strip().lower()
-    kind, _, index = value.partition(":")
-    if kind == "mps" and not index:
-        return "mps:0"
-    if index.isdigit():
-        return f"{kind}:{int(index)}"
-    return value
-
-
-def device_kind(device: str) -> str:
-    return canonical_device(device).partition(":")[0]
+def _canonical_or_none(device: str) -> str | None:
+    try:
+        return wp.canonical_device(device)
+    except ValueError:
+        return None
 
 
 class WorkerRegistry:
@@ -170,6 +170,9 @@ class WorkerRegistry:
         self._workers: dict[str, Worker] = {}
         self._listeners: list[Callable[[], None]] = []
         self._watchdog: asyncio.Task | None = None
+        #: Fire-and-forget closes, kept so they are not collected mid-flight
+        #: and their failures are logged.
+        self._tasks: set[asyncio.Task] = set()
 
     # ── queries ───────────────────────────────────────────────────────────
 
@@ -178,9 +181,6 @@ class WorkerRegistry:
 
     def workers(self) -> list[Worker]:
         return sorted(self._workers.values(), key=lambda w: w.name)
-
-    def online(self) -> list[Worker]:
-        return [w for w in self.workers() if w.online]
 
     # ── change notification ───────────────────────────────────────────────
 
@@ -261,7 +261,7 @@ class WorkerRegistry:
         worker.running.pop(run.run_id, None)
         logger.warning("run %s on worker %s ends interrupted: %s",
                        run.run_id, worker.name, reason)
-        _put_now(run.inbox, (WORKER_GONE, reason))
+        run.inbox.put_nowait((WORKER_GONE, reason))
 
     def heartbeat(self, worker: Worker, frame: wp.Heartbeat) -> None:
         worker.last_heartbeat = self._clock()
@@ -313,7 +313,7 @@ class WorkerRegistry:
         if worker is not None:
             worker.running.pop(run_id, None)
 
-    async def route(self, worker: Worker, frame: Any) -> None:
+    def route(self, worker: Worker, frame: Any) -> None:
         """Deliver a per-run frame to its run's inbox, dropping duplicates."""
         run = worker.running.get(frame.run_id)
         if run is None:
@@ -326,7 +326,13 @@ class WorkerRegistry:
                          frame.seq)
             return
         run.last_seq = frame.seq
-        await run.inbox.put(frame)
+        run.inbox.put_nowait(frame)
+        if run.inbox.qsize() > INBOX_HIGH_WATER and not run.high_water_logged:
+            run.high_water_logged = True
+            logger.warning(
+                "run %s: %d frames from worker %s are waiting to be "
+                "recorded; the database is falling behind", run.run_id,
+                run.inbox.qsize(), worker.name)
 
     # ── the watchdog ──────────────────────────────────────────────────────
 
@@ -339,7 +345,7 @@ class WorkerRegistry:
             silent = now - worker.last_heartbeat
             if silent > worker.heartbeat_s * self.missed_heartbeats:
                 self.disconnect(worker, f"no heartbeat for {silent:.0f} s")
-                asyncio.ensure_future(_close_quietly(worker))
+                self._spawn(_close_quietly(worker))
                 continue
             if silent > worker.heartbeat_s * 1.5 \
                     and worker.status == STATUS_ONLINE:
@@ -352,6 +358,17 @@ class WorkerRegistry:
                 for run in list(worker.running.values()):
                     if run.awaiting_alive:
                         self._end(worker, run, "no run_alive after reconnect")
+
+    def _spawn(self, coroutine: Any) -> None:
+        task = asyncio.ensure_future(coroutine)
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("a worker registry task failed",
+                           exc_info=task.exception())
 
     def _ensure_watchdog(self) -> None:
         if self._watchdog is None or self._watchdog.done():
@@ -383,19 +400,6 @@ class WorkerRegistry:
                     pass
                 self.disconnect(worker, "the control plane is shutting down")
                 await _close_quietly(worker)
-
-
-def _put_now(inbox: asyncio.Queue, item: Any) -> None:
-    """Put *item* even into a full inbox (the oldest frame makes room)."""
-    while True:
-        try:
-            inbox.put_nowait(item)
-            return
-        except asyncio.QueueFull:
-            try:
-                inbox.get_nowait()
-            except asyncio.QueueEmpty:  # pragma: no cover
-                pass
 
 
 async def _close_quietly(worker: Worker) -> None:

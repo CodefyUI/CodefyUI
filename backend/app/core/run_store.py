@@ -64,6 +64,7 @@ from ..config import settings
 from .db import Database, transaction, utc_now_iso
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
+from .worker_protocol import TARGET_LOCAL
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
 #: The worker id of a run executed by this process (#769). Also what a
 #: pre-MIGRATION_008 row's NULL ``worker_id`` reads back as.
-WORKER_LOCAL = "local"
+WORKER_LOCAL = TARGET_LOCAL
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "

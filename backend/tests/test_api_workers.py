@@ -66,6 +66,7 @@ async def test_drain_and_undrain(registry):
     async with _client() as client:
         drained = await client.post("/api/workers/box/drain")
         assert drained.status_code == 200 and drained.json()["draining"]
+        assert drained.json()["status"] == "draining"
         assert not registry.get("box").accepts_runs
         assert (await client.post("/api/workers/box/undrain")
                 ).json()["draining"] is False

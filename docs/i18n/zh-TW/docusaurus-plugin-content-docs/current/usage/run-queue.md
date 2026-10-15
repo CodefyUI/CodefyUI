@@ -38,8 +38,8 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 `target.worker` 決定 run 放在哪裡：
 
 - **省略或 `local`**：這台伺服器，排在解析後裝置的佇列上，與沒有 worker 時完全相同。
-- **worker 名稱**：那個 worker。送出時它必須已連線，而且必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待。
-- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。
+- **worker 名稱**：那個 worker。送出時它必須已連線，而且必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
+- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。指定裝置集合時，只有在這台伺服器擁有集合中每一個裝置時才會考慮它。這台伺服器與所有已連線的 worker 都不可能執行的 run，送出時回 `400`。
 
 在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。worker 斷線，或連續錯過三次心跳（30 秒）時，它的 run 會以 `interrupted` 結束，並留下類型為 `worker_disconnected` 的 `run_warning`，名額隨即釋放。
 

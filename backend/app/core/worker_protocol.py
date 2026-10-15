@@ -108,6 +108,35 @@ FINISHED_CANCELLED = "cancelled"
 FINISHED_INTERRUPTED = "interrupted"
 FinishedStatus = Literal["succeeded", "failed", "cancelled", "interrupted"]
 
+#: ``target.worker`` values with a meaning of their own (#769): this
+#: control-plane process, and "wherever there is room". Neither can be a
+#: worker's name. The one definition every module imports (#772).
+TARGET_LOCAL = "local"
+TARGET_ANY = "any"
+RESERVED_WORKER_NAMES = frozenset({TARGET_LOCAL, TARGET_ANY})
+#: Worker names, matched with ``fullmatch`` (the ``target.worker`` alphabet).
+WORKER_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+
+_DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
+
+
+def canonical_device(device: str) -> str:
+    """One spelling per device, for comparing sets on both ends.
+
+    Trimmed and lower-cased; ``cuda:01`` -> ``cuda:1``; ``mps`` -> ``mps:0``
+    (there is one); ``cpu`` -> ``cpu``. A bare ``cuda`` stays bare: which
+    card it means is the executing process's to decide. ``ValueError`` for
+    anything that is not ``cpu``, ``cuda[:N]`` or ``mps[:N]``.
+    """
+    match = _DEVICE_SYNTAX.match(str(device).strip().lower())
+    if match is None:
+        raise ValueError(f"unknown device {device!r}")
+    kind, index = match.groups()
+    if kind == "mps" and index is None:
+        index = "0"
+    return kind if index is None else f"{kind}:{int(index)}"
+
+
 #: A run id is used as a directory name on the worker, so it is held to a
 #: path-safe alphabet (the control plane's ids are uuid4 hex).
 RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
