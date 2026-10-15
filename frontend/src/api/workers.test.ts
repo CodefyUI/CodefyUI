@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   agentCommand,
+  addSshWorker,
   createEnrollment,
   deleteEnrollment,
+  deleteSshWorker,
   drainWorker,
   fetchEnrollments,
   fetchWorkerList,
+  fetchSshWorkers,
   fetchWorkers,
   removeWorker,
+  setSshWorkerEnabled,
   undrainWorker,
 } from './workers';
 import { _setSessionTokenForTesting } from './_auth';
@@ -173,5 +177,49 @@ describe('enrollment tokens', () => {
     await expect(agentCommand(body)).rejects.toThrow('control_url must be');
     mockFetch(500, null, true);
     await expect(agentCommand(body)).rejects.toThrow('Command failed: mock');
+  });
+});
+
+describe('SSH workers (#784)', () => {
+  it('lists them with the session token', async () => {
+    const list = { ssh_workers: [], ssh_available: true, port_range: [18000, 18100], default_remote_cdui: '~/CodefyUI/cdui' };
+    const fetchMock = mockFetch(200, list);
+    expect(await fetchSshWorkers()).toEqual(list);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/workers/ssh');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    mockFetch(503, { detail: 'SSH workers are not available' });
+    await expect(fetchSshWorkers()).rejects.toMatchObject({ message: 'SSH workers are not available', status: 503 });
+  });
+
+  it('adds one', async () => {
+    const fetchMock = mockFetch(200, { id: 'gpu-box', state: 'connecting' });
+    expect(await addSshWorker({ target: 'alice@gpu-box', port: 2222 })).toMatchObject({ id: 'gpu-box' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/workers/ssh');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ target: 'alice@gpu-box', port: 2222 });
+    mockFetch(409, { detail: 'an SSH worker named gpu-box exists already' });
+    await expect(addSshWorker({ target: 'a@gpu-box' })).rejects.toThrow('exists already');
+  });
+
+  it('enables, disables and deletes one', async () => {
+    let fetchMock = mockFetch(200, { id: 'gpu box', enabled: false });
+    await setSshWorkerEnabled('gpu box', false);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/workers/ssh/gpu%20box/disable');
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    fetchMock = mockFetch(200, { id: 'gpu-box', enabled: true });
+    await setSshWorkerEnabled('gpu-box', true);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/workers/ssh/gpu-box/enable');
+    mockFetch(500, null, true);
+    await expect(setSshWorkerEnabled('x', true)).rejects.toThrow('Enable failed: mock');
+    await expect(setSshWorkerEnabled('x', false)).rejects.toThrow('Disable failed: mock');
+
+    fetchMock = mockFetch(200, { id: 'gpu-box', deleted: true });
+    await deleteSshWorker('gpu-box');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/workers/ssh/gpu-box');
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+    mockFetch(404, { detail: "no SSH worker named 'x'" });
+    await expect(deleteSshWorker('x')).rejects.toThrow("no SSH worker named 'x'");
   });
 });

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3.7
 title: 遠端 Worker
-description: 在另一台機器上執行圖：用 Workers 面板產生的一次性 token，把 GPU 伺服器加入為 worker agent。
+description: 在另一台機器上執行圖：用 Workers 面板產生的一次性 token，把 GPU 伺服器加入為 worker agent，或讓伺服器透過 SSH 啟動它。
 ---
 
 # 遠端 Worker
@@ -85,3 +85,54 @@ worker 必須執行與伺服器相同的 CodefyUI 版本，也應該認得相同
 要解除降級，請在 worker 上安裝相同的外掛與套件（`cdui plugin install ...`、Package Center、相同的自訂節點檔）並重新啟動 agent：它只在啟動時回報節點。輔助程序失敗的 worker 不會回報節點目錄：它的卡片會顯示警告，`any` 會略過它，指定它的 run 則不經檢查直接送出（agent 的 log 會說明輔助程序失敗的原因）。把伺服器的外掛組合複製到 worker 的指令（`cdui agent sync`）尚在規劃中。
 
 **環境指紋。** 同一個輔助程序也會收集 worker 的[環境指紋](/advanced/api-reference#run-environment)（CodefyUI commit、Python、torch build、加速器、外掛版本、影響數值的環境變數）。Workers 面板顯示它的摘要，worker 執行的每個 run 都會記錄這個摘要（重新連線時未回報指紋的 worker 會顯示「未回報」，不會沿用舊的摘要），所以 Runs 面板會指出實際執行它的環境。指紋描述的是 agent 的環境，也就是它的 run 子程序所繼承的環境，在 run 的裝置集合縮小 `CUDA_VISIBLE_DEVICES` 之前。
+
+## 透過 SSH 連線 {/* #connecting-over-ssh */}
+
+若 GPU 伺服器只能用 SSH 連到，例如筆電在 NAT 後面、伺服器只開放 22 埠，可以讓伺服器自己啟動 worker。它會用 `ssh` 連到 GPU 伺服器、在那裡執行 `cdui agent start`，agent 再經由同一個 SSH 連線中的反向通道（`ssh -R`）連回來。兩台機器都不需要開連接埠，伺服器也可以維持只監聽 `127.0.0.1`。
+
+**開始之前：**
+
+- GPU 伺服器上已用 `install.sh` 安裝相同版本的 CodefyUI。伺服器不會替你安裝。
+- 伺服器所在的機器 PATH 上有 OpenSSH 用戶端（`ssh`）。macOS 與 Linux 內建；Windows 請加入選用功能 **OpenSSH 用戶端**，並在 PATH 含有它的工作階段中啟動伺服器。
+- 在伺服器機器上、以執行 `cdui start` 的作業系統使用者開終端機執行 `ssh <target>`，**不會出現任何提示**就能登入。ssh 以 `BatchMode=yes` 執行：不能用密碼，有 passphrase 的金鑰須透過 `ssh-agent`。你的 `~/.ssh/config` 會生效，所以 `Host` 別名、`ProxyJump` 與其中指定的金鑰都能用。
+
+**新增。** 開啟 **Workers**，按 **新增 worker**，選 **透過 SSH**：
+
+| 欄位 | 說明 |
+|---|---|
+| SSH 目標 | `user@host`，或伺服器帳號 `~/.ssh/config` 中的 `Host` 別名。 |
+| 連接埠 | ssh 的 `-p`。保持 22 時不會傳給 ssh，所以 ssh 設定中該主機的連接埠會生效。 |
+| Worker 名稱 | 選填；預設為目標的主機名稱（`alice@gpu1.lab` 會成為 `gpu1`）。已被其他 worker 使用的名稱會被拒絕。 |
+| 金鑰檔 | 選填；伺服器機器上的私鑰（ssh 的 `-i`）。留空則使用你的 ssh 設定與 agent。 |
+| 遠端主機上的 cdui | 遠端啟動器的路徑；留空代表 `~/CodefyUI/cdui`，也就是 `install.sh` 放置的位置。 |
+
+按 **新增並連線**。Worker 卡片上會多一行 **SSH 通道**：ssh 執行中但 agent 尚未連線時為 **連線中**，連上後為 **已連線**，等待重試時為 **失敗** 並附上 ssh 或 agent 最後輸出的幾行（金鑰被拒、未知主機、找不到 `cdui`），停用時為 **已停止**。**最近的 ssh 輸出** 可看到更多輸出。
+
+**實際執行的內容。** 每個啟用中的 SSH worker，伺服器都會維持一個像這樣的程序：
+
+```bash
+ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+    -o StrictHostKeyChecking=accept-new \
+    -R 127.0.0.1:18000:127.0.0.1:8000 -- alice@gpu-box \
+    "sh -c '... ~/CodefyUI/cdui agent start --foreground --control http://127.0.0.1:18000 --name gpu-box'"
+```
+
+遠端指令會先把 `~/.local/bin` 加到 PATH：非互動式的 ssh shell 不會讀取你的 shell 設定檔。遠端連接埠取自 `CODEFYUI_SSH_REMOTE_PORT_RANGE`（`18000-18100`）；若該埠在遠端主機上已被占用，會改試下一個並記住。ssh 結束後，伺服器會在 2 秒後重新啟動它，間隔逐次加倍到最多一分鐘；伺服器自己重啟後也會重新連線。若遠端 sshd 根本不允許轉送（`AllowTcpForwarding no`、`PermitListen` 不含該埠；明確拒絕，或連續三個埠都失敗），通道會停在 **失敗** 並顯示原因，不再自動重試；請伺服器管理者允許轉送到 `127.0.0.1` 的 `-R` 後按 **重試**。通道列也會顯示遠端 agent 的 PID：在遠端主機上 agent 的命令列是 `python .../scripts/dev.py agent start --foreground ...`，可用 `pgrep -af 'agent start'` 找到它。
+
+**憑證。** 每次啟動都會經由 ssh 的標準輸入送出一次性的 enrollment token（有效 10 分鐘），不會出現在任何命令列上，所以兩台機器的 `ps` 都看不到它。第一次啟動時 worker 會加入；agent 會把 worker 憑證以 `http://127.0.0.1:<遠端連接埠>` 這個位址存在遠端主機上，之後每次啟動都用它重新連線，token 則不會被使用。Worker 加入後，token 會綁定到它，只能用來重新核發這個 worker 的憑證。這個 worker 第一次使用某個埠時，會先對該位址執行 `cdui agent forget`，所以其他 worker 或其他控制面留下的憑證不會被送出。若仍送出了這種憑證（這台伺服器在該通道上拒絕它，或 agent 回報憑證屬於另一個 worker 名稱），伺服器會先執行 `cdui agent forget` 再重新啟動 agent，讓它重新加入。所有通道都從這台機器自己的位址連入，因此經由通道的加入嘗試會依通道（其遠端連接埠）分開限速，彼此之間以及與這台機器上的 agent 互不影響。
+
+**連線中斷。** 若連線不是因停用而結束（筆電睡眠、網路中斷），遠端 agent 與它的 run 會繼續執行；這些 run 在這台伺服器上以 `disconnected` 等待並保留事件，如同[連線中斷時](#when-the-connection-drops)所述。伺服器會以相同的遠端連接埠重新啟動 ssh，遠端腳本發現 agent 仍在執行，就會接上它而不另啟一個（通道列會顯示重新接上的 PID）。Agent 會自行經由新的通道重新連線，它的 run 也會繼續。若遠端 sshd 還沒發現舊連線已消失、仍占用該埠，伺服器會先另開一個短暫的 ssh 結束那個殘留的連線。若在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內沒有新的連線接上，agent 會停止。遠端腳本把 agent 的 PID 與日誌存在遠端主機的 `~/.codefyui-ssh/<遠端連接埠>/`。
+
+**停用、啟用、刪除。** **停用** 會先讓 worker 停止接新 run，再結束它的 ssh 連線；之後即使有 agent 以它的名稱連線，停用中的 worker 仍維持不接新 run。停用會經由連線通知遠端 agent 停止（沒有連線時則另開一個短暫的 ssh），所以仍在執行的 run 會以 `interrupted` 結束；若有需要，請先排空並等它完成。**啟用** 會重新啟動連線。對尚未連線的 worker，**刪除** 會結束連線並移除該項目；對已連線的 worker，**移除** 會撤銷它的憑證，並一併刪除它的 SSH 項目。
+
+**安全性。**
+
+- 通道只監聽遠端主機的 loopback（`-R 127.0.0.1:...`）。該主機上的每個使用者仍可連到那個埠，因此經由它的請求只能到達 `/ws/worker` 與 `POST /api/workers/enroll`；其他路徑一律回 `421`，而這兩個端點都需要 token。
+- `StrictHostKeyChecking=accept-new` 會在第一次見到主機時信任它，金鑰改變時拒絕連線。設定 `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes` 則要求主機已在伺服器帳號的 `known_hosts` 中。
+- 伺服器使用執行它的作業系統使用者的 SSH 存取權，就像 Source Control 分頁使用 git 一樣。能操作這台伺服器的人，就能在該使用者連得到的每台主機上啟動 SSH worker。
+- 通道後面的 agent 從 `127.0.0.1` 連線，但只有在它的 machine id 與伺服器相同時才會被視為這台機器上的 worker，所以 GPU 伺服器不會被誤認為伺服器本機。它以自己的 worker token 驗證身分。
+
+| 設定 | 預設值 | 說明 |
+|---|---|---|
+| `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | 通道可以在遠端主機 loopback 上使用的連接埠 |
+| `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | 設為 `yes` 時要求主機已知 |

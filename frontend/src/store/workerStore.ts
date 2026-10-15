@@ -1,14 +1,19 @@
 import { create } from 'zustand';
 import {
+  deleteSshWorker,
   drainWorker,
+  fetchSshWorkers,
   fetchWorkerList,
   removeWorker,
+  setSshWorkerEnabled,
   undrainWorker,
+  WorkersApiError,
+  type SshWorker,
   type WorkerInfo,
   type WorkerRejection,
 } from '../api/workers';
 import { cachedAppVersion } from '../utils/appVersion';
-import { useI18n } from '../i18n';
+import { useI18n, type TranslationKey } from '../i18n';
 import { useToastStore } from './toastStore';
 
 /**
@@ -35,6 +40,17 @@ interface WorkerState {
   workers: WorkerInfo[];
   /** Each worker name's last refused handshake, newest first (#781). */
   rejections: WorkerRejection[];
+  /**
+   * The SSH workers this server starts itself (#784), with their tunnel
+   * state; read with the list, empty when the server has none (or answers
+   * that read with an error: an older server has no such route).
+   */
+  ssh: SshWorker[];
+  /**
+   * Why the SSH workers could not be read; the list keeps its last value
+   * meanwhile. A 404 (a server without SSH workers) is not an error.
+   */
+  sshError: string | null;
   /** False until the first read answered (or failed). */
   loaded: boolean;
   error: string | null;
@@ -58,6 +74,10 @@ interface WorkerState {
   setDraining: (workerId: string, draining: boolean) => Promise<void>;
   /** Revoke the worker's credential and drop it from the list (#780). */
   remove: (workerId: string) => Promise<void>;
+  /** Enable or disable an SSH worker's tunnel (#784). */
+  setSshEnabled: (id: string, enabled: boolean) => Promise<void>;
+  /** Stop an SSH worker and delete its entry (#784). */
+  deleteSsh: (id: string) => Promise<void>;
   /**
    * Close the panel and ask the dock to show its Runs tab. The caller
    * selects the run (`runStore.select`); this store stays out of the run
@@ -86,6 +106,31 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Mark *id* busy for the length of *action*; toast *failKey* if it throws. */
+async function guarded(
+  id: string,
+  failKey: TranslationKey,
+  action: (seq: number) => Promise<void>,
+): Promise<void> {
+  const { busy, workers, ssh } = useWorkerStore.getState();
+  if (busy[id]) return;
+  useWorkerStore.setState((s) => ({ busy: { ...s.busy, [id]: true } }));
+  const seq = nextSeq++;
+  try {
+    await action(seq);
+  } catch (err) {
+    const { t } = useI18n.getState();
+    const name = workers.find((w) => w.id === id)?.name ?? ssh.find((e) => e.id === id)?.id ?? id;
+    useToastStore.getState().addToast(t(failKey, { name, error: errorMessage(err) }), 'error');
+  } finally {
+    useWorkerStore.setState((s) => {
+      const next = { ...s.busy };
+      delete next[id];
+      return { busy: next };
+    });
+  }
+}
+
 async function tick() {
   // Called by the first watch() and by the timer, which the last release
   // clears, so there is always a watcher here.
@@ -97,6 +142,8 @@ async function tick() {
 export const useWorkerStore = create<WorkerState>((set, get) => ({
   workers: [],
   rejections: [],
+  ssh: [],
+  sshError: null,
   loaded: false,
   error: null,
   serverVersion: null,
@@ -110,9 +157,26 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
   refresh: async () => {
     const seq = nextSeq++;
     try {
-      const { workers, rejections } = await fetchWorkerList();
+      const [{ workers, rejections }, ssh] = await Promise.all([
+        fetchWorkerList(),
+        fetchSshWorkers().then(
+          (list) => ({ list: list.ssh_workers, error: null }),
+          (err: unknown) =>
+            (err instanceof WorkersApiError && err.status === 404
+              ? { list: [], error: null }
+              : { list: null, error: errorMessage(err) }),
+        ),
+      ]);
       if (!claim(seq)) return;
-      set({ workers, rejections, loaded: true, error: null, serverVersion: cachedAppVersion() });
+      set((s) => ({
+        workers,
+        rejections,
+        ssh: ssh.list ?? s.ssh,
+        sshError: ssh.error,
+        loaded: true,
+        error: null,
+        serverVersion: cachedAppVersion(),
+      }));
     } catch (err) {
       if (!claim(seq)) return;
       set({ loaded: true, error: errorMessage(err), serverVersion: cachedAppVersion() });
@@ -153,7 +217,12 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
     const seq = nextSeq++;
     try {
       await removeWorker(workerId);
-      if (claim(seq)) set((s) => ({ workers: s.workers.filter((w) => w.id !== workerId) }));
+      if (claim(seq)) {
+        set((s) => ({
+          workers: s.workers.filter((w) => w.id !== workerId),
+          ssh: s.ssh.filter((e) => e.id !== workerId),
+        }));
+      }
     } catch (err) {
       const { t } = useI18n.getState();
       const name = get().workers.find((w) => w.id === workerId)?.name ?? workerId;
@@ -169,6 +238,21 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
       });
     }
   },
+
+  setSshEnabled: (id, enabled) =>
+    guarded(id, enabled ? 'workers.ssh.enable.failed' : 'workers.ssh.disable.failed', async (seq) => {
+      const updated = await setSshWorkerEnabled(id, enabled);
+      if (claim(seq)) set((s) => ({ ssh: s.ssh.map((e) => (e.id === id ? updated : e)) }));
+      // The worker's own status moved too (disconnected, draining): read
+      // the list now rather than at the next poll.
+      await get().refresh();
+    }),
+
+  deleteSsh: (id) =>
+    guarded(id, 'workers.ssh.delete.failed', async (seq) => {
+      await deleteSshWorker(id);
+      if (claim(seq)) set((s) => ({ ssh: s.ssh.filter((e) => e.id !== id) }));
+    }),
 
   revealRuns: () => set((s) => ({ panelOpen: false, runsRevealSeq: s.runsRevealSeq + 1 })),
 
@@ -199,6 +283,8 @@ export function _resetWorkerStoreForTesting(): void {
   useWorkerStore.setState({
     workers: [],
     rejections: [],
+    ssh: [],
+    sshError: null,
     loaded: false,
     error: null,
     serverVersion: null,

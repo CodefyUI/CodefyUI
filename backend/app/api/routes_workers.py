@@ -11,6 +11,11 @@
                                              (no session token; rate-limited)
     POST   /api/workers/agent-command        the command for a token at an
                                              address (token; #786)
+    GET    /api/workers/ssh                  the SSH workers (session token)
+    POST   /api/workers/ssh                  add one and start it (token)
+    POST   /api/workers/ssh/{id}/enable      start its ssh again (token)
+    POST   /api/workers/ssh/{id}/disable     drain, then end its ssh (token)
+    DELETE /api/workers/ssh/{id}             stop it and delete the row (token)
 
 Auth follows ``routes_runs``: reads are open, the writes are covered by
 ``auth_guard`` in ``main.py`` (session token). Two exceptions: listing the
@@ -70,10 +75,16 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..core import tls_fingerprint as tls_fp
+from ..core import ssh_launch
 from ..core import worker_protocol as wp
 from ..core import worker_store as ws_store
 from ..core.api_keys import require_session_token
-from ..core.auth import allowed_hosts, bound_to_loopback, is_loopback_peer
+from ..core.auth import (
+    allowed_hosts,
+    bound_to_loopback,
+    is_loopback_peer,
+    tunnel_port,
+)
 from ..core.mounts import (
     control_plane_label,
     control_plane_mounts,
@@ -411,7 +422,12 @@ class EnrollRequest(BaseModel):
 async def enroll(request: Request, body: EnrollRequest) -> Any:
     """Trade an enrollment token for a worker token (no session token)."""
     client = request.client.host if request.client is not None else "?"
-    wait = enroll_limiter.take(client)
+    # Every SSH tunnel arrives from this machine's own address: one bucket
+    # per tunnel (its remote port), so SSH workers restarting together do
+    # not spend each other's attempts, nor a local agent's (#784).
+    tunnel = tunnel_port(request.headers.get("host"))
+    wait = enroll_limiter.take(client if tunnel is None
+                               else f"ssh-tunnel:{tunnel}")
     if wait > 0:
         logger.warning("enrollment from %s refused: too many attempts", client)
         return JSONResponse(
@@ -460,7 +476,8 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
         if known is not None:
             known.enrolled = True
     logger.info("worker %s enrolled from %s", name, client)
-    if request.url.scheme != "https" and not is_loopback_peer(client):
+    if (request.url.scheme != "https" and not is_loopback_peer(client)
+            and tunnel is None):
         logger.warning(
             "worker %s enrolled over plain http:// from %s: its new worker "
             "token crossed the network unencrypted; put the server behind "
@@ -468,14 +485,123 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
     return {"worker_id": name, "worker_token": worker_token}
 
 
+# ── SSH workers (#784) ────────────────────────────────────────────────────
+
+
+def _launcher(request: Request) -> Any:
+    launcher = getattr(request.app.state, "ssh_launcher", None)
+    if launcher is None:
+        raise HTTPException(503, "SSH workers are not available")
+    return launcher
+
+
+class SshWorkerRequest(BaseModel):
+    #: ``user@host``, ``host``, or a ``Host`` alias from ssh config.
+    target: str = Field(..., max_length=320)
+    port: int = Field(22, ge=1, le=65535)
+    #: A private key file on this (the control-plane) machine.
+    identity: str | None = Field(None, max_length=4096)
+    #: The cdui launcher on the remote host.
+    remote_cdui: str | None = Field(None, max_length=255)
+    #: The worker name; the target's host name by default.
+    name: str | None = Field(None, max_length=63)
+
+
+@router.get("/ssh", dependencies=[Depends(require_session_token)])
+async def list_ssh_workers(request: Request) -> dict[str, Any]:
+    """The SSH workers with their tunnel state, and whether this machine
+    has an ``ssh`` to start them with."""
+    launcher = _launcher(request)
+    return {"ssh_workers": launcher.describe_all(),
+            "ssh_available": launcher.ssh_path() is not None,
+            "port_range": list(launcher.port_range),
+            "default_remote_cdui": ssh_launch.DEFAULT_REMOTE_CDUI}
+
+
+@router.post("/ssh")
+async def add_ssh_worker(request: Request,
+                         body: SshWorkerRequest) -> dict[str, Any]:
+    """Store an SSH worker and start its ``ssh -R`` session."""
+    launcher = _launcher(request)
+    try:
+        target = ssh_launch.validate_target(body.target)
+        remote_cdui = ssh_launch.validate_remote_cdui(body.remote_cdui)
+        identity = ssh_launch.validate_identity(body.identity)
+    except ssh_launch.SshConfigError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    name = (body.name or "").strip().lower() or (
+        ssh_launch.default_worker_name(target))
+    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
+        raise HTTPException(400, f"worker name {name!r} must be lowercase "
+                                 "letters, digits and '-', at most 63 "
+                                 "characters")
+    if name in wp.RESERVED_WORKER_NAMES:
+        raise HTTPException(400, f"worker name {name!r} is reserved")
+    if launcher.ssh_path() is None:
+        raise HTTPException(400, "ssh was not found on this machine's PATH; "
+                                 "install an OpenSSH client first")
+    registry = _registry(request)
+    if name in launcher.entries:
+        raise HTTPException(409, f"an SSH worker named {name} exists already")
+    if registry.get(name) is not None or await _store(request).is_enrolled(
+            name):
+        raise HTTPException(409, f"a worker named {name} exists already; "
+                                 "pick another name, or remove that worker "
+                                 "first")
+    try:
+        entry = await launcher.add(ws_store.SshWorker(
+            id=name, target=target, port=body.port, identity=identity,
+            remote_cdui=remote_cdui))
+    except ws_store.NameTaken as exc:
+        raise HTTPException(409, str(exc)) from exc
+    logger.info("SSH worker %s added (%s, port %d)", name, target, body.port)
+    return entry
+
+
+async def _set_ssh_enabled(request: Request, name: str,
+                           enabled: bool) -> dict[str, Any]:
+    entry = await _launcher(request).set_enabled(name, enabled)
+    if entry is None:
+        raise HTTPException(404, f"no SSH worker named {name!r}")
+    logger.info("SSH worker %s %s", name, "enabled" if enabled else "disabled")
+    return entry
+
+
+@router.post("/ssh/{name}/enable")
+async def enable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
+    return await _set_ssh_enabled(request, name, True)
+
+
+@router.post("/ssh/{name}/disable")
+async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
+    """Drain the worker, then end its ssh session (the remote agent stops;
+    a run still on it ends ``interrupted``)."""
+    return await _set_ssh_enabled(request, name, False)
+
+
+@router.delete("/ssh/{name}")
+async def delete_ssh_worker(request: Request, name: str) -> dict[str, Any]:
+    """Stop the SSH worker and delete its row. Its enrollment stays (remove
+    the worker itself to revoke it)."""
+    if not await _launcher(request).remove(name):
+        raise HTTPException(404, f"no SSH worker named {name!r}")
+    logger.info("SSH worker %s deleted", name)
+    return {"id": name, "deleted": True}
+
+
 @router.delete("/{worker_id}")
 async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
     """Revoke the worker's credential, disconnect it, and forget it.
 
     Its running runs end ``interrupted`` (the socket closes), and the runs
-    still queued for it fail at once: nothing would ever place them.
+    still queued for it fail at once: nothing would ever place them. An SSH
+    worker's session is ended and its row deleted first, so it does not
+    come back.
     """
     registry = _registry(request)
+    launcher = getattr(request.app.state, "ssh_launcher", None)
+    ssh_removed = (launcher is not None and worker_id in launcher.entries
+                   and await launcher.remove(worker_id))
     store = getattr(request.app.state, "worker_store", None)
     revoked = False
     if store is not None:
@@ -483,7 +609,7 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
     removed = registry.forget(
         worker_id, "the worker was removed and its credential revoked"
         if revoked else "the worker was removed")
-    if removed is None and not revoked:
+    if removed is None and not revoked and not ssh_removed:
         raise HTTPException(404, f"no worker named {worker_id!r}")
     if revoked:
         logger.info("worker %s: credential revoked", worker_id)

@@ -152,9 +152,19 @@ export interface EnrollmentList {
   fingerprint_command?: string;
 }
 
+/** An API failure: the server's `detail` (or *fallback*), and the HTTP status. */
+export class WorkersApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 async function failure(res: Response, fallback: string): Promise<Error> {
   const body = await res.json().catch(() => ({}));
-  return new Error(typeof body.detail === 'string' ? body.detail : `${fallback}: ${res.statusText}`);
+  return new WorkersApiError(
+    typeof body.detail === 'string' ? body.detail : `${fallback}: ${res.statusText}`,
+    res.status,
+  );
 }
 
 /** The worker list with the handshakes the server refused (#781). */
@@ -226,6 +236,94 @@ export async function createEnrollment(
 export async function deleteEnrollment(id: string): Promise<void> {
   const res = await apiFetch(`${BASE_URL}/enrollments/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw await failure(res, 'Revoke failed');
+}
+
+/**
+ * An SSH worker's tunnel (#784): `connecting` while ssh runs and the agent
+ * has not connected, `up` once it has, `failed` while waiting to retry
+ * after ssh exited, `stopped` when disabled.
+ */
+export type TunnelState = 'connecting' | 'up' | 'failed' | 'stopped';
+
+/** A worker this server starts itself over `ssh -R` (#784). */
+export interface SshWorker {
+  /** The worker name. */
+  id: string;
+  /** `user@host` or a Host alias from the server account's ssh config. */
+  target: string;
+  port: number;
+  /** A key file on the server's machine, or `null` for ssh's defaults. */
+  identity: string | null;
+  /** The cdui launcher on the remote host. */
+  remote_cdui: string;
+  /** The remote loopback port of the reverse forward. */
+  remote_port: number | null;
+  enabled: boolean;
+  state: TunnelState;
+  /** The last lines ssh (or the remote agent) wrote before it exited. */
+  last_error: string | null;
+  exit_code: number | null;
+  tail: string[];
+  attempts: number;
+  /** Epoch seconds of the next attempt, while waiting to retry. */
+  retry_at: number | null;
+  /** Epoch seconds the worker came online through the tunnel. */
+  up_since: number | null;
+  /** It stopped retrying (the remote sshd forbids forwarding); Enable retries. */
+  gave_up?: boolean;
+  /** The agent's pid on the remote host, once the remote script printed it. */
+  remote_pid?: number | null;
+  /** That agent survived a dropped session and this session re-attached to it. */
+  reattached?: boolean;
+}
+
+export interface SshWorkerList {
+  ssh_workers: SshWorker[];
+  /** The server's machine has an `ssh` client on PATH. */
+  ssh_available: boolean;
+  port_range: [number, number];
+  default_remote_cdui: string;
+}
+
+export interface NewSshWorker {
+  target: string;
+  port?: number;
+  identity?: string;
+  remote_cdui?: string;
+  name?: string;
+}
+
+/** The SSH workers and their tunnel state (#784). */
+export async function fetchSshWorkers(): Promise<SshWorkerList> {
+  // A GET the server guards with the session token.
+  const res = await apiFetch(`${BASE_URL}/ssh`, {}, { authenticate: true });
+  if (!res.ok) throw await failure(res, 'SSH workers failed');
+  return res.json();
+}
+
+/** Store an SSH worker; the server starts its ssh session at once. */
+export async function addSshWorker(body: NewSshWorker): Promise<SshWorker> {
+  const res = await apiFetch(`${BASE_URL}/ssh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await failure(res, 'Add SSH worker failed');
+  return res.json();
+}
+
+/** Enable (start ssh) or disable (drain, then end ssh) an SSH worker. */
+export async function setSshWorkerEnabled(id: string, enabled: boolean): Promise<SshWorker> {
+  const action = enabled ? 'enable' : 'disable';
+  const res = await apiFetch(`${BASE_URL}/ssh/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+  if (!res.ok) throw await failure(res, enabled ? 'Enable failed' : 'Disable failed');
+  return res.json();
+}
+
+/** Stop an SSH worker and forget it; its enrollment stays. */
+export async function deleteSshWorker(id: string): Promise<void> {
+  const res = await apiFetch(`${BASE_URL}/ssh/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw await failure(res, 'Delete failed');
 }
 
 /**

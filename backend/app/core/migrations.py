@@ -10,7 +10,8 @@ schema (#140); 005 indexes metrics by producer (#641); 006 records the
 environment that executed each run (#344); 007 is the durable study
 coordinator (#343); 008 records where each run executes (#769); 009 is
 worker enrollment (#780); 010 says where each artifact's file lives
-(#782); 011 records a worker's environment (#781).
+(#782); 011 records a worker's environment (#781); 012 the SSH workers
+the control plane launches (#784).
 """
 
 from __future__ import annotations
@@ -540,10 +541,36 @@ MIGRATION_011 = """
 ALTER TABLE workers ADD COLUMN fingerprint_digest TEXT;
 """
 
+# ── Migration 012: SSH workers (#784) ────────────────────────────────────
+#
+# One row per worker the control plane starts itself over ``ssh -R``
+# (``core.ssh_launch``). ``id`` is the worker name (the same id as its
+# ``workers`` row once it has enrolled; a row here may exist before that).
+# ``target`` is what ``ssh`` is given (``user@host`` or a ``Host`` alias
+# from the server account's ssh config), ``port`` its ``-p``, ``identity``
+# an optional key path on THIS machine, ``remote_cdui`` the launcher on the
+# remote host, ``remote_port`` the remote loopback port of the reverse
+# forward (kept so a restart reuses it, and with it the credential the
+# agent stored for that address). ``enabled`` 0 keeps the row but no ssh.
+# No secret here: tokens travel on ssh's stdin, never stored.
+MIGRATION_012 = """
+CREATE TABLE ssh_workers (
+  id           TEXT PRIMARY KEY,            -- the worker name
+  target       TEXT NOT NULL,               -- user@host or an ssh Host alias
+  port         INTEGER NOT NULL DEFAULT 22,
+  identity     TEXT,                        -- key file on the control plane
+  remote_cdui  TEXT NOT NULL,               -- the cdui launcher on the remote
+  remote_port  INTEGER,                     -- remote loopback end of ssh -R
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT NOT NULL
+);
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
-                         MIGRATION_010, MIGRATION_011]
+                         MIGRATION_010, MIGRATION_011,
+                         MIGRATION_012]
 
 
 def _is_comment_only(statement: str) -> bool:

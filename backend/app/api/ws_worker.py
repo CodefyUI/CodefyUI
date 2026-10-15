@@ -5,7 +5,9 @@ The server end of ``core.worker_protocol``; the agent end is ``app.agent``
 
 Handshake checks, before ``accept``:
 
-- Host header against the whitelist, as ``/ws/execution`` does;
+- Host header against the whitelist, as ``/ws/execution`` does, or the
+  remote end of an SSH worker's reverse tunnel (``127.0.0.1:<port>``,
+  ``auth.tunnel_host_allows``, #784);
 - no browser: a request with an ``Origin`` header is refused (an agent
   sends none, and no page has a reason to open this socket);
 - a credential (``X-CodefyUI-Token`` header, or ``?token=``), accepted by
@@ -69,6 +71,8 @@ from ..core.auth import (
     host_is_allowed,
     is_loopback_peer,
     session_token,
+    tunnel_host_allows,
+    tunnel_port,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +97,10 @@ def plain_from_another_machine(ws: WebSocket) -> bool:
     this machine that forwards no headers, or the local end of an SSH
     tunnel (#784), whose hop across the network is encrypted by ssh.
     """
+    if tunnel_port(ws.headers.get("host")) is not None:
+        # Through an SSH tunnel to a server bound to one LAN address: the
+        # peer is that address, but the network hop is ssh's.
+        return False
     return not _peer_is_loopback(ws) and ws.url.scheme not in ("wss",
                                                                "https")
 
@@ -157,7 +165,9 @@ async def authorise(ws: WebSocket) -> Authorised | None:
 
 @router.websocket(wp.WORKER_WS_PATH)
 async def websocket_worker(ws: WebSocket) -> None:
-    if not host_is_allowed(ws.headers.get("host", "")):
+    host = ws.headers.get("host", "")
+    if not host_is_allowed(host) and not tunnel_host_allows(
+            host, wp.WORKER_WS_PATH):
         await ws.close(code=4003, reason="Host not allowed")
         return
     if ws.headers.get("origin"):
@@ -165,6 +175,7 @@ async def websocket_worker(ws: WebSocket) -> None:
         return
     auth = await authorise(ws)
     if auth is None:
+        _note_tunnel_refusal(ws, host)
         await ws.close(code=4401, reason="Missing or invalid token")
         return
     enrolled_as = auth.worker
@@ -246,6 +257,9 @@ async def websocket_worker(ws: WebSocket) -> None:
     store = getattr(ws.app.state, "worker_store", None)
     if enrolled_as is not None and store is not None:
         await _touch(store, hello, fingerprint_digest=worker.fingerprint)
+    launcher = getattr(ws.app.state, "ssh_launcher", None)
+    if launcher is not None:
+        launcher.worker_connected(worker.name)
     service = getattr(ws.app.state, "run_service", None)
     if service is not None:
         service.check_worker_overrides(worker)
@@ -293,6 +307,17 @@ async def _record_fingerprint(service: Any, worker: Any) -> None:
     except Exception:  # noqa: BLE001
         logger.warning("could not record worker %s's fingerprint",
                        worker.name, exc_info=True)
+
+
+def _note_tunnel_refusal(ws: WebSocket, host: str) -> None:
+    """A credential refused through an SSH worker's tunnel (#784): tell
+    the launcher, which restarts that agent with ``cdui agent forget``.
+    Only this refusal (an unknown or revoked token, 4401) counts; a Host
+    or registry refusal never does."""
+    port = tunnel_port(host)
+    launcher = getattr(ws.app.state, "ssh_launcher", None)
+    if port is not None and launcher is not None:
+        launcher.note_refused(port)
 
 
 async def _touch(store: Any, hello: wp.Hello | None,

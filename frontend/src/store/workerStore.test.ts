@@ -1,22 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  deleteSshWorker,
   drainWorker,
+  fetchSshWorkers,
   fetchWorkerList,
   fetchWorkers,
   removeWorker,
+  setSshWorkerEnabled,
   undrainWorker,
+  WorkersApiError,
+  type SshWorker,
   type WorkerInfo,
 } from '../api/workers';
 import { rememberAppVersion } from '../utils/appVersion';
 import { useToastStore } from './toastStore';
 import { WORKER_POLL_MS, _resetWorkerStoreForTesting, useWorkerStore } from './workerStore';
 
-vi.mock('../api/workers', () => ({
+vi.mock('../api/workers', async (importOriginal) => ({
+  WorkersApiError: (await importOriginal<typeof import('../api/workers')>()).WorkersApiError,
   fetchWorkers: vi.fn(),
   fetchWorkerList: vi.fn(),
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
+  fetchSshWorkers: vi.fn(),
+  setSshWorkerEnabled: vi.fn(),
+  deleteSshWorker: vi.fn(),
 }));
 
 function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
@@ -47,6 +56,11 @@ beforeEach(() => {
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
   vi.mocked(removeWorker).mockReset().mockResolvedValue(undefined);
+  vi.mocked(fetchSshWorkers).mockReset().mockResolvedValue({
+    ssh_workers: [], ssh_available: true, port_range: [18000, 18100], default_remote_cdui: '~/CodefyUI/cdui',
+  });
+  vi.mocked(setSshWorkerEnabled).mockReset();
+  vi.mocked(deleteSshWorker).mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -280,4 +294,115 @@ describe('workerStore', () => {
     await vi.advanceTimersByTimeAsync(WORKER_POLL_MS * 2);
     expect(fetchWorkers).toHaveBeenCalledTimes(1);
   });
+
+  // ── SSH workers (#784) ──
+
+  it('reads the SSH workers with the list; a 404 means none, another failure keeps the list', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValueOnce({ ssh_workers: [sshEntry('w1')], ssh_available: true, port_range: [18000, 18100], default_remote_cdui: '~/CodefyUI/cdui' });
+    await useWorkerStore.getState().refresh();
+    expect(useWorkerStore.getState().ssh.map((e) => e.id)).toEqual(['w1']);
+    vi.mocked(fetchSshWorkers).mockRejectedValueOnce(new WorkersApiError('Missing or invalid token', 403));
+    await useWorkerStore.getState().refresh();
+    expect(useWorkerStore.getState()).toMatchObject({ error: null, sshError: 'Missing or invalid token' });
+    expect(useWorkerStore.getState().ssh.map((e) => e.id)).toEqual(['w1']);
+    vi.mocked(fetchSshWorkers).mockRejectedValueOnce(new Error('offline'));
+    await useWorkerStore.getState().refresh();
+    expect(useWorkerStore.getState()).toMatchObject({ sshError: 'offline' });
+    vi.mocked(fetchSshWorkers).mockRejectedValueOnce(new WorkersApiError('Not Found', 404));
+    await useWorkerStore.getState().refresh();
+    expect(useWorkerStore.getState()).toMatchObject({ ssh: [], sshError: null, error: null });
+  });
+
+  it('enables and disables an SSH worker, replacing it with the answer', async () => {
+    useWorkerStore.setState({ ssh: [sshEntry('s1'), sshEntry('s2')] });
+    const stopped = sshEntry('s1', { enabled: false, state: 'stopped' });
+    vi.mocked(setSshWorkerEnabled).mockResolvedValueOnce(stopped);
+    vi.mocked(fetchSshWorkers).mockResolvedValueOnce({ ssh_workers: [stopped, sshEntry('s2')], ssh_available: true, port_range: [18000, 18100], default_remote_cdui: '~/CodefyUI/cdui' });
+    const reads = vi.mocked(fetchWorkers).mock.calls.length;
+    await useWorkerStore.getState().setSshEnabled('s1', false);
+    expect(setSshWorkerEnabled).toHaveBeenCalledWith('s1', false);
+    // The list is read again at once: the worker's own status moved too.
+    expect(vi.mocked(fetchWorkers).mock.calls.length).toBe(reads + 1);
+    expect(useWorkerStore.getState().ssh.map((e) => e.state)).toEqual(['stopped', 'up']);
+    expect(useWorkerStore.getState().busy).toEqual({});
+  });
+
+  it('drops an SSH answer older than a list already applied', async () => {
+    useWorkerStore.setState({ ssh: [sshEntry('s1')] });
+    let answer: (entry: SshWorker) => void = () => {};
+    vi.mocked(setSshWorkerEnabled).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    const pending = useWorkerStore.getState().setSshEnabled('s1', false);
+    vi.mocked(fetchSshWorkers).mockResolvedValue({
+      ssh_workers: [sshEntry('s1', { state: 'connecting' })], ssh_available: true, port_range: [1, 2], default_remote_cdui: 'x',
+    });
+    await useWorkerStore.getState().refresh();
+    answer(sshEntry('s1', { state: 'stopped' }));
+    await pending;
+    expect(useWorkerStore.getState().ssh[0].state).toBe('connecting');
+  });
+
+  it('keeps a list read newer than an SSH delete', async () => {
+    useWorkerStore.setState({ ssh: [sshEntry('s1')] });
+    let answer: () => void = () => {};
+    vi.mocked(deleteSshWorker).mockImplementationOnce(() => new Promise<void>((resolve) => { answer = resolve; }));
+    const deleting = useWorkerStore.getState().deleteSsh('s1');
+    vi.mocked(fetchSshWorkers).mockResolvedValueOnce({
+      ssh_workers: [sshEntry('s1'), sshEntry('s3')], ssh_available: true, port_range: [1, 2], default_remote_cdui: 'x',
+    });
+    await useWorkerStore.getState().refresh();
+    answer();
+    await deleting;
+    expect(useWorkerStore.getState().ssh.map((e) => e.id)).toEqual(['s1', 's3']);
+  });
+
+  it('deletes an SSH worker, and a remove drops its SSH entry too', async () => {
+    useWorkerStore.setState({ workers: [worker('w1')], ssh: [sshEntry('w1'), sshEntry('s2')] });
+    await useWorkerStore.getState().deleteSsh('s2');
+    expect(deleteSshWorker).toHaveBeenCalledWith('s2');
+    expect(useWorkerStore.getState().ssh.map((e) => e.id)).toEqual(['w1']);
+    await useWorkerStore.getState().remove('w1');
+    expect(useWorkerStore.getState()).toMatchObject({ workers: [], ssh: [] });
+  });
+
+  it('ignores an SSH action while one is in flight, and toasts a failure', async () => {
+    useWorkerStore.setState({ busy: { s1: true }, ssh: [sshEntry('s1')] });
+    await useWorkerStore.getState().setSshEnabled('s1', true);
+    await useWorkerStore.getState().deleteSsh('s1');
+    expect(setSshWorkerEnabled).not.toHaveBeenCalled();
+    expect(deleteSshWorker).not.toHaveBeenCalled();
+
+    useWorkerStore.setState({ busy: {}, workers: [worker('w1', { name: 'GPU box' })] });
+    vi.mocked(setSshWorkerEnabled).mockRejectedValueOnce(new Error('nope'));
+    await useWorkerStore.getState().setSshEnabled('s1', true);
+    vi.mocked(setSshWorkerEnabled).mockRejectedValueOnce(new Error('nope'));
+    await useWorkerStore.getState().setSshEnabled('w1', false);
+    vi.mocked(deleteSshWorker).mockRejectedValueOnce('plain');
+    await useWorkerStore.getState().deleteSsh('zz');
+    expect(useToastStore.getState().toasts.map((t) => t.message)).toEqual([
+      'Could not enable s1: nope',
+      'Could not disable GPU box: nope',
+      'Could not delete zz: plain',
+    ]);
+    expect(useWorkerStore.getState().ssh).toHaveLength(1);
+  });
 });
+
+function sshEntry(id: string, extra: Partial<SshWorker> = {}): SshWorker {
+  return {
+    id,
+    target: `alice@${id}`,
+    port: 22,
+    identity: null,
+    remote_cdui: '~/CodefyUI/cdui',
+    remote_port: 18000,
+    enabled: true,
+    state: 'up',
+    last_error: null,
+    exit_code: null,
+    tail: [],
+    attempts: 1,
+    retry_at: null,
+    up_since: 1,
+    ...extra,
+  };
+}

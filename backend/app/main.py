@@ -73,6 +73,7 @@ from .core.auth import (
     init_allowed_hosts,
     local_interface_ips,
     session_token,
+    tunnel_host_allows,
     write_token_file,
 )
 from .core.body_limit import BodySizeLimitMiddleware, RequestBodyTooLarge
@@ -98,6 +99,7 @@ from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
+from .core.ssh_launch import SshLauncher
 from .core.worker_store import WorkerStore
 from .core.workers import WorkerRegistry
 from .core.run_store import RunStore
@@ -485,6 +487,13 @@ async def _lifespan_body(app: FastAPI):
     app.state.git_service = GitService(
         project_dir=lambda: settings.PROJECT_DIR)
 
+    # ── SSH workers (#784): the ones this server starts itself ────────
+    # Each enabled ``ssh_workers`` row gets its ``ssh -R`` process back.
+    # None configured (the default): nothing is started, no port is held.
+    ssh_launcher = SshLauncher(worker_store, worker_registry)
+    app.state.ssh_launcher = ssh_launcher
+    await ssh_launcher.start_all()
+
     yield
 
     # An install in flight when the server stops is cancelled and waited for
@@ -512,6 +521,10 @@ async def _lifespan_body(app: FastAPI):
     await run_service.shutdown()
     app.state.run_service = None
     # After the runs: a worker run's stop travels over its worker's socket.
+    # The SSH workers' sessions next (#784): closing ssh's stdin stops each
+    # remote agent in order, before the registry drops their sockets.
+    await ssh_launcher.shutdown()
+    app.state.ssh_launcher = None
     await worker_registry.shutdown()
     app.state.worker_registry = None
     app.state.worker_store = None
@@ -616,7 +629,8 @@ async def host_guard(request: Request, call_next):
     ``Host: attacker.com`` (the browser doesn't know about the rebinding).
     """
     host = request.headers.get("host", "")
-    if not host_is_allowed(host):
+    if not host_is_allowed(host) and not tunnel_host_allows(
+            host, request.url.path):
         logger.warning("rejected request with Host=%r path=%s", host, request.url.path)
         return JSONResponse(
             status_code=421,
