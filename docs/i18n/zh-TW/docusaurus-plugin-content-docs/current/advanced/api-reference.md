@@ -64,9 +64,12 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
-| `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。`options.target`（`{worker, devices}`）指定在哪裡執行；目前只接受 `local`。 |
-| `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`active`、`final_metrics`、`fingerprint_digest`、`execution_facts`、`worker_id`（`local`）、`devices`（要求的裝置集合，或 `null`）與 `metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）；response 也包含未分頁的 `total`。 |
+| `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。`options.target`（`{worker, devices}`）指定在哪裡執行：`local`、已連線的 worker，或 `any`（[Run 佇列，Worker](/usage/run-queue#workers)）。指定的 worker 未連線或不提供該裝置時回 `400`。 |
+| `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`active`、`final_metrics`、`fingerprint_digest`、`execution_facts`、`worker_id`（`local`、worker 名稱，或 `any` run 尚未放置前的 `any`）、`devices`（要求的裝置集合或 `null`；在 worker 上的 run 則是它取得的裝置）與 `metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）；response 也包含未分頁的 `total`。 |
 | `/api/runs/{run_id}` | GET | open | 回傳單一 run（欄位與列表的每列相同，包含 `worker_id` 與 `devices`）與 `last_cursor`（client 從這個位置開始輪詢事件），以及 `fingerprint`：其 `fingerprint_digest` 所指的環境文件（run 開始前為 `null`）。 |
+| `/api/workers` | GET | open | 這台伺服器啟動以來見過的所有 worker agent：`{workers: [{id, name, status, draining, version, fingerprint_digest, platform, mounts, devices[{value, kind, index, name, memory}], running, connected_at, last_heartbeat_at}]}`。`status` 為 `online`、`degraded`（心跳延遲）或 `disconnected`；`memory` 是最近一次心跳的 `{total_bytes, free_bytes, source}`，或 `null`。 |
+| `/api/workers/{id}/drain` | POST | token | 不再把新的 run 放到該 worker；它正在執行的 run 會繼續。回傳該 worker 的資料；未知的 worker 回 404。 |
+| `/api/workers/{id}/undrain` | POST | token | 恢復把 run 放到該 worker。 |
 | `/api/runs/{run_id}` | DELETE | token | 刪除已完成的 run 及其事件、metrics、artifact 列與擷取的輸出；還在佇列或執行中則回傳 409。artifact 檔案會留在磁碟上。 |
 | `/api/runs/{run_id}/cancel` | POST | token | 協作式停止——`{run_id, status, cancelled}`；若 run 早已結束，`cancelled: false`（仍為 200）。 |
 | `/api/runs/{run_id}/events` | GET | open | 回傳 `?cursor=` 之後的事件；`?wait=` 最多長輪詢 60 秒，`?limit=` 上限為 2000。回傳 `{run_id, status, active, events[{cursor, type, payload, ts}], cursor}`。頁面可能少於 `limit` 筆；下一個 request 應使用回傳的 `cursor`。 |
@@ -288,6 +291,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 | 端點 | 方法 | 驗證 | 說明 |
 |----------|--------|------|-------------|
 | `/ws/execution` | WebSocket | token | run 的附掛／訂閱檢視：`execute` 啟動一個 run，`attach` 從指定 cursor 重播事件 log 再接著即時追蹤，`detach` 取消訂閱，`cancel` 停止 run。關閉 socket 永遠不會取消。 |
+| `/ws/worker` | WebSocket | token | Worker agent（`cdui agent start`）連線的位置。這個版本只限同機：非 loopback 的連線，或帶有 `Origin` header 的請求，會在 socket 被接受前以 **4003** 關閉；token 遺漏或無效時為 **4401**。frame 定義在 `backend/app/core/worker_protocol.py`。關閉時該 worker 的 run 會以 `interrupted` 結束。 |
 
 **交握。** `ws://<host>:<port>/ws/execution?token=<session token>`——由於瀏覽器無法在 WebSocket 交握時設定 header，因此使用 `?token=` query parameter；非瀏覽器 client 也可使用 `X-CodefyUI-Token` header。在 socket 被接受前的 close code：`Host`——或瀏覽器的 `Origin`——不在白名單時為 **4003**；token 遺漏或無效時為 **4401**；之後 frame 超過大小上限時為 **1009**。
 

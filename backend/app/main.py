@@ -60,7 +60,9 @@ from .api import (
     routes_studies,
     routes_sweeps,
     routes_system,
+    routes_workers,
     ws_execution,
+    ws_worker,
 )
 from .config import settings
 from .core.auth import (
@@ -96,6 +98,7 @@ from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
+from .core.workers import WorkerRegistry
 from .core.run_store import RunStore
 from .core.study_coordinator import StudyCoordinator
 from .core.study_store import StudyStore
@@ -373,10 +376,16 @@ async def _lifespan_body(app: FastAPI):
     # settings.RUN_EVENT_PAYLOAD_CAP_BYTES itself, so there is one place the
     # ceiling comes from rather than a lifespan-only override that leaves
     # every other construction of the service on a different number.
+    # Worker agents (#772) register here when they connect to /ws/worker.
+    # With none connected, the run service behaves exactly as without it:
+    # a run without a target is placed and executed in this process.
+    worker_registry = WorkerRegistry()
+    app.state.worker_registry = worker_registry
     run_service = RunService(
         RunStore(db),
         output_store=app.state.run_output_store,
         retention_keep_last=settings.RUN_RETENTION_KEEP_LAST,
+        workers=worker_registry,
     )
     app.state.run_service = run_service
     # Sweeps (#140) read and write their own table through the same
@@ -477,6 +486,9 @@ async def _lifespan_body(app: FastAPI):
     # `Database.close` would otherwise race a run's final writes (#119).
     await run_service.shutdown()
     app.state.run_service = None
+    # After the runs: a worker run's stop travels over its worker's socket.
+    await worker_registry.shutdown()
+    app.state.worker_registry = None
 
     # Release the SQLite handle so `cdui stop` on Windows frees the DB and
     # its WAL sidecar files (spec Section 13, Windows file locking).
@@ -644,6 +656,7 @@ app.include_router(routes_data_files.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)
+app.include_router(routes_workers.router)
 app.include_router(routes_sweeps.router)
 app.include_router(routes_studies.router)
 app.include_router(routes_packs.router)
@@ -653,6 +666,7 @@ app.include_router(routes_llm.router)
 app.include_router(routes_apps.router)
 app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
+app.include_router(ws_worker.router)
 
 
 async def _cache_usage() -> dict[str, dict[str, int]]:

@@ -187,6 +187,10 @@ class RunStarted(_RunFrame):
     type: Literal["run_started"] = RUN_STARTED
     #: The run subprocess's pid, for the worker's own logs and the UI.
     pid: int | None = None
+    #: Facts about where the run executes, merged into the run's
+    #: ``execution_facts`` (e.g. #774's ``visible_devices`` /
+    #: ``device_aliases``).
+    execution_facts: dict[str, Any] | None = None
 
 
 class Event(_RunFrame):

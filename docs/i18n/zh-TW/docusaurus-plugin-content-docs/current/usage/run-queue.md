@@ -29,7 +29,19 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 沒有明確指定 `device` 的 run 會使用圖檔裡的 `settings.device`；圖檔也沒有指定時就在 `cpu` 上執行，不會有任何機制替你選加速器。指定了裝置集合（`target.devices`，或 `cdui run` 的 `--devices`）的 run 則改用集合的第一個裝置，不會參考 `settings.device`。`--device auto`（或請求本文中的 `"device": "auto"`）是唯一的例外：它會解析成這台伺服器能看到的最佳加速器（依序 `cuda`、`mps`、`cpu`），並排在那條佇列上。指定了不存在的加速器會退回 `cpu` 並發出警告。
 :::
 
-run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。目前唯一的 worker 是 `local`，也就是這台伺服器；省略 `worker` 時也是 `local`。其他 worker 名稱以及 `any` 在遠端 worker 推出前都會回 `400`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；只寫 `mps` 視為 `mps:0`，只寫 `cuda` 會被拒絕；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。`device` 省略或為 `auto` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 只寫種類時也一樣（`"device": "cuda"` 搭配 `["cuda:1", "cuda:0"]` 會在 `cuda:1` 上執行）。`device` 指向其他裝置則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。`devices` 記錄的是你要求的集合：這個版本只使用第一個裝置來排隊與執行，其餘裝置不會檢查。沒有指定 target 的 run 行為與以往完全相同。
+run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。`worker` 可以是 `local`（這台伺服器；省略 `worker` 時也是它）、已連線的 worker agent 名稱（見 [Worker](#workers)），或 `any`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；只寫 `mps` 視為 `mps:0`，只寫 `cuda` 會被拒絕；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。`device` 省略或為 `auto` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 只寫種類時也一樣（`"device": "cuda"` 搭配 `["cuda:1", "cuda:0"]` 會在 `cuda:1` 上執行）。`device` 指向其他裝置則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。在這台伺服器上，`devices` 記錄你要求的集合，只用第一個裝置來排隊與執行；在 worker 上，run 會佔用集合中的每一個裝置。沒有指定 target 的 run 行為與以往完全相同。
+
+### Worker {/* #workers */}
+
+Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。這個版本的 agent 必須與伺服器在同一台機器上。`GET /api/workers` 列出各 agent 與其裝置，`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
+
+`target.worker` 決定 run 放在哪裡：
+
+- **省略或 `local`**：這台伺服器，排在解析後裝置的佇列上，與沒有 worker 時完全相同。
+- **worker 名稱**：那個 worker。送出時它必須已連線，而且必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待。
+- **`any`**：依名稱順序，第一個已連線、未 drain 且該裝置有空位的 worker，最後才是這台伺服器。
+
+在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。worker 斷線，或連續錯過三次心跳（30 秒）時，它的 run 會以 `interrupted` 結束，並留下類型為 `worker_disconnected` 的 `run_warning`，名額隨即釋放。
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
 
@@ -111,7 +123,7 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
 | `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；有 `--devices` 時改用集合的第一個裝置（此時不參考圖檔的 `settings.device`）。`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
-| `--target <名稱>` | run 在哪裡執行。目前只接受 `local`（這台伺服器）。省略時為 `local`。 |
+| `--target <名稱>` | run 在哪裡執行：`local`（這台伺服器）、已連線的 worker agent 名稱，或 `any`。見 [Worker](#workers)。省略時為 `local`。 |
 | `--devices <清單>` | 同一種類的裝置集合，以逗號分隔，例如 `cuda:0,cuda:1`。`--device` 省略、為 `auto` 或只寫種類（`cuda`）時，第一個就是 run 的裝置；其他 `--device` 必須與它相同。 |
 | `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。省略時使用圖檔的 `settings.seed`（若有）。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#reproducible-runs-seed)**。 |
 | `--no-seed` | 即使圖檔有 `settings.seed`，也不設種子執行（送出 `"seed": null`） |

@@ -29,7 +29,19 @@ A saturated GPU never delays a CPU run, and two different cards never wait on ea
 A run without an explicit `device` option uses the graph file's `settings.device`, and a graph without one runs on `cpu`; no mechanism picks an accelerator on your behalf. A run that names a device set (`target.devices`, or `--devices` on `cdui run`) uses the set's first device instead, and `settings.device` is not consulted. `--device auto` (or `"device": "auto"` in the request body) is the one exception: it resolves to the best accelerator this server can see, `cuda` before `mps` before `cpu`, and queues on that line. An accelerator that is not present falls back to `cpu` with a warning.
 :::
 
-A run can also name a **target**: `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}` in the request's `options`, or `--target` / `--devices` on `cdui run`. Today the only worker is `local`, this server, and it is also what an omitted `worker` means; any other worker name, and `any`, is refused with `400` until remote workers arrive. `devices` lists concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`; a bare `mps` means `mps:0`, a bare `cuda` is refused; no `auto`, no duplicates, no mixing `cuda` with `cpu`). Its first entry becomes the run's device, and therefore its queue, when `device` is omitted or `auto`, and also when `device` is only the kind (`"device": "cuda"` with `["cuda:1", "cuda:0"]` runs on `cuda:1`); a `device` that names anything else is refused. The run's row reports both as `worker_id` and `devices`. `devices` records the set you asked for: in this release only its first device is used, to queue and to execute, and the others are not checked. A run without a target behaves exactly as before.
+A run can also name a **target**: `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}` in the request's `options`, or `--target` / `--devices` on `cdui run`. `worker` is `local` (this server, also what an omitted `worker` means), the name of a connected worker agent (see [Workers](#workers)), or `any`. `devices` lists concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`; a bare `mps` means `mps:0`, a bare `cuda` is refused; no `auto`, no duplicates, no mixing `cuda` with `cpu`). Its first entry becomes the run's device, and therefore its queue, when `device` is omitted or `auto`, and also when `device` is only the kind (`"device": "cuda"` with `["cuda:1", "cuda:0"]` runs on `cuda:1`); a `device` that names anything else is refused. The run's row reports both as `worker_id` and `devices`. On this server `devices` records the set you asked for and only its first device is used, to queue and to execute; on a worker the run holds every device of the set. A run without a target behaves exactly as before.
+
+### Workers
+
+A worker agent (`cdui agent start`, see [CLI Commands](/getting-started/cli-commands#agent-commands)) connects to this server and runs each run it is given in a subprocess of its own. In this release the agent must run on the same machine as the server. `GET /api/workers` lists the agents with their devices, and `POST /api/workers/{id}/drain` stops new runs on one (`/undrain` resumes).
+
+How `target.worker` places a run:
+
+- **omitted or `local`**: this server, on the queue of its resolved device, exactly as without workers.
+- **a worker name**: that worker. The worker must be connected when you submit, and it must offer the device set, the named device, or a device of the named kind (`cuda`, `mps`; `auto` picks CUDA, then MPS, then the CPU); otherwise the submit fails with `400`. The run waits in the queue `<worker>/<device>` while that device's slots on the worker are taken (one run per accelerator, two on the CPU, as here) and while the worker is draining or away.
+- **`any`**: the first connected, non-draining worker with a free slot for the device, in name order, and this server last.
+
+A run on a worker cannot use `record_outputs` or the interactive lane (the canvas always runs here); both are refused at submit. Once it starts, its row records `worker_id`, `devices` and a `queue_key` of `<worker>/<device>`, and its events are the same as a local run's. **Stop** reaches the worker, which stops the run cooperatively and terminates it after a grace period. If the worker disconnects, or misses three heartbeats (30 s), its runs end `interrupted` with a `run_warning` of kind `worker_disconnected`, and their slots are freed.
 
 This is a limit on **runs per device**, and it is not the same knob as `CODEFYUI_MAX_PARALLEL_NODES`, which bounds how many *nodes inside one run* execute at the same time. The two multiply.
 
@@ -111,7 +123,7 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <text>` | Label stored on the run and shown wherever runs are listed |
 | `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`. Omitted: the graph's `settings.device`, else `cpu`; with `--devices`, the first device of the set instead (the graph's `settings.device` is then not consulted). `auto`: the best accelerator this server has. The resolved device is the queue it joins. |
-| `--target <name>` | Where the run executes. Only `local` (this server) is accepted today. Omitted: `local`. |
+| `--target <name>` | Where the run executes: `local` (this server), the name of a connected worker agent, or `any`. See [Workers](#workers). Omitted: `local`. |
 | `--devices <list>` | Comma-separated device set of one kind, e.g. `cuda:0,cuda:1`. Its first entry is the run's device when `--device` is omitted, `auto` or only the kind (`cuda`); any other `--device` must equal it. |
 | `--seed <n>` | Seed every node from `n`, making the run reproducible. Omitted: the graph's `settings.seed`, if any. A seeded run executes one node at a time — see **[Reproducible runs](./running-graphs#reproducible-runs-seed)**. |
 | `--no-seed` | Run unseeded even when the graph has a `settings.seed` (sends `"seed": null`) |
