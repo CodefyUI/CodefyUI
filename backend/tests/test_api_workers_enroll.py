@@ -356,6 +356,137 @@ async def test_enrolling_over_plain_http_from_another_machine_is_warned(
     assert response.json()["worker_token"] not in caplog.text
 
 
+# ── the certificate fingerprint for the Add worker dialog (#786) ──────────
+
+
+async def test_without_a_cert_file_the_dialog_gets_the_openssl_command(env):
+    async with _client(base="https://127.0.0.1:8000") as client:
+        listed = (await client.get("/api/workers/enrollments")).json()
+        created = await _new_token(client)
+    assert listed["tls_fingerprint"] is None
+    assert listed["fingerprint_command"].startswith("openssl x509 ")
+    assert "--ca-fingerprint" not in created["command"]
+
+
+async def test_a_readable_cert_file_gives_the_fingerprint(env, tmp_path,
+                                                          monkeypatch):
+    import trustme
+
+    from app.config import settings
+    from app.core import tls_fingerprint
+
+    leaf = trustme.CA().issue_cert("127.0.0.1")
+    path = tmp_path / "fullchain.pem"
+    path.write_bytes(b"".join(blob.bytes() for blob in leaf.cert_chain_pems))
+    expected = tls_fingerprint.spki_fingerprint(
+        tls_fingerprint.pem_certificates(leaf.cert_chain_pems[0].bytes())[0])
+    monkeypatch.setattr(settings, "TLS_CERT_FILE", str(path))
+    async with _client(base="https://127.0.0.1:8000") as client:
+        listed = (await client.get("/api/workers/enrollments")).json()
+        created = await _new_token(client)
+    async with _client() as plain:
+        over_http = await _new_token(plain)
+    assert listed["tls_fingerprint"] == expected
+    assert created["command"].endswith(f" --ca-fingerprint {expected}")
+    # Over http the agent has no certificate to check.
+    assert "--ca-fingerprint" not in over_http["command"]
+
+    monkeypatch.setattr(settings, "TLS_CERT_FILE", str(tmp_path / "gone"))
+    async with _client() as client:
+        listed = (await client.get("/api/workers/enrollments")).json()
+    assert listed["tls_fingerprint"] is None
+
+
+async def test_the_cert_file_is_read_once_per_version_and_warned_once(
+        env, tmp_path, monkeypatch, caplog):
+    import os
+
+    import trustme
+
+    from app.config import settings
+    from app.core import tls_fingerprint
+
+    reads: list[bytes] = []
+    real = tls_fingerprint.pem_certificates
+
+    def counting(pem: bytes) -> list[bytes]:
+        reads.append(pem)
+        return real(pem)
+
+    monkeypatch.setattr(routes_workers.tls_fp, "pem_certificates", counting)
+    path = tmp_path / "fullchain.pem"
+    path.write_bytes(b"not a certificate")
+    monkeypatch.setattr(settings, "TLS_CERT_FILE", str(path))
+    async with _client() as client:
+        for _ in range(3):
+            listed = (await client.get("/api/workers/enrollments")).json()
+        assert listed["tls_fingerprint"] is None
+        assert len(reads) == 1
+        assert caplog.text.count("gives no certificate fingerprint") == 1
+
+        # A new version of the file (a renewal): read again, once.
+        leaf = trustme.CA().issue_cert("127.0.0.1")
+        path.write_bytes(leaf.cert_chain_pems[0].bytes())
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+        for _ in range(2):
+            listed = (await client.get("/api/workers/enrollments")).json()
+    assert listed["tls_fingerprint"] == tls_fingerprint.spki_fingerprint(
+        real(leaf.cert_chain_pems[0].bytes())[0])
+    assert len(reads) == 2
+    assert caplog.text.count("gives no certificate fingerprint") == 1
+
+
+async def test_a_token_can_be_made_for_another_address(env):
+    async with _client() as client:
+        created = await _new_token(client, control_url="https://cp.lab/sub/")
+        bad = await client.post("/api/workers/enrollments",
+                                json={"control_url": "http://x;rm -rf /"})
+    assert created["control_url"] == "https://cp.lab/sub"
+    assert created["command"].startswith(
+        "cdui agent start --control https://cp.lab/sub --token ")
+    assert bad.status_code == 422
+
+
+async def test_the_agent_command_route_uses_the_same_builder(
+        env, tmp_path, monkeypatch):
+    import trustme
+
+    from app.config import settings
+
+    leaf = trustme.CA().issue_cert("127.0.0.1")
+    path = tmp_path / "fullchain.pem"
+    path.write_bytes(leaf.cert_chain_pems[0].bytes())
+    monkeypatch.setattr(settings, "TLS_CERT_FILE", str(path))
+    token = "abcdef.0123456789abcdef"
+    async with _client() as client:
+        tls = (await client.post("/api/workers/agent-command", json={
+            "control_url": "https://[::1]:8443", "token": token,
+            "worker": "gpu-box"})).json()
+        plain = (await client.post("/api/workers/agent-command", json={
+            "control_url": "http://10.0.0.7:8000/", "token": token})).json()
+        refused = [
+            (await client.post("/api/workers/agent-command",
+                               json=body)).status_code
+            for body in ({"control_url": "ftp://x", "token": token},
+                         {"control_url": "http://x:80$(id)", "token": token},
+                         {"control_url": "http://x", "token": "w" * 43},
+                         {"control_url": "http://x", "token": token,
+                          "worker": "Bad Name"})]
+    async with _client(token=False) as anonymous:
+        unauthorised = await anonymous.post("/api/workers/agent-command", json={
+            "control_url": "http://x", "token": token})
+    fingerprint = routes_workers._read_tls_fingerprint()
+    assert tls["command"] == (
+        f"cdui agent start --control https://[::1]:8443 --token {token} "
+        f"--name gpu-box --ca-fingerprint {fingerprint}")
+    assert plain == {"control_url": "http://10.0.0.7:8000", "command":
+                     f"cdui agent start --control http://10.0.0.7:8000 "
+                     f"--token {token}"}
+    assert refused == [422, 422, 422, 422]
+    assert unauthorised.status_code in (401, 403)
+
+
 # ── remove (revoke) ───────────────────────────────────────────────────────
 
 

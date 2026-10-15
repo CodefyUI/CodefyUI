@@ -28,8 +28,45 @@ Enrollment token 只顯示一次，伺服器只保存它的雜湊值。已用完
 
 **重新核發憑證。** 名稱一經加入即被占用：一般 token 無法再次加入該名稱（伺服器回 `409`）。要讓某個 worker 換新憑證（重灌機器、遺失憑證檔），請按它卡片上的 **重新核發**：在那裡產生的 token 只能加入該 worker，指令也會帶上它的 `--name`。使用後舊憑證即失效。若該機器上還留有舊憑證檔，請先在那裡執行 `cdui agent forget <url>`。
 
-沒有 TLS 時，token 以及送到 worker 的每個 run 的輸入都會以明文經過網路；若發生在其他機器的連線上，伺服器會記錄警告。
+沒有 TLS 時，token 以及送到 worker 的每個 run 的輸入都會以明文經過網路；若發生在其他機器的連線上，伺服器會記錄警告。[Agent 與控制面之間的信任](#trust-between-agent-and-control-plane) 說明兩端各自檢查什麼。
 
 ## 連線中斷時 {/* #when-the-connection-drops */}
 
 連線中斷的 worker 會繼續執行它的 run，並保留事件直到這台伺服器收到為止。在這台伺服器上，這些 run 顯示為 `disconnected`，並在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內保留名額；在此期間重新連線，run 會接續執行，紀錄沒有缺漏，超過時間則以 `interrupted` 結束。各種結果，以及筆電休眠的影響，見[連線中斷時](./run-queue#when-the-connection-drops)。
+## Agent 與控制面之間的信任 {/* #trust-between-agent-and-control-plane */}
+
+送到 worker 的 run 會帶著填回 secret 參數值（API 金鑰、密碼）的圖，所以兩端都必須確認對方是誰。控制面以 worker 憑證認出 agent；agent 則以 TLS 憑證認出控制面，加入請求與每一條 `/ws/worker` 連線都做同一個檢查。
+
+CodefyUI 本身不提供 TLS；請把它放在 TLS proxy 後面（[部署](/usage/deployment)），並給 worker `https://` 位址。
+
+**Worker 的 CA 信任的憑證**（公開 CA，或安裝在 worker 上的公司 CA）：不需要做任何事。Agent 每次連線都像瀏覽器一樣檢查憑證機構與主機名稱，且不記錄任何東西，所以憑證續期（即使換了金鑰）仍可繼續使用。
+
+**自簽憑證，或 worker 沒有的 CA：釘選它的金鑰。** `--ca-fingerprint` 接受伺服器憑證公鑰（SubjectPublicKeyInfo）的 SHA-256，寫成 `sha256:<64 個十六進位字元>`，做法與 `kubeadm join --discovery-token-ca-cert-hash` 相同：
+
+```bash
+cdui agent start --control https://cp.lab --token abcdef.0123456789abcdef \
+  --ca-fingerprint sha256:96d448128bb7dfbceea1a628393cfdd0f1f86716ad81deb4fab0c0fe281a0690
+```
+
+參數名稱沿用，但它釘選的是伺服器自己（leaf）憑證的金鑰，從不是 CA 的：在任何 Python 版本上，釘選值只比對 TLS 交握證明過其金鑰的那張憑證。有釘選時，agent 不檢查憑證機構，也不檢查主機名稱。不符的憑證會在送出 token 之前就被拒絕，並印出兩個指紋，agent 以代碼 `2` 結束。釘選值會記在憑證檔（`<user-data>/agent/<host>-<port>.token`），之後啟動不帶參數也會沿用；存下的值若不是合法指紋，會在日誌中指名該檔案回報並忽略（worker 憑證仍可使用）。
+
+要取得指紋，請在 proxy 主機上對 proxy 使用的憑證檔執行（`fullchain.pem` 中第一張是 leaf）：
+
+```bash
+openssl x509 -in /path/to/fullchain.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 | awk '{print "sha256:" $NF}'
+```
+
+位址是 `https://` 時，Add worker 對話框會顯示這個指令。若伺服器自己讀得到憑證檔，把 `CODEFYUI_TLS_CERT_FILE` 設為它的路徑：對話框就會顯示指紋，產生的指令也會帶上 `--ca-fingerprint`（伺服器只在檔案改變時重新讀取）。Worker 的 CA 信任該憑證時請不要設定，以免指令釘選一把續期時就會換掉的金鑰。
+
+**Worker 的 CA 不接受、又沒有釘選的憑證**不會被使用：加入會失敗；執行中的 agent 會記錄錯誤與原因（第一次會附上伺服器出示的指紋，供你與對話框比對後用 `--ca-fingerprint` 帶入），並以平常的退避間隔重試，所以修好 proxy 或更新 CA 清單後不必重啟。
+
+**已釘選的憑證換了金鑰之後**，先在 proxy 主機上確認新指紋，然後擇一：
+
+- 執行 `cdui agent start --control <url> --ca-fingerprint <新指紋>`：保留 worker 憑證，連線成功後記錄新的釘選值；或
+- 執行 `cdui agent forget <url>`：刪除憑證與其中的釘選值，再用新的 token 重新加入。
+
+續期的憑證只有在沿用金鑰時（certbot 的 `--reuse-key`）指紋才不變。
+
+**未加密的 HTTP。** 以 `http://` 位址連到另一台機器時，`cdui agent start` 會印出一次警告：worker token 與每個指派中的 secret 參數都以明文傳輸。Agent 仍會連線。Workers 面板會把這種 worker 標成 **未加密 HTTP**：它的連線從另一台機器未加密地抵達伺服器。伺服器依連線的 scheme（只有 uvicorn 回報 `wss` 才算，uvicorn 只對 `--forwarded-allow-ips` 列出的 proxy 這麼做；CodefyUI 本身從不讀 `X-Forwarded-Proto`）與對端位址判斷：loopback 對端，例如同一台機器的 agent 或 SSH 通道的本機端，不會被標記，因為跨越網路的不是那條 socket。同樣的理由，`http://127.0.0.1` 位址不會讓 agent 印出警告。
+
+不涵蓋：mutual TLS（agent 由 worker 憑證識別）、由 CodefyUI 管理的憑證機構，以及使用者身分。

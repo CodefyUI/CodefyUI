@@ -182,6 +182,13 @@ class Settings(BaseSettings):
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
     EXTRA_ALLOWED_HOSTS: str = ""
+    # The certificate (PEM, leaf first, e.g. the proxy's fullchain.pem) the
+    # TLS proxy in front of this server presents (#786). CodefyUI serves no
+    # TLS itself, so it cannot see that certificate otherwise; given a
+    # readable file, the Add worker dialog shows its SPKI fingerprint and
+    # puts --ca-fingerprint in the agent command. Empty: the dialog shows
+    # the openssl command that computes it on the proxy host instead.
+    TLS_CERT_FILE: str = ""
 
     # ── Package Center (optional packs) ────────────────────────────────
     # Let a request from another machine start a pack install. OFF by

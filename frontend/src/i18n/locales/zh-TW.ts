@@ -1073,6 +1073,11 @@ const zhTW: Record<TranslationKey, string> = {
   'workers.add.remote.token.detail': '{when} 到期，剩 {uses} 次',
   'workers.add.remote.revoke': '撤銷',
   'workers.add.remote.delete': '刪除',
+  'workers.add.remote.tls.fingerprint': '指令會以 --ca-fingerprint 釘選這台伺服器的憑證金鑰：',
+  'workers.add.remote.tls.compute': 'CodefyUI 讀不到 TLS 反向代理使用的憑證（設定 CODEFYUI_TLS_CERT_FILE 即可在這裡顯示指紋）。若 worker 機器的 CA 不信任該憑證（例如自簽憑證），請在代理主機上計算指紋，並在指令後加上 --ca-fingerprint <指紋>：',
+  'workers.add.remote.plainHttp': '這個位址是未加密的 HTTP：worker token 與送到 worker 的每個 run 中的 secret 參數都以明文傳輸。在不信任的網路上請改用 https:// 位址（TLS 反向代理）。',
+  'workers.plainHttp': '未加密 HTTP',
+  'workers.plainHttp.title': '從另一台機器以未加密的 HTTP 連線：它的 token 與其 run 中的 secret 參數以明文跨越網路',
 
   // 執行面板（#124）：把 Run Service 攤開給使用者看 —— 所有由伺服器持有的
   // 執行、佇列位置、即時曲線與產出檔案。

@@ -134,6 +134,11 @@
   overflow-wrap: anywhere;
 }
 
+/* A sha256:<64 hex> fingerprint (#786): long, so it may wrap anywhere. */
+.fingerprint {
+  overflow-wrap: anywhere;
+}
+
 .error {
   padding: var(--sp-2) var(--sp-3);
   color: var(--status-error);

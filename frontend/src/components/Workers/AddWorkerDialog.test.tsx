@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import {
+  agentCommand,
   createEnrollment,
   deleteEnrollment,
   fetchEnrollments,
@@ -11,13 +12,14 @@ import {
 import { useI18n } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
 import { settle } from '../../test/utils';
-import { AGENT_START_COMMAND, AGENT_STOP_COMMAND, AddWorkerDialog, isLoopbackUrl } from './AddWorkerDialog';
+import { AGENT_START_COMMAND, AGENT_STOP_COMMAND, AddWorkerDialog, isHttpsUrl, isLoopbackUrl } from './AddWorkerDialog';
 
 vi.mock('../../api/workers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/workers')>()),
   fetchEnrollments: vi.fn(),
   createEnrollment: vi.fn(),
   deleteEnrollment: vi.fn(),
+  agentCommand: vi.fn(),
 }));
 
 const TOKEN = 'abcdef.0123456789abcdef';
@@ -55,11 +57,29 @@ function created(extra: Partial<CreatedEnrollment> = {}): CreatedEnrollment {
   };
 }
 
+/** The fingerprint the fake server pins in its commands (#786). */
+let serverFp: string | null = null;
+
+/** The fake server's command builder (`routes_workers.agent_command`). */
+function serverCommand(url: string, token: string, worker?: string | null): string {
+  let command = `cdui agent start --control ${url} --token ${token}`;
+  if (worker) command += ` --name ${worker}`;
+  if (serverFp && url.startsWith('https:')) command += ` --ca-fingerprint ${serverFp}`;
+  return command;
+}
+
 const writeText = vi.fn();
 
 beforeEach(() => {
+  serverFp = null;
   vi.mocked(fetchEnrollments).mockReset().mockResolvedValue(listOf());
-  vi.mocked(createEnrollment).mockReset().mockResolvedValue(created());
+  vi.mocked(createEnrollment).mockReset().mockImplementation(async (options) => {
+    const url = options.control_url ?? 'http://192.168.1.5:8000';
+    return created({ control_url: url, worker: options.worker ?? null, command: serverCommand(url, TOKEN, options.worker) });
+  });
+  vi.mocked(agentCommand).mockReset().mockImplementation(
+    async ({ control_url, token, worker }) => serverCommand(control_url, token, worker),
+  );
   vi.mocked(deleteEnrollment).mockReset().mockResolvedValue(undefined);
   useI18n.setState({ locale: 'en' });
   useToastStore.setState({ toasts: [] });
@@ -183,7 +203,8 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     const dialog = await renderRemote();
     expect(within(dialog).getByRole('textbox', { name: /Server address/ })).toHaveValue('http://192.168.1.5:8000');
     expect(within(dialog).getByText('No enrollment tokens.')).toBeInTheDocument();
-    expect(within(dialog).queryByRole('note')).toBeNull();
+    // Plain HTTP to another machine (#786): one note, the warning.
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/plain HTTP: the worker token and the secrets/);
     expect(within(dialog).queryByText(/only works on this machine/)).toBeNull();
   });
 
@@ -215,7 +236,7 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     fireEvent.change(uses, { target: { value: '3' } });
     vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ enrollments: [enrollment('abcdef', { uses_left: 3 })] }));
     await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
-    expect(createEnrollment).toHaveBeenCalledWith({ ttl_s: 3600, uses: 3 });
+    expect(createEnrollment).toHaveBeenCalledWith({ ttl_s: 3600, uses: 3, control_url: 'http://192.168.1.5:8000' });
     const command = `cdui agent start --control http://192.168.1.5:8000 --token ${TOKEN}`;
     expect(within(dialog).getByText(command)).toBeInTheDocument();
     expect(within(dialog).getByText('Pending')).toBeInTheDocument();
@@ -223,11 +244,11 @@ describe('AddWorkerDialog (another machine, #780)', () => {
 
     // Editing the address rebuilds the command; a trailing slash is dropped.
     const address = within(dialog).getByRole('textbox', { name: /Server address/ });
-    fireEvent.change(address, { target: { value: ' http://box.lan:8000/ ' } });
+    await act(async () => fireEvent.change(address, { target: { value: ' http://box.lan:8000/ ' } }));
     expect(within(dialog).getByText(`cdui agent start --control http://box.lan:8000 --token ${TOKEN}`))
       .toBeInTheDocument();
-    // An emptied field falls back to the server's own idea of its address.
-    fireEvent.change(address, { target: { value: '' } });
+    // An emptied field falls back to the address the token was made for.
+    await act(async () => fireEvent.change(address, { target: { value: '' } }));
     expect(within(dialog).getByText(command)).toBeInTheDocument();
 
     await act(async () => fireEvent.click(within(dialog).getAllByRole('button', { name: 'Copy' })[0]));
@@ -312,6 +333,133 @@ describe('AddWorkerDialog (another machine, #780)', () => {
   });
 });
 
+describe('AddWorkerDialog (trust, #786)', () => {
+  const FP = `sha256:${'ab'.repeat(32)}`;
+  const OPENSSL = 'openssl x509 -in /path/to/fullchain.pem -pubkey -noout | openssl dgst -sha256';
+
+  async function type(dialog: HTMLElement, value: string) {
+    await act(async () => {
+      fireEvent.change(within(dialog).getByRole('textbox', { name: /Server address/ }), { target: { value } });
+    });
+  }
+
+  it('over https without a readable certificate shows the openssl command', async () => {
+    vi.mocked(fetchEnrollments).mockResolvedValue(listOf({
+      control_url: 'https://cp.lab', tls_fingerprint: null, fingerprint_command: OPENSSL,
+    }));
+    const dialog = await renderRemote();
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/compute its fingerprint on the proxy host/);
+    expect(within(dialog).getByText(OPENSSL)).toBeInTheDocument();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    expect(createEnrollment).toHaveBeenCalledWith({ ttl_s: 86400, uses: 1, control_url: 'https://cp.lab' });
+    expect(within(dialog).getByText(`cdui agent start --control https://cp.lab --token ${TOKEN}`)).toBeInTheDocument();
+  });
+
+  it('shows the command the server built, and asks it again for an edited address', async () => {
+    serverFp = FP;
+    vi.mocked(fetchEnrollments).mockResolvedValue(listOf({
+      control_url: 'https://cp.lab', tls_fingerprint: FP, fingerprint_command: OPENSSL,
+    }));
+    const dialog = await renderRemote();
+    expect(within(dialog).getByRole('note')).toHaveTextContent(FP);
+    expect(within(dialog).queryByText(OPENSSL)).toBeNull();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    expect(within(dialog).getByText(
+      `cdui agent start --control https://cp.lab --token ${TOKEN} --ca-fingerprint ${FP}`,
+    )).toBeInTheDocument();
+    expect(agentCommand).not.toHaveBeenCalled();
+
+    // A plain http address: the server leaves the pin out; the note warns.
+    await type(dialog, 'http://10.0.0.7:8000');
+    expect(agentCommand).toHaveBeenLastCalledWith({ control_url: 'http://10.0.0.7:8000', token: TOKEN, worker: null });
+    expect(within(dialog).getByText(`cdui agent start --control http://10.0.0.7:8000 --token ${TOKEN}`))
+      .toBeInTheDocument();
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/plain HTTP/);
+
+    // Half-typed: no request, and no stale command.
+    await type(dialog, 'http');
+    expect(agentCommand).toHaveBeenCalledTimes(1);
+    expect(within(dialog).queryByText(/cdui agent start --control/)).toBeNull();
+  });
+
+  it('judges the address the command uses: the server\'s own when the field is empty', async () => {
+    vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ control_url: 'https://cp.lab', fingerprint_command: OPENSSL }));
+    const dialog = await renderRemote();
+    await type(dialog, '');
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/compute its fingerprint/);
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    // No address typed: the server's default, which the token's command uses.
+    expect(createEnrollment).toHaveBeenLastCalledWith({ ttl_s: 86400, uses: 1 });
+    expect(within(dialog).getByText(`cdui agent start --control http://192.168.1.5:8000 --token ${TOKEN}`))
+      .toBeInTheDocument();
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/plain HTTP/);
+  });
+
+  it('shows a refused address', async () => {
+    const dialog = await renderRemote();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    vi.mocked(agentCommand).mockRejectedValue(new Error('control_url must be http(s)://host[:port][/path]'));
+    await type(dialog, 'http://bad;host');
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/control_url must be/);
+  });
+
+  it('drops an answer for an address that changed meanwhile', async () => {
+    const dialog = await renderRemote();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    let answer: (value: string) => void = () => {};
+    let refuse: (reason: Error) => void = () => {};
+    let fresh: (value: string) => void = () => {};
+    vi.mocked(agentCommand)
+      .mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }))
+      .mockImplementationOnce(() => new Promise((_, reject) => { refuse = reject; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { fresh = resolve; }));
+    await type(dialog, 'http://a.lan:8000');
+    await type(dialog, 'http://b.lan:8000');
+    await type(dialog, 'http://c.lan:8000');
+    await act(async () => {
+      answer('stale command');
+      refuse(new Error('stale error'));
+      fresh('fresh command');
+    });
+    expect(within(dialog).queryByText('stale command')).toBeNull();
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(within(dialog).getByText('fresh command')).toBeInTheDocument();
+  });
+
+  it('over https before the list arrives shows the advice without a command', async () => {
+    vi.mocked(fetchEnrollments).mockRejectedValue(new Error('offline'));
+    render(<AddWorkerDialog mode="remote" onClose={vi.fn()} />);
+    await settle();
+    const dialog = screen.getByRole('dialog');
+    await type(dialog, 'https://cp.lab');
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/compute its fingerprint/);
+    expect(within(dialog).queryByRole('button', { name: 'Copy' })).toBeNull();
+  });
+
+  it('says nothing about trust without any address', async () => {
+    vi.mocked(fetchEnrollments).mockRejectedValue(new Error('offline'));
+    render(<AddWorkerDialog mode="remote" onClose={vi.fn()} />);
+    await settle();
+    expect(within(screen.getByRole('dialog')).queryByRole('note')).toBeNull();
+  });
+
+  it('renders in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ control_url: 'https://cp.lab', tls_fingerprint: FP }));
+    const dialog = await renderRemote();
+    expect(within(dialog).getByRole('note')).toHaveTextContent(/釘選/);
+  });
+});
+
+describe('isHttpsUrl', () => {
+  it('knows an https address', () => {
+    expect(isHttpsUrl('https://cp.lab')).toBe(true);
+    expect(isHttpsUrl('HTTPS://cp.lab:8443')).toBe(true);
+    expect(isHttpsUrl('http://cp.lab')).toBe(false);
+    expect(isHttpsUrl('')).toBe(false);
+  });
+});
+
 describe('isLoopbackUrl', () => {
   it('knows the addresses that only work on this machine', () => {
     expect(isLoopbackUrl('http://127.0.0.1:8000')).toBe(true);
@@ -326,14 +474,15 @@ describe('isLoopbackUrl', () => {
 
 describe('AddWorkerDialog (re-key, #780)', () => {
   it('generates a token bound to the worker and names it in the command', async () => {
-    vi.mocked(createEnrollment).mockResolvedValue(created({ worker: 'gpu-box' }));
     vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ enrollments: [enrollment('abcdef', { worker: 'gpu-box' })] }));
     render(<AddWorkerDialog mode="remote" rekey="gpu-box" onClose={vi.fn()} />);
     await settle();
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText(/Re-key gpu-box/)).toBeInTheDocument();
     await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
-    expect(createEnrollment).toHaveBeenCalledWith({ ttl_s: 86400, uses: 1, worker: 'gpu-box' });
+    expect(createEnrollment).toHaveBeenCalledWith({
+      ttl_s: 86400, uses: 1, worker: 'gpu-box', control_url: 'http://192.168.1.5:8000',
+    });
     expect(within(dialog).getByText(
       `cdui agent start --control http://192.168.1.5:8000 --token ${TOKEN} --name gpu-box`,
     )).toBeInTheDocument();

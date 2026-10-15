@@ -1207,6 +1207,11 @@ const en = {
   'workers.add.remote.token.detail': 'expires {when}, {uses} use(s) left',
   'workers.add.remote.revoke': 'Revoke',
   'workers.add.remote.delete': 'Delete',
+  'workers.add.remote.tls.fingerprint': 'The command pins this server\'s certificate key with --ca-fingerprint:',
+  'workers.add.remote.tls.compute': 'CodefyUI cannot read the certificate your TLS proxy presents (set CODEFYUI_TLS_CERT_FILE to show its fingerprint here). If the worker machine\'s CAs do not trust that certificate (a self-signed one, for instance), compute its fingerprint on the proxy host and add --ca-fingerprint <fingerprint> to the command:',
+  'workers.add.remote.plainHttp': 'This address is plain HTTP: the worker token and the secrets in every run sent to the worker travel unencrypted. Use an https:// address (a TLS proxy) on networks you do not trust.',
+  'workers.plainHttp': 'Plain HTTP',
+  'workers.plainHttp.title': 'Connected over plain HTTP from another machine: its token and the secrets in its runs cross the network unencrypted',
 
   // Runs panel (#124) — the Run Service made visible: every run the server
   // owns, its queue position, its live curves and its artifacts.

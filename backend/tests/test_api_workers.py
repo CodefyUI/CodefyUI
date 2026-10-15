@@ -1,9 +1,11 @@
-"""``GET /api/workers`` and drain/undrain (#772)."""
+"""``GET /api/workers`` and drain/undrain (#772); ``plain_http`` (#786)."""
 
 from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from httpx_ws import aconnect_ws
+from httpx_ws.transport import ASGIWebSocketTransport
 
 from app.core import worker_protocol as wp
 from app.core.auth import TOKEN_HEADER, session_token
@@ -12,6 +14,9 @@ from app.core.run_service import QueueLimits, RunService
 from app.core.run_store import RunStore
 from app.core.workers import WorkerRegistry
 from app.main import app
+
+from .test_ws_worker import FakeAgent, env  # noqa: F401
+from .test_ws_worker_auth import enrolled, remote_peer  # noqa: F401
 
 BASE = "http://127.0.0.1:8000"
 
@@ -161,3 +166,53 @@ async def test_without_a_run_service_slots_are_null(registry):
         body = (await client.get("/api/workers")).json()
     assert body["local"] is None
     assert body["workers"][0]["devices"][0]["slots"] is None
+
+
+# ── the "plain HTTP" badge field (#786) ───────────────────────────────────
+
+
+async def test_plain_http_is_listed_per_worker(registry):
+    registry.connect(wp.Hello(name="far", version="t"), send=_noop,
+                     close=_noop, plain_http=True)
+    registry.connect(wp.Hello(name="near", version="t"), send=_noop,
+                     close=_noop)
+    async with _client(token=False) as client:
+        body = (await client.get("/api/workers")).json()
+    assert {w["name"]: w["plain_http"] for w in body["workers"]} == {
+        "far": True, "near": False}
+
+
+async def _plain_http_after_connecting(base: str, worker_token: str,
+                                       registry: WorkerRegistry) -> bool:
+    """Connect ``gpu-box`` through ``/ws/worker`` at *base*; its listed
+    ``plain_http``."""
+    async with AsyncClient(transport=ASGIWebSocketTransport(app=app),
+                           base_url=base) as client, \
+            aconnect_ws(wp.WORKER_WS_PATH, client,
+                        headers={"X-CodefyUI-Token": worker_token}) as ws:
+        await FakeAgent(ws).hello("gpu-box")
+        [listed] = (await client.get("/api/workers")).json()["workers"]
+        assert listed["plain_http"] == registry.get("gpu-box").plain_http
+        return listed["plain_http"]
+
+
+async def test_plain_ws_from_another_machine_shows_the_badge(
+        enrolled, remote_peer):  # noqa: F811
+    _, registry, _, worker_token = enrolled
+    assert await _plain_http_after_connecting(
+        "http://127.0.0.1:8000", worker_token, registry) is True
+
+
+async def test_tls_from_another_machine_shows_no_badge(
+        enrolled, remote_peer):  # noqa: F811
+    _, registry, _, worker_token = enrolled
+    assert await _plain_http_after_connecting(
+        "https://127.0.0.1:8000", worker_token, registry) is False
+
+
+async def test_a_loopback_peer_shows_no_badge(enrolled):  # noqa: F811
+    # A same-host agent, a TLS proxy on this machine, or an SSH tunnel's
+    # local end (#784): the hop across the network is not this socket.
+    _, registry, _, worker_token = enrolled
+    assert await _plain_http_after_connecting(
+        "http://127.0.0.1:8000", worker_token, registry) is False

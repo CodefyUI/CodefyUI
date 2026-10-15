@@ -9,6 +9,8 @@
     DELETE /api/workers/enrollments/{id}     revoke one (token)
     POST   /api/workers/enroll               enrollment token -> worker token
                                              (no session token; rate-limited)
+    POST   /api/workers/agent-command        the command for a token at an
+                                             address (token; #786)
 
 Auth follows ``routes_runs``: reads are open, the writes are covered by
 ``auth_guard`` in ``main.py`` (session token). Two exceptions: listing the
@@ -43,7 +45,9 @@ workers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import re
 import threading
 import time
@@ -54,6 +58,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ..config import settings
+from ..core import tls_fingerprint as tls_fp
 from ..core import worker_protocol as wp
 from ..core import worker_store as ws_store
 from ..core.api_keys import require_session_token
@@ -205,6 +211,29 @@ class EnrollmentRequest(BaseModel):
     #: Bind the token to this known worker: a re-key token, which is the
     #: only kind that can enroll a name already taken, and only that one.
     worker: str | None = Field(None, max_length=63)
+    #: The address the worker dials, as the dialog shows it; default: the
+    #: address this request used (:func:`public_url`).
+    control_url: str | None = Field(None, max_length=300)
+
+
+#: What a control URL in a generated shell command may contain: a scheme,
+#: a host (name, IPv4 or bracketed IPv6) with an optional port, and an
+#: optional path, with no character a shell would interpret.
+_CONTROL_URL = re.compile(
+    r"https?://[A-Za-z0-9.\-]+(:[0-9]{1,5})?|https?://\[[0-9A-Fa-f:.]+\]"
+    r"(:[0-9]{1,5})?", re.I)
+_CONTROL_PATH = re.compile(r"(/[A-Za-z0-9._~\-]+)*/?")
+
+
+def checked_control_url(url: str) -> str:
+    """*url* without a trailing slash, or 422 when it is not an http(s)
+    address safe to paste into a shell."""
+    text = url.strip()
+    match = _CONTROL_URL.match(text)
+    if match is None or _CONTROL_PATH.fullmatch(text[match.end():]) is None:
+        raise HTTPException(422, "control_url must be http(s)://host[:port]"
+                                 "[/path] with no spaces or shell characters")
+    return text.rstrip("/")
 
 
 def public_url(request: Request) -> str:
@@ -216,9 +245,59 @@ def public_url(request: Request) -> str:
     return f"{request.url.scheme}://{host}{root}"
 
 
-def agent_command(url: str, token: str, name: str | None = None) -> str:
+def agent_command(url: str, token: str, name: str | None = None,
+                  fingerprint: str | None = None) -> str:
+    """The one builder of the agent command (the dialog shows what this
+    returns). *fingerprint* is pinned over ``https`` only: plain HTTP has
+    no certificate."""
     command = f"cdui agent start --control {url} --token {token}"
-    return command if name is None else f"{command} --name {name}"
+    if name is not None:
+        command += f" --name {name}"
+    if fingerprint is not None and url.lower().startswith("https:"):
+        command += f" --ca-fingerprint {fingerprint}"
+    return command
+
+
+#: ``(path, mtime_ns)`` -> the fingerprint read from it (or None). One
+#: entry: a changed file (or setting) is read again; a warning is logged
+#: once per version of the file.
+_fingerprint_cache: dict[tuple[str, int | None], str | None] = {}
+
+
+def _read_tls_fingerprint() -> str | None:
+    path = settings.TLS_CERT_FILE.strip()
+    if not path:
+        return None
+    try:
+        mtime: int | None = os.stat(path).st_mtime_ns
+    except OSError as exc:
+        mtime, error = None, exc
+    else:
+        error = None
+    key = (path, mtime)
+    if key in _fingerprint_cache:
+        return _fingerprint_cache[key]
+    value = None
+    if error is None:
+        try:
+            with open(path, "rb") as handle:
+                certificates = tls_fp.pem_certificates(handle.read())
+            value = tls_fp.spki_fingerprint(certificates[0])
+        except (OSError, ValueError, IndexError) as exc:
+            error = exc
+    if error is not None:
+        logger.warning("CODEFYUI_TLS_CERT_FILE %s gives no certificate "
+                       "fingerprint: %s", path, error or "no certificate")
+    _fingerprint_cache.clear()
+    _fingerprint_cache[key] = value
+    return value
+
+
+async def tls_fingerprint() -> str | None:
+    """The SPKI fingerprint of ``CODEFYUI_TLS_CERT_FILE``'s first (leaf)
+    certificate (#786), or None when it is unset or cannot be read. Read
+    in a thread, and again only when the file changes."""
+    return await asyncio.to_thread(_read_tls_fingerprint)
 
 
 _LOOPBACK_ENTRY = re.compile(r"(127\.[0-9.]+|localhost):[0-9]+")
@@ -244,27 +323,58 @@ async def create_enrollment(request: Request,
         registry = _registry(request)
         if registry.get(body.worker) is None:
             raise HTTPException(404, f"no worker named {body.worker!r}")
+    url = (checked_control_url(body.control_url) if body.control_url
+           else public_url(request))
     entry = await store.create_enrollment(
         ttl_s=body.ttl_s, uses=body.uses, label=body.label,
         worker=body.worker)
-    url = public_url(request)
     logger.info("enrollment token %s created (%d use(s), expires %s%s)",
                 entry["id"], entry["uses_left"], entry["expires_at"],
                 f", re-keys {body.worker}" if body.worker else "")
     return {**entry, "control_url": url,
-            "command": agent_command(url, entry["token"], body.worker)}
+            "command": agent_command(url, entry["token"], body.worker,
+                                     await tls_fingerprint())}
+
+
+class AgentCommandRequest(BaseModel):
+    control_url: str = Field(..., max_length=300)
+    token: str = Field(..., max_length=64)
+    worker: str | None = Field(None, max_length=63)
+
+
+@router.post("/agent-command")
+async def agent_command_for(body: AgentCommandRequest) -> dict[str, str]:
+    """The agent command for an enrollment *token* at another address, for
+    the Add worker dialog when its address field changes after a token was
+    generated: the same builder as ``POST /enrollments`` (#786). The token
+    travels in the body (a URL would be logged) and is not checked or
+    stored here; it only appears in the answer."""
+    if not ws_store.is_enrollment_token(body.token):
+        raise HTTPException(422, "token must be an enrollment token")
+    if body.worker is not None and wp.WORKER_NAME_PATTERN.fullmatch(
+            body.worker) is None:
+        raise HTTPException(422, "invalid worker name")
+    url = checked_control_url(body.control_url)
+    return {"control_url": url,
+            "command": agent_command(url, body.token.strip(), body.worker,
+                                     await tls_fingerprint())}
 
 
 @router.get("/enrollments", dependencies=[Depends(require_session_token)])
 async def list_enrollments(request: Request) -> dict[str, Any]:
     """The enrollment tokens (never the secrets), newest first, with the
     facts the Add worker dialog needs to offer a URL another machine can
-    reach."""
+    reach, and to verify the server's TLS certificate (#786):
+    ``tls_fingerprint`` when ``CODEFYUI_TLS_CERT_FILE`` names a readable
+    certificate, else null, and the ``openssl`` command that computes it on
+    the proxy host."""
     return {
         "enrollments": await _store(request).list_enrollments(),
         "control_url": public_url(request),
         "other_machine_urls": other_machine_urls(request.url.scheme),
         "listening_on_loopback": bound_to_loopback(),
+        "tls_fingerprint": await tls_fingerprint(),
+        "fingerprint_command": tls_fp.OPENSSL_COMMAND,
     }
 
 

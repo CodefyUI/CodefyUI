@@ -132,7 +132,7 @@ cd CodefyUI
 
 | Flag | Effect |
 |---|---|
-| `--dev` / `--no-dev` | install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, tensorboard) |
+| `--dev` / `--no-dev` | install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, trustme, tensorboard) |
 | `--gpu auto` | detect your driver and pick the matching PyTorch wheel |
 | `--gpu cpu` \| `cu118` \| `cu121` \| `cu124` \| `cu126` \| `cu128` \| `rocm6.1` \| `rocm6.2` \| `mps` \| `skip` | pick the wheel yourself; `skip` leaves an existing torch alone |
 | `--yes` / `-y` | non-interactive; same as `--gpu auto --no-dev` |

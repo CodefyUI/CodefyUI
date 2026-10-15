@@ -94,9 +94,9 @@ def started(monkeypatch):
     calls: list[dict[str, Any]] = []
 
     def fake_run_agent(args, control, token, facts, token_source=None,
-                       mounts=None):
+                       mounts=None, trust=None):
         calls.append({"control": control, "token": token, "name": args.name,
-                      "token_source": token_source})
+                      "token_source": token_source, "trust": trust})
         return 0
 
     monkeypatch.setattr(cli, "run_agent", fake_run_agent)

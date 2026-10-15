@@ -65,6 +65,11 @@ export interface WorkerInfo {
   enrolled?: boolean;
   /** How its connection authenticated: `worker_token` or `session_token`. */
   credential?: string | null;
+  /**
+   * Its connection is plain `ws://` from another machine: its token and the
+   * secrets in its runs cross the network unencrypted (#786).
+   */
+  plain_http?: boolean;
 }
 
 /** `pending` can still enroll; `expired` and `used` are listed until deleted. */
@@ -100,6 +105,13 @@ export interface EnrollmentList {
   other_machine_urls: string[];
   /** The server is bound to a loopback address: no other machine reaches it. */
   listening_on_loopback: boolean;
+  /**
+   * `sha256:<hex>` of the TLS certificate's public key when the server can
+   * read it (`CODEFYUI_TLS_CERT_FILE`), else `null` (#786).
+   */
+  tls_fingerprint?: string | null;
+  /** The `openssl` command that computes the fingerprint on the proxy host. */
+  fingerprint_command?: string;
 }
 
 async function failure(res: Response, fallback: string): Promise<Error> {
@@ -149,10 +161,11 @@ export async function fetchEnrollments(): Promise<EnrollmentList> {
 
 /**
  * A new enrollment token, valid for `ttl_s` seconds and `uses` agents.
- * With `worker`, a re-key token: it can enroll that worker only.
+ * With `worker`, a re-key token: it can enroll that worker only. Its
+ * `command` dials `control_url` (default: the address the page uses).
  */
 export async function createEnrollment(
-  options: { ttl_s: number; uses: number; worker?: string },
+  options: { ttl_s: number; uses: number; worker?: string; control_url?: string },
 ): Promise<CreatedEnrollment> {
   const res = await apiFetch(`${BASE_URL}/enrollments`, {
     method: 'POST',
@@ -169,8 +182,21 @@ export async function deleteEnrollment(id: string): Promise<void> {
   if (!res.ok) throw await failure(res, 'Revoke failed');
 }
 
-/** The command a worker machine runs to enroll with *controlUrl*. */
-export function agentEnrollCommand(controlUrl: string, token: string, name?: string | null): string {
-  const command = `cdui agent start --control ${controlUrl} --token ${token}`;
-  return name ? `${command} --name ${name}` : command;
+/**
+ * The agent command for an enrollment *token* at *controlUrl* (#786): the
+ * server builds it, with the same function as the `command` of
+ * {@link createEnrollment}, so the flags (`--name`, `--ca-fingerprint`)
+ * are decided in one place. The token goes in the body, never a URL.
+ */
+export async function agentCommand(
+  options: { control_url: string; token: string; worker?: string | null },
+): Promise<string> {
+  const res = await apiFetch(`${BASE_URL}/agent-command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(options),
+  });
+  if (!res.ok) throw await failure(res, 'Command failed');
+  const body = await res.json();
+  return body.command;
 }

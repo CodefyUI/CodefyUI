@@ -151,6 +151,11 @@ function WorkerCard({ worker, serverVersion, now, onRemoved, onRekey }: {
         <span className={`${styles.chip} ${known ? styles[`chip_${worker.status}`] : styles.chip_neutral}`}>
           {known ? t(`workers.status.${worker.status}`) : worker.status}
         </span>
+        {worker.plain_http && (
+          <span className={`${styles.chip} ${styles.chip_degraded}`} title={t('workers.plainHttp.title')}>
+            {t('workers.plainHttp')}
+          </span>
+        )}
         <span className={styles.spacer} />
         <button
           ref={actionRef}

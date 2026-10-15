@@ -142,6 +142,11 @@ dev = [
     # the test parses them back with, so the format is verified against
     # TensorBoard's own implementation rather than against ours.
     "tensorboard>=2.14",
+    # TEST-ONLY (#786): self-signed certificates for the agent's TLS
+    # pinning tests (an HTTPS and a wss test server). Brings `cryptography`,
+    # which the runtime never imports: the agent hashes a certificate's
+    # SubjectPublicKeyInfo with its own small DER reader.
+    "trustme>=1.1",
 ]
 llm-sentence = [
     "sentence-transformers>=3.0,<6",
