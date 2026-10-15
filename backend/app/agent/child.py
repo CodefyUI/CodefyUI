@@ -50,7 +50,8 @@ Send = Callable[[tuple], None]
 
 
 def main(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
-    """``Process`` target. *spec* is built by ``runner.child_spec``."""
+    """``Process`` target. *spec* is built by ``Runner.assign``."""
+    ignore_interrupts()
     apply_environment(spec.get("env") or {})
     _redirect_output(spec.get("log_path"))
     # Logging to the redirected stderr, so a node's warnings land in the
@@ -64,6 +65,20 @@ def main(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
         events_out.close()
     except OSError:
         pass
+
+
+def ignore_interrupts() -> None:
+    """Leave Ctrl+C to the agent.
+
+    A foreground agent shares its terminal's process group with its
+    children, so Ctrl+C reaches every run subprocess at once. The agent
+    answers it by cancelling each run (cooperatively, then by force); a
+    child that died of the same keystroke would skip that and be reported
+    as a crash.
+    """
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def apply_environment(env: dict[str, Any]) -> None:
@@ -132,12 +147,49 @@ def build_context(run_id: str, options: dict[str, Any], device: str) -> Any:
     )
 
 
-def _pipe_sinks(send: Send) -> Any:
+def wire_payload(payload: Any, cap_bytes: int) -> Any:
+    """*payload* as the control plane would store it: NaN-free
+    (``json_safe``), capped (``cap_event_payload``, the same policy and
+    ceiling ``RunService._emit`` applies) and plain JSON values.
+
+    Applying both here keeps a giant payload off the pipe and the socket;
+    the control plane applies them again, which changes nothing. The JSON
+    round trip (``default=str``, the rule ``json_size`` measures with)
+    turns anything without a JSON type into its ``str`` so the message can
+    always be pickled. Raises when even that fails (a circular structure).
+    """
+    import json
+
+    from ..core.run_events import cap_event_payload
+    from ..core.run_store import json_safe
+
+    capped = cap_event_payload(json_safe(payload), cap_bytes=cap_bytes)
+    return json.loads(json.dumps(capped, allow_nan=False, default=str))
+
+
+def _pipe_sinks(send: Send, cap_bytes: int | None = None) -> Any:
     """A ``RunSinks`` whose callables write pipe messages."""
+    import logging
+
+    from ..config import settings
     from ..core.executors import RunSinks
 
+    log = logging.getLogger(__name__)
+    if cap_bytes is None:
+        cap_bytes = settings.RUN_EVENT_PAYLOAD_CAP_BYTES
+
     async def emit(event_type: str, payload: dict[str, Any] | None) -> None:
-        send((MSG_EVENT, event_type, payload))
+        try:
+            wired = wire_payload(payload, cap_bytes)
+        except (TypeError, ValueError, RecursionError) as exc:
+            log.warning("a %s event could not be encoded: %s", event_type, exc)
+            node_id = payload.get("node_id") if isinstance(payload, dict) else None
+            send((MSG_WARNING, {
+                "kind": "unserialisable_event",
+                "detail": f"a {event_type} event could not be encoded: {exc}",
+                "node_id": node_id if isinstance(node_id, str) else None}))
+            return
+        send((MSG_EVENT, event_type, wired))
 
     async def record_metrics(points: list[Any]) -> None:
         # The engine bridge calls this with [] on every progress frame to
@@ -149,8 +201,13 @@ def _pipe_sinks(send: Send) -> Any:
                  "node_id": p.node_id} for p in points]))
 
     async def record_artifact(signal: Any) -> None:
+        try:
+            meta = wire_payload(signal.meta, 0)  # 0: no cap; a row, not an event
+        except (TypeError, ValueError, RecursionError) as exc:
+            log.warning("an artifact's meta could not be encoded: %s", exc)
+            meta = None
         send((MSG_ARTIFACT, {"kind": signal.kind, "path": signal.path,
-                             "meta": signal.meta, "node_id": signal.node_id}))
+                             "meta": meta, "node_id": signal.node_id}))
 
     async def warn(signal: Any) -> None:
         send((MSG_WARNING, {"kind": signal.kind, "detail": signal.detail,

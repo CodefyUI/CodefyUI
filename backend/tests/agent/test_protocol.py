@@ -48,7 +48,7 @@ def test_every_frame_type_round_trips():
 def test_frames_are_flat_json_objects():
     raw = wp.encode_frame(wp.Cancel(run_id="r1"))
     assert json.loads(raw) == {"type": "cancel", "run_id": "r1",
-                               "grace_s": wp.DEFAULT_GRACE_S}
+                               "grace_s": None}
 
 
 def test_nan_crosses_the_wire_unchanged():

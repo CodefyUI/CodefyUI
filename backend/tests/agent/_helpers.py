@@ -150,6 +150,16 @@ def crash_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     os._exit(3)
 
 
+def crash_on_cancel_child(spec: dict[str, Any], events_out: Any,
+                          control_in: Any) -> None:
+    """Start a node; on ``cancel``, crash with exit code 7 instead of stopping."""
+    child._redirect_output(spec.get("log_path"))
+    _running(events_out, "fragile")
+    control_in.recv()
+    print(CRASH_MARKER, file=sys.stderr, flush=True)
+    os._exit(7)
+
+
 def quick_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     """Report success at once."""
     events_out.send((child.MSG_FINISHED, {"status": "succeeded",
@@ -167,7 +177,8 @@ def env_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     """Report the environment and device the run would execute with."""
     child.apply_environment(spec.get("env") or {})
     names = ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES",
-             "CUDA_DEVICE_ORDER", "CODEFYUI_DB_PATH")
+             "ROCR_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "CODEFYUI_DB_PATH",
+             "CODEFYUI_AGENT_TOKEN")
     events_out.send((child.MSG_EVENT, "env", {
         "env": {name: os.environ.get(name) for name in names},
         "device": spec.get("device"),

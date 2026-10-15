@@ -138,7 +138,7 @@ def last_server_url() -> str | None:
 def session_token() -> str | None:
     """The running server's session token, or None when it cannot be read."""
     try:
-        return (user_data_dir() / "session.token").read_text(
+        return token_file().read_text(
             encoding="ascii").strip() or None
     except (OSError, UnicodeDecodeError):
         return None
@@ -262,6 +262,28 @@ def resolve_token(explicit: str | None, *, interactive: bool,
         return session_token
     answer = ask(t("連線 token：", "Connection token: ")).strip()
     return answer or session_token
+
+
+def token_file() -> Path:
+    return user_data_dir() / "session.token"
+
+
+class MissingToken(ValueError):
+    """No token was given and the session token file does not exist."""
+
+
+def require_token(token: Any) -> None:
+    """Refuse to start without a token: a reader that finds no file now.
+
+    Only for a start in this terminal; the background process it launches
+    re-reads the file at every dial and logs an error while it is missing.
+    """
+    if callable(token) and token() is None:
+        raise MissingToken(t(
+            f"找不到連線 token：沒有 --token、${TOKEN_ENV}，也沒有 "
+            f"{token_file()}（先執行 cdui start，或用 --token 指定）",
+            f"no connection token: no --token, no ${TOKEN_ENV}, and no "
+            f"{token_file()} (run cdui start first, or pass --token)"))
 
 
 # ── process helpers ───────────────────────────────────────────────────────
@@ -442,7 +464,10 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
         connection = AgentConnection(
             runner=runner, name=name, version=get_version(),
             control_url=control, token=token, probe_devices=probe,
-            max_message_bytes=settings.WS_MAX_MESSAGE_BYTES)
+            max_message_bytes=settings.WS_MAX_MESSAGE_BYTES,
+            token_source=(f"the session token file {token_file()}"
+                          if callable(token) else "--token / "
+                          f"${TOKEN_ENV}"))
         return await connection.run(stop)
 
     logger.info("agent %s starting (pid %s); offering %s", name, os.getpid(),
@@ -456,9 +481,25 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
 
 
 def _probe_facts() -> list[Any]:
-    from ..core.resources import probe_devices
+    """This machine's devices without torch, plus MPS on Apple silicon.
 
-    return probe_devices(allow_torch=False)
+    ``probe_devices(allow_torch=False)`` cannot ask torch whether MPS
+    works, so it reports none; a macOS arm64 host has it (every Apple
+    silicon Mac does), offered here with unknown memory.
+    """
+    from ..core.resources import DeviceFact, probe_devices
+
+    facts = probe_devices(allow_torch=False)
+    if apple_silicon() and not any(f.kind == "mps" for f in facts):
+        facts.append(DeviceFact("mps", "mps", None, "Apple MPS", None, None,
+                                "none"))
+    return facts
+
+
+def apple_silicon() -> bool:
+    import platform
+
+    return sys.platform == "darwin" and platform.machine() == "arm64"
 
 
 def _report(fact: Any) -> Any:
@@ -484,6 +525,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
     token = resolve_token(args.token, interactive=interactive)
+    if not args.daemonized:
+        try:
+            require_token(token)
+        except MissingToken as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     if not args.foreground:
         return _start_background(args, control, token)
     _setup_logging(args.daemonized)

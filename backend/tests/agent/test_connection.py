@@ -249,3 +249,82 @@ async def test_stop_while_connected_reports_running_runs(tmp_path):
             lambda n, f: isinstance(f, wp.RunFinished), timeout=5)
         assert finished.status == "interrupted"
         assert agent.task.result() == 0
+
+
+def test_an_unencodable_frame_becomes_a_warning_with_its_seq():
+    from app.agent.connection import _encode_or_warn
+
+    loop: dict = {}
+    loop["self"] = loop
+    raw = _encode_or_warn(wp.Event(run_id="r1", seq=4, event_type="x",
+                                   payload=loop))
+    frame = wp.decode_agent_frame(raw)
+    assert isinstance(frame, wp.RunWarning)
+    assert (frame.seq, frame.kind) == (4, "unserialisable_frame")
+    finished = wp.decode_agent_frame(_encode_or_warn(wp.RunFinished(
+        run_id="r1", seq=5, status="succeeded", peak_memory={"x": loop})))
+    assert finished.status == "succeeded" and finished.peak_memory is None
+
+
+async def test_a_refused_token_is_logged_as_an_error_and_retried(
+        tmp_path, caplog):
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    def refuse(connection, request):
+        return Response(403, "Forbidden", Headers(), b"bad token")
+
+    server = await websockets.serve(lambda ws: None, "127.0.0.1", 0,
+                                    process_request=refuse)
+    try:
+        port = server.sockets[0].getsockname()[1]
+        agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
+        agent.connection.token_source = "the session token file /x/session.token"
+        with caplog.at_level("ERROR", logger="app.agent.connection"):
+            async with agent:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and len(
+                        [r for r in caplog.records
+                         if r.levelname == "ERROR"]) < 2:
+                    await asyncio.sleep(0.05)
+        errors = [r.getMessage() for r in caplog.records
+                  if r.levelname == "ERROR"]
+        assert len(errors) >= 2  # backed off and tried again
+        assert "HTTP 403" in errors[0] and "/x/session.token" in errors[0]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_no_token_is_logged_and_retried(tmp_path, caplog):
+    agent = Agent(tmp_path, "http://127.0.0.1:1")
+    agent.connection._token = lambda: None
+    with caplog.at_level("ERROR", logger="app.agent.connection"):
+        async with agent:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and len(caplog.records) < 2:
+                await asyncio.sleep(0.05)
+    assert sum("no connection token" in r.getMessage()
+               for r in caplog.records) >= 2
+
+
+async def test_cancel_grace_falls_back_to_assign_then_welcome(tmp_path):
+    async with FakeControlPlane(grace_s=0.3) as cp, Agent(
+            tmp_path, cp.url, child_entry=h.deaf_child, kill_after_s=1.0):
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        await cp.send(wp.Assign(run_id="g1", graph={"nodes": []}))
+        await cp.send(wp.Assign(run_id="g2", graph={"nodes": []},
+                                grace_s=60))
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Event)
+                          and f.run_id == "g2")
+        started = time.monotonic()
+        await cp.send(wp.Cancel(run_id="g1"))  # welcome's 0.3 s
+        await cp.wait_for(lambda n, f: isinstance(f, wp.RunFinished)
+                          and f.run_id == "g1", timeout=10)
+        assert time.monotonic() - started < 5
+        await cp.send(wp.Cancel(run_id="g2", grace_s=0.1))  # cancel wins
+        finished = await cp.wait_for(
+            lambda n, f: isinstance(f, wp.RunFinished) and f.run_id == "g2",
+            timeout=10)
+        assert finished.status == "interrupted"
+

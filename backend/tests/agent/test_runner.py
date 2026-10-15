@@ -20,10 +20,13 @@ from pathlib import Path
 import pytest
 
 from app.agent.runner import (
+    FINISHED_MARKER,
     AssignmentRefused,
     Runner,
+    canonical_device,
     child_device,
     child_environment,
+    mark_finished,
     prune_run_dirs,
     read_tail,
 )
@@ -35,7 +38,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 def _runner(tmp_path: Path, sink: h.FrameSink, **kw) -> Runner:
-    kw.setdefault("offered_devices", {"cpu"})
+    kw.setdefault("offered_devices", {"cpu", "mps"})
     return Runner(runs_dir=tmp_path / "agent-runs", send=sink, **kw)
 
 
@@ -62,14 +65,28 @@ def test_child_device_renumbers_into_the_visible_set():
 
 
 def test_child_environment_pins_cards_and_drops_the_database():
-    env = child_environment(["cuda:3", "cuda:1"])
+    env = child_environment("cuda:3", ["cuda:3", "cuda:1"])
     assert env["set"] == {"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-                          "CUDA_VISIBLE_DEVICES": "3,1",
-                          "HIP_VISIBLE_DEVICES": "3,1"}
-    assert env["unset"] == ["CODEFYUI_DB_PATH"]
-    # A set without CUDA cards leaves the inherited visibility alone.
-    assert child_environment(["cpu"])["set"] == {
-        "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+                          "CUDA_VISIBLE_DEVICES": "3,1"}
+    assert set(env["unset"]) == {"CODEFYUI_DB_PATH", "CODEFYUI_AGENT_TOKEN",
+                                 "HIP_VISIBLE_DEVICES",
+                                 "ROCR_VISIBLE_DEVICES"}
+    # No set: the run's own device decides.
+    assert child_environment("cuda:2", [])["set"]["CUDA_VISIBLE_DEVICES"] == "2"
+    # A run that names no card sees none.
+    for device, devices in (("cpu", []), ("cpu", ["cpu"]), ("mps", [])):
+        assert child_environment(device, devices)["set"][
+            "CUDA_VISIBLE_DEVICES"] == ""
+    # A bare cuda with no set keeps what the agent inherited.
+    assert "CUDA_VISIBLE_DEVICES" not in child_environment("cuda", [])["set"]
+
+
+def test_canonical_device():
+    assert canonical_device("MPS") == "mps:0"
+    assert canonical_device("mps:0") == "mps:0"
+    assert canonical_device("cuda:01") == "cuda:1"
+    assert canonical_device("cuda") == "cuda"
+    assert canonical_device("cpu") == "cpu"
 
 
 def test_read_tail_keeps_the_last_bytes(tmp_path):
@@ -80,15 +97,29 @@ def test_read_tail_keeps_the_last_bytes(tmp_path):
     assert read_tail(tmp_path / "missing.log") == ""
 
 
-def test_prune_keeps_the_newest_and_the_running(tmp_path):
+def test_prune_orders_by_retirement_and_skips_runs_in_flight(tmp_path):
     for index, name in enumerate(["a", "b", "c", "d"]):
-        path = tmp_path / name
-        path.mkdir()
-        os.utime(path, (1000 + index, 1000 + index))
-    prune_run_dirs(tmp_path, keep_last=2, protect={"a"})
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["a", "c", "d"]
+        (tmp_path / name).mkdir()
+        if name != "a":  # "a" is in flight: no marker
+            mark_finished(tmp_path / name)
+            marker = tmp_path / name / FINISHED_MARKER
+            # "b" started first but retired last.
+            stamp = 3000 if name == "b" else 1000 + index
+            os.utime(marker, (stamp, stamp))
+    (tmp_path / "stray-file").write_text("x")
+    prune_run_dirs(tmp_path, keep_last=2)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "a", "b", "d", "stray-file"]
     prune_run_dirs(tmp_path, keep_last=0)  # 0 disables retention
-    assert len(list(tmp_path.iterdir())) == 3
+    assert len(list(tmp_path.iterdir())) == 4
+    prune_run_dirs(tmp_path / "gone", keep_last=1)  # no directory: no error
+
+
+def test_a_new_runner_marks_leftover_directories(tmp_path):
+    runs = tmp_path / "agent-runs"
+    (runs / "old").mkdir(parents=True)
+    Runner(runs_dir=runs, offered_devices={"cpu"})
+    assert (runs / "old" / FINISHED_MARKER).exists()
 
 
 # ── refusals: no subprocess is started ───────────────────────────────────
@@ -98,6 +129,10 @@ def test_prune_keeps_the_newest_and_the_running(tmp_path):
     (_assign("r1", options={"record_outputs": True}), "record_outputs"),
     (_assign("r1", devices=["cuda:0"], device="cuda:0"), "not offered"),
     (_assign("r1", device="tpu:0"), "unknown device"),
+    (_assign("r1", device="cuda:0"), "not offered"),
+    (_assign("r1", device="cuda"), "not offered"),
+    (_assign("r1", device="mps", devices=["cpu"]), "not in the assigned set"),
+    (_assign("r1", device="cpu", devices=["mps:0"]), "not in the assigned set"),
 ])
 async def test_refused_assignments_finish_failed_at_once(tmp_path, assign,
                                                          reason):
@@ -109,6 +144,29 @@ async def test_refused_assignments_finish_failed_at_once(tmp_path, assign,
     assert reason in finished.error and finished.seq == 1
     assert runner.runs == {}
     assert [type(f) for f in sink.frames] == [wp.RunFinished]
+
+
+async def test_mps_and_mps0_are_one_device(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.quick_child,
+                     offered_devices={"cpu", "mps:0"})
+    await runner.assign(_assign("m1", device="mps", devices=["mps"]))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert finished.status == "succeeded"
+
+
+async def test_an_unexpected_error_fails_only_that_run(tmp_path, monkeypatch):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.quick_child)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("no more pipes")
+
+    monkeypatch.setattr(runner._ctx, "Pipe", broken)
+    await runner.assign(_assign("x1"))
+    finished = sink.finished("x1")
+    assert finished.status == "failed" and "no more pipes" in finished.error
+    assert runner.runs == {}
 
 
 async def test_draining_refuses_new_runs(tmp_path):
@@ -185,7 +243,20 @@ async def test_cancel_escalates_to_terminate_and_reports_interrupted(tmp_path):
     assert finished.status == "interrupted"
     assert finished.last_node == "deaf"
     assert "grace period" in finished.error
+    assert finished.stderr_tail is not None
     assert await runner.cancel("deaf1") is False  # gone: nothing to cancel
+
+
+async def test_a_crash_while_stopping_is_still_a_crash(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.crash_on_cancel_child)
+    await runner.assign(_assign("cc1"))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    await runner.cancel("cc1", grace_s=20)
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished),
+                                   timeout=20)
+    assert finished.status == "failed" and finished.exit_code == 7
+    assert h.CRASH_MARKER in finished.stderr_tail
 
 
 async def test_shutdown_stops_every_run(tmp_path):
@@ -202,6 +273,9 @@ async def test_shutdown_stops_every_run(tmp_path):
 
 async def test_child_gets_the_assigned_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEFYUI_DB_PATH", str(tmp_path / "never.db"))
+    monkeypatch.setenv("CODEFYUI_AGENT_TOKEN", "secret")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
     sink = h.FrameSink()
     runner = _runner(tmp_path, sink, child_entry=h.env_child,
                      offered_devices={"cpu", "cuda:2", "cuda:5"})
@@ -209,8 +283,9 @@ async def test_child_gets_the_assigned_environment(tmp_path, monkeypatch):
                                 devices=["cuda:2", "cuda:5"]))
     event = await sink.wait_for(lambda f: isinstance(f, wp.Event))
     assert event.payload["env"] == {
-        "CUDA_VISIBLE_DEVICES": "2,5", "HIP_VISIBLE_DEVICES": "2,5",
-        "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CODEFYUI_DB_PATH": None}
+        "CUDA_VISIBLE_DEVICES": "2,5", "HIP_VISIBLE_DEVICES": None,
+        "ROCR_VISIBLE_DEVICES": None, "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "CODEFYUI_DB_PATH": None, "CODEFYUI_AGENT_TOKEN": None}
     assert event.payload["device"] == "cuda:1"
     assert event.payload["torch_loaded"] is False
     await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))

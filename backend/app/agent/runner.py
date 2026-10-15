@@ -37,6 +37,7 @@ import logging
 import multiprocessing
 import re
 import shutil
+import signal
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,20 +110,42 @@ def child_device(device: str, devices: list[str]) -> str:
     return f"cuda:{visible.index(index)}"
 
 
-def child_environment(devices: list[str]) -> dict[str, Any]:
+def canonical_device(device: str) -> str:
+    """One spelling per device: ``cuda:01`` -> ``cuda:1``, ``mps`` ->
+    ``mps:0`` (there is one), ``cpu`` -> ``cpu``. A bare ``cuda`` stays
+    bare: which card it means is the child's to decide."""
+    kind, index = split_device(device)
+    if kind == "mps" and index is None:
+        index = 0
+    return kind if index is None else f"{kind}:{index}"
+
+
+#: Removed from every run subprocess's environment: the database it must
+#: never open, the agent's connection token, and the ROCm visibility
+#: filters (``CUDA_VISIBLE_DEVICES`` alone selects the cards, and ROCm
+#: honours it; an inherited ``HIP_``/``ROCR_VISIBLE_DEVICES`` would filter
+#: the cards twice).
+CHILD_UNSET_ENV = ("CODEFYUI_DB_PATH", "CODEFYUI_AGENT_TOKEN",
+                   "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+
+
+def child_environment(device: str, devices: list[str]) -> dict[str, Any]:
     """``{"set", "unset"}`` for ``child.apply_environment``.
 
-    A set without CUDA cards leaves ``CUDA_VISIBLE_DEVICES`` as the agent
-    inherited it (which cards a CPU run may still see is #774's call).
-    ``HIP_VISIBLE_DEVICES`` follows the same indices, for ROCm builds.
+    The run sees only its own devices: the CUDA cards of its set (or of
+    *device* when the set is empty) as ``CUDA_VISIBLE_DEVICES``, and no
+    card at all when it names none (a ``cpu`` or ``mps`` run). A bare
+    ``cuda`` with no set keeps the visibility the agent inherited.
     """
     env: dict[str, str] = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
-    indices = cuda_indices(devices)
+    effective = list(devices) or [device]
+    kinds = {split_device(d)[0] for d in effective}
+    indices = cuda_indices(effective)
     if indices:
-        visible = ",".join(str(i) for i in indices)
-        env["CUDA_VISIBLE_DEVICES"] = visible
-        env["HIP_VISIBLE_DEVICES"] = visible
-    return {"set": env, "unset": ["CODEFYUI_DB_PATH"]}
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in indices)
+    elif "cuda" not in kinds:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+    return {"set": env, "unset": list(CHILD_UNSET_ENV)}
 
 
 def read_tail(path: Path, limit: int = STDERR_TAIL_BYTES) -> str:
@@ -137,23 +160,57 @@ def read_tail(path: Path, limit: int = STDERR_TAIL_BYTES) -> str:
         return ""
 
 
-def prune_run_dirs(runs_dir: Path, keep_last: int,
-                   protect: frozenset[str] | set[str] = frozenset()) -> None:
-    """Delete all but the *keep_last* newest per-run directories.
+#: Touched in a run's directory when the run is retired. Retention orders
+#: by it, so a long run that ended last is kept over a short one that
+#: started later, and a directory without it (a run in flight) is never
+#: pruned.
+FINISHED_MARKER = ".finished"
 
-    Same rule as the control plane's run retention (keep the last N).
-    Directories of runs still in flight are never removed.
+
+def mark_finished(run_dir: Path) -> None:
+    try:
+        (run_dir / FINISHED_MARKER).touch()
+    except OSError:
+        pass
+
+
+def mark_leftovers(runs_dir: Path) -> None:
+    """Mark the directories a previous agent process left unmarked.
+
+    Called before this agent starts any run: every unmarked directory then
+    belongs to a run that ended with the old process, and marking it makes
+    it eligible for retention.
+    """
+    try:
+        for path in runs_dir.iterdir():
+            if path.is_dir() and not (path / FINISHED_MARKER).exists():
+                mark_finished(path)
+    except OSError:
+        pass
+
+
+def prune_run_dirs(runs_dir: Path, keep_last: int) -> None:
+    """Delete all but the *keep_last* most recently finished run directories.
+
+    Same rule as the control plane's run retention (keep the last N),
+    counted by retirement time (:data:`FINISHED_MARKER`). Blocking: call it
+    in a thread. Tolerates directories vanishing underneath it.
     """
     if keep_last <= 0:
         return
     try:
-        entries = [p for p in runs_dir.iterdir() if p.is_dir()]
+        candidates = list(runs_dir.iterdir())
     except OSError:
         return
-    entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    for stale in entries[keep_last:]:
-        if stale.name not in protect:
-            shutil.rmtree(stale, ignore_errors=True)
+    finished: list[tuple[float, Path]] = []
+    for path in candidates:
+        try:
+            finished.append(((path / FINISHED_MARKER).stat().st_mtime, path))
+        except OSError:  # no marker (in flight), not a dir, or gone
+            continue
+    finished.sort(key=lambda item: item[0], reverse=True)
+    for _, stale in finished[keep_last:]:
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 def _as_dict(value: Any) -> dict[str, Any] | None:
@@ -175,11 +232,13 @@ class RunHandle:
     events_in: Any
     control_out: Any
     log_path: Path
-    grace_s: float = wp.DEFAULT_GRACE_S
+    #: The assignment's own ``grace_s``; ``None`` defers to the runner's.
+    grace_s: float | None = None
     seq: int = 0
     last_node: str | None = None
     cancel_requested: bool = False
     terminated: bool = False
+    killed: bool = False
     finished: bool = False
     reader: threading.Thread | None = None
     escalation: asyncio.Task | None = None
@@ -207,7 +266,7 @@ class Runner:
         child_entry: Callable[..., None] = child_module.main,
     ) -> None:
         self.runs_dir = runs_dir
-        self.offered_devices = offered_devices
+        self.offered_devices = {canonical_device(d) for d in offered_devices}
         self.send: Send = send if send is not None else _drop
         self.keep_last = keep_last
         self.default_grace_s = default_grace_s
@@ -218,6 +277,8 @@ class Runner:
         self.shutdown_grace_s = 10.0
         self.runs: dict[str, RunHandle] = {}
         self._ctx = multiprocessing.get_context("spawn")
+        self._housekeeping: set[asyncio.Future] = set()
+        mark_leftovers(runs_dir)
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── queries ───────────────────────────────────────────────────────────
@@ -232,25 +293,55 @@ class Runner:
     # ── assign ────────────────────────────────────────────────────────────
 
     def _check(self, frame: wp.Assign) -> tuple[str, list[str]]:
-        """``(child device, devices)`` for *frame*, or ``AssignmentRefused``."""
+        """``(child device, devices)`` for *frame*, or ``AssignmentRefused``.
+
+        Every device is compared in canonical form (``mps`` is ``mps:0``).
+        The run's own ``device`` must be offered too, and, when the
+        assignment names a set, belong to it.
+        """
         if self.draining:
             raise AssignmentRefused(REFUSE_DRAINING)
         if frame.run_id in self.runs:
             raise AssignmentRefused(REFUSE_DUPLICATE.format(run_id=frame.run_id))
         if frame.options.get("record_outputs"):
             raise AssignmentRefused(REFUSE_RECORD_OUTPUTS)
+        offered = self.offered_devices
         devices = list(frame.devices)
-        for device in devices:
-            kind, index = split_device(device)
-            canonical = kind if index is None else f"{kind}:{index}"
-            if canonical not in self.offered_devices:
+        canonical_set = [canonical_device(device) for device in devices]
+        for device, canonical in zip(devices, canonical_set):
+            if canonical not in offered:
                 raise AssignmentRefused(
                     f"device {device!r} is not offered by this worker "
-                    f"(offered: {sorted(self.offered_devices)})")
-        return child_device(frame.device, devices), devices
+                    f"(offered: {sorted(offered)})")
+        device = canonical_device(frame.device)
+        kind, index = split_device(device)
+        if index is None:  # a bare kind: any card of that kind will do
+            if not any(split_device(o)[0] == kind for o in offered):
+                raise AssignmentRefused(
+                    f"device {frame.device!r} is not offered by this worker "
+                    f"(offered: {sorted(offered)})")
+        elif device not in offered:
+            raise AssignmentRefused(
+                f"device {frame.device!r} is not offered by this worker "
+                f"(offered: {sorted(offered)})")
+        if canonical_set and index is not None and device not in canonical_set:
+            raise AssignmentRefused(
+                f"device {frame.device!r} is not in the assigned set "
+                f"{devices}")
+        if canonical_set and index is None and not any(
+                split_device(d)[0] == kind for d in canonical_set):
+            raise AssignmentRefused(
+                f"device {frame.device!r} is not in the assigned set "
+                f"{devices}")
+        named = device if kind == "cuda" else frame.device.strip().lower()
+        return child_device(named, canonical_set), canonical_set
 
     async def assign(self, frame: wp.Assign) -> None:
-        """Start *frame*'s run, or refuse it with a ``run_finished``."""
+        """Start *frame*'s run, or refuse it with a ``run_finished``.
+
+        Never raises: whatever goes wrong becomes that run's
+        ``run_finished`` ``failed``, and the connection keeps serving.
+        """
         self._loop = asyncio.get_running_loop()
         try:
             device, devices = self._check(frame)
@@ -261,13 +352,38 @@ class Runner:
                     run_id=frame.run_id, seq=1, status=wp.FINISHED_FAILED,
                     error=str(exc)))
             return
+        try:
+            await self._start(frame, device, devices)
+        except Exception as exc:  # noqa: BLE001 -- reported, agent keeps serving
+            logger.exception("run %s: could not start", frame.run_id)
+            await self._abandon(frame.run_id, f"could not start the run "
+                                              f"subprocess: {exc}")
+
+    async def _abandon(self, run_id: str, error: str) -> None:
+        """Fail a run whose start went wrong part-way, and clean it up."""
+        handle = self.runs.pop(run_id, None)
+        if handle is not None:
+            handle.finished = True
+            try:
+                if handle.process.is_alive():
+                    handle.process.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            handle.done.set()
+        seq = handle.next_seq() if handle is not None else 1
+        await self.send(wp.RunFinished(run_id=run_id, seq=seq,
+                                       status=wp.FINISHED_FAILED, error=error))
+
+    async def _start(self, frame: wp.Assign, device: str,
+                     devices: list[str]) -> None:
         run_dir = self.runs_dir / frame.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / OUTPUT_LOG
         spec = {
             "run_id": frame.run_id, "graph": frame.graph,
             "options": frame.options, "device": device,
-            "env": child_environment(devices), "log_path": str(log_path),
+            "env": child_environment(frame.device, devices),
+            "log_path": str(log_path),
         }
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)
@@ -276,15 +392,10 @@ class Runner:
             name=f"codefyui-run-{frame.run_id}", daemon=False)
         try:
             process.start()
-        except Exception as exc:  # noqa: BLE001 -- reported, agent keeps serving
-            logger.exception("run %s: could not start its subprocess",
-                             frame.run_id)
+        except BaseException:
             for end in (events_in, events_out, control_in, control_out):
                 end.close()
-            await self.send(wp.RunFinished(
-                run_id=frame.run_id, seq=1, status=wp.FINISHED_FAILED,
-                error=f"could not start the run subprocess: {exc}"))
-            return
+            raise
         # The child holds its own copies now. Closing ours is what lets the
         # reader see EOF when the child exits, however it exits.
         events_out.close()
@@ -292,8 +403,7 @@ class Runner:
         handle = RunHandle(
             run_id=frame.run_id, process=process, events_in=events_in,
             control_out=control_out, log_path=log_path,
-            grace_s=(self.default_grace_s if frame.grace_s is None
-                     else frame.grace_s))
+            grace_s=frame.grace_s)
         self.runs[frame.run_id] = handle
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
@@ -311,7 +421,10 @@ class Runner:
         handle = self.runs.get(run_id)
         if handle is None or handle.finished:
             return False
-        grace = handle.grace_s if grace_s is None else grace_s
+        # cancel's grace, else the assignment's, else welcome's (else 30 s).
+        grace = next(g for g in (grace_s, handle.grace_s,
+                                 self.default_grace_s, wp.DEFAULT_GRACE_S)
+                     if g is not None)
         if not handle.cancel_requested:
             handle.cancel_requested = True
             try:
@@ -344,6 +457,7 @@ class Runner:
         if handle.process.is_alive():
             logger.warning("run %s survived terminate(); killing",
                            handle.run_id)
+            handle.killed = True
             handle.process.kill()
 
     async def shutdown(self, grace_s: float | None = None) -> None:
@@ -449,29 +563,50 @@ class Runner:
             pass
 
     def _unreported_end(self, handle: RunHandle) -> wp.RunFinished:
-        """``run_finished`` for a child that exited without saying how."""
+        """``run_finished`` for a child that exited without saying how.
+
+        ``interrupted`` only when the exit is the one a stop explains: the
+        signal this agent sent after the grace period, or a clean exit
+        while a cancel was pending. Any other exit is a crash (``failed``),
+        cancel or not. The output tail rides on every one of them.
+        """
         code = handle.process.exitcode
-        if handle.cancel_requested:
+        tail = read_tail(handle.log_path)
+        expected: set[int] = set()
+        if handle.terminated:
+            expected.add(-signal.SIGTERM)
+        if handle.killed:
+            expected.add(-getattr(signal, "SIGKILL", signal.SIGTERM))
+        if code in expected:
+            error = ("the run did not stop within its grace period and was "
+                     "terminated")
+        elif handle.cancel_requested and code == 0:
+            error = "the run subprocess exited while stopping"
+        else:
             return wp.RunFinished(
                 run_id=handle.run_id, seq=handle.next_seq(),
-                status=wp.FINISHED_INTERRUPTED, exit_code=code,
-                last_node=handle.last_node,
-                error=("the run did not stop within its grace period and "
-                       "was terminated" if handle.terminated
-                       else "the run subprocess exited while stopping"))
+                status=wp.FINISHED_FAILED, exit_code=code,
+                error=f"run subprocess exited with code {code}",
+                stderr_tail=tail, last_node=handle.last_node)
         return wp.RunFinished(
             run_id=handle.run_id, seq=handle.next_seq(),
-            status=wp.FINISHED_FAILED, exit_code=code,
-            error=f"run subprocess exited with code {code}",
-            stderr_tail=read_tail(handle.log_path),
-            last_node=handle.last_node)
+            status=wp.FINISHED_INTERRUPTED, exit_code=code, error=error,
+            stderr_tail=tail, last_node=handle.last_node)
 
     def _retire(self, handle: RunHandle) -> None:
         self.runs.pop(handle.run_id, None)
         if handle.escalation is not None and not handle.escalation.done():
             handle.escalation.cancel()
         handle.done.set()
-        prune_run_dirs(self.runs_dir, self.keep_last, protect=set(self.runs))
+        task = asyncio.ensure_future(asyncio.to_thread(
+            self._retire_files, handle.log_path.parent))
+        self._housekeeping.add(task)
+        task.add_done_callback(self._housekeeping.discard)
+
+    def _retire_files(self, run_dir: Path) -> None:
+        """Mark *run_dir* finished and apply retention. Blocking."""
+        mark_finished(run_dir)
+        prune_run_dirs(self.runs_dir, self.keep_last)
 
 
 async def _drop(frame: Any) -> None:  # pragma: no cover - placeholder sink

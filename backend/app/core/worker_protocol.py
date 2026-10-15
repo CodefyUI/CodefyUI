@@ -10,12 +10,10 @@ Wire format
 Every frame is ONE JSON text message: an object whose ``type`` key names
 the frame and whose other keys are that frame's fields, flat (no
 ``data`` envelope). :func:`encode_frame` writes one, :func:`decode_agent_frame`
-and :func:`decode_control_frame` read one. JSON is written with
-``allow_nan=True``: an event payload crosses this wire as the Python value
-the engine produced, NaN included, and the control plane sanitises it with
-the same ``json_safe`` / ``cap_event_payload`` an in-process run goes
-through. Converting NaN here would make a worker run's log differ from a
-local one's.
+and :func:`decode_control_frame` read one. Event payloads arrive
+already passed through ``json_safe`` and ``cap_event_payload`` (the run
+subprocess applies the control plane's own policy), so they are small and
+NaN-free; the control plane applies both again, which changes nothing.
 
 Direction and order
 -------------------
@@ -51,10 +49,14 @@ What the frames carry
 - ``artifact`` / ``warning``: an ``ArtifactSignal`` / ``WarningSignal``'s
   fields, for ``RunSinks.record_artifact`` / ``RunSinks.warn``.
 - ``run_finished.status``: ``succeeded``, ``failed`` or ``cancelled`` as an
-  ``ExecutionOutcome`` reports them, or ``interrupted``: the run did not
-  stop within ``grace_s`` of a ``cancel`` and the agent terminated it
-  (``last_node`` names the node that was running). A subprocess that died
-  without reporting is ``failed`` with ``exit_code`` and ``stderr_tail``.
+  ``ExecutionOutcome`` reports them, or ``interrupted``: after a ``cancel``
+  the subprocess ended without reporting, because the agent terminated it
+  after ``grace_s`` or it exited cleanly while stopping (``last_node``
+  names the node that was running). A subprocess that died without
+  reporting otherwise is ``failed`` with ``exit_code``. ``stderr_tail``
+  rides on every unreported end.
+- A frame the agent cannot encode is replaced by a ``warning`` with the
+  same ``seq`` (kind ``unserialisable_frame``), never dropped silently.
 """
 
 from __future__ import annotations
@@ -264,7 +266,9 @@ class Assign(_Frame):
 class Cancel(_Frame):
     type: Literal["cancel"] = CANCEL
     run_id: RunId
-    grace_s: float = Field(default=DEFAULT_GRACE_S, ge=0)
+    #: Seconds before the run is terminated. ``None``: the assignment's
+    #: ``grace_s``, else ``welcome.grace_s``, else :data:`DEFAULT_GRACE_S`.
+    grace_s: float | None = Field(default=None, ge=0)
 
 
 class Drain(_Frame):
@@ -295,9 +299,15 @@ class ProtocolError(ValueError):
 
 
 def encode_frame(frame: _Frame) -> str:
-    """One frame as the JSON text message that goes on the wire."""
+    """One frame as the JSON text message that goes on the wire.
+
+    ``default=str`` is the control plane's rule for measuring an event
+    payload (``run_events.json_size``): a value JSON has no type for is
+    sent as its ``str`` rather than failing the frame. What can still
+    raise (a circular structure) is the sender's to handle.
+    """
     return json.dumps(frame.model_dump(mode="python"), allow_nan=True,
-                      separators=(",", ":"), ensure_ascii=False)
+                      separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 def _decode(adapter: TypeAdapter[Any], raw: str | bytes) -> Any:

@@ -148,7 +148,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import json
 import logging
 import re
 import time
@@ -208,6 +207,14 @@ from .run_events import NON_METRIC_EVENTS as NON_METRIC_EVENTS
 from .run_events import NON_METRIC_KEYS as NON_METRIC_KEYS
 from .run_events import metric_step as metric_step
 from .run_events import scalar_metrics as scalar_metrics
+# The payload cap moved to ``run_events`` by #771 (the worker subprocess
+# applies it too); re-exported under the names this module published.
+from .run_events import TRUNCATION_MARKER as TRUNCATION_MARKER
+from .run_events import _elide_entry as _elide_entry
+from .run_events import _fit_prefix as _fit_prefix
+from .run_events import _truncate_strings as _truncate_strings
+from .run_events import cap_event_payload as cap_event_payload
+from .run_events import json_size as json_size
 from .run_output_store import RunOutputStore
 from .run_store import (
     STATUS_CANCELLED,
@@ -949,176 +956,6 @@ def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
         if seed is not None:
             filled["seed"] = seed
     return filled if filled or options is not None else options
-
-
-def json_size(value: Any) -> int:
-    """Bytes this value would occupy as a stored JSON column.
-
-    Matches ``run_store._dumps``' encoding (compact separators, the default
-    ``ensure_ascii=True``), so the number is the real storage cost and not
-    an estimate. ``ensure_ascii`` also means every character encodes to one
-    byte, which is why ``len`` of the string is the byte count with no
-    encode step. ``default=str`` keeps MEASURING from ever raising on
-    something exotic — a sizer that throws would fail the run it was only
-    trying to bound.
-    """
-    try:
-        return len(json.dumps(value, separators=(",", ":"), default=str))
-    except (TypeError, ValueError, RecursionError):  # pragma: no cover
-        return 0
-
-
-def _elide_entry(entry: Any, budget_bytes: int) -> Any:
-    """Replace one over-budget output entry with a placeholder.
-
-    ``output_kind`` and ``port`` survive so a UI can render "image, elided"
-    in the right slot rather than a hole. The payload key (``image``,
-    ``tensor_summary``, …) is DROPPED rather than stuffed with a marker
-    object: a consumer that reads ``entry["text"]`` expecting a string must
-    not silently receive a dict instead. ``"elided" in entry`` is the check.
-    """
-    if not isinstance(entry, dict):
-        return entry
-    size = json_size(entry)
-    if size <= budget_bytes:
-        return entry
-    elided: dict[str, Any] = {"output_kind": entry.get("output_kind"),
-                              "elided": True, "bytes": size,
-                              "cap_bytes": budget_bytes}
-    if "port" in entry:
-        elided["port"] = entry["port"]
-    return elided
-
-
-#: Appended to a string that was cut short. ASCII by construction, so its
-#: contribution to the encoded payload is exactly ``len`` bytes.
-TRUNCATION_MARKER = "... [truncated]"
-
-
-def _fit_prefix(value: str, budget_bytes: int) -> str:
-    """The LONGEST prefix of *value* whose JSON encoding fits the budget.
-
-    Binary search rather than ``value[:budget_bytes]`` because
-    ``ensure_ascii=True`` (``run_store._dumps``' encoding, which
-    ``json_size`` mirrors) makes one source character cost anywhere from 1
-    to 12 bytes — a CJK traceback sliced by character count would still
-    blow the cap and collapse to the marker this exists to avoid. The
-    encoded size is monotonic in the prefix length, so the search is exact;
-    it costs ~log2(len) measurements and only ever runs on the rare
-    over-cap path.
-    """
-    low, high = 0, len(value)
-    while low < high:
-        mid = (low + high + 1) // 2
-        if json_size(value[:mid]) <= budget_bytes:
-            low = mid
-        else:
-            high = mid - 1
-    return value[:low]
-
-
-def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, Any]:
-    """Cut over-long top-level strings down to a head + marker.
-
-    The bug this fixes: an ``execution_error`` carrying a 200 KB traceback
-    has no ``outputs`` to elide, so it fell straight through to the marker
-    and the user got a red banner with NO message — on the one payload
-    where the text is the entire point. A first paragraph of a traceback is
-    almost always enough to diagnose the failure; nothing is.
-
-    Largest string first, re-measuring after each: the budget for one
-    string is the cap minus everything else in the payload AS IT NOW
-    STANDS, so a payload with several strings spends its bytes where they
-    are actually needed instead of splitting them evenly between a 200 KB
-    ``error`` and a 6-character ``status``.
-
-    Two whole-payload measurements per string sounds expensive, and would
-    be if the key count were open-ended. It is not: every payload reaching
-    here is built by ``core.run_events`` or ``_finalize`` and has at most a
-    handful of top-level keys (``node_id``, ``status``, ``error``,
-    ``error_type``, ``outputs``, ``reason``, ``run_id``). Nothing a client
-    sends becomes a key here.
-    """
-    keys = sorted((k for k, v in payload.items() if isinstance(v, str)),
-                  key=lambda k: len(payload[k]), reverse=True)
-    out = dict(payload)
-    for key in keys:
-        if json_size(out) <= cap_bytes:
-            break
-        room = (cap_bytes - json_size({**out, key: ""})
-                - len(TRUNCATION_MARKER))
-        if room <= 0:
-            continue
-        kept = _fit_prefix(out[key], room)
-        # Only when the result is genuinely SHORTER. With a tiny budget the
-        # marker can outweigh what it replaces ("ok" -> "o... [truncated]"),
-        # and growing a payload that is already over cap helps nobody — the
-        # marker fallback is the right answer for that one.
-        if len(kept) + len(TRUNCATION_MARKER) < len(out[key]):
-            out[key] = kept + TRUNCATION_MARKER
-    return out
-
-
-def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
-    """Bound one event payload before it becomes a durable row.
-
-    Retention counts RUNS, not bytes. Nothing else stops a graph whose nodes
-    emit base64 PNGs (#117 image entries are the full image) from writing
-    hundreds of megabytes of ``exec_run_events`` for a single run — with
-    ``record_outputs`` off, because this path is the live status stream, not
-    the output capture. Same for a training payload whose per-batch array
-    grows every epoch.
-
-    Four steps, cheapest first, each preserving more meaning than the next:
-
-    1. Measure once. Under cap — the overwhelmingly common case, an ordinary
-       ``node_status`` is a couple of KB — and the payload is returned
-       untouched, having cost exactly one ``json.dumps``.
-    2. Over cap, elide the output entries that are pulling more than their
-       equal share of the budget. Equal share, rather than the whole cap,
-       so a payload made of several medium entries degrades entry by entry
-       instead of collapsing wholesale.
-    3. Still over, and the weight is in a top-level string (an ``error``
-       with a giant traceback): keep its head and mark it truncated.
-    4. Still over — nothing left to trim — and the payload collapses to a
-       marker that keeps the identifying keys. Losing the body beats
-       refusing the event.
-
-    ``cap_bytes <= 0`` disables the whole thing.
-    """
-    if cap_bytes <= 0 or payload is None:
-        return payload
-    size = json_size(payload)
-    if size <= cap_bytes:
-        return payload
-
-    if isinstance(payload, dict):
-        entries = payload.get("outputs")
-        if isinstance(entries, list) and entries:
-            budget = max(1, cap_bytes // len(entries))
-            payload = {**payload,
-                       "outputs": [_elide_entry(e, budget) for e in entries]}
-            size = json_size(payload)
-            if size <= cap_bytes:
-                return payload
-
-        payload = _truncate_strings(payload, cap_bytes=cap_bytes)
-        size = json_size(payload)
-        if size <= cap_bytes:
-            return payload
-
-    marker: dict[str, Any] = {"elided": True, "bytes": size,
-                              "cap_bytes": cap_bytes}
-    if isinstance(payload, dict):
-        # ``error_type`` is a class name, so it can never be what pushed the
-        # payload over the cap -- and the frontend keys its whole error
-        # mapping on it (``errorMessages.ts``). Without it here the marker
-        # is the one shape that leaves the UI scanning a traceback that is
-        # no longer in the payload.
-        for key in ("node_id", "status", "run_id", "reason", "error_type"):
-            if key in payload:
-                marker[key] = payload[key]
-    return marker
 
 
 # ── run exclusion ─────────────────────────────────────────────────────────

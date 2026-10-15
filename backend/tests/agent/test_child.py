@@ -136,3 +136,42 @@ def test_safe_sender_swallows_a_closed_pipe():
     reader.close()
     writer.close()
     child._safe_sender(writer)(("event",))  # no exception
+
+
+def test_wire_payload_applies_the_control_planes_cap_and_sanitising():
+    from app.core.run_events import cap_event_payload
+    from app.core.run_store import json_safe
+
+    big = {"node_id": "a", "status": "error", "error": "x" * 50_000,
+           "loss": float("nan"), "shape": (2, 3), "obj": object()}
+    wired = child.wire_payload(big, 4096)
+    assert wired["error"].endswith("... [truncated]")
+    assert wired["loss"] is None and wired["shape"] == [2, 3]
+    assert isinstance(wired["obj"], str)
+    # Small payloads are what the control plane would store, unchanged.
+    small = {"node_id": "a", "status": "running"}
+    assert child.wire_payload(small, 4096) == cap_event_payload(
+        json_safe(small), cap_bytes=4096) == small
+
+
+async def test_an_unencodable_event_becomes_a_warning():
+    sent: list[tuple] = []
+    sinks = child._pipe_sinks(sent.append, cap_bytes=0)
+    loop: dict = {"node_id": "n1"}
+    loop["self"] = loop  # circular: no JSON for this
+    await sinks.emit("node_status", loop)
+    assert sent[0][0] == child.MSG_WARNING
+    assert sent[0][1]["kind"] == "unserialisable_event"
+    assert sent[0][1]["node_id"] == "n1"
+
+
+def test_children_ignore_ctrl_c():
+    import signal
+
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        child.ignore_interrupts()
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGINT, previous)
+

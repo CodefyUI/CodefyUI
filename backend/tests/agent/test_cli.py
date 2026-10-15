@@ -158,3 +158,22 @@ def test_start_in_background_then_stop(user_data):
     assert "agent bg-test starting" in log
     # The token never reaches the command line.
     assert "--token" not in log
+
+
+def test_start_without_a_token_fails_fast(user_data, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    code = cli.main(["start", "--foreground", "--control", "http://x:1"])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "session.token" in err and "--token" in err
+
+
+def test_apple_silicon_offers_mps_without_torch(monkeypatch):
+    monkeypatch.setattr(cli, "apple_silicon", lambda: True)
+    facts = cli._probe_facts()
+    mps = [f for f in facts if f.kind == "mps"]
+    assert [(f.value, f.total_bytes, f.free_bytes) for f in mps] == [
+        ("mps", None, None)]
+    monkeypatch.setattr(cli, "apple_silicon", lambda: False)
+    assert not [f for f in cli._probe_facts() if f.kind == "mps"]
+

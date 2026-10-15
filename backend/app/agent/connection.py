@@ -46,6 +46,37 @@ BACKOFF_MAX_S = 30.0
 WELCOME_TIMEOUT_S = 10.0
 
 
+def _encode_or_warn(frame: Any) -> str:
+    """*frame* as JSON; a frame that cannot be encoded becomes a ``warning``
+    for its run with the same ``seq`` (a ``run_finished`` keeps its status
+    and drops only what failed), so nothing vanishes without a trace."""
+    try:
+        return wp.encode_frame(frame)
+    except (TypeError, ValueError, RecursionError) as exc:
+        logger.warning("a %s frame could not be encoded: %s",
+                       getattr(frame, "type", "?"), exc)
+        if isinstance(frame, wp.RunFinished):
+            return wp.encode_frame(frame.model_copy(update={
+                "peak_memory": None,
+                "error": (frame.error or "") + f" (part of this report "
+                         f"could not be encoded: {exc})"}))
+        run_id, seq = getattr(frame, "run_id", None), getattr(frame, "seq", None)
+        if run_id is None or seq is None:
+            raise
+        return wp.encode_frame(wp.RunWarning(
+            run_id=run_id, seq=seq, kind="unserialisable_frame",
+            detail=f"a {frame.type} frame could not be encoded: {exc}"))
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status a refused WebSocket handshake answered with."""
+    response = getattr(exc, "response", None)  # websockets >= 14
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)  # legacy client
+    return status if isinstance(status, int) else None
+
+
 class AgentRejected(RuntimeError):
     """The control plane refused this agent (``reject``); do not retry."""
 
@@ -77,6 +108,10 @@ def platform_facts() -> dict[str, str]:
     }
 
 
+class _NoToken(Exception):
+    """No token to dial with; logged where it is raised."""
+
+
 class AgentConnection:
     """Keeps one ``/ws/worker`` connection up and serves it.
 
@@ -93,6 +128,7 @@ class AgentConnection:
         probe_devices: Callable[[], list[wp.DeviceReport]],
         max_message_bytes: int | None = None,
         backoff_min_s: float = BACKOFF_MIN_S,
+        token_source: str = "--token",
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
@@ -103,6 +139,8 @@ class AgentConnection:
         self._probe_devices = probe_devices
         self.max_message_bytes = max_message_bytes
         self.backoff_min_s = backoff_min_s
+        #: Where the token comes from, for error messages (a file path).
+        self.token_source = token_source
         self.heartbeat_s = wp.DEFAULT_HEARTBEAT_S
         self.worker_id: str | None = None
         self._ws: Any = None
@@ -123,7 +161,7 @@ class AgentConnection:
                              getattr(frame, "type", "?"))
                 return False
             try:
-                await ws.send(wp.encode_frame(frame))
+                await ws.send(_encode_or_warn(frame))
                 return True
             except ConnectionClosed:
                 logger.debug("connection closed; dropped a %s frame",
@@ -153,8 +191,11 @@ class AgentConnection:
         while not stop.is_set():
             welcomed = False
             try:
-                url = worker_ws_url(self._resolve(self._control_url),
-                                    self._resolve(self._token))
+                token = self._resolve(self._token)
+                if not token:
+                    logger.error("no connection token: %s", self.token_source)
+                    raise _NoToken
+                url = worker_ws_url(self._resolve(self._control_url), token)
                 async with websockets.connect(
                         url, max_size=self.max_message_bytes,
                         open_timeout=WELCOME_TIMEOUT_S) as ws:
@@ -163,10 +204,17 @@ class AgentConnection:
                 logger.error("the control plane rejected this agent: %s", exc)
                 code = 2
                 break
+            except _NoToken:
+                pass
             except (OSError, WebSocketException, asyncio.TimeoutError,
                     wp.ProtocolError, ValueError) as exc:
-                logger.warning("connection to the control plane failed: %s",
-                               exc)
+                if _http_status(exc) in (401, 403):
+                    logger.error(
+                        "the control plane refused the token (HTTP %s); "
+                        "token from %s", _http_status(exc), self.token_source)
+                else:
+                    logger.warning(
+                        "connection to the control plane failed: %s", exc)
             if stop.is_set():
                 break
             if welcomed:
@@ -247,7 +295,12 @@ class AgentConnection:
                 except wp.ProtocolError as exc:
                     logger.warning("ignoring a bad frame: %s", exc)
                     continue
-                await self._dispatch(frame)
+                try:
+                    await self._dispatch(frame)
+                except AgentRejected:
+                    raise
+                except Exception:  # noqa: BLE001 -- one bad frame, not the socket
+                    logger.exception("handling a %s frame failed", frame.type)
         except ConnectionClosed:
             pass
         logger.warning("the control plane closed the connection")
