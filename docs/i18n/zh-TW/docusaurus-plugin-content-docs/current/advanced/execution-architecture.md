@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)），以及控制面指紋釘選（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。以下各節會註明哪些部分仍在規劃中。
+目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)），以及讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）。以下各節會註明哪些部分仍在規劃中。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -135,7 +135,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **方向規則。** worker 一律主動連到控制面，從不監聽任何埠；控制面從不連向 worker。worker 從不寫 SQLite。
 
-**規劃中。** 握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）；agent 在首次使用時釘選控制面的 TLS 指紋，並規定機密只能經由已驗證的通道傳送（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
+**規劃中。** 握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）。Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 
 ## 不變量 {/* #invariants */}
 

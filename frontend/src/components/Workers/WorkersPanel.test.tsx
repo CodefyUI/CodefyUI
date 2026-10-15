@@ -24,7 +24,7 @@ vi.mock('../../api/workers', () => ({
   fetchEnrollments: vi.fn(),
   createEnrollment: vi.fn(),
   deleteEnrollment: vi.fn(),
-  agentEnrollCommand: (url: string, token: string) => `cdui agent start --control ${url} --token ${token}`,
+  agentCommand: vi.fn(),
 }));
 
 const NOW_S = 1_800_000_000;
@@ -191,6 +191,14 @@ describe('WorkersPanel', () => {
       }),
     ]);
     expect(within(dialog).queryByText('Running')).toBeNull();
+  });
+
+  it('badges a worker connected over plain HTTP from another machine (#786)', async () => {
+    const dialog = await openPanel([worker('far', { plain_http: true }), worker('near', { plain_http: false })]);
+    const far = within(dialog).getByRole('article', { name: 'far' });
+    const near = within(dialog).getByRole('article', { name: 'near' });
+    expect(within(far).getByText('Plain HTTP')).toHaveAttribute('title', expect.stringMatching(/unencrypted/));
+    expect(within(near).queryByText('Plain HTTP')).toBeNull();
   });
 
   it('shows a status this build does not know as sent, in a neutral chip', async () => {

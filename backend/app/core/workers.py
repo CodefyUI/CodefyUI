@@ -174,6 +174,13 @@ class Worker:
     #: :data:`CREDENTIAL_WORKER`, :data:`CREDENTIAL_SESSION`, or None for
     #: an enrolled worker that has not connected since this server started.
     credential: str | None = None
+    #: Its current (or last) connection reached this server over plain
+    #: ``ws://`` from another machine (#786): the worker token and the
+    #: secrets in its assignments crossed the network unencrypted. False for
+    #: ``wss`` (as uvicorn reports the scheme) and for a loopback peer: a
+    #: same-host agent, a TLS proxy on this machine, or an SSH tunnel's
+    #: local end.
+    plain_http: bool = False
 
     @property
     def online(self) -> bool:
@@ -218,6 +225,7 @@ class Worker:
             "last_heartbeat_at": self.last_heartbeat_at,
             "enrolled": self.enrolled,
             "credential": self.credential,
+            "plain_http": self.plain_http,
         }
 
 
@@ -367,7 +375,8 @@ class WorkerRegistry:
                 close: Callable[[], Awaitable[None]],
                 same_host: bool = False,
                 credential: str | None = None,
-                enrolled: bool = False) -> tuple[Worker, Worker | None]:
+                enrolled: bool = False,
+                plain_http: bool = False) -> tuple[Worker, Worker | None]:
         """Register *hello*'s worker. Returns ``(worker, replaced)``.
 
         *same_host*: the worker's machine identity equals this process's
@@ -375,6 +384,7 @@ class WorkerRegistry:
         :meth:`_shared_devices`) share their slots. *credential* says how
         the connection authenticated; *enrolled* that the worker has a
         ``workers`` row (a known worker keeps the flag either way).
+        *plain_http*: the connection is unencrypted from another machine.
 
         A worker already registered under the name is replaced: its runs
         move to the new connection and wait for ``run_alive``, and the
@@ -387,7 +397,7 @@ class WorkerRegistry:
             mounts=dict(hello.mounts), devices=list(hello.devices),
             send=send, close=close, heartbeat_s=self.heartbeat_s,
             last_heartbeat=self._clock(), same_host=same_host,
-            credential=credential,
+            credential=credential, plain_http=plain_http,
             enrolled=enrolled or (old is not None and old.enrolled))
         worker.shared = self._shared_devices(worker)
         replaced = None

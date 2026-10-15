@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  agentEnrollCommand,
+  agentCommand,
   createEnrollment,
   deleteEnrollment,
   drainWorker,
@@ -141,12 +141,23 @@ describe('enrollment tokens', () => {
     await expect(deleteEnrollment('x')).rejects.toThrow("no enrollment token 'x'");
   });
 
-  it('builds the agent command, with the name for a re-key token', () => {
-    expect(agentEnrollCommand('http://10.0.0.2:8000', 'abcdef.0123456789abcdef')).toBe(
-      'cdui agent start --control http://10.0.0.2:8000 --token abcdef.0123456789abcdef',
-    );
-    expect(agentEnrollCommand('http://10.0.0.2:8000', 'abcdef.0123456789abcdef', 'gpu-box')).toBe(
-      'cdui agent start --control http://10.0.0.2:8000 --token abcdef.0123456789abcdef --name gpu-box',
-    );
+  it('creates one for another address', async () => {
+    const fetchMock = mockFetch(200, { id: 'abcdef' });
+    await createEnrollment({ ttl_s: 3600, uses: 1, control_url: 'https://cp.lab' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ttl_s: 3600, uses: 1, control_url: 'https://cp.lab' });
+  });
+
+  it('asks the server for the agent command at an address, the token in the body', async () => {
+    const fetchMock = mockFetch(200, { control_url: 'https://cp.lab', command: 'cdui agent start ...' });
+    const body = { control_url: 'https://cp.lab', token: 'abcdef.0123456789abcdef', worker: null };
+    expect(await agentCommand(body)).toBe('cdui agent start ...');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/workers/agent-command');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual(body);
+    mockFetch(422, { detail: 'control_url must be http(s)://host[:port][/path]' });
+    await expect(agentCommand(body)).rejects.toThrow('control_url must be');
+    mockFetch(500, null, true);
+    await expect(agentCommand(body)).rejects.toThrow('Command failed: mock');
   });
 });

@@ -31,6 +31,14 @@ derive their data directories from it. Mounts are saved in
 ``<user-data>/agent.json`` (``agent_config``), so a later ``cdui agent
 start`` keeps them; ``--mount LABEL=`` removes one.
 
+Trust (#786): over ``https`` the agent verifies the control plane's
+certificate (``app.agent.trust``) for the enrollment request and every
+``wss`` dial. ``--ca-fingerprint sha256:<hex>`` pins the SPKI hash of the
+server's leaf certificate (recorded in the credential file, so later starts
+keep it; a mismatch is refused); without it the system CAs decide and
+nothing is recorded. Over plain ``http`` to another machine one warning is
+printed at start.
+
 Background by default, like ``cdui start``: the agent is re-launched as a
 detached ``--foreground`` process, its pid in ``<user-data>/agent.pid`` and
 its log in ``<user-data>/agent.log``. ``--foreground`` keeps it attached
@@ -203,6 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
         "shared storage: LABEL=PATH, e.g. data=/nas/lab/codefyui/data "
         "(repeatable; saved and reused by later starts; LABEL= removes "
         "one)"))
+    start.add_argument("--ca-fingerprint", default=None, help=t(
+        "控制面伺服器憑證（leaf）公鑰的指紋 sha256:<hex>；釘選後不檢查 CA，"
+        "不符就拒絕連線",
+        "fingerprint of the control plane's server (leaf) certificate "
+        "public key, sha256:<hex>; pins it instead of checking CAs, and "
+        "refuses to connect when it does not match"))
     start.add_argument("--foreground", action="store_true", help=t(
         "在前景執行（systemd 或想看日誌時）",
         "stay in the foreground (systemd, or to watch the log)"))
@@ -453,6 +467,8 @@ def _start_background(args: argparse.Namespace, control: Any,
     env = dict(os.environ)
     if isinstance(control, str):
         argv += ["--control", control]
+    if getattr(args, "ca_fingerprint", None):
+        argv += ["--ca-fingerprint", args.ca_fingerprint]
     if isinstance(token, str):
         env[TOKEN_ENV] = token
     if args.name:
@@ -517,7 +533,8 @@ def _install_stop_handlers(loop: asyncio.AbstractEventLoop,
 
 def run_agent(args: argparse.Namespace, control: Any, token: Any,
               devices: list[Any], token_source: str | None = None,
-              mounts: dict[str, str] | None = None) -> int:
+              mounts: dict[str, str] | None = None,
+              trust: Any = None) -> int:
     """The agent itself: connect and serve until stopped."""
     from ..config import settings
     from ..core import worker_protocol as wp
@@ -545,7 +562,10 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             max_message_bytes=settings.WS_MAX_MESSAGE_BYTES,
             token_source=token_source or (
                 f"the session token file {token_file()}"
-                if callable(token) else f"--token / ${TOKEN_ENV}"))
+                if callable(token) else f"--token / ${TOKEN_ENV}"),
+            trust=trust,
+            on_trusted=(fingerprint_recorder(control)
+                        if isinstance(control, str) else None))
         return await connection.run(stop)
 
     logger.info("agent %s starting (pid %s); offering %s; mounts %s", name,
@@ -589,6 +609,75 @@ def _report(fact: Any) -> Any:
         value=fact.value, kind=fact.kind, index=fact.index, name=fact.name,
         total_bytes=fact.total_bytes, free_bytes=fact.free_bytes,
         source=fact.source, uuid=getattr(fact, "uuid", None))
+
+
+# ── trust (#786) ──────────────────────────────────────────────────────────
+
+
+def plain_http_to_another_machine(control: Any) -> bool:
+    """*control* is an ``http://`` URL whose host is not this machine (a
+    loopback URL is the same host, or an SSH tunnel's local end)."""
+    from urllib.parse import urlsplit
+
+    from ..core.auth import is_loopback_peer
+
+    if not isinstance(control, str):
+        return False
+    parts = urlsplit(control.strip())
+    host = (parts.hostname or "").lower()
+    return (parts.scheme.lower() == "http" and host != "localhost"
+            and not is_loopback_peer(host))
+
+
+def warn_plain_http(control: str) -> None:
+    _err(f"警告：{control} 是未加密的 HTTP：worker token 與每個指派中的 secret "
+         "參數都以明文傳輸。請改用 https:// 控制面網址（TLS 反向代理）或 SSH "
+         "通道。",
+         f"Warning: {control} is plain HTTP: the worker token and the "
+         "secrets in every assignment travel unencrypted. Use an https:// "
+         "control URL (a TLS proxy) or an SSH tunnel.")
+
+
+def retrust_hint(control: str) -> str:
+    return t(
+        f"若憑證是刻意更換的，先確認新指紋（Add worker 對話框，或在代理主機上用 "
+        f"openssl 計算），再執行 cdui agent start --control {control} "
+        f"--ca-fingerprint <新指紋>；或執行 cdui agent forget {control} "
+        "刪掉已存憑證後重新加入",
+        "If the certificate was replaced on purpose, check its new "
+        "fingerprint (the Add worker dialog, or openssl on the proxy host) "
+        f"and run cdui agent start --control {control} --ca-fingerprint "
+        f"<new fingerprint>; or run cdui agent forget {control} to drop the "
+        "stored credential and enroll again")
+
+
+def build_trust(control: str, pin: str | None, stored: Any) -> Any:
+    """The verifier for an ``https`` *control*: the user's pin
+    (``--ca-fingerprint`` now, else the one an earlier start recorded),
+    else the system CAs."""
+    from .trust import ControlPlaneTrust
+
+    source = "--ca-fingerprint"
+    if pin is None and stored is not None and stored.ca_fingerprint:
+        pin = stored.ca_fingerprint
+        source = t(f"{stored.path} 記錄的 --ca-fingerprint",
+                   f"the --ca-fingerprint recorded in {stored.path}")
+    return ControlPlaneTrust(pin, source=source, hint=retrust_hint(control))
+
+
+def fingerprint_recorder(control: str) -> Callable[[str], None]:
+    """Stores the user's pin in *control*'s credential file when it differs
+    from the one there (``record_fingerprint`` skips the write otherwise).
+    Runs in a thread, once per verified connection."""
+    from .enroll import record_fingerprint
+
+    def record(fingerprint: str) -> None:
+        path = record_fingerprint(user_data_dir(), control, fingerprint)
+        if path is not None:
+            logger.info("recorded the pinned certificate fingerprint %s in "
+                        "%s", fingerprint, path)
+
+    return record
 
 
 def cmd_forget(args: argparse.Namespace) -> int:
@@ -644,9 +733,10 @@ def use_stored_credential(args: argparse.Namespace, control: str,
 
 
 def enroll_now(args: argparse.Namespace, control: str, token: str,
-               facts: list[Any]) -> str:
-    """Trade the enrollment *token* for a worker token and store it.
-    Returns the worker token. Raises ``EnrollError``."""
+               facts: list[Any], trust: Any = None) -> str:
+    """Trade the enrollment *token* for a worker token and store it, with
+    the user's pin when *trust* has one (``https``). Returns the worker
+    token. Raises ``EnrollError``."""
     from .connection import platform_facts
     from .enroll import enroll, save_credential
 
@@ -654,8 +744,10 @@ def enroll_now(args: argparse.Namespace, control: str, token: str,
          f"Enrolling as worker {args.name!r} with {control}...")
     worker_id, worker_token = enroll(
         control, token, name=args.name, platform=platform_facts(),
-        devices=[_report(fact).model_dump() for fact in facts])
-    path = save_credential(user_data_dir(), control, worker_id, worker_token)
+        devices=[_report(fact).model_dump() for fact in facts], trust=trust)
+    pin = trust.expected if trust is not None else None
+    path = save_credential(user_data_dir(), control, worker_id, worker_token,
+                           ca_fingerprint=pin)
     args.name = worker_id
     _say(f"已加入；worker 憑證存於 {path}（之後重啟會沿用）。",
          f"Enrolled; the worker credential is stored in {path} (restarts "
@@ -676,7 +768,12 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "stop the agent first (cdui agent stop)."), file=sys.stderr)
         return 1
     explicit_name = args.name
+    from ..core import tls_fingerprint
+    from .trust import is_https
+
     try:
+        pin = (tls_fingerprint.normalize(args.ca_fingerprint)
+               if args.ca_fingerprint else None)
         args.name = validate_name(args.name or default_name())
         wanted = parse_devices(args.devices)
         facts = offered_reports(_probe_facts(), wanted)
@@ -700,6 +797,15 @@ def cmd_start(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+    if pin is not None and not (isinstance(control, str)
+                                and is_https(control)):
+        _err("--ca-fingerprint 需要 https:// 控制面網址。",
+             "--ca-fingerprint needs an https:// control URL.")
+        return 2
+    if plain_http_to_another_machine(control) and not args.daemonized:
+        warn_plain_http(control)
+    trust = (build_trust(control, pin, stored)
+             if isinstance(control, str) and is_https(control) else None)
     token_source = None
     if stored is not None:
         token: Any = stored.worker_token
@@ -720,7 +826,7 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         url = control() if callable(control) else control
         try:
-            token = enroll_now(args, url, token, facts)
+            token = enroll_now(args, url, token, facts, trust)
         except (EnrollError, ValueError) as exc:
             _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
             return 1
@@ -737,7 +843,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         return _start_background(args, control, token)
     _setup_logging(args.daemonized)
     return run_agent(args, control, token, facts, token_source=token_source,
-                     mounts=mounts)
+                     mounts=mounts, trust=trust)
 
 
 def main(argv: list[str] | None = None) -> int:

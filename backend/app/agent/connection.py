@@ -24,6 +24,14 @@ refuses new assignments until the next ``welcome``.
 
 Frames from every run's reader thread and from the heartbeat go out through
 :meth:`AgentConnection.send_frame`, one at a time.
+
+Over ``wss`` every dial goes through the :class:`~app.agent.trust.
+ControlPlaneTrust` the enrollment used (#786). A certificate that does not
+match a fingerprint the user pinned (``--ca-fingerprint``) ends the agent
+(exit code 2), like a ``reject``: retrying cannot change the key. Without a
+pin, a certificate the system CAs do not accept is logged as an error, with
+the cause, and retried with the usual backoff (a proxy being repaired, a
+CA bundle being updated).
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ import asyncio
 import inspect
 import logging
 import platform
+import ssl
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -42,6 +51,7 @@ from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
 from .runner import Runner, mark_finished
 from .spool import SpoolStore
+from .trust import ControlPlaneTrust, TrustError, untrusted_message
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +165,8 @@ class AgentConnection:
         backoff_min_s: float = BACKOFF_MIN_S,
         token_source: str = "--token",
         spools: SpoolStore | None = None,
+        trust: ControlPlaneTrust | None = None,
+        on_trusted: Callable[[str], None] | None = None,
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
@@ -170,6 +182,16 @@ class AgentConnection:
         self.backoff_min_s = backoff_min_s
         #: Where the token comes from, for error messages (a file path).
         self.token_source = token_source
+        #: Verifies the control plane over ``wss`` (#786); one without a pin
+        #: (system CAs) is created at the first ``wss`` dial when none is
+        #: given.
+        self.trust = trust
+        #: Called with the pinned fingerprint after each verified ``wss``
+        #: connection, in a thread (the CLI records it in the credential
+        #: file when it differs).
+        self.on_trusted = on_trusted
+        #: The fingerprint hint for an untrusted certificate was logged.
+        self._hinted = False
         self.heartbeat_s = wp.DEFAULT_HEARTBEAT_S
         self.worker_id: str | None = None
         self._ws: Any = None
@@ -306,15 +328,28 @@ class AgentConnection:
                     logger.error("no connection token: %s", self.token_source)
                     raise _NoToken
                 url = worker_ws_url(self._resolve(self._control_url), None)
+                options: dict[str, Any] = {_headers_kwarg(): {
+                    TOKEN_HEADER: token}}
+                if url.startswith("wss:"):
+                    if self.trust is None:
+                        self.trust = ControlPlaneTrust()
+                    options["ssl"] = self.trust.context()
                 async with websockets.connect(
                         url, max_size=self.max_message_bytes,
-                        open_timeout=WELCOME_TIMEOUT_S,
-                        **{_headers_kwarg(): {TOKEN_HEADER: token}}) as ws:
+                        open_timeout=WELCOME_TIMEOUT_S, **options) as ws:
+                    if "ssl" in options:
+                        await self._trusted()
                     welcomed = await self._serve(ws, stop)
             except AgentRejected as exc:
                 logger.error("the control plane rejected this agent: %s", exc)
                 code = 2
                 break
+            except TrustError as exc:
+                logger.error("refusing the control plane: %s", exc)
+                code = 2
+                break
+            except ssl.SSLCertVerificationError as exc:
+                await self._log_untrusted(exc)
             except _NoToken:
                 pass
             except (OSError, WebSocketException, asyncio.TimeoutError,
@@ -338,6 +373,34 @@ class AgentConnection:
             backoff = min(next_backoff(backoff), BACKOFF_MAX_S)
         await self.runner.shutdown()
         return code
+
+    async def _trusted(self) -> None:
+        """A ``wss`` handshake passed. With a pin, hand it to
+        :attr:`on_trusted` (once per connection, in a thread: it reads and
+        may write the credential file). The pin, never the observed value,
+        is what gets recorded; without a pin nothing is."""
+        trust = self.trust
+        if trust is None or trust.expected is None or self.on_trusted is None:
+            return
+        try:
+            await asyncio.to_thread(self.on_trusted, trust.expected)
+        except Exception:  # noqa: BLE001 -- recording is best effort
+            logger.warning("could not record the certificate fingerprint",
+                           exc_info=True)
+
+    async def _log_untrusted(self, exc: ssl.SSLCertVerificationError) -> None:
+        """A certificate the system CAs reject, without a pin: an error with
+        the cause; the first time also with the fingerprint it presents (a
+        second dial, so in a thread). The caller retries."""
+        url = self._resolve(self._control_url)
+        if self._hinted:
+            reason = getattr(exc, "verify_message", None) or exc
+            logger.error("the certificate of %s is not trusted by this "
+                         "machine (%s); retrying", url, reason)
+            return
+        self._hinted = True
+        logger.error("%s; retrying", await asyncio.to_thread(
+            untrusted_message, url, exc))
 
     async def _handshake(self, ws: Any) -> wp.Welcome:
         hello = wp.Hello(

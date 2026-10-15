@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  agentEnrollCommand,
+  agentCommand,
   createEnrollment,
   deleteEnrollment,
   fetchEnrollments,
@@ -50,6 +50,40 @@ export function isLoopbackUrl(url: string): boolean {
     return false;
   }
   return host === 'localhost' || host === '[::1]' || host.startsWith('127.');
+}
+
+/** Whether *url* is an `https://` address. */
+export function isHttpsUrl(url: string): boolean {
+  return /^https:\/\//i.test(url);
+}
+
+/**
+ * How the agent will verify this server (#786). Over `https`: the
+ * certificate fingerprint when the server can read it, else the `openssl`
+ * command that computes it on the TLS proxy's host. Over plain `http` to
+ * another machine: a warning that the token and the secrets in every run
+ * travel unencrypted.
+ */
+function TrustNote({ address, list }: { address: string; list: EnrollmentList | null }) {
+  const { t } = useI18n();
+  if (isHttpsUrl(address)) {
+    const fingerprint = list?.tls_fingerprint ?? null;
+    if (fingerprint) {
+      return (
+        <p role="note">
+          {t('workers.add.remote.tls.fingerprint')} <code className={styles.fingerprint}>{fingerprint}</code>
+        </p>
+      );
+    }
+    return (
+      <div role="note">
+        <p>{t('workers.add.remote.tls.compute')}</p>
+        {list?.fingerprint_command && <CommandLine command={list.fingerprint_command} />}
+      </div>
+    );
+  }
+  if (address === '' || isLoopbackUrl(address)) return null;
+  return <p className={styles.warn} role="note">{t('workers.add.remote.plainHttp')}</p>;
 }
 
 function errorText(err: unknown): string {
@@ -113,6 +147,10 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
   const [ttl, setTtl] = useState(DEFAULT_TTL_S);
   const [uses, setUses] = useState(1);
   const [created, setCreated] = useState<CreatedEnrollment | null>(null);
+  // The server-built command for the generated token and the address it
+  // dials (#786): `created.command` at first, asked again when the address
+  // field changes, so the flags are decided by the server's one builder.
+  const [shown, setShown] = useState<{ url: string; command: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -134,7 +172,10 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
     if (busy) return;
     setBusy(true);
     try {
-      setCreated(await createEnrollment(rekey ? { ttl_s: ttl, uses, worker: rekey } : { ttl_s: ttl, uses }));
+      const options = rekey ? { ttl_s: ttl, uses, worker: rekey } : { ttl_s: ttl, uses };
+      const next = await createEnrollment(address ? { ...options, control_url: address } : options);
+      setCreated(next);
+      setShown({ url: next.control_url, command: next.command });
       await load();
     } catch (err) {
       setError(errorText(err));
@@ -146,7 +187,10 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
   const revoke = async (id: string) => {
     try {
       await deleteEnrollment(id);
-      if (created?.id === id) setCreated(null);
+      if (created?.id === id) {
+        setCreated(null);
+        setShown(null);
+      }
       await load();
     } catch (err) {
       setError(errorText(err));
@@ -154,7 +198,24 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
   };
 
   const address = (url ?? '').trim().replace(/\/+$/, '');
+  // The address the command uses: the typed one, else the server's own.
+  const target = address || created?.control_url || list?.control_url || '';
   const others = list?.other_machine_urls ?? [];
+
+  useEffect(() => {
+    if (created === null || shown?.url === target || !/^https?:\/\/\S+$/i.test(target)) return;
+    let live = true;
+    agentCommand({ control_url: target, token: created.token, worker: created.worker })
+      .then((command) => {
+        if (live) setShown({ url: target, command });
+      })
+      .catch((err: unknown) => {
+        if (live) setError(errorText(err));
+      });
+    return () => {
+      live = false;
+    };
+  }, [created, shown, target]);
   return (
     <>
       <p>{rekey ? t('workers.add.rekey.intro', { name: rekey }) : t('workers.add.remote.intro')}</p>
@@ -186,6 +247,7 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
           )}
         </>
       )}
+      <TrustNote address={target} list={list} />
       <div className={styles.fieldRow}>
         <label className={styles.field}>
           {t('workers.add.remote.ttl')}
@@ -215,10 +277,10 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
           {t('workers.add.remote.generate')}
         </button>
       </div>
-      {created !== null && (
+      {created !== null && shown?.url === target && (
         <>
           <p>{t('workers.add.remote.command')}</p>
-          <CommandLine command={agentEnrollCommand(address || created.control_url, created.token, created.worker)} />
+          <CommandLine command={shown.command} />
           <p className={styles.muted}>{t('workers.add.remote.restart')}</p>
         </>
       )}

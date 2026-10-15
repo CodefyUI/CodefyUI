@@ -20,8 +20,8 @@ Handshake checks, before ``accept``:
     got from ``POST /api/workers/enroll``, looked up by hash in the
     ``workers`` table. The credential names the worker: its ``hello`` must
     use that name. Over plain ``ws://`` from another machine a warning is
-    logged (the token crosses the network in the clear; TLS pinning is
-    #786).
+    logged (the token crosses the network in the clear), and the worker
+    is listed with ``plain_http: true`` (#786, :func:`plain_from_another_machine`).
 
 A refused handshake closes before ``accept``, which a client sees as
 HTTP 403.
@@ -73,6 +73,20 @@ def _peer_is_loopback(ws: WebSocket) -> bool:
     return is_loopback_peer(ws.client.host if ws.client is not None else None)
 
 
+def plain_from_another_machine(ws: WebSocket) -> bool:
+    """The connection is unencrypted and comes from another machine (#786).
+
+    The scheme is the one this process was reached with: ``wss`` only when
+    uvicorn says so (it rewrites the scheme from ``X-Forwarded-Proto`` for
+    the proxies ``--forwarded-allow-ips`` trusts; this code never reads the
+    header). A loopback peer is exempt: a same-host agent, a TLS proxy on
+    this machine that forwards no headers, or the local end of an SSH
+    tunnel (#784), whose hop across the network is encrypted by ssh.
+    """
+    return not _peer_is_loopback(ws) and ws.url.scheme not in ("wss",
+                                                               "https")
+
+
 @dataclass(frozen=True)
 class Authorised:
     """Who a handshake authenticated as."""
@@ -106,7 +120,7 @@ async def worker_token_authoriser(ws: WebSocket, provided: str | None,
     name = await store.authenticate(provided)
     if name is None:
         return None
-    if not loopback and ws.url.scheme not in ("wss", "https"):
+    if plain_from_another_machine(ws):
         logger.warning(
             "worker %s authenticated over plain ws:// from %s: its token "
             "crossed the network unencrypted; put the server behind TLS "
@@ -191,7 +205,8 @@ async def websocket_worker(ws: WebSocket) -> None:
         hello, send=send, close=close,
         same_host=_peer_is_loopback(ws)
         and same_machine(hello.machine_id, machine_identity()),
-        credential=auth.credential, enrolled=enrolled_as is not None)
+        credential=auth.credential, enrolled=enrolled_as is not None,
+        plain_http=plain_from_another_machine(ws))
     store = getattr(ws.app.state, "worker_store", None)
     if enrolled_as is not None and store is not None:
         await _touch(store, hello)

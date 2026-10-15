@@ -8,6 +8,13 @@ The worker token is written with the control URL and the worker name to
 on every ``/ws/worker`` dial from then on, so a restarted agent reconnects
 without enrolling again. ``cdui agent forget URL`` deletes that file.
 
+Over ``https`` the file also records the control plane's certificate
+fingerprint the user pinned with ``--ca-fingerprint`` (#786,
+``ca_fingerprint``, SPKI sha256 of the leaf), so later starts keep pinning
+it (``app.agent.trust``). Without a pin it records nothing: the system CAs
+decide. A malformed stored fingerprint is reported and ignored; the worker
+token stays usable.
+
 One file per control plane (host and port), so one machine can serve two
 control planes. Plain ``urllib``: the agent stays free of the server's
 dependencies.
@@ -16,8 +23,10 @@ dependencies.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -25,6 +34,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+from ..core import tls_fingerprint as fp
+from .trust import ControlPlaneTrust, TrustError, untrusted_message
+
+logger = logging.getLogger(__name__)
 
 #: Seconds the enrollment request may take.
 ENROLL_TIMEOUT_S = 30.0
@@ -42,6 +56,9 @@ class Credential:
     worker_id: str
     worker_token: str
     path: Path
+    #: ``sha256:<hex>`` the control plane's certificate must match, or None
+    #: (plain http, or a credential from before #786).
+    ca_fingerprint: str | None = None
 
 
 def normalize_url(url: str) -> str:
@@ -78,26 +95,45 @@ def load_credential(user_data: Path, control_url: str) -> Credential | None:
         stored_url = str(data["control_url"])
         worker_id = str(data["worker_id"])
         token = str(data["worker_token"])
-    except (OSError, ValueError, KeyError, TypeError):
+        raw_pin = data.get("ca_fingerprint")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     try:
         if normalize_url(stored_url) != normalize_url(control_url):
             return None
     except ValueError:
         return None
-    return Credential(stored_url, worker_id, token, path)
+    return Credential(stored_url, worker_id, token, path,
+                      _stored_pin(raw_pin, path))
+
+
+def _stored_pin(raw: Any, path: Path) -> str | None:
+    """The recorded pin, or None. A malformed one is logged and ignored:
+    the credential (the worker token) stays usable."""
+    if not raw:
+        return None
+    try:
+        return fp.normalize(str(raw))
+    except ValueError:
+        logger.error("ignoring the malformed ca_fingerprint %r in %s; pass "
+                     "--ca-fingerprint again to pin the certificate", raw,
+                     path)
+        return None
 
 
 def save_credential(user_data: Path, control_url: str, worker_id: str,
-                    worker_token: str) -> Path:
+                    worker_token: str, *,
+                    ca_fingerprint: str | None = None) -> Path:
     """Write the credential, readable by this OS user only."""
     path = credential_path(user_data, control_url)
     path.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform != "win32":
         os.chmod(path.parent, 0o700)
-    body = json.dumps({"control_url": normalize_url(control_url),
-                       "worker_id": worker_id,
-                       "worker_token": worker_token}, indent=2)
+    data = {"control_url": normalize_url(control_url),
+            "worker_id": worker_id, "worker_token": worker_token}
+    if ca_fingerprint:
+        data["ca_fingerprint"] = fp.normalize(ca_fingerprint)
+    body = json.dumps(data, indent=2)
     tmp = path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -108,6 +144,18 @@ def save_credential(user_data: Path, control_url: str, worker_id: str,
         os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     return path
+
+
+def record_fingerprint(user_data: Path, control_url: str,
+                       fingerprint: str) -> Path | None:
+    """Store the pin *fingerprint* (given with ``--ca-fingerprint``) in the
+    credential for *control_url*. None when there is no credential to store
+    it in or it is stored already (no write)."""
+    stored = load_credential(user_data, control_url)
+    if stored is None or stored.ca_fingerprint == fp.normalize(fingerprint):
+        return None
+    return save_credential(user_data, control_url, stored.worker_id,
+                           stored.worker_token, ca_fingerprint=fingerprint)
 
 
 def forget_credential(user_data: Path, control_url: str) -> Path | None:
@@ -133,8 +181,12 @@ def forget_credential(user_data: Path, control_url: str) -> Path | None:
 def enroll(control_url: str, token: str, *, name: str,
            platform: dict[str, str], devices: list[dict[str, Any]],
            mounts: dict[str, str] | None = None,
-           timeout: float = ENROLL_TIMEOUT_S) -> tuple[str, str]:
-    """``POST /api/workers/enroll``. Returns ``(worker_id, worker_token)``."""
+           timeout: float = ENROLL_TIMEOUT_S,
+           trust: ControlPlaneTrust | None = None) -> tuple[str, str]:
+    """``POST /api/workers/enroll``. Returns ``(worker_id, worker_token)``.
+
+    Over ``https`` the request goes through *trust*'s context (the same
+    verifier the worker socket uses)."""
     url = normalize_url(control_url) + "/api/workers/enroll"
     body = json.dumps({"token": token.strip(), "name": name,
                        "platform": platform, "devices": devices,
@@ -142,13 +194,23 @@ def enroll(control_url: str, token: str, *, name: str,
     request = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/json"})
+    handlers = []
+    if url.startswith("https:"):
+        trust = trust or ControlPlaneTrust()
+        handlers.append(urllib.request.HTTPSHandler(context=trust.context()))
+    opener = urllib.request.build_opener(*handlers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout) as response:
             answer = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise EnrollError(_detail(exc)) from exc
     except (urllib.error.URLError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
+        if isinstance(reason, TrustError):
+            raise EnrollError(str(reason)) from exc
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            raise EnrollError(untrusted_message(
+                normalize_url(control_url), reason)) from exc
         raise EnrollError(f"could not reach {control_url}: {reason}") from exc
     except ValueError as exc:
         raise EnrollError(f"{control_url} answered with something that is "
