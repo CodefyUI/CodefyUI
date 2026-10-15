@@ -390,10 +390,21 @@ class AgentConnection:
                 pass
             except (OSError, WebSocketException, asyncio.TimeoutError,
                     wp.ProtocolError, ValueError) as exc:
-                if _http_status(exc) in (401, 403):
+                status = _http_status(exc)
+                if status == 401:
+                    # Only this status means the credential itself: the
+                    # SSH launcher wipes it on these words (#784).
                     logger.error(
-                        "the control plane refused the token (HTTP %s); "
-                        "token from %s", _http_status(exc), self.token_source)
+                        "the control plane refused the token (HTTP 401); "
+                        "token from %s", self.token_source)
+                elif status == 403:
+                    # Refused for another reason (a Host or Origin check, no
+                    # worker registry yet), or by a control plane that
+                    # answers every refusal with 403: not the token.
+                    logger.error(
+                        "the control plane refused the connection (HTTP "
+                        "403); not a refusal of the token from %s",
+                        self.token_source)
                 else:
                     logger.warning(
                         "connection to the control plane failed: %s", exc)

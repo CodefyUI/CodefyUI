@@ -191,7 +191,7 @@ def main() -> int:
     print("codefyui-ssh: agent pid 4242", file=sys.stderr, flush=True)
     if mode == "refused":
         print("2026-01-01 00:00:00,000 ERROR app.agent.connection: the "
-              "control plane refused the token (HTTP 403); token from the "
+              "control plane refused the token (HTTP 401); token from the "
               "stored credential", file=sys.stderr, flush=True)
     for line in sys.stdin:
         with open(log + ".stdin", "a", encoding="utf-8") as handle:

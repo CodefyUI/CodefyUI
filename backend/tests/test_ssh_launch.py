@@ -338,7 +338,9 @@ async def test_a_shutdown_stops_every_session_within_its_own_grace(
     await launcher.add(_entry("two-box", target="b@two"))
     await _until(lambda: len(_tokens(fake_ssh)) == 2, "ssh never ran")
     await launcher.shutdown()
-    assert graces and set(graces) == {ssh_launch.SHUTDOWN_GRACE_S}
+    # One per launch's stop (the loops also end their own sessions,
+    # with whatever grace; stop terminates at its own).
+    assert graces.count(ssh_launch.SHUTDOWN_GRACE_S) == 2
     assert sorted(launcher.registry.stopped_names) == ["gpu-box", "two-box"]
 
 
@@ -433,7 +435,8 @@ async def test_disable_sends_stop_through_the_session(launcher, fake_ssh):
     await launcher.set_enabled("gpu-box", False)
     assert _stdin(fake_ssh)[1:] == ["stop"]
     # A live session carried the stop: no one-shot stop.
-    assert not any("kill -TERM" in argv[-1] for argv in _oneshots(fake_ssh))
+    assert not any("stopped agent pid" in argv[-1]
+                   for argv in _oneshots(fake_ssh))
 
 
 async def test_disable_with_the_session_gone_stops_the_agent_over_ssh(
@@ -532,6 +535,19 @@ async def test_the_port_range_can_run_out(tmp_path, fake_ssh):
     finally:
         await launcher.shutdown()
         database.close()
+
+
+def test_the_instance_id_is_read_only_when_a_launch_needs_it(
+        tmp_path, monkeypatch):
+    import app.config as config
+
+    monkeypatch.setattr(config, "_user_data_root", lambda: tmp_path)
+    launcher = SshLauncher(None, FakeRegistry())
+    assert not (tmp_path / ssh_launch.INSTANCE_ID_FILE).exists()
+    made = launcher.instance_id
+    assert (tmp_path / ssh_launch.INSTANCE_ID_FILE).read_text().strip() \
+        == made
+    assert launcher.instance_id == made
 
 
 def test_a_slot_is_not_a_port():
@@ -830,6 +846,107 @@ def test_the_prepare_command_makes_a_private_directory_and_clears_the_socket(
     assert again.returncode == 0
     assert not (state / "sock").exists()
     assert state.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_a_reattached_session_reads_only_new_agent_output(remote_home):
+    """A "refused the token" line the agent wrote before this session
+    attached is not shown to it again: the launcher would read it as news
+    and restart a healthy agent with ``cdui agent forget``."""
+    entry = _entry(remote_cdui="~/cdui")
+    first = _run_remote(remote_home, ssh_launch.remote_command(
+        entry, CP, 18000, grace_s=3))
+    first.stdin.write(f"{TOKEN}\n".encode())
+    first.stdin.flush()
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    _wait_file(remote_home / "path")
+    with open(_state(remote_home) / "log", "a") as log:
+        log.write(f"x ERROR {ssh_launch.TOKEN_REFUSED} (HTTP 401)\n"
+                  f"the credential in y {ssh_launch.CREDENTIAL_MISMATCH} z\n")
+    first.stdin.close()  # dropped
+    second = _run_remote(remote_home, ssh_launch.remote_command(
+        entry, CP, 18000, grace_s=3))
+    second.stdin.write(f"{TOKEN}\n".encode())
+    second.stdin.flush()
+    first.wait(timeout=10)  # superseded: it leaves without a kill
+    time.sleep(1.0)
+    with open(_state(remote_home) / "log", "a") as log:
+        log.write("fresh line after attaching\n")
+    time.sleep(1.5)
+    second.stdin.write(b"stop\n")
+    second.stdin.close()
+    output = second.stdout.read().decode()
+    second.wait(timeout=10)
+    assert f"codefyui-ssh: agent pid {pid} reattached" in output
+    assert ssh_launch.TOKEN_REFUSED not in output
+    assert ssh_launch.CREDENTIAL_MISMATCH not in output
+    assert "fresh line after attaching" in output
+
+
+def _legacy_agent(home: Path, args: list[str]) -> subprocess.Popen:
+    """A process that looks like an agent of an earlier build: its command
+    line is *args*, its pid in the old ``<slot>/`` layout."""
+    script = home / "old-agent"
+    script.write_text("#!/bin/sh\nwhile :; do sleep 0.05; done\n")
+    script.chmod(0o755)
+    proc = subprocess.Popen([str(script), *args], start_new_session=True)
+    legacy = home / ".codefyui-ssh" / "18000"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "pid").write_text(str(proc.pid))
+    return proc
+
+
+def _prepare(home: Path) -> str:
+    result = subprocess.run(
+        ["/bin/sh", "-c", ssh_launch.remote_prepare_command(CP, 18000)],
+        env={**os.environ, "HOME": str(home)}, capture_output=True,
+        text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_prepare_stops_a_detached_legacy_tcp_agent(remote_home):
+    old = _legacy_agent(remote_home, [
+        "agent", "start", "--foreground", "--control",
+        "http://127.0.0.1:18000", "--name", "gpu-box"])
+    try:
+        out = _prepare(remote_home)
+        assert f"stopped legacy agent pid {old.pid}" in out
+        old.wait(timeout=10)
+    finally:
+        if old.poll() is None:
+            old.kill()
+            old.wait()
+
+
+def test_prepare_leaves_an_attached_or_socket_agent_alone(remote_home):
+    # A legacy agent whose session is still attached: reported only.
+    session = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    old = _legacy_agent(remote_home, [
+        "agent", "start", "--foreground", "--control",
+        "http://127.0.0.1:18000", "--name", "gpu-box"])
+    (remote_home / ".codefyui-ssh" / "18000" / "session").write_text(
+        str(session.pid))
+    try:
+        out = _prepare(remote_home)
+        assert "is still attached; left running" in out
+        assert old.poll() is None
+    finally:
+        for proc in (old, session):
+            proc.kill()
+            proc.wait()
+    # An agent on a socket, or one dialling another address: not touched.
+    for args in (["agent", "start", "--uds", "/x/sock", "--control",
+                  "http://127.0.0.1:18000"],
+                 ["agent", "start", "--control", "http://127.0.0.1:18001"]):
+        (remote_home / ".codefyui-ssh" / "18000" / "session").unlink(
+            missing_ok=True)
+        other = _legacy_agent(remote_home, args)
+        try:
+            out = _prepare(remote_home)
+            assert "legacy" not in out and other.poll() is None
+        finally:
+            other.kill()
+            other.wait()
 
 
 def test_a_reused_pid_is_never_taken_for_the_agent(remote_home):

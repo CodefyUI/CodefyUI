@@ -532,18 +532,22 @@ async def _lifespan_body(app: FastAPI):
     # queue (#343). The next boot settles them as interrupted.
     await study_coordinator.shutdown()
     app.state.study_coordinator = None
-    # The SSH workers' sessions BEFORE the run service (#784): ``stop`` on
-    # each ssh's stdin stops its remote agent at once, and the agent's runs
-    # report how they ended (and upload their last files) while the run
-    # service is still here to record them. Bounded by
-    # ``ssh_launch.SHUTDOWN_GRACE_S``; whatever did not report then ends
-    # ``interrupted`` (``WorkerRegistry.stopped``).
-    await ssh_launcher.shutdown()
-    app.state.ssh_launcher = None
     # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
     # only database work in the process that nobody is awaiting, and
     # `Database.close` would otherwise race a run's final writes (#119).
-    await run_service.shutdown()
+    # The run service retires its queue first and then dispatches nothing,
+    # so no new run goes to a worker that is stopping.
+    #
+    # The SSH workers' sessions (#784) end at the same time, not before:
+    # ``stop`` on each ssh's stdin stops its remote agent at once, and its
+    # runs report how they ended while the run service is still here to
+    # record them (bounded by ``ssh_launch.SHUTDOWN_GRACE_S``; a run that
+    # did not report ends ``interrupted``, ``WorkerRegistry.stopped``).
+    # The local drain never waits behind that teardown. Under ``cdui
+    # stop``, which kills the server after about 2 s, the SSH runs' last
+    # reports are best effort: the next start marks them ``interrupted``.
+    await asyncio.gather(run_service.shutdown(), ssh_launcher.shutdown())
+    app.state.ssh_launcher = None
     app.state.run_service = None
     # After the runs: a worker run's stop travels over its worker's socket.
     await worker_registry.shutdown()

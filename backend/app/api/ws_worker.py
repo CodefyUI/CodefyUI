@@ -28,7 +28,8 @@ Handshake checks, before ``accept``:
     is listed with ``plain_http: true`` (#786, :func:`plain_from_another_machine`).
 
 A refused handshake closes before ``accept``, which a client sees as
-HTTP 403.
+HTTP 403; a refused credential is answered with HTTP 401 instead
+(:func:`refuse_token`), so the agent can tell the two apart.
 
 Then: the first frame must be ``hello`` (within :data:`HELLO_TIMEOUT_S`).
 What it must satisfy is decided in ``core.worker_handshake`` (#781): the
@@ -152,6 +153,23 @@ AUTHORISERS: list[Authoriser] = [session_token_authoriser,
                                  worker_token_authoriser]
 
 
+async def refuse_token(ws: WebSocket) -> None:
+    """Refuse a missing or invalid credential so the agent can tell it from
+    every other refusal: HTTP 401 where the server can answer a handshake
+    with a response of its own (uvicorn's ``websocket.http.response``),
+    else a close with 4401 (seen as HTTP 403, like the other refusals).
+    The agent reads only a 401 as "my token was refused", which is what
+    makes an SSH worker forget its credential (#784)."""
+    if "websocket.http.response" in ws.scope.get("extensions", {}):
+        from fastapi.responses import JSONResponse
+
+        await ws.send_denial_response(JSONResponse(
+            status_code=401,
+            content={"detail": "Missing or invalid token"}))
+        return
+    await ws.close(code=4401, reason="Missing or invalid token")
+
+
 async def authorise(ws: WebSocket) -> Authorised | None:
     provided = (ws.headers.get("x-codefyui-token")
                 or ws.query_params.get(TOKEN_QUERY_PARAM))
@@ -181,7 +199,7 @@ async def websocket_worker(ws: WebSocket) -> None:
         # side cannot tell the agent from another client of the listener.
         # The launcher acts on the agent's own report instead
         # (``ssh_launch.TOKEN_REFUSED``).
-        await ws.close(code=4401, reason="Missing or invalid token")
+        await refuse_token(ws)
         return
     enrolled_as = auth.worker
     registry = getattr(ws.app.state, "worker_registry", None)

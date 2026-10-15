@@ -274,3 +274,54 @@ async def test_a_dead_listener_is_opened_again(workers, tmp_path):
     assert launch._listener is not dead and launch._listener.alive
     assert second != first  # a new private directory
     await launch._close_listener()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets")
+async def test_a_refused_token_is_a_401_and_other_refusals_a_403(workers):
+    """Over a real listener: a bad token (or the session token, never
+    accepted there) is answered HTTP 401, the one status the agent reads as
+    "my token was refused"; a browser (Origin) gets 403 like every other
+    pre-accept refusal, and so never makes an SSH worker forget its
+    credential."""
+    import websockets
+    from websockets.exceptions import InvalidStatus
+
+    listener = TunnelListener(app, "gpu-box")
+    target = await listener.open()
+    try:
+        for headers, expected in (({"X-CodefyUI-Token": "forged"}, 401),
+                                  ({"X-CodefyUI-Token": session_token()},
+                                   401),
+                                  ({"X-CodefyUI-Token": "forged",
+                                    "Origin": "http://evil.example"}, 403)):
+            with pytest.raises(InvalidStatus) as refused:
+                async with websockets.unix_connect(
+                        target, "ws://127.0.0.1:8000/ws/worker",
+                        additional_headers=headers, open_timeout=10):
+                    pass
+            assert refused.value.response.status_code == expected, headers
+    finally:
+        await listener.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-domain sockets")
+async def test_a_failed_bind_leaves_no_directory(monkeypatch):
+    import app.core.tunnel_listener as module
+
+    made: list[str] = []
+    real = module.tempfile.mkdtemp
+
+    def mkdtemp(**kwargs):
+        made.append(real(**kwargs))
+        return made[-1]
+
+    def chmod(path, mode):
+        raise OSError("no chmod here")
+
+    monkeypatch.setattr(module.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(module.os, "chmod", chmod)
+    listener = TunnelListener(app, "gpu-box")
+    with pytest.raises(OSError, match="no chmod"):
+        await listener.open()
+    assert made and not os.path.exists(made[0])
+    assert listener.target is None and listener._dir is None

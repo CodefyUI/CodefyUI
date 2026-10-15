@@ -165,6 +165,7 @@ class TunnelListener:
                 os.chmod(path, 0o600)
             except OSError:
                 sock.close()
+                self._cleanup_dir()
                 raise
             self.path = path
             return sock

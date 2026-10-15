@@ -295,9 +295,9 @@ def load_instance_id(user_data: Path | None = None) -> str:
     directory (``ssh-instance-id``)."""
     import secrets
 
-    from .auth import _token_dir
+    from ..config import _user_data_root
 
-    path = (user_data or _token_dir()) / INSTANCE_ID_FILE
+    path = (user_data or _user_data_root()) / INSTANCE_ID_FILE
     try:
         found = path.read_text(encoding="ascii").strip()
         if INSTANCE_ID_PATTERN.fullmatch(found):
@@ -312,6 +312,11 @@ def load_instance_id(user_data: Path | None = None) -> str:
         logger.warning("could not keep the SSH instance id in %s; using %s "
                        "for this run", path, made, exc_info=True)
     return made
+
+
+def control_url_legacy(remote_port: int) -> str:
+    """The address an agent of an earlier build dialled over TCP."""
+    return f"http://127.0.0.1:{remote_port}"
 
 
 def control_url(cp: str, remote_port: int) -> str:
@@ -342,11 +347,16 @@ def _state_dir(cp: str, remote_port: int) -> str:
 #: socket (``/proc``), or at least ``agent start`` where there is no
 #: ``/proc``. A pid file outlives its process, and the pid may be reused.
 _FUNCS = ('al() { ps -p "$1" -o stat= 2>/dev/null | grep -q "^[^Z]"; }; '
-          'own() { [ -n "$1" ] && al "$1" || return 1; '
-          'if [ -r "/proc/$1/cmdline" ]; then '
-          f'grep -qF -- "$d/{SOCKET_NAME}" "/proc/$1/cmdline"; '
-          'else ps -p "$1" -o args= 2>/dev/null | grep -q "agent start"; '
-          "fi; }; ")
+          # ``has PID TEXT``: the process's command line contains TEXT.
+          # ``/proc`` where there is one (Linux, BusyBox included); else
+          # ``ps -ww`` (no truncation), else plain ``ps`` as a best effort.
+          'has() { if [ -r "/proc/$1/cmdline" ]; then '
+          'grep -qF -- "$2" "/proc/$1/cmdline"; else '
+          '{ ps -ww -p "$1" -o args= 2>/dev/null '
+          '|| ps -p "$1" -o args= 2>/dev/null; } | grep -qF -- "$2"; fi; }; '
+          'own() { [ -n "$1" ] && al "$1" && has "$1" '
+          f'"$d/{SOCKET_NAME}"; '
+          "}; ")
 
 
 def _sh(script: str) -> str:
@@ -402,7 +412,9 @@ def remote_command(entry: SshWorker, cp: str, remote_port: int, *,
         'a=$(cat "$d/pid" 2>/dev/null); o=; '
         'if own "$a"; then '
         "echo codefyui-ssh: agent pid $a reattached >&2; "
-        'tail -n 5 -f "$d/log" >&2 & l=$!; '
+        # Only what the agent writes from now on: an old "refused the
+        # token" or "is for worker" line is not this session's news.
+        'tail -n 0 -f "$d/log" >&2 & l=$!; '
         "else "
         + forget
         + ': > "$d/log"; '
@@ -453,11 +465,24 @@ def remote_prepare_command(cp: str, remote_port: int) -> str:
     plane's alone (``<cp>-<slot>``): the socket removed is never another's
     live one."""
     d = _state_dir(cp, remote_port)
+    legacy = f'"$HOME"/{REMOTE_STATE_DIR}/{remote_port}'
+    tcp = control_url_legacy(remote_port)
     return _sh(
-        f"umask 077; d={d}; "
+        f"umask 077; d={d}; L={legacy}; " + _FUNCS +
         f'mkdir -p "$d" && chmod 700 "$HOME"/{REMOTE_STATE_DIR} "$d" '
         f"|| exit {NO_STATE_EXIT}; "
         f'rm -f "$d/{SOCKET_NAME}"; '
+        # An agent of an earlier build, in the old ``<slot>/`` layout,
+        # dialling a TCP forward: stopped once its session is gone (it
+        # can never connect again), reported while one is attached.
+        'la=$(cat "$L/pid" 2>/dev/null); ls=$(cat "$L/session" 2>/dev/null); '
+        'if [ -n "$la" ] && al "$la" && has "$la" "agent start" '
+        f'&& has "$la" "{tcp}" && ! has "$la" "--uds"; then '
+        'if [ -n "$ls" ] && al "$ls"; then '
+        'echo "codefyui-ssh: legacy agent pid $la in $L is still attached; '
+        'left running"; '
+        'else kill -TERM "$la"; '
+        'echo "codefyui-ssh: stopped legacy agent pid $la in $L"; fi; fi; '
         'echo "codefyui-ssh: dir $d"')
 
 
@@ -967,10 +992,12 @@ class SshLaunch:
         finally:
             if proc.returncode is None:
                 # Timed out, or this task was cancelled: never left behind.
+                # A cancellation is re-raised after this ``finally``.
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
-                with contextlib.suppress(BaseException):
-                    await asyncio.shield(proc.wait())
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(proc.wait()),
+                                           KILL_GRACE_S)
         lines = [line.rstrip() for line in
                  out.decode("utf-8", errors="replace").splitlines()
                  if line.strip()]
@@ -1023,7 +1050,7 @@ class SshLauncher:
         self.registry = registry
         #: This control plane's id on the remote hosts
         #: (:func:`load_instance_id`).
-        self.instance_id = instance_id or load_instance_id()
+        self._instance_id = instance_id
         #: The ASGI app each SSH worker's listener serves (its agent routes
         #: only); None in unit tests, which forward to *local_port*.
         self.app = app
@@ -1034,6 +1061,14 @@ class SshLauncher:
         self.entries: dict[str, SshWorker] = {}
         self.launches: dict[str, SshLaunch] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+
+    @property
+    def instance_id(self) -> str:
+        """This control plane's id on the remote hosts, read (or made) the
+        first time a launch needs it."""
+        if self._instance_id is None:
+            self._instance_id = load_instance_id()
+        return self._instance_id
 
     def ssh_path(self) -> str | None:
         return self._ssh or ssh_executable()
