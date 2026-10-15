@@ -108,7 +108,11 @@ async def websocket_worker(ws: WebSocket) -> None:
         await close()
         return
 
-    worker, replaced = registry.connect(hello, send=send, close=close)
+    # Recorded, not assumed: every peer is loopback until enrollment (#780)
+    # admits remote ones, and a same-host worker shares this process's
+    # device slots (#773).
+    worker, replaced = registry.connect(hello, send=send, close=close,
+                                        same_host=_peer_is_loopback(ws))
     if replaced is not None:
         await replaced.close()
     await send(wp.Welcome(worker_id=worker.id,

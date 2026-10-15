@@ -2801,3 +2801,38 @@ async def test_a_failing_facts_write_does_not_fail_the_run(store, monkeypatch):
     finally:
         await svc.shutdown()
     assert record.status == STATUS_SUCCEEDED
+
+
+# ── per-(worker, device) overrides (#773) ────────────────────────────────
+
+
+def test_queue_overrides_accept_a_worker_device_key():
+    from app.core.run_service import parse_queue_overrides
+
+    assert parse_queue_overrides(
+        "cuda:0=2, GPU-Box-1/CUDA:0=3,gpu-box-1/mps=4,box/cuda:01=5,"
+        "box/cpu=6") == (
+        ("cuda:0", 2), ("gpu-box-1/cuda:0", 3), ("gpu-box-1/mps:0", 4),
+        ("box/cuda:1", 5), ("box/cpu", 6))
+    # ``local/<device>`` is the bare key spelled out.
+    assert parse_queue_overrides("local/cuda:1=2") == (("cuda:1", 2),)
+
+
+@pytest.mark.parametrize("entry", [
+    "any/cuda:0=2",          # reserved, not a worker
+    "-box/cuda:0=2",         # not a worker name
+    "box/=2",                # no device
+    "/cuda:0=2",             # no worker
+    "box/tpu:0=2",           # unknown device
+    "box/cuda=2",            # a kind, not a card
+    "box/cuda:0/x=2",        # more than one separator
+    "box/cuda:0=0",          # count below 1
+    "box/cuda:0=two",        # not a number
+])
+def test_a_malformed_worker_override_warns_and_is_skipped(entry, caplog):
+    from app.core.run_service import parse_queue_overrides
+
+    with caplog.at_level("WARNING", logger="app.core.run_service"):
+        assert parse_queue_overrides(f"{entry},cpu=3") == (("cpu", 3),)
+    assert any("ignoring run queue override" in r.getMessage()
+               for r in caplog.records)

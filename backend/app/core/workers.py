@@ -99,6 +99,10 @@ class Worker:
     heartbeat_s: float
     status: str = STATUS_ONLINE
     draining: bool = False
+    #: Dialled in from a loopback address: this machine, so its devices are
+    #: this process's devices and share their slots (#773,
+    #: ``scheduling.slot_for``).
+    same_host: bool = False
     connected_at: float = field(default_factory=time.time)
     last_heartbeat: float = field(default_factory=time.monotonic)
     last_heartbeat_at: float = field(default_factory=time.time)
@@ -132,6 +136,7 @@ class Worker:
             "status": (STATUS_DRAINING if self.draining and self.online
                        else self.status),
             "draining": self.draining,
+            "same_host": self.same_host,
             "version": self.version,
             "fingerprint_digest": self.fingerprint,
             "platform": dict(self.platform),
@@ -198,8 +203,13 @@ class WorkerRegistry:
     # ── connections ───────────────────────────────────────────────────────
 
     def connect(self, hello: wp.Hello, *, send: Send,
-                close: Callable[[], Awaitable[None]]) -> tuple[Worker, Worker | None]:
+                close: Callable[[], Awaitable[None]],
+                same_host: bool = False) -> tuple[Worker, Worker | None]:
         """Register *hello*'s worker. Returns ``(worker, replaced)``.
+
+        *same_host*: the connection came from a loopback address, so the
+        worker shares this machine's devices (and their slots) with this
+        process.
 
         A worker already registered under the name is replaced: its runs
         move to the new connection and wait for ``run_alive``, and the
@@ -211,7 +221,7 @@ class WorkerRegistry:
             fingerprint=hello.fingerprint, platform=dict(hello.platform),
             mounts=dict(hello.mounts), devices=list(hello.devices),
             send=send, close=close, heartbeat_s=self.heartbeat_s,
-            last_heartbeat=self._clock())
+            last_heartbeat=self._clock(), same_host=same_host)
         replaced = None
         if old is not None and old.online:
             replaced = old

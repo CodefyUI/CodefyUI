@@ -21,6 +21,8 @@ Every run is scheduled against its **resolved device** — `cpu`, `cuda:0`, `mps
 
 A saturated GPU never delays a CPU run, and two different cards never wait on each other. Runs within one queue start in **submit order**, oldest first.
 
+**Admission.** A limit belongs to a *slot*: one device on one machine. `cuda:0` on this server and `cuda:0` on the worker `gpu-box-1` are two slots, each with its own limit. A run with a device set needs a slot on every device of the set: it starts only when all of them have room, takes them together, and gives them all back when it ends. While it waits it holds none of them, so a run that needs only one of those cards can start first from that card's own queue. A [worker](#workers) running on the same machine as the server shares this server's slots, because its `cuda:0` is the same card: a run here and a run on that worker never both get one card under a limit of 1. A waiting run's `queue_position` counts only the queue it waits in (a device-set run waits in its first device's queue), so position 1 means nothing is ahead of it in that line, not that it starts next.
+
 :::note Aliases of one card share one queue
 `cuda` and `cuda:0` are the same physical device, so they are canonicalised onto a single queue key (`cuda:0`) rather than becoming two independent FIFOs over one card. Same for `mps` and `mps:0`. On a multi-GPU box `cuda` follows the process's current device.
 :::
@@ -29,11 +31,11 @@ A saturated GPU never delays a CPU run, and two different cards never wait on ea
 A run without an explicit `device` option uses the graph file's `settings.device`, and a graph without one runs on `cpu`; no mechanism picks an accelerator on your behalf. A run that names a device set (`target.devices`, or `--devices` on `cdui run`) uses the set's first device instead, and `settings.device` is not consulted. `--device auto` (or `"device": "auto"` in the request body) is the one exception: it resolves to the best accelerator this server can see, `cuda` before `mps` before `cpu`, and queues on that line. An accelerator that is not present falls back to `cpu` with a warning.
 :::
 
-A run can also name a **target**: `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}` in the request's `options`, or `--target` / `--devices` on `cdui run`. `worker` is `local` (this server, also what an omitted `worker` means), the name of a connected worker agent (see [Workers](#workers)), or `any`. `devices` lists concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`; a bare `mps` means `mps:0`, a bare `cuda` is refused; no `auto`, no duplicates, no mixing `cuda` with `cpu`). Its first entry becomes the run's device, and therefore its queue, when `device` is omitted or `auto`, and also when `device` is only the kind (`"device": "cuda"` with `["cuda:1", "cuda:0"]` runs on `cuda:1`); a `device` that names anything else is refused. The run's row reports both as `worker_id` and `devices`. On this server `devices` records the set you asked for and only its first device is used, to queue and to execute; on a worker the run holds every device of the set. A run without a target behaves exactly as before.
+A run can also name a **target**: `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}` in the request's `options`, or `--target` / `--devices` on `cdui run`. `worker` is `local` (this server, also what an omitted `worker` means), the name of a connected worker agent (see [Workers](#workers)), or `any`. `devices` lists concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`; a bare `mps` means `mps:0`, a bare `cuda` is refused; no `auto`, no duplicates, no mixing `cuda` with `cpu`). Its first entry becomes the run's device, and therefore its queue, when `device` is omitted or `auto`, and also when `device` is only the kind (`"device": "cuda"` with `["cuda:1", "cuda:0"]` runs on `cuda:1`); a `device` that names anything else is refused. The run's row reports both as `worker_id` and `devices`. On this server the run queues and executes on its first device and holds a slot on every device of the set; on a worker it holds and uses every device of the set. A run without a target behaves exactly as before.
 
 ### Workers
 
-A worker agent (`cdui agent start`, see [CLI Commands](/getting-started/cli-commands#agent-commands)) connects to this server and runs each run it is given in a subprocess of its own. In this release the agent must run on the same machine as the server. `GET /api/workers` lists the agents with their devices, and `POST /api/workers/{id}/drain` stops new runs on one (`/undrain` resumes).
+A worker agent (`cdui agent start`, see [CLI Commands](/getting-started/cli-commands#agent-commands)) connects to this server and runs each run it is given in a subprocess of its own. In this release the agent must run on the same machine as the server. `GET /api/workers` lists the agents with their devices, each with its `slots` (`limit`, `taken`); its `local` field lists this server's devices the same way, and `same_host: true` marks an agent that shares this server's slots. `POST /api/workers/{id}/drain` stops new runs on one (`/undrain` resumes).
 
 How `target.worker` places a run:
 
@@ -324,12 +326,14 @@ All of these are environment variables read at startup (like every other setting
 | --- | --- | --- |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_GPU` | `1` | Concurrent runs per accelerator queue |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_CPU` | `2` | Concurrent runs on the `cpu` queue |
-| `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(empty)* | Per-key overrides, e.g. `cuda:0=2,cpu=8`. Beats the two defaults above. |
+| `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(empty)* | Per-slot overrides. A bare device is this server's (`cuda:0=2,cpu=8`); `<worker>/<device>` is that worker's (`gpu-box-1/cuda:0=2`) and never this server's. Beats the two defaults above. |
 | `CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT` | `2` | Concurrent canvas runs |
 | `CODEFYUI_MAX_PARALLEL_NODES` | `4` | Nodes executing concurrently inside one run |
 | `CODEFYUI_RUN_RETENTION_KEEP_LAST` | `200` | How many finished runs to keep. `0` keeps none; a negative value disables retention. |
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | Largest event payload stored and fanned out; an over-cap output entry is replaced by an elision marker that still names its port. `0` or less disables the cap. |
 | `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` | `4194304` (4 MB) | Byte budget for one `GET /api/runs/{id}/events` page; a page that stops early hands back a cursor to resume from. |
+
+For example, `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` lets two runs share this server's `cuda:0` and three share `cuda:0` on `gpu-box-1`, and leaves every other card at 1. A worker on the same machine as the server uses this server's limit for its devices, since they are one slot.
 
 A malformed override entry is ignored with a warning rather than failing startup, and a limit below 1 is treated as 1 — a queue that cannot drain is a hang, not a policy. The three sweep caps are listed under [Sweeps](#sweeps).
 

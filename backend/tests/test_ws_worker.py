@@ -385,25 +385,33 @@ async def test_drain_holds_runs_and_undrain_releases_them(env):
         assert (await _terminal(service, run_id)).status == "succeeded"
 
 
-async def test_any_prefers_a_worker_and_falls_back_to_this_process(env):
+async def test_any_on_a_same_host_worker_shares_this_process_slots(env):
+    """A loopback agent's ``cpu`` is this machine's ``cpu`` (#773): one
+    budget of two, so the third ``any`` run waits instead of also running
+    here. (The fall-back-here path with a remote worker is
+    ``test_worker_scheduler``'s.)"""
     service, registry = env
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         agent = FakeAgent(ws)
         await agent.hello()
+        assert registry.get("box").same_host
         ids = [(await client.post("/api/runs", json={
             "graph": _graph(), "options": {"target": {"worker": "any"}}})
             ).json()["run_id"] for _ in range(3)]
         on_worker = [await agent.recv(), await agent.recv()]
         assert [a.run_id for a in on_worker] == ids[:2]
-        # The third found the worker full and ran here.
-        local = await _terminal(service, ids[2], timeout=60)
-        assert local.status == "succeeded"
-        assert (local.queue_key, local.worker_id) == ("cpu", "local")
-        for assign in on_worker:
+        assert service.slot_usage(("local", "cpu")) == {"limit": 2,
+                                                         "taken": 2}
+        assert service.queue_position(ids[2]) == 1
+        await agent.finish_run(on_worker[0])
+        third = await agent.recv()
+        assert third.run_id == ids[2]
+        for assign in (on_worker[1], third):
             await agent.finish_run(assign)
-        for run_id in ids[:2]:
+        for run_id in ids:
             record = await _terminal(service, run_id)
             assert (record.queue_key, record.worker_id) == ("box/cpu", "box")
+        assert service.slot_usage(("local", "cpu"))["taken"] == 0
 
 
 async def test_a_queued_run_says_which_worker_it_waits_for(env):
@@ -460,3 +468,36 @@ async def test_a_slow_run_does_not_starve_heartbeats(env):
         await _until(lambda: worker.devices[0].free_bytes == 123)
         assert run.inbox.qsize() == 2000
         registry.close_run("box", "slowrun")
+
+
+async def test_a_local_run_waits_for_a_same_host_workers_card(env,
+                                                              monkeypatch):
+    """#773 review of #772: an in-process run and a loopback worker's run
+    must not both get ``cuda:0`` under ``gpu=1``."""
+    from app.core import run_service as run_service_module
+
+    monkeypatch.setattr(run_service_module, "resolve_device",
+                        lambda requested: (requested or "cpu").lower())
+    service, registry = env
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello(devices=("cpu", "cuda:0"))
+        remote = (await client.post("/api/runs", json={
+            "graph": _graph(), "options": {
+                "device": "cuda:0", "target": {"worker": "box"}}})).json()
+        assign = await agent.recv()
+        assert assign.run_id == remote["run_id"]
+        local = (await client.post("/api/runs", json={
+            "graph": _graph(), "options": {"device": "cuda:0"}})).json()
+        assert local["status"] == "queued"
+        assert service.queue_position(local["run_id"]) == 1
+        workers = (await client.get("/api/workers")).json()
+        assert workers["workers"][0]["devices"][1]["slots"] == {
+            "limit": 1, "taken": 1}
+        await agent.finish_run(assign)
+        assert (await _terminal(service, remote["run_id"])).status == (
+            "succeeded")
+        # The card is free again: the local run leaves the queue (how it
+        # ends on a machine with no CUDA does not matter here).
+        record = await _terminal(service, local["run_id"], timeout=60)
+        assert record.worker_id == "local" and record.queue_key == "cuda:0"

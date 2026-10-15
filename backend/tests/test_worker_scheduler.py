@@ -142,8 +142,10 @@ def test_any_with_a_device_set_falls_back_here_only_with_every_device():
     assert only_one.explain(entry) == (
         "waiting for a worker that offers cuda:0, cuda:1")
     both = _scheduler(here=("cpu", "cuda:0", "cuda:1"))
+    # Here, it executes on the first card and holds both (#773).
     assert both.place(entry, {}) == Placement(
-        "local", ("cuda:0",), (("local", "cuda:0"),))
+        "local", ("cuda:0",), (("local", "cuda:0"), ("local", "cuda:1")))
+    assert both.place(entry, {("local", "cuda:1"): 1}) is None
     assert both.explain(entry) is None
 
 

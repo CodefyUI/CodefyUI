@@ -21,6 +21,8 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互相等待。同一條佇列內的 run 依**送出順序**啟動，先送出的先執行。
 
+**准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。等待期間它不佔用任何名額，因此只需要其中一張卡的 run 可以從那張卡自己的佇列先啟動。與伺服器在同一台機器上的 [worker](#workers) 和這台伺服器共用名額，因為它的 `cuda:0` 就是同一張卡：在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
+
 :::note 同一張卡的別名會併成同一條佇列
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
 :::
@@ -29,11 +31,11 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 沒有明確指定 `device` 的 run 會使用圖檔裡的 `settings.device`；圖檔也沒有指定時就在 `cpu` 上執行，不會有任何機制替你選加速器。指定了裝置集合（`target.devices`，或 `cdui run` 的 `--devices`）的 run 則改用集合的第一個裝置，不會參考 `settings.device`。`--device auto`（或請求本文中的 `"device": "auto"`）是唯一的例外：它會解析成這台伺服器能看到的最佳加速器（依序 `cuda`、`mps`、`cpu`），並排在那條佇列上。指定了不存在的加速器會退回 `cpu` 並發出警告。
 :::
 
-run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。`worker` 可以是 `local`（這台伺服器；省略 `worker` 時也是它）、已連線的 worker agent 名稱（見 [Worker](#workers)），或 `any`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；只寫 `mps` 視為 `mps:0`，只寫 `cuda` 會被拒絕；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。`device` 省略或為 `auto` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 只寫種類時也一樣（`"device": "cuda"` 搭配 `["cuda:1", "cuda:0"]` 會在 `cuda:1` 上執行）。`device` 指向其他裝置則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。在這台伺服器上，`devices` 記錄你要求的集合，只用第一個裝置來排隊與執行；在 worker 上，run 會佔用集合中的每一個裝置。沒有指定 target 的 run 行為與以往完全相同。
+run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。`worker` 可以是 `local`（這台伺服器；省略 `worker` 時也是它）、已連線的 worker agent 名稱（見 [Worker](#workers)），或 `any`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；只寫 `mps` 視為 `mps:0`，只寫 `cuda` 會被拒絕；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。`device` 省略或為 `auto` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 只寫種類時也一樣（`"device": "cuda"` 搭配 `["cuda:1", "cuda:0"]` 會在 `cuda:1` 上執行）。`device` 指向其他裝置則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。在這台伺服器上，run 用第一個裝置排隊與執行，並在集合中每一個裝置各佔一個名額；在 worker 上，run 會佔用並使用集合中的每一個裝置。沒有指定 target 的 run 行為與以往完全相同。
 
 ### Worker {/* #workers */}
 
-Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。這個版本的 agent 必須與伺服器在同一台機器上。`GET /api/workers` 列出各 agent 與其裝置，`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
+Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。這個版本的 agent 必須與伺服器在同一台機器上。`GET /api/workers` 列出各 agent 與其裝置，每個裝置附上 `slots`（`limit`、`taken`）；回應的 `local` 欄位以相同格式列出這台伺服器的裝置，`same_host: true` 標示與這台伺服器共用名額的 agent。`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
 
 `target.worker` 決定 run 放在哪裡：
 
@@ -324,12 +326,14 @@ study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後�
 | --- | --- | --- |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_GPU` | `1` | 每條加速器佇列的並行 run 數 |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_CPU` | `2` | `cpu` 佇列的並行 run 數 |
-| `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(空)* | 個別 key 的覆寫，例如 `cuda:0=2,cpu=8`。優先於上面兩個預設值。 |
+| `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(空)* | 個別名額的覆寫。只寫裝置時指這台伺服器（`cuda:0=2,cpu=8`）；`<worker>/<device>` 指該 worker（`gpu-box-1/cuda:0=2`），不影響這台伺服器。優先於上面兩個預設值。 |
 | `CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT` | `2` | 畫布 run 的並行上限 |
 | `CODEFYUI_MAX_PARALLEL_NODES` | `4` | 單一 run 內同時執行的節點數 |
 | `CODEFYUI_RUN_RETENTION_KEEP_LAST` | `200` | 保留幾筆已結束的 run。`0` 表示完全不保留；負值會停用 retention。 |
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | 儲存及分送的單一事件 payload 上限；超過上限的輸出項目會換成省略標記，但仍會指出它的 port。`0` 或更小的值會停用上限。 |
 | `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` | `4194304` (4 MB) | 單一 `GET /api/runs/{id}/events` page 的 byte 預算；提早停止的 page 會回傳 cursor，供下一次接續。 |
+
+例如 `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` 讓這台伺服器的 `cuda:0` 可同時執行兩個 run、`gpu-box-1` 的 `cuda:0` 可同時執行三個，其他卡維持 1。與伺服器在同一台機器上的 worker 對它的裝置使用這台伺服器的上限，因為兩者是同一個名額。
 
 格式錯誤的覆寫項目會被忽略並記錄警告，不會讓伺服器啟動失敗。小於 1 的上限一律視為 1，避免佇列因無法排空而停滯。三項 sweep 上限列在[參數掃描](#sweeps)一節。
 

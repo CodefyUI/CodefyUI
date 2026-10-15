@@ -7,6 +7,9 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core import worker_protocol as wp
 from app.core.auth import TOKEN_HEADER, session_token
+from app.core.db import Database
+from app.core.run_service import QueueLimits, RunService
+from app.core.run_store import RunStore
 from app.core.workers import WorkerRegistry
 from app.main import app
 
@@ -78,3 +81,61 @@ async def test_drain_and_undrain(registry):
 async def test_no_registry_is_503():
     async with _client() as client:
         assert (await client.get("/api/workers")).status_code == 503
+
+
+def _devices(*values: str) -> list[wp.DeviceReport]:
+    return [wp.DeviceReport(value=v, kind=v.split(":")[0]) for v in values]
+
+
+async def test_every_device_carries_its_slots_and_this_server_is_listed(
+        registry, tmp_path, monkeypatch):
+    """#773: ``slots: {limit, taken}`` per device, for each worker and for
+    this server (``local``); a same-host worker reads this server's."""
+    database = Database(tmp_path / "codefyui.db")
+    database.connect()
+    service = RunService(RunStore(database), workers=registry,
+                         limits=QueueLimits(overrides=(("far/cuda:1", 3),)))
+    monkeypatch.setattr(RunService, "local_devices",
+                        staticmethod(lambda: ["cpu", "cuda:0"]))
+    app.state.run_service = service
+    try:
+        registry.connect(wp.Hello(name="far", version="t",
+                                  devices=_devices("cpu", "cuda:0",
+                                                   "cuda:1", "tpu")),
+                         send=_noop, close=_noop)
+        registry.connect(wp.Hello(name="here", version="t",
+                                  devices=_devices("cuda:0")),
+                         send=_noop, close=_noop, same_host=True)
+        # What two running runs would hold: one on far's first card, one
+        # on this machine's (shared with the same-host worker).
+        service._slots.update({("far", "cuda:0"): 1, ("local", "cuda:0"): 1})
+        async with _client(token=False) as client:
+            body = (await client.get("/api/workers")).json()
+        far, here = body["workers"]
+        assert far["same_host"] is False and here["same_host"] is True
+        assert [d["slots"] for d in far["devices"]] == [
+            {"limit": 2, "taken": 0}, {"limit": 1, "taken": 1},
+            {"limit": 3, "taken": 0}, None]
+        assert here["devices"][0]["slots"] == {"limit": 1, "taken": 1}
+        assert body["local"] == {"id": "local", "devices": [
+            {"value": "cpu", "kind": "cpu",
+             "slots": {"limit": 2, "taken": 0}},
+            {"value": "cuda:0", "kind": "cuda",
+             "slots": {"limit": 1, "taken": 1}}]}
+        async with _client() as client:
+            drained = (await client.post("/api/workers/far/drain")).json()
+        assert drained["devices"][1]["slots"] == {"limit": 1, "taken": 1}
+    finally:
+        await service.shutdown()
+        del app.state.run_service
+        database.close()
+
+
+async def test_without_a_run_service_slots_are_null(registry):
+    registry.connect(wp.Hello(name="box", version="t",
+                              devices=_devices("cpu")),
+                     send=_noop, close=_noop)
+    async with _client(token=False) as client:
+        body = (await client.get("/api/workers")).json()
+    assert body["local"] is None
+    assert body["workers"][0]["devices"][0]["slots"] is None
