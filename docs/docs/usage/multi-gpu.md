@@ -90,7 +90,7 @@ A worker on the same machine shares this server's slot for every card that is ph
 
 Open it with **Workers** in the Runs panel header, or from **Settings → Execution → Workers → Manage**. It refreshes every 5 seconds while open and shows, for each worker:
 
-- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Storage: shared filesystem](./run-queue#storage-shared-filesystem)) and the age of its last heartbeat;
+- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Remote Workers, Storage](/usage/remote-workers#storage)) and the age of its last heartbeat;
 - each device with its free and total memory from the latest heartbeat and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
 
@@ -110,9 +110,9 @@ When a run finishes, its detail header shows **Peak memory** for CUDA (the alloc
 
 - **One run does not train across cards.** A device set makes several cards visible to one run, and nodes can be pinned to them by in-run name, but there is no `DistributedDataParallel` strategy yet ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
 - **No memory admission.** Runs are admitted by count per slot; a run is not refused because a card lacks memory, and an over-full card fails with an out-of-memory error ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)). See [Training Memory](/advanced/training-memory).
-- **Plain HTTP between machines.** A remote worker enrolls and connects over whatever the control plane serves; without a TLS proxy its token and run inputs cross the network unencrypted. Fingerprint pinning is [#786](https://github.com/CodefyUI/CodefyUI/issues/786).
+- **Plain HTTP between machines.** A remote worker enrolls and connects over whatever the control plane serves; without a TLS proxy or an SSH tunnel its token and run inputs cross the network unencrypted ([Remote Workers, Trust](/usage/remote-workers#trust-between-agent-and-control-plane)).
 - **No captured outputs on a worker** (`record_outputs`, [#789](https://github.com/CodefyUI/CodefyUI/issues/789)), and no persistent weights: every worker run starts fresh.
-- **A disconnect ends the run.** If the agent stops or loses its connection, its runs end `interrupted` ([#783](https://github.com/CodefyUI/CodefyUI/issues/783) adds resume).
+- **A long disconnect ends the run.** A worker that loses its connection keeps its runs going for `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes); past that they end `interrupted` ([Remote Workers, When the connection drops](/usage/remote-workers#when-the-connection-drops)).
 
 ## See also
 

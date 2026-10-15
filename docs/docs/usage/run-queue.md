@@ -47,40 +47,7 @@ How `target.worker` places a run:
 
 A run on a worker cannot use `record_outputs` or the interactive lane (the canvas always runs here); both are refused at submit. Once it starts, its row records `worker_id`, `devices` and a `queue_key` of `<worker>/<device>`, and its events are the same as a local run's. **Stop** reaches the worker, which stops the run cooperatively and terminates it after a grace period.
 
-#### When the connection drops
-
-A worker is disconnected when its connection closes or it misses three heartbeats (30 s). Its runs keep running on the worker, which keeps their events on disk until this server confirms it has recorded them. Each run's status becomes `disconnected`, with a `run_warning` of kind `worker_disconnected`; it keeps its slots, and the Runs panel shows how long ago its worker went away (`GET /api/runs/{id}` reports it as `worker_status`). Then one of three things happens:
-
-- **The worker reconnects within the grace** (`CODEFYUI_WORKER_RESUME_GRACE_S`, 5 minutes): it sends the events this server has not recorded, in order, and the run is `running` again with a `run_warning` of kind `worker_reconnected`. Its event log has no gap and no duplicate.
-- **It does not**: the run ends `interrupted` and its slots are freed. If the worker comes back later and still has the run, it is told to stop it at once, so the card is free for the next run; how the run ended there is recorded as `late_result` on the run (`{status, error, worker_id, at}`, in `GET /api/runs/{id}` and in `execution_facts`), and its status and event log stay as they were.
-- **This server restarts meanwhile**: the run ends `interrupted` at startup, like every other run that was executing.
-
-A laptop as the server: sleep closes the connection, so a lid closed for longer than the grace ends the worker's runs `interrupted`. Raise `CODEFYUI_WORKER_RESUME_GRACE_S` for long naps; `0` ends a disconnected worker's runs at once.
-
-#### Storage: shared filesystem
-
-A run that reads or writes files in the data folder needs a worker that sees the same files: a node that reads an upload (CSVReader, ImageReader, ModelLoader, CheckpointLoader and the other upload fields), a node that saves (CheckpointSaver, ModelSaver, ImageWriter, VideoWrite), a TrainingLoop with `checkpoint_every`, `checkpoint_every_steps` or `tensorboard`, or a reader given a path in the data folder. Nodes that download into a cache of their own (Dataset, HuggingFaceDataset) do not count. Mount one network share on both machines and give it the same **label**: this server's data folder (the project directory with `--project`) is the label `data` (`CODEFYUI_MOUNT_LABEL`), and an agent names its own path for the label with `cdui agent start --mount data=<path>`. The paths may differ between machines.
-
-| Run | Worker with the `data` mount | Worker without it |
-| --- | --- | --- |
-| Uses files, all of them uploads picked in a file field | Placed (preferred) | Placed: the files travel over HTTP ([Storage: no shared filesystem](./remote-workers#storage-no-shared-filesystem)). `any` tries it after the workers with the mount |
-| Uses files another way (a plain path, an upload this server lacks, inputs over `CODEFYUI_TRANSFER_MAX_INPUT_BYTES`), or `CODEFYUI_TRANSFER_ENABLED=0` | Placed | Named worker: `400` at submit, ``worker gpu-box-1 has no `data` mount; add `--mount data=...` to its agent, or make the run fit the transfer backend: <reason>``. `any`: skipped |
-| Uses no files (a pure-tensor graph) | Placed | Placed |
-
-On the worker, the run's data folders are derived from the mount path the way `backend/data` is laid out (`files/`, `images/`, `models/`, `media/`, `graphs/`, `presets/`), or, when the path holds `codefyui.project.toml`, from that project. A file the run records (a checkpoint, a TensorBoard folder) is stored relative to the mount (`backend: "mount"`) and listed by `GET /api/runs/{id}/artifacts` and the Runs panel at this server's path; a row whose mount this server does not hold has `path: null` and is named by its label and relative path. An agent on the same machine as this server holds `data` without `--mount`: its runs use this server's data folders exactly as configured here, its files are listed as ordinary local files, and `GET /api/workers` shows the label with this server's path. A saved mount whose folder is missing when the agent starts (the share is not mounted yet) is not offered until the folder appears; the agent checks again at every heartbeat. `--mount` cannot change while the agent runs: stop it first. With `--project`, uploaded data files stay in the install's `data/files`, outside the project, so they are not shared.
-
-An NFS example, with the share mounted at a different path on each machine:
-
-```bash
-# Both machines
-sudo mount -t nfs nas.lab:/export/codefyui /mnt/codefyui      # on the GPU server: /nas/codefyui
-# Control plane: keep the data folders on the share (the database stays local)
-export CODEFYUI_DATA_FILES_DIR=/mnt/codefyui/data/files CODEFYUI_IMAGES_DIR=/mnt/codefyui/data/images \
-       CODEFYUI_MODELS_DIR=/mnt/codefyui/data/models CODEFYUI_MEDIA_DIR=/mnt/codefyui/data/media
-cdui start
-# GPU server: the label is saved, so later starts need no --mount
-cdui agent start --mount data=/nas/codefyui/data
-```
+A worker keeps its runs going through a dropped connection for `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes), and a run that reads or writes files needs a folder both machines share or the transfer backend: see [Remote Workers, When the connection drops](/usage/remote-workers#when-the-connection-drops) and [Remote Workers, Storage](/usage/remote-workers#storage).
 
 A seeded run on a worker executes alone **in its own process**: the "a seeded run executes alone" rule of [Reproducible runs](./running-graphs#reproducible-runs-seed) guards this server's process-wide random state, and a worker's subprocess has random state of its own. So seeded runs on different workers or different cards run at the same time, and a seeded run on a worker neither waits for this server's runs nor holds them up. Seeded runs that execute on this server, including `any` runs that landed here, still run one at a time.
 
@@ -373,12 +340,12 @@ All of these are environment variables read at startup (like every other setting
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_CPU` | `2` | Concurrent runs on the `cpu` queue |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(empty)* | Per-slot overrides. A bare device is this server's (`cuda:0=2,cpu=8`); `<worker>/<device>` is that worker's (`gpu-box-1/cuda:0=2`) and never this server's. Beats the two defaults above. |
 | `CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT` | `2` | Concurrent canvas runs |
-| `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | Seconds a disconnected worker's runs wait for it before they end `interrupted` (see [When the connection drops](#when-the-connection-drops)). `0` ends them at once. |
+| `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | Seconds a disconnected worker's runs wait for it before they end `interrupted` (see [Remote Workers, When the connection drops](./remote-workers#when-the-connection-drops)). `0` ends them at once. |
 | `CODEFYUI_MAX_PARALLEL_NODES` | `4` | Nodes executing concurrently inside one run |
 | `CODEFYUI_RUN_RETENTION_KEEP_LAST` | `200` | How many finished runs to keep. `0` keeps none; a negative value disables retention. |
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | Largest event payload stored and fanned out; an over-cap output entry is replaced by an elision marker that still names its port. `0` or less disables the cap. |
 | `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` | `4194304` (4 MB) | Byte budget for one `GET /api/runs/{id}/events` page; a page that stops early hands back a cursor to resume from. |
-| `CODEFYUI_MOUNT_LABEL` | `data` | The label of this server's data folder for workers that share it ([Storage: shared filesystem](#storage-shared-filesystem)). |
+| `CODEFYUI_MOUNT_LABEL` | `data` | The label of this server's data folder for workers that share it ([Remote Workers, Storage](./remote-workers#storage-shared-filesystem)). |
 
 For example, with `gpu-box-1` a worker on another machine, `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` lets two runs share this server's `cuda:0` and three share `cuda:0` on `gpu-box-1`, and leaves every other card at 1. A card that a worker on the same machine shares with this server always uses this server's limit; a `<worker>/<device>` override naming such a card is ignored, with a warning when the worker connects. `local/<device>` is accepted as another spelling of a bare device.
 

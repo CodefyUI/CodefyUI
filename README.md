@@ -21,6 +21,7 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 - **Source Control** — A sidebar tab that runs git on a project directory: stage, commit, branches, remotes, stash, fetch / pull / push, history and diffs
 - **WebSocket Execution** — Real-time per-node progress, Print node output displayed in the Execution Log panel
 - **Run Queue & Sweeps** — Runs belong to the server and queue per device; `cdui run` submits a graph from a terminal; `POST /api/sweeps` runs one graph over a grid or random sample of parameter values
+- **Remote Workers** — Send queued runs to other machines: enroll a GPU server from the **Workers** panel (`cdui agent start`), reach it over the LAN, a TLS proxy or SSH, and each run executes in a subprocess of its own
 - **Partial Re-Execution** — Dirty node tracking: only re-runs changed nodes and their downstream dependencies
 - **Quick Node Search** — Double-click the canvas to open an instant search panel for adding nodes and presets
 - **Custom Node Manager** — GUI for uploading, enabling/disabling, and deleting custom nodes

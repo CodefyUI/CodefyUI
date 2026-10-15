@@ -90,7 +90,7 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 從 Runs 面板標題列的 **Workers**，或 **Settings → 執行 → Workers → 管理**開啟。開啟期間每 5 秒更新一次，每個 worker 會顯示：
 
-- 狀態（**Online**、心跳延遲或節點型別與伺服器不同時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、節點型別是否與伺服器相同（以及哪些不同）、上次連線被拒的原因、mount 標籤（見[儲存：共用檔案系統](./run-queue#storage-shared-filesystem)），以及上次心跳距今多久；
+- 狀態（**Online**、心跳延遲或節點型別與伺服器不同時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、節點型別是否與伺服器相同（以及哪些不同）、上次連線被拒的原因、mount 標籤（見[遠端 Worker：儲存](/usage/remote-workers#storage)），以及上次心跳距今多久；
 - 每個裝置在最近一次心跳時的可用與總記憶體，以及 slot 的已占用 / 上限；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
 
@@ -110,9 +110,9 @@ run 結束後，詳細資訊標題會顯示 CUDA 的**峰值記憶體**（配置
 
 - **單一 run 不會跨卡訓練。** 裝置集合讓一個 run 看得到多張卡，節點也可以用 run 內名稱固定到這些卡上，但目前還沒有 `DistributedDataParallel` 策略（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **沒有依記憶體的准入。** run 以每個 slot 的數量准入；不會因為卡上記憶體不足而拒絕 run，塞太滿的卡會以記憶體不足錯誤失敗（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）。請參閱[訓練記憶體](/advanced/training-memory)。
-- **機器之間是明文 HTTP。** 遠端 worker 以控制面提供的協定加入與連線；沒有 TLS proxy 時，它的 token 與 run 的輸入會以明文經過網路。指紋釘選是 [#786](https://github.com/CodefyUI/CodefyUI/issues/786)。
+- **機器之間是明文 HTTP。** 遠端 worker 以控制面提供的協定加入與連線；沒有 TLS proxy 或 SSH 通道時，它的 token 與 run 的輸入會以明文經過網路（[遠端 Worker：信任](/usage/remote-workers#trust-between-agent-and-control-plane)）。
 - **worker 上不擷取輸出**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)），也不保留權重：每個 worker run 都從頭開始。
-- **斷線會結束 run。** agent 停止或失去連線時，它的 run 以 `interrupted` 結束（[#783](https://github.com/CodefyUI/CodefyUI/issues/783) 會加入續跑）。
+- **長時間斷線會結束 run。** 失去連線的 worker 會在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內繼續它的 run；超過後它們以 `interrupted` 結束（[遠端 Worker：連線中斷時](/usage/remote-workers#when-the-connection-drops)）。
 
 ## 另請參閱 {/* #see-also */}
 
