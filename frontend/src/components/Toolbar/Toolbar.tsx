@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
+import { lazy, Suspense, useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
 import { useDeviceOptions, deviceLabel, deviceOptionLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
@@ -25,8 +25,16 @@ import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { ToolbarGlobalActions } from './ToolbarGlobalActions';
 import { ProjectBadge } from './ProjectBadge';
-import { QueueRunDialog } from './QueueRunDialog';
 import styles from './Toolbar.module.css';
+
+/**
+ * The Queue on... dialog (#775), in a chunk of its own: it is opened from a
+ * menu, and keeping it out of the first paint keeps the entry chunk under
+ * the 500 kB build limit.
+ */
+const QueueRunDialog = lazy(() =>
+  import('./QueueRunDialog').then((module) => ({ default: module.QueueRunDialog })),
+);
 
 /* ── Shared dropdown menu ───────────────────────────────────────── */
 
@@ -1042,7 +1050,9 @@ export function Toolbar() {
           exactly this group and none of the graph controls above it. */}
       <ToolbarGlobalActions />
       {queueRunOpen && (
-        <QueueRunDialog onClose={() => useUIStore.getState().setQueueRunOpen(false)} />
+        <Suspense fallback={null}>
+          <QueueRunDialog onClose={() => useUIStore.getState().setQueueRunOpen(false)} />
+        </Suspense>
       )}
     </div>
   );
