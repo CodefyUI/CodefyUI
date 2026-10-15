@@ -43,9 +43,10 @@ importing only the one below it:
   worker subprocess can build the very same bytes.
 - ``core.executors`` -- an ``Executor`` runs one ``ExecutionRequest`` and
   returns an ``ExecutionOutcome``. ``InProcessExecutor`` (the default, and
-  today the only one) is what ``_execute`` used to do: ``execute_graph`` in
-  this process, its callbacks bridged through ``run_events`` into the run's
-  ``RunSinks``.
+  the only one a run without a worker target meets) is what ``_execute``
+  used to do: ``execute_graph`` in this process, its callbacks bridged
+  through ``run_events`` into the run's ``RunSinks``. ``WorkerExecutor``
+  (#772) executes a run placed on a worker agent; see Workers below.
 - this module -- scheduling, the row, and persistence: ``RunSinks`` lands in
   ``_emit`` (where ``cap_event_payload`` applies), the metric batcher and the
   artifact table. Classifying a stop as ``cancelled`` or ``interrupted``
@@ -797,10 +798,11 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     set).
 
     ``devices`` records the REQUESTED set. Its first entry becomes the
-    run's ``device`` (see :func:`normalize_options`). On this process only
-    that entry is used, to queue and to execute; the rest is stored as
-    asked (#773 / #774). On a worker (#772) the run holds a slot for every
-    device in the set and its subprocess sees all of them.
+    run's ``device`` (see :func:`normalize_options`). On this process that
+    entry is the queue and the device the run executes on, and the run
+    holds a slot on every device of the set (#773). On a worker (#772) the
+    run holds a slot for every device in the set and its subprocess sees
+    all of them (#774).
     """
     if raw is None:
         return None
@@ -898,8 +900,8 @@ def normalize_options(raw: Any) -> dict[str, Any]:
       ``target.devices and device disagree``. ``cuda:00`` + ``["cuda:0"]``
       agrees, and the device becomes ``cuda:0``.
 
-    Only ``devices[0]`` takes effect in this release; see
-    :func:`normalize_target`.
+    How the rest of the set is used depends on where the run executes;
+    see :func:`normalize_target`.
     """
     if raw is None:
         raw = {}

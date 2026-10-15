@@ -12,10 +12,12 @@ Three pieces:
   metric batcher, the artifact row). An executor never touches the store.
 - :class:`ExecutionRequest`: everything one execution needs, gathered by
   ``RunService._execute``.
-- :class:`Executor`: ``run(request) -> ExecutionOutcome``. Today there is one,
-  :class:`InProcessExecutor`, which is ``RunService._execute``'s body as it was
-  before #766, unchanged: it calls ``execute_graph`` in this process and turns
-  its callbacks into payloads with ``core.run_events`` and into rows with the
+- :class:`Executor`: ``run(request) -> ExecutionOutcome``. Two exist.
+  :class:`InProcessExecutor`, the default, is ``RunService._execute``'s body
+  as it was before #766, unchanged: it calls ``execute_graph`` in this
+  process and turns its callbacks into payloads with ``core.run_events`` and
+  into rows with the sinks. :class:`WorkerExecutor` (#772) hands a run
+  placed on a worker agent to that worker and feeds its frames into the same
   sinks.
 
 The split exists so a run can execute somewhere else (a worker subprocess,

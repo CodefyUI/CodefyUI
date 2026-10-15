@@ -12,7 +12,7 @@ That is what makes queueing useful. Submit five training jobs, shut the laptop l
 
 ## One queue per device
 
-Every run is scheduled against its **resolved device** — `cpu`, `cuda:0`, `mps`. That string is the queue key, so each device has its own independent line and its own concurrency limit. The device is resolved in this order: the run's own `device` option, then the graph file's `settings.device`, then `cpu`; only an explicit `auto` picks the best accelerator present.
+Every run without a worker target is scheduled against its **resolved device** — `cpu`, `cuda:0`, `mps` — and executes in the server process. That string is the queue key, so each device has its own independent line and its own concurrency limit. The device is resolved in this order: the run's own `device` option, then the graph file's `settings.device`, then `cpu`; only an explicit `auto` picks the best accelerator present.
 
 | Queue key | Runs at once (default) | Why |
 | --- | --- | --- |
@@ -48,6 +48,8 @@ How `target.worker` places a run:
 A run on a worker cannot use `record_outputs` or the interactive lane (the canvas always runs here); both are refused at submit. Once it starts, its row records `worker_id`, `devices` and a `queue_key` of `<worker>/<device>`, and its events are the same as a local run's. **Stop** reaches the worker, which stops the run cooperatively and terminates it after a grace period. If the worker disconnects, or misses three heartbeats (30 s), its runs end `interrupted` with a `run_warning` of kind `worker_disconnected`, and their slots are freed.
 
 A seeded run on a worker executes alone **in its own process**: the "a seeded run executes alone" rule of [Reproducible runs](./running-graphs#reproducible-runs-seed) guards this server's process-wide random state, and a worker's subprocess has random state of its own. So seeded runs on different workers or different cards run at the same time, and a seeded run on a worker neither waits for this server's runs nor holds them up. Seeded runs that execute on this server, including `any` runs that landed here, still run one at a time.
+
+For running several jobs on a multi-GPU machine, starting a worker and choosing devices, see [Multi-GPU Execution](./multi-gpu).
 
 This is a limit on **runs per device**, and it is not the same knob as `CODEFYUI_MAX_PARALLEL_NODES`, which bounds how many *nodes inside one run* execute at the same time. The two multiply.
 
@@ -85,7 +87,7 @@ A run gives its device slot back the moment its graph finishes, before it writes
 
 ### Runs panel
 
-The **Runs** tab of the results panel lists the newest 50 runs the server owns — started from any tab, `cdui run` or the API — newest first, with filter chips **All / Running / Queued / Succeeded / Failed / Cancelled / Interrupted** and the columns **Run, Status, Device, Started, Duration, Final loss**. A run started from a tab is listed under that tab's name, cut to 64 characters. A filter chip applies before the 50-row cut, and the count next to **Refresh** shows how many of the matching runs are listed (`50 of 312`). Older runs are reachable through `GET /api/runs?offset=`. A waiting run shows `Queue #N` beside its device. **New sweep** starts a [parameter sweep](#in-the-runs-panel). Each row offers up to four actions:
+The **Runs** tab of the results panel lists the newest 50 runs the server owns — started from any tab, **Queue on...**, `cdui run` or the API — newest first, with filter chips **All / Running / Queued / Succeeded / Failed / Cancelled / Interrupted** and the columns **Run, Status, Worker, Devices, Started, Duration, Final loss**. **Worker** reads **This server** for a local run, **Any available** for an `any` run not placed yet, else the worker's name; **Devices** lists the run's device set, or its device, with each card's in-run name on hover for a run on a worker. A run started from a tab is listed under that tab's name, cut to 64 characters. A filter chip applies before the 50-row cut, and the count next to **Refresh** shows how many of the matching runs are listed (`50 of 312`). Older runs are reachable through `GET /api/runs?offset=`. A waiting run shows `Queue #N` beside its devices, and under its worker the reason it waits when there is one (`queue_reason`, such as `waiting for worker gpu-box to reconnect`). **New sweep** starts a [parameter sweep](#in-the-runs-panel). Each row offers up to four actions:
 
 | Action | What it does |
 | --- | --- |
@@ -231,7 +233,7 @@ A sweep can carry an `error` while its `state` is still `running` or `finished`.
 
 `POST /api/sweeps/{id}/cancel` asks every queued or running child to stop — one cooperative cancel each — and reports `cancelled` and `already_finished` counts plus a per-variant list in index order. A variant is in neither count when it never got a run, or when its run still shows `running` but the cancel could not reach it (for example, a run started by another server process using the same database). The sweep's state becomes `cancelling` only if at least one child was still active, and it never becomes `cancelled`: a sweep whose first thirty variants finished and last two were stopped is a finished sweep with two cancelled rows. Once every child is terminal, the next read (the cancel reply itself, if they already were) settles the state to `finished`. Asking twice is harmless (`cancelled: 0`).
 
-A cancel is a request, not a guarantee. Stopping is cooperative: the server raises a flag and the node has to read it. The training, evaluation and sampling nodes check it every batch and stop within one, but a node that never checks runs to completion exactly as if nobody had asked. There is no force-stop behind the request and no timeout — the only way to impose a deadline is to kill the run mid-step, which throws away the work it has done and, on a GPU, can leave the device unusable until the server exits.
+A cancel is a request, not a guarantee. Stopping is cooperative: the server raises a flag and the node has to read it. The training, evaluation and sampling nodes check it every batch and stop within one, but a node that never checks runs to completion exactly as if nobody had asked. For a run in the server process there is no force-stop behind the request and no timeout: the only way to impose a deadline there is to kill the run mid-step, which throws away the work it has done and, on a GPU, can leave the device unusable until the server exits. A run on a [worker](#workers) has a process of its own, so the worker terminates it when it has not stopped within the grace period (30 seconds by default), and only that run's process ends.
 
 So `cancelling` has no time bound. It ends when the last child reaches a terminal status, not after any particular wait; restarting the server ends it too, because runs abandoned by the old process are retired on the way back up. To see what a cancel is still waiting on, read `counts.running` plus `counts.queued` from `GET /api/sweeps/{id}`: those are the children that were asked and have not stopped, and `variants` names them. How long the sweep has been showing `cancelling` tells you nothing.
 
@@ -314,11 +316,13 @@ Each attempt records the run id it is about to use before the child is submitted
 
 ## When the server stops
 
-Nothing resumes a queue across a restart: the schedule lives in the server's memory, and a waiting row would otherwise sit forever waiting on a scheduler that no longer exists.
+Nothing resumes a queue across a restart: the queue lives in the server process's memory (workers keep no queue of their own), and a waiting row would otherwise sit forever waiting on a scheduler that no longer exists.
 
 A graceful shutdown immediately retires every waiting run as `interrupted`, writes its normal stop event, and gives executing runs 5 seconds to stop cooperatively. `systemctl stop` on the unit in [Deployment](./deployment#a-systemd-unit) shuts the server down this way, because it sends SIGTERM to the server process itself. On Windows, so does Ctrl+C on `cdui start --foreground`, pressed once: a second Ctrl+C while uvicorn is waiting for connections to close skips these steps.
 
 On Linux and macOS, Ctrl+C on `cdui start --foreground` is not graceful: the `cdui` process kills the server about 0.25 seconds after the Ctrl+C, so executing runs do not get their 5 seconds and waiting runs may not be retired. `cdui stop` does not wait for these steps either: on Windows it force-kills the server's process tree (`taskkill /F /T`), and on Linux and macOS it sends SIGTERM and then SIGKILL about 2 seconds later. Those stops, any other hard kill, or an executing run that outlasts the 5 seconds can leave rows as `queued` or `running`. At the next startup, recovery changes both statuses to `interrupted` and writes the same stop event a graceful shutdown writes, unless the run's event log already ends with a closing event. An editor tab that reconnects, and anything reading `GET /api/runs/{id}/events`, therefore sees the run end. Neither resumes.
+
+A run executing on a [worker](#workers) gets the same treatment on a graceful shutdown: the stop reaches the worker, a run still going after the 5 seconds is terminated there, and the server then closes its worker connections. The agents keep running and reconnect when the server is back. After a hard stop the worker is not told anything: its run subprocesses run to their end, what they report is discarded, and recovery retires their rows as `interrupted` like the others.
 
 Requeue anything you still want by submitting it again.
 
@@ -348,5 +352,6 @@ Retention runs at startup and after every run ends, keeping the newest `KEEP_LAS
 ## See also
 
 - [Running Graphs](./running-graphs) — what happens inside a single run
+- [Multi-GPU Execution](./multi-gpu) — worker agents, device sets and slots on a multi-GPU machine
 - [CLI Graph Runner](./cli-runner) — executing a graph with no server
 - [API Reference](../advanced/api-reference) — the `/api/runs`, `/api/sweeps` and `/api/studies` endpoints

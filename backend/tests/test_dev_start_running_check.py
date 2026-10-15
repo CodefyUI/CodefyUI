@@ -389,7 +389,18 @@ def test_workers_cannot_be_forwarded(extra, monkeypatch, capsys):
     assert leaving.value.code == 2
     err = capsys.readouterr().err
     assert "--workers" in err and "single process" in err
+    # The server is one process; runs get processes of their own through a
+    # worker agent, so the refusal names it (#778).
+    assert "cdui agent start" in err
     assert "server.addr" not in err, "that is the bind flags' explanation"
+
+
+def test_workers_refusal_names_the_agent_in_chinese(monkeypatch, capsys):
+    monkeypatch.setattr(dev, "LANG", "zh")
+    with pytest.raises(SystemExit):
+        dev._reject_owned_uvicorn_flags(["--workers", "2"])
+    err = capsys.readouterr().err
+    assert "單一行程" in err and "cdui agent start" in err
 
 
 # -- a start whose server does not come up ----------------------------------------
@@ -536,7 +547,8 @@ def test_web_concurrency_does_not_reach_the_server(launcher, monkeypatch,
     dev.start()
 
     assert seen == ["<unset>"]
-    assert "WEB_CONCURRENCY=4" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "WEB_CONCURRENCY=4" in err and "cdui agent start" in err
 
 
 # -- `cdui dev` ------------------------------------------------------------------

@@ -11,7 +11,7 @@ frontend/   React 19 · TypeScript · React Flow 12 · Zustand 5 · Vite 6
 backend/    Python 3.10+ · FastAPI · PyTorch
 ```
 
-A single uvicorn process serves the REST API, the execution WebSocket, and the prebuilt React app. By default it also executes every run. A queued run can instead target a worker agent (`cdui agent start`), which executes it in a subprocess of its own; [Execution Architecture](./execution-architecture) describes that split.
+A single uvicorn process serves the REST API, the execution WebSocket, and the prebuilt React app. By default it also executes every run. A queued run can instead target a worker agent (`cdui agent start`), which executes it in a subprocess of its own; [Execution Architecture](./execution-architecture) describes that split, and [Multi-GPU Execution](/usage/multi-gpu) how to use it.
 
 ## Core principles
 

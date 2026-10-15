@@ -1763,18 +1763,22 @@ _UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port", "--ws-max-size", "--workers")
 # Owned flag -> the remedy to name when it is forwarded after `--`. A refusal
 # that does not point at the knob that DOES work is just a dead end.
 # --host/--port have cdui flags of their own; --ws-max-size is configured by
-# environment like every other app setting; --workers has no knob, and says so.
+# environment like every other app setting; --workers has no server knob, and
+# names the worker agent, which is how runs get processes of their own.
 _UVICORN_FLAG_ALTERNATIVE = {
     "--host": "使用 cdui start --host。",
     "--port": "使用 cdui start --port。",
     "--ws-max-size": "改設環境變數 CODEFYUI_WS_MAX_MESSAGE_BYTES。",
-    "--workers": "CodefyUI 只以單一行程提供服務。",
+    "--workers": ("CodefyUI 伺服器只以單一行程執行；要讓 run 在其他行程中執行，"
+                  "請用 cdui agent start 啟動 worker agent。"),
 }
 _UVICORN_FLAG_ALTERNATIVE_EN = {
     "--host": "use `cdui start --host` instead.",
     "--port": "use `cdui start --port` instead.",
     "--ws-max-size": "set CODEFYUI_WS_MAX_MESSAGE_BYTES instead.",
-    "--workers": "CodefyUI serves from a single process.",
+    "--workers": ("the CodefyUI server runs as a single process; to execute "
+                  "runs in other processes, start a worker agent with "
+                  "`cdui agent start`."),
 }
 
 # Mirrors app.config.Settings.WS_MAX_MESSAGE_BYTES, including its fallback to
@@ -2301,9 +2305,11 @@ def start() -> None:
     # --reload, which ignores workers.)
     web_concurrency = os.environ.pop("WEB_CONCURRENCY", None)
     if web_concurrency not in (None, "", "1"):
-        warn(f"忽略 WEB_CONCURRENCY={web_concurrency}：CodefyUI 只以單一行程提供服務。",
-             f"Ignoring WEB_CONCURRENCY={web_concurrency}: CodefyUI serves "
-             f"from a single process.")
+        warn(f"忽略 WEB_CONCURRENCY={web_concurrency}：CodefyUI 伺服器只以單一行程執行；"
+             f"要讓 run 在其他行程中執行，請用 cdui agent start 啟動 worker agent。",
+             f"Ignoring WEB_CONCURRENCY={web_concurrency}: the CodefyUI server "
+             f"runs as a single process; to execute runs in other processes, "
+             f"start a worker agent with `cdui agent start`.")
     uvicorn = _require_venv_tool("uvicorn")
     # Extras go last so `app.main:app` keeps its position — the process
     # matchers in `cdui stop` key on it. --ws-max-size is passed explicitly
