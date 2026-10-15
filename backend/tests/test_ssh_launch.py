@@ -1,0 +1,928 @@
+"""SSH workers (#784): ``core.ssh_launch`` and its routes.
+
+A fake ``ssh`` (``tests/fake_ssh.py``, behind an ``ssh`` shim on PATH)
+records its argv and the token it reads from stdin, and keeps running (or
+fails, or reports a busy or forbidden forward port, or another worker's
+stored credential). The
+remote command itself is run with a real ``sh`` against a fake ``cdui``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.config import settings
+from app.core import auth, ssh_launch
+from app.core.auth import TOKEN_HEADER, session_token
+from app.core.db import Database
+from app.core.ssh_launch import SshLauncher
+from app.core.worker_store import SshWorker, WorkerStore
+from app.core.workers import WorkerRegistry
+from app.main import app
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="the fake ssh is a POSIX shell shim")
+
+FAKE_SSH = Path(__file__).resolve().parent / "fake_ssh.py"
+LOCAL_PORT = 8123
+RANGE = (18000, 18009)
+
+
+# ── fixtures ──────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def fake_ssh(tmp_path, monkeypatch):
+    """``ssh`` on PATH is the fake; returns the path of its argv log."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "ssh"
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE_SSH}" "$@"\n')
+    shim.chmod(0o755)
+    log = tmp_path / "ssh.log"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_SSH_LOG", str(log))
+    monkeypatch.setenv("FAKE_SSH_MODE", "hold")
+    monkeypatch.delenv("FAKE_SSH_BUSY_PORTS", raising=False)
+    monkeypatch.setattr(ssh_launch, "BACKOFF_MIN_S", 0.05)
+    monkeypatch.setattr(ssh_launch, "POLL_S", 0.05)
+    monkeypatch.setattr(ssh_launch, "STOP_GRACE_S", 3.0)
+    return log
+
+
+class FakeRegistry:
+    """What the launcher asks of ``WorkerRegistry``: ``get`` and ``drain``."""
+
+    def __init__(self) -> None:
+        self.online: set[str] = set()
+        self.drained: dict[str, bool] = {}
+
+    def get(self, name: str) -> Any:
+        return SimpleNamespace(online=True) if name in self.online else None
+
+    def drain(self, name: str, draining: bool = True) -> None:
+        self.drained[name] = draining
+
+
+@pytest.fixture
+async def launcher(tmp_path, fake_ssh):
+    database = Database(tmp_path / "codefyui.db")
+    database.connect()
+    store = WorkerStore(database)
+    registry = FakeRegistry()
+    launcher = SshLauncher(store, registry, port_range=RANGE,
+                           local_port=LOCAL_PORT)
+    try:
+        yield launcher
+    finally:
+        await launcher.shutdown()
+        database.close()
+
+
+def _entry(name: str = "gpu-box", **fields: Any) -> SshWorker:
+    return SshWorker(id=name, target=fields.pop("target", "alice@gpu-box"),
+                     **fields)
+
+
+def _calls(log: Path) -> list[list[str]]:
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def _stdin(log: Path) -> list[str]:
+    """Every line the fake ssh read on stdin, in order."""
+    path = Path(str(log) + ".stdin")
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def _tokens(log: Path) -> list[str]:
+    """The tokens: the stdin lines that are not ``stop``."""
+    return [line for line in _stdin(log) if line != "stop"]
+
+
+async def _until(predicate: Any, what: str, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(what)
+        await asyncio.sleep(0.02)
+
+
+# ── the command line ──────────────────────────────────────────────────────
+
+
+async def test_ssh_gets_the_spec_options_and_the_token_only_on_stdin(
+        launcher, fake_ssh, tmp_path):
+    key = tmp_path / "id_ed25519"
+    key.write_text("not a real key")
+    await launcher.add(_entry(identity=str(key), port=2222))
+    await _until(lambda: _tokens(fake_ssh), "ssh never read a token")
+    [argv] = _calls(fake_ssh)
+    [token] = _tokens(fake_ssh)
+
+    assert argv[0] == "-T"  # (the fake records its arguments only)
+    options = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-o"]
+    assert "BatchMode=yes" in options
+    assert "ExitOnForwardFailure=yes" in options
+    assert "ServerAliveInterval=15" in options
+    assert "StrictHostKeyChecking=accept-new" in options
+    assert "-T" in argv
+    assert argv[argv.index("-p") + 1] == "2222"
+    assert argv[argv.index("-i") + 1] == str(key)
+    # The remote end binds the remote loopback only.
+    assert argv[argv.index("-R") + 1] == f"127.0.0.1:18000:127.0.0.1:{LOCAL_PORT}"
+    # `--`, then the target, then one command string.
+    dashes = argv.index("--")
+    assert argv[dashes + 1:dashes + 2] == ["alice@gpu-box"]
+    command = argv[dashes + 2]
+    assert len(argv) == dashes + 3
+    assert command.startswith("sh -c '") and command.endswith("'")
+    assert ('"$HOME"/CodefyUI/cdui agent start --foreground --control '
+            'http://127.0.0.1:18000 --name gpu-box') in command
+    # The token is an enrollment token, on stdin, never on a command line.
+    assert ssh_launch.ENROLL_TTL_S <= 600
+    assert all(token not in arg for arg in argv)
+    [pending] = await launcher.store.list_enrollments()
+    assert pending["label"] == "ssh alice@gpu-box"
+    assert pending["worker"] is None and pending["state"] == "pending"
+    assert launcher.describe("gpu-box")["state"] == "connecting"
+    assert (await launcher.store.list_ssh_workers())[0].remote_port == 18000
+
+
+async def test_strict_host_key_checking_can_require_a_known_host(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setattr(settings, "SSH_STRICT_HOST_KEY_CHECKING", "yes")
+    await launcher.add(_entry())
+    await _until(lambda: _calls(fake_ssh), "ssh never ran")
+    assert "StrictHostKeyChecking=yes" in _calls(fake_ssh)[0]
+    # Port 22 is left to ssh, so a Host alias's own Port applies.
+    assert "-p" not in _calls(fake_ssh)[0]
+
+
+async def test_up_once_the_worker_is_online_then_the_token_is_dropped(
+        launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never read a token")
+    assert len(await launcher.store.list_enrollments()) == 1
+    launcher.registry.online.add("gpu-box")
+    await _until(lambda: launcher.describe("gpu-box")["state"] == "up",
+                 "the tunnel never came up")
+    assert launcher.describe("gpu-box")["up_since"] is not None
+    for _ in range(100):
+        if not await launcher.store.list_enrollments():
+            break
+        await asyncio.sleep(0.02)
+    assert await launcher.store.list_enrollments() == []
+    launcher.registry.online.discard("gpu-box")
+    await _until(lambda: launcher.describe("gpu-box")["state"] == "connecting",
+                 "a worker that went away still reads up")
+
+
+async def test_an_enrolled_worker_gets_a_token_bound_to_it(launcher,
+                                                           fake_ssh):
+    store = launcher.store
+    created = await store.create_enrollment()
+    await store.enroll(created["token"], name="gpu-box", platform={},
+                       mounts={}, devices=[])
+    await store.delete_enrollment(created["id"])
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never read a token")
+    [pending] = await store.list_enrollments()
+    assert pending["worker"] == "gpu-box"
+
+
+async def test_the_tunnel_host_reaches_the_agent_paths_only(launcher,
+                                                            fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: _calls(fake_ssh), "ssh never ran")
+    assert auth.tunnel_host_allows("127.0.0.1:18000", "/ws/worker")
+    assert auth.tunnel_host_allows("localhost:18000", "/api/workers/enroll")
+    assert not auth.tunnel_host_allows("127.0.0.1:18000", "/api/runs")
+    assert not auth.tunnel_host_allows("127.0.0.1:18001", "/ws/worker")
+    assert not auth.tunnel_host_allows("evil.example:18000", "/ws/worker")
+    await launcher.set_enabled("gpu-box", False)
+    assert not auth.tunnel_host_allows("127.0.0.1:18000", "/ws/worker")
+
+
+# ── failures and retries ──────────────────────────────────────────────────
+
+
+async def test_a_failing_ssh_is_retried_with_its_error_surfaced(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_MODE", "fail")
+    await launcher.add(_entry())
+    await _until(lambda: len(_calls(fake_ssh)) >= 3
+                 and launcher.describe("gpu-box")["state"] == "failed",
+                 "ssh was not retried")
+    view = launcher.describe("gpu-box")
+    assert view["gave_up"] is False
+    assert "Permission denied (publickey)" in view["last_error"]
+    assert view["exit_code"] == 255
+    assert view["attempts"] >= 3
+    assert any("Permission denied" in line for line in view["tail"])
+    # Each attempt minted a new token and deleted the unspent one before.
+    assert len(await launcher.store.list_enrollments()) <= 1
+
+
+def test_the_backoff_doubles_up_to_a_minute():
+    assert ssh_launch.next_backoff(2.0) == 4.0
+    assert ssh_launch.next_backoff(40.0) == ssh_launch.BACKOFF_MAX_S
+    assert ssh_launch.next_backoff(0.0) == ssh_launch.BACKOFF_MIN_S
+
+
+async def test_a_taken_remote_port_moves_to_the_next(launcher, fake_ssh,
+                                                     monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "18000")
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "the second port was never tried")
+    calls = _calls(fake_ssh)
+    assert [c[c.index("-R") + 1].split(":")[1] for c in calls] == [
+        "18000", "18001"]
+    assert (await launcher.store.list_ssh_workers())[0].remote_port == 18001
+    assert launcher.describe("gpu-box")["remote_port"] == 18001
+    assert "--control http://127.0.0.1:18001" in calls[1][-1]
+
+
+async def test_the_first_launch_on_a_new_port_forgets_and_later_ones_reuse(
+        launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    # A port this entry never used may hold another worker's credential.
+    assert ('"$HOME"/CodefyUI/cdui agent forget http://127.0.0.1:18000'
+            in _calls(fake_ssh)[0][-1])
+    await launcher.set_enabled("gpu-box", False)
+    await launcher.set_enabled("gpu-box", True)
+    await _until(lambda: len(_tokens(fake_ssh)) == 2, "never relaunched")
+    # Its own port again: the credential stored there is its own.
+    assert "agent forget" not in _calls(fake_ssh)[1][-1]
+
+
+async def test_a_credential_this_server_refuses_restarts_with_forget(
+        launcher, fake_ssh):
+    await launcher.store.add_ssh_worker(_entry(remote_port=18003))
+    await launcher.start_all()
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    assert "agent forget" not in _calls(fake_ssh)[0][-1]
+    launcher.note_refused(18004)  # another tunnel: nothing happens
+    launcher.note_refused(18003)
+    await _until(lambda: len(_calls(fake_ssh)) >= 2,
+                 "the refused agent was not restarted")
+    assert ('"$HOME"/CodefyUI/cdui agent forget http://127.0.0.1:18003'
+            in _calls(fake_ssh)[1][-1])
+
+
+async def test_another_workers_stored_credential_restarts_with_forget(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_MODE", "mismatch")
+    await launcher.store.add_ssh_worker(_entry(remote_port=18002))
+    await launcher.start_all()
+    await _until(lambda: len(_calls(fake_ssh)) >= 2, "not restarted")
+    first, second = _calls(fake_ssh)[:2]
+    assert "agent forget" not in first[-1]
+    assert "agent forget http://127.0.0.1:18002" in second[-1]
+    assert "is for worker" in (launcher.describe("gpu-box")["last_error"]
+                               or "")
+
+
+async def test_forbidden_forwarding_is_a_final_failure_without_port_walking(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_MODE", "forbidden")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "forbidden forwarding was retried")
+    view = launcher.describe("gpu-box")
+    assert view["state"] == "failed" and view["retry_at"] is None
+    assert "does not allow remote port forwarding" in view["last_error"]
+    assert len(_calls(fake_ssh)) == 1
+    assert view["remote_port"] == 18000
+    # Enable tries again.
+    monkeypatch.setenv("FAKE_SSH_MODE", "hold")
+    await launcher.set_enabled("gpu-box", True)
+    await _until(lambda: _tokens(fake_ssh), "Enable did not retry")
+    assert launcher.describe("gpu-box")["gave_up"] is False
+
+
+async def test_every_port_failing_gives_up_after_a_few(launcher, fake_ssh,
+                                                       monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "all")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the port walk never stopped")
+    calls = _calls(fake_ssh)
+    assert len(calls) == ssh_launch.FORWARD_GIVE_UP
+    assert [c[c.index("-R") + 1].split(":")[1] for c in calls] == [
+        "18000", "18001", "18002"]
+    assert "ports in a row" in launcher.describe("gpu-box")["last_error"]
+
+
+async def test_the_remote_agent_pid_is_reported(launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["remote_pid"] == 4242,
+                 "the remote pid was not read")
+
+
+async def test_disable_sends_stop_through_the_session(launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["remote_pid"] == 4242,
+                 "the session never attached")
+    await launcher.set_enabled("gpu-box", False)
+    assert _stdin(fake_ssh)[1:] == ["stop"]
+    # A live session carried the stop: no one-shot ssh.
+    assert all("-R" in argv for argv in _calls(fake_ssh))
+
+
+async def test_disable_with_the_session_gone_stops_the_agent_over_ssh(
+        launcher, fake_ssh, monkeypatch):
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["remote_pid"] == 4242,
+                 "the session never attached")
+    monkeypatch.setenv("FAKE_SSH_MODE", "fail")  # every relaunch fails now
+    os.kill(launcher.describe("gpu-box")["pid"], 9)  # the session drops
+    await _until(lambda: launcher.describe("gpu-box")["state"] == "failed",
+                 "the drop was not seen")
+    await launcher.set_enabled("gpu-box", False)
+    oneshots = [argv for argv in _calls(fake_ssh) if "-R" not in argv]
+    assert len(oneshots) == 1
+    assert "ExitOnForwardFailure=yes" not in oneshots[0]
+    assert "kill -TERM $a" in oneshots[0][-1]
+    assert ".codefyui-ssh/18000" in oneshots[0][-1]
+
+
+async def test_a_held_own_port_is_reclaimed_then_tried_again(
+        launcher, fake_ssh, monkeypatch):
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["remote_pid"] == 4242,
+                 "the session never attached")
+    # The session drops, but the remote sshd still holds port 18000.
+    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "18000")
+    os.kill(launcher.describe("gpu-box")["pid"], 9)
+    await _until(lambda: any("-R" not in argv for argv in _calls(fake_ssh)),
+                 "the stale session was not reclaimed")
+    reclaim = next(argv for argv in _calls(fake_ssh) if "-R" not in argv)
+    assert "sshd:" in reclaim[-1]
+    monkeypatch.setenv("FAKE_SSH_BUSY_PORTS", "")
+    await _until(lambda: len(_tokens(fake_ssh)) >= 2, "never relaunched")
+    forwards = [argv[argv.index("-R") + 1].split(":")[1]
+                for argv in _calls(fake_ssh) if "-R" in argv]
+    # The same port throughout: the surviving agent dials there.
+    assert set(forwards) == {"18000"}
+    assert launcher.describe("gpu-box")["remote_port"] == 18000
+
+
+async def test_enable_waiting_behind_a_disable_ends_running(launcher,
+                                                            fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    disable = asyncio.ensure_future(launcher.set_enabled("gpu-box", False))
+    enable = asyncio.ensure_future(launcher.set_enabled("gpu-box", True))
+    await asyncio.gather(disable, enable)
+    assert launcher.launches["gpu-box"].running
+    assert launcher.entries["gpu-box"].enabled
+    assert (await launcher.store.list_ssh_workers())[0].enabled
+    await _until(lambda: len(_tokens(fake_ssh)) == 2, "not relaunched")
+
+
+async def test_delete_racing_enable_does_not_resurrect(launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    remove = asyncio.ensure_future(launcher.remove("gpu-box"))
+    enable = asyncio.ensure_future(launcher.set_enabled("gpu-box", True))
+    removed, enabled = await asyncio.gather(remove, enable)
+    assert removed is True and enabled is None
+    assert "gpu-box" not in launcher.launches
+    assert await launcher.store.list_ssh_workers() == []
+    await asyncio.sleep(0.3)
+    assert len(_calls(fake_ssh)) == 1
+
+
+async def test_a_disabled_rows_worker_is_drained_when_it_connects(launcher):
+    await launcher.store.add_ssh_worker(_entry(enabled=False))
+    await launcher.store.add_ssh_worker(_entry("on-box", target="b@on"))
+    await launcher.start_all()
+    launcher.registry.drained.clear()
+    launcher.worker_connected("gpu-box")
+    launcher.worker_connected("on-box")
+    launcher.worker_connected("unknown")
+    assert launcher.registry.drained == {"gpu-box": True}
+
+
+async def test_no_ssh_on_path_fails_with_a_clear_message(launcher,
+                                                         monkeypatch):
+    monkeypatch.setattr(ssh_launch, "ssh_executable", lambda: None)
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["state"] == "failed",
+                 "a missing ssh was not reported")
+    assert "ssh was not found" in launcher.describe("gpu-box")["last_error"]
+
+
+async def test_the_port_range_can_run_out(tmp_path, fake_ssh):
+    database = Database(tmp_path / "small.db")
+    database.connect()
+    launcher = SshLauncher(WorkerStore(database), FakeRegistry(),
+                           port_range=(18000, 18000), local_port=LOCAL_PORT)
+    try:
+        await launcher.add(_entry("one"))
+        await launcher.add(_entry("two", target="bob@other"))
+        await _until(lambda: launcher.describe("two")["state"] == "failed",
+                     "a full range was not reported")
+        assert "no free remote port" in launcher.describe("two")["last_error"]
+    finally:
+        await launcher.shutdown()
+        database.close()
+
+
+def test_the_server_port_is_never_a_remote_port():
+    launcher = SshLauncher(None, FakeRegistry(), port_range=(8000, 8002),
+                           local_port=8000)
+    assert launcher.free_port("x") == 8001
+    assert launcher.free_port("x", after=8002) == 8001
+
+
+# ── stop, enable, disable, restart ────────────────────────────────────────
+
+
+async def test_disable_drains_then_ends_the_session_by_closing_stdin(
+        launcher, fake_ssh):
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never read a token")
+    began = time.monotonic()
+    view = await launcher.set_enabled("gpu-box", False)
+    # The fake exits on stdin EOF: no terminate needed, so no grace wait.
+    assert time.monotonic() - began < ssh_launch.STOP_GRACE_S
+    assert launcher.registry.drained == {"gpu-box": True}
+    assert view["enabled"] is False and view["state"] == "stopped"
+    assert view["pid"] is None
+    assert not (await launcher.store.list_ssh_workers())[0].enabled
+    # No unspent token is left behind.
+    assert await launcher.store.list_enrollments() == []
+
+    view = await launcher.set_enabled("gpu-box", True)
+    assert launcher.registry.drained == {"gpu-box": False}
+    await _until(lambda: len(_tokens(fake_ssh)) == 2, "enable did not relaunch")
+    assert launcher.describe("gpu-box")["state"] == "connecting"
+    assert await launcher.set_enabled("nope", True) is None
+
+
+async def test_restart_relaunches_enabled_rows_and_drains_disabled_ones(
+        tmp_path, fake_ssh):
+    database = Database(tmp_path / "boot.db")
+    database.connect()
+    store = WorkerStore(database)
+    await store.add_ssh_worker(_entry("on-box", remote_port=18005))
+    await store.add_ssh_worker(_entry("off-box", target="bob@off",
+                                      enabled=False))
+    registry = FakeRegistry()
+    launcher = SshLauncher(store, registry, port_range=RANGE,
+                           local_port=LOCAL_PORT)
+    try:
+        await launcher.start_all()
+        await _until(lambda: _tokens(fake_ssh), "the enabled row never ran")
+        [argv] = _calls(fake_ssh)
+        # The stored remote port is reused (and with it the credential the
+        # agent keeps for that address).
+        assert argv[argv.index("-R") + 1].startswith("127.0.0.1:18005:")
+        assert registry.drained == {"off-box": True}
+        assert [v["id"] for v in launcher.describe_all()] == ["off-box",
+                                                              "on-box"]
+        assert launcher.describe("off-box")["state"] == "stopped"
+        assert await launcher.remove("on-box") is True
+        assert await launcher.remove("on-box") is False
+    finally:
+        await launcher.shutdown()
+        database.close()
+
+
+# ── the remote command, run by a real sh ──────────────────────────────────
+
+
+TOKEN = "abcdef.0123456789abcdef"
+
+
+def _fake_cdui(home: Path) -> Path:
+    """A ``cdui`` that records each call and, for ``agent start``, its
+    token and PATH, then idles until SIGTERM (recorded in ``got_term``)."""
+    script = home / "cdui"
+    script.write_text(
+        "#!/bin/sh\n"
+        'out="$(dirname "$0")"\n'
+        'printf "%s\\n" "$*" >> "$out/args"\n'
+        'case "$2" in forget) exit 0;; esac\n'
+        'printf "%s" "$CODEFYUI_AGENT_TOKEN" > "$out/token"\n'
+        'printf "%s" "$PATH" > "$out/path"\n'
+        'echo "fake agent says hello"\n'
+        'trap "echo term >> \\"$out/got_term\\"; exit 0" TERM\n'
+        "while :; do sleep 0.05; done\n")
+    script.chmod(0o755)
+    return script
+
+
+def _run_remote(home: Path, command: str) -> subprocess.Popen:
+    env = {**os.environ, "HOME": str(home)}
+    return subprocess.Popen(["/bin/sh", "-c", command], env=env,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+
+
+def _wait_file(path: Path, timeout: float = 10.0, text: str = "") -> str:
+    deadline = time.monotonic() + timeout
+    while not path.exists() or text not in path.read_text():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{path} never had {text!r}")
+        time.sleep(0.02)
+    time.sleep(0.05)
+    return path.read_text()
+
+
+def _alive(pid: int) -> bool:
+    out = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                         capture_output=True, text=True).stdout.strip()
+    return bool(out) and not out.startswith("Z")
+
+
+@pytest.fixture
+def remote_home(tmp_path):
+    home = tmp_path / "remote-home"
+    home.mkdir()
+    _fake_cdui(home)
+    yield home
+    # Whatever a test left running: stop it.
+    pid_file = home / ".codefyui-ssh" / "18000" / "pid"
+    if pid_file.exists():
+        subprocess.run(["kill", "-TERM", pid_file.read_text().strip()],
+                       capture_output=True)
+
+
+def _state(home: Path, port: int = 18000) -> Path:
+    return home / ".codefyui-ssh" / str(port)
+
+
+def test_the_remote_agent_gets_the_token_in_its_env_and_stop_ends_it(
+        remote_home):
+    command = ssh_launch.remote_command(_entry(remote_cdui="~/cdui"), 18000)
+    assert "'" not in command[len("sh -c '"):-1]
+    assert "\\" not in command
+    proc = _run_remote(remote_home, command)
+    proc.stdin.write(f"{TOKEN}\n".encode())
+    proc.stdin.flush()
+    assert _wait_file(remote_home / "token") == TOKEN
+    args = (remote_home / "args").read_text()
+    assert args.strip() == ("agent start --foreground --control "
+                            "http://127.0.0.1:18000 --name gpu-box")
+    assert "abcdef" not in args
+    assert (_wait_file(remote_home / "path").split(":")[:2]
+            == [f"{remote_home}/.local/bin", f"{remote_home}/.cargo/bin"])
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    assert _wait_file(_state(remote_home) / "log", text="hello")
+    # Disable: a ``stop`` line, then the end of input.
+    proc.stdin.write(b"stop\n")
+    proc.stdin.close()
+    output = proc.stdout.read().decode()
+    proc.wait(timeout=10)
+    assert proc.returncode == 0
+    assert _wait_file(remote_home / "got_term").strip() == "term"
+    assert not _alive(pid)
+    assert f"codefyui-ssh: agent pid {pid}" in output
+    assert "fake agent says hello" in output
+    assert not (_state(remote_home) / "pid").exists()
+
+
+def test_a_dropped_session_leaves_the_agent_for_the_grace_then_stops_it(
+        remote_home):
+    command = ssh_launch.remote_command(_entry(remote_cdui="~/cdui"), 18000,
+                                       grace_s=2)
+    proc = _run_remote(remote_home, command)
+    proc.stdin.write(f"{TOKEN}\n".encode())
+    proc.stdin.flush()
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    _wait_file(remote_home / "path")
+    proc.stdin.close()  # the session drops: no ``stop``
+    time.sleep(1.0)
+    assert _alive(pid) and not (remote_home / "got_term").exists()
+    proc.wait(timeout=10)
+    assert _wait_file(remote_home / "got_term").strip() == "term"
+    assert not _alive(pid)
+
+
+def test_a_new_session_within_the_grace_reattaches_to_the_same_agent(
+        remote_home):
+    entry = _entry(remote_cdui="~/cdui")
+    first = _run_remote(remote_home, ssh_launch.remote_command(
+        entry, 18000, grace_s=2))
+    first.stdin.write(f"{TOKEN}\n".encode())
+    first.stdin.flush()
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    _wait_file(remote_home / "path")
+    first.stdin.close()  # dropped
+
+    second = _run_remote(remote_home, ssh_launch.remote_command(
+        entry, 18000, grace_s=2, forget_first=True))
+    second.stdin.write(f"{TOKEN}\n".encode())
+    second.stdin.flush()
+    first.wait(timeout=10)  # superseded: it leaves without a kill
+    time.sleep(0.5)
+    assert _alive(pid), "the first session's grace stopped a re-attached agent"
+    assert not (remote_home / "got_term").exists()
+    # One agent start ever, and no forget for an agent that is alive.
+    assert (remote_home / "args").read_text().count("agent start") == 1
+    assert "agent forget" not in (remote_home / "args").read_text()
+    second.stdin.write(b"stop\n")
+    second.stdin.close()
+    output = second.stdout.read().decode()
+    second.wait(timeout=10)
+    assert f"codefyui-ssh: agent pid {pid} reattached" in output
+    assert _wait_file(remote_home / "got_term").strip() == "term"
+    assert not _alive(pid)
+
+
+def test_the_remote_shell_refuses_to_start_without_a_token(remote_home):
+    proc = _run_remote(remote_home, ssh_launch.remote_command(
+        _entry(remote_cdui=str(remote_home / "cdui")), 18000))
+    proc.stdin.close()
+    assert proc.wait(timeout=10) == ssh_launch.NO_TOKEN_EXIT
+    assert not (remote_home / "args").exists()
+
+
+def test_forget_first_runs_cdui_agent_forget_before_a_fresh_start(
+        remote_home):
+    proc = _run_remote(remote_home, ssh_launch.remote_command(
+        _entry(remote_cdui="~/cdui"), 18000, forget_first=True))
+    proc.stdin.write(f"{TOKEN}\n".encode())
+    proc.stdin.flush()
+    _wait_file(remote_home / "token")
+    lines = (remote_home / "args").read_text().splitlines()
+    assert lines[0] == "agent forget http://127.0.0.1:18000"
+    assert lines[1].startswith("agent start --foreground")
+    proc.stdin.write(b"stop\n")
+    proc.stdin.close()
+    assert proc.wait(timeout=10) == 0
+
+
+def test_the_one_shot_stop_ends_a_surviving_agent(remote_home):
+    proc = _run_remote(remote_home, ssh_launch.remote_command(
+        _entry(remote_cdui="~/cdui"), 18000, grace_s=60))
+    proc.stdin.write(f"{TOKEN}\n".encode())
+    proc.stdin.flush()
+    pid = int(_wait_file(_state(remote_home) / "pid"))
+    _wait_file(remote_home / "path")  # the agent is up, its trap set
+    proc.stdin.close()  # dropped; the agent waits out its grace
+    stop = subprocess.run(["/bin/sh", "-c", ssh_launch.remote_stop_command(
+        18000)], env={**os.environ, "HOME": str(remote_home)},
+        capture_output=True, text=True, timeout=10)
+    assert f"stopped agent pid {pid}" in stop.stdout
+    assert _wait_file(remote_home / "got_term").strip() == "term"
+    proc.wait(timeout=10)
+    # Nothing to stop: still fine.
+    again = subprocess.run(["/bin/sh", "-c", ssh_launch.remote_stop_command(
+        18000)], env={**os.environ, "HOME": str(remote_home)},
+        capture_output=True, text=True, timeout=10)
+    assert again.returncode == 0 and again.stdout == ""
+
+
+def test_the_reclaim_command_is_harmless_without_a_stale_session(
+        remote_home):
+    _state(remote_home).mkdir(parents=True)
+    (_state(remote_home) / "session").write_text("999999\n")
+    result = subprocess.run(
+        ["/bin/sh", "-c", ssh_launch.remote_reclaim_command(18000)],
+        env={**os.environ, "HOME": str(remote_home)},
+        capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0 and result.stdout == ""
+    command = ssh_launch.remote_reclaim_command(18000)
+    assert "'" not in command[len("sh -c '"):-1] and "\\" not in command
+
+
+# ── validation ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("target", ["alice@gpu-box", "gpu-box",
+                                    "lab.gpu_1", "a.b@host.example.org"])
+def test_targets_that_are_accepted(target):
+    assert ssh_launch.validate_target(f" {target} ") == target
+
+
+@pytest.mark.parametrize("target", ["", "-oProxyCommand=evil", "a b",
+                                    "alice@", "@host", "host;rm", "h'x",
+                                    "alice@-oFoo"])
+def test_targets_that_are_refused(target):
+    with pytest.raises(ssh_launch.SshConfigError):
+        ssh_launch.validate_target(target)
+
+
+def test_remote_cdui_paths():
+    assert ssh_launch.validate_remote_cdui(None) == "~/CodefyUI/cdui"
+    assert ssh_launch.validate_remote_cdui(" /opt/x/cdui ") == "/opt/x/cdui"
+    assert ssh_launch.validate_remote_cdui("cdui") == "cdui"
+    for bad in ("-x", "a b", "~/x;y", "$(id)", "~/../etc/cdui", "x'y",
+                "~user/cdui"):
+        with pytest.raises(ssh_launch.SshConfigError):
+            ssh_launch.validate_remote_cdui(bad)
+
+
+def test_identity_files_must_exist_and_be_absolute(tmp_path, monkeypatch):
+    key = tmp_path / "key"
+    key.write_text("k")
+    assert ssh_launch.validate_identity(str(key)) == str(key)
+    assert ssh_launch.validate_identity("  ") is None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert ssh_launch.validate_identity("~/key") == str(key)
+    with pytest.raises(ssh_launch.SshConfigError, match="absolute"):
+        ssh_launch.validate_identity("key")
+    with pytest.raises(ssh_launch.SshConfigError, match="does not exist"):
+        ssh_launch.validate_identity(str(tmp_path / "missing"))
+
+
+def test_default_names_and_port_ranges():
+    assert ssh_launch.default_worker_name("alice@GPU1.lab.example") == "gpu1"
+    assert ssh_launch.default_worker_name("lab_box") == "lab-box"
+    assert ssh_launch.default_worker_name("___") == "ssh-worker"
+    assert ssh_launch.parse_port_range("19000-19010") == (19000, 19010)
+    assert ssh_launch.parse_port_range("nope") == ssh_launch.DEFAULT_PORT_RANGE
+    assert ssh_launch.parse_port_range("90-100") == ssh_launch.DEFAULT_PORT_RANGE
+
+
+def test_the_forward_lands_on_this_servers_bind_address(monkeypatch):
+    for host, expected in (("127.0.0.1", "127.0.0.1"),
+                           ("0.0.0.0", "127.0.0.1"),
+                           ("::", "localhost"),
+                           ("localhost", "localhost"),
+                           ("192.168.1.5", "192.168.1.5"),
+                           ("::1", "[::1]")):
+        monkeypatch.setattr(settings, "HOST", host)
+        assert ssh_launch.local_forward_host() == expected
+
+
+# ── routes ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def api(tmp_path, fake_ssh):
+    database = Database(tmp_path / "api.db")
+    database.connect()
+    store = WorkerStore(database)
+    registry = WorkerRegistry()
+    launcher = SshLauncher(store, registry, port_range=RANGE,
+                           local_port=LOCAL_PORT)
+    app.state.db = database
+    app.state.worker_store = store
+    app.state.worker_registry = registry
+    app.state.ssh_launcher = launcher
+    try:
+        yield launcher
+    finally:
+        await launcher.shutdown()
+        await registry.shutdown()
+        database.close()
+        for attribute in ("db", "worker_store", "worker_registry",
+                          "ssh_launcher"):
+            if hasattr(app.state, attribute):
+                delattr(app.state, attribute)
+
+
+def _client(token: bool = True,
+            base: str = "http://127.0.0.1:8000") -> AsyncClient:
+    headers = {TOKEN_HEADER: session_token()} if token else {}
+    return AsyncClient(transport=ASGITransport(app=app), base_url=base,
+                       headers=headers)
+
+
+async def test_the_ssh_routes_add_list_disable_enable_and_delete(api,
+                                                                  fake_ssh):
+    async with _client() as client:
+        added = await client.post("/api/workers/ssh", json={
+            "target": "alice@gpu1.lab.example"})
+        assert added.status_code == 200, added.text
+        body = added.json()
+        assert body["id"] == "gpu1"
+        assert body["remote_cdui"] == "~/CodefyUI/cdui"
+        assert body["state"] == "connecting" and body["enabled"] is True
+        assert body["port"] == 22 and body["identity"] is None
+
+        listed = (await client.get("/api/workers/ssh")).json()
+        assert listed["ssh_available"] is True
+        assert listed["port_range"] == list(RANGE)
+        assert listed["default_remote_cdui"] == "~/CodefyUI/cdui"
+        assert [e["id"] for e in listed["ssh_workers"]] == ["gpu1"]
+
+        again = await client.post("/api/workers/ssh", json={
+            "target": "bob@gpu1"})
+        assert again.status_code == 409
+
+        disabled = await client.post("/api/workers/ssh/gpu1/disable")
+        assert disabled.json()["state"] == "stopped"
+        enabled = await client.post("/api/workers/ssh/gpu1/enable")
+        assert enabled.json()["enabled"] is True
+        assert (await client.post("/api/workers/ssh/nope/enable")
+                ).status_code == 404
+
+        deleted = await client.delete("/api/workers/ssh/gpu1")
+        assert deleted.json() == {"id": "gpu1", "deleted": True}
+        assert (await client.delete("/api/workers/ssh/gpu1")
+                ).status_code == 404
+
+
+async def test_listing_needs_the_session_token_and_adding_too(api):
+    async with _client(token=False) as anonymous:
+        assert (await anonymous.get("/api/workers/ssh")).status_code in (
+            401, 403)
+        assert (await anonymous.post("/api/workers/ssh", json={
+            "target": "a@b"})).status_code == 403
+
+
+@pytest.mark.parametrize("body, message", [
+    ({"target": "-oProxyCommand=x"}, "SSH target"),
+    ({"target": "a@b", "identity": "/nope/key"}, "does not exist"),
+    ({"target": "a@b", "remote_cdui": "~/x; rm"}, "remote cdui"),
+    ({"target": "a@b", "name": "Bad Name"}, "worker name"),
+    ({"target": "a@b", "name": "local"}, "reserved"),
+])
+async def test_bad_ssh_workers_are_refused(api, body, message):
+    async with _client() as client:
+        response = await client.post("/api/workers/ssh", json=body)
+    assert response.status_code == 400
+    assert message in response.json()["detail"]
+
+
+async def test_a_known_worker_name_is_not_taken_over(api):
+    store = api.store
+    created = await store.create_enrollment()
+    await store.enroll(created["token"], name="gpu-box", platform={},
+                       mounts={}, devices=[])
+    async with _client() as client:
+        response = await client.post("/api/workers/ssh", json={
+            "target": "alice@gpu-box"})
+    assert response.status_code == 409
+    assert "exists already" in response.json()["detail"]
+
+
+async def test_no_ssh_means_no_ssh_worker(api, monkeypatch):
+    monkeypatch.setattr(ssh_launch, "ssh_executable", lambda: None)
+    async with _client() as client:
+        response = await client.post("/api/workers/ssh", json={
+            "target": "a@b"})
+        listed = (await client.get("/api/workers/ssh")).json()
+    assert response.status_code == 400
+    assert "ssh was not found" in response.json()["detail"]
+    assert listed["ssh_available"] is False
+
+
+async def test_without_a_launcher_the_routes_answer_503():
+    async with _client() as client:
+        assert (await client.get("/api/workers/ssh")).status_code == 503
+
+
+async def test_removing_the_worker_removes_its_ssh_entry(api, fake_ssh):
+    async with _client() as client:
+        await client.post("/api/workers/ssh", json={"target": "a@ssh-only"})
+        response = await client.delete("/api/workers/ssh-only")
+        assert response.status_code == 200, response.text
+        assert response.json()["revoked"] is False
+        assert "ssh-only" not in api.entries
+        assert (await client.get("/api/workers/ssh")).json()[
+            "ssh_workers"] == []
+
+
+async def test_a_tunnel_host_reaches_enroll_and_nothing_else(api, fake_ssh):
+    async with _client() as client:
+        await client.post("/api/workers/ssh", json={"target": "a@b"})
+    async with _client(token=False, base="http://127.0.0.1:18000") as tunnel:
+        enroll = await tunnel.post("/api/workers/enroll", json={
+            "token": "nope", "name": "b"})
+        # Past the Host guard: the route itself answers.
+        assert enroll.status_code == 401
+        assert (await tunnel.get("/api/workers")).status_code == 421
+        assert (await tunnel.get("/api/runs")).status_code == 421
+    async with _client(token=False, base="http://127.0.0.1:18001") as other:
+        assert (await other.post("/api/workers/enroll", json={
+            "token": "nope", "name": "b"})).status_code == 421
+
+
+async def test_each_tunnel_has_its_own_enrollment_rate_bucket(api, fake_ssh,
+                                                              monkeypatch):
+    from app.api import routes_workers
+
+    monkeypatch.setattr(routes_workers, "enroll_limiter",
+                        routes_workers.TokenBucket(burst=2, per_minute=1))
+    async with _client() as client:
+        await client.post("/api/workers/ssh", json={"target": "a@b"})
+    body = {"token": "nope", "name": "b"}
+    async with _client(token=False, base="http://127.0.0.1:18000") as tunnel:
+        codes = [(await tunnel.post("/api/workers/enroll", json=body)
+                  ).status_code for _ in range(3)]
+    assert codes == [401, 401, 429]
+    # The same peer address, not through the tunnel: a bucket of its own.
+    async with _client(token=False) as local:
+        assert (await local.post("/api/workers/enroll", json=body)
+                ).status_code == 401
+

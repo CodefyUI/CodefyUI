@@ -26,6 +26,10 @@ creates a token **bound** to it (``worker`` column): that token can enroll
 that name only, and re-keys its row, so the old worker token stops working.
 Revoking a worker deletes its row.
 
+The ``ssh_workers`` table (migration 012, #784) lives here too: the
+workers this control plane starts itself over ``ssh -R``
+(``core.ssh_launch``). It holds no secret.
+
 Every method is one ``Database.run`` call (the Decision A2 seam). This
 module knows nothing about the registry or the socket; ``routes_workers``
 and ``ws_worker`` put the two together.
@@ -350,3 +354,94 @@ class WorkerStore:
                 fingerprint_digest=row["fingerprint_digest"]) for row in rows]
 
         return await self.db.run(_list)
+
+    async def is_enrolled(self, name: str) -> bool:
+        """Whether *name* has a ``workers`` row (a credential to re-key)."""
+        def _exists(conn: sqlite3.Connection) -> bool:
+            return conn.execute("SELECT 1 FROM workers WHERE id = ?",
+                                (name,)).fetchone() is not None
+
+        return await self.db.run(_exists)
+
+    # ── SSH workers (#784, migration 012) ─────────────────────────────────
+
+    async def list_ssh_workers(self) -> list[SshWorker]:
+        def _list(conn: sqlite3.Connection) -> list[SshWorker]:
+            rows = conn.execute(
+                "SELECT * FROM ssh_workers ORDER BY id").fetchall()
+            return [_ssh_worker(row) for row in rows]
+
+        return await self.db.run(_list)
+
+    async def add_ssh_worker(self, entry: SshWorker) -> SshWorker:
+        """Insert *entry*. Raises :class:`NameTaken` when its id has a row."""
+        def _add(conn: sqlite3.Connection) -> SshWorker:
+            try:
+                conn.execute(
+                    "INSERT INTO ssh_workers (id, target, port, identity, "
+                    "remote_cdui, remote_port, enabled, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entry.id, entry.target, entry.port, entry.identity,
+                     entry.remote_cdui, entry.remote_port,
+                     1 if entry.enabled else 0, utc_now_iso()))
+            except sqlite3.IntegrityError as exc:
+                raise NameTaken(f"an SSH worker named {entry.id} exists "
+                                "already") from exc
+            row = conn.execute("SELECT * FROM ssh_workers WHERE id = ?",
+                               (entry.id,)).fetchone()
+            return _ssh_worker(row)
+
+        return await self.db.run(_add)
+
+    async def update_ssh_worker(self, name: str, *,
+                                enabled: bool | None = None,
+                                remote_port: int | None = None) -> bool:
+        """Change *name*'s row. False when there is none."""
+        def _update(conn: sqlite3.Connection) -> bool:
+            sets: list[str] = []
+            values: list[Any] = []
+            if enabled is not None:
+                sets.append("enabled = ?")
+                values.append(1 if enabled else 0)
+            if remote_port is not None:
+                sets.append("remote_port = ?")
+                values.append(remote_port)
+            if not sets:
+                return conn.execute("SELECT 1 FROM ssh_workers WHERE id = ?",
+                                    (name,)).fetchone() is not None
+            return conn.execute(
+                f"UPDATE ssh_workers SET {', '.join(sets)} WHERE id = ?",
+                (*values, name)).rowcount > 0
+
+        return await self.db.run(_update)
+
+    async def delete_ssh_worker(self, name: str) -> bool:
+        def _delete(conn: sqlite3.Connection) -> bool:
+            return conn.execute("DELETE FROM ssh_workers WHERE id = ?",
+                                (name,)).rowcount > 0
+
+        return await self.db.run(_delete)
+
+
+@dataclass(frozen=True)
+class SshWorker:
+    """One ``ssh_workers`` row: a worker this control plane starts itself
+    over ``ssh -R`` (#784)."""
+
+    id: str
+    target: str
+    port: int = 22
+    identity: str | None = None
+    remote_cdui: str = "~/CodefyUI/cdui"
+    remote_port: int | None = None
+    enabled: bool = True
+    created_at: str = ""
+
+
+def _ssh_worker(row: sqlite3.Row) -> SshWorker:
+    return SshWorker(id=row["id"], target=row["target"], port=row["port"],
+                     identity=row["identity"],
+                     remote_cdui=row["remote_cdui"],
+                     remote_port=row["remote_port"],
+                     enabled=bool(row["enabled"]),
+                     created_at=row["created_at"])

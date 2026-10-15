@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import {
+  addSshWorker,
+  deleteSshWorker,
   drainWorker,
   fetchEnrollments,
   fetchWorkerList,
+  fetchSshWorkers,
   fetchWorkers,
   removeWorker,
+  setSshWorkerEnabled,
   undrainWorker,
+  type SshWorker,
   type WorkerInfo,
 } from '../../api/workers';
 import { useI18n } from '../../i18n';
@@ -17,7 +22,8 @@ import { rememberAppVersion } from '../../utils/appVersion';
 import { relativeTime } from '../SourceControl/scm';
 import { FINGERPRINT_SHORT_LENGTH, WorkersPanel } from './WorkersPanel';
 
-vi.mock('../../api/workers', () => ({
+vi.mock('../../api/workers', async (importOriginal) => ({
+  WorkersApiError: (await importOriginal<typeof import('../../api/workers')>()).WorkersApiError,
   fetchWorkers: vi.fn(),
   fetchWorkerList: vi.fn(),
   drainWorker: vi.fn(),
@@ -27,6 +33,10 @@ vi.mock('../../api/workers', () => ({
   createEnrollment: vi.fn(),
   deleteEnrollment: vi.fn(),
   agentCommand: vi.fn(),
+  fetchSshWorkers: vi.fn(),
+  setSshWorkerEnabled: vi.fn(),
+  deleteSshWorker: vi.fn(),
+  addSshWorker: vi.fn(),
 }));
 
 const NOW_S = 1_800_000_000;
@@ -50,6 +60,30 @@ function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
   };
 }
 
+function ssh(id: string, extra: Partial<SshWorker> = {}): SshWorker {
+  return {
+    id,
+    target: `alice@${id}`,
+    port: 22,
+    identity: null,
+    remote_cdui: '~/CodefyUI/cdui',
+    remote_port: 18000,
+    enabled: true,
+    state: 'up',
+    last_error: null,
+    exit_code: null,
+    tail: [],
+    attempts: 1,
+    retry_at: null,
+    up_since: NOW_S - 50,
+    ...extra,
+  };
+}
+
+function sshList(entries: SshWorker[]) {
+  return { ssh_workers: entries, ssh_available: true, port_range: [18000, 18100] as [number, number], default_remote_cdui: '~/CodefyUI/cdui' };
+}
+
 async function openPanel(workers: WorkerInfo[] = [worker('gpu-box')]) {
   vi.mocked(fetchWorkers).mockResolvedValue(workers);
   render(<WorkersPanel />);
@@ -70,6 +104,9 @@ beforeEach(() => {
   vi.mocked(drainWorker).mockReset();
   vi.mocked(undrainWorker).mockReset();
   vi.mocked(removeWorker).mockReset().mockResolvedValue(undefined);
+  vi.mocked(fetchSshWorkers).mockReset().mockResolvedValue(sshList([]));
+  vi.mocked(setSshWorkerEnabled).mockReset();
+  vi.mocked(deleteSshWorker).mockReset().mockResolvedValue(undefined);
   vi.mocked(fetchEnrollments).mockReset().mockResolvedValue({
     enrollments: [],
     control_url: 'http://192.168.1.5:8000',
@@ -519,5 +556,116 @@ describe('WorkersPanel', () => {
     const dialog = await openPanel([worker('a')]);
     expect(within(dialog).getByText('線上')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '排空' })).toBeInTheDocument();
+  });
+
+  // ── SSH workers (#784) ──
+
+  it('shows an SSH worker\'s tunnel on its card, with Disable', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box')]));
+    vi.mocked(setSshWorkerEnabled).mockResolvedValue(ssh('gpu-box', { enabled: false, state: 'stopped' }));
+    const dialog = await openPanel([worker('gpu-box')]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    expect(within(card).getByText('SSH tunnel')).toBeInTheDocument();
+    expect(within(card).getByText('Up')).toBeInTheDocument();
+    expect(within(card).getByText('alice@gpu-box')).toBeInTheDocument();
+    expect(within(card).getByText('remote port 18000')).toBeInTheDocument();
+    expect(within(card).queryByRole('status')).toBeNull();
+    expect(within(card).queryByText('Recent ssh output')).toBeNull();
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box', { enabled: false, state: 'stopped' })]));
+    vi.mocked(fetchWorkers).mockResolvedValue([worker('gpu-box', { status: 'disconnected', draining: true })]);
+    await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Disable' })));
+    expect(setSshWorkerEnabled).toHaveBeenCalledWith('gpu-box', false);
+    // The card flips at once, not at the next poll.
+    expect(within(card).getByText('Disconnected')).toBeInTheDocument();
+    expect(within(card).getByText('Stopped')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Enable' })).toBeInTheDocument();
+  });
+
+  it('shows why a tunnel failed, and the recent output', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box', {
+      state: 'failed',
+      port: 2222,
+      identity: '/home/me/.ssh/key',
+      remote_port: null,
+      last_error: 'alice@gpu-box: Permission denied (publickey).',
+      exit_code: 255,
+      tail: ['debug1: hello', 'alice@gpu-box: Permission denied (publickey).'],
+    })]));
+    const dialog = await openPanel([worker('gpu-box', { status: 'offline' })]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    expect(within(card).getByText('Failed')).toBeInTheDocument();
+    expect(within(card).getByText('alice@gpu-box:2222')).toHaveAttribute('title', '/home/me/.ssh/key');
+    expect(within(card).queryByText(/remote port/)).toBeNull();
+    expect(within(card).getByRole('status')).toHaveTextContent('Permission denied (publickey).');
+    expect(within(card).getByText('Recent ssh output')).toBeInTheDocument();
+    expect(within(card).getByText(/debug1: hello/)).toBeInTheDocument();
+  });
+
+  it('lists an SSH worker that has not connected yet, with Delete', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('new-box', { state: 'connecting', up_since: null })]));
+    const dialog = await openPanel([]);
+    expect(within(dialog).queryByText(t('workers.empty'))).toBeNull();
+    const card = within(dialog).getByRole('article', { name: 'new-box' });
+    expect(within(card).getByText('Not connected yet')).toBeInTheDocument();
+    expect(within(card).getByText('Connecting')).toBeInTheDocument();
+    await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Delete' })));
+    expect(deleteSshWorker).toHaveBeenCalledWith('new-box');
+    expect(within(dialog).queryByRole('article', { name: 'new-box' })).toBeNull();
+  });
+
+  it('does nothing on Enable or Delete while an action on it is in flight', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('new-box', { enabled: false, state: 'stopped' })]));
+    const dialog = await openPanel([]);
+    act(() => useWorkerStore.setState({ busy: { 'new-box': true } }));
+    const card = within(dialog).getByRole('article', { name: 'new-box' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Enable' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Delete' }));
+    expect(setSshWorkerEnabled).not.toHaveBeenCalled();
+    expect(deleteSshWorker).not.toHaveBeenCalled();
+  });
+
+  it('shows a tunnel state this build does not know in a neutral chip', async () => {
+    const odd = ssh('gpu-box', { state: 'paused' as SshWorker['state'] });
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([odd]));
+    const dialog = await openPanel([worker('gpu-box')]);
+    expect(within(dialog).getByText('paused')).toBeInTheDocument();
+  });
+
+  it('reads the list again after the dialog added an SSH worker', async () => {
+    vi.mocked(addSshWorker).mockResolvedValue(ssh('gpu-box', { state: 'connecting' }));
+    const dialog = await openPanel([]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add worker' }));
+    const add = await screen.findByRole('dialog', { name: 'Add a worker' });
+    await settle();
+    fireEvent.click(within(add).getByRole('button', { name: 'Over SSH' }));
+    await settle();
+    fireEvent.change(within(add).getByLabelText(/SSH target/), { target: { value: 'alice@gpu-box' } });
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box', { state: 'connecting' })]));
+    const before = vi.mocked(fetchWorkers).mock.calls.length;
+    await act(async () => fireEvent.click(within(add).getByRole('button', { name: 'Add and connect' })));
+    await settle();
+    expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();
+    expect(vi.mocked(fetchWorkers).mock.calls.length).toBeGreaterThan(before);
+    expect(within(dialog).getByRole('article', { name: 'gpu-box' })).toBeInTheDocument();
+  });
+
+  it('shows the remote agent pid, Retry for a tunnel that gave up, and a failed SSH read', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([
+      ssh('gpu-box', { remote_pid: 4242 }),
+      ssh('back-box', { remote_pid: 77, reattached: true }),
+      ssh('stuck', { state: 'failed', gave_up: true, last_error: 'administratively prohibited' }),
+    ]));
+    vi.mocked(setSshWorkerEnabled).mockResolvedValue(ssh('stuck', { state: 'connecting' }));
+    const dialog = await openPanel([worker('gpu-box')]);
+    expect(within(dialog).getByText('remote agent pid 4242')).toBeInTheDocument();
+    expect(within(dialog).getByText('remote agent pid 77, re-attached after a dropped session')).toBeInTheDocument();
+    const stuck = within(dialog).getByRole('article', { name: 'stuck' });
+    await act(async () => fireEvent.click(within(stuck).getByRole('button', { name: 'Retry' })));
+    expect(setSshWorkerEnabled).toHaveBeenCalledWith('stuck', true);
+    act(() => useWorkerStore.setState({ busy: { stuck: true } }));
+    fireEvent.click(within(stuck).getByRole('button', { name: 'Retry' }));
+    expect(setSshWorkerEnabled).toHaveBeenCalledTimes(1);
+    act(() => useWorkerStore.setState({ sshError: 'Missing or invalid token' }));
+    expect(within(dialog).getByText(/Could not read the SSH workers/)).toBeInTheDocument();
   });
 });

@@ -294,6 +294,65 @@
   background: var(--surface-raised);
 }
 
+/* ── SSH tunnel state (#784) ── */
+
+.chip_up {
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: var(--success-wash);
+}
+
+.chip_connecting {
+  color: var(--status-warning);
+  border-color: var(--status-warning);
+  background: var(--warning-wash);
+}
+
+.chip_failed {
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: var(--danger-wash);
+}
+
+.chip_stopped {
+  color: var(--text-muted);
+  border-color: var(--border-base);
+  background: var(--surface-raised);
+}
+
+.tunnel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.tunnelError {
+  flex-basis: 100%;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--status-error);
+  background: var(--danger-wash);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tunnelTail {
+  flex-basis: 100%;
+}
+
+.tunnelTail pre {
+  margin: var(--sp-1) 0 0;
+  max-height: 12em;
+  overflow: auto;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ── remove (#780) ── */
 
 .danger {

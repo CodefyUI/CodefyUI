@@ -2,11 +2,15 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   agentCommand,
+  addSshWorker,
   createEnrollment,
   deleteEnrollment,
   fetchEnrollments,
+  fetchSshWorkers,
   type CreatedEnrollment,
   type EnrollmentList,
+  type NewSshWorker,
+  type SshWorkerList,
 } from '../../api/workers';
 import { useI18n } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
@@ -17,10 +21,15 @@ import styles from './WorkersPanel.module.css';
 /**
  * How the dialog tells the user to add a worker. `remote` (#780): a
  * one-time enrollment token and the one-line command that uses it, for an
- * agent on another machine. `same-host`: `cdui agent start` beside the
- * server, which needs no token. The prop picks the tab it opens on.
+ * agent on another machine. `ssh` (#784): this server starts the agent on
+ * `user@host` itself and the agent connects back through `ssh -R`.
+ * `same-host`: `cdui agent start` beside the server, which needs no token.
+ * The prop picks the tab it opens on.
  */
-export type AddWorkerMode = 'remote' | 'same-host';
+export type AddWorkerMode = 'remote' | 'ssh' | 'same-host';
+
+/** Where `install.sh` puts the launcher; the server's own default. */
+export const DEFAULT_REMOTE_CDUI = '~/CodefyUI/cdui';
 
 export const AGENT_START_COMMAND = 'cdui agent start';
 export const AGENT_STOP_COMMAND = 'cdui agent stop';
@@ -39,6 +48,8 @@ interface AddWorkerDialogProps {
   /** Re-key this enrolled worker: the token is bound to it (#780). */
   rekey?: string | null;
   onClose: () => void;
+  /** Called after an SSH worker was added, before the dialog closes. */
+  onAdded?: () => void;
 }
 
 /** Whether *url* names this machine only (127.x, localhost, ::1). */
@@ -323,8 +334,132 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
   );
 }
 
+/**
+ * Connect over SSH (#784): the server runs `ssh -R ... user@host cdui agent
+ * start` itself, so the worker needs no route to this server and neither
+ * end opens a port. The fields are what ssh is given; the tunnel's state
+ * shows on the worker's card in the Workers panel.
+ */
+function SshInstructions({ onAdded, onClose }: { onAdded?: () => void; onClose: () => void }) {
+  const { t } = useI18n();
+  const [info, setInfo] = useState<SshWorkerList | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [target, setTarget] = useState('');
+  const [port, setPort] = useState('22');
+  const [identity, setIdentity] = useState('');
+  const [remoteCdui, setRemoteCdui] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetchSshWorkers().then(setInfo, (err) => setError(errorText(err)));
+  }, []);
+
+  const submit = async () => {
+    if (busy) return;
+    if (!target.trim()) {
+      setError(t('workers.add.ssh.needTarget'));
+      return;
+    }
+    const body: NewSshWorker = { target: target.trim(), port: Number(port) || 22 };
+    if (identity.trim()) body.identity = identity.trim();
+    if (remoteCdui.trim()) body.remote_cdui = remoteCdui.trim();
+    if (name.trim()) body.name = name.trim();
+    setBusy(true);
+    try {
+      const entry = await addSshWorker(body);
+      useToastStore.getState().addToast(t('workers.add.ssh.added', { name: entry.id }), 'success');
+      onAdded?.();
+      onClose();
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+
+  const defaultCdui = info?.default_remote_cdui ?? DEFAULT_REMOTE_CDUI;
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <p>{t('workers.add.ssh.intro')}</p>
+      {info !== null && !info.ssh_available && (
+        <p className={styles.warn} role="note">{t('workers.add.ssh.noSsh')}</p>
+      )}
+      {error !== null && <div className={styles.error} role="alert">{friendlyError(error)}</div>}
+      <label className={styles.field}>
+        {t('workers.add.ssh.target')}
+        <input
+          className={`${styles.input} ${styles.inputUrl}`}
+          value={target}
+          placeholder="alice@gpu-box"
+          spellCheck={false}
+          autoCapitalize="off"
+          onChange={(event) => setTarget(event.target.value)}
+        />
+        <span className={styles.muted}>{t('workers.add.ssh.targetHint')}</span>
+      </label>
+      <div className={styles.fieldRow}>
+        <label className={styles.field}>
+          {t('workers.add.ssh.port')}
+          <input
+            className={`${styles.input} ${styles.inputUses}`}
+            type="number"
+            min={1}
+            max={65535}
+            value={port}
+            onChange={(event) => setPort(event.target.value)}
+          />
+        </label>
+        <label className={styles.field}>
+          {t('workers.add.ssh.name')}
+          <input
+            className={styles.input}
+            value={name}
+            placeholder={t('workers.add.ssh.namePlaceholder')}
+            spellCheck={false}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+      </div>
+      <label className={styles.field}>
+        {t('workers.add.ssh.identity')}
+        <input
+          className={`${styles.input} ${styles.inputUrl}`}
+          value={identity}
+          placeholder="~/.ssh/id_ed25519"
+          spellCheck={false}
+          onChange={(event) => setIdentity(event.target.value)}
+        />
+        <span className={styles.muted}>{t('workers.add.ssh.identityHint')}</span>
+      </label>
+      <label className={styles.field}>
+        {t('workers.add.ssh.remoteCdui')}
+        <input
+          className={`${styles.input} ${styles.inputUrl}`}
+          value={remoteCdui}
+          placeholder={defaultCdui}
+          spellCheck={false}
+          onChange={(event) => setRemoteCdui(event.target.value)}
+        />
+        <span className={styles.muted}>{t('workers.add.ssh.remoteCduiHint', { path: defaultCdui })}</span>
+      </label>
+      <div className={styles.fieldRow}>
+        <button type="submit" className={`${styles.btn} ${styles.accent}`} aria-disabled={busy}>
+          {t('workers.add.ssh.add')}
+        </button>
+      </div>
+      <p className={styles.muted}>{t('workers.add.ssh.how')}</p>
+      <p className={styles.muted}>{t('workers.add.ssh.security')}</p>
+    </form>
+  );
+}
+
 /** The Workers panel's "Add worker" dialog, over the panel. */
-export function AddWorkerDialog({ mode, rekey = null, onClose }: AddWorkerDialogProps) {
+export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWorkerDialogProps) {
   const { t } = useI18n();
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -394,13 +529,23 @@ export function AddWorkerDialog({ mode, rekey = null, onClose }: AddWorkerDialog
             <button
               type="button"
               className={styles.btn}
+              aria-pressed={current === 'ssh'}
+              onClick={() => setCurrent('ssh')}
+            >
+              {t('workers.add.mode.ssh')}
+            </button>
+            <button
+              type="button"
+              className={styles.btn}
               aria-pressed={current === 'same-host'}
               onClick={() => setCurrent('same-host')}
             >
               {t('workers.add.mode.sameHost')}
             </button>
           </div>
-          {current === 'remote' ? <RemoteInstructions rekey={rekey} /> : <SameHostInstructions />}
+          {current === 'remote' && <RemoteInstructions rekey={rekey} />}
+          {current === 'ssh' && <SshInstructions onAdded={onAdded} onClose={onClose} />}
+          {current === 'same-host' && <SameHostInstructions />}
         </div>
       </div>
     </div>,

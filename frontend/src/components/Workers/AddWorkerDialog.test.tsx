@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import {
   agentCommand,
+  addSshWorker,
   createEnrollment,
   deleteEnrollment,
   fetchEnrollments,
+  fetchSshWorkers,
   type CreatedEnrollment,
   type Enrollment,
   type EnrollmentList,
+  type SshWorker,
+  type SshWorkerList,
 } from '../../api/workers';
 import { useI18n } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
@@ -20,6 +24,8 @@ vi.mock('../../api/workers', async (importOriginal) => ({
   createEnrollment: vi.fn(),
   deleteEnrollment: vi.fn(),
   agentCommand: vi.fn(),
+  fetchSshWorkers: vi.fn(),
+  addSshWorker: vi.fn(),
 }));
 
 const TOKEN = 'abcdef.0123456789abcdef';
@@ -81,6 +87,8 @@ beforeEach(() => {
     async ({ control_url, token, worker }) => serverCommand(control_url, token, worker),
   );
   vi.mocked(deleteEnrollment).mockReset().mockResolvedValue(undefined);
+  vi.mocked(fetchSshWorkers).mockReset().mockResolvedValue(sshInfo());
+  vi.mocked(addSshWorker).mockReset().mockResolvedValue(sshEntry());
   useI18n.setState({ locale: 'en' });
   useToastStore.setState({ toasts: [] });
   writeText.mockReset().mockResolvedValue(undefined);
@@ -487,5 +495,121 @@ describe('AddWorkerDialog (re-key, #780)', () => {
       `cdui agent start --control http://192.168.1.5:8000 --token ${TOKEN} --name gpu-box`,
     )).toBeInTheDocument();
     expect(within(dialog).getByText('re-keys gpu-box')).toBeInTheDocument();
+  });
+});
+
+function sshInfo(extra: Partial<SshWorkerList> = {}): SshWorkerList {
+  return { ssh_workers: [], ssh_available: true, port_range: [18000, 18100], default_remote_cdui: '~/CodefyUI/cdui', ...extra };
+}
+
+function sshEntry(extra: Partial<SshWorker> = {}): SshWorker {
+  return {
+    id: 'gpu-box',
+    target: 'alice@gpu-box',
+    port: 22,
+    identity: null,
+    remote_cdui: '~/CodefyUI/cdui',
+    remote_port: 18000,
+    enabled: true,
+    state: 'connecting',
+    last_error: null,
+    exit_code: null,
+    tail: [],
+    attempts: 1,
+    retry_at: null,
+    up_since: null,
+    ...extra,
+  };
+}
+
+async function renderSsh(props: { onClose?: () => void; onAdded?: () => void } = {}) {
+  const onClose = props.onClose ?? vi.fn();
+  render(<AddWorkerDialog mode="ssh" onClose={onClose} onAdded={props.onAdded} />);
+  await settle();
+  return { onClose, dialog: screen.getByRole('dialog') };
+}
+
+describe('AddWorkerDialog (over SSH, #784)', () => {
+  it('opens on the SSH form, and the mode switch reaches it from another tab', async () => {
+    const { dialog } = await renderSsh();
+    expect(dialog).toHaveAttribute('data-mode', 'ssh');
+    expect(within(dialog).getByRole('button', { name: 'Over SSH' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(dialog).getByLabelText(/SSH target/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/^Port/)).toHaveValue(22);
+    expect(within(dialog).getByLabelText(/cdui on the remote host/)).toHaveAttribute('placeholder', '~/CodefyUI/cdui');
+    expect(within(dialog).queryByRole('note')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'This machine' }));
+    expect(dialog).toHaveAttribute('data-mode', 'same-host');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Over SSH' }));
+    await settle();
+    expect(dialog).toHaveAttribute('data-mode', 'ssh');
+  });
+
+  it('asks for a target before it sends anything', async () => {
+    const { dialog } = await renderSsh();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Add and connect' })));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Enter the SSH target');
+    expect(addSshWorker).not.toHaveBeenCalled();
+  });
+
+  it('sends every field it was given, then says so, refreshes and closes', async () => {
+    const onAdded = vi.fn();
+    const { dialog, onClose } = await renderSsh({ onAdded });
+    fireEvent.change(within(dialog).getByLabelText(/SSH target/), { target: { value: ' alice@gpu-box ' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Port/), { target: { value: '2222' } });
+    fireEvent.change(within(dialog).getByLabelText(/Worker name/), { target: { value: ' gpu-1 ' } });
+    fireEvent.change(within(dialog).getByLabelText(/Identity file/), { target: { value: '~/.ssh/lab' } });
+    fireEvent.change(within(dialog).getByLabelText(/cdui on the remote host/), { target: { value: '/opt/CodefyUI/cdui' } });
+    vi.mocked(addSshWorker).mockResolvedValue(sshEntry({ id: 'gpu-1' }));
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Add and connect' })));
+    expect(addSshWorker).toHaveBeenCalledWith({
+      target: 'alice@gpu-box', port: 2222, name: 'gpu-1', identity: '~/.ssh/lab', remote_cdui: '/opt/CodefyUI/cdui',
+    });
+    expect(useToastStore.getState().toasts.map((t) => t.message)).toEqual(['SSH worker gpu-1 added; connecting']);
+    expect(onAdded).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends only the target and port 22 by default, and works without onAdded', async () => {
+    const { dialog, onClose } = await renderSsh();
+    fireEvent.change(within(dialog).getByLabelText(/SSH target/), { target: { value: 'gpu-box' } });
+    fireEvent.change(within(dialog).getByLabelText(/^Port/), { target: { value: '' } });
+    await act(async () => fireEvent.submit(within(dialog).getByLabelText(/SSH target/)));
+    expect(addSshWorker).toHaveBeenCalledWith({ target: 'gpu-box', port: 22 });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the server\'s refusal and stays open; a second press while sending does nothing', async () => {
+    const { dialog, onClose } = await renderSsh();
+    fireEvent.change(within(dialog).getByLabelText(/SSH target/), { target: { value: 'gpu-box' } });
+    let fail: (err: Error) => void = () => {};
+    vi.mocked(addSshWorker).mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    const button = within(dialog).getByRole('button', { name: 'Add and connect' });
+    await act(async () => fireEvent.click(button));
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => fireEvent.click(button));
+    expect(addSshWorker).toHaveBeenCalledTimes(1);
+    await act(async () => fail(new Error('a worker named gpu-box exists already')));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('exists already');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(button).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  it('warns when the server has no ssh, and shows a failed read', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValueOnce(sshInfo({ ssh_available: false, default_remote_cdui: '/srv/cdui' }));
+    const { dialog } = await renderSsh();
+    expect(within(dialog).getByRole('note')).toHaveTextContent('No ssh command was found');
+    expect(within(dialog).getByLabelText(/cdui on the remote host/)).toHaveAttribute('placeholder', '/srv/cdui');
+    cleanup();
+    vi.mocked(fetchSshWorkers).mockRejectedValueOnce(new Error('SSH workers are not available'));
+    const again = await renderSsh();
+    expect(within(again.dialog).getByRole('alert')).toHaveTextContent('SSH workers are not available');
+  });
+
+  it('renders in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const { dialog } = await renderSsh();
+    expect(within(dialog).getByRole('button', { name: '透過 SSH' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '新增並連線' })).toBeInTheDocument();
   });
 });

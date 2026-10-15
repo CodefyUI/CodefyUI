@@ -1,6 +1,8 @@
 import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  SshWorker,
+  TunnelState,
   WorkerDevice,
   WorkerInfo,
   WorkerNodeCatalog,
@@ -146,13 +148,114 @@ function RejectionLine({ rejection, now }: { rejection: WorkerRejection; now: nu
   );
 }
 
+/** The tunnel states this build has a word for; another is shown as sent. */
+const TUNNEL_STATES: ReadonlySet<string> = new Set<TunnelState>(['connecting', 'up', 'failed', 'stopped']);
+
+/**
+ * An SSH worker's tunnel (#784): its state, where it goes, Enable /
+ * Disable, and while it is not up, the last lines ssh or the remote agent
+ * wrote (the reason it failed: a refused key, an unknown host, no cdui).
+ */
+function TunnelLine({ entry }: { entry: SshWorker }) {
+  const { t } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[entry.id]));
+  const setSshEnabled = useWorkerStore((s) => s.setSshEnabled);
+  const where = entry.port === 22 ? entry.target : `${entry.target}:${entry.port}`;
+  const showError = entry.state !== 'up' && entry.last_error;
+  const known = TUNNEL_STATES.has(entry.state);
+  return (
+    <span className={styles.tunnel}>
+      <span className={`${styles.chip} ${known ? styles[`chip_${entry.state}`] : styles.chip_neutral}`}>
+        {known ? t(`workers.ssh.state.${entry.state}`) : entry.state}
+      </span>
+      <code title={entry.identity ?? undefined}>{where}</code>
+      {entry.remote_port !== null && (
+        <span className={styles.fact}>{t('workers.ssh.remotePort', { port: entry.remote_port })}</span>
+      )}
+      {entry.remote_pid != null && (
+        <span className={styles.fact}>
+          {t(entry.reattached ? 'workers.ssh.remotePidReattached' : 'workers.ssh.remotePid', { pid: entry.remote_pid })}
+        </span>
+      )}
+      <button
+        type="button"
+        className={styles.btn}
+        aria-disabled={busy}
+        title={t(entry.enabled ? 'workers.ssh.disable.title' : 'workers.ssh.enable.title')}
+        onClick={() => {
+          if (!busy) void setSshEnabled(entry.id, !entry.enabled);
+        }}
+      >
+        {t(entry.enabled ? 'workers.ssh.disable' : 'workers.ssh.enable')}
+      </button>
+      {entry.enabled && entry.gave_up && (
+        <button
+          type="button"
+          className={styles.btn}
+          aria-disabled={busy}
+          title={t('workers.ssh.retry.title')}
+          onClick={() => {
+            if (!busy) void setSshEnabled(entry.id, true);
+          }}
+        >
+          {t('workers.ssh.retry')}
+        </button>
+      )}
+      {showError && (
+        <pre className={styles.tunnelError} role="status">
+          {entry.last_error}
+        </pre>
+      )}
+      {entry.tail.length > 0 && (
+        <details className={styles.tunnelTail}>
+          <summary>{t('workers.ssh.output')}</summary>
+          <pre>{entry.tail.join('\n')}</pre>
+        </details>
+      )}
+    </span>
+  );
+}
+
+/** An SSH worker whose agent has not connected yet (no worker entry). */
+function SshOnlyCard({ entry }: { entry: SshWorker }) {
+  const { t } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[entry.id]));
+  const deleteSsh = useWorkerStore((s) => s.deleteSsh);
+  return (
+    <article className={styles.card} aria-label={entry.id}>
+      <header className={styles.cardHeader}>
+        <h3 className={styles.workerName}>{entry.id}</h3>
+        <span className={`${styles.chip} ${styles.chip_offline}`}>{t('workers.ssh.notYet')}</span>
+        <span className={styles.spacer} />
+        <button
+          type="button"
+          className={`${styles.btn} ${styles.danger}`}
+          aria-disabled={busy}
+          title={t('workers.ssh.delete.title')}
+          onClick={() => {
+            if (!busy) void deleteSsh(entry.id);
+          }}
+        >
+          {t('workers.ssh.delete')}
+        </button>
+      </header>
+      <dl className={styles.facts}>
+        <dt>{t('workers.ssh.tunnel')}</dt>
+        <dd><TunnelLine entry={entry} /></dd>
+      </dl>
+    </article>
+  );
+}
+
 /** Statuses whose worker has no live connection: removing one ends nothing. */
 const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
 
-function WorkerCard({ worker, rejection, serverVersion, now, onRemoved, onRekey }: {
+function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey }: {
   worker: WorkerInfo;
   /** Its name's last refused handshake, if the server remembers one (#781). */
   rejection: WorkerRejection | undefined;
+  /** Its SSH tunnel, when this server starts it over ssh (#784). */
+  ssh?: SshWorker;
   serverVersion: string | null;
   now: number;
   /** Called after this card's worker was removed, to keep the focus in the dialog. */
@@ -241,6 +344,12 @@ function WorkerCard({ worker, rejection, serverVersion, now, onRemoved, onRekey 
         </button>
       </header>
       <dl className={styles.facts}>
+        {ssh && (
+          <>
+            <dt>{t('workers.ssh.tunnel')}</dt>
+            <dd><TunnelLine entry={ssh} /></dd>
+          </>
+        )}
         <dt>{t('workers.version')}</dt>
         <dd><VersionLine version={worker.version} serverVersion={serverVersion} /></dd>
         <dt>{t('workers.fingerprint')}</dt>
@@ -310,6 +419,8 @@ function WorkersDialog() {
   const titleId = useId();
   const workers = useWorkerStore((s) => s.workers);
   const rejections = useWorkerStore((s) => s.rejections);
+  const ssh = useWorkerStore((s) => s.ssh);
+  const sshError = useWorkerStore((s) => s.sshError);
   const loaded = useWorkerStore((s) => s.loaded);
   const error = useWorkerStore((s) => s.error);
   const serverVersion = useWorkerStore((s) => s.serverVersion);
@@ -348,10 +459,12 @@ function WorkersDialog() {
   // its own, so the user sees why (#781).
   const names = new Set(workers.map((w) => w.name));
   const refusedOnly = rejections.filter((r) => r.live_owner || !names.has(r.name));
+  const sshById = new Map(ssh.map((entry) => [entry.id, entry]));
+  const sshOnly = ssh.filter((entry) => !workers.some((worker) => worker.id === entry.id));
   let content;
   if (!loaded) {
     content = <p className={styles.muted}>{t('workers.loading')}</p>;
-  } else if (workers.length === 0 && refusedOnly.length === 0 && error === null) {
+  } else if (workers.length === 0 && refusedOnly.length === 0 && sshOnly.length === 0 && error === null) {
     content = <p className={styles.muted}>{t('workers.empty')}</p>;
   } else {
     content = workers.map((worker) => (
@@ -359,12 +472,19 @@ function WorkersDialog() {
         key={worker.id}
         worker={worker}
         rejection={rejectionOf.get(worker.name)}
+        ssh={sshById.get(worker.id)}
         serverVersion={serverVersion}
         now={now}
         onRemoved={() => closeRef.current?.focus()}
         onRekey={(workerId) => setAdding({ rekey: workerId })}
       />
     ));
+    content = (
+      <>
+        {content}
+        {sshOnly.map((entry) => <SshOnlyCard key={`ssh:${entry.id}`} entry={entry} />)}
+      </>
+    );
   }
 
   return createPortal(
@@ -407,6 +527,11 @@ function WorkersDialog() {
         </header>
         <div className={styles.body}>
           {error !== null && <div className={styles.error} role="alert">{friendlyError(error)}</div>}
+          {sshError !== null && (
+            <div className={styles.error} role="alert">
+              {t('workers.ssh.readFailed', { error: friendlyError(sshError) })}
+            </div>
+          )}
           {content}
           {loaded && refusedOnly.length > 0 && (
             <section className={styles.rejections} aria-label={t('workers.rejections.title')}>
@@ -426,7 +551,12 @@ function WorkersDialog() {
       </div>
       {adding !== null && (
         <Suspense fallback={null}>
-          <AddWorkerDialog mode="remote" rekey={adding.rekey} onClose={() => setAdding(null)} />
+          <AddWorkerDialog
+            mode="remote"
+            rekey={adding.rekey}
+            onClose={() => setAdding(null)}
+            onAdded={() => void refresh()}
+          />
         </Suspense>
       )}
     </div>,

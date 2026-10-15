@@ -292,6 +292,96 @@ async def test_no_warning_from_this_machine(enrolled, caplog):
     assert "plain ws://" not in caplog.text
 
 
+async def test_an_ssh_tunnel_peer_with_another_machine_id_is_not_same_host(
+        enrolled, monkeypatch):
+    """#784: over ``ssh -R`` a remote agent is a loopback peer dialing
+    ``Host: 127.0.0.1:<tunnel port>``. Its machine id decides: not ours."""
+    from httpx import AsyncClient
+    from httpx_ws.transport import ASGIWebSocketTransport
+
+    from app.api import ws_worker as module
+    from app.core import auth
+
+    _, registry, _, worker_token = enrolled
+    monkeypatch.setattr(module, "machine_identity", lambda: "control-plane")
+    tunnel = AsyncClient(transport=ASGIWebSocketTransport(app=app),
+                         base_url="http://127.0.0.1:18077")
+    # Not a tunnel port (yet): the Host guard refuses it.
+    async with tunnel as client:
+        with pytest.raises(WebSocketDisconnect) as refused:
+            async with aconnect_ws(_path(worker_token), client):
+                pass
+    assert refused.value.code == 4003
+    auth.allow_tunnel_port(18077)
+    try:
+        tunnel = AsyncClient(transport=ASGIWebSocketTransport(app=app),
+                             base_url="http://127.0.0.1:18077")
+        async with tunnel as client, \
+                aconnect_ws(_path(worker_token), client) as ws:
+            await FakeAgent(ws).hello("gpu-box", machine_id="gpu-box-id")
+            worker = registry.get("gpu-box")
+            assert worker.same_host is False
+            assert worker.credential == CREDENTIAL_WORKER
+    finally:
+        auth.forget_tunnel_port(18077)
+
+
+class _Launcher:
+    def __init__(self) -> None:
+        self.refused: list[int] = []
+        self.connected: list[str] = []
+
+    def note_refused(self, port: int) -> None:
+        self.refused.append(port)
+
+    def worker_connected(self, name: str) -> None:
+        self.connected.append(name)
+
+
+async def test_only_a_refused_credential_on_a_tunnel_reaches_the_launcher(
+        enrolled, monkeypatch, caplog):
+    """#784: the launcher restarts an agent with ``cdui agent forget`` only
+    for a 4401 through its tunnel; a Host refusal (4003) never counts. A
+    tunnelled peer that is not loopback (a server bound to one LAN address)
+    is not warned about plain ws://."""
+    from httpx import AsyncClient
+    from httpx_ws.transport import ASGIWebSocketTransport
+
+    from app.core import auth
+
+    _, registry, _, worker_token = enrolled
+    launcher = _Launcher()
+    app.state.ssh_launcher = launcher
+
+    def tunnel_client(port: int) -> AsyncClient:
+        return AsyncClient(transport=ASGIWebSocketTransport(app=app),
+                           base_url=f"http://127.0.0.1:{port}")
+
+    auth.allow_tunnel_port(18078)
+    try:
+        async with tunnel_client(18078) as client:
+            with pytest.raises(WebSocketDisconnect) as refused:
+                async with aconnect_ws(_path("not-a-token"), client):
+                    pass
+        assert refused.value.code == 4401
+        async with tunnel_client(18079) as client:  # not a tunnel port
+            with pytest.raises(WebSocketDisconnect) as refused:
+                async with aconnect_ws(_path("not-a-token"), client):
+                    pass
+        assert refused.value.code == 4003
+        assert launcher.refused == [18078]
+
+        monkeypatch.setattr(ws_worker, "_peer_is_loopback", lambda ws: False)
+        async with tunnel_client(18078) as client, \
+                aconnect_ws(_path(worker_token), client) as ws:
+            await FakeAgent(ws).hello("gpu-box")
+        assert launcher.connected == ["gpu-box"]
+        assert "plain ws://" not in caplog.text
+    finally:
+        auth.forget_tunnel_port(18078)
+        del app.state.ssh_launcher
+
+
 async def test_the_authorisers_are_pluggable(env, monkeypatch):  # noqa: F811
     async def everyone(ws, provided, loopback):
         return ws_worker.Authorised(CREDENTIAL_SESSION) \

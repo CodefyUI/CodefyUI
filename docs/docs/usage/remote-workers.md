@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3.7
 title: Remote Workers
-description: Run graphs on another machine — enroll a GPU server as a worker agent with a one-time token from the Workers panel.
+description: Run graphs on another machine — enroll a GPU server as a worker agent with a one-time token from the Workers panel, or let the server start it over SSH.
 ---
 
 # Remote Workers
@@ -85,3 +85,54 @@ A worker must run the same CodefyUI version as the server, and it should know th
 To clear it, install the same plugins and packs on the worker (`cdui plugin install ...`, the Package Center, the same custom node files) and restart the agent: it reports its nodes only when it starts. A worker whose helper failed reports no catalog: its card warns about it, `any` skips it, and a run that names it is sent without the check (the agent's log says why the helper failed). A command that copies the server's plugin set to a worker (`cdui agent sync`) is planned.
 
 **Environment fingerprint.** The same helper collects the worker's [environment fingerprint](/advanced/api-reference#run-environment) (CodefyUI commit, Python, torch build, accelerators, plugin revisions, numerics-relevant environment variables). The Workers panel shows its digest, and every run the worker executes records that digest (a worker that reconnects without one shows "not reported", never an older digest), so the Runs panel names the environment that actually ran it. The fingerprint describes the agent's environment as its run subprocesses inherit it, before a run's device set narrows `CUDA_VISIBLE_DEVICES`.
+
+## Connecting over SSH
+
+For a GPU server you reach with SSH and nothing else, for example a laptop behind NAT and a server that only opens port 22, the server can start the worker itself. It runs `ssh` to the GPU server, starts `cdui agent start` there, and the agent connects back through a reverse tunnel in the same SSH session (`ssh -R`). Neither machine opens a port, and the server can stay on `127.0.0.1`.
+
+**Before you start:**
+
+- CodefyUI is installed on the GPU server, in the same version, with `install.sh`. The server does not install it for you.
+- The server's machine has an OpenSSH client on its PATH (`ssh`). macOS and Linux have one; on Windows, add the **OpenSSH Client** optional feature, and the server must be started from a session that has it on PATH.
+- `ssh <target>` works from a terminal on the server's machine, as the OS user that runs `cdui start`, **without any prompt**. ssh runs with `BatchMode=yes`: no password, and a key with a passphrase only through `ssh-agent`. Your `~/.ssh/config` applies, so a `Host` alias, a `ProxyJump` and the keys it names all work.
+
+**Adding one.** Open **Workers**, press **Add worker**, and choose **Over SSH**:
+
+| Field | Meaning |
+|---|---|
+| SSH target | `user@host`, or a `Host` alias from the server account's `~/.ssh/config`. |
+| Port | ssh's `-p`. Left at 22, it is not passed, so the port in your ssh config for that host applies. |
+| Worker name | Optional; the target's host name by default (`alice@gpu1.lab` becomes `gpu1`). A name another worker already has is refused. |
+| Identity file | Optional; a private key on the server's machine (ssh's `-i`). Empty uses your ssh config and agent. |
+| cdui on the remote host | The launcher's path there; empty means `~/CodefyUI/cdui`, where `install.sh` puts it. |
+
+Press **Add and connect**. The worker's card shows an **SSH tunnel** line: **Connecting** while ssh runs and the agent has not connected yet, **Up** once it has, **Failed** with the last lines ssh or the agent wrote (a refused key, an unknown host, a missing `cdui`) while it waits to try again, and **Stopped** when disabled. **Recent ssh output** shows more of that output.
+
+**What runs.** For each enabled SSH worker the server keeps one process like this:
+
+```bash
+ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+    -o StrictHostKeyChecking=accept-new \
+    -R 127.0.0.1:18000:127.0.0.1:8000 -- alice@gpu-box \
+    "sh -c '... ~/CodefyUI/cdui agent start --foreground --control http://127.0.0.1:18000 --name gpu-box'"
+```
+
+The remote command puts `~/.local/bin` on PATH first: a non-interactive ssh shell does not read your shell profile. The remote port comes from `CODEFYUI_SSH_REMOTE_PORT_RANGE` (`18000-18100`); when it is taken on the remote host, the next one is tried and remembered. When ssh exits, the server starts it again after 2 s, doubling up to a minute, and again after its own restart. If the remote sshd does not allow the forward at all (`AllowTcpForwarding no`, a `PermitListen` that excludes the port; an explicit refusal, or three ports failing in a row), the tunnel stays **Failed** with that reason and stops retrying; **Retry** starts it again once the server's admin has allowed `-R` to `127.0.0.1`. The tunnel line also shows the remote agent's pid: on the remote host the agent's command line is `python .../scripts/dev.py agent start --foreground ...`, so `pgrep -af 'agent start'` finds it.
+
+**Credentials.** Each start sends a one-time enrollment token (valid 10 minutes) on ssh's standard input, never on a command line, so `ps` on either machine does not show it. The first start enrolls the worker; the agent stores its worker credential on the remote host for the address `http://127.0.0.1:<remote port>`, and every later start reconnects with it and leaves the token unused. Once the worker is enrolled, the token is bound to it, so it can only re-key that worker. The first start on a port this worker has not used before runs `cdui agent forget` for that address first, so a credential another worker or another control plane left there is never presented. If one is presented anyway (this server refuses it on that tunnel, or the agent reports a credential for another worker name), the server starts the agent again with `cdui agent forget` first, which enrolls it anew. Every tunnel arrives from this machine's own address, so enrollment attempts through a tunnel are rate-limited per tunnel (its remote port), apart from each other and from agents on this machine.
+
+**A dropped session.** When the session ends without Disable (the laptop sleeps, the network goes), the remote agent keeps running and so do its runs; they wait `disconnected` on this server and keep their events, as in [When the connection drops](#when-the-connection-drops). The server starts ssh again with the same remote port, and the remote script, finding the agent alive, attaches to it instead of starting another (the tunnel line shows the pid it re-attached to). The agent reconnects through the new tunnel by itself and its runs continue. If the remote sshd has not noticed that the old session is gone and still holds the port, the server ends that stale session over a short separate ssh first. With no session back within `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes), the agent stops. The remote script keeps the agent's pid and log in `~/.codefyui-ssh/<remote port>/` on the remote host.
+
+**Disable, Enable, Delete.** **Disable** drains the worker, then ends its ssh session; a disabled worker stays drained even if an agent connects under its name later. Disable tells the remote agent to stop through the session (or, when no session is up, with a short separate ssh), so a run still on it ends `interrupted`; drain first and wait for it when that matters. **Enable** starts the session again. On a worker that has not connected yet, **Delete** ends the session and forgets the entry; on a connected one, **Remove** revokes the worker and deletes its SSH entry too.
+
+**Security.**
+
+- The tunnel listens on the remote host's loopback only (`-R 127.0.0.1:...`). Every user of that host can still connect to that port, so requests through it reach `/ws/worker` and `POST /api/workers/enroll` only; every other path answers `421`, and both of those need a token.
+- `StrictHostKeyChecking=accept-new` trusts a host the first time and refuses a changed key. Set `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes` to require that the host is already in the server account's `known_hosts`.
+- The server uses the SSH access of the OS user that runs it, as the Source Control tab does with git. Anyone who controls this server can start an SSH worker on every host that user reaches.
+- The agent behind the tunnel connects from `127.0.0.1`, but it counts as a worker on this machine only when its machine id equals the server's, so a GPU server is never mistaken for the server's own machine. It authenticates with its worker token.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | Ports the tunnels may take on the remote hosts' loopback |
+| `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | `yes` requires a known host |
