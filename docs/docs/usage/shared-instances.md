@@ -148,6 +148,14 @@ own, but the worker machine holds it for the length of the run: whoever
 administers that machine is trusted with it. See [Trust between agent and control
 plane](./remote-workers#trust-between-agent-and-control-plane).
 
+A worker belongs to the instance like everything else: anyone who can reach
+the editor can send runs to every enrolled worker. A run on a worker uses the
+ambient credentials of the **worker's** agent account (its environment keys
+and the ChatGPT, Kaggle and Hugging Face credentials stored on that machine),
+not the control plane's. A graph that relies on an instance key needs
+that key configured on each worker it runs on, with the same caveat as
+above: whoever configured it pays for every run sent there.
+
 ## If you need per-person attribution
 
 There is no in-product answer today. Run one instance per person, and let each

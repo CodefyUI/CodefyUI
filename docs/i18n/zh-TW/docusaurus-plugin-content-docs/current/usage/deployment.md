@@ -247,6 +247,16 @@ server {
 
 請依組織既有方式，在 `location /` 前加入單一登入，例如對 OIDC 輔助服務使用 `auth_request`、vouch 類型的 forward-auth，或使用供應商的 nginx 模組。CodefyUI 沒有身分模型，不需要感知或整合這一層。
 
+## 這個 proxy 後方的 worker {/* #workers-behind-this-proxy */}
+
+[遠端 worker](./remote-workers) 經由同一個 proxy 連到這台伺服器：`cdui agent start --control https://codefyui.example.com`。上面的站台設定已經涵蓋它，因為 agent 用到的一切都在 `location /` 底下：
+
+- **`/ws/worker`** 是一條在 agent 執行期間一直保持的 WebSocket。它需要與 `/ws/execution` 相同的 `Upgrade` / `Connection` 標頭與較長的 `proxy_read_timeout`。若你把站台拆成多個 `location` 區塊，請在負責 `/ws/worker` 的區塊也加上那三行與逾時設定；少了它們，agent 的握手會失敗，或連線被切斷、它的 run 以 `disconnected` 等待。
+- **Artifact 上傳。** 沒有共用資料夾的 worker 會把 run 寫出的每個檔案上傳到 `POST /api/runs/{run_id}/artifacts/upload`，每次一個檔案，上限為 `CODEFYUI_MAX_UPLOAD_SIZE`（500 MB）。`client_max_body_size` 至少要這麼大；設得較小時，較大的輸出只會得到一個 413，那些檔案會留在 worker 上，並附上 `transfer_failed` 警告。
+- **`--forwarded-allow-ips`**（上面的 unit 已設定）讓 uvicorn 把 agent 的連線回報為 `wss`，Workers 面板就不會把這個 proxy 後方的 worker 標成 **未加密 HTTP**。
+
+若你在 `location /` 前加了單一登入，請排除 agent 使用的路徑：它以 worker token 驗證身分，無法完成瀏覽器登入。這些路徑是 `/ws/worker`、`POST /api/workers/enroll`、`POST /api/runs/{run_id}/artifacts/upload`，以及 `/api/files/download/`、`/api/images/download/`、`/api/models/download/` 底下的輸入檔下載。Agent 會檢查 proxy 的憑證；自簽憑證需要 `--ca-fingerprint`（[遠端 Worker：信任](./remote-workers#trust-between-agent-and-control-plane)）。
+
 ## TLS 在代理這一層結束 {/* #tls-terminates-at-the-proxy */}
 
 為了 HTTPS，前端不需要重新 build，也不需要改任何設定。WebSocket 的網址是在執行時從 `window.location` 推導出來的，所以 `wss://` 會自動跟著 `https://` 走，埠號也會一起帶過去。隨附的 bundle 裡沒有任何寫死的主機或協定 -- 整個專案裡唯一的 `ws://localhost:8000` 屬於 Vite 開發代理，那個永遠不會被打包出去。

@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)），以及讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）。以下各節會註明哪些部分仍在規劃中。
+程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）、斷線與續接（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）、SSH 反向通道（[#784](https://github.com/CodefyUI/CodefyUI/issues/784)）、transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框。遠端 worker 的設定方式見[遠端 Worker](/usage/remote-workers)。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -24,7 +24,8 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 | **Placement** | 排程器對等待中 run 的回答：哪個 worker、在哪些裝置上執行、占用哪些 slot。 |
 | **Target** | 送出時帶的 `options.target` 物件：`{"worker", "devices"}`。 |
 | **裝置集合** | 列出同一種類、多於一個裝置的 `target.devices`。 |
-| **Mount**、**transfer 後端** | 規劃中的儲存名詞（[儲存](#storage)）。 |
+| **Mount** | 兩台機器共用、各自位於不同路徑之資料夾的標籤（`data`）（[儲存](#storage)）。 |
+| **Transfer 後端** | 由控制面擔任檔案庫，供與它沒有共用資料夾的 worker 使用（[儲存](#storage)）。 |
 
 ## 角色 {/* #roles */}
 
@@ -106,18 +107,19 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **取消。** 對 worker run 按 Stop 會轉送為 `cancel`。agent 往 pipe 送 `("cancel",)`，子程序把它轉成 `ExecutionContext.cancel()`，與 in-process run 相同的協作式停止。若子程序在 `grace_s`（預設 30 秒）後仍未結束，agent 會 terminate 它，5 秒後再 kill；控制面把這個 run 記為停止，與 in-process 取消相同。`cdui agent stop` 以同樣方式要求每個執行中的 run 停止，寬限 10 秒。
 
-**斷線。** 關閉 `/ws/worker` 本身從不取消 run。socket 關閉、或連續錯過三次心跳的 worker 會被標為 `disconnected`。agent 送出每個 run 的 frame 前先寫入 `agent-runs/<run id>/spool.jsonl`，控制面確認（`ack`，每記錄 64 個 frame 或 1 秒一次；已確認的 seq 只存在記憶體中）後即丟棄。斷線 worker 的每個 run 變成 `disconnected`（附帶 kind 為 `worker_disconnected` 的 `run_warning`），slot 保留。同名連線若在 `CODEFYUI_WORKER_RESUME_GRACE_S`（300 秒）內於 `run_alive` 列出它，就依序補送未確認的 frame；registry 丟棄已見過的 `seq` 並記錄缺漏，run 回到 `running`（`worker_reconnected`）。逾時則以 `interrupted` 結束並釋放 slot；worker 仍回報但這裡未追蹤的 run 會收到 `grace_s` 為 0 的 `cancel`，它的 `run_finished` 記錄為 `execution_facts.late_result`，不會在結束事件之後再加事件。worker 送來的任何 frame 都算存活訊號，agent 在補送期間也持續送心跳。單一 run 的 inbox 超過 10,000 個 frame 時暫停讀取 socket，讓補送由 TCP 控制速度。見[連線中斷時](../usage/run-queue#when-the-connection-drops)。
+**斷線。** 關閉 `/ws/worker` 本身從不取消 run。socket 關閉、或連續錯過三次心跳的 worker 會被標為 `disconnected`。agent 送出每個 run 的 frame 前先寫入 `agent-runs/<run id>/spool.jsonl`，控制面確認（`ack`，每記錄 64 個 frame 或 1 秒一次；已確認的 seq 只存在記憶體中）後即丟棄。斷線 worker 的每個 run 變成 `disconnected`（附帶 kind 為 `worker_disconnected` 的 `run_warning`），slot 保留。同名連線若在 `CODEFYUI_WORKER_RESUME_GRACE_S`（300 秒）內於 `run_alive` 列出它，就依序補送未確認的 frame；registry 丟棄已見過的 `seq` 並記錄缺漏，run 回到 `running`（`worker_reconnected`）。逾時則以 `interrupted` 結束並釋放 slot；worker 仍回報但這裡未追蹤的 run 會收到 `grace_s` 為 0 的 `cancel`，它的 `run_finished` 記錄為 `execution_facts.late_result`，不會在結束事件之後再加事件。worker 送來的任何 frame 都算存活訊號，agent 在補送期間也持續送心跳。單一 run 的 inbox 超過 10,000 個 frame 時暫停讀取 socket，讓補送由 TCP 控制速度。見[連線中斷時](../usage/remote-workers#when-the-connection-drops)。
 
 **留在程序內的部分。** 在控制面內執行的 run 與 3.0 相同，共用一個程序與一個 CUDA context。因此它們的 `peak_memory` 項目標為 `exact: false`；worker run 的 CUDA 項目則是 `exact: true`，因為它的子程序只裝著那一個 run。
 
 ## 儲存 {/* #storage */}
 
-**目前。** worker 與伺服器在同一台機器上，兩者看到同一個檔案系統。run 子程序寫到節點要寫的位置，`artifact` frame 帶有節點的 `kind`、`path`、`meta` 與 `node_id`；控制面把這一列存進 `exec_run_artifacts`，路徑與 worker 回報的完全相同。每個 run 的主控台輸出寫到 agent 使用者資料目錄下的 `agent-runs/<run id>/output.log`，未回報就崩潰時，最後 4 KB 會一併送回。run 子程序從不開啟 SQLite。
+**每個 run。** run 子程序寫到節點要寫的位置，`artifact` frame 帶有節點的 `kind`、`path`、`meta` 與 `node_id`；控制面把這一列存進 `exec_run_artifacts`。每個 run 的主控台輸出寫到 agent 使用者資料目錄下的 `agent-runs/<run id>/output.log`，未回報就崩潰時，最後 4 KB 會一併送回。run 子程序從不開啟 SQLite。使用資料夾中檔案的 run（`core/run_needs.py`：上傳欄位、寫檔節點、會存 checkpoint 的 TrainingLoop、資料夾中的路徑）需要一台拿得到這些檔案的 worker，方式有兩種；設計參考 Kubernetes volume 與 Argo 的 artifact repository。
 
-**規劃中。** 遠端 worker 需要能找到 run 的輸入檔，並把 run 寫出的東西送回。設計參考 Kubernetes volume 與 Argo 的 artifact repository：
+**Mount**（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)、`core/mounts.py`）。worker 為共用資料夾宣告標籤（`cdui agent start --mount data=/nas/...`，以 `hello.mounts` 送出），控制面的資料夾則是標籤 `data`（`CODEFYUI_MOUNT_LABEL`）。`WorkerScheduler` 只把使用檔案的 run 放到擁有該標籤的 worker；指派會讓 run 子程序的資料夾指向 mount，run 記錄的檔案以 `backend: "mount"`、`mount_label` 與相對於 mount 的路徑儲存，讀回時轉換為控制面上的路徑。同機 worker 不必宣告就擁有該標籤：指派會把控制面的資料夾借給它，它的檔案就是一般的 `local` 資料列。
 
-- **Mount**（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）：worker 為共享檔案系統宣告標籤（`data` → `/mnt/nas/data`），控制面在自己與 worker 的路徑之間轉換，排程器只把 run 放到擁有所需標籤的 worker。`hello` 與 `GET /api/workers` 中的 `mounts` 欄位已為此保留。
-- **Transfer 後端**（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)，已在程式碼中）：沒有共享檔案系統時，由控制面擔任 artifact repository，檔案以內容定址的方式透過 HTTP 搬運。`assign.storage` 的 `backend` 為 `"transfer"`，並以 SHA-256 列出 run 用到的上傳檔（雜湊值存在 `file_hashes` 表，檔案大小或 mtime 改變時重新計算）；agent 從下載路徑取得 `agent-cache` 中沒有的檔案，給 run 一個專屬的資料夾，並在 `run_finished` 之前，以獨立的執行緒把 run 寫出的檔案上傳到 `POST /api/runs/{id}/artifacts/upload`，中斷 checkpoint 最後上傳。這些資料列為 `backend: "transfer"`：artifact 存放於 `<資料夾>/runs/<run id>/`，由 run 保留機制與刪除一併移除；writer 節點的檔案放在資料夾中相同的相對路徑，會保留下來。有掛載的 worker 優先。見[儲存：沒有共用檔案系統](../usage/remote-workers#storage-no-shared-filesystem)。
+**Transfer**（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)、`core/transfer.py`、`agent/transfer.py`）。適用於沒有該標籤的 worker，且 run 使用的檔案全部是上傳檔、總大小不超過 `CODEFYUI_TRANSFER_MAX_INPUT_BYTES`：`assign.storage` 的 `backend` 為 `"transfer"`，並以 SHA-256 列出輸入檔（存在 `file_hashes` 資料表，檔案大小或 mtime 改變時重新計算）。agent 從下載路徑以 worker token 取得 `agent-cache` 中沒有的檔案，給 run 一個自己的資料夾，並在 `run_finished` 之前，由獨立的執行緒把 run 寫出的檔案上傳到 `POST /api/runs/{id}/artifacts/upload`，中斷 checkpoint 最後上傳。這些資料列的 `backend` 為 `"transfer"`：artifact 放在 `<資料夾>/runs/<run id>/`，run 保留機制與刪除會一併移除；寫檔節點的檔案放在資料夾中的相對路徑，會保留。有 mount 的 worker 優先。
+
+面向使用者的說明，包括拒絕規則與範例，見[遠端 Worker：儲存](/usage/remote-workers#storage)。
 
 ## 安全 {/* #security */}
 
