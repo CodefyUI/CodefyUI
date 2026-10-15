@@ -85,7 +85,10 @@ device in canonical form (``canonical_queue_key(resolve_device(...))``:
 CUDA job and a CPU preprocessing run never wait on each
 other, and two CUDA jobs on one card never fight over its VRAM. Each key
 admits :data:`QueueLimits` runs at once — 1 for an accelerator, 2 for
-``cpu`` — and everything else waits in submit order.
+``cpu`` — and everything else waits in submit order. Waiting is CHEAP: a
+pending run holds a run id, its options and a wake-up channel, and nothing
+else; its graph is re-read from ``exec_runs.graph_snapshot`` at promotion,
+so a queue two hundred deep costs no more memory than the rows already do.
 
 Who may start is asked of a :class:`~app.core.scheduling.Scheduler`
 (#768): ``_pump`` hands it the front of a FIFO and the slots already taken,
@@ -93,10 +96,7 @@ and gets back a ``Placement`` (start it, holding these slots) or ``None``
 (it stays first in line). Slots are keyed by ``(worker_id, device)``;
 :class:`~app.core.scheduling.LocalScheduler`, the default, gives a run the
 one slot ``("local", queue_key)`` under the cap above, which is the #123
-rule unchanged. The FIFOs themselves stay keyed by the device string. Waiting is CHEAP: a
-pending run holds a run id, its options and a wake-up channel, and nothing
-else; its graph is re-read from ``exec_runs.graph_snapshot`` at promotion,
-so a queue two hundred deep costs no more memory than the rows already do.
+rule unchanged. The FIFOs themselves stay keyed by the device string.
 
 ``interactive`` runs BYPASS the FIFO entirely — a classroom demo must not
 sit behind a training job — and are bounded two other ways instead:
@@ -1973,8 +1973,25 @@ class RunService:
             return
         queue = self._pending.get(queue_key)
         while queue:
-            placement = self._scheduler.place(queue[0], self._slots)
+            try:
+                # Inside the guard: a scheduler that raises must not unwind
+                # ``_finalize`` or ``submit`` any more than a failed start
+                # may. The run stays first in line.
+                placement = self._scheduler.place(queue[0], self._slots)
+            except Exception:
+                logger.exception(
+                    "the scheduler failed to place run %s off the %s queue; "
+                    "it stays queued", queue[0].run_id, queue_key)
+                break
             if placement is None:
+                break
+            if not placement.slots:
+                # A placement that holds no slot would never be counted,
+                # so the loop would drain the whole FIFO uncapped.
+                logger.warning(
+                    "the scheduler placed run %s without any slot; treating "
+                    "it as a refusal, the run stays queued",
+                    queue[0].run_id)
                 break
             entry = queue.popleft()
             self._pending_by_id.pop(entry.run_id, None)
@@ -2143,11 +2160,23 @@ class RunService:
                 self._slots[slot] = remaining
             else:
                 self._slots.pop(slot, None)
-        # Every queue a freed slot can unblock: the run's own first, then
-        # the FIFO of each other device it held. A FIFO is keyed by the
-        # device string (#123), so that is what a slot maps back to.
-        for key in dict.fromkeys(
-                (active.queue_key, *(device for _worker, device in slots))):
+        self.reschedule(first=active.queue_key)
+
+    def reschedule(self, *, first: str | None = None) -> None:
+        """Offer the front of every waiting FIFO to the scheduler. SYNCHRONOUS.
+
+        For the moments capacity can appear somewhere a single queue key
+        cannot name: a run releasing several slots, and (#772) a worker
+        coming online or draining. Every non-empty FIFO is pumped, because
+        which queue a freed slot unblocks is the scheduler's knowledge, not
+        this method's; there are a handful of FIFOs (one per device), so
+        asking all of them is cheap. *first* is pumped before the rest,
+        which keeps a released run's own queue first in line.
+        """
+        keys = list(self._pending)
+        if first is not None:
+            keys = [first, *(key for key in keys if key != first)]
+        for key in keys:
             self._pump(key)
 
     # ── the run task ──────────────────────────────────────────────────────

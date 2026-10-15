@@ -76,6 +76,10 @@ class Scheduler(Protocol):
     ``taken``: ``_pump`` calls it between taking the entry's place in line
     and starting it, with no ``await`` in between, and does the accounting
     itself once the start succeeds.
+
+    A placement must name at least one slot; ``_pump`` treats an empty
+    ``slots`` (and an exception) as a refusal, since an uncounted start
+    would let the whole FIFO drain past its cap.
     """
 
     def place(self, entry: QueuedEntry,

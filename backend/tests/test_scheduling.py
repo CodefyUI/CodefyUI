@@ -3,7 +3,9 @@
 ``LocalScheduler`` must reproduce the #123 rule exactly (``test_run_queue``
 pins that end to end); this module pins the seam itself: the pump defers to
 whatever scheduler it is given, slots are keyed by ``(worker_id, device)``,
-and a placement holding several slots gives every one of them back.
+and a placement holding several slots gives every one of them back. A
+scheduler that raises, or places a run on no slot, counts as a refusal;
+``reschedule`` offers every waiting queue to the scheduler again.
 """
 
 from __future__ import annotations
@@ -277,3 +279,51 @@ async def test_releasing_a_multi_slot_placement_frees_every_slot(
     assert (await _await_terminal(store, narrow.run_id)).status == (
         STATUS_SUCCEEDED)
     assert service._slots == {}
+
+
+async def test_reschedule_starts_a_run_the_scheduler_now_accepts(
+        make_service, store):
+    """#772's hook: capacity appears without a submit or a release."""
+    scheduler = _Refusing()
+    service = make_service(scheduler=scheduler)
+    waiting = await _submit(service, "waiting", device="cuda:0")
+    assert waiting.status == STATUS_QUEUED
+
+    scheduler.refuse = False
+    service.reschedule()
+    assert not service.is_queued(waiting.run_id)
+    assert (await _await_terminal(store, waiting.run_id)).status == (
+        STATUS_SUCCEEDED)
+    assert service.queue_snapshot() == {}
+
+
+class _NoSlots:
+    def place(self, entry: QueuedEntry,
+              taken: Mapping[SlotKey, int]) -> Placement | None:
+        return Placement("local", (entry.queue_key,), ())
+
+
+async def test_a_placement_without_slots_is_a_refusal(make_service, caplog):
+    """Uncounted, it would let the pump drain the whole FIFO uncapped."""
+    service = make_service(scheduler=_NoSlots())
+    results = [await _submit(service, f"run-{i}") for i in range(3)]
+    assert [r.status for r in results] == [STATUS_QUEUED] * 3
+    assert service.queue_snapshot() == {"cpu": [r.run_id for r in results]}
+    assert service._slots == {}
+    assert "without any slot" in caplog.text
+
+
+class _Raising:
+    def place(self, entry: QueuedEntry,
+              taken: Mapping[SlotKey, int]) -> Placement | None:
+        raise RuntimeError("scheduler bug")
+
+
+async def test_a_raising_scheduler_leaves_the_run_queued(make_service, store,
+                                                         caplog):
+    service = make_service(scheduler=_Raising())
+    result = await _submit(service, "boom")   # submit does not raise
+    assert result.status == STATUS_QUEUED
+    assert service.queue_position(result.run_id) == 1
+    assert (await store.get_run(result.run_id)).status == STATUS_QUEUED
+    assert "scheduler failed to place" in caplog.text
