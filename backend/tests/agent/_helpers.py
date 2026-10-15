@@ -166,6 +166,14 @@ def quick_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
                                           "error": None, "peak_memory": None}))
 
 
+def lingering_child(spec: dict[str, Any], events_out: Any,
+                    control_in: Any) -> None:
+    """Report success, then stay alive (pipe open) until terminated."""
+    quick_child(spec, events_out, control_in)
+    while True:
+        time.sleep(0.05)
+
+
 def deaf_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     """Start a node and never stop: ignores ``cancel`` (terminate path)."""
     _running(events_out, "deaf")

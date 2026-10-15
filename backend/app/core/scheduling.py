@@ -32,6 +32,7 @@ holding one of them. Reservations are first come, first served (an
 earlier reservation also blocks a later set run), so two set runs cannot
 reserve each other into a deadlock. An ``any`` run with a set reserves
 nothing: which worker's cards it needs is not known until it is placed.
+Nor does it ever run in this process (:class:`WorkerScheduler`).
 
 Same-host workers (#773): a worker whose ``hello.machine_id`` equals this
 process's runs on this machine. Each card it shares with this process
@@ -220,9 +221,11 @@ class WorkerScheduler:
     - ``any``: the first connected, non-draining worker that can take it
       the same way, in name order, and this process last, judged the same
       way against *local_devices* (this process's devices, canonical).
-      With a device set, this process qualifies only when it has every
-      device of the set; it then executes on the set's first device, as a
-      local run with a set does.
+      With a device set, this process never qualifies: a worker's run
+      subprocess sees the set renumbered from ``cuda:0`` through
+      ``CUDA_VISIBLE_DEVICES``, so a node pinned to ``cuda:1`` means the
+      set's second card; in this process it would mean physical card 1.
+      An ``any`` set run therefore waits for a worker that offers the set.
 
     Every worker slot is ``(worker_id, device)`` capped by
     ``limits.for_slot(slot)`` (a same-host worker's is this process's slot,
@@ -302,13 +305,15 @@ class WorkerScheduler:
                       *, connected_only: bool = False) -> bool:
         """Whether this process or a worker could ever run it.
 
-        By default every worker this server has seen counts, connected or
+        This process counts only for a run without a device set (see the
+        class docstring: a set is renumbered on a worker, not here). By
+        default every worker this server has seen counts, connected or
         not (#777): a run submitted while the only worker offering its
         device is away waits for it to reconnect rather than being refused.
         *connected_only* asks about the workers connected now, which is
         what a waiting run's reason describes.
         """
-        if _serves(self._local_devices(), requested, devices):
+        if not devices and _serves(self._local_devices(), requested, None):
             return True
         return any((w.online or not connected_only)
                    and _serves(w.device_values(), requested, devices)
@@ -316,15 +321,9 @@ class WorkerScheduler:
 
     def _place_here(self, requested: str, devices: list[str] | None,
                     taken: Mapping[SlotKey, int]) -> Placement | None:
-        offered = self._local_devices()
-        if devices:
-            if not _serves(offered, requested, devices):
-                return None
-            first = canonical_device(devices[0])
-            slots = local_set_slots(first, devices)
-            if _all_free(self._limits, slots, taken):
-                return Placement(LOCAL_WORKER_ID, (first,), slots)
+        if devices:  # renumbered only on a worker; see the class docstring
             return None
+        offered = self._local_devices()
         for device in candidate_devices(offered, requested):
             slot: SlotKey = (LOCAL_WORKER_ID, device)
             if _free(self._limits, slot, taken):

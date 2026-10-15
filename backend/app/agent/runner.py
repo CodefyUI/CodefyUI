@@ -20,7 +20,10 @@
    thread waits for each frame to be handed to the connection before it
    reads the next message, so a slow control plane slows the child's pipe
    writes instead of growing a buffer here;
-4. reports how the run ended. The child says so itself (``finished``);
+4. reports how the run ended, once the child process has exited (one that
+   lingers after reporting is terminated, then killed), so the control
+   plane never frees the device slot while the old process still holds
+   it. The child says so itself (``finished``);
    a child that exits without saying is a crash (``failed``, with the exit
    code and the tail of its output) or, after a ``cancel`` it did not
    honour within ``grace_s``, a run this agent terminated
@@ -300,6 +303,7 @@ class Runner:
         send: Send | None = None, keep_last: int = 200,
         default_grace_s: float = wp.DEFAULT_GRACE_S,
         kill_after_s: float = KILL_AFTER_S,
+        exit_after_finished_s: float = EXIT_AFTER_FINISHED_S,
         child_entry: Callable[..., None] = child_module.main,
     ) -> None:
         self.runs_dir = runs_dir
@@ -308,6 +312,7 @@ class Runner:
         self.keep_last = keep_last
         self.default_grace_s = default_grace_s
         self.kill_after_s = kill_after_s
+        self.exit_after_finished_s = exit_after_finished_s
         self.child_entry = child_entry
         self.draining = False
         #: Grace a run gets when the agent itself stops (``cdui agent stop``).
@@ -557,7 +562,12 @@ class Runner:
         return None
 
     def _read(self, handle: RunHandle, loop: asyncio.AbstractEventLoop) -> None:
-        """Thread body: forward the child's messages, then report its end."""
+        """Thread body: forward the child's messages, then report its end.
+
+        ``run_finished`` goes out only once the child process is gone,
+        whether it said how the run ended or not.
+        """
+        reported: wp.RunFinished | None = None
         while True:
             try:
                 message = handle.events_in.recv()
@@ -578,18 +588,20 @@ class Runner:
             if frame is None:
                 continue
             if isinstance(frame, wp.RunFinished):
+                # Held until the child has exited: the control plane frees
+                # the run's device slot on run_finished, and the next run
+                # must not start next to this one's CUDA context.
                 handle.finished = True
+                reported = frame
+                break
             self._forward(loop, frame)
-        handle.process.join(EXIT_AFTER_FINISHED_S if handle.finished else None)
-        if handle.process.is_alive():
-            logger.warning("run %s: subprocess still alive %.0f s after "
-                           "reporting; killing it", handle.run_id,
-                           EXIT_AFTER_FINISHED_S)
-            handle.process.kill()
+        if reported is not None:
+            self._await_exit(handle)
+        else:
             handle.process.join()
-        if not handle.finished:
             handle.finished = True
-            self._forward(loop, self._unreported_end(handle))
+            reported = self._unreported_end(handle)
+        self._forward(loop, reported)
         for end in (handle.events_in, handle.control_out):
             try:
                 end.close()
@@ -601,6 +613,27 @@ class Runner:
             loop.call_soon_threadsafe(self._retire, handle)
         except RuntimeError:  # the agent's loop is gone: nobody to retire for
             pass
+
+    def _await_exit(self, handle: RunHandle) -> None:
+        """Wait for a child that reported its outcome to exit. Blocking.
+
+        ``exit_after_finished_s`` for it to leave on its own, then
+        ``terminate()``, then ``kill()`` after ``kill_after_s``.
+        """
+        process = handle.process
+        process.join(self.exit_after_finished_s)
+        if not process.is_alive():
+            return
+        logger.warning("run %s: subprocess still alive %.0f s after "
+                       "reporting; terminating it", handle.run_id,
+                       self.exit_after_finished_s)
+        process.terminate()
+        process.join(self.kill_after_s)
+        if process.is_alive():
+            logger.warning("run %s survived terminate(); killing",
+                           handle.run_id)
+            process.kill()
+            process.join()
 
     def _unreported_end(self, handle: RunHandle) -> wp.RunFinished:
         """``run_finished`` for a child that exited without saying how.

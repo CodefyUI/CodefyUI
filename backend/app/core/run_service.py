@@ -116,7 +116,8 @@ seen since it started and offer the device at submit (else
 the interactive lane are refused (the canvas always executes here).
 :class:`~app.core.scheduling.WorkerScheduler` places it on
 ``(worker, device)`` slots, capped per device like a local slot; ``any``
-tries the connected workers in name order and this process last. The
+tries the connected workers in name order and this process last (a run
+with a device set: the workers only). The
 placement decides the executor (``WorkerExecutor`` for a worker,
 ``InProcessExecutor`` here), the context device (the placement's first
 device), and what the row records once the run starts: ``queue_key``
@@ -184,6 +185,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import itertools
 import json
 import logging
 import time
@@ -261,9 +263,6 @@ from .run_events import scalar_metrics as scalar_metrics
 # The payload cap moved to ``run_events`` by #771 (the worker subprocess
 # applies it too); re-exported under the names this module published.
 from .run_events import TRUNCATION_MARKER as TRUNCATION_MARKER
-from .run_events import _elide_entry as _elide_entry
-from .run_events import _fit_prefix as _fit_prefix
-from .run_events import _truncate_strings as _truncate_strings
 from .run_events import cap_event_payload as cap_event_payload
 from .run_events import json_size as json_size
 from .run_output_store import RunOutputStore
@@ -460,11 +459,6 @@ def _local_device_values() -> list[str]:
         if key not in values:
             values.append(key)
     return values
-
-
-def _on_worker(active: Any) -> bool:
-    """Whether *active* was placed on a worker agent rather than here."""
-    return on_a_worker(getattr(active, "placement", None))
 
 
 def canonical_queue_key(device: str) -> str:
@@ -702,8 +696,8 @@ class InteractiveSession:
     node_state_store: NodeStateStore | None = None
 
 
-#: The one worker a run can target today: this control-plane process. The
-#: same string ``run_store`` writes for a run with no target.
+#: The worker that is this control-plane process: what a run without a
+#: target runs on, and the string ``run_store`` writes for one.
 TARGET_WORKER_LOCAL = WORKER_LOCAL
 #: "Place it wherever there is room": the connected workers first, then
 #: this process (#772).
@@ -791,9 +785,10 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     known here: :meth:`RunService.submit` checks it against the worker
     registry (#772).
 
-    ``devices`` absent (or null) means the run's ``device`` option as
-    today. Given, it is a non-empty list of concrete devices in canonical
-    form (see :func:`_concrete_device`), with no duplicates after
+    ``devices`` absent (or null) means the run's single ``device``
+    option, as before #769. Given, it is a non-empty list of concrete
+    devices in canonical form (see :func:`_concrete_device`), with no
+    duplicates after
     canonicalising and one kind (``cuda:0`` with ``cpu`` is not a device
     set).
 
@@ -802,7 +797,9 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     entry is the queue and the device the run executes on, and the run
     holds a slot on every device of the set (#773). On a worker (#772) the
     run holds a slot for every device in the set and its subprocess sees
-    all of them (#774).
+    all of them (#774), renumbered from ``cuda:0`` in the set's order.
+    An ``any`` run with a set is therefore placed on a worker only, never
+    in this process (``WorkerScheduler``).
     """
     if raw is None:
         return None
@@ -1408,6 +1405,9 @@ class _QueuedRun:
     options: dict[str, Any]
     signal: _Broadcast
     subscribers: set[RunSubscription] = field(default_factory=set)
+    #: Submit order across EVERY queue (``RunService._submit_seq``):
+    #: ``reschedule`` offers a freed slot to the oldest front first.
+    seq: int = 0
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails.
@@ -1568,6 +1568,11 @@ class RunService:
         # only places that touch both, so they cannot drift.
         self._pending: dict[str, deque[_QueuedRun]] = {}
         self._pending_by_id: dict[str, _QueuedRun] = {}
+        # One monotonic submit counter for every queue: several FIFOs can
+        # share one slot (``cuda:0``, ``any/cuda`` and a same-host worker's
+        # ``<worker>/cuda:0``), and ``reschedule`` serves their fronts in
+        # this order so no queue starves the others.
+        self._submit_seq = itertools.count(1)
         # Runs holding each ``(worker_id, device)`` slot (#768). NOT derived
         # from ``_runs`` on demand: counting a dict by predicate on every
         # promotion is both slower and easier to get subtly wrong than
@@ -1892,7 +1897,8 @@ class RunService:
         # a run overtaking a queue that filled between the check and the
         # start.
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
-                           options=normalized_options, signal=_Broadcast())
+                           options=normalized_options, signal=_Broadcast(),
+                           seq=next(self._submit_seq))
         self._enqueue(entry)
         self._pump(queue_key)
         return SubmitResult(
@@ -1968,7 +1974,9 @@ class RunService:
         it to reconnect, #777), and must offer every device of the set (or
         the requested device, or one of the requested kind) as it last
         reported them; ``any`` likewise needs this server or a worker it
-        has seen to offer the device. The run must be one a worker can do
+        has seen to offer the device (a device set: a worker it has seen,
+        since this server never takes an ``any`` set run, see
+        ``WorkerScheduler``). The run must be one a worker can do
         in this wave (no ``record_outputs``, not the interactive lane).
         Only an unknown worker name, a device nobody offers, or one of
         those two options is refused, so a worker disconnecting halfway
@@ -1985,10 +1993,14 @@ class RunService:
         if worker_id == TARGET_WORKER_ANY:
             can_serve = getattr(self._scheduler, "can_serve_any", None)
             if can_serve is not None and not can_serve(requested, devices):
-                wanted = ", ".join(devices) if devices else requested
+                if devices:
+                    raise RunSubmitError(
+                        f"no known worker offers the device set "
+                        f"{', '.join(devices)} (target 'any' runs a device "
+                        f"set on a worker only, never on this server)")
                 raise RunSubmitError(
                     f"neither this server nor a known worker offers "
-                    f"{wanted}")
+                    f"{requested}")
             return f"{TARGET_WORKER_ANY}{WORKER_QUEUE_SEPARATOR}{requested}"
         worker = None if self._workers is None else self._workers.get(worker_id)
         if worker is None:
@@ -2122,6 +2134,7 @@ class RunService:
         if entry is None:
             return None
         queue = self._pending.get(entry.queue_key)
+        was_front = bool(queue) and queue[0] is entry
         if queue is not None:
             try:
                 queue.remove(entry)
@@ -2129,8 +2142,13 @@ class RunService:
                 pass
             if not queue:
                 self._pending.pop(entry.queue_key, None)
-        if self._reservations.pop(run_id, None) is not None:
-            # Cards it kept other runs off are open to them again.
+        reserved = self._reservations.pop(run_id, None) is not None
+        if was_front or reserved:
+            # The run behind it is the new front, and nothing else would
+            # offer it to the scheduler: a front that was waiting for a
+            # worker, or whose placement raised, holds no slot whose
+            # release would pump its queue. Cards it reserved are open
+            # to every other run again too.
             self.reschedule()
         return entry
 
@@ -2178,10 +2196,12 @@ class RunService:
         entry only, and a ``None`` stops the pump, so nothing overtakes a
         run that cannot start yet.
 
-        Called on submit and again whenever a run of this key ends, so there
-        is no scheduler task, no polling interval, and nothing to drain at
-        shutdown. Being synchronous is what makes it safe to call from
-        ``_drive``'s ``finally``: the slot is released and the next run
+        Called on submit; a run ending, a waiting run leaving the front of
+        its line and a worker changing go through :meth:`reschedule`, which
+        asks every queue. So there is no scheduler task, no polling
+        interval, and nothing to drain at shutdown. Being synchronous is
+        what makes it safe to call from ``_drive``'s ``finally``: the slot
+        is released and the next run
         registered without an await in between, so no third party can slip
         into a slot that has already been promised.
 
@@ -2190,63 +2210,76 @@ class RunService:
         promoting one into a task nobody drains is the exact failure
         ``_start``'s own re-check exists to prevent.
         """
+        while self._pump_one(queue_key):
+            pass
+
+    def _pump_one(self, queue_key: str) -> bool:
+        """Start the front of *queue_key* if the scheduler places it.
+
+        True when a run started (the queue may move again), False when the
+        front stays where it is or the queue is empty. ``_pump``'s body,
+        one entry at a time, so :meth:`reschedule` can interleave queues.
+        """
         if self._shutting_down:
-            return
+            return False
         queue = self._pending.get(queue_key)
-        while queue:
-            try:
-                # Inside the guard: a scheduler that raises must not unwind
-                # ``_finalize`` or ``submit`` any more than a failed start
-                # may. The run stays first in line.
-                placement = self._scheduler.place(
-                    queue[0], self._admission_view(queue[0].run_id))
-            except Exception:
-                logger.exception(
-                    "the scheduler failed to place run %s off the %s queue; "
-                    "it stays queued", queue[0].run_id, queue_key)
-                break
-            if placement is None:
-                self._reserve(queue[0])
-                break
-            if not placement.slots:
-                # A placement that holds no slot would never be counted,
-                # so the loop would drain the whole FIFO uncapped.
-                logger.warning(
-                    "the scheduler placed run %s without any slot; treating "
-                    "it as a refusal, the run stays queued",
-                    queue[0].run_id)
-                break
-            entry = queue.popleft()
-            self._pending_by_id.pop(entry.run_id, None)
-            self._reservations.pop(entry.run_id, None)
-            try:
-                # The graph is NOT passed: ``_drive`` re-reads it from the
-                # row. The signal and the subscriber set ARE — same objects,
-                # so a client that parked on the queued run keeps both its
-                # generation and its live feed across the promotion.
-                self._start(entry.run_id, None, entry.options,
-                            queue_key=queue_key, lane=entry.options.get(
-                                "lane", DEFAULT_LANE),
-                            placement=placement,
-                            signal=entry.signal, subscribers=entry.subscribers)
-            except Exception:
-                # Two things must not happen here, and both did before this
-                # guard. The entry must not be LOST — it has already left
-                # both indexes — so it goes back at the FRONT, keeping its
-                # place in line for the next pump. And the exception must
-                # not escape: this method is called from ``_finalize``,
-                # inside the PREVIOUS run's task and before that run's
-                # terminal event and row write, so letting it through would
-                # make one run's failed promotion silently strand another
-                # run's outcome.
-                logger.exception(
-                    "run %s could not be started off the %s queue; it stays "
-                    "queued", entry.run_id, queue_key)
-                queue.appendleft(entry)
-                self._pending_by_id[entry.run_id] = entry
-                break
         if not queue:
             self._pending.pop(queue_key, None)
+            return False
+        front = queue[0]
+        try:
+            # Inside the guard: a scheduler that raises must not unwind
+            # ``_finalize`` or ``submit`` any more than a failed start
+            # may. The run stays first in line.
+            placement = self._scheduler.place(
+                front, self._admission_view(front.run_id))
+        except Exception:
+            logger.exception(
+                "the scheduler failed to place run %s off the %s queue; "
+                "it stays queued", front.run_id, queue_key)
+            return False
+        if placement is None:
+            self._reserve(front)
+            return False
+        if not placement.slots:
+            # A placement that holds no slot would never be counted,
+            # so the loop would drain the whole FIFO uncapped.
+            logger.warning(
+                "the scheduler placed run %s without any slot; treating "
+                "it as a refusal, the run stays queued", front.run_id)
+            return False
+        entry = queue.popleft()
+        if not queue:
+            self._pending.pop(queue_key, None)
+        self._pending_by_id.pop(entry.run_id, None)
+        self._reservations.pop(entry.run_id, None)
+        try:
+            # The graph is NOT passed: ``_drive`` re-reads it from the
+            # row. The signal and the subscriber set ARE — same objects,
+            # so a client that parked on the queued run keeps both its
+            # generation and its live feed across the promotion.
+            self._start(entry.run_id, None, entry.options,
+                        queue_key=queue_key, lane=entry.options.get(
+                            "lane", DEFAULT_LANE),
+                        placement=placement,
+                        signal=entry.signal, subscribers=entry.subscribers)
+        except Exception:
+            # Two things must not happen here, and both did before this
+            # guard. The entry must not be LOST — it has already left
+            # both indexes — so it goes back at the FRONT, keeping its
+            # place in line for the next pump. And the exception must
+            # not escape: this method is called from ``_finalize``,
+            # inside the PREVIOUS run's task and before that run's
+            # terminal event and row write, so letting it through would
+            # make one run's failed promotion silently strand another
+            # run's outcome.
+            logger.exception(
+                "run %s could not be started off the %s queue; it stays "
+                "queued", entry.run_id, queue_key)
+            self._pending.setdefault(queue_key, deque()).appendleft(entry)
+            self._pending_by_id[entry.run_id] = entry
+            return False
+        return True
 
     def _start(
         self, run_id: str, graph: dict[str, Any] | None,
@@ -2394,24 +2427,36 @@ class RunService:
                 self._slots[slot] = remaining
             else:
                 self._slots.pop(slot, None)
-        self.reschedule(first=active.queue_key)
+        self.reschedule()
 
-    def reschedule(self, *, first: str | None = None) -> None:
+    def reschedule(self) -> None:
         """Offer the front of every waiting FIFO to the scheduler. SYNCHRONOUS.
 
         For the moments capacity can appear somewhere a single queue key
-        cannot name: a run releasing several slots, and (#772) a worker
-        coming online or draining. Every non-empty FIFO is pumped, because
-        which queue a freed slot unblocks is the scheduler's knowledge, not
-        this method's; there are a handful of FIFOs (one per device), so
-        asking all of them is cheap. *first* is pumped before the rest,
-        which keeps a released run's own queue first in line.
+        cannot name: a run releasing its slots, a waiting run leaving the
+        front of its line, and (#772) a worker coming online or draining.
+        Every non-empty FIFO is asked, because which queue a freed slot
+        unblocks is the scheduler's knowledge, not this method's; there are
+        a handful of FIFOs, so asking all of them is cheap.
+
+        One run at a time, oldest front first (by submit order across all
+        queues, ``_QueuedRun.seq``): several FIFOs can share one slot
+        (``cuda:0``, ``any/cuda`` and a same-host worker's
+        ``<worker>/cuda:0`` all take ``("local", "cuda:0")``), and serving
+        the releasing run's own queue first would let one long line keep
+        the slot forever. A queue whose front is refused is not asked
+        again in this pass, so strict FIFO per queue still holds.
         """
-        keys = list(self._pending)
-        if first is not None:
-            keys = [first, *(key for key in keys if key != first)]
-        for key in keys:
-            self._pump(key)
+        blocked: set[str] = set()
+        while True:
+            fronts = [(queue[0].seq, key)
+                      for key, queue in self._pending.items()
+                      if queue and key not in blocked]
+            if not fronts:
+                return
+            _, key = min(fronts)
+            if not self._pump_one(key):
+                blocked.add(key)
 
     # ── the run task ──────────────────────────────────────────────────────
 
@@ -2456,7 +2501,7 @@ class RunService:
             # emitting nothing — the status stays true while it waits.
             # A worker run executes in a subprocess with RNGs of its own, so
             # it neither waits for nor holds this process's seed gate.
-            gate = (contextlib.nullcontext() if _on_worker(active)
+            gate = (contextlib.nullcontext() if on_a_worker(active.placement)
                     else run_exclusion().for_seed(options.get("seed")))
             async with gate:
                 if not await self._begin(active, graph, options):
@@ -2539,7 +2584,7 @@ class RunService:
         never fails the run; a failure is logged and leaves the columns
         NULL, which reads as "not recorded" rather than as a wrong answer.
         """
-        on_worker = _on_worker(active)
+        on_worker = on_a_worker(active.placement)
         if on_worker:
             # This process's environment is not the one executing the run:
             # no fingerprint (the worker's is #781's; NULL reads as "not
@@ -2605,7 +2650,7 @@ class RunService:
         asked rather than a user.
         """
         executor = (self._worker_executor
-                    if _on_worker(active) and self._worker_executor is not None
+                    if on_a_worker(active.placement) and self._worker_executor is not None
                     else self._executor)
         try:
             outcome = await executor.run(ExecutionRequest(

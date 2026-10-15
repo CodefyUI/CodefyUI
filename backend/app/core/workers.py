@@ -353,6 +353,9 @@ class WorkerRegistry:
         if frame.devices != worker.devices:
             worker.devices = list(frame.devices)
             worker.shared = self._shared_devices(worker)
+            # A device appearing (or a card changing its slot) is capacity
+            # a waiting run may now take.
+            self._changed()
         if worker.status == STATUS_DEGRADED:
             worker.status = STATUS_ONLINE
             logger.info("worker %s is back on time", worker.name)

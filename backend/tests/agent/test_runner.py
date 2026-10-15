@@ -207,6 +207,48 @@ async def test_crash_is_reported_with_exit_code_and_agent_keeps_serving(
     assert after.status == "succeeded"
 
 
+async def test_run_finished_waits_for_a_lingering_child_to_exit(tmp_path):
+    """The slot is freed on run_finished, so the child must be gone first."""
+    alive_at_finish: list[bool] = []
+    sink = h.FrameSink()
+
+    async def send(frame):
+        if isinstance(frame, wp.RunFinished):
+            alive_at_finish.append(runner.runs[frame.run_id].process.is_alive())
+        await sink(frame)
+
+    runner = Runner(runs_dir=tmp_path / "agent-runs", send=send,
+                    offered_devices={"cpu"}, child_entry=h.lingering_child,
+                    exit_after_finished_s=0.5, kill_after_s=2.0)
+    started = time.monotonic()
+    await runner.assign(_assign("linger1"))
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=30)
+    assert alive_at_finish == [False]
+    assert time.monotonic() - started >= 0.5
+    # The report is the child's own, unchanged by the forced exit.
+    assert finished.status == "succeeded" and finished.error is None
+    assert finished.exit_code is None and finished.stderr_tail is None
+    assert [f.seq for f in sink.of("linger1")] == [1, 2]
+
+
+async def test_run_finished_follows_a_clean_exit(tmp_path):
+    alive_at_finish: list[bool] = []
+    sink = h.FrameSink()
+
+    async def send(frame):
+        if isinstance(frame, wp.RunFinished):
+            alive_at_finish.append(runner.runs[frame.run_id].process.is_alive())
+        await sink(frame)
+
+    runner = Runner(runs_dir=tmp_path / "agent-runs", send=send,
+                    offered_devices={"cpu"}, child_entry=h.quick_child)
+    await runner.assign(_assign("q1"))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert finished.status == "succeeded"
+    assert alive_at_finish == [False]
+
+
 async def test_cancel_is_cooperative_within_grace(tmp_path):
     """Acceptance: cancel ends a long node well inside grace_s + 5 s."""
     sink = h.FrameSink()

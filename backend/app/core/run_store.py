@@ -344,15 +344,16 @@ class RunRecord:
     #: ``sweep_id``.
     study_id: str | None = None
     study_attempt_id: str | None = None
-    #: Where the run executes (#769). ``local`` -- this control-plane
-    #: process -- is the only worker today; a row written before
-    #: MIGRATION_008 has NULL and reads back as ``local``, which is where it
-    #: ran.
+    #: Where the run executes (#769): ``local`` (this control-plane
+    #: process), a worker's name, or ``any`` while such a run waits to be
+    #: placed (``mark_running`` then records the worker it got, #772). A
+    #: row written before MIGRATION_008 has NULL and reads back as
+    #: ``local``, which is where it ran.
     worker_id: str = WORKER_LOCAL
-    #: The REQUESTED device set (``options.target.devices``), or None when
-    #: the run named one ``device`` as every run before #769 did. In this
-    #: release only the first entry is used -- it is the run's device and
-    #: so its ``queue_key``; the rest is recorded as asked and not checked.
+    #: The device set (``options.target.devices`` as asked, replaced by the
+    #: devices a worker run was placed on), or None when the run named one
+    #: ``device`` as every run before #769 did. The first entry is the run's
+    #: device and so its ``queue_key``; the run holds a slot on every entry.
     devices: list[str] | None = None
 
     @classmethod
@@ -583,9 +584,10 @@ class RunStore:
         study attempt (#343); the ``studies`` row must exist (enforced FK).
 
         *worker_id* / *devices* record where the run executes (#769): the
-        worker (a non-empty string; ``local`` is the only one today) and
-        the REQUESTED ``target.devices`` list, or None for a run that named
-        a single ``device``. Only the first device is used in this release.
+        target worker as submitted (a non-empty string: ``local``, a
+        worker's name, or ``any``) and the REQUESTED ``target.devices``
+        list, or None for a run that named a single ``device``.
+        ``mark_running`` replaces both with the placement of a worker run.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
