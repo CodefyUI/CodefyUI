@@ -105,11 +105,22 @@ export async function fetchHealth(): Promise<HealthInfo> {
   };
 }
 
+/** Memory facts for one device (#767); display only. `null` byte counts
+ * mean the probe could not say. */
+export interface DeviceMemory {
+  total_bytes: number | null;
+  free_bytes: number | null;
+  /** `nvml`, `torch.cuda`, `torch.mps` or `psutil`. */
+  source: string;
+}
+
 export interface DeviceInfo {
   value: string;
   label: string;
   detail: string;
   available: boolean;
+  /** Absent from older servers; `null` when no probe answered. */
+  memory?: DeviceMemory | null;
 }
 
 export interface DevicesResponse {

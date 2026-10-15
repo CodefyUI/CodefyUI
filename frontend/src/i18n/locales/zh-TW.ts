@@ -750,6 +750,7 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.device.hint': '最佳可用裝置：{device}',
   'settings.device.unavailable': '{device}（此伺服器沒有）',
   'toolbar.device.followFallback': '跟隨設定（{device} → CPU）',
+  'toolbar.device.memory': '可用 {free} / {total} GiB',
   'settings.device.fallback': '這台伺服器沒有 {device}，執行時會退回 CPU。',
   'settings.device.gpuIdle': '偵測到 {gpu}，但這台伺服器跑的是 CPU 版。安裝：',
 

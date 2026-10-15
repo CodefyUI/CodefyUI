@@ -856,6 +856,7 @@ const en = {
   // part that carries the news. This says where the run lands instead; the
   // Settings row is where the sentence lives.
   'toolbar.device.followFallback': 'Follow Settings ({device} → CPU)',
+  'toolbar.device.memory': '{free} / {total} GiB free',
   // Replaces the hint above in that state rather than joining it: naming CPU
   // as the best device and as the fallback is one fact printed twice.
   'settings.device.fallback': 'No {device} on this server. Runs fall back to CPU.',

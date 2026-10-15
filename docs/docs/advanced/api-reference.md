@@ -28,7 +28,7 @@ The Host guard runs before all other checks on every request, including the SPA 
 |----------|--------|------|-------------|
 | `/api/health` | GET | open | Health probe with `status`, `version`, `boot_id` (a process identifier that lets clients detect a server restart), `nodes_loaded`, `presets_loaded`, `caches` (current bytes in each in-memory store and its budget; see [Training Memory](./training-memory)), and `project` (the absolute project directory) when the server runs with `--project`. |
 | `/api/auth/bootstrap` | GET | open | `{"token": "..."}` for any allowed-Host request — how the frontend gets the session token. |
-| `/api/system/devices` | GET | open | Compute devices for graph execution: the best-available `default` plus a labelled `devices` list that tells NVIDIA CUDA, AMD ROCm and Apple MPS apart. Backs the editor's device selector. |
+| `/api/system/devices` | GET | open | Compute devices for graph execution: the best-available `default` plus a labelled `devices` list that tells NVIDIA CUDA, AMD ROCm and Apple MPS apart. Each device also carries `memory`: `{total_bytes, free_bytes, source}` read at request time (`source` is `nvml`, `torch.cuda`, `torch.mps` or `psutil`), or `null` when nothing could read it. NVIDIA cards are read through NVML when the optional `nvml` extra (`nvidia-ml-py`) is installed. Backs the editor's device selector, which shows free / total GiB for accelerators. |
 | `/api/system/fingerprint` | GET | open | This server's environment fingerprint and its digest: `{fingerprint, digest}`. See [Run environment](#run-environment). |
 | `/api/system/fingerprints/{digest}` | GET | open | A fingerprint some run recorded, by its digest; 404 when no run recorded it. Keeps resolving after the runs are deleted. |
 

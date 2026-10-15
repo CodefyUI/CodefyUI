@@ -136,6 +136,12 @@ dev = [
 llm-sentence = [
     "sentence-transformers>=3.0,<6",
 ]
+# Per-card CUDA memory without importing torch (#767): `core/resources.py`
+# asks NVML first and falls back to torch when this is absent. Also read by
+# `core/env_fingerprint.py` for the driver version.
+nvml = [
+    "nvidia-ml-py>=12.535",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

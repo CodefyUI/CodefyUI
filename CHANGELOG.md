@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **The device dropdowns show each accelerator's free and total memory** ([#767]). `GET /api/system/devices` adds `"memory": {"total_bytes", "free_bytes", "source"}` (or `null`) to every device, read by the new `core/resources.probe_devices()`: NVML for NVIDIA cards, then `torch.cuda.mem_get_info`, `torch.mps` for Apple MPS, and `psutil` for CPU. The Settings and toolbar device selects append `free / total GiB` to accelerators. Display only; nothing admits or refuses a run by it. NVML comes from the new optional `nvml` extra (`nvidia-ml-py`); without it CUDA memory is read through torch. `probe_devices(allow_torch=False)` never imports torch, for the worker agent.
+
 ## [3.0.2] — 2026-10-14
 
 Fixes the package upgrade 3.0.1 introduced for `cdui plugin sync`: an
@@ -6164,3 +6168,4 @@ Release candidates before 1.0.0 are on the
 [#757]: https://github.com/CodefyUI/CodefyUI/pull/757
 [#760]: https://github.com/CodefyUI/CodefyUI/pull/760
 [#762]: https://github.com/CodefyUI/CodefyUI/pull/762
+[#767]: https://github.com/CodefyUI/CodefyUI/issues/767

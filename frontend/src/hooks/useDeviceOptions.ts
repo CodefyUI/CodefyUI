@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import { fetchDevices, type DeviceInfo } from '../api/rest';
+import { useI18n } from '../i18n';
 
 export interface DeviceOptions {
   devices: DeviceInfo[];
@@ -39,15 +40,38 @@ function loadDeviceOptions(): Promise<DeviceOptions> {
   return _pending;
 }
 
-/** The option label a dropdown shows for one device. */
+const GIB = 1024 ** 3;
+
+/**
+ * "10.2 / 16.0 GiB free" for an accelerator whose memory the server could
+ * read (#767), else null. CPU is left out: system RAM is not what decides
+ * whether a model fits on the device, and every dropdown lists CPU.
+ * The figure is a snapshot from the page's one fetch; display only.
+ */
+function memoryText(d: DeviceInfo): string | null {
+  const m = d.memory;
+  if (d.value === 'cpu' || !m || m.total_bytes == null || m.free_bytes == null) return null;
+  return useI18n.getState().t('toolbar.device.memory', {
+    free: (m.free_bytes / GIB).toFixed(1),
+    total: (m.total_bytes / GIB).toFixed(1),
+  });
+}
+
 /**
  * Option text for a device. A single-device backend shows its label only
  * ("Apple MPS"); a per-card entry (cuda:1) adds the id and the card name so
- * two cards of one vendor stay distinguishable.
+ * two cards of one vendor stay distinguishable. An accelerator with memory
+ * facts ends with free / total GiB.
  */
 export function deviceLabel(d: DeviceInfo): string {
-  if (!d.value.includes(':')) return d.label;
-  return d.detail ? `${d.label} · ${d.value} · ${d.detail}` : `${d.label} · ${d.value}`;
+  const parts = [d.label];
+  if (d.value.includes(':')) {
+    parts.push(d.value);
+    if (d.detail) parts.push(d.detail);
+  }
+  const memory = memoryText(d);
+  if (memory) parts.push(memory);
+  return parts.join(' · ');
 }
 
 /**
