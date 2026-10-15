@@ -32,7 +32,7 @@ The caret next to **Run** in the toolbar opens a menu whose **Queue on...** item
 
 ## Start a worker on this machine {/* #start-a-same-host-worker */}
 
-A worker agent executes each run it is given in a subprocess of its own, so a crash or an out-of-memory kill ends that run and leaves the server and the other runs alone. In this release the agent runs on the same machine as the server.
+A worker agent executes each run it is given in a subprocess of its own, so a crash or an out-of-memory kill ends that run and leaves the server and the other runs alone. This section starts one on the same machine as the server; for a GPU server elsewhere, see [Remote Workers](/usage/remote-workers#adding-a-worker).
 
 ```bash
 cdui start                 # the server, if it is not running yet
@@ -94,7 +94,7 @@ Open it with **Workers** in the Runs panel header, or from **Settings → Execut
 - each device with its free and total memory from the latest heartbeat and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
 
-**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** shows the same-host command above with its options.
+**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options. **Re-key** gives a worker a new credential, and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)).
 
 ## What the canvas does {/* #the-canvas */}
 
@@ -108,7 +108,7 @@ When a run finishes, its detail header shows **Peak memory** for CUDA (the alloc
 
 - **One run does not train across cards.** A device set makes several cards visible to one run, and nodes can be pinned to them by in-run name, but there is no `DistributedDataParallel` strategy yet ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
 - **No memory admission.** Runs are admitted by count per slot; a run is not refused because a card lacks memory, and an over-full card fails with an out-of-memory error ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)). See [Training Memory](/advanced/training-memory).
-- **Same machine only.** Remote GPU servers need enrollment ([#780](https://github.com/CodefyUI/CodefyUI/issues/780)).
+- **Plain HTTP between machines.** A remote worker enrolls and connects over whatever the control plane serves; without a TLS proxy its token and run inputs cross the network unencrypted. Fingerprint pinning is [#786](https://github.com/CodefyUI/CodefyUI/issues/786).
 - **No captured outputs on a worker** (`record_outputs`, [#789](https://github.com/CodefyUI/CodefyUI/issues/789)), and no persistent weights: every worker run starts fresh.
 - **A disconnect ends the run.** If the agent stops or loses its connection, its runs end `interrupted` ([#783](https://github.com/CodefyUI/CodefyUI/issues/783) adds resume).
 

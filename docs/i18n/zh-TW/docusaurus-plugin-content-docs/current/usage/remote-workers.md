@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3.6
+sidebar_position: 3.7
 title: 遠端 Worker
 description: 在另一台機器上執行圖：用 Workers 面板產生的一次性 token，把 GPU 伺服器加入為 worker agent。
 ---

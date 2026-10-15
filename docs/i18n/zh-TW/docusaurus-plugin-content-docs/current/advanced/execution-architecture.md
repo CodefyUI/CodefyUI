@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在**同一台機器**上的 worker agent、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：enrollment token 與遠端 worker（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)），以及控制面指紋釘選（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。以下各節會註明哪些部分仍在規劃中。
+目前程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框與 Runs 面板的 Worker、Devices 欄。已規劃但尚未進入程式碼：握手時檢查版本與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）與 transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、讓 run 撐過斷線的 spool（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)），以及控制面指紋釘選（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。以下各節會註明哪些部分仍在規劃中。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -86,7 +86,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **裝置集合。** 帶裝置集合的 run 需要集合中每個裝置各一個 slot：全部都有空位才開始，一次全部占用、一次全部釋放。它在 FIFO 最前面等待時，所需的 slot 會被保留，所以其中一張卡上持續的流量無法讓它餓死。保留依先來先到，因此兩個集合 run 不會互相保留而死結。`any` 的集合 run 不保留任何 slot，因為放置之前不知道會在哪台機器。在伺服器本身，集合 run 占用集合中每個 slot，並在第一個裝置上執行；在 worker 上，它的子程序看得到集合中的每個裝置。
 
-**同機共用。** `hello.machine_id` 與伺服器自己相同的 worker（`/etc/machine-id`、macOS 硬體 UUID 或 Windows machine GUID 的 SHA-256 摘要）就在同一台機器上。它的 CPU、`mps:0`，以及 NVML UUID 與伺服器某張卡相符的每張 CUDA 卡，都會對應到伺服器那張卡的 slot，受伺服器的上限約束。因此在上限為 1 時，本機 run 與 worker run 不可能同時拿到同一張實體卡。這無法由對端位址判斷：`ssh -R` 通道會讓遠端 agent 看起來像 loopback。
+**同機共用。** 從 loopback 連入、且 `hello.machine_id` 與伺服器自己相同的 worker（`/etc/machine-id`、macOS 硬體 UUID 或 Windows machine GUID 的 SHA-256 摘要）就在同一台機器上。它的 CPU、`mps:0`，以及 NVML UUID 與伺服器某張卡相符的每張 CUDA 卡，都會對應到伺服器那張卡的 slot，受伺服器的上限約束。因此在上限為 1 時，本機 run 與 worker run 不可能同時拿到同一張實體卡。兩者缺一不可：`ssh -R` 通道會讓遠端 agent 看起來像 loopback，而 machine id 是 agent 自己回報的。
 
 **`target` 選項**（[#769](https://github.com/CodefyUI/CodefyUI/issues/769)）是 `{"worker": "local" | "any" | <名稱>, "devices": [...]}`，兩個鍵都可省略。`worker` 是符合 `[a-z0-9][a-z0-9-]{0,62}` 的名稱；`local` 與 `any` 為保留字。`devices` 列出同一種類、不重複的具體裝置（`cpu`、`cuda:N`、`mps:N`），第一項成為 run 的 `device`。排程器這樣放置：
 
@@ -94,7 +94,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 - **worker 名稱**：放到該 worker，用裝置集合、或要求的裝置、或該 worker 提供的同種類裝置中第一個有空 slot 的。
 - **`any`**：依名稱順序第一個已連線、未 drain 且能接下這個 run 的 worker，伺服器排最後。CUDA 裝置集合超過一張卡、或是 `cuda:0` 以外的單張卡時，伺服器永遠不符合資格：worker 的 run 子程序看到的集合會從 `cuda:0` 重新編號（`CUDA_VISIBLE_DEVICES`），伺服器的程序則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。其他集合（`cpu`、`mps`、只有 `cuda:0`）在伺服器擁有集合中每個裝置時符合資格。
 
-**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：伺服器啟動以來從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run（重新編號會改變的 CUDA 集合，則是它見過的所有 worker 都無法服務），或 worker target 搭配 interactive 通道或 `record_outputs`。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
+**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：既未加入、伺服器啟動以來也從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run（重新編號會改變的 CUDA 集合，則是它見過的所有 worker 都無法服務），或 worker target 搭配 interactive 通道或 `record_outputs`。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
 
 **Sweep 與 study**（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。`options.target` 會傳到每個子 run。在寫入任何資料列之前，`RunService.check_placeable_batch` 會對每個不同的子 run（子 run 之間只差在圖的 `settings`）套用上面的送出規則，所以 sweep 或 study 要嘛整批被拒絕、要嘛整批被接受；送出子 run 途中有 worker 離線，只會讓它們等待，不會讓整批失敗。只要子 run 還存在，每個 sweep variant 與 study attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。在這台伺服器上帶種子的 run 會占用程序層級的種子閘門而單獨執行；worker run 有自己的隨機狀態，不經過這道閘門，所以在不同 worker 或不同卡上帶種子的子 run 可以同時執行。**新增掃描**對話框提供與 **Queue on...** 相同的目標選擇器，sweep 檢視會顯示每個 variant 的 Worker 與裝置；study 請透過 API 設定 `target`。
 
@@ -121,20 +121,21 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 ## 安全 {/* #security */}
 
-**目前：僅限同機。** `/ws/worker` 只在以下條件全部成立時接受連線，否則在 `accept` 之前關閉：
+**誰能連線。** `/ws/worker` 只在以下條件全部成立時接受連線，否則在 `accept` 之前關閉：
 
 - `Host` 標頭在允許清單內，與 `/ws/execution` 相同；
 - 沒有 `Origin` 標頭（agent 不會送，網頁也沒有理由開這個 socket）；
-- 對端位址是 loopback；
-- 請求帶有伺服器的 session token（`?token=` 或 `X-CodefyUI-Token`），同機的 agent 從伺服器寫出的 token 檔讀取。
+- 某個驗證器（`ws_worker.py` 的 `AUTHORISERS`）接受 `X-CodefyUI-Token`（或 `?token=`）中的憑證：來自 loopback 對端的伺服器 **session token**（同機的 agent 從伺服器寫出的 token 檔讀取），或來自任何對端的 **worker token**（agent 加入後取得的長期憑證，見[遠端 Worker](/usage/remote-workers#adding-a-worker)）。
 
-被拒絕的握手以 **4003**（Host、Origin、非 loopback 對端）或 **4401**（token）關閉。`accept` 之後，第一個 frame 必須在 10 秒內送出 `hello`；協定版本不符、名稱不合法或為保留字，會收到 `reject`。REST 端與 run 路由相同：`GET /api/workers` 開放，`POST /api/workers/{id}/drain` 與 `/undrain` 需要 session token（[API 參考](./api-reference#runs-and-sweeps)）。
+被拒絕的握手以 **4003**（Host、Origin）或 **4401**（憑證）關閉。`accept` 之後，第一個 frame 必須在 10 秒內送出 `hello`；協定版本不符、名稱不合法或為保留字，會收到 `reject`。身分綁定憑證：worker token 代表它的 worker，所以 `hello` 必須使用該名稱；新連線只有在以相同方式驗證時，才能取代同名的現有連線。
 
-**指派中傳送的內容。** `assign` 帶著 run 的圖，其中 SECRET 參數已從記憶體保險箱還原（[#251](https://github.com/CodefyUI/CodefyUI/issues/251)），因為 worker 沒有自己的保險箱。資料庫中的圖仍是去除機密後的版本。目前這個 frame 只經過 loopback socket。
+**加入。** Workers 面板的「新增 worker」對話框向 `POST /api/workers/enrollments` 取得一次性 token（`abcdef.0123456789abcdef`，預設 24 小時、可用一次），並顯示 `cdui agent start --control <url> --token <token>`。agent 在 `POST /api/workers/enroll`（不需 session token，依用戶端位址限速）用它換得 worker token，存在 0600 檔案中，每次重啟都沿用。`workers` 與 `worker_enrollments` 兩張表只保存 sha256 雜湊值。已加入的名稱即被占用：只有綁定該 worker 的 token（重新核發）能再次加入，並撤銷舊憑證。`DELETE /api/workers/{id}` 撤銷 worker、中斷連線，並讓佇列中等它的 run 失敗。已加入的 worker 在開機時以 `offline` 載入，所以 run 可以指定它並等待。worker token 或加入請求若從其他機器以明文 HTTP 傳送，會記錄警告。REST 端與 run 路由相同：`GET /api/workers` 開放，`POST /api/workers/{id}/drain` 與 `/undrain` 需要 session token（[API 參考](./api-reference#runs-and-sweeps)）。
+
+**指派中傳送的內容。** `assign` 帶著 run 的圖，其中 SECRET 參數已從記憶體保險箱還原（[#251](https://github.com/CodefyUI/CodefyUI/issues/251)），因為 worker 沒有自己的保險箱。資料庫中的圖仍是去除機密後的版本。對遠端 worker，它會經過網路：在不信任的網路上，請把控制面放在 TLS 之後。
 
 **方向規則。** worker 一律主動連到控制面，從不監聽任何埠；控制面從不連向 worker。worker 從不寫 SQLite。
 
-**規劃中。** 透過 Workers 面板的「新增 worker」對話框發出 enrollment token，給每個 worker 獨立憑證（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）；握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）；agent 在首次使用時釘選控制面的 TLS 指紋，並規定機密只能經由已驗證的通道傳送（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
+**規劃中。** 握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）；agent 在首次使用時釘選控制面的 TLS 指紋，並規定機密只能經由已驗證的通道傳送（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 
 ## 不變量 {/* #invariants */}
 
@@ -160,6 +161,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | 2026-10-15 | 每個 run 一個 spawn 子程序，裝置集合以 `CUDA_VISIBLE_DEVICES` 傳入（[#771](https://github.com/CodefyUI/CodefyUI/issues/771)）；agent 程序從不 import torch。 |
 | 2026-10-15 | 同機 worker 以 machine id 判定，共用的卡以 NVML UUID 判定，從不依對端位址（[#773](https://github.com/CodefyUI/CodefyUI/issues/773)）。 |
 | 2026-10-15 | enrollment 完成之前，`/ws/worker` 只接受帶 session token 的 loopback 對端（[#772](https://github.com/CodefyUI/CodefyUI/issues/772)）。 |
+| 2026-10-15 | 加入：一次性 token 換成每個 worker 獨立的憑證；session token 仍只限 loopback；身分綁定憑證，已加入的名稱只能透過重新核發 token 易手，同機需要 loopback 對端且 machine id 相符（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）。 |
 | 2026-10-15 | 單一 run、sweep 與 study 共用同一條送出規則：只有啟動以來從未見過的 worker 名稱會被拒絕；目標為已知但離線之 worker 的 run 會等它回來（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。 |
 
 ## 進入點 {/* #entry-points */}

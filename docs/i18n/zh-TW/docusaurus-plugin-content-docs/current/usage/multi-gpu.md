@@ -32,7 +32,7 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 
 ## 在這台機器上啟動 worker {/* #start-a-same-host-worker */}
 
-worker agent 會把它接到的每個 run 放在自己的子程序中執行，所以崩潰或記憶體不足被終止只會結束那一個 run，伺服器與其他 run 不受影響。這個版本的 agent 與伺服器在同一台機器上執行。
+worker agent 會把它接到的每個 run 放在自己的子程序中執行，所以崩潰或記憶體不足被終止只會結束那一個 run，伺服器與其他 run 不受影響。本節在伺服器所在的機器上啟動它；其他地方的 GPU 伺服器請見[遠端 Worker](/usage/remote-workers#adding-a-worker)。
 
 ```bash
 cdui start                 # the server, if it is not running yet
@@ -94,7 +94,7 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 - 每個裝置在最近一次心跳時的可用與總記憶體，以及 slot 的已占用 / 上限；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
 
-**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 顯示上面那段同機指令與其參數。
+**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 會產生另一台機器用的加入指令，或顯示上面那段同機指令與其參數。**重新核發** 讓 worker 換新憑證，**移除** 會撤銷憑證、中斷連線，並讓佇列中等它的 run 失敗（[遠端 Worker](/usage/remote-workers)）。
 
 ## 畫布的行為 {/* #the-canvas */}
 
@@ -108,7 +108,7 @@ run 結束後，詳細資訊標題會顯示 CUDA 的**峰值記憶體**（配置
 
 - **單一 run 不會跨卡訓練。** 裝置集合讓一個 run 看得到多張卡，節點也可以用 run 內名稱固定到這些卡上，但目前還沒有 `DistributedDataParallel` 策略（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **沒有依記憶體的准入。** run 以每個 slot 的數量准入；不會因為卡上記憶體不足而拒絕 run，塞太滿的卡會以記憶體不足錯誤失敗（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）。請參閱[訓練記憶體](/advanced/training-memory)。
-- **只限同一台機器。** 遠端 GPU 伺服器需要 enrollment（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）。
+- **機器之間是明文 HTTP。** 遠端 worker 以控制面提供的協定加入與連線；沒有 TLS proxy 時，它的 token 與 run 的輸入會以明文經過網路。指紋釘選是 [#786](https://github.com/CodefyUI/CodefyUI/issues/786)。
 - **worker 上不擷取輸出**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)），也不保留權重：每個 worker run 都從頭開始。
 - **斷線會結束 run。** agent 停止或失去連線時，它的 run 以 `interrupted` 結束（[#783](https://github.com/CodefyUI/CodefyUI/issues/783) 會加入續跑）。
 

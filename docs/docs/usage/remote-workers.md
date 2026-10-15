@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3.6
+sidebar_position: 3.7
 title: Remote Workers
 description: Run graphs on another machine — enroll a GPU server as a worker agent with a one-time token from the Workers panel.
 ---
