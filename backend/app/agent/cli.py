@@ -106,11 +106,15 @@ def t(zh: str, en: str) -> str:
 
 
 def _say(zh: str, en: str) -> None:
-    print(t(zh, en))
+    # Flushed: a foreground agent's stdout is a pipe under a supervisor (or
+    # a test), block-buffered, and a hard stop (``TerminateProcess`` on
+    # Windows, SIGKILL) drops whatever was still in the buffer, such as the
+    # "Enrolled" line printed before the agent settles into its loop.
+    print(t(zh, en), flush=True)
 
 
 def _err(zh: str, en: str) -> None:
-    print(t(zh, en), file=sys.stderr)
+    print(t(zh, en), file=sys.stderr, flush=True)
 
 
 # ── paths and same-host defaults ──────────────────────────────────────────

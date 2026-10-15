@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +85,12 @@ def test_an_entry_edited_in_the_cache_is_rehashed_and_dropped(tmp_path):
     cache = tr.InputCache(tmp_path / "cache")
     data = b"original"
     path = cache.add(_sha(data), [data])
-    path.write_bytes(b"modified")  # the stamp moved
+    before = path.stat()
+    path.write_bytes(b"modified")
+    # Within one tick of a coarse file clock (Windows: ~16 ms) the edit
+    # leaves size and mtime as they were; the entry, stamped that close to
+    # its write, is hashed again all the same.
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert cache.lookup(_sha(data), len(data)) is None
     assert not path.exists()
     # Touched but intact: hashed again, kept, re-stamped.
@@ -91,6 +98,46 @@ def test_an_entry_edited_in_the_cache_is_rehashed_and_dropped(tmp_path):
     path.with_name(f"{_sha(data)}.ok").write_text("stale", encoding="utf-8")
     assert cache.lookup(_sha(data), len(data)) == path
     assert cache.lookup(_sha(data), len(data)) == path
+
+
+def _settle(path: Path) -> None:
+    """Date *path*'s last write well before the racy window."""
+    past = time.time_ns() - 10 * tr.RACY_WINDOW_NS
+    os.utime(path, ns=(past, past))
+
+
+def test_an_entry_stamped_right_after_its_write_is_hashed_again(
+        tmp_path, monkeypatch):
+    cache = tr.InputCache(tmp_path / "cache")
+    data = b"original"
+    path = cache.add(_sha(data), [data])
+    stamp = path.with_name(f"{_sha(data)}.ok")
+    assert stamp.read_text(encoding="utf-8") == tr.RACY_STAMP
+    _settle(path)
+    hashed: list[Path] = []
+    real = tr.sha256_file
+    monkeypatch.setattr(tr, "sha256_file",
+                        lambda p: hashed.append(p) or real(p))
+    assert cache.lookup(_sha(data), len(data)) == path
+    assert hashed == [path]
+    # Re-stamped once settled: trusted from now on, not hashed again.
+    assert stamp.read_text(encoding="utf-8") != tr.RACY_STAMP
+    assert cache.lookup(_sha(data), len(data)) == path
+    assert hashed == [path]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no ctime on Windows")
+def test_a_settled_entry_edited_with_its_mtime_put_back_is_dropped(tmp_path):
+    cache = tr.InputCache(tmp_path / "cache")
+    data = b"original"
+    path = cache.add(_sha(data), [data])
+    _settle(path)
+    assert cache.lookup(_sha(data), len(data)) == path  # trusted stamp
+    before = path.stat()
+    path.write_bytes(b"modified")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert cache.lookup(_sha(data), len(data)) is None
+    assert not path.exists()
 
 
 def test_walk_files_never_follows_a_symlink(tmp_path):

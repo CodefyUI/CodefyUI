@@ -110,6 +110,12 @@ UPLOAD_MAX_PAUSE_S = 30.0
 #: a proxy with no upstream (502/503/504), a timeout, a rate limit.
 OUTAGE_STATUSES = frozenset({408, 429, 502, 503, 504})
 TIMEOUT_S = 60.0
+#: How close to a cache entry's last write its stat is not trusted
+#: (:class:`InputCache`): above every common file clock's tick.
+RACY_WINDOW_NS = 3_000_000_000
+#: The stamp of an entry verified within :data:`RACY_WINDOW_NS` of its last
+#: write: it never matches, so the next lookup hashes the entry again.
+RACY_STAMP = "racy"
 
 
 class TransferError(RuntimeError):
@@ -146,10 +152,17 @@ def walk_files(directory: Path) -> Iterator[Path]:
 class InputCache:
     """``<root>/<sha256>``: every input this worker fetched, by content.
 
-    Beside each entry, ``<sha256>.ok`` records its size and mtime when it
-    was verified. An entry whose stat no longer matches (someone edited the
-    cache) is hashed again before it is used, and fetched again when it no
-    longer hashes to its name.
+    Beside each entry, ``<sha256>.ok`` records its stat (size, mtime, file
+    id and, off Windows, ctime) when it was verified. An entry whose stat no
+    longer matches (someone edited the cache) is hashed again before it is
+    used, and fetched again when it no longer hashes to its name.
+
+    A stat taken within :data:`RACY_WINDOW_NS` of the entry's last write
+    proves nothing: the file clock ticks coarsely (about 16 ms on Windows,
+    a few ms on Linux, 2 s on FAT), so an edit of the same size in the same
+    tick leaves every field as it was. Such an entry gets a stamp that never
+    matches, and is hashed again on its next lookup (git's "racily clean"
+    rule); the stamp written then, once the window has passed, is trusted.
     """
 
     def __init__(self, root: Path) -> None:
@@ -160,7 +173,12 @@ class InputCache:
 
     def _stamp(self, path: Path) -> str:
         stat = path.stat()
-        return f"{stat.st_size} {stat.st_mtime_ns}"
+        fields = [stat.st_size, stat.st_mtime_ns, stat.st_ino]
+        if os.name != "nt":  # st_ctime is the creation time on Windows
+            fields.append(stat.st_ctime_ns)
+        if abs(time.time_ns() - stat.st_mtime_ns) < RACY_WINDOW_NS:
+            return RACY_STAMP
+        return " ".join(str(value) for value in fields)
 
     def lookup(self, sha256: str, size: int) -> Path | None:
         """The verified cache entry for *sha256*, or None."""
@@ -169,7 +187,8 @@ class InputCache:
         try:
             if not path.is_file() or path.stat().st_size != size:
                 return None
-            if stamp_file.read_text(encoding="utf-8") == self._stamp(path):
+            stamp = stamp_file.read_text(encoding="utf-8")
+            if stamp != RACY_STAMP and stamp == self._stamp(path):
                 return path
         except OSError:
             pass
