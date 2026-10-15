@@ -19,7 +19,8 @@ responsibilities, and nothing else:
   fanned out to live subscribers; scalar progress values are batched into
   ``exec_run_metrics``. Since #122 the same path also carries what nodes
   report DIRECTLY from their worker threads — ``context.log_metric`` and
-  ``context.log_artifact`` — through ``_signal_bridge``.
+  ``context.log_artifact`` — through the engine's ``on_signal`` callback
+  (``core.executors``, since #766).
 - **cancel** — cooperative, via the ``ExecutionContext`` flag (never
   ``Task.cancel``; see ``cancel``).
 - **survive** — startup recovery retires rows a dead process left
@@ -32,6 +33,24 @@ function-local import of the #117 output-entry builders out of
 ``api/ws_execution.py`` — is gone: #121 moved them to
 ``core.output_entries``, where they belong now that the WebSocket is a
 *view* over this service rather than the thing that produces node_status.
+
+Since #766 the service no longer calls the engine itself. Three layers, each
+importing only the one below it:
+
+- ``core.run_events`` -- pure functions that turn engine callback arguments
+  into event payloads (``node_status``, ``inner_node_status``, metric points,
+  the signal frames), plus the event types. No I/O, no ``RunService``, so a
+  worker subprocess can build the very same bytes.
+- ``core.executors`` -- an ``Executor`` runs one ``ExecutionRequest`` and
+  returns an ``ExecutionOutcome``. ``InProcessExecutor`` (the default, and
+  today the only one) is what ``_execute`` used to do: ``execute_graph`` in
+  this process, its callbacks bridged through ``run_events`` into the run's
+  ``RunSinks``.
+- this module -- scheduling, the row, and persistence: ``RunSinks`` lands in
+  ``_emit`` (where ``cap_event_payload`` applies), the metric batcher and the
+  artifact table. Classifying a stop as ``cancelled`` or ``interrupted``
+  stays here too (``_stopped_status``); an executor only knows that the
+  engine stopped.
 
 Lanes
 -----
@@ -153,19 +172,36 @@ from .device_utils import (
 from .env_fingerprint import collect_fingerprint, execution_facts
 from .execution_context import (
     ArtifactSignal,
-    CancellationError,
-    DroppedSignal,
     ExecutionContext,
-    MetricSignal,
     WarningSignal,
 )
-from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
-from .node_state_store import NodeStateStore
-from .output_entries import (
-    OUTPUT_KIND_TEXT,
-    build_node_output_entries,
-    declared_media_ports,
+from .executors import (
+    ExecutionRequest,
+    Executor,
+    InProcessExecutor,
+    RunSinks,
 )
+from .node_state_store import NodeStateStore
+from .run_events import (
+    EVENT_ARTIFACT,
+    EVENT_METRIC,
+    EVENT_RUN_COMPLETED,
+    EVENT_RUN_FAILED,
+    EVENT_RUN_STARTED,
+    EVENT_RUN_STOPPED,
+    EVENT_WARNING,
+    artifact_meta,
+    artifact_payload,
+    warning_payload,
+)
+# Moved to ``run_events`` by #766 and re-exported under the names this module
+# has always published (the redundant ``as`` marks each one as a re-export).
+from .run_events import EVENT_INNER_NODE_STATUS as EVENT_INNER_NODE_STATUS
+from .run_events import EVENT_NODE_STATUS as EVENT_NODE_STATUS
+from .run_events import NON_METRIC_EVENTS as NON_METRIC_EVENTS
+from .run_events import NON_METRIC_KEYS as NON_METRIC_KEYS
+from .run_events import metric_step as metric_step
+from .run_events import scalar_metrics as scalar_metrics
 from .run_output_store import RunOutputStore
 from .run_store import (
     STATUS_CANCELLED,
@@ -193,54 +229,8 @@ logger = logging.getLogger(__name__)
 
 # ── event vocabulary ──────────────────────────────────────────────────────
 #
-# Deliberately the WebSocket message types, verbatim. The durable event log
-# exists to be replayed onto that wire (#121: attach to a running run and
-# catch up), so a 1:1 mapping means the bridge is
-# ``{"type": event.type, **(event.payload or {})}`` and there is no second
-# vocabulary to keep in sync. The ``type`` key itself is NOT stored in the
-# payload — the column already carries it.
-EVENT_RUN_STARTED = "execution_start"
-EVENT_NODE_STATUS = "node_status"
-EVENT_RUN_COMPLETED = "execution_complete"
-EVENT_RUN_FAILED = "execution_error"
-EVENT_RUN_STOPPED = "execution_stopped"
-
-#: #122's additions. New TYPES rather than new node_status payloads, because
-#: neither is about a node changing state: a client that only knows the five
-#: types above ignores them (the WS bridge is
-#: ``{"type": event.type, **payload}`` for every type), and a client that
-#: wants live charts subscribes to ``metric`` instead of re-deriving series
-#: from progress frames.
-#:
-#: ``metric`` carries a whole FLUSH, not one point: the batcher already
-#: groups points by size or by 0.5 s, and reusing that cadence is what keeps
-#: a per-batch series from writing one event row per batch. Payload is
-#: ``{"points": [{"name", "value", "step", "node_id"}, ...]}``, emitted only
-#: after the points are durable.
-EVENT_METRIC = "metric"
-#: One row appended to ``exec_run_artifacts``: ``{"kind", "path", "meta",
-#: "node_id"}``. The interrupt checkpoint is the first producer.
-EVENT_ARTIFACT = "artifact"
-#: Something was lost or degraded but the run continues:
-#: ``{"kind": <what>, ...}``. Today the only kind is ``dropped_signals``.
-EVENT_WARNING = "run_warning"
-#: A node the canvas draws INSIDE a block or preset card (#559), which
-#: ``node_status`` rolls up into the outermost card: ``{"node_id",
-#: "container_id", "status"}`` plus ``error``/``error_type`` on an error
-#: frame, and ``outputs`` when the node produced something: the entries a
-#: ``node_status`` would carry for it (its media, by the ports the node
-#: declares, and its port summary) minus its text, which the card's own
-#: frames relay already. ``node_id`` is the id the run gives the node --
-#: ``blk/nest/mul``, the entered instances in front of the canvas id -- so
-#: two copies of one block never share a status or a value; ``container_id``
-#: is the outermost card. The card's own ``node_status`` frames keep their
-#: shape; its terminal one now carries the values on its drawn output ports
-#: as its port summary. A container nested inside another reports here too,
-#: rolled up the same way. A new TYPE so a client
-#: that only knows ``node_status`` keeps reading one status per card. A
-#: progress frame from inside a card stays a ``node_status`` for the card and
-#: names the inner node in ``inner_node_id``: one frame, both cards.
-EVENT_INNER_NODE_STATUS = "inner_node_status"
+# The event TYPES and their payload builders live in ``core.run_events``
+# since #766 (re-exported above); what stays here is how a run's log ENDS.
 
 #: ``execution_stopped`` payload discriminator. The WS protocol has one
 #: "stopped" frame; the run ROW distinguishes cancelled from interrupted,
@@ -322,25 +312,6 @@ MAX_RETRIES_LIMIT = 10
 #: that entirely if only the key is checked. ``auto`` resolves to the best
 #: accelerator present (``describe_accelerator()["default"]``); an absent
 #: device is ``cpu`` unless the graph carries ``settings.device``.
-
-#: Progress-payload keys that describe the LOOP, not a measurement. Turning
-#: ``epoch`` into a series named "epoch" whose value equals its own step is
-#: noise; ``total_epochs`` is a constant repeated once per point. #122 added
-#: the per-batch pair for exactly the same reason.
-NON_METRIC_KEYS = frozenset({"event", "step", "epoch", "total_epochs",
-                             "start_epoch", "batch", "total_batches"})
-
-#: Progress ``event`` values whose payload must NOT be mined for metrics.
-#: A per-batch frame (#122) is throttled by WALL CLOCK, so several of them
-#: legitimately share one step and their count depends on how fast the
-#: machine is -- turning that into rows would make the series a measure of
-#: the hardware. The node logs the authoritative per-batch series itself,
-#: through ``context.log_metric`` under its ``batch_metrics`` option.
-#:
-#: Mirrors ``core.loop_control.EVENT_BATCH``; not imported from there
-#: because this module must not depend on the node-side toolkit, and the
-#: string is the wire contract either way.
-NON_METRIC_EVENTS = frozenset({"batch"})
 
 #: Flush thresholds for the metric batcher (see ``_flush_metrics``).
 METRIC_FLUSH_MAX_POINTS = 64
@@ -847,7 +818,7 @@ def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, A
 
     Two whole-payload measurements per string sounds expensive, and would
     be if the key count were open-ended. It is not: every payload reaching
-    here is built by ``_progress_bridge`` or ``_finalize`` and has at most a
+    here is built by ``core.run_events`` or ``_finalize`` and has at most a
     handful of top-level keys (``node_id``, ``status``, ``error``,
     ``error_type``, ``outputs``, ``reason``, ``run_id``). Nothing a client
     sends becomes a key here.
@@ -870,27 +841,6 @@ def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, A
         if len(kept) + len(TRUNCATION_MARKER) < len(out[key]):
             out[key] = kept + TRUNCATION_MARKER
     return out
-
-
-def _error_fields(
-    status: str, result: dict[str, Any] | None,
-) -> dict[str, str]:
-    """``error`` and, when the engine named the class, ``error_type``.
-
-    Only on an error frame. ``error_type`` is copied out rather than left in
-    ``result`` because ``str(exc)`` never contains the class name --
-    ``str(KeyError('x'))`` is ``"'x'"`` -- so a client that wants to say
-    something kinder than the raw message for one exception KIND has nothing
-    else to key on. Absent when the engine did not supply one, so a client
-    can tell "no type" from a type it does not recognise.
-    """
-    if not result or status != "error":
-        return {}
-    fields = {"error": result.get("error", "")}
-    error_type = result.get("error_type")
-    if isinstance(error_type, str) and error_type:
-        fields["error_type"] = error_type
-    return fields
 
 
 def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
@@ -953,56 +903,6 @@ def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
             if key in payload:
                 marker[key] = payload[key]
     return marker
-
-
-def scalar_metrics(
-    payload: Any, *, node_id: str | None, step: int,
-) -> list[MetricPoint]:
-    """Extract chartable scalars from one progress payload.
-
-    Every finite top-level number that is not a loop descriptor becomes a
-    point of a series named after its key. Booleans are excluded (a flag is
-    not a measurement), as are strings, lists and nested objects — a
-    ``losses`` array is per-batch detail that belongs in the event payload,
-    not as one row per element in the metrics table.
-
-    This is INFERENCE, and it exists for nodes that report progress but
-    know nothing about metrics. A node that calls ``context.log_metric``
-    says what it means; see ``RunService._collect_metrics``, which stops
-    inferring from a node the moment that node speaks for itself.
-    """
-    if not isinstance(payload, dict):
-        return []
-    if payload.get("event") in NON_METRIC_EVENTS:
-        return []
-    points: list[MetricPoint] = []
-    for key, value in payload.items():
-        if key in NON_METRIC_KEYS or isinstance(value, bool):
-            continue
-        if not isinstance(value, (int, float)):
-            continue
-        points.append(MetricPoint(name=key, value=float(value), step=step,
-                                  node_id=node_id))
-    return points
-
-
-def metric_step(payload: Any, *, fallback: int) -> int:
-    """The step a progress payload belongs to.
-
-    ``step`` wins over ``epoch``; both beat the caller's running counter, so
-    a producer that reports nothing still gets a monotonic x-axis instead of
-    every point piling up on step 0.
-    """
-    if isinstance(payload, dict):
-        for key in ("step", "epoch"):
-            value = payload.get(key)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, int):
-                return value
-            if isinstance(value, float) and value.is_integer():
-                return int(value)
-    return fallback
 
 
 def apply_seed(seed: int | None) -> None:
@@ -1352,7 +1252,6 @@ class _ActiveRun:
     #: still being written, and a poller should keep waiting for it.
     finished: bool = False
     pending_metrics: list[MetricPoint] = field(default_factory=list)
-    last_metric_step: int = 0
     last_flush_monotonic: float = field(default_factory=time.monotonic)
     #: Nodes that have logged an EXPLICIT metric (#122). Progress payloads
     #: from these are no longer mined by ``scalar_metrics`` — otherwise a
@@ -1395,8 +1294,14 @@ class RunService:
         metric_flush_max_points: int = METRIC_FLUSH_MAX_POINTS,
         metric_flush_interval_s: float = METRIC_FLUSH_INTERVAL_S,
         limits: QueueLimits | None = None,
+        executor: Executor | None = None,
     ) -> None:
         self.store = store
+        # Where a run's graph executes (#766). In this process unless a
+        # caller hands over another executor; the service schedules, records
+        # and fans out the same way whichever one it is.
+        self._executor: Executor = (InProcessExecutor() if executor is None
+                                    else executor)
         self._output_store = output_store
         self._retention_keep_last = retention_keep_last
         # ONE source for the ceiling, read HERE rather than defaulted to a
@@ -2164,57 +2069,28 @@ class RunService:
         self, active: _ActiveRun, graph: dict[str, Any],
         options: dict[str, Any], session: InteractiveSession | None = None,
     ) -> tuple[str, str | None]:
-        """Run the graph and classify the outcome. Never raises but cancel."""
-        media_ports = declared_media_ports(graph["nodes"])
-        on_progress = self._progress_bridge(active, media_ports)
-        try:
-            apply_seed(options.get("seed"))
-            # Determinism is NOT applied here any more: ``execute_graph``
-            # owns it through ``deterministic_scope``, which also takes it
-            # back when the run ends. Setting it here would latch the
-            # process outside that scope — the one-way latch the #188
-            # review found.
-            await execute_graph(
-                graph["nodes"],
-                graph["edges"],
-                on_progress=on_progress,
-                on_inner_status=self._inner_status_bridge(
-                    active, on_progress, media_ports),
-                # The nodes inside blocks and preset cards declare media too:
-                # read once, from the node list the run executes (#559).
-                on_expanded=lambda expanded: media_ports.update(
-                    declared_media_ports(expanded)),
-                on_signal=self._signal_bridge(active),
-                context=active.context,
-                error_mode=options.get("error_mode", DEFAULT_ERROR_MODE),
-                max_retries=int(options.get("max_retries", 0)),
-                # No ExecutionCache by default: nothing is re-executed
-                # within a run, and sharing one ACROSS server-owned runs
-                # would serve a later run stale tensors under a matching
-                # key. The canvas lends its own — one per socket, cleared by
-                # the same reconnect that always cleared it — because
-                # incremental re-execution IS the editing loop.
-                cache=None if session is None else session.cache,
-                changed_nodes=(None if session is None
-                               else list(session.changed_nodes) or None),
-                run_id=active.run_id,
-                output_store=self._output_store,
-                record_outputs=active.record_outputs,
-                preset_fallback=build_preset_fallback(graph["presets"]),
-                subgraphs=graph["subgraphs"],
-            )
-            return STATUS_SUCCEEDED, None
-        except CancellationError:
-            # Why it stopped is a different fact from that it stopped: a user
-            # pressing Stop is `cancelled`, the server going away is
-            # `interrupted`. The engine raises the same exception for both.
-            return self._stopped_status(active), None
-        except GraphValidationError as exc:
-            return STATUS_FAILED, str(exc)
-        except Exception as exc:
-            logger.warning("run %s failed: %s", active.run_id, exc,
-                           exc_info=True)
-            return STATUS_FAILED, str(exc)
+        """Hand the run to the executor and read back its outcome.
+
+        Never raises but cancel. Where the graph executes is the executor's
+        business (#766); what a stop MEANS is this service's: an executor
+        reports ``cancelled`` for any cooperative stop, and
+        ``_stopped_status`` turns that into ``interrupted`` when the server
+        asked rather than a user.
+        """
+        outcome = await self._executor.run(ExecutionRequest(
+            run_id=active.run_id,
+            graph=graph,
+            options=options,
+            context=active.context,
+            session=session,
+            output_store=self._output_store,
+            record_outputs=active.record_outputs,
+            sinks=self._sinks(active),
+            explicit_metric_nodes=active.explicit_metric_nodes,
+        ))
+        if outcome.status == STATUS_CANCELLED:
+            return self._stopped_status(active), outcome.error
+        return outcome.status, outcome.error
 
     async def _finalize(
         self, active: _ActiveRun, status: str, error: str | None,
@@ -2265,133 +2141,41 @@ class RunService:
             await self._notify_terminal(active.run_id, status)
         await self.prune_retention()
 
-    def _progress_bridge(
-        self, active: _ActiveRun, media_ports: dict[str, dict[str, list[str]]],
-    ) -> Callable[[str, str, dict[str, Any] | None], Any]:
-        """Build the engine's ``on_progress`` callback for one run.
+    # ── sinks (#766) ──────────────────────────────────────────────────────
+    #
+    # The persistence half of what used to be the three engine bridges
+    # (``_progress_bridge``, ``_inner_status_bridge``, ``_signal_bridge``).
+    # The payloads are built by ``core.run_events``; the executor calls these
+    # through the run's ``RunSinks`` (see ``_sinks``).
 
-        The message body is byte-for-byte what ``ws_execution`` puts on the
-        wire minus its ``type`` key — see the event-vocabulary block above.
-        A ``node_status`` payload is ``{"node_id", "status"}`` plus, on an
-        error frame only, ``error`` and (when the engine named the class)
-        ``error_type`` (see :func:`_error_fields`); plus ``outputs`` whenever
-        the node produced any; plus ``inner_node_id`` on a progress frame a
-        node inside the card sent (#559).
+    def _sinks(self, active: _ActiveRun) -> RunSinks:
+        """The ``RunSinks`` one run's executor reports into."""
+        run_id = active.run_id
 
-        ``media_ports`` is :func:`declared_media_ports` of the graph, read
-        when a frame is built: the run adds the nodes inside its containers
-        to it before anything runs.
-        """
-        async def on_progress(
-            node_id: str, status: str, result: dict[str, Any] | None,
-            inner_node_id: str | None = None,
-        ) -> None:
-            message: dict[str, Any] = {"node_id": node_id, "status": status}
-            if inner_node_id is not None:
-                message["inner_node_id"] = inner_node_id
-            message.update(_error_fields(status, result))
-            entries = build_node_output_entries(
-                status, result, media_ports.get(node_id))
-            if entries:
-                message["outputs"] = entries
-            await self._emit(active.run_id, EVENT_NODE_STATUS, message)
-            if status == "progress":
-                self._collect_metrics(active, node_id, result)
-                await self._flush_metrics(active)
+        async def emit(event_type: str, payload: Any) -> None:
+            await self._emit(run_id, event_type, payload)
 
-        return on_progress
+        async def record_metrics(points: list[MetricPoint]) -> None:
+            await self._record_metrics(active, points)
 
-    def _inner_status_bridge(
-        self, active: _ActiveRun,
-        on_progress: Callable[..., Any],
-        media_ports: dict[str, dict[str, list[str]]],
-    ) -> Callable[[str, str, str, dict[str, Any] | None], Any]:
-        """Build the engine's ``on_inner_status`` callback for one run (#559).
+        async def record_artifact(signal: ArtifactSignal) -> None:
+            await self._record_artifact(active, signal)
 
-        A status becomes one ``inner_node_status`` event (see
-        :data:`EVENT_INNER_NODE_STATUS`): the status, on an error what
-        failed, and what the node produced -- a picture or chart it drew and
-        its port summary -- under its own id, so an image made inside a block
-        reaches the run's log like one made at the top level. Its text is
-        left out: the card relays every line already (#601). A progress
-        frame goes to ``on_progress`` as the card's, naming the inner node,
-        so its metrics are filed under the card as before.
-        """
-        async def on_inner_status(
-            node_id: str, container_id: str, status: str,
-            result: dict[str, Any] | None,
-        ) -> None:
-            if status == "progress":
-                await on_progress(container_id, status, result,
-                                  inner_node_id=node_id)
-                return
-            message: dict[str, Any] = {
-                "node_id": node_id, "container_id": container_id,
-                "status": status,
-            }
-            message.update(_error_fields(status, result))
-            entries = [
-                entry for entry in build_node_output_entries(
-                    status, result, media_ports.get(node_id))
-                if entry.get("output_kind") != OUTPUT_KIND_TEXT
-            ]
-            if entries:
-                message["outputs"] = entries
-            await self._emit(active.run_id, EVENT_INNER_NODE_STATUS, message)
+        async def warn(signal: WarningSignal) -> None:
+            await self._emit(run_id, EVENT_WARNING, warning_payload(signal))
 
-        return on_inner_status
+        return RunSinks(emit=emit, record_metrics=record_metrics,
+                        record_artifact=record_artifact, warn=warn)
 
-    def _signal_bridge(
-        self, active: _ActiveRun,
-    ) -> Callable[[Any], Any]:
-        """Build the engine's ``on_signal`` callback for one run (#122).
-
-        Everything a node reports that is not a node status arrives here,
-        already serialised onto the loop by the engine's single pump — so
-        this can await the database without a lock and without reordering
-        anything.
-
-        Nothing in here is allowed to raise. A metric, an artifact row and a
-        dropped-signal notice are all observability; a run must not fail
-        because the thing describing it did.
-        """
-        async def on_signal(signal: Any) -> None:
-            try:
-                if isinstance(signal, MetricSignal):
-                    await self._record_metric(active, signal)
-                elif isinstance(signal, ArtifactSignal):
-                    await self._record_artifact(active, signal)
-                elif isinstance(signal, DroppedSignal):
-                    await self._emit(active.run_id, EVENT_WARNING, {
-                        "kind": "dropped_signals", "count": signal.count,
-                        "detail": ("progress/metric signals were dropped to "
-                                   "keep the run's outbox bounded; the "
-                                   "series may have gaps"),
-                    })
-                elif isinstance(signal, WarningSignal):
-                    await self._emit(active.run_id, EVENT_WARNING, {
-                        "kind": signal.kind, "detail": signal.detail,
-                        "node_id": signal.node_id,
-                    })
-                else:  # pragma: no cover - a node pack's own signal type
-                    logger.debug("run %s: ignoring unknown signal %r",
-                                 active.run_id, type(signal).__name__)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("run %s: could not record a %s", active.run_id,
-                               type(signal).__name__, exc_info=True)
-
-        return on_signal
-
-    async def _record_metric(
-        self, active: _ActiveRun, signal: MetricSignal,
+    async def _record_metrics(
+        self, active: _ActiveRun, points: list[MetricPoint],
     ) -> None:
-        """Buffer one explicitly-logged point and claim the node for it."""
-        active.explicit_metric_nodes.add(signal.node_id or "")
-        active.pending_metrics.append(MetricPoint(
-            name=signal.name, value=signal.value, step=signal.step,
-            node_id=signal.node_id))
+        """Buffer points, then let the batcher decide whether to flush.
+
+        Called on every progress frame, even with no points: the time rule
+        in ``_flush_metrics`` is checked on this path.
+        """
+        active.pending_metrics.extend(points)
         await self._flush_metrics(active)
 
     async def _record_artifact(
@@ -2402,16 +2186,11 @@ class RunService:
         Store first: an ``artifact`` event pointing at a row that failed to
         insert would send a client looking for something that is not there.
         """
-        meta = signal.meta
-        if signal.node_id:
-            meta = {**(meta or {}), "node_id": signal.node_id}
         record = await self.store.add_artifact(
-            active.run_id, signal.kind, signal.path, meta=meta)
-        await self._emit(active.run_id, EVENT_ARTIFACT, {
-            "artifact_id": record.id, "kind": record.kind,
-            "path": record.path, "meta": record.meta,
-            "node_id": signal.node_id,
-        })
+            active.run_id, signal.kind, signal.path,
+            meta=artifact_meta(signal))
+        await self._emit(active.run_id, EVENT_ARTIFACT,
+                         artifact_payload(record, signal.node_id))
 
     # ── events ────────────────────────────────────────────────────────────
 
@@ -2593,26 +2372,6 @@ class RunService:
         return None if waiting is None else waiting.signal.waiter()
 
     # ── metrics ───────────────────────────────────────────────────────────
-
-    def _collect_metrics(
-        self, active: _ActiveRun, node_id: str, payload: Any,
-    ) -> None:
-        """Infer series from a progress payload — unless the node speaks.
-
-        Explicit beats inferred (#122). ``TrainingLoop`` logs ``train_loss``
-        and ``val_loss`` through ``context.log_metric`` AND keeps
-        ``loss``/``val_loss`` in its epoch payload for the live chart that
-        has always read them; mining both would file every validation loss
-        twice. The first explicit point from a node retires the inference
-        for that node, which also leaves every node that has no metric API
-        (a plugin, a chart pack) working exactly as it did.
-        """
-        if node_id in active.explicit_metric_nodes:
-            return
-        step = metric_step(payload, fallback=active.last_metric_step + 1)
-        active.last_metric_step = step
-        active.pending_metrics.extend(
-            scalar_metrics(payload, node_id=node_id, step=step))
 
     async def _flush_metrics(
         self, active: _ActiveRun, *, force: bool = False,

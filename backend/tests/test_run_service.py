@@ -1982,3 +1982,166 @@ async def test_a_cancelled_waiter_does_not_block_the_next_run():
             return "in"
 
     assert await asyncio.wait_for(_reader(), timeout=2.0) == "in"
+
+
+# ── the Executor seam (#766) ──────────────────────────────────────────────
+#
+# ``RunService`` no longer calls the engine; it builds one ``ExecutionRequest``
+# per run and hands it to its executor. These pin the seam itself: what the
+# executor is given, and that what it returns is what lands on the row.
+
+
+class _RecordingExecutor:
+    """Records every request and answers with a fixed outcome."""
+
+    def __init__(self, outcome) -> None:
+        self.outcome = outcome
+        self.requests: list[Any] = []
+
+    async def run(self, request):
+        self.requests.append(request)
+        return self.outcome
+
+
+def test_the_default_executor_is_in_process(store):
+    from app.core.executors import InProcessExecutor
+
+    assert isinstance(RunService(store)._executor, InProcessExecutor)
+
+
+def test_the_executor_default_error_mode_matches_the_option_default():
+    from app.core import executors
+    from app.core import run_service as run_service_module
+
+    assert executors.DEFAULT_ERROR_MODE == run_service_module.DEFAULT_ERROR_MODE
+
+
+async def test_a_recording_executor_gets_one_request_per_run(store):
+    from app.core.executors import ExecutionOutcome, RunSinks
+
+    executor = _RecordingExecutor(ExecutionOutcome(STATUS_SUCCEEDED, None))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    session = InteractiveSession(cache=ExecutionCache())
+    try:
+        queued = await svc.submit(_graph(), options={"device": "cpu",
+                                                     "seed": 5})
+        await _await_terminal(store, queued.run_id)
+        interactive = await svc.submit(
+            _graph(), options={"lane": LANE_INTERACTIVE}, session=session)
+        await _await_terminal(store, interactive.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert [r.run_id for r in executor.requests] == [queued.run_id,
+                                                     interactive.run_id]
+    first, second = executor.requests
+    for request, submitted in ((first, queued), (second, interactive)):
+        assert request.context.execution_id == submitted.run_id
+        assert request.context.device == "cpu"
+        assert isinstance(request.sinks, RunSinks)
+        assert [n["id"] for n in request.graph["nodes"]] == [
+            "start", "src", "print"]
+        assert request.output_store is None
+        assert request.record_outputs is False
+        assert request.explicit_metric_nodes == set()
+    assert first.session is None
+    assert first.options["seed"] == 5
+    assert first.context.seed == 5
+    assert second.session is session
+    assert second.sinks is not first.sinks
+
+    for submitted in (queued, interactive):
+        record = await store.get_run(submitted.run_id)
+        assert record is not None and record.status == STATUS_SUCCEEDED
+        types = [e.type for e in await store.get_events(submitted.run_id)]
+        assert types == [EVENT_RUN_STARTED, EVENT_RUN_COMPLETED]
+
+
+async def test_the_executors_failure_lands_on_the_row(store):
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(
+        ExecutionOutcome(STATUS_FAILED, "worker lost its card"))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_FAILED
+    assert record.error == "worker lost its card"
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].type == EVENT_RUN_FAILED
+    assert events[-1].payload == {"error": "worker lost its card"}
+
+
+async def test_the_sinks_land_in_the_event_log_and_metrics(store):
+    """What an executor reports through its sinks is persisted the way the
+    in-process bridges' reports always were."""
+    from app.core.execution_context import ArtifactSignal, WarningSignal
+    from app.core.executors import ExecutionOutcome
+    from app.core.run_store import MetricPoint
+
+    class _Reporting:
+        async def run(self, request):
+            await request.sinks.emit(EVENT_NODE_STATUS,
+                                     {"node_id": "src", "status": "running"})
+            await request.sinks.record_metrics(
+                [MetricPoint(name="loss", value=0.5, step=1, node_id="src")])
+            await request.sinks.record_artifact(ArtifactSignal(
+                kind="checkpoint", path="x.pt", meta={"epoch": 1},
+                node_id="src"))
+            await request.sinks.warn(WarningSignal(
+                kind="node_state_evicted", detail="gone", node_id="src"))
+            return ExecutionOutcome(STATUS_SUCCEEDED)
+
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Reporting())
+    try:
+        submitted = await svc.submit(_graph())
+        await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    events = await store.get_events(submitted.run_id)
+    assert [e.type for e in events] == [
+        EVENT_RUN_STARTED, EVENT_NODE_STATUS, EVENT_ARTIFACT, EVENT_WARNING,
+        EVENT_METRIC, EVENT_RUN_COMPLETED]
+    assert events[2].payload["meta"] == {"epoch": 1, "node_id": "src"}
+    assert events[3].payload == {"kind": "node_state_evicted",
+                                 "detail": "gone", "node_id": "src"}
+    metrics = await store.get_metrics(submitted.run_id, name="loss")
+    assert [(m.value, m.step) for m in metrics] == [(0.5, 1)]
+
+
+async def test_a_cancelled_outcome_is_interrupted_when_the_server_stops(
+        store):
+    """The executor only knows the engine stopped; the service says why."""
+    from app.core.executors import ExecutionOutcome
+
+    started = asyncio.Event()
+
+    class _Waits:
+        async def run(self, request):
+            started.set()
+            while not request.context.should_stop():
+                await asyncio.sleep(0.01)
+            return ExecutionOutcome(STATUS_CANCELLED)
+
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Waits())
+    submitted = await svc.submit(_graph())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    await svc.shutdown()
+    record = await store.get_run(submitted.run_id)
+    assert record is not None and record.status == STATUS_INTERRUPTED
+
+    started.clear()
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Waits())
+    try:
+        submitted = await svc.submit(_graph())
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await svc.cancel(submitted.run_id)
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert record.status == STATUS_CANCELLED
