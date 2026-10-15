@@ -372,6 +372,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "nvidia-ml-py" },
     { name = "packaging" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -406,9 +407,6 @@ dev = [
 llm-sentence = [
     { name = "sentence-transformers" },
 ]
-nvml = [
-    { name = "nvidia-ml-py" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -424,7 +422,7 @@ requires-dist = [
     { name = "kagglesdk", specifier = "<0.1.24" },
     { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "nvidia-ml-py", marker = "extra == 'nvml'", specifier = ">=12.535" },
+    { name = "nvidia-ml-py", specifier = ">=12.535" },
     { name = "packaging", specifier = ">=20.9" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -449,7 +447,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["dev", "llm-sentence", "nvml"]
+provides-extras = ["dev", "llm-sentence"]
 
 [[package]]
 name = "colorama"
