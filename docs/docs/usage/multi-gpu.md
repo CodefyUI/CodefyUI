@@ -12,7 +12,7 @@ The CodefyUI **server** is one process. A **run** executes in that process by de
 
 | | **Run** (the canvas) | **Queued run** |
 | --- | --- | --- |
-| Started from | The toolbar's **Run** | `cdui run`, `POST /api/runs`, a sweep or study |
+| Started from | The toolbar's **Run** | **Queue on...** next to Run, `cdui run`, `POST /api/runs`, a sweep or study |
 | Executes in | Always the server process | The server process, or a worker when its `target` says so |
 | Waits for a free card | No: starts at once (two at most, one per tab) | Yes: joins the queue of its device |
 | Devices | One: the graph's device, else Settings | One device, or a device set on a worker |
@@ -20,9 +20,15 @@ The CodefyUI **server** is one process. A **run** executes in that process by de
 
 Use **Run** while you build and debug a graph. Queue a run for anything long, anything you want on a particular card, and anything that needs more than one card.
 
-:::note Queue on... in the toolbar
-A **Queue on...** item next to **Run**, which submits a queued run to this server, a worker or any free slot from the browser, is in review ([#775](https://github.com/CodefyUI/CodefyUI/issues/775), PR [#811](https://github.com/CodefyUI/CodefyUI/pull/811)). Until it lands, queue a run with `cdui run` or `POST /api/runs`, as below.
-:::
+### Queue on... {/* #queue-on */}
+
+The caret next to **Run** in the toolbar opens a menu whose **Queue on...** item submits the active tab's graph as a queued run (the same `POST /api/runs` that `cdui run` uses):
+
+- **Target**: **This server**, each connected worker with its status and devices (a draining worker is listed but cannot be chosen), and **Any available** once a worker is connected.
+- **Devices**: one device for This server; for a worker, a set of one kind, kept in the order the worker lists its devices, with each CUDA card's in-run name shown as you tick it (`cuda:2 -> cuda:0 in this run`); for Any available, a kind (CPU, CUDA GPU, Apple MPS).
+- **Name**, **Random seed**, **Deterministic algorithms** and **Record node outputs** start from the tab's settings. Record node outputs is disabled for a worker or Any available.
+
+**Queue** submits the run, closes the dialog and opens it in the Runs tab. A refusal from the server is shown in the dialog.
 
 ## Start a worker on this machine {/* #start-a-same-host-worker */}
 
@@ -40,7 +46,7 @@ Within a few seconds the worker appears in the [Workers panel](#the-workers-pane
 
 ## Choose devices {/* #choose-devices */}
 
-A queued run names where it executes with `--target` and `--devices` on `cdui run`, or `options.target` in `POST /api/runs`:
+A queued run names where it executes in the [Queue on...](#queue-on) dialog, with `--target` and `--devices` on `cdui run`, or with `options.target` in `POST /api/runs`:
 
 ```bash
 # One card on this server, as before
@@ -61,10 +67,12 @@ cdui run train.json --target any --device cuda
 ```
 
 - **`local`** (the default) is this server. A run here executes on one device: with a device set it holds a slot on every device of the set, so nothing else is placed on them, and executes on the first.
-- **A worker name** sends the run to that worker. The worker must be connected and offer the devices, or the submit fails with `400`.
+- **A worker name** sends the run to that worker. The worker must have connected since the server started and must offer the devices, or the submit fails with `400`. A worker that is away now is not a refusal: the run waits for it to reconnect.
 - **`any`** takes the first connected, non-draining worker with a free slot, in name order, and this server last.
 
 **In-run device names.** A run on a worker sees only its own cards, renumbered from 0 in the order you listed them. With `--devices cuda:2,cuda:0`, the run's `cuda:0` is the machine's `cuda:2` and its `cuda:1` is the machine's `cuda:0`. A node whose **device** parameter is `auto` follows the run's device (the first card); to put a node on another card of the set, set its **device** to that card's in-run name, here `cuda:1`. The run records the mapping in `execution_facts` as `visible_devices` and `device_aliases`. See [Device Backends](/advanced/device-backends#addressing-one-card-out-of-several).
+
+**Sweeps and studies.** `POST /api/sweeps` and `POST /api/studies` pass `options.target` to every child. With `"target": {"worker": "any"}` and no `devices`, each child takes the next free slot of the sweep's device kind, so a four-variant sweep on two agents with one card each runs two variants at once; seeded children on workers run side by side, each in a process of its own. A target a single run would be refused for refuses the whole sweep or study with `400` before anything is queued. Each variant and attempt reports `worker_id`, `devices` and `queue_key`. The New Sweep dialog has no target selector yet; it follows in a later release, so set `target` through the API for now. See [Run Queue, Sweeps](./run-queue#sweeps).
 
 ## Slots and limits {/* #slots-and-limits */}
 
@@ -86,11 +94,11 @@ Open it with **Workers** in the Runs panel header, or from **Settings → Execut
 - each device with its free and total memory from the latest heartbeat and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
 
-**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining, or has disconnected since the run was submitted, waits, and its row's `queue_reason` says why. **Add worker** shows the same-host command above with its options.
+**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** shows the same-host command above with its options.
 
 ## What the canvas does {/* #the-canvas */}
 
-**Run** on the canvas always executes in the server process, on the graph's device (else the one in Settings), and never goes to a worker. It skips the queue, so it can share a card with a queued run even when that card's limit is 1. It keeps the tab's cached outputs and model weights between clicks and records outputs for the Inspector, which a worker run cannot do. To give a canvas graph to a worker, save it and queue it with `cdui run --target`.
+**Run** on the canvas always executes in the server process, on the graph's device (else the one in Settings), and never goes to a worker. It skips the queue, so it can share a card with a queued run even when that card's limit is 1. It keeps the tab's cached outputs and model weights between clicks and records outputs for the Inspector, which a worker run cannot do. To send the tab's graph to a worker, use [Queue on...](#queue-on).
 
 ## Peak memory in the Runs panel {/* #peak-memory */}
 

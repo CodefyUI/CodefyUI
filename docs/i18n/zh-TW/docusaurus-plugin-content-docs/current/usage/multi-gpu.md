@@ -12,7 +12,7 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 
 | | **Run**（畫布） | **Queued run** |
 | --- | --- | --- |
-| 從哪裡啟動 | 工具列的 **Run** | `cdui run`、`POST /api/runs`、sweep 或 study |
+| 從哪裡啟動 | 工具列的 **Run** | Run 旁的**排入佇列...**、`cdui run`、`POST /api/runs`、sweep 或 study |
 | 在哪裡執行 | 一律在伺服器程序內 | 伺服器程序內，或 `target` 指定的 worker |
 | 是否等待空出的卡 | 否：立即開始（最多兩個，每個分頁一個） | 是：加入其裝置的佇列 |
 | 裝置 | 一個：圖的裝置，否則為 Settings 的裝置 | 一個裝置，或 worker 上的一組裝置集合 |
@@ -20,9 +20,15 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 
 建構與除錯圖時用 **Run**。耗時長的工作、想放在特定卡上的工作，以及需要不只一張卡的工作，請排入佇列。
 
-:::note 工具列的 Queue on...
-**Run** 旁的 **Queue on...** 項目可以從瀏覽器把 queued run 送到這台伺服器、某個 worker 或任一空出的 slot，目前仍在審查中（[#775](https://github.com/CodefyUI/CodefyUI/issues/775)、PR [#811](https://github.com/CodefyUI/CodefyUI/pull/811)）。在它合併之前，請如下用 `cdui run` 或 `POST /api/runs` 排入 run。
-:::
+### 排入佇列... {/* #queue-on */}
+
+工具列 **Run** 旁的下拉鍵會開啟選單，其中的**排入佇列...**會把目前分頁的圖送出為 queued run（與 `cdui run` 相同的 `POST /api/runs`）：
+
+- **目標**：**本伺服器**、每個已連線的 worker 及其狀態與裝置（排空中的 worker 會列出但不能選），以及有 worker 連線後出現的**任一可用**。
+- **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。
+- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。目標為 worker 或任一可用時，錄製節點輸出會停用。
+
+**排入佇列**會送出 run、關閉對話框，並在 Runs 分頁開啟它。伺服器拒絕時，訊息會顯示在對話框內。
 
 ## 在這台機器上啟動 worker {/* #start-a-same-host-worker */}
 
@@ -40,7 +46,7 @@ cdui agent stop            # when you are done
 
 ## 選擇裝置 {/* #choose-devices */}
 
-queued run 以 `cdui run` 的 `--target` 與 `--devices`，或 `POST /api/runs` 的 `options.target` 指定執行位置：
+queued run 可以在[排入佇列...](#queue-on)對話框、`cdui run` 的 `--target` 與 `--devices`，或 `POST /api/runs` 的 `options.target` 指定執行位置：
 
 ```bash
 # One card on this server, as before
@@ -61,10 +67,12 @@ cdui run train.json --target any --device cuda
 ```
 
 - **`local`**（預設）是這台伺服器。在這裡 run 只在一個裝置上執行：帶裝置集合時，它占用集合中每個裝置的 slot，因此不會有其他 run 被放到這些裝置上，並在第一個裝置上執行。
-- **worker 名稱**把 run 送到該 worker。該 worker 必須已連線並提供這些裝置，否則送出會以 `400` 失敗。
+- **worker 名稱**把 run 送到該 worker。該 worker 必須在伺服器啟動後連線過並提供這些裝置，否則送出會以 `400` 失敗。目前離線的 worker 不會造成拒絕：run 會等它重新連線。
 - **`any`** 依名稱順序選第一個已連線、未排空且有空 slot 的 worker，這台伺服器排最後。
 
 **run 內的裝置名稱。** worker 上的 run 只看得到自己的卡，並依你列出的順序從 0 重新編號。以 `--devices cuda:2,cuda:0` 為例，run 的 `cuda:0` 是機器的 `cuda:2`，run 的 `cuda:1` 是機器的 `cuda:0`。**device** 參數為 `auto` 的節點跟隨 run 的裝置（第一張卡）；要把節點放到集合中的另一張卡，把它的 **device** 設為那張卡在 run 內的名稱，此例為 `cuda:1`。run 會把對應關係記在 `execution_facts` 的 `visible_devices` 與 `device_aliases`。請參閱[裝置後端](/advanced/device-backends#addressing-one-card-out-of-several)。
+
+**Sweep 與 study。** `POST /api/sweeps` 與 `POST /api/studies` 會把 `options.target` 傳給每個子 run。使用 `"target": {"worker": "any"}` 且不帶 `devices` 時，每個子 run 取下一個符合 sweep 裝置種類的空 slot，所以在兩個各有一張卡的 agent 上，四個 variant 的 sweep 會同時跑兩個；worker 上帶種子的子 run 各在自己的程序中，可以並行。單一 run 會被拒絕的 target，會讓整個 sweep 或 study 在排入任何東西之前以 `400` 被拒絕。每個 variant 與 attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。New Sweep 對話框目前還沒有目標選擇器，會在之後的版本加入，現在請透過 API 設定 `target`。請參閱[執行佇列：Sweep](./run-queue#sweeps)。
 
 ## Slot 與上限 {/* #slots-and-limits */}
 
@@ -86,11 +94,11 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 - 每個裝置在最近一次心跳時的可用與總記憶體，以及 slot 的已占用 / 上限；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
 
-**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空、或在 run 送出後斷線時，queued run 會等待，run 列上的 `queue_reason` 會說明原因。**新增 worker** 顯示上面那段同機指令與其參數。
+**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 顯示上面那段同機指令與其參數。
 
 ## 畫布的行為 {/* #the-canvas */}
 
-畫布上的 **Run** 一律在伺服器程序內、以圖的裝置（否則為 Settings 中的裝置）執行，從不送到 worker。它跳過佇列，所以即使某張卡的上限是 1，它仍可能與 queued run 共用那張卡。它會在多次點擊之間保留分頁的快取輸出與模型權重，並為 Inspector 記錄輸出，這些 worker run 都做不到。要把畫布上的圖交給 worker，請先存檔，再以 `cdui run --target` 排入佇列。
+畫布上的 **Run** 一律在伺服器程序內、以圖的裝置（否則為 Settings 中的裝置）執行，從不送到 worker。它跳過佇列，所以即使某張卡的上限是 1，它仍可能與 queued run 共用那張卡。它會在多次點擊之間保留分頁的快取輸出與模型權重，並為 Inspector 記錄輸出，這些 worker run 都做不到。要把分頁中的圖交給 worker，請使用[排入佇列...](#queue-on)。
 
 ## Runs 面板中的峰值記憶體 {/* #peak-memory */}
 
