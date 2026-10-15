@@ -301,6 +301,64 @@ def test_a_run_file_is_replaced_atomically(data_root):
     assert (run_dir / "checkpoint" / "a.pt").read_bytes() == b"1"
 
 
+def _receiving(directory: Path, data: bytes) -> transfer.Receiver:
+    """A Receiver part-way through a file: the server died here."""
+    boundary = "b0undary"
+    head = "".join(
+        f"--{boundary}\r\nContent-Disposition: form-data; "
+        f'name="{name}"\r\n\r\n{value}\r\n'
+        for name, value in (("kind", "checkpoint"), ("name", "a.pt")))
+    head += (f"--{boundary}\r\nContent-Disposition: form-data; "
+             'name="file"; filename="a.pt"\r\n'
+             "Content-Type: application/octet-stream\r\n\r\n")
+    receiver = transfer.Receiver(
+        f"multipart/form-data; boundary={boundary}", lambda _f: directory,
+        1 << 20)
+    receiver.write(head.encode() + data)
+    return receiver
+
+
+def test_unfinished_uploads_are_swept_and_never_listed(data_root, tmp_path):
+    """A server that died mid-upload leaves ``.incoming-*`` files beside
+    where they would have landed: startup removes every one the upload
+    ledger names (no walk of the data folders, no age rule), and the
+    models and media listings never show one."""
+    from app.api.routes_media import list_media_files
+    from app.api.routes_models import list_model_files
+
+    died = [_receiving(data_root / "runs" / "r1", b"part"),
+            _receiving(data_root / "models" / "periodic", b"part"),
+            _receiving(data_root / "media" / "clips", b"part")]
+    for receiver in died:
+        receiver._out.flush()
+    stale = [receiver.tmp for receiver in died]
+    assert all(path.is_file() and transfer.is_incoming(path)
+               for path in stale)
+    assert len(list(transfer.incoming_ledger().iterdir())) == 3
+    # A finished upload leaves no ledger entry.
+    done = _receiving(data_root / "models", b"x")
+    done.discard()
+    assert len(list(transfer.incoming_ledger().iterdir())) == 3
+    # Listings skip them, whatever their name looks like.
+    (data_root / "models" / ".incoming-c.pt").write_bytes(b"partial")
+    (data_root / "media" / ".incoming-d.mp4").write_bytes(b"partial")
+    names = {f["filename"] for f in asyncio.run(list_model_files())}
+    assert not any(transfer.is_incoming(n) for n in names)
+    assert asyncio.run(list_media_files()) == []
+    # An entry naming something else is not followed.
+    outside = tmp_path / "precious"
+    outside.write_bytes(b"keep")
+    (transfer.incoming_ledger() / "forged").write_text(str(outside))
+    for receiver in died:
+        receiver._out.close()
+
+    assert transfer.sweep_incoming() == len(stale)
+    assert not any(path.exists() for path in stale)
+    assert outside.exists()
+    assert list(transfer.incoming_ledger().iterdir()) == []
+    assert (data_root / "models" / "periodic" / "x.pt").exists()
+
+
 def test_the_run_directory_guard_refuses_symlinks(data_root, tmp_path):
     outside = tmp_path / "precious"
     (outside / "checkpoint").mkdir(parents=True)

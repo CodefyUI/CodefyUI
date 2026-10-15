@@ -222,3 +222,34 @@ async def test_a_loopback_peer_shows_no_badge(enrolled):  # noqa: F811
     _, registry, _, worker_token = enrolled
     assert await _plain_http_after_connecting(
         "http://127.0.0.1:8000", worker_token, registry) is False
+
+
+async def test_deleting_an_ssh_worker_ends_its_waiting_runs(registry):
+    """DELETE /api/workers/ssh/{name} drops the worker from the registry:
+    a run waiting for it to reconnect ends instead of waiting forever."""
+    from app.core.workers import WORKER_GONE
+
+    class _Launcher:
+        entries = {"box": object()}
+
+        async def remove(self, name):
+            return self.entries.pop(name, None) is not None
+
+    worker, _ = registry.connect(wp.Hello(name="box", version="t"),
+                                 send=_noop, close=_noop)
+    run = registry.open_run(worker, "r1")
+    registry.disconnect(worker, "the session ended")
+    before = getattr(app.state, "ssh_launcher", None)
+    app.state.ssh_launcher = _Launcher()
+    try:
+        async with _client() as client:
+            response = await client.delete("/api/workers/ssh/box")
+    finally:
+        if before is None:
+            del app.state.ssh_launcher
+        else:
+            app.state.ssh_launcher = before
+    assert response.status_code == 200
+    assert registry.get("box") is None
+    items = [run.inbox.get_nowait() for _ in range(run.inbox.qsize())]
+    assert any(item[0] is WORKER_GONE for item in items)

@@ -243,6 +243,7 @@ async def websocket_worker(ws: WebSocket) -> None:
     await send(wp.Welcome(worker_id=hello.name,
                           heartbeat_s=registry.heartbeat_s,
                           grace_s=registry.grace_s,
+                          resume_grace_s=registry.resume_grace_s,
                           capabilities=list(wp.CAPABILITIES)))
     # Same machine needs both (#773, #780): the machine id alone is
     # self-reported, so a remote agent could copy ours; the loopback peer

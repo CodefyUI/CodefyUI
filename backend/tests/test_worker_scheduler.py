@@ -621,3 +621,32 @@ def test_a_batch_is_checked_per_child_not_per_settings():
     with pytest.raises(RunSubmitError, match="foundations:Edu-KNN"):
         service.check_placeable_batch(
             [chain("Print"), chain("foundations:Edu-KNN")], options)
+
+
+def test_a_busy_transfer_run_has_no_made_up_reason(data_label):
+    """A run that reaches a worker by the transfer backend (#785) and only
+    waits for a busy slot gets no reason: the usable-worker check counts
+    the transfer route too (it used to read "... are skipped by `any`"
+    naming nobody)."""
+    gpu = _worker("gpu", "cpu", "cuda:0")
+    gpu.capabilities = (wp.CAPABILITY_TRANSFER,)
+    scheduler = _scheduler(gpu)
+    entry = _NeedyEntry("r1", "any/cuda", _target("any", "cuda"), {
+        **NEEDS_DATA, "transfer": {"ok": True}})
+    assert scheduler.place(entry, {}).worker_id == "gpu"
+    assert scheduler.place(entry, {("gpu", "cuda:0"): 1}) is None
+    assert scheduler.explain(entry) is None
+
+
+def test_the_skipped_list_names_only_workers_that_could_take_the_run(
+        data_label):
+    """A worker ``any`` skips is named only when it would otherwise reach
+    the run's files: one without the mount (and no transfer) is not."""
+    held = _mounted(_cataloged("a-box", "cpu", "cuda:0"), data="/n")
+    bare = _cataloged("c-bare", "cpu", "cuda:0")
+    scheduler = _scheduler(held, bare)
+    entry = _NeedyEntry("r1", "any/cuda", _target("any", "cuda"), NEEDS_DATA)
+    assert scheduler.place(entry, {}) is None
+    assert scheduler.explain(entry) == (
+        "waiting for a worker that offers cuda: a-box is skipped by `any` "
+        "(node types missing, or not reported)")

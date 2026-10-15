@@ -462,6 +462,9 @@ class AgentConnection:
         self.worker_id = welcome.worker_id
         self.heartbeat_s = welcome.heartbeat_s
         self.runner.default_grace_s = welcome.grace_s
+        if welcome.resume_grace_s is not None:
+            # A transfer upload rides out an outage this long (#785).
+            self.runner.upload_window_s = welcome.resume_grace_s
         self.runner.draining = False
         shared = wp.shared_capabilities(wp.CAPABILITIES, welcome.capabilities)
         logger.info("connected as %s (worker id %s; capabilities %s)",

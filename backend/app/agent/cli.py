@@ -247,20 +247,48 @@ def validate_name(name: str) -> str:
 
 
 def parse_devices(raw: str | None) -> list[str] | None:
-    """``"cuda:0, CUDA:1"`` -> ``["cuda:0", "cuda:1"]``; None when not given."""
+    """``"cuda:0, CUDA:01, mps"`` -> ``["cuda:0", "cuda:1", "mps:0"]``, in
+    ``worker_protocol.canonical_device``'s spelling (the one the agent and
+    the control plane compare devices in); None when not given."""
+    from ..core import worker_protocol as wp
+
     if raw is None:
         return None
-    devices = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    devices = []
+    for part in raw.split(","):
+        if not part.strip():
+            continue
+        try:
+            device = wp.canonical_device(part)
+            if device == "cuda":  # which card: the agent offers cards
+                raise ValueError(device)
+            devices.append(device)
+        except ValueError:
+            raise ValueError(t(
+                f"--devices 看不懂 {part.strip()!r}（請用 cpu、cuda:N 或 mps）",
+                f"--devices: unknown device {part.strip()!r} (use cpu, "
+                "cuda:N or mps)")) from None
     if not devices:
         raise ValueError(t("--devices 是空的", "--devices is empty"))
     return devices
 
 
+def _canonical(value: str) -> str:
+    from ..core import worker_protocol as wp
+
+    try:
+        return wp.canonical_device(value)
+    except ValueError:
+        return value
+
+
 def offered_reports(facts: list[Any], wanted: list[str] | None) -> list[Any]:
-    """The probe's devices, narrowed to *wanted* (CPU is always offered)."""
+    """The probe's devices, narrowed to *wanted* (CPU is always offered).
+    Compared canonically: the probe reports MPS as ``mps``."""
     if wanted is None:
         return list(facts)
-    known = {fact.value for fact in facts}
+    wanted = [_canonical(device) for device in wanted]
+    known = {_canonical(fact.value) for fact in facts}
     unknown = [device for device in wanted if device not in known]
     if unknown:
         raise ValueError(t(
@@ -268,7 +296,7 @@ def offered_reports(facts: list[Any], wanted: list[str] | None) -> list[Any]:
             f"device(s) not found on this machine: {', '.join(unknown)} "
             f"(found: {', '.join(sorted(known))})"))
     return [fact for fact in facts
-            if fact.value in wanted or fact.kind == "cpu"]
+            if _canonical(fact.value) in wanted or fact.kind == "cpu"]
 
 
 def resolve_mounts(flags: list[str] | None) -> dict[str, str]:

@@ -52,7 +52,7 @@ Enrollment token 只顯示一次，伺服器只保存它的雜湊值。已用完
 
 **重新啟動。** `cdui agent start --control <url>` 會找到已存的憑證並用它重新連線，不需要 token。伺服器重啟後也記得已加入的 worker：在它連線前列為 `offline`，指定它的 run 會在佇列中等待。`cdui agent forget <url>` 刪除已存的憑證，下次啟動時重新加入。
 
-**移除 worker。** Workers 面板的 **移除** 會撤銷該 worker 的憑證、中斷它的連線（執行中的 run 以 `interrupted` 結束，佇列中的 run 失敗）並從清單移除；之後它的 agent 都會被拒絕。
+**移除 worker。** Workers 面板的 **移除** 會撤銷該 worker 的憑證、中斷它的連線（執行中的 run 立即以 `interrupted` 結束，包括正在等它重新連線的 run；佇列中的 run 失敗）並從清單移除；之後它的 agent 都會被拒絕。
 
 **重新核發憑證。** 名稱一經加入即被占用：一般 token 無法再次加入該名稱（伺服器回 `409`）。要讓某個 worker 換新憑證（重灌機器、遺失憑證檔），請按它卡片上的 **重新核發**：在那裡產生的 token 只能加入該 worker，指令也會帶上它的 `--name`。使用後舊憑證即失效。若該機器上還留有舊憑證檔，請先在那裡執行 `cdui agent forget <url>`。
 
@@ -201,7 +201,7 @@ cdui agent start --mount data=/nas/codefyui/data
 - run 結束後，它在 `models/`、`media/`、`output/` 底下寫出的其他檔案（CheckpointSaver、ModelSaver、VideoWrite、ImageWriter），以及被它覆寫的輸入檔，上傳到控制面自己的資料夾、相同的相對路徑，也就是同一個節點在本機 run 時寫入的位置（`CODEFYUI_MODELS_DIR` 中的 `models/best.pt`）。該處已有不同的檔案時會保留原檔，新檔加上後綴（`best-1.pt`）；內容相同則不重複存放。這些檔案的 kind 為 `output`；
 - 最後是被停止的訓練迴圈寫出的 checkpoint，存到 run 的資料夾，讓已取消 run 的續訓點留在控制面上。
 
-上傳與 run 並行，網路慢不會拖住 run；上傳完成後才回報 run 結束。`GET /api/runs/{id}/artifacts` 以 `backend: "transfer"` 和控制面上的路徑列出，執行任務面板在每一筆旁提供 **下載**（`GET /api/runs/{id}/artifacts/{artifact_id}/download`）。超過控制面上傳上限（`CODEFYUI_MAX_UPLOAD_SIZE`，500 MB）的檔案會留在 worker 上，以它在 worker 上的路徑列出，並附上 `transfer_failed` 警告。在最後一批上傳期間按停止，尚未送出的檔案就不再上傳，並以一則 `transfer_failed` 警告說明有幾個留在 worker 上。
+上傳與 run 並行，網路慢不會拖住 run；上傳完成後才回報 run 結束。`GET /api/runs/{id}/artifacts` 以 `backend: "transfer"` 和控制面上的路徑列出，執行任務面板在每一筆旁提供 **下載**（`GET /api/runs/{id}/artifacts/{artifact_id}/download`）。連不上控制面時（連線中斷，或 proxy 回應 502、503、504），agent 會持續重試，間隔逐次拉長，時間與控制面保留已斷線 worker 之 run 的時間相同（`CODEFYUI_WORKER_RESUME_GRACE_S`，預設 5 分鐘），所以在斷線期間結束的 run 仍會送回它的檔案。同一個 run 的檔案共用這段時間：用完之後，其餘每個檔案只再試一次。超過控制面上傳上限（`CODEFYUI_MAX_UPLOAD_SIZE`，500 MB）的檔案，或重試後仍未被接收的檔案，會留在 worker 上，以它在 worker 上的路徑列出，並附上 `transfer_failed` 警告。在最後一批上傳期間按停止，尚未送出的檔案就不再上傳，並以一則 `transfer_failed` 警告說明有幾個留在 worker 上。
 
 **清理。** Run 自己的資料夾屬於該 run：run 保留機制（`CODEFYUI_RUN_RETENTION_KEEP_LAST`）或 **刪除** 移除 run 時，它的 `runs/<run id>` 資料夾也一起刪除。想保留的檔案請下載或另行複製。以 `interrupted` 結束、之後被保留機制移除的 run 會保留 `checkpoint` 資料夾，與本機 run 保留續訓點的做法相同。放進資料夾的檔案屬於你，與本機 run 相同：兩者都不會刪除它們。在 worker 上，run 的資料夾跟著 agent 自己的 run 保留機制；快取不會自動清理，刪除 `agent-cache` 是安全的（需要時會重新下載）。
 
@@ -272,6 +272,8 @@ openssl x509 -in /path/to/fullchain.pem -pubkey -noout | openssl pkey -pubin -ou
 
 **在 worker 上。** Agent 會在記憶體中把 run 的 secret 值交給它的子程序，自己不會寫入任何檔案，但 worker 機器在 run 執行期間持有它們：管理那台機器的人等同被託付這些值。Worker 憑證檔只有 agent 的作業系統使用者可讀。
 
+**在控制面上。** 已加入的 worker 可以把檔案寫進控制面的 `models/`、`media/` 與 `output/` 資料夾，並記錄為它的 run 可下載的 artifact（[沒有共用檔案系統](#storage-no-shared-filesystem)），所以只加入你信任的機器。
+
 不涵蓋：mutual TLS（agent 由 worker 憑證識別）、由 CodefyUI 管理的憑證機構，以及使用者身分。
 
 ## 以服務執行 agent {/* #running-the-agent-as-a-service */}
@@ -309,6 +311,10 @@ Restart=on-failure
 RestartSec=5s
 # On SIGTERM the agent asks its runs to stop and terminates them after 10 s.
 TimeoutStopSec=60s
+# SIGTERM to the agent only: with the default (control-group) systemd also
+# signals the run subprocesses directly, and a running run ends `failed`
+# instead of `cancelled`. The rest of the group is killed after TimeoutStopSec.
+KillMode=mixed
 
 # Deliberately NOT PrivateDevices (breaks GPU access) or ProtectHome /
 # ProtectSystem=strict (both break writes to the user data dir under
@@ -327,7 +333,7 @@ sudo systemctl enable --now codefyui-agent
 journalctl -u codefyui-agent -f
 ```
 
-`--foreground` 是必要的，理由與伺服器相同：沒有它時，`cdui agent start` 會啟動背景 agent 後就結束，而 systemd 會把 `Type=exec` 服務主程序的結束視為服務結束。因版本不同而被拒的 agent 會以錯誤結束，`Restart=on-failure` 會每 5 秒重試一次直到你更新；更新期間請先 `systemctl stop codefyui-agent`。SSH worker 不需要 unit：控制面會讓它的 agent 持續執行。
+`--foreground` 是必要的，理由與伺服器相同：沒有它時，`cdui agent start` 會啟動背景 agent 後就結束，而 systemd 會把 `Type=exec` 服務主程序的結束視為服務結束。因版本不同而被拒的 agent 會以錯誤結束，`Restart=on-failure` 會每 5 秒重試一次直到你更新；更新期間請先 `systemctl stop codefyui-agent`。請保留 `KillMode=mixed`：它讓 agent 自己停止它的 run，執行中的 run 會以 `cancelled` 結束（訓練迴圈會寫下中斷 checkpoint）；使用 systemd 的預設值時，run 子程序會直接收到 SIGTERM，run 會以 `failed` 結束，錯誤為 `run subprocess exited with code -15`。SSH worker 不需要 unit：控制面會讓它的 agent 持續執行。
 
 ## 限制 {/* #limits */}
 

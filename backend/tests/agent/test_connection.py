@@ -32,10 +32,12 @@ class FakeControlPlane:
     """Answers ``hello`` with ``welcome`` (or ``reject``) and records frames."""
 
     def __init__(self, *, reject: str | None = None,
-                 heartbeat_s: float = 0.2, grace_s: float = 5.0) -> None:
+                 heartbeat_s: float = 0.2, grace_s: float = 5.0,
+                 resume_grace_s: float | None = None) -> None:
         self.reject = reject
         self.heartbeat_s = heartbeat_s
         self.grace_s = grace_s
+        self.resume_grace_s = resume_grace_s
         self.frames: list[tuple[int, Any]] = []
         self.paths: list[str] = []
         self.tokens: list[str | None] = []
@@ -74,7 +76,7 @@ class FakeControlPlane:
                 return
             await ws.send(wp.encode_frame(wp.Welcome(
                 worker_id=f"w-{number}", heartbeat_s=self.heartbeat_s,
-                grace_s=self.grace_s)))
+                grace_s=self.grace_s, resume_grace_s=self.resume_grace_s)))
             async for raw in ws:
                 self._record(number, wp.decode_agent_frame(raw))
         except websockets.exceptions.ConnectionClosed:
@@ -373,3 +375,21 @@ async def test_cancel_grace_falls_back_to_assign_then_welcome(tmp_path):
             timeout=10)
         assert finished.status == "interrupted"
 
+
+
+async def test_uploads_retry_for_the_control_planes_resume_grace(tmp_path):
+    """``welcome.resume_grace_s`` sets how long a transfer run's uploads
+    ride out an outage (#785); without it, the default."""
+    from app.agent import transfer as tr
+
+    async with FakeControlPlane() as cp, Agent(tmp_path, cp.url) as agent:
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        await asyncio.sleep(0.1)
+        assert agent.runner.upload_window_s == tr.UPLOAD_RETRY_WINDOW_S
+    async with FakeControlPlane(resume_grace_s=1800) as cp, \
+            Agent(tmp_path, cp.url) as agent:
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        deadline = time.monotonic() + 5
+        while agent.runner.upload_window_s != 1800:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.02)

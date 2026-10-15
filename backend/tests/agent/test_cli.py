@@ -67,6 +67,22 @@ def test_devices():
         cli.offered_reports(facts, ["cuda:7"])
 
 
+def test_devices_are_parsed_in_the_protocols_spelling():
+    """``--devices`` speaks ``worker_protocol.canonical_device``: ``mps``
+    and ``mps:0`` both name the probe's ``mps``, ``cuda:01`` is ``cuda:1``,
+    and a typo is refused with the accepted forms."""
+    assert cli.parse_devices("MPS, cuda:01") == ["mps:0", "cuda:1"]
+    for typo in ("gpu0", "cuda", " CUDA "):  # a bare cuda names no card
+        with pytest.raises(ValueError, match="cuda:N"):
+            cli.parse_devices(typo)
+    assert cli.parse_devices("cpu") == ["cpu"]
+    facts = [SimpleNamespace(value="cpu", kind="cpu"),
+             SimpleNamespace(value="mps", kind="mps")]
+    for wanted in ("mps", "mps:0"):
+        assert [f.value for f in cli.offered_reports(
+            facts, cli.parse_devices(wanted))] == ["cpu", "mps"]
+
+
 def test_control_defaults_to_the_last_cdui_start(user_data):
     asked: list[str] = []
 

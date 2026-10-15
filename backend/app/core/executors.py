@@ -810,14 +810,18 @@ class WorkerExecutor:
 
     async def _forward_cancel(self, request: ExecutionRequest,
                               worker_id: str) -> None:
-        """Watcher task: forward the run's stop as ``cancel``. Never raises."""
+        """Watcher task: forward the run's stop as ``cancel``. Never raises.
+
+        A worker that is away gets the cancel when it is back (#783). One
+        that is removed meanwhile does not keep this waiting: removal
+        (``WorkerRegistry.forget``) ends the run, which cancels this task.
+        """
         from . import worker_protocol as wp
 
         try:
             while not request.context.should_stop():
                 await asyncio.sleep(CANCEL_POLL_S)
             told = False
-            # A worker that is away gets the cancel when it is back (#783).
             while not await self._send(worker_id,
                                        wp.Cancel(run_id=request.run_id)):
                 if not told:

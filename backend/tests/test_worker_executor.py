@@ -367,6 +367,52 @@ async def test_a_stop_while_disconnected_reaches_the_worker_when_back(
     assert (await asyncio.wait_for(task, 5)).status == "cancelled"
 
 
+async def test_removing_a_disconnected_worker_ends_its_runs(registry):
+    """Remove while the run waits for a reconnect: it ends at once, and the
+    registry has nothing left to expire (the run used to hang forever)."""
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.disconnect(agent.worker, "network dropped")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    registry.forget("box", "the worker was removed")
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+    assert "the worker was removed" in outcome.error
+    assert registry.get("box") is None
+    assert agent.worker.running == {}
+
+
+async def test_removing_an_online_worker_ends_its_runs(registry):
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.forget("box")
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+
+
+async def test_a_stop_waiting_for_a_removed_worker_ends_the_run(registry):
+    """A Stop waiting for a disconnected worker does not retry forever once
+    the worker is removed: the run ends, as the user's stop."""
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    task = asyncio.create_task(WorkerExecutor(registry).run(request))
+    await agent.wait_for(wp.Assign)
+    registry.disconnect(agent.worker, "network dropped")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    request.context.cancel()
+    await asyncio.sleep(0.3)  # the watcher is retrying the cancel
+    assert not task.done()
+    registry.forget("box")
+    assert (await asyncio.wait_for(task, 5)).status == "cancelled"
+
+
 async def test_acks_come_every_n_frames_and_after_a_quiet_second(
         registry, monkeypatch):
     from app.core import executors

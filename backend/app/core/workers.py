@@ -626,8 +626,11 @@ class WorkerRegistry:
 
     def forget(self, worker_id: str,
                reason: str = "the worker was removed") -> Worker | None:
-        """Drop *worker_id*: a connected one is disconnected (its runs end
-        ``interrupted``) and its socket closed. Returns the dropped worker."""
+        """Drop *worker_id*: a connected one is disconnected and its socket
+        closed. Every run on it ends ``interrupted`` at once, including runs
+        already waiting for it to reconnect: once it is gone from the
+        registry nothing (the watchdog included) would end them. Returns the
+        dropped worker."""
         worker = self._workers.get(worker_id)
         if worker is None:
             return None
@@ -635,6 +638,8 @@ class WorkerRegistry:
             # Removed: nothing will come back for its runs (#783).
             self.disconnect(worker, reason, resume=False)
             self._spawn(_close_quietly(worker))
+        for run in list(worker.running.values()):
+            self._end(worker, run, reason)
         del self._workers[worker_id]
         logger.info("worker %s removed", worker_id)
         self._changed()

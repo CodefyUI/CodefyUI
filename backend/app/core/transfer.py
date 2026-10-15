@@ -97,6 +97,20 @@ RUNS_DIRNAME = "runs"
 #: Bytes read at a time when hashing or copying.
 CHUNK = 1024 * 1024
 
+#: The name prefix of a file an upload is being received into
+#: (:class:`Receiver`); listings skip such files.
+INCOMING_PREFIX = ".incoming-"
+#: Under the data root: one entry per upload being received, naming its
+#: temporary file, removed when the upload ends either way. What is left
+#: at startup names the temporary files a server that died mid-upload
+#: left (:func:`sweep_incoming`), without walking the data folders.
+INCOMING_LEDGER_DIRNAME = ".upload-ledger"
+
+
+def is_incoming(path: Path | str) -> bool:
+    """Whether *path* is an upload still being received (or left by one)."""
+    return Path(path).name.startswith(INCOMING_PREFIX)
+
 
 class TransferRefused(ValueError):
     """The run cannot use the transfer backend; the message says why."""
@@ -439,6 +453,41 @@ def remove_run_files(run_id: str, *, keep_checkpoints: bool = False) -> bool:
     return removed
 
 
+def incoming_ledger() -> Path:
+    from .data_paths import data_root
+
+    return data_root() / INCOMING_LEDGER_DIRNAME
+
+
+def sweep_incoming() -> int:
+    """Remove the temporary files of uploads that never finished: the ones
+    the ledger (:data:`INCOMING_LEDGER_DIRNAME`) still names. Startup only:
+    ``server.lock`` keeps one server per data directory, so no upload is in
+    progress then and every entry is stale. Reads the ledger, never walks
+    the data folders (they may be large). A named file that is not an
+    ``.incoming-*`` regular file is left alone. Blocking. How many
+    temporary files were removed."""
+    ledger = incoming_ledger()
+    if ledger.is_symlink() or not ledger.is_dir():
+        return 0
+    removed = 0
+    for entry in ledger.iterdir():
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                path = Path(entry.read_text(encoding="utf-8").strip())
+                if path.is_absolute() and is_incoming(path) \
+                        and not path.is_symlink() and path.is_file():
+                    path.unlink()
+                    removed += 1
+            entry.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not sweep %s", entry, exc_info=True)
+    if removed:
+        logger.info("removed %d unfinished upload(s) (%s*) left by an "
+                    "earlier server", removed, INCOMING_PREFIX)
+    return removed
+
+
 def _suffixed(path: Path, n: int) -> Path:
     return path.with_name(f"{path.stem}-{n}{path.suffix}")
 
@@ -512,7 +561,8 @@ class Receiver:
     ``sha256``) must come before the ``file`` part, as the agent sends them;
     the file goes to ``<directory(fields)>/.incoming-<uuid>`` (a name of its
     own per request, beside where it will land, so the final move is a
-    rename on one filesystem).
+    rename on one filesystem), recorded in the ledger
+    (:func:`incoming_ledger`) until :meth:`discard`.
     """
 
     FIELDS = ("kind", "name", "place", "sha256")
@@ -532,6 +582,7 @@ class Receiver:
         self.fields: dict[str, str] = {}
         self.size = 0
         self.tmp: Path | None = None
+        self._ledger_entry: Path | None = None
         self.got_file = False
         self._digest = hashlib.sha256()
         self._out: Any = None
@@ -581,7 +632,13 @@ class Receiver:
             self.got_file = True
             folder = self.directory(self.fields)
             folder.mkdir(parents=True, exist_ok=True)
-            self.tmp = folder / f".incoming-{uuid.uuid4().hex}"
+            token = uuid.uuid4().hex
+            self.tmp = folder / f"{INCOMING_PREFIX}{token}"
+            ledger = incoming_ledger()
+            ledger.mkdir(parents=True, exist_ok=True)
+            self._ledger_entry = ledger / token
+            self._ledger_entry.write_text(str(self.tmp.resolve()),
+                                          encoding="utf-8")
             self._out = open(self.tmp, "wb")  # noqa: SIM115 -- closed in close()
 
     def _part_data(self, data: bytes, start: int, end: int) -> None:
@@ -619,3 +676,5 @@ class Receiver:
             self._out = None
         if self.tmp is not None:
             self.tmp.unlink(missing_ok=True)
+        if self._ledger_entry is not None:
+            self._ledger_entry.unlink(missing_ok=True)
