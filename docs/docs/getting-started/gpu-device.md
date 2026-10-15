@@ -8,7 +8,7 @@ description: Choose the right PyTorch build for NVIDIA CUDA, Apple Silicon (MPS)
 
 The default PyTorch install works on every platform (CPU, and Apple Silicon via MPS). Read on only if you need a specific CUDA version, AMD ROCm/DirectML, or want to verify GPU detection.
 
-CodefyUI reads the available devices from the backend at runtime, so whatever PyTorch can see shows up in every device dropdown: Settings, the graph's own device control next to Run, and each node's **device** parameter under Advanced. Set it once, on the graph or in Settings. The node parameter is kept for older graphs; a graph runs on one device, and work that needs two devices belongs in two graphs.
+CodefyUI reads the available devices from the backend at runtime, so whatever PyTorch can see shows up in every device dropdown: Settings, the graph's own device control next to Run, and each node's **device** parameter under Advanced. Set it once, on the graph or in Settings. The node parameter's `auto` follows the run's device; a run that was given several devices may pin a node to any of them, by its in-run name `cuda:0..N-1` in the order the devices were listed.
 
 ## NVIDIA CUDA (specific version)
 

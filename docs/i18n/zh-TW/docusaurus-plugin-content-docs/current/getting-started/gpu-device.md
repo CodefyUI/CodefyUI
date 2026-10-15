@@ -8,7 +8,7 @@ description: 為 NVIDIA CUDA、Apple Silicon（MPS）或 AMD ROCm 選擇合適�
 
 預設的 PyTorch 安裝適用於所有平台（CPU，以及透過 MPS 的 Apple Silicon）。只有在你需要特定 CUDA 版本、AMD ROCm/DirectML，或想驗證 GPU 偵測時才需要繼續往下讀。
 
-CodefyUI 會在執行階段從後端讀取可用的裝置，所以只要 PyTorch 看得到的，都會出現在每個裝置下拉選單裡：設定、執行旁邊這張圖自己的裝置控制項，以及每個節點「進階」裡的 **device** 參數。在圖上或設定裡設一次即可。節點參數是為舊圖保留的；一張圖只在一個裝置上執行，需要兩個裝置的工作應拆成兩張圖。
+CodefyUI 會在執行階段從後端讀取可用的裝置，所以只要 PyTorch 看得到的，都會出現在每個裝置下拉選單裡：設定、執行旁邊這張圖自己的裝置控制項，以及每個節點「進階」裡的 **device** 參數。在圖上或設定裡設一次即可。節點參數的 `auto` 跟隨這次執行的裝置；拿到多個裝置的執行可以把節點固定在其中任一個，用的是執行內的名稱 `cuda:0..N-1`，依裝置列出的順序。
 
 ## NVIDIA CUDA（特定版本） {/* #nvidia-cuda-specific-version */}
 

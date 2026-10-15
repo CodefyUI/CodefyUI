@@ -2836,3 +2836,90 @@ def test_the_convex_case_is_still_grouped_into_one_function_per_instance():
     script = generate_python(nodes, edges, subgraphs=subgraphs)
     assert len(_subgraph_function_names(script)) == 2
     assert "inlined" not in script
+
+
+# ── the device description is not part of the export (#774) ──────────────
+
+#: ``DEVICE_PARAM_DESCRIPTION`` before #774 rewrote it.
+_PRE_774_DEVICE_DESCRIPTION = (
+    "Device for this node. Leave it on 'auto' to use the graph's device "
+    "(the toolbar assignment, or Settings when the graph has none). "
+    "A graph runs on one device; if part of the work needs a different one, "
+    "split it into two graphs."
+)
+
+
+def _pinned_device_graph(device: str) -> tuple[list[dict], list[dict]]:
+    """Start -> ModelLoader with its own ``device`` param."""
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "load", "type": "ModelLoader", "position": {"x": 0, "y": 0},
+         "data": {"params": {"path": "w.pt", "load_mode": "full_model",
+                             "device": device, "strict": True}}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "load",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+    ]
+    return nodes, edges
+
+
+def _with_pre_774_description(monkeypatch) -> int:
+    """Put the old description back into every node module that shows it."""
+    patched = 0
+    for name, module in list(sys.modules.items()):
+        if (name.startswith("app.nodes.") and module is not None
+                and hasattr(module, "DEVICE_PARAM_DESCRIPTION")):
+            monkeypatch.setattr(module, "DEVICE_PARAM_DESCRIPTION",
+                                _PRE_774_DEVICE_DESCRIPTION)
+            patched += 1
+    return patched
+
+
+@pytest.fixture
+def _four_fake_cards(monkeypatch):
+    import torch
+
+    from app.core.device_utils import get_available_devices
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_name",
+                        lambda index=0: f"Fake GPU {index}")
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    get_available_devices.cache_clear()
+    yield
+    get_available_devices.cache_clear()
+
+
+def test_a_pinned_device_exports_byte_identically_across_the_774_text(
+        monkeypatch, _four_fake_cards):
+    """The export reads params, never their descriptions, so rewriting
+    ``DEVICE_PARAM_DESCRIPTION`` leaves the script unchanged byte for byte,
+    and the node's value is written as given (no alias rewriting)."""
+    nodes, edges = _pinned_device_graph("cuda")
+    after = _generate(nodes, edges, name="pinned", device="cuda:1")
+    assert _with_pre_774_description(monkeypatch) == 13
+    before = _generate(nodes, edges, name="pinned", device="cuda:1")
+    assert after == before
+    assert "'device': 'cuda'" in after
+    assert "GRAPH_DEVICE = 'cuda:1'" in after
+
+
+def test_an_indexed_node_device_is_refused_the_same_way_across_the_774_text(
+        monkeypatch, _four_fake_cards):
+    """A node ``device="cuda:1"`` does not export today: the SELECT check in
+    ``validate_graph`` compares against the static options (#802). #774
+    does not change that; the refusal is the same before and after."""
+    from app.core.graph_engine import GraphValidationError
+
+    nodes, edges = _pinned_device_graph("cuda:1")
+    with pytest.raises(GraphValidationError) as after:
+        _generate(nodes, edges, name="pinned")
+    _with_pre_774_description(monkeypatch)
+    with pytest.raises(GraphValidationError) as before:
+        _generate(nodes, edges, name="pinned")
+    assert str(after.value) == str(before.value)
+    assert "'cuda:1' is not one of its options" in str(after.value)

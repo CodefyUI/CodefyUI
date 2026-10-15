@@ -10,7 +10,11 @@
    cards as ``CUDA_VISIBLE_DEVICES`` / ``HIP_VISIBLE_DEVICES``,
    ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` so the indices this agent reports
    (``core.resources``, NVML order) are the ones the child's torch uses,
-   and no ``CODEFYUI_DB_PATH``: the child never opens SQLite;
+   and no ``CODEFYUI_DB_PATH``: the child never opens SQLite. The cards
+   keep the order the assignment lists them in, so the run's ``cuda:K`` is
+   the K-th device of its set; ``run_started`` carries that mapping as an
+   ``execution_facts`` patch (:func:`run_facts`, #774). Node ``device``
+   params are not rewritten: ``CUDA_VISIBLE_DEVICES`` is what renumbers;
 3. reads the child's pipe on a thread of its own and forwards every message
    as a protocol frame, in order, stamped with the run's next ``seq``. The
    thread waits for each frame to be handed to the connection before it
@@ -146,6 +150,34 @@ def child_environment(device: str, devices: list[str]) -> dict[str, Any]:
     elif "cuda" not in kinds:
         env["CUDA_VISIBLE_DEVICES"] = ""
     return {"set": env, "unset": list(CHILD_UNSET_ENV)}
+
+
+def device_aliases(devices: list[str]) -> dict[str, str]:
+    """Physical CUDA card -> its name inside the run, for *devices* (#774).
+
+    With ``CUDA_VISIBLE_DEVICES=2,0`` the CUDA runtime numbers the visible
+    cards in the order listed, so the run's ``cuda:0`` is this machine's
+    ``cuda:2`` and its ``cuda:1`` is ``cuda:0``: the alias is the card's
+    position in *devices*, which is why the order of a device set matters.
+    ``{}`` when the set names no CUDA card.
+    """
+    return {f"cuda:{index}": f"cuda:{position}"
+            for position, index in enumerate(cuda_indices(devices))}
+
+
+def run_facts(env: dict[str, Any], devices: list[str]) -> dict[str, Any]:
+    """What the run subprocess sees of this machine's devices (#774).
+
+    Merged into the run's ``execution_facts`` by the control plane from
+    ``run_started``. ``visible_devices`` is ``CUDA_VISIBLE_DEVICES``
+    exactly as the subprocess gets it from *env* (``""`` for a run that
+    sees no card, ``None`` when the agent left the inherited value in
+    place); ``device_aliases`` is :func:`device_aliases`.
+    """
+    return {
+        "visible_devices": (env.get("set") or {}).get("CUDA_VISIBLE_DEVICES"),
+        "device_aliases": device_aliases(devices),
+    }
 
 
 def read_tail(path: Path, limit: int = STDERR_TAIL_BYTES) -> str:
@@ -379,11 +411,12 @@ class Runner:
         run_dir = self.runs_dir / frame.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / OUTPUT_LOG
+        env = child_environment(frame.device, devices)
+        facts = run_facts(env, list(devices) or [frame.device])
         spec = {
             "run_id": frame.run_id, "graph": frame.graph,
             "options": frame.options, "device": device,
-            "env": child_environment(frame.device, devices),
-            "log_path": str(log_path),
+            "env": env, "log_path": str(log_path),
         }
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)
@@ -408,7 +441,8 @@ class Runner:
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
         await self.send(wp.RunStarted(run_id=frame.run_id,
-                                      seq=handle.next_seq(), pid=process.pid))
+                                      seq=handle.next_seq(), pid=process.pid,
+                                      execution_facts=facts))
         handle.reader = threading.Thread(
             target=self._read, args=(handle, self._loop),
             name=f"run-reader-{frame.run_id}", daemon=True)
