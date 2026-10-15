@@ -418,6 +418,18 @@ describe('WorkersPanel', () => {
     await act(async () => answer());
   });
 
+  it('says never for a worker never seen, and opens a re-key dialog for it', async () => {
+    const dialog = await openPanel([worker('new-box', { status: 'offline', connected_at: null, last_heartbeat_at: null })]);
+    const card = within(dialog).getByRole('article', { name: 'new-box' });
+    expect(within(card).getByText('never')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Re-key' }));
+    const add = await screen.findByRole('dialog', { name: 'Add a worker' });
+    await settle();
+    expect(within(add).getByText(/Re-key new-box/)).toBeInTheDocument();
+    fireEvent.keyDown(add, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();
+  });
+
   it('renders in zh-TW', async () => {
     useI18n.setState({ locale: 'zh-TW' });
     const dialog = await openPanel([worker('a')]);

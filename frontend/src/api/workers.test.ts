@@ -141,9 +141,12 @@ describe('enrollment tokens', () => {
     await expect(deleteEnrollment('x')).rejects.toThrow("no enrollment token 'x'");
   });
 
-  it('builds the agent command', () => {
+  it('builds the agent command, with the name for a re-key token', () => {
     expect(agentEnrollCommand('http://10.0.0.2:8000', 'abcdef.0123456789abcdef')).toBe(
       'cdui agent start --control http://10.0.0.2:8000 --token abcdef.0123456789abcdef',
+    );
+    expect(agentEnrollCommand('http://10.0.0.2:8000', 'abcdef.0123456789abcdef', 'gpu-box')).toBe(
+      'cdui agent start --control http://10.0.0.2:8000 --token abcdef.0123456789abcdef --name gpu-box',
     );
   });
 });

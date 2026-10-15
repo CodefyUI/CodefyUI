@@ -36,6 +36,8 @@ const MAX_USES = 100;
 
 interface AddWorkerDialogProps {
   mode: AddWorkerMode;
+  /** Re-key this enrolled worker: the token is bound to it (#780). */
+  rekey?: string | null;
   onClose: () => void;
 }
 
@@ -103,7 +105,7 @@ function SameHostInstructions() {
  * dial. The tokens already issued are listed (never their secrets) with a
  * revoke button each.
  */
-function RemoteInstructions() {
+function RemoteInstructions({ rekey }: { rekey: string | null }) {
   const { t, locale } = useI18n();
   const [list, setList] = useState<EnrollmentList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -132,7 +134,7 @@ function RemoteInstructions() {
     if (busy) return;
     setBusy(true);
     try {
-      setCreated(await createEnrollment({ ttl_s: ttl, uses }));
+      setCreated(await createEnrollment(rekey ? { ttl_s: ttl, uses, worker: rekey } : { ttl_s: ttl, uses }));
       await load();
     } catch (err) {
       setError(errorText(err));
@@ -155,7 +157,7 @@ function RemoteInstructions() {
   const others = list?.other_machine_urls ?? [];
   return (
     <>
-      <p>{t('workers.add.remote.intro')}</p>
+      <p>{rekey ? t('workers.add.rekey.intro', { name: rekey }) : t('workers.add.remote.intro')}</p>
       {error !== null && <div className={styles.error} role="alert">{friendlyError(error)}</div>}
       {list?.listening_on_loopback && (
         <p className={styles.warn} role="note">{t('workers.add.remote.loopbackServer')}</p>
@@ -216,7 +218,7 @@ function RemoteInstructions() {
       {created !== null && (
         <>
           <p>{t('workers.add.remote.command')}</p>
-          <CommandLine command={agentEnrollCommand(address || created.control_url, created.token)} />
+          <CommandLine command={agentEnrollCommand(address || created.control_url, created.token, created.worker)} />
           <p className={styles.muted}>{t('workers.add.remote.restart')}</p>
         </>
       )}
@@ -230,6 +232,9 @@ function RemoteInstructions() {
             <li key={entry.id} className={styles.tokenRow}>
               <code>{entry.id}</code>
               {entry.label && <span>{entry.label}</span>}
+              {entry.worker && (
+                <span className={styles.fact}>{t('workers.add.remote.token.rekeys', { name: entry.worker })}</span>
+              )}
               <span className={`${styles.chip} ${styles[`chip_${entry.state}`]}`}>
                 {t(`workers.add.remote.state.${entry.state}`)}
               </span>
@@ -257,7 +262,7 @@ function RemoteInstructions() {
 }
 
 /** The Workers panel's "Add worker" dialog, over the panel. */
-export function AddWorkerDialog({ mode, onClose }: AddWorkerDialogProps) {
+export function AddWorkerDialog({ mode, rekey = null, onClose }: AddWorkerDialogProps) {
   const { t } = useI18n();
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -333,7 +338,7 @@ export function AddWorkerDialog({ mode, onClose }: AddWorkerDialogProps) {
               {t('workers.add.mode.sameHost')}
             </button>
           </div>
-          {current === 'remote' ? <RemoteInstructions /> : <SameHostInstructions />}
+          {current === 'remote' ? <RemoteInstructions rekey={rekey} /> : <SameHostInstructions />}
         </div>
       </div>
     </div>,

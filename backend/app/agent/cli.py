@@ -380,14 +380,18 @@ def cmd_stop(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_running(pid: int) -> int:
+    _say(f"agent 已在執行（PID {pid}）。用 cdui agent stop 停止它。",
+         f"The agent is already running (PID {pid}). Stop it with "
+         "cdui agent stop.")
+    return 0
+
+
 def _start_background(args: argparse.Namespace, control: Any,
                       token: Any) -> int:
     existing = running_agent_pid()
     if existing is not None:
-        _say(f"agent 已在執行（PID {existing}）。用 cdui agent stop 停止它。",
-             f"The agent is already running (PID {existing}). Stop it with "
-             "cdui agent stop.")
-        return 0
+        return _report_running(existing)
     argv = [sys.executable, "-m", "app.agent", "start", "--foreground",
             DAEMON_FLAG]
     env = dict(os.environ)
@@ -611,6 +615,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if not args.foreground and not args.daemonized:
+        # Before anything is asked or enrolled: a single-use token spent on
+        # a start that then finds an agent running would be lost.
+        existing = running_agent_pid()
+        if existing is not None:
+            return _report_running(existing)
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
     stored = None

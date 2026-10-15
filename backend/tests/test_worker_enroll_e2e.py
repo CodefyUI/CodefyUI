@@ -123,7 +123,8 @@ def test_an_agent_enrolls_reconnects_with_its_credential_and_is_revoked(
         assert record["worker_id"] == NAME
 
         removed = client.delete(f"/api/workers/{NAME}")
-        assert removed.json() == {"id": NAME, "revoked": True}
+        assert removed.json() == {"id": NAME, "revoked": True,
+                                  "failed_runs": []}
         assert _worker(client) is None
         # It dials again (backoff starts at 1 s) and is refused each time.
         time.sleep(4)

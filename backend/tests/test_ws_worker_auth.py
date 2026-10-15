@@ -134,7 +134,7 @@ async def test_revoking_disconnects_and_refuses_reconnects(enrolled,
             agent = FakeAgent(ws)
             await agent.hello("gpu-box")
             removed = await client.delete("/api/workers/gpu-box")
-            assert removed.json() == {"id": "gpu-box", "revoked": True}
+            assert removed.json()["revoked"] is True
             with pytest.raises(Exception):  # the server closed the socket
                 await agent.recv(timeout=5)
         assert registry.get("gpu-box") is None
@@ -151,7 +151,7 @@ async def test_a_rekeyed_worker_loses_its_connection(enrolled, remote_peer):
             agent = FakeAgent(ws)
             await agent.hello("gpu-box")
             created = (await client.post("/api/workers/enrollments",
-                                         json={})).json()
+                                         json={"worker": "gpu-box"})).json()
             response = await client.post("/api/workers/enroll", json={
                 "token": created["token"], "name": "gpu-box"})
             assert response.status_code == 200

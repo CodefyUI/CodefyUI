@@ -478,6 +478,8 @@ ALTER TABLE exec_runs ADD COLUMN devices TEXT;
 # - ``worker_enrollments``: one-time join tokens. ``id`` is the token's
 #   public half (the six characters before the dot); ``uses_left`` counts
 #   down to 0 and a used-up or expired row stays listed until deleted.
+#   ``worker`` binds a token to one enrolled worker: it is the only kind
+#   of token that can enroll a name that is already taken (a re-key).
 MIGRATION_009 = """
 CREATE TABLE workers (
   id            TEXT PRIMARY KEY,           -- the worker name
@@ -497,7 +499,8 @@ CREATE TABLE worker_enrollments (
   expires_at  TEXT NOT NULL,
   uses_left   INTEGER NOT NULL,
   created_at  TEXT NOT NULL,
-  label       TEXT
+  label       TEXT,
+  worker      TEXT                          -- bound: may enroll (re-key) this name only
 );
 """
 

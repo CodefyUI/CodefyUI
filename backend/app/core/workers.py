@@ -116,7 +116,9 @@ class Worker:
     shared: dict[str, str] = field(default_factory=dict)
     connected_at: float = field(default_factory=time.time)
     last_heartbeat: float = field(default_factory=time.monotonic)
-    last_heartbeat_at: float = field(default_factory=time.time)
+    #: Epoch seconds of its last heartbeat (or, for a worker known from the
+    #: table, when it was last seen); None for one never seen.
+    last_heartbeat_at: float | None = field(default_factory=time.time)
     running: dict[str, WorkerRun] = field(default_factory=dict)
     #: When runs inherited from a replaced connection stop waiting for
     #: ``run_alive`` (monotonic), or None.
@@ -362,7 +364,7 @@ class WorkerRegistry:
         ISO text). A name already registered is left as it is. The devices
         are the ones it last reported, so a run can target it and wait.
         """
-        from .worker_store import iso_to_epoch
+        from .db import iso_to_epoch
 
         added = []
         for entry in known:
@@ -375,13 +377,14 @@ class WorkerRegistry:
                 except ValueError:
                     logger.warning("worker %s: a stored device report "
                                    "could not be read; left out", entry.name)
-            seen = iso_to_epoch(entry.last_seen_at) or 0.0
+            seen = iso_to_epoch(entry.last_seen_at)
             worker = Worker(
                 id=entry.name, name=entry.name, version="", fingerprint=None,
                 platform=dict(entry.platform), mounts=dict(entry.mounts),
                 devices=devices, send=_not_connected, close=_nothing,
                 heartbeat_s=self.heartbeat_s, status=STATUS_OFFLINE,
-                connected_at=seen, last_heartbeat_at=seen, enrolled=True)
+                connected_at=seen or 0.0, last_heartbeat_at=seen,
+                enrolled=True)
             self._workers[entry.name] = worker
             added.append(worker)
         if added:

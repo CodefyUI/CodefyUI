@@ -46,6 +46,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -55,9 +56,10 @@ from pydantic import BaseModel, Field
 from ..core import worker_protocol as wp
 from ..core import worker_store as ws_store
 from ..core.api_keys import require_session_token
-from ..core.auth import allowed_hosts, bound_to_loopback
+from ..core.auth import allowed_hosts, bound_to_loopback, is_loopback_peer
 from ..core.scheduling import LOCAL_WORKER_ID, slot_for
 from ..core.worker_protocol import canonical_device
+from ..core.workers import CREDENTIAL_SESSION
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +77,9 @@ MAX_DEVICES = 256
 
 class TokenBucket:
     """A per-key token bucket, in memory: *burst* requests at once, then
-    *per_minute* a minute. Keys idle long enough to be full again are
-    pruned, so the table cannot grow without bound."""
+    *per_minute* a minute. At most *max_keys* keys are kept, least recently
+    used first out, so a flood of addresses cannot grow the table without
+    bound (an evicted key starts again with a full bucket)."""
 
     def __init__(self, burst: int = ENROLL_BURST,
                  per_minute: float = ENROLL_PER_MINUTE,
@@ -85,7 +88,7 @@ class TokenBucket:
         self.rate = per_minute / 60.0
         self._clock = clock
         self._max_keys = max_keys
-        self._buckets: dict[str, tuple[float, float]] = {}
+        self._buckets: OrderedDict[str, tuple[float, float]] = OrderedDict()
         self._lock = threading.Lock()
 
     def take(self, key: str) -> float:
@@ -95,19 +98,12 @@ class TokenBucket:
             now = self._clock()
             tokens, at = self._buckets.get(key, (float(self.burst), now))
             tokens = min(float(self.burst), tokens + (now - at) * self.rate)
-            if tokens < 1.0:
-                self._buckets[key] = (tokens, now)
-                return (1.0 - tokens) / self.rate
-            self._buckets[key] = (tokens - 1.0, now)
-            if len(self._buckets) > self._max_keys:
-                self._prune(now)
-            return 0.0
-
-    def _prune(self, now: float) -> None:
-        full_after = self.burst / self.rate
-        for key, (_, at) in list(self._buckets.items()):
-            if now - at >= full_after:
-                del self._buckets[key]
+            allowed = tokens >= 1.0
+            self._buckets[key] = (tokens - 1.0 if allowed else tokens, now)
+            self._buckets.move_to_end(key)
+            while len(self._buckets) > self._max_keys:
+                self._buckets.popitem(last=False)
+            return 0.0 if allowed else (1.0 - tokens) / self.rate
 
 
 enroll_limiter = TokenBucket()
@@ -190,6 +186,9 @@ class EnrollmentRequest(BaseModel):
                        le=ws_store.MAX_TTL_S)
     uses: int = Field(ws_store.DEFAULT_USES, ge=1, le=ws_store.MAX_USES)
     label: str | None = Field(None, max_length=100)
+    #: Bind the token to this known worker: a re-key token, which is the
+    #: only kind that can enroll a name already taken, and only that one.
+    worker: str | None = Field(None, max_length=63)
 
 
 def public_url(request: Request) -> str:
@@ -201,8 +200,9 @@ def public_url(request: Request) -> str:
     return f"{request.url.scheme}://{host}{root}"
 
 
-def agent_command(url: str, token: str) -> str:
-    return f"cdui agent start --control {url} --token {token}"
+def agent_command(url: str, token: str, name: str | None = None) -> str:
+    command = f"cdui agent start --control {url} --token {token}"
+    return command if name is None else f"{command} --name {name}"
 
 
 _LOOPBACK_ENTRY = re.compile(r"(127\.[0-9.]+|localhost):[0-9]+")
@@ -221,14 +221,22 @@ def other_machine_urls(scheme: str) -> list[str]:
 async def create_enrollment(request: Request,
                             body: EnrollmentRequest) -> dict[str, Any]:
     """A new enrollment token and the command that uses it. The token is
-    in this response only; the server keeps its hash."""
-    entry = await _store(request).create_enrollment(
-        ttl_s=body.ttl_s, uses=body.uses, label=body.label)
+    in this response only; the server keeps its hash. With ``worker`` it
+    is a re-key token for that known worker, and the command names it."""
+    store = _store(request)
+    if body.worker is not None:
+        registry = _registry(request)
+        if registry.get(body.worker) is None:
+            raise HTTPException(404, f"no worker named {body.worker!r}")
+    entry = await store.create_enrollment(
+        ttl_s=body.ttl_s, uses=body.uses, label=body.label,
+        worker=body.worker)
     url = public_url(request)
-    logger.info("enrollment token %s created (%d use(s), expires %s)",
-                entry["id"], entry["uses_left"], entry["expires_at"])
+    logger.info("enrollment token %s created (%d use(s), expires %s%s)",
+                entry["id"], entry["uses_left"], entry["expires_at"],
+                f", re-keys {body.worker}" if body.worker else "")
     return {**entry, "control_url": url,
-            "command": agent_command(url, entry["token"])}
+            "command": agent_command(url, entry["token"], body.worker)}
 
 
 @router.get("/enrollments", dependencies=[Depends(require_session_token)])
@@ -289,20 +297,25 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
                                  "Workers panel generates)")
     store = _store(request)
     devices = [d.model_dump() for d in body.devices]
+    registry = getattr(request.app.state, "worker_registry", None)
+    live = None if registry is None else registry.get(name)
+    # A same-host agent on the session token holds the name without a row.
+    held = (live is not None and live.online
+            and live.credential == CREDENTIAL_SESSION)
     try:
         worker_token, rekeyed = await store.enroll(
             body.token, name=name, platform=dict(body.platform),
-            mounts=dict(body.mounts), devices=devices)
+            mounts=dict(body.mounts), devices=devices, held_elsewhere=held)
     except ws_store.EnrollmentRefused as exc:
         logger.warning("enrollment of %s from %s refused: %s", name, client,
                        exc)
-        raise HTTPException(401, str(exc)) from exc
-    registry = getattr(request.app.state, "worker_registry", None)
+        raise HTTPException(exc.status, str(exc)) from exc
     if registry is not None:
-        if rekeyed:
-            # The connection that used the old credential must not outlive it.
-            registry.kick(name, "the worker enrolled again; its old "
-                                "credential was revoked")
+        if rekeyed or held:
+            # The connection that used the old credential (or the session
+            # token, for a name now enrolled) must not outlive it.
+            registry.kick(name, "the worker was re-keyed; its old "
+                                "credential no longer works")
         registry.load_known([ws_store.KnownWorker(
             name=name, platform=dict(body.platform), mounts=dict(body.mounts),
             devices=devices, created_at="", last_seen_at=None)])
@@ -310,8 +323,7 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
         if known is not None:
             known.enrolled = True
     logger.info("worker %s enrolled from %s", name, client)
-    if request.url.scheme != "https" and not (
-            client.startswith("127.") or client in ("::1", "localhost")):
+    if request.url.scheme != "https" and not is_loopback_peer(client):
         logger.warning(
             "worker %s enrolled over plain http:// from %s: its new worker "
             "token crossed the network unencrypted; put the server behind "
@@ -323,9 +335,8 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
 async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
     """Revoke the worker's credential, disconnect it, and forget it.
 
-    Its running runs end ``interrupted`` (the socket closes); a run still
-    queued for it keeps waiting until it is cancelled or a worker by that
-    name connects again.
+    Its running runs end ``interrupted`` (the socket closes), and the runs
+    still queued for it fail at once: nothing would ever place them.
     """
     registry = _registry(request)
     store = getattr(request.app.state, "worker_store", None)
@@ -339,4 +350,7 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
         raise HTTPException(404, f"no worker named {worker_id!r}")
     if revoked:
         logger.info("worker %s: credential revoked", worker_id)
-    return {"id": worker_id, "revoked": revoked}
+    service = _service(request)
+    failed = [] if service is None else await service.fail_queued_for_worker(
+        worker_id, f"worker {worker_id} was removed")
+    return {"id": worker_id, "revoked": revoked, "failed_runs": failed}

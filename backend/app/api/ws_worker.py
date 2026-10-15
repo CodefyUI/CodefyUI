@@ -55,6 +55,7 @@ from ..core.auth import (
     TOKEN_QUERY_PARAM,
     constant_time_equals,
     host_is_allowed,
+    is_loopback_peer,
     session_token,
 )
 
@@ -64,15 +65,10 @@ router = APIRouter()
 
 #: Seconds a fresh connection has to say ``hello``.
 HELLO_TIMEOUT_S = 10.0
-#: Peers that may authenticate with the session token.
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 def _peer_is_loopback(ws: WebSocket) -> bool:
-    client = ws.client
-    host = client.host if client is not None else ""
-    return host in LOOPBACK_HOSTS or host.startswith("127.") \
-        or host == "::ffff:127.0.0.1"
+    return is_loopback_peer(ws.client.host if ws.client is not None else None)
 
 
 @dataclass(frozen=True)

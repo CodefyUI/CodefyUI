@@ -171,7 +171,8 @@ async def test_enroll_trades_the_token_for_a_worker_credential(env):
     assert worker.enrolled and worker.device_values() == ["cpu"]
     described = worker.describe()
     assert (described["status"], described["connected_at"],
-            described["enrolled"]) == ("offline", None, True)
+            described["last_heartbeat_at"], described["enrolled"]) == (
+        "offline", None, None, True)
 
 
 async def test_a_single_use_token_refuses_a_second_use(env):
@@ -226,23 +227,78 @@ async def test_an_expired_token_is_refused_and_listed_until_deleted(env):
     ("abcdef.0123456789abcdef", "Bad_Name", 400),
     ("abcdef.0123456789abcdef", "local", 400),
     ("abcdef.0123456789abcdef", "any", 400),
+    ("abcdef.0123456789abcdef", "enroll", 400),
+    ("abcdef.0123456789abcdef", "enrollments", 400),
 ])
 async def test_bad_enrollments_are_refused(env, token, name, status):
     response = await _enroll(token, name)
     assert response.status_code == status
 
 
-async def test_enrolling_a_name_again_rekeys_it(env):
-    store, registry, _ = env
+async def test_an_enrolled_name_needs_a_rekey_token(env):
+    store, registry, database = env
     async with _client() as client:
         first = await _new_token(client)
         second = await _new_token(client)
-    old = (await _enroll(first["token"])).json()["worker_token"]
-    new = (await _enroll(second["token"])).json()["worker_token"]
+        old = (await _enroll(first["token"])).json()["worker_token"]
+        # An ordinary token cannot take the name, and spends nothing.
+        taken = await _enroll(second["token"])
+        assert taken.status_code == 409
+        assert taken.json()["detail"] == (
+            "worker gpu-box is already enrolled; remove it or create a "
+            "re-key token for it")
+        listed = (await client.get("/api/workers/enrollments")).json()
+        assert {e["id"]: e["uses_left"] for e in listed["enrollments"]}[
+            second["id"]] == 1
+        # A token bound to the worker re-keys it, and names it in its command.
+        rekey = await _new_token(client, worker="gpu-box")
+        assert rekey["worker"] == "gpu-box"
+        assert rekey["command"].endswith(f"--token {rekey['token']} "
+                                         "--name gpu-box")
+    new = (await _enroll(rekey["token"])).json()["worker_token"]
     assert old != new
     assert await store.authenticate(old) is None
     assert await store.authenticate(new) == "gpu-box"
     assert len(await store.list_workers()) == 1
+
+
+async def test_a_rekey_token_enrolls_its_own_worker_only(env):
+    async with _client() as client:
+        first = await _new_token(client)
+        await _enroll(first["token"])
+        rekey = await _new_token(client, worker="gpu-box")
+        unknown = await client.post("/api/workers/enrollments",
+                                    json={"worker": "nobody"})
+    assert unknown.status_code == 404
+    other = await _enroll(rekey["token"], name="other-box")
+    assert other.status_code == 403
+    assert "re-keys worker gpu-box only" in other.json()["detail"]
+
+
+async def test_a_name_held_by_a_live_same_host_agent_is_taken(env):
+    _, registry, _ = env
+    from app.core import worker_protocol as wp
+    from app.core.workers import CREDENTIAL_SESSION
+
+    closed = []
+
+    async def noop(*_: Any) -> None:
+        return None
+
+    async def close() -> None:
+        closed.append(True)
+
+    registry.connect(wp.Hello(name="gpu-box", version="t"), send=noop,
+                     close=close, credential=CREDENTIAL_SESSION)
+    async with _client() as client:
+        plain = await _new_token(client)
+        assert (await _enroll(plain["token"])).status_code == 409
+        rekey = await _new_token(client, worker="gpu-box")
+    assert (await _enroll(rekey["token"])).status_code == 200
+    # The session-token connection does not outlive the enrollment.
+    await asyncio.sleep(0)
+    worker = registry.get("gpu-box")
+    assert closed and not worker.online and worker.enrolled
 
 
 async def test_enroll_is_rate_limited_per_client(env, monkeypatch):
@@ -256,7 +312,7 @@ async def test_enroll_is_rate_limited_per_client(env, monkeypatch):
     assert "too many" in limited.json()["detail"]
 
 
-def test_the_token_bucket_refills_and_prunes():
+def test_the_token_bucket_refills_and_keeps_the_recent_keys():
     now = [0.0]
     bucket = routes_workers.TokenBucket(burst=2, per_minute=60,
                                         clock=lambda: now[0], max_keys=2)
@@ -265,9 +321,13 @@ def test_the_token_bucket_refills_and_prunes():
     now[0] = 1.0
     assert bucket.take("a") == 0.0
     bucket.take("b")
-    now[0] = 100.0
-    bucket.take("c")  # a third key: the two full-again keys are pruned
-    assert set(bucket._buckets) == {"c"}
+    bucket.take("a")  # "a" is now the most recently used
+    bucket.take("c")  # a third key evicts the least recently used: "b"
+    assert list(bucket._buckets) == ["a", "c"]
+    # Even when every key is still limited, the table stays bounded.
+    for key in ("d", "e", "f"):
+        bucket.take(key)
+    assert len(bucket._buckets) == 2
 
 
 async def test_no_secret_reaches_the_log(env, caplog):
@@ -307,7 +367,8 @@ async def test_remove_revokes_and_forgets(env):
         removed = await client.delete("/api/workers/gpu-box")
         again = await client.delete("/api/workers/gpu-box")
         listed = (await client.get("/api/workers")).json()["workers"]
-    assert removed.json() == {"id": "gpu-box", "revoked": True}
+    assert removed.json() == {"id": "gpu-box", "revoked": True,
+                              "failed_runs": []}
     assert again.status_code == 404
     assert listed == [] and registry.get("gpu-box") is None
     assert await store.authenticate(token) is None
@@ -325,7 +386,8 @@ async def test_remove_forgets_a_session_token_worker_too(env):
     registry.disconnect(worker)
     async with _client() as client:
         removed = await client.delete("/api/workers/same-box")
-    assert removed.json() == {"id": "same-box", "revoked": False}
+    assert removed.json() == {"id": "same-box", "revoked": False,
+                              "failed_runs": []}
     assert registry.get("same-box") is None
 
 
@@ -370,7 +432,17 @@ async def test_a_restart_knows_enrolled_workers_and_runs_queue_for_them(
                 await asyncio.sleep(0.02)
         assert row["status"] == "queued"
         assert row["queue_reason"] == "waiting for worker gpu-box to reconnect"
-        await service.cancel(run_id)
+        # Removing the worker fails what waits for it, at once.
+        async with _client() as client:
+            removed = (await client.delete("/api/workers/gpu-box")).json()
+            row = (await client.get(f"/api/runs/{run_id}")).json()
+            events = (await client.get(
+                f"/api/runs/{run_id}/events")).json()["events"]
+        assert removed["failed_runs"] == [run_id]
+        assert (row["status"], row["error"]) == (
+            "failed", "worker gpu-box was removed")
+        assert events[-1]["type"] == "execution_error"
+        assert events[-1]["payload"] == {"error": "worker gpu-box was removed"}
     finally:
         await service.shutdown()
         await registry.shutdown()
@@ -388,3 +460,22 @@ async def test_a_stored_device_report_that_cannot_be_read_is_left_out(env):
     registry.load_known(await store.list_workers())
     worker = registry.get("gpu-box")
     assert worker.device_values() == ["cpu"] and worker.platform == {}
+
+
+async def test_only_post_enroll_skips_the_session_token(env):
+    async with _client(token=False) as client:
+        # DELETE /api/workers/enroll is the remove route for a worker named
+        # "enroll" (a reserved name): it still needs the session token.
+        assert (await client.delete("/api/workers/enroll")).status_code == 403
+        assert (await client.put("/api/workers/enroll",
+                                 json={})).status_code == 403
+
+
+def test_one_loopback_rule():
+    from app.core.auth import is_loopback_peer
+
+    for address in ("127.0.0.1", "127.8.9.1", "::1", "[::1]", "localhost",
+                    "::ffff:127.0.0.1", "LOCALHOST"):
+        assert is_loopback_peer(address), address
+    for address in ("10.0.0.1", "", None, "::ffff:10.0.0.1", "128.0.0.1"):
+        assert not is_loopback_peer(address), address

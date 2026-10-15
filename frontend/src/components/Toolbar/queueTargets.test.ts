@@ -5,6 +5,7 @@ import {
   anyKinds,
   connectedWorkers,
   defaultDevices,
+  targetableWorkers,
   defaultKind,
   deviceKind,
   localDeviceChoices,
@@ -52,6 +53,11 @@ describe('workerDeviceChoices / connectedWorkers', () => {
   it('leaves out disconnected and offline workers', () => {
     const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('c', 'draining', []), worker('d', 'offline', [])];
     expect(connectedWorkers(list).map((w) => w.name)).toEqual(['a', 'c']);
+  });
+
+  it('lets a run name an offline (enrolled) worker, never a disconnected one', () => {
+    const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('d', 'offline', [])];
+    expect(targetableWorkers(list).map((w) => w.name)).toEqual(['a', 'd']);
   });
 });
 

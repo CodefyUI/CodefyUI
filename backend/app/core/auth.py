@@ -70,6 +70,20 @@ def bound_to_loopback() -> bool:
     """
     return settings.HOST.strip().strip("[]").lower() in LOOPBACK_HOSTS
 
+def is_loopback_peer(address: str | None) -> bool:
+    """Is *address* (a socket peer, ``request.client.host``) this machine?
+
+    The question the worker routes ask of the CONNECTION (#780): the
+    session token is accepted on ``/ws/worker`` only from such a peer, a
+    worker counts as same-host only from one, and credentials sent from
+    anywhere else over plain HTTP are warned about. Unlike
+    :func:`bound_to_loopback`, which asks about the listening address.
+    """
+    host = (address or "").strip().strip("[]").lower()
+    return (host in LOOPBACK_HOSTS or host.startswith("127.")
+            or host.startswith("::ffff:127."))
+
+
 # We generate the token at import time. The server process keeps it in memory;
 # every restart rotates the token, which is the desired behaviour (no stale
 # tokens in random files after a crash).

@@ -122,12 +122,17 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # Paths that intentionally skip auth: the bootstrap endpoint (frontend uses
 # it to *get* the token), and Starlette's docs/openapi which are read-only
-# anyway. The Host header check still applies. Worker enrollment (#780) is
-# called by an agent on another machine, which holds an enrollment token and
-# no session token; the route checks that token and rate-limits itself.
+# anyway. The Host header check still applies.
 _AUTH_EXEMPT_PATHS = frozenset({
     "/api/auth/bootstrap",
-    routes_workers.ENROLL_PATH,
+})
+
+# (method, path) pairs that skip the session-token check, and nothing else
+# at those paths. Worker enrollment (#780) is called by an agent on another
+# machine, which holds an enrollment token and no session token; the route
+# checks that token and rate-limits itself.
+_AUTH_EXEMPT_ROUTES = frozenset({
+    ("POST", routes_workers.ENROLL_PATH),
 })
 
 # Router prefixes whose routes carry their OWN route-level auth dependency
@@ -576,7 +581,8 @@ async def auth_guard(request: Request, call_next):
     frontend obtains the token in the first place.
     """
     path = request.url.path
-    if path in _AUTH_EXEMPT_PATHS:
+    if path in _AUTH_EXEMPT_PATHS \
+            or (request.method, path) in _AUTH_EXEMPT_ROUTES:
         return await call_next(request)
     if _prefix_exempt(path):
         # /api/apps + /api/keys routes each declare exactly one explicit

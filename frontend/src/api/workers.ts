@@ -1,4 +1,4 @@
-import { apiFetch, getSessionToken } from './_auth';
+import { apiFetch } from './_auth';
 
 /**
  * Worker agents as the control plane sees them (#772): `GET /api/workers`
@@ -59,8 +59,8 @@ export interface WorkerInfo {
   running: string[];
   /** Epoch seconds; `null` for an `offline` worker. */
   connected_at: number | null;
-  /** Epoch seconds. */
-  last_heartbeat_at: number;
+  /** Epoch seconds; `null` for an enrolled worker never seen. */
+  last_heartbeat_at: number | null;
   /** It holds a worker credential the server can revoke (#780). */
   enrolled?: boolean;
   /** How its connection authenticated: `worker_token` or `session_token`. */
@@ -75,6 +75,8 @@ export interface Enrollment {
   /** The token's public half (the six characters before the dot). */
   id: string;
   label: string | null;
+  /** The worker a re-key token is bound to, or `null`. */
+  worker: string | null;
   /** ISO-8601 UTC. */
   created_at: string;
   /** ISO-8601 UTC. */
@@ -139,15 +141,19 @@ export async function removeWorker(workerId: string): Promise<void> {
 
 /** The enrollment tokens and the addresses the dialog offers (#780). */
 export async function fetchEnrollments(): Promise<EnrollmentList> {
-  // A GET that needs the session token: apiFetch adds it to writes only.
-  const token = await getSessionToken();
-  const res = await fetch(`${BASE_URL}/enrollments`, { headers: { 'X-CodefyUI-Token': token } });
+  // A GET the server guards with the session token.
+  const res = await apiFetch(`${BASE_URL}/enrollments`, {}, { authenticate: true });
   if (!res.ok) throw await failure(res, 'Enrollment tokens failed');
   return res.json();
 }
 
-/** A new enrollment token, valid for `ttl_s` seconds and `uses` agents. */
-export async function createEnrollment(options: { ttl_s: number; uses: number }): Promise<CreatedEnrollment> {
+/**
+ * A new enrollment token, valid for `ttl_s` seconds and `uses` agents.
+ * With `worker`, a re-key token: it can enroll that worker only.
+ */
+export async function createEnrollment(
+  options: { ttl_s: number; uses: number; worker?: string },
+): Promise<CreatedEnrollment> {
   const res = await apiFetch(`${BASE_URL}/enrollments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -164,6 +170,7 @@ export async function deleteEnrollment(id: string): Promise<void> {
 }
 
 /** The command a worker machine runs to enroll with *controlUrl*. */
-export function agentEnrollCommand(controlUrl: string, token: string): string {
-  return `cdui agent start --control ${controlUrl} --token ${token}`;
+export function agentEnrollCommand(controlUrl: string, token: string, name?: string | null): string {
+  const command = `cdui agent start --control ${controlUrl} --token ${token}`;
+  return name ? `${command} --name ${name}` : command;
 }

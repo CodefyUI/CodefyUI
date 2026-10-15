@@ -3198,6 +3198,32 @@ class RunService:
         return CancelOutcome(run_id=run_id, status=record.status,
                              cancelled=False)
 
+    async def fail_queued_for_worker(self, worker_id: str,
+                                     error: str) -> list[str]:
+        """Fail every run still waiting for *worker_id* (#780: the worker
+        was removed, so nothing will ever place them). Running runs are not
+        touched here; closing the worker's socket interrupts those.
+        Returns the run ids that were failed."""
+        failed: list[str] = []
+        for run_id, waiting in list(self._pending_by_id.items()):
+            if entry_target(waiting.options)[0] != worker_id:
+                continue
+            entry = self._dequeue(run_id)
+            if entry is None:  # pragma: no cover - same loop, same index
+                continue
+            self._run_secrets.pop(run_id, None)
+            landed = await self.store.mark_finished(
+                run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
+            if landed:
+                await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
+            entry.close()
+            if landed:
+                await self._notify_terminal(run_id, STATUS_FAILED)
+                failed.append(run_id)
+        if failed:
+            logger.warning("%d queued run(s) failed: %s", len(failed), error)
+        return failed
+
     async def _retire_waiting(
         self, entry: _QueuedRun, status: str, reason: str,
     ) -> CancelOutcome | None:

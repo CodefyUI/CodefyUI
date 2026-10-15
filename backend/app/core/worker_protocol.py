@@ -113,7 +113,11 @@ FinishedStatus = Literal["succeeded", "failed", "cancelled", "interrupted"]
 #: worker's name. The one definition every module imports (#772).
 TARGET_LOCAL = "local"
 TARGET_ANY = "any"
-RESERVED_WORKER_NAMES = frozenset({TARGET_LOCAL, TARGET_ANY})
+#: ``enroll`` and ``enrollments`` are taken by the REST surface
+#: (``/api/workers/enroll``, ``/api/workers/enrollments``, #780): a worker
+#: under either name would collide with them in ``/api/workers/{id}``.
+RESERVED_WORKER_NAMES = frozenset({TARGET_LOCAL, TARGET_ANY, "enroll",
+                                   "enrollments"})
 #: Worker names, matched with ``fullmatch`` (the ``target.worker`` alphabet).
 WORKER_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 

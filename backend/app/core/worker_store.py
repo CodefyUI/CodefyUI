@@ -18,8 +18,13 @@ Neither secret is stored: each table keeps the sha256 hex of its secret
 (enrollment, also short-lived and rate-limited) random secret makes a slow
 hash pointless.
 
-Same name, new enrollment: the row is re-keyed, so the old worker token
-stops working. Revoking a worker deletes its row.
+A name is taken once enrolled: an ordinary token cannot enroll a name
+that already has a row (:class:`NameTaken`, 409), which would hand that
+worker's identity to whoever holds the token. To give an enrolled worker a
+new credential (a reinstalled machine, a lost credential file), the panel
+creates a token **bound** to it (``worker`` column): that token can enroll
+that name only, and re-keys its row, so the old worker token stops working.
+Revoking a worker deletes its row.
 
 Every method is one ``Database.run`` call (the Decision A2 seam). This
 module knows nothing about the registry or the socket; ``routes_workers``
@@ -36,10 +41,9 @@ import secrets
 import sqlite3
 import string
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .db import Database, transaction, utc_now_iso
+from .db import Database, transaction, utc_iso_after, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +61,6 @@ MAX_USES = 100
 STATE_PENDING = "pending"
 STATE_EXPIRED = "expired"
 STATE_USED = "used"
-
-_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 
 def hash_secret(secret: str) -> str:
@@ -84,23 +86,24 @@ def mint_worker_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _iso_after(seconds: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)
-            ).strftime(_TIMESTAMP_FORMAT)
-
-
-def iso_to_epoch(value: str | None) -> float | None:
-    if not value:
-        return None
-    try:
-        return datetime.strptime(value, _TIMESTAMP_FORMAT).replace(
-            tzinfo=timezone.utc).timestamp()
-    except ValueError:
-        return None
-
-
 class EnrollmentRefused(Exception):
-    """An enrollment token that cannot enroll; the message says why."""
+    """An enrollment token that cannot enroll; the message says why.
+    ``status`` is the HTTP status the route answers with."""
+
+    status = 401
+
+
+class WrongWorker(EnrollmentRefused):
+    """A token bound to one worker, used for another name."""
+
+    status = 403
+
+
+class NameTaken(EnrollmentRefused):
+    """The name is enrolled (or held by a live agent) and the token is not
+    bound to it."""
+
+    status = 409
 
 
 @dataclass(frozen=True)
@@ -134,10 +137,15 @@ def _enrollment_state(row: sqlite3.Row, now: str) -> str:
 
 
 def _describe_enrollment(row: sqlite3.Row, now: str) -> dict[str, Any]:
-    return {"id": row["id"], "label": row["label"],
+    return {"id": row["id"], "label": row["label"], "worker": row["worker"],
             "created_at": row["created_at"], "expires_at": row["expires_at"],
             "uses_left": row["uses_left"],
             "state": _enrollment_state(row, now)}
+
+
+def name_taken_message(name: str) -> str:
+    return (f"worker {name} is already enrolled; remove it or create a "
+            "re-key token for it")
 
 
 class WorkerStore:
@@ -150,8 +158,10 @@ class WorkerStore:
 
     async def create_enrollment(self, *, ttl_s: int = DEFAULT_TTL_S,
                                 uses: int = DEFAULT_USES,
-                                label: str | None = None) -> dict[str, Any]:
-        """A new enrollment token. The returned ``token`` is the only copy."""
+                                label: str | None = None,
+                                worker: str | None = None) -> dict[str, Any]:
+        """A new enrollment token. The returned ``token`` is the only copy.
+        *worker* binds it: it can then enroll (re-key) that name only."""
         def _create(conn: sqlite3.Connection) -> dict[str, Any]:
             while True:
                 public, token = mint_enrollment_token()
@@ -159,10 +169,10 @@ class WorkerStore:
                 try:
                     conn.execute(
                         "INSERT INTO worker_enrollments (id, token_hash, "
-                        "expires_at, uses_left, created_at, label) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (public, hash_secret(token), _iso_after(ttl_s), uses,
-                         now, label))
+                        "expires_at, uses_left, created_at, label, worker) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (public, hash_secret(token), utc_iso_after(ttl_s),
+                         uses, now, label, worker))
                 except sqlite3.IntegrityError:
                     continue  # the public half collided; draw again
                 row = conn.execute(
@@ -192,14 +202,19 @@ class WorkerStore:
 
     async def enroll(self, token: str, *, name: str,
                      platform: dict[str, str], mounts: dict[str, str],
-                     devices: list[dict[str, Any]]) -> tuple[str, bool]:
+                     devices: list[dict[str, Any]],
+                     held_elsewhere: bool = False) -> tuple[str, bool]:
         """Spend one use of *token* on *name*. Returns ``(worker token,
         re-keyed)``; ``re-keyed`` is True when *name* was enrolled before
         (its old worker token no longer works).
 
         Raises :class:`EnrollmentRefused` for an unknown, expired or
-        used-up token. All in one transaction, so two agents racing for
-        the last use cannot both get it.
+        used-up token, :class:`WrongWorker` for a token bound to another
+        name, and :class:`NameTaken` when *name* is enrolled already, or
+        *held_elsewhere* (a live same-host agent uses it), and the token is
+        not bound to it. A refused enrollment spends nothing. All in one
+        transaction, so two agents racing for the last use cannot both get
+        it.
         """
         token_hash = hash_secret(token.strip())
         worker_token = mint_worker_token()
@@ -225,13 +240,20 @@ class WorkerStore:
                         f"enrollment token {row['id']} expired at "
                         f"{row['expires_at']}; generate a new one in the "
                         "Workers panel")
+                bound = row["worker"]
+                if bound is not None and bound != name:
+                    raise WrongWorker(
+                        f"enrollment token {row['id']} re-keys worker "
+                        f"{bound} only; start the agent with --name {bound}")
+                existing = conn.execute(
+                    "SELECT 1 FROM workers WHERE id = ?", (name,)).fetchone()
+                if (existing is not None or held_elsewhere) and bound != name:
+                    raise NameTaken(name_taken_message(name))
                 conn.execute(
                     "UPDATE worker_enrollments SET uses_left = uses_left - 1 "
                     "WHERE id = ?", (row["id"],))
                 facts = (json.dumps(platform), json.dumps(mounts),
                          json.dumps(devices))
-                existing = conn.execute(
-                    "SELECT 1 FROM workers WHERE id = ?", (name,)).fetchone()
                 if existing is None:
                     conn.execute(
                         "INSERT INTO workers (id, name, token_hash, platform, "

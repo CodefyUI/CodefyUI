@@ -240,7 +240,7 @@ describe('QueueRunDialog: this server', () => {
 });
 
 describe('QueueRunDialog: workers', () => {
-  it('lists connected workers with status and devices, leaving out the disconnected and offline, disabling the draining', async () => {
+  it('lists workers with status and devices, an offline one too, leaving out the disconnected, disabling the draining', async () => {
     workersMock.fetchWorkers.mockResolvedValue([
       worker({ name: 'gpu-box' }),
       worker({ name: 'slow-box', status: 'degraded', devices: [] }),
@@ -255,9 +255,14 @@ describe('QueueRunDialog: workers', () => {
       'gpu-box (Online): cpu, cuda:0, cuda:1, cuda:2',
       'slow-box (Degraded): no devices',
       'busy-box (Draining): cpu, cuda:0, cuda:1, cuda:2',
+      'cold-box (Offline): cpu, cuda:0, cuda:1, cuda:2',
       'Any available',
     ]);
     expect(options[3]).toBeDisabled();
+    expect(screen.queryByText(/is offline/)).toBeNull();
+    // An offline worker can be chosen; the run waits for it.
+    fireEvent.change(targetSelect(), { target: { value: 'cold-box' } });
+    expect(screen.getByText('cold-box is offline: the run waits in the queue until it connects.')).toBeInTheDocument();
   });
 
   it('builds a device set of one kind and shows each card under its in-run name', async () => {

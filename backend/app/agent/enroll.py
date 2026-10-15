@@ -112,9 +112,19 @@ def save_credential(user_data: Path, control_url: str, worker_id: str,
 
 def forget_credential(user_data: Path, control_url: str) -> Path | None:
     """Delete the credential for *control_url*. Returns its path, or None
-    when there was none."""
+    when there was none. A file at that path whose stored URL is another
+    control plane's (the same host and port under another path) is left
+    alone; one that cannot be read is deleted (nothing could use it)."""
     path = credential_path(user_data, control_url)
     if not path.exists():
+        return None
+    try:
+        stored_url = str(json.loads(path.read_text(encoding="utf-8"))
+                         ["control_url"])
+        other = normalize_url(stored_url) != normalize_url(control_url)
+    except (OSError, ValueError, KeyError, TypeError):
+        other = False
+    if other:
         return None
     path.unlink()
     return path

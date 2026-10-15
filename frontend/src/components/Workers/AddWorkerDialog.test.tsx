@@ -36,6 +36,7 @@ function enrollment(id: string, extra: Partial<Enrollment> = {}): Enrollment {
   return {
     id,
     label: null,
+    worker: null,
     created_at: '2026-10-15T00:00:00.000000Z',
     expires_at: '2026-10-16T00:00:00.000000Z',
     uses_left: 1,
@@ -320,5 +321,22 @@ describe('isLoopbackUrl', () => {
     expect(isLoopbackUrl('http://10.0.0.7:8000')).toBe(false);
     expect(isLoopbackUrl('not a url')).toBe(false);
     expect(isLoopbackUrl('')).toBe(false);
+  });
+});
+
+describe('AddWorkerDialog (re-key, #780)', () => {
+  it('generates a token bound to the worker and names it in the command', async () => {
+    vi.mocked(createEnrollment).mockResolvedValue(created({ worker: 'gpu-box' }));
+    vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ enrollments: [enrollment('abcdef', { worker: 'gpu-box' })] }));
+    render(<AddWorkerDialog mode="remote" rekey="gpu-box" onClose={vi.fn()} />);
+    await settle();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/Re-key gpu-box/)).toBeInTheDocument();
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    expect(createEnrollment).toHaveBeenCalledWith({ ttl_s: 86400, uses: 1, worker: 'gpu-box' });
+    expect(within(dialog).getByText(
+      `cdui agent start --control http://192.168.1.5:8000 --token ${TOKEN} --name gpu-box`,
+    )).toBeInTheDocument();
+    expect(within(dialog).getByText('re-keys gpu-box')).toBeInTheDocument();
   });
 });

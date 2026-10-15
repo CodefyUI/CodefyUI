@@ -270,3 +270,23 @@ def test_forget_without_a_credential_and_with_a_bad_url(user_data, capsys):
     assert cli.main(["forget", "http://nowhere:1"]) == 0
     assert "No credential" in capsys.readouterr().out
     assert cli.main(["forget", "nowhere"]) == 2
+
+
+def test_forget_leaves_another_control_planes_credential(tmp_path):
+    path = agent_enroll.save_credential(tmp_path, "http://box:8000/sub",
+                                        "gpu-box", "secret")
+    assert agent_enroll.forget_credential(tmp_path, "http://box:8000") is None
+    assert path.exists()
+    assert agent_enroll.forget_credential(tmp_path,
+                                          "http://BOX:8000/sub/") == path
+    assert not path.exists()
+
+
+def test_a_running_agent_is_reported_before_any_enrollment(cp, user_data,
+                                                          monkeypatch,
+                                                          capsys):
+    monkeypatch.setattr(cli, "running_agent_pid", lambda: 4242)
+    assert cli.main(["start", "--control", cp.url, "--token",
+                     ENROLL_TOKEN]) == 0
+    assert cp.requests == []
+    assert "already running (PID 4242)" in capsys.readouterr().out

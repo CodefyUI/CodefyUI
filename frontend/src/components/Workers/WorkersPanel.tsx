@@ -97,12 +97,14 @@ function VersionLine({ version, serverVersion }: { version: string; serverVersio
 /** Statuses whose worker has no live connection: removing one ends nothing. */
 const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
 
-function WorkerCard({ worker, serverVersion, now, onRemoved }: {
+function WorkerCard({ worker, serverVersion, now, onRemoved, onRekey }: {
   worker: WorkerInfo;
   serverVersion: string | null;
   now: number;
   /** Called after this card's worker was removed, to keep the focus in the dialog. */
   onRemoved: () => void;
+  /** Open the Add worker dialog for a token bound to this worker (#780). */
+  onRekey: (workerId: string) => void;
 }) {
   const { t, locale } = useI18n();
   const busy = useWorkerStore((s) => Boolean(s.busy[worker.id]));
@@ -162,6 +164,14 @@ function WorkerCard({ worker, serverVersion, now, onRemoved }: {
         </button>
         <button
           type="button"
+          className={styles.btn}
+          title={t('workers.rekey.title')}
+          onClick={() => onRekey(worker.id)}
+        >
+          {t('workers.rekey')}
+        </button>
+        <button
+          type="button"
           className={`${styles.btn} ${styles.danger}`}
           aria-disabled={busy}
           title={t(confirming ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
@@ -189,7 +199,11 @@ function WorkerCard({ worker, serverVersion, now, onRemoved }: {
               ))}
         </dd>
         <dt>{t('workers.heartbeat')}</dt>
-        <dd>{relativeTime(worker.last_heartbeat_at, locale, now) || '-'}</dd>
+        <dd>
+          {worker.last_heartbeat_at === null
+            ? <span className={styles.muted}>{t('workers.heartbeat.never')}</span>
+            : relativeTime(worker.last_heartbeat_at, locale, now) || '-'}
+        </dd>
         {(!perDeviceRuns || workerRuns.length > 0) && (
           <>
             <dt>{t('workers.running')}</dt>
@@ -233,7 +247,8 @@ function WorkersDialog() {
   const serverVersion = useWorkerStore((s) => s.serverVersion);
   const closePanel = useWorkerStore((s) => s.closePanel);
   const refresh = useWorkerStore((s) => s.refresh);
-  const [addOpen, setAddOpen] = useState(false);
+  /** The Add worker dialog: closed (null), open, or open to re-key a worker. */
+  const [adding, setAdding] = useState<{ rekey: string | null } | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -270,6 +285,7 @@ function WorkersDialog() {
         serverVersion={serverVersion}
         now={now}
         onRemoved={() => closeRef.current?.focus()}
+        onRekey={(workerId) => setAdding({ rekey: workerId })}
       />
     ));
   }
@@ -298,7 +314,7 @@ function WorkersDialog() {
           <button
             type="button"
             className={`${styles.btn} ${styles.accent}`}
-            onClick={() => setAddOpen(true)}
+            onClick={() => setAdding({ rekey: null })}
           >
             {t('workers.add')}
           </button>
@@ -317,9 +333,9 @@ function WorkersDialog() {
           {content}
         </div>
       </div>
-      {addOpen && (
+      {adding !== null && (
         <Suspense fallback={null}>
-          <AddWorkerDialog mode="remote" onClose={() => setAddOpen(false)} />
+          <AddWorkerDialog mode="remote" rekey={adding.rekey} onClose={() => setAdding(null)} />
         </Suspense>
       )}
     </div>,

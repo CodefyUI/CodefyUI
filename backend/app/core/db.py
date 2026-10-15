@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+#: The one stored timestamp format, for modules that write or parse it.
+TIMESTAMP_FORMAT = _TIMESTAMP_FORMAT
 
 
 def utc_now_iso() -> str:
@@ -43,6 +45,23 @@ def utc_now_iso() -> str:
     the runs ``before=`` cursor) is lexicographically correct.
     """
     return datetime.now(timezone.utc).strftime(_TIMESTAMP_FORMAT)
+
+
+def utc_iso_after(seconds: float) -> str:
+    """:func:`utc_now_iso` *seconds* from now (an expiry)."""
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)
+            ).strftime(_TIMESTAMP_FORMAT)
+
+
+def iso_to_epoch(value: str | None) -> float | None:
+    """A stored timestamp as epoch seconds; None for None or a malformed one."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, _TIMESTAMP_FORMAT).replace(
+            tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
 
 
 @contextmanager
