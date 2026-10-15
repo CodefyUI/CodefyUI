@@ -90,6 +90,14 @@ pending run holds a run id, its options and a wake-up channel, and nothing
 else; its graph is re-read from ``exec_runs.graph_snapshot`` at promotion,
 so a queue two hundred deep costs no more memory than the rows already do.
 
+Who may start is asked of a :class:`~app.core.scheduling.Scheduler`
+(#768): ``_pump`` hands it the front of a FIFO and the slots already taken,
+and gets back a ``Placement`` (start it, holding these slots) or ``None``
+(it stays first in line). Slots are keyed by ``(worker_id, device)``;
+:class:`~app.core.scheduling.LocalScheduler`, the default, gives a run the
+one slot ``("local", queue_key)`` under the cap above, which is the #123
+rule unchanged. The FIFOs themselves stay keyed by the device string.
+
 ``interactive`` runs BYPASS the FIFO entirely — a classroom demo must not
 sit behind a training job — and are bounded two other ways instead:
 
@@ -223,6 +231,7 @@ from .run_store import (
     RunStore,
     json_safe,
 )
+from .scheduling import LocalScheduler, Placement, Scheduler, SlotKey
 from .secret_params import (
     SecretVault,
     restore_graph_secrets,
@@ -1426,6 +1435,10 @@ class _ActiveRun:
     #: already terminal.
     queue_key: str = CPU_QUEUE_KEY
     lane: str = DEFAULT_LANE
+    #: The slots a queued-lane run took at promotion (#768); every one is
+    #: given back on release. ``None`` on the interactive lane, which holds
+    #: no device slot.
+    placement: Placement | None = None
     session: "InteractiveSession | None" = None
     record_outputs: bool = False
     #: True once this run's admission — its device slot, or its interactive
@@ -1492,6 +1505,7 @@ class RunService:
         metric_flush_interval_s: float = METRIC_FLUSH_INTERVAL_S,
         limits: QueueLimits | None = None,
         executor: Executor | None = None,
+        scheduler: Scheduler | None = None,
     ) -> None:
         self.store = store
         # Where a run's graph executes (#766). In this process unless a
@@ -1517,6 +1531,9 @@ class RunService:
         self._metric_flush_max_points = metric_flush_max_points
         self._metric_flush_interval_s = metric_flush_interval_s
         self._limits = QueueLimits.from_settings() if limits is None else limits
+        # Who may leave the front of a FIFO, and on which slots (#768).
+        self._scheduler: Scheduler = (LocalScheduler(self._limits)
+                                      if scheduler is None else scheduler)
         self._runs: dict[str, _ActiveRun] = {}
         # ── the queue (#123) ─────────────────────────────────────────────
         # One FIFO per resolved device, plus a by-id index so cancel is O(1)
@@ -1525,11 +1542,11 @@ class RunService:
         # only places that touch both, so they cannot drift.
         self._pending: dict[str, deque[_QueuedRun]] = {}
         self._pending_by_id: dict[str, _QueuedRun] = {}
-        # Slots taken per queue key. NOT derived from ``_runs`` on demand:
-        # counting a dict by predicate on every promotion is both slower and
-        # easier to get subtly wrong than incrementing where the slot is
-        # actually taken and released.
-        self._slots: dict[str, int] = {}
+        # Runs holding each ``(worker_id, device)`` slot (#768). NOT derived
+        # from ``_runs`` on demand: counting a dict by predicate on every
+        # promotion is both slower and easier to get subtly wrong than
+        # incrementing where the slot is actually taken and released.
+        self._slots: dict[SlotKey, int] = {}
         # No reproducibility gate here on purpose: ``_drive`` reaches it
         # through ``run_exclusion()``. It is orthogonal to the queue's
         # admission (the queue decides how many runs may be IN FLIGHT, the
@@ -1934,7 +1951,11 @@ class RunService:
         return entry
 
     def _pump(self, queue_key: str) -> None:
-        """Start as many waiting runs as this device has room for. SYNCHRONOUS.
+        """Start waiting runs while the scheduler places them. SYNCHRONOUS.
+
+        Strict FIFO per queue key: the scheduler is asked about the FRONT
+        entry only, and a ``None`` stops the pump, so nothing overtakes a
+        run that cannot start yet.
 
         Called on submit and again whenever a run of this key ends, so there
         is no scheduler task, no polling interval, and nothing to drain at
@@ -1951,8 +1972,27 @@ class RunService:
         if self._shutting_down:
             return
         queue = self._pending.get(queue_key)
-        while queue and self._slots.get(queue_key, 0) < self._limits.for_key(
-                queue_key):
+        while queue:
+            try:
+                # Inside the guard: a scheduler that raises must not unwind
+                # ``_finalize`` or ``submit`` any more than a failed start
+                # may. The run stays first in line.
+                placement = self._scheduler.place(queue[0], self._slots)
+            except Exception:
+                logger.exception(
+                    "the scheduler failed to place run %s off the %s queue; "
+                    "it stays queued", queue[0].run_id, queue_key)
+                break
+            if placement is None:
+                break
+            if not placement.slots:
+                # A placement that holds no slot would never be counted,
+                # so the loop would drain the whole FIFO uncapped.
+                logger.warning(
+                    "the scheduler placed run %s without any slot; treating "
+                    "it as a refusal, the run stays queued",
+                    queue[0].run_id)
+                break
             entry = queue.popleft()
             self._pending_by_id.pop(entry.run_id, None)
             try:
@@ -1963,6 +2003,7 @@ class RunService:
                 self._start(entry.run_id, None, entry.options,
                             queue_key=queue_key, lane=entry.options.get(
                                 "lane", DEFAULT_LANE),
+                            placement=placement,
                             signal=entry.signal, subscribers=entry.subscribers)
             except Exception:
                 # Two things must not happen here, and both did before this
@@ -1987,6 +2028,7 @@ class RunService:
         self, run_id: str, graph: dict[str, Any] | None,
         options: dict[str, Any], *, queue_key: str,
         lane: str = DEFAULT_LANE,
+        placement: Placement | None = None,
         session: InteractiveSession | None = None,
         signal: _Broadcast | None = None,
         subscribers: set[RunSubscription] | None = None,
@@ -2010,6 +2052,9 @@ class RunService:
         The reported status is therefore a promise the task fulfils on its
         first step; a client that reads the row in that microsecond sees
         ``queued``, which is simply true.
+
+        *placement* is the scheduler's answer for a queued-lane run (the
+        slots it takes here); the interactive lane passes none.
 
         *graph* may be ``None``, meaning "read it from the row" — the shape
         every promoted run takes, since a deferred start cannot rely on the
@@ -2054,7 +2099,9 @@ class RunService:
         active = _ActiveRun(
             run_id=run_id, context=context,
             signal=_Broadcast() if signal is None else signal,
-            queue_key=queue_key, lane=lane, session=session,
+            queue_key=queue_key, lane=lane,
+            placement=None if lane == LANE_INTERACTIVE else placement,
+            session=session,
             record_outputs=bool(options.get("record_outputs")),
             subscribers=set() if subscribers is None else subscribers,
         )
@@ -2071,7 +2118,8 @@ class RunService:
             # Taken HERE, not in ``_pump``, so the one path that starts a run
             # is the one path that accounts for it. The interactive lane's
             # slot was taken in ``_admit_interactive`` before its row existed.
-            self._slots[queue_key] = self._slots.get(queue_key, 0) + 1
+            for slot in active.placement.slots if active.placement else ():
+                self._slots[slot] = self._slots.get(slot, 0) + 1
         elif self._session_key(session) is not None:
             self._interactive_sessions[self._session_key(session)] = run_id
         active.task = task
@@ -2105,12 +2153,31 @@ class RunService:
         if active.lane == LANE_INTERACTIVE:
             self._release_interactive(active.session)
             return
-        remaining = self._slots.get(active.queue_key, 0) - 1
-        if remaining > 0:
-            self._slots[active.queue_key] = remaining
-        else:
-            self._slots.pop(active.queue_key, None)
-        self._pump(active.queue_key)
+        slots = active.placement.slots if active.placement else ()
+        for slot in slots:
+            remaining = self._slots.get(slot, 0) - 1
+            if remaining > 0:
+                self._slots[slot] = remaining
+            else:
+                self._slots.pop(slot, None)
+        self.reschedule(first=active.queue_key)
+
+    def reschedule(self, *, first: str | None = None) -> None:
+        """Offer the front of every waiting FIFO to the scheduler. SYNCHRONOUS.
+
+        For the moments capacity can appear somewhere a single queue key
+        cannot name: a run releasing several slots, and (#772) a worker
+        coming online or draining. Every non-empty FIFO is pumped, because
+        which queue a freed slot unblocks is the scheduler's knowledge, not
+        this method's; there are a handful of FIFOs (one per device), so
+        asking all of them is cheap. *first* is pumped before the rest,
+        which keeps a released run's own queue first in line.
+        """
+        keys = list(self._pending)
+        if first is not None:
+            keys = [first, *(key for key in keys if key != first)]
+        for key in keys:
+            self._pump(key)
 
     # ── the run task ──────────────────────────────────────────────────────
 

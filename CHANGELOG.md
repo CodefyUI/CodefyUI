@@ -30,7 +30,6 @@ received — each links to the release it was published as.
 ### Internal
 
 - **The run service hands a run to an executor instead of calling the engine itself** ([#766]). `RunService._execute` now builds one `ExecutionRequest` and awaits `Executor.run`, which returns an `ExecutionOutcome(status, error)`; the default `InProcessExecutor` (`backend/app/core/executors.py`) is the old `_execute` body, so runs execute exactly as before. The event payloads the three engine bridges built are now pure functions in `backend/app/core/run_events.py`, and persistence goes through `RunSinks` back into the service, so a worker subprocess can later produce the same payloads. No event payload, event order or option changes; an executor that raises or reports an unknown status files the run as failed instead of leaving it unfinished. The unused `run_service.apply_seed` alias is removed.
-- **A `single-node-parity` CI check runs exported examples and pins the default submit path** ([#765]). Every CPU example the smoke suite executes is now exported, run under `python -I` in an empty folder the way a course grader runs it, and compared with the same graph run in-process: the order its nodes run in, and its printed output or GraphOutput JSON. Three graphs submitted over `POST /api/runs` with default settings have their event sequence compared with `backend/tests/snapshots/single_node_parity.json`, which changes only in a commit that means to change it. Both modules also run in the full suite.
 
 ## [3.0.2] — 2026-10-14
 
@@ -6177,4 +6176,5 @@ Release candidates before 1.0.0 are on the
 [#765]: https://github.com/CodefyUI/CodefyUI/issues/765
 [#766]: https://github.com/CodefyUI/CodefyUI/issues/766
 [#767]: https://github.com/CodefyUI/CodefyUI/issues/767
+[#768]: https://github.com/CodefyUI/CodefyUI/issues/768
 [#769]: https://github.com/CodefyUI/CodefyUI/issues/769
