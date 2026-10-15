@@ -1,4 +1,4 @@
-"""``cdui agent start|stop``: the worker agent's command line (#771).
+"""``cdui agent start|stop|forget``: the worker agent's command line (#771).
 
 ``cdui agent ...`` reaches :func:`main` through ``scripts/agent.py`` inside
 the backend venv; ``python -m app.agent ...`` is the same entry point.
@@ -15,6 +15,14 @@ flags:
 
 When a default cannot be found and the terminal is interactive, the agent
 asks for that value (and only for ``--control`` / ``--token``).
+
+Another machine (#780): ``--control URL --token T`` with an enrollment
+token from the Workers panel (``abcdef.0123456789abcdef``) enrolls once and
+stores the worker credential it gets (``app.agent.enroll``,
+``<user-data>/agent/<host>-<port>.token``, 0600). Every later
+``cdui agent start --control URL`` finds that credential and uses it, with
+or without ``--token``, and asks for nothing; ``cdui agent forget URL``
+deletes it so the next start enrolls again.
 
 Background by default, like ``cdui start``: the agent is re-launched as a
 detached ``--foreground`` process, its pid in ``<user-data>/agent.pid`` and
@@ -187,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(DAEMON_FLAG, action="store_true",
                        help=argparse.SUPPRESS)
     sub.add_parser("stop", help=t("停止背景 agent", "stop the background agent"))
+    forget = sub.add_parser("forget", help=t(
+        "刪掉這台機器存下的某個控制面的 worker 憑證",
+        "delete the worker credential stored for a control plane"))
+    forget.add_argument("control", help=t(
+        "控制面網址，例如 http://192.168.1.5:8000",
+        "control-plane URL, e.g. http://192.168.1.5:8000"))
     return parser
 
 
@@ -442,7 +456,7 @@ def _install_stop_handlers(loop: asyncio.AbstractEventLoop,
 
 
 def run_agent(args: argparse.Namespace, control: Any, token: Any,
-              devices: list[Any]) -> int:
+              devices: list[Any], token_source: str | None = None) -> int:
     """The agent itself: connect and serve until stopped."""
     from ..config import settings
     from ..core import worker_protocol as wp
@@ -467,9 +481,9 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             runner=runner, name=name, version=get_version(),
             control_url=control, token=token, probe_devices=probe,
             max_message_bytes=settings.WS_MAX_MESSAGE_BYTES,
-            token_source=(f"the session token file {token_file()}"
-                          if callable(token) else "--token / "
-                          f"${TOKEN_ENV}"))
+            token_source=token_source or (
+                f"the session token file {token_file()}"
+                if callable(token) else f"--token / ${TOKEN_ENV}"))
         return await connection.run(stop)
 
     logger.info("agent %s starting (pid %s); offering %s", name, os.getpid(),
@@ -513,10 +527,83 @@ def _report(fact: Any) -> Any:
         source=fact.source, uuid=getattr(fact, "uuid", None))
 
 
+def cmd_forget(args: argparse.Namespace) -> int:
+    from .enroll import forget_credential
+
+    try:
+        removed = forget_credential(user_data_dir(), args.control)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if removed is None:
+        _say(f"沒有 {args.control} 的已存憑證。",
+             f"No credential is stored for {args.control}.")
+        return 0
+    _say(f"已刪除 {removed}。下次 cdui agent start --control {args.control} "
+         "需要新的 enrollment token。",
+         f"Deleted {removed}. The next cdui agent start --control "
+         f"{args.control} needs a new enrollment token.")
+    return 0
+
+
+def use_stored_credential(args: argparse.Namespace, control: str,
+                          explicit_name: str | None) -> Any:
+    """The stored credential for *control*, applied to *args*, or None.
+
+    Returns the credential; ``args.name`` becomes the name it was enrolled
+    under. Raises ``ValueError`` when ``--name`` asks for another name.
+    """
+    from ..core.worker_store import is_enrollment_token
+    from .enroll import load_credential
+
+    stored = load_credential(user_data_dir(), control)
+    if stored is None:
+        return None
+    if explicit_name and validate_name(explicit_name) != stored.worker_id:
+        raise ValueError(t(
+            f"{stored.path} 存的是 worker {stored.worker_id!r} 的憑證，不是 "
+            f"{explicit_name!r}；要換名稱，先執行 cdui agent forget {control}"
+            "，再用新的 enrollment token 加入",
+            f"the credential in {stored.path} is for worker "
+            f"{stored.worker_id!r}, not {explicit_name!r}; to change the name, "
+            f"run cdui agent forget {control} and enroll with a new token"))
+    args.name = stored.worker_id
+    if not args.daemonized:
+        _say(f"使用已存的 worker 憑證（{stored.path}）。",
+             f"Using the stored worker credential ({stored.path}).")
+        if args.token and is_enrollment_token(args.token):
+            _say(f"未使用 enrollment token；要重新加入，先執行 cdui agent "
+                 f"forget {control}。",
+                 "The enrollment token was not used; to enroll again, run "
+                 f"cdui agent forget {control} first.")
+    return stored
+
+
+def enroll_now(args: argparse.Namespace, control: str, token: str,
+               facts: list[Any]) -> str:
+    """Trade the enrollment *token* for a worker token and store it.
+    Returns the worker token. Raises ``EnrollError``."""
+    from .connection import platform_facts
+    from .enroll import enroll, save_credential
+
+    _say(f"正在以 worker {args.name!r} 加入 {control}…",
+         f"Enrolling as worker {args.name!r} with {control}...")
+    worker_id, worker_token = enroll(
+        control, token, name=args.name, platform=platform_facts(),
+        devices=[_report(fact).model_dump() for fact in facts])
+    path = save_credential(user_data_dir(), control, worker_id, worker_token)
+    args.name = worker_id
+    _say(f"已加入；worker 憑證存於 {path}（之後重啟會沿用）。",
+         f"Enrolled; the worker credential is stored in {path} (restarts "
+         "reuse it).")
+    return worker_token
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
     # process and in every run subprocess (``core.resources``).
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    explicit_name = args.name
     try:
         args.name = validate_name(args.name or default_name())
         wanted = parse_devices(args.devices)
@@ -526,7 +613,40 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
-    token = resolve_token(args.token, interactive=interactive)
+    stored = None
+    if isinstance(control, str):
+        try:
+            stored = use_stored_credential(args, control, explicit_name)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    token_source = None
+    if stored is not None:
+        token: Any = stored.worker_token
+        token_source = (f"the stored credential {stored.path} (cdui agent "
+                        f"forget {control} to enroll again)")
+    else:
+        token = resolve_token(args.token, interactive=interactive)
+    from ..core.worker_store import is_enrollment_token
+
+    if isinstance(token, str) and is_enrollment_token(token):
+        if args.daemonized:
+            print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
+                    "cdui agent start。",
+                    "The background agent was given an enrollment token; run "
+                    "cdui agent start again in a terminal."), file=sys.stderr)
+            return 2
+        from .enroll import EnrollError
+
+        url = control() if callable(control) else control
+        try:
+            token = enroll_now(args, url, token, facts)
+        except (EnrollError, ValueError) as exc:
+            _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
+            return 1
+        control = url
+        token_source = (f"the stored credential (cdui agent forget {url} to "
+                        "enroll again)")
     if not args.daemonized:
         try:
             require_token(token)
@@ -536,7 +656,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not args.foreground:
         return _start_background(args, control, token)
     _setup_logging(args.daemonized)
-    return run_agent(args, control, token, facts)
+    return run_agent(args, control, token, facts, token_source=token_source)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -548,4 +668,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "stop":
         return cmd_stop(args)
+    if args.command == "forget":
+        return cmd_forget(args)
     return cmd_start(args)

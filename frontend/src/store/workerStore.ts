@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { drainWorker, fetchWorkers, undrainWorker, type WorkerInfo } from '../api/workers';
+import { drainWorker, fetchWorkers, removeWorker, undrainWorker, type WorkerInfo } from '../api/workers';
 import { cachedAppVersion } from '../utils/appVersion';
 import { useI18n } from '../i18n';
 import { useToastStore } from './toastStore';
@@ -35,7 +35,7 @@ interface WorkerState {
    * every poll rather than asked for again.
    */
   serverVersion: string | null;
-  /** Worker ids with a drain / undrain in flight. */
+  /** Worker ids with a drain / undrain / remove in flight. */
   busy: Record<string, boolean>;
   panelOpen: boolean;
   /**
@@ -47,6 +47,8 @@ interface WorkerState {
   closePanel: () => void;
   refresh: () => Promise<void>;
   setDraining: (workerId: string, draining: boolean) => Promise<void>;
+  /** Revoke the worker's credential and drop it from the list (#780). */
+  remove: (workerId: string) => Promise<void>;
   /**
    * Close the panel and ask the dock to show its Runs tab. The caller
    * selects the run (`runStore.select`); this store stays out of the run
@@ -124,6 +126,29 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
           name,
           error: errorMessage(err),
         }),
+        'error',
+      );
+    } finally {
+      set((s) => {
+        const busy = { ...s.busy };
+        delete busy[workerId];
+        return { busy };
+      });
+    }
+  },
+
+  remove: async (workerId) => {
+    if (get().busy[workerId]) return;
+    set((s) => ({ busy: { ...s.busy, [workerId]: true } }));
+    const seq = nextSeq++;
+    try {
+      await removeWorker(workerId);
+      if (claim(seq)) set((s) => ({ workers: s.workers.filter((w) => w.id !== workerId) }));
+    } catch (err) {
+      const { t } = useI18n.getState();
+      const name = get().workers.find((w) => w.id === workerId)?.name ?? workerId;
+      useToastStore.getState().addToast(
+        t('workers.remove.failed', { name, error: errorMessage(err) }),
         'error',
       );
     } finally {

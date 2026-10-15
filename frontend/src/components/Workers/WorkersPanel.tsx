@@ -94,14 +94,21 @@ function VersionLine({ version, serverVersion }: { version: string; serverVersio
   );
 }
 
-function WorkerCard({ worker, serverVersion, now }: {
+/** Statuses whose worker has no live connection: removing one ends nothing. */
+const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
+
+function WorkerCard({ worker, serverVersion, now, onRemoved }: {
   worker: WorkerInfo;
   serverVersion: string | null;
   now: number;
+  /** Called after this card's worker was removed, to keep the focus in the dialog. */
+  onRemoved: () => void;
 }) {
   const { t, locale } = useI18n();
   const busy = useWorkerStore((s) => Boolean(s.busy[worker.id]));
   const setDraining = useWorkerStore((s) => s.setDraining);
+  const remove = useWorkerStore((s) => s.remove);
+  const [confirming, setConfirming] = useState(false);
   const actionRef = useRef<HTMLButtonElement>(null);
   const mounts = Object.entries(worker.mounts);
   // Without per-device run ids from the server, the worker's runs are
@@ -123,6 +130,18 @@ function WorkerCard({ worker, serverVersion, now }: {
     if (button !== null && document.activeElement === document.body) button.focus();
   };
 
+  // Removing a connected worker disconnects it and interrupts its runs, so
+  // that takes a second press; one that is away goes at once.
+  const removeWorker = async () => {
+    if (busy) return;
+    if (!AWAY_STATUSES.has(worker.status) && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    await remove(worker.id);
+    if (document.activeElement === document.body) onRemoved();
+  };
+
   return (
     <article className={styles.card} aria-label={worker.name}>
       <header className={styles.cardHeader}>
@@ -140,6 +159,16 @@ function WorkerCard({ worker, serverVersion, now }: {
           onClick={() => void toggleDrain()}
         >
           {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
+        </button>
+        <button
+          type="button"
+          className={`${styles.btn} ${styles.danger}`}
+          aria-disabled={busy}
+          title={t(confirming ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
+          onClick={() => void removeWorker()}
+          onBlur={() => setConfirming(false)}
+        >
+          {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
         </button>
       </header>
       <dl className={styles.facts}>
@@ -235,7 +264,13 @@ function WorkersDialog() {
     content = <p className={styles.muted}>{t('workers.empty')}</p>;
   } else {
     content = workers.map((worker) => (
-      <WorkerCard key={worker.id} worker={worker} serverVersion={serverVersion} now={now} />
+      <WorkerCard
+        key={worker.id}
+        worker={worker}
+        serverVersion={serverVersion}
+        now={now}
+        onRemoved={() => closeRef.current?.focus()}
+      />
     ));
   }
 
@@ -284,7 +319,7 @@ function WorkersDialog() {
       </div>
       {addOpen && (
         <Suspense fallback={null}>
-          <AddWorkerDialog mode="same-host" onClose={() => setAddOpen(false)} />
+          <AddWorkerDialog mode="remote" onClose={() => setAddOpen(false)} />
         </Suspense>
       )}
     </div>,

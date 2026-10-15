@@ -8,7 +8,8 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 (see the naming-decision block above ``MIGRATION_003``); 004 is the sweep
 schema (#140); 005 indexes metrics by producer (#641); 006 records the
 environment that executed each run (#344); 007 is the durable study
-coordinator (#343); 008 records where each run executes (#769).
+coordinator (#343); 008 records where each run executes (#769); 009 is
+worker enrollment (#780).
 """
 
 from __future__ import annotations
@@ -456,9 +457,53 @@ ALTER TABLE exec_runs ADD COLUMN worker_id TEXT;
 ALTER TABLE exec_runs ADD COLUMN devices TEXT;
 """
 
+# ── Migration 009: enrolled workers (#780) ────────────────────────────────
+#
+# Two tables, and no secret in either: every credential is stored as the
+# sha256 hex of the secret (``core.worker_store.hash_secret``), the way
+# ``api_keys.token_hash`` is.
+#
+# - ``workers``: one row per enrolled worker agent. ``id`` IS the name (a
+#   worker's id is its name everywhere else: ``target.worker``,
+#   ``exec_runs.worker_id``, the registry); ``name`` is kept as its own
+#   UNIQUE column so the table reads like the spec. ``token_hash`` is the
+#   long-lived worker token's hash; a re-enrollment under the same name
+#   replaces it, so the old token stops working. ``platform``,
+#   ``mounts_json`` and ``devices_json`` are the facts the agent last
+#   reported (JSON), so a worker known from an earlier boot can be shown,
+#   and targeted, before it reconnects; ``machine_id`` is the digest its
+#   last ``hello`` reported (a record only: same-host also needs a loopback
+#   peer, see ``ws_worker``). ``enabled`` is 1 for every row this
+#   release writes; a revoked worker's row is deleted.
+# - ``worker_enrollments``: one-time join tokens. ``id`` is the token's
+#   public half (the six characters before the dot); ``uses_left`` counts
+#   down to 0 and a used-up or expired row stays listed until deleted.
+MIGRATION_009 = """
+CREATE TABLE workers (
+  id            TEXT PRIMARY KEY,           -- the worker name
+  name          TEXT NOT NULL UNIQUE,
+  token_hash    TEXT NOT NULL UNIQUE,       -- sha256 hex of the worker token
+  platform      TEXT,                       -- JSON {system, release, machine, python}
+  mounts_json   TEXT,                       -- JSON {label: path}
+  devices_json  TEXT,                       -- JSON [DeviceReport]
+  machine_id    TEXT,                       -- hello.machine_id (a digest), last seen
+  created_at    TEXT NOT NULL,
+  last_seen_at  TEXT,
+  enabled       INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE worker_enrollments (
+  id          TEXT PRIMARY KEY,             -- the token's public half
+  token_hash  TEXT NOT NULL UNIQUE,         -- sha256 hex of the whole token
+  expires_at  TEXT NOT NULL,
+  uses_left   INTEGER NOT NULL,
+  created_at  TEXT NOT NULL,
+  label       TEXT
+);
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
-                         MIGRATION_007, MIGRATION_008]
+                         MIGRATION_007, MIGRATION_008, MIGRATION_009]
 
 
 def _is_comment_only(statement: str) -> bool:

@@ -98,6 +98,7 @@ from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
+from .core.worker_store import WorkerStore
 from .core.workers import WorkerRegistry
 from .core.run_store import RunStore
 from .core.study_coordinator import StudyCoordinator
@@ -121,9 +122,12 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # Paths that intentionally skip auth: the bootstrap endpoint (frontend uses
 # it to *get* the token), and Starlette's docs/openapi which are read-only
-# anyway. The Host header check still applies.
+# anyway. The Host header check still applies. Worker enrollment (#780) is
+# called by an agent on another machine, which holds an enrollment token and
+# no session token; the route checks that token and rate-limits itself.
 _AUTH_EXEMPT_PATHS = frozenset({
     "/api/auth/bootstrap",
+    routes_workers.ENROLL_PATH,
 })
 
 # Router prefixes whose routes carry their OWN route-level auth dependency
@@ -389,6 +393,11 @@ async def _lifespan_body(app: FastAPI):
     # a run without a target is placed and executed in this process.
     worker_registry = WorkerRegistry(local_devices=_local_device_facts)
     app.state.worker_registry = worker_registry
+    # Enrolled workers (#780) are known before they dial in, as offline, so
+    # a run can target one and wait. None enrolled: nothing changes.
+    worker_store = WorkerStore(db)
+    app.state.worker_store = worker_store
+    worker_registry.load_known(await worker_store.list_workers())
     run_service = RunService(
         RunStore(db),
         output_store=app.state.run_output_store,
@@ -497,6 +506,7 @@ async def _lifespan_body(app: FastAPI):
     # After the runs: a worker run's stop travels over its worker's socket.
     await worker_registry.shutdown()
     app.state.worker_registry = None
+    app.state.worker_store = None
 
     # Release the SQLite handle so `cdui stop` on Windows frees the DB and
     # its WAL sidecar files (spec Section 13, Windows file locking).

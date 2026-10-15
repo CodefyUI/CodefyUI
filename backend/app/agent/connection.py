@@ -26,6 +26,7 @@ Frames from every run's reader thread and from the heartbeat go out through
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import platform
 from typing import Any, Callable
@@ -93,6 +94,23 @@ def worker_ws_url(control_url: str, token: str | None) -> str:
     path = parts.path.rstrip("/") + wp.WORKER_WS_PATH
     query = f"token={quote(token, safe='')}" if token else ""
     return urlunsplit((scheme, parts.netloc, path, query, ""))
+
+
+#: The header the token travels in (``core.auth.TOKEN_HEADER``). Not the
+#: ``?token=`` query: uvicorn logs a WebSocket's path WITH its query string
+#: at INFO, and a worker token is a long-lived credential (#780).
+TOKEN_HEADER = "X-CodefyUI-Token"
+
+
+def _headers_kwarg() -> str:
+    """``websockets.connect``'s name for extra request headers:
+    ``additional_headers`` from websockets 14, ``extra_headers`` before."""
+    try:
+        params = inspect.signature(websockets.connect).parameters
+    except (TypeError, ValueError):  # pragma: no cover - C-level callable
+        return "additional_headers"
+    return ("additional_headers" if "additional_headers" in params
+            else "extra_headers")
 
 
 def next_backoff(current: float) -> float:
@@ -196,10 +214,11 @@ class AgentConnection:
                 if not token:
                     logger.error("no connection token: %s", self.token_source)
                     raise _NoToken
-                url = worker_ws_url(self._resolve(self._control_url), token)
+                url = worker_ws_url(self._resolve(self._control_url), None)
                 async with websockets.connect(
                         url, max_size=self.max_message_bytes,
-                        open_timeout=WELCOME_TIMEOUT_S) as ws:
+                        open_timeout=WELCOME_TIMEOUT_S,
+                        **{_headers_kwarg(): {TOKEN_HEADER: token}}) as ws:
                     welcomed = await self._serve(ws, stop)
             except AgentRejected as exc:
                 logger.error("the control plane rejected this agent: %s", exc)

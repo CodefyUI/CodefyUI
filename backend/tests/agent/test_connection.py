@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import websockets
@@ -38,6 +37,7 @@ class FakeControlPlane:
         self.grace_s = grace_s
         self.frames: list[tuple[int, Any]] = []
         self.paths: list[str] = []
+        self.tokens: list[str | None] = []
         self.sockets: list[Any] = []
         self._changed = asyncio.Event()
         self.server: Any = None
@@ -62,6 +62,8 @@ class FakeControlPlane:
     async def _handle(self, ws: Any, *_: Any) -> None:
         request = getattr(ws, "request", None)
         self.paths.append(request.path if request is not None else ws.path)
+        headers = request.headers if request is not None else ws.request_headers
+        self.tokens.append(headers.get("X-CodefyUI-Token"))
         number = len(self.sockets)
         self.sockets.append(ws)
         try:
@@ -171,9 +173,9 @@ async def test_hello_heartbeats_and_a_run_match_in_process(tmp_path):
                                        "python"}
         # A digest of this machine's id, never the raw id (#773).
         assert hello.machine_id == machine_identity()
-        query = parse_qs(urlsplit(cp.paths[0]).query)
-        assert urlsplit(cp.paths[0]).path == wp.WORKER_WS_PATH
-        assert query == {"token": ["tok en/1"]}
+        # The token travels in a header, never in the logged query (#780).
+        assert cp.paths[0] == wp.WORKER_WS_PATH
+        assert cp.tokens[0] == "tok en/1"
         await cp.wait_for(lambda n, f: len(cp.of_type(wp.Heartbeat)) >= 2)
 
         await cp.send(wp.Assign(run_id="run1", graph=h.tensor_graph(),
