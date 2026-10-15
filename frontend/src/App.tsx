@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { WelcomeToolbar } from './components/Toolbar/WelcomeToolbar';
@@ -26,6 +26,7 @@ import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { useWorkerStore } from './store/workerStore';
 import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
+import { lazyRetry } from './components/shared/lazyRetry';
 import { PluginHost } from './plugins/PluginHost';
 import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
 import { useTabStore } from './store/tabStore';
@@ -98,8 +99,9 @@ function RightColumn() {
  * leaves room under the 500 kB build limit. `workerStore` stays in the main
  * chunk, since the Runs panel, Settings and `isAnyModalOpen` read it.
  */
-const WorkersPanel = lazy(() =>
-  import('./components/Workers/WorkersPanel').then((module) => ({ default: module.WorkersPanel })),
+const WorkersPanel = lazyRetry(
+  () => import('./components/Workers/WorkersPanel').then((module) => module.WorkersPanel),
+  () => useWorkerStore.getState().closePanel(),
 );
 
 /** Mounts the lazy Workers panel only while it is open. */

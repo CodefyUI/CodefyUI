@@ -5,9 +5,9 @@ import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { friendlyError } from '../../utils/errorMessages';
+import { deviceAliasLines, runDevices, runWorkerLabel } from '../../utils/runPlacement';
 import { LossChart } from './LossChart';
 import { producerLabel } from './sweepObjective';
-import { variantDevices, variantWorker } from './sweepPlacement';
 import { sweepParamTitle } from './sweepParams';
 import styles from './SweepDetail.module.css';
 
@@ -238,6 +238,9 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
             const best = detail.best?.index === variant.index;
             const values = new Map(variant.params.map((param) => [`${param.node_id}.${param.param}`, param.value]));
             const statusKey = variant.status ? STATUS_KEY[variant.status] : undefined;
+            // Where it runs (#777), worded as the Runs list words it; a run
+            // that is gone has no placement to show.
+            const placed = variant.run_exists !== false;
             return <tr key={variant.index} className={best ? styles.best : undefined} data-testid={`sweep-variant-${variant.index}`}>
               <td>{variant.rank ?? '-'}</td>
               <td>{variant.index + 1}{best && <span className={styles.bestMark}>{t('sweeps.detail.best')}</span>}</td>
@@ -248,8 +251,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
                 ? <span title={variant.ambiguous_producers.map(nodeName).join(', ')}>{t('sweeps.detail.ambiguous')}</span>
                 : formatValue(variant.objective)}</td>
               <td>{formatMetrics(variant.final_metrics)}</td>
-              <td>{variantWorker(variant)}</td>
-              <td>{variantDevices(variant)}</td>
+              <td>{placed ? runWorkerLabel(variant, t) : '-'}</td>
+              <td title={placed ? deviceAliasLines(variant, t) ?? undefined : undefined}>{placed ? runDevices(variant) : '-'}</td>
               <td>{variant.run_id && variant.run_exists !== false
                 ? <button type="button" onClick={() => onOpenRun(variant.run_id!)}>{t('sweeps.detail.openRun')}</button>
                 : <button type="button" disabled>{t('sweeps.detail.unavailable')}</button>}</td>

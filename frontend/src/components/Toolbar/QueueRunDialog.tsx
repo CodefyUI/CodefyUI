@@ -80,7 +80,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     };
   }, []);
 
-  const choice = useRunTargetChoice(graphDevice, () => setError(null));
+  const choice = useRunTargetChoice(graphDevice);
   const isWorker = choice.isWorker;
 
   const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -111,11 +111,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       setError(t('queueRun.error.seed'));
       return;
     }
+    // No device: the picker says so beside the devices.
     const resolved = choice.resolve();
-    if (resolved === null) {
-      setError(t('queueRun.error.noDevice'));
-      return;
-    }
+    if (resolved === null) return;
     const store = useTabStore.getState();
     // The run needs the session key in memory, as a sweep's children do:
     // RunService removes it before persisting the snapshot.

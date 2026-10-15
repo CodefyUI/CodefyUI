@@ -10,6 +10,7 @@ const en = {
   'toolbar.queueOn': 'Queue on...',
   'toolbar.queueOn.title': 'Submit this graph as a queued run, on this server or a worker',
   // The Queue on... dialog (#775).
+  'lazyChunk.failed': 'This part of the app could not be loaded. Try again; if it keeps failing, reload the page.',
   'queueRun.title': 'Queue run',
   'queueRun.close': 'Close',
   'queueRun.target': 'Target',
@@ -24,6 +25,8 @@ const en = {
   'queueRun.kind.mps': 'Apple MPS',
   'queueRun.anyHint': 'The run goes to the first connected worker with a free device of this kind, and to this server last.',
   'queueRun.localHint': 'A run on this server uses one device.',
+  'queueRun.serverPicks': 'the server picks its best device',
+  'queueRun.tabDevice': "the tab's device, as set",
   // A card's name inside a run given a device set (#774).
   'queueRun.alias': '{device} -> {alias} in this run',
   'queueRun.name': 'Name',

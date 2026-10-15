@@ -326,9 +326,12 @@ describe('SweepDetail', () => {
   it('shows where each variant runs: its worker and devices (#777)', () => {
     const detail = sweep('running');
     detail.variants = [
-      { ...variant(0, 'running', null, null), worker_id: 'gpu-box', devices: ['cuda:0', 'cuda:1'], queue_key: 'gpu-box/cuda:0' },
+      { ...variant(0, 'running', null, null), worker_id: 'gpu-box', devices: ['cuda:2', 'cuda:0'], queue_key: 'gpu-box/cuda:2' },
       { ...variant(1, 'missing', null, null) },
       { ...variant(2, 'queued', null, null), worker_id: 'any', devices: null, queue_key: 'any/cuda' },
+      { ...variant(3, 'succeeded', null, null), worker_id: 'local', devices: null, queue_key: 'cpu' },
+      // A server from before #777 sends no placement: this server.
+      { ...variant(4, 'succeeded', null, null) },
     ];
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
     view();
@@ -337,9 +340,15 @@ describe('SweepDetail', () => {
     const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
     const worker = headers.indexOf('Worker');
     expect(headers[worker + 1]).toBe('Devices');
-    expect(cells(0).slice(worker, worker + 2)).toEqual(['gpu-box', 'cuda:0, cuda:1']);
+    expect(cells(0).slice(worker, worker + 2)).toEqual(['gpu-box', 'cuda:2, cuda:0']);
+    // The in-run names of a worker's cards (#774), on hover.
+    const devicesCell = within(screen.getByTestId('sweep-variant-0')).getAllByRole('cell')[worker + 1];
+    expect(devicesCell).toHaveAttribute('title', 'cuda:2 -> cuda:0 in this run\ncuda:0 -> cuda:1 in this run');
     expect(cells(1).slice(worker, worker + 2)).toEqual(['-', '-']);
-    expect(cells(2).slice(worker, worker + 2)).toEqual(['any', 'cuda']);
+    expect(cells(2).slice(worker, worker + 2)).toEqual(['Any available', 'cuda']);
+    expect(cells(3).slice(worker, worker + 2)).toEqual(['This server', 'cpu']);
+    expect(within(screen.getByTestId('sweep-variant-3')).getAllByRole('cell')[worker + 1]).not.toHaveAttribute('title');
+    expect(cells(4).slice(worker, worker + 2)).toEqual(['This server', '-']);
   });
 
   it('heads a swept param by node label and param, with the full address as its title', () => {

@@ -644,7 +644,55 @@ describe('NewSweepDialog: target (#777)', () => {
     });
     expect(screen.getByRole('alert')).toHaveTextContent('Choose at least one device.');
     expect(api.createSweep).not.toHaveBeenCalled();
+    // Ticking a card clears it too.
+    fireEvent.click(screen.getByRole('checkbox', { name: /cuda:0/ }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /cuda:0/ }));
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
     fireEvent.change(target(), { target: { value: 'local' } });
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps an error that is not about the target when the target changes', async () => {
+    await openSettled();
+    fireEvent.change(screen.getByLabelText(/objective metric/i), { target: { value: '  ' } });
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(/objective/i);
+    fireEvent.change(target(), { target: { value: 'any' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/objective/i);
+  });
+
+  function setGraphDevice(device: string) {
+    useTabStore.setState((state) => ({
+      tabs: state.tabs.map((tab) => (tab.id === state.activeTabId ? { ...tab, graphDevice: device } : tab)),
+    }));
+  }
+
+  it('starts on the device it sends: auto, which the server resolves, with no target', async () => {
+    setGraphDevice('auto');
+    const onClose = await openSettled();
+    const auto = screen.getByRole('radio', { name: /auto/ });
+    expect(auto).toBeChecked();
+    expect(auto.closest('label')).toHaveTextContent('the server picks its best device');
+    // Picking a card and then auto again is no change at all.
+    fireEvent.click(screen.getByRole('radio', { name: /cpu/ }));
+    fireEvent.click(auto);
+    const options = await start(onClose);
+    expect(options).not.toHaveProperty('target');
+    expect(options.device).toBe('auto');
+  });
+
+  it("lists a device this server lacks as the tab's device, and sends a picked card as a target", async () => {
+    setGraphDevice('cuda:3');
+    const onClose = await openSettled();
+    expect(screen.getByRole('radio', { name: /cuda:3/ }).closest('label')).toHaveTextContent("the tab's device, as set");
+    expect(screen.getByRole('radio', { name: /cuda:3/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: /cpu/ }));
+    const options = await start(onClose);
+    expect(options).toMatchObject({ target: { worker: 'local', devices: ['cpu'] }, device: 'cpu' });
   });
 });

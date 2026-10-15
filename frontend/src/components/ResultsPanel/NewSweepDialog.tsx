@@ -98,7 +98,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   // Where the variants run (#777): the Queue on... dialog's target picker.
   // Left at This server with its default device, the sweep is sent exactly
   // as before, with the graph's device and no target.
-  const target = useRunTargetChoice(tab?.graphDevice ?? globalDevice, () => setLocalError(null));
+  const target = useRunTargetChoice(tab?.graphDevice ?? globalDevice, { keepGraphDevice: true });
   // What a blank Name sends, shown as the field's placeholder.
   const defaultName = tabDefaultName(tab);
   // The ROOT graph, flushed exactly as Start serializes it: inside a block the
@@ -239,7 +239,8 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       if (!objective.trim()) throw new Error(t('sweeps.new.objectiveRequired'));
       const sweepSeed = seedUsed ? parseSeed(seed) : null;
       const resolved = target.touched ? target.resolve() : null;
-      if (target.touched && resolved === null) throw new Error(t('queueRun.error.noDevice'));
+      // No device: the picker says so beside the devices.
+      if (target.touched && resolved === null) return;
       const store = useTabStore.getState();
       // The child runs need the session key in memory. RunService removes it
       // before persisting each child snapshot; this dialog/store keep no copy.

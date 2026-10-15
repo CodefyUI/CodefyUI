@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
 import { useDeviceOptions, deviceLabel, deviceOptionLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
@@ -25,6 +25,7 @@ import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { ToolbarGlobalActions } from './ToolbarGlobalActions';
 import { ProjectBadge } from './ProjectBadge';
+import { lazyRetry } from '../shared/lazyRetry';
 import styles from './Toolbar.module.css';
 
 /**
@@ -32,8 +33,9 @@ import styles from './Toolbar.module.css';
  * menu, and keeping it out of the first paint keeps the entry chunk under
  * the 500 kB build limit.
  */
-const QueueRunDialog = lazy(() =>
-  import('./QueueRunDialog').then((module) => ({ default: module.QueueRunDialog })),
+const QueueRunDialog = lazyRetry(
+  () => import('./QueueRunDialog').then((module) => module.QueueRunDialog),
+  (props) => props.onClose(),
 );
 
 /* ── Shared dropdown menu ───────────────────────────────────────── */

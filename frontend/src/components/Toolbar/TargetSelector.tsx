@@ -11,6 +11,7 @@ import {
   connectedWorkers,
   defaultDevices,
   defaultKind,
+  deviceKind,
   localDeviceChoices,
   toggleDevice,
   workerDeviceChoices,
@@ -37,13 +38,32 @@ export interface RunTargetChoice {
   kinds: string[];
   selected: string[];
   kind: string;
-  /** Whether the user changed the target or its devices from the defaults. */
+  /**
+   * Whether the choice differs from the one the picker opened with (This
+   * server, the graph's device). Computed, so picking the first device
+   * again is not a change.
+   */
   touched: boolean;
+  /** Set when {@link resolve} found no device chosen; any change clears it. */
+  deviceError: boolean;
   changeTarget: (next: string) => void;
   toggle: (value: string) => void;
   chooseKind: (kind: string) => void;
-  /** The submission's target and device; null when no device is chosen. */
+  /** The submission's target and device; null (and `deviceError`) when no
+   * device is chosen. */
   resolve: () => ResolvedTarget | null;
+}
+
+export interface RunTargetOptions {
+  /** Called when the target changes (not the devices). */
+  onTargetChange?: () => void;
+  /**
+   * List the graph's own device on This server when it is not one of the
+   * concrete devices there (`auto`, a bare `cuda`, a card this server
+   * lacks), and start on it, so the untouched picker shows the device the
+   * caller sends without a target (#777).
+   */
+  keepGraphDevice?: boolean;
 }
 
 /**
@@ -51,7 +71,9 @@ export interface RunTargetChoice {
  * opens: who is connected now is what a submission can name. *graphDevice*
  * is what the defaults are resolved against.
  */
-export function useRunTargetChoice(graphDevice: string, onChange?: () => void): RunTargetChoice {
+export function useRunTargetChoice(graphDevice: string, options: RunTargetOptions = {}): RunTargetChoice {
+  const { onTargetChange, keepGraphDevice = false } = options;
+  const { t } = useI18n();
   const { devices: localDevices } = useDeviceOptions();
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
   const [workersError, setWorkersError] = useState<string | null>(null);
@@ -59,6 +81,7 @@ export function useRunTargetChoice(graphDevice: string, onChange?: () => void): 
   // null: not chosen yet, so the target's default applies.
   const [chosenDevices, setChosenDevices] = useState<string[] | null>(null);
   const [chosenKind, setChosenKind] = useState<string | null>(null);
+  const [deviceError, setDeviceError] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -73,9 +96,15 @@ export function useRunTargetChoice(graphDevice: string, onChange?: () => void): 
   const worker = online.find((candidate) => candidate.id === target) ?? null;
   const isWorker = target !== TARGET_LOCAL;
   const localChoices = useMemo(() => localDeviceChoices(localDevices), [localDevices]);
+  const herePicks = useMemo(() => {
+    if (!keepGraphDevice || localChoices.some((c) => c.value === graphDevice)) return localChoices;
+    const detail = graphDevice === 'auto' ? t('queueRun.serverPicks') : t('queueRun.tabDevice');
+    return [{ value: graphDevice, kind: deviceKind(graphDevice), detail }, ...localChoices];
+  }, [keepGraphDevice, localChoices, graphDevice, t]);
+  const initialHere = useMemo(() => defaultDevices(herePicks, graphDevice), [herePicks, graphDevice]);
   const choices: DeviceChoice[] = useMemo(
-    () => (worker ? workerDeviceChoices(worker) : localChoices),
-    [worker, localChoices],
+    () => (worker ? workerDeviceChoices(worker) : herePicks),
+    [worker, herePicks],
   );
   const kinds = useMemo(() => anyKinds(localChoices, online), [localChoices, online]);
   const selected = chosenDevices ?? defaultDevices(choices, graphDevice);
@@ -94,18 +123,26 @@ export function useRunTargetChoice(graphDevice: string, onChange?: () => void): 
     kinds,
     selected,
     kind,
-    touched: target !== TARGET_LOCAL || chosenDevices !== null,
+    touched: target !== TARGET_LOCAL || selected.join() !== initialHere.join(),
+    deviceError,
     changeTarget: (next) => {
       setTarget(next);
       setChosenDevices(null);
       setChosenKind(null);
-      onChange?.();
+      setDeviceError(false);
+      onTargetChange?.();
     },
-    toggle: (value) => setChosenDevices(isWorker ? toggleDevice(selected, value, choiceOrder) : [value]),
+    toggle: (value) => {
+      setChosenDevices(isWorker ? toggleDevice(selected, value, choiceOrder) : [value]);
+      setDeviceError(false);
+    },
     chooseKind: setChosenKind,
     resolve: () => {
       if (target === TARGET_ANY) return { target: { worker: TARGET_ANY }, device: kind };
-      if (selected.length === 0) return null;
+      if (selected.length === 0) {
+        setDeviceError(true);
+        return null;
+      }
       return { target: { worker: target, devices: selected }, device: selected[0] };
     },
   };
@@ -206,6 +243,9 @@ export function TargetSelector({
         )}
         {!isWorker && <p className={styles.hint}>{t(localHint)}</p>}
       </fieldset>
+      {choice.deviceError && (
+        <div className={styles.error} role="alert">{t('queueRun.error.noDevice')}</div>
+      )}
     </>
   );
 }

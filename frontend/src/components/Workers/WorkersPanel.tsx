@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkerDevice, WorkerInfo, WorkerStatus } from '../../api/workers';
 import { useI18n } from '../../i18n';
@@ -8,6 +8,7 @@ import { friendlyError } from '../../utils/errorMessages';
 import { formatBytes } from '../../utils/formatBytes';
 import { relativeTime } from '../SourceControl/scm';
 import { trapTab } from '../shared/focusTrap';
+import { lazyRetry } from '../shared/lazyRetry';
 import styles from './WorkersPanel.module.css';
 
 /** Hex characters of the environment digest shown; the tooltip has it all. */
@@ -183,8 +184,9 @@ function WorkerCard({ worker, serverVersion, now }: {
  * once in `App`.
  */
 /** The Add worker dialog (#776), loaded the first time it opens. */
-const AddWorkerDialog = lazy(() =>
-  import('./AddWorkerDialog').then((module) => ({ default: module.AddWorkerDialog })),
+const AddWorkerDialog = lazyRetry(
+  () => import('./AddWorkerDialog').then((module) => module.AddWorkerDialog),
+  (props) => props.onClose(),
 );
 
 export function WorkersPanel() {
