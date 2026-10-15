@@ -2403,13 +2403,25 @@ async def test_cuda_peak_covers_every_used_card_run_card_first(
     assert no_active_scopes == []
 
 
-async def test_a_card_with_only_reserved_memory_is_counted(
+async def test_reserved_only_memory_counts_unless_it_is_old_cache(
         monkeypatch, no_active_scopes):
+    """Reserved memory with no allocation is counted on a card the run
+    could not reset (a context it created, or a shared card), and skipped
+    on a card it did reset: there it is cache an earlier run left."""
     import sys
 
-    cuda = _FakeCuda(count=1, allocated={}, reserved={0: GiB})
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
-    outcome = await _run_in_process(monkeypatch, "cuda:0")
+    cached = _FakeCuda(count=1, allocated={}, reserved={0: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cached))
+    assert (await _run_in_process(monkeypatch, "cuda:0")).peak_memory is None
+
+    fresh = _FakeCuda(initialized=False, count=1, allocated={},
+                      reserved={0: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(fresh))
+
+    def _init():
+        fresh.initialized = True
+
+    outcome = await _run_in_process(monkeypatch, "cuda:0", during=_init)
     assert outcome.peak_memory == {"cuda:0": {
         "allocated_bytes": 0, "reserved_bytes": GiB, "exact": False}}
 
@@ -2512,14 +2524,60 @@ async def test_concurrent_runs_on_one_card_do_not_reset_each_other(
 
 
 @pytest.mark.parametrize("device", ["cpu", ""])
-async def test_cpu_runs_record_null(monkeypatch, no_active_scopes, device):
+async def test_a_plain_cpu_run_records_null(
+        monkeypatch, no_active_scopes, device):
+    """No CUDA context, or no card holding memory: null, nothing created."""
     import sys
 
-    cuda = _FakeCuda()
+    cuda = _FakeCuda(initialized=False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
     assert (await _run_in_process(monkeypatch, device)).peak_memory is None
     assert cuda.calls == []
+
+    idle = _FakeCuda(allocated={}, reserved={})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(idle))
+    assert (await _run_in_process(monkeypatch, device)).peak_memory is None
     assert no_active_scopes == []
+
+
+async def test_a_cpu_run_lists_the_cards_its_nodes_used(
+        monkeypatch, no_active_scopes):
+    """A node that pinned a CUDA card in a CPU run: the card is listed, in
+    card order, reset at the start like any run alone on it."""
+    import sys
+
+    cuda = _FakeCuda(count=3, allocated={2: GiB, 1: 2 * GiB},
+                     reserved={2: 2 * GiB, 1: 3 * GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(monkeypatch, "cpu")
+    assert cuda.resets() == [0, 1, 2]
+    assert outcome.peak_memory == {
+        "cuda:1": {"allocated_bytes": 2 * GiB, "reserved_bytes": 3 * GiB,
+                   "exact": False},
+        "cuda:2": {"allocated_bytes": GiB, "reserved_bytes": 2 * GiB,
+                   "exact": False},
+    }
+    assert list(outcome.peak_memory) == ["cuda:1", "cuda:2"]
+
+
+async def test_a_cpu_run_beside_a_cuda_run_marks_that_card_shared(
+        monkeypatch, no_active_scopes):
+    import sys
+
+    from app.core.executors import PeakMemoryScope
+
+    cuda = _FakeCuda(count=2, allocated={0: GiB, 1: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    gpu_run = PeakMemoryScope("cuda:0").open()
+    cpu_run = PeakMemoryScope("cpu").open()
+    # The CPU run did not reset card 0 under the CUDA run.
+    assert cuda.resets() == [0, 1, 1]
+    reading = cpu_run.read(exact=True)
+    assert reading["cuda:0"]["shared"] is True
+    assert reading["cuda:1"] == {"allocated_bytes": GiB,
+                                 "reserved_bytes": 2 * GiB, "exact": True}
+    cpu_run.close()
+    gpu_run.close()
 
 
 async def test_no_torch_loaded_records_null_and_imports_nothing(

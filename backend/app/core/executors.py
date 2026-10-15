@@ -125,8 +125,8 @@ class ExecutionOutcome:
     #: The run's device memory (#770), merged into the row's
     #: ``execution_facts.peak_memory`` by ``RunService._finalize``: a map of
     #: ``"cuda:N"`` to its peaks, or ``"mps"`` to what the driver held at
-    #: the end; None for a CPU run, a run without torch or CUDA, or when the
-    #: allocator could not be read. See :meth:`PeakMemoryScope.read`.
+    #: the end; None when no card holds memory (a plain CPU run), without
+    #: torch or a CUDA context, or when the allocator could not be read. See :meth:`PeakMemoryScope.read`.
     peak_memory: dict[str, Any] | None = None
 
 
@@ -260,21 +260,25 @@ class PeakMemoryScope:
 
     def open(self) -> "PeakMemoryScope":
         """Register on the run's card and reset what is safe to reset."""
-        if self.kind != "cuda":
+        if self.kind == "mps":
             return self
         torch = sys.modules.get("torch")
         initialised = _cuda_initialised(torch)
-        # A bare ``cuda`` is whichever card torch points at. Asking would
-        # initialise CUDA; without a context nothing has moved it off 0.
-        self.card = self._index
-        if self.card is None:
-            self.card = (int(torch.cuda.current_device()) if initialised
-                         else 0)
         others = [scope for scope in _ACTIVE_SCOPES if scope is not self]
-        for scope in others:
-            if scope.card == self.card:
-                scope.shared = True
-                self.shared = True
+        # A CPU run has no card of its own (``card`` stays None) but is
+        # measured the same way: a node can pin a CUDA card.
+        if self.kind == "cuda":
+            # A bare ``cuda`` is whichever card torch points at. Asking
+            # would initialise CUDA; without a context nothing has moved it
+            # off 0.
+            self.card = self._index
+            if self.card is None:
+                self.card = (int(torch.cuda.current_device()) if initialised
+                             else 0)
+            for scope in others:
+                if scope.card == self.card:
+                    scope.shared = True
+                    self.shared = True
         _ACTIVE_SCOPES.append(self)
         if not initialised:
             self.fresh = torch is not None
@@ -301,7 +305,8 @@ class PeakMemoryScope:
         """The run's device memory, as ``execution_facts.peak_memory``.
 
         - CUDA: one ``"cuda:N"`` entry per card this process holds memory
-          on (``memory_reserved > 0`` or a nonzero peak), the run's own card
+          on (a nonzero allocation peak, or ``memory_reserved > 0`` on a
+          card whose counters were not reset), the run's own card
           first, so a node pinned to another card is counted too. Each is
           ``{"allocated_bytes", "reserved_bytes", "exact"}`` from
           ``max_memory_allocated`` / ``max_memory_reserved``, plus
@@ -314,15 +319,15 @@ class PeakMemoryScope:
           everything the Metal driver holds for this process, the
           allocator's cache included. MPS has no peak counter, so this is
           not a peak and not a bound on one.
-        - CPU, torch never loaded, CUDA never initialised, or a read
-          failing: None.
+        - A CPU run is read like a CUDA one, with no card of its own: a
+          node that pinned a CUDA card puts that card in the map.
+        - torch never loaded, CUDA never initialised, no card holding
+          memory (a plain CPU run), or a read failing: None.
 
         *exact* is the caller's to say: in-process runs share one CUDA
         context and pass False; a run alone in its own process (the worker
         subprocess, #771) can pass True. A ``shared`` card is never exact.
         """
-        if self.kind not in ("cuda", "mps"):
-            return None
         torch = sys.modules.get("torch")
         if torch is None:
             return None
@@ -344,7 +349,12 @@ class PeakMemoryScope:
             entries: dict[str, Any] = {}
             for card in order:
                 allocated = int(torch.cuda.max_memory_allocated(card))
-                if allocated <= 0 and torch.cuda.memory_reserved(card) <= 0:
+                # On a card reset at the start, reserved memory with no
+                # allocation since is cache an EARLIER run left behind (the
+                # caching allocator keeps it), not this run's use.
+                if allocated <= 0 and (
+                        card in self.reset_cards
+                        or torch.cuda.memory_reserved(card) <= 0):
                     continue
                 shared = (
                     (self.shared and card == self.card)
