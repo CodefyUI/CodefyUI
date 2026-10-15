@@ -36,9 +36,10 @@ function-local import of the #117 output-entry builders out of
 Lanes
 -----
 The run's device is resolved once, in :meth:`RunService.submit`: the
-effective value is ``options["device"]`` when the key is present, else the
-graph's ``settings.device``, else ``cpu``; ``auto`` resolves to the best
-accelerator this server has. The same string becomes ``exec_runs.queue_key``
+effective value is the first entry of ``options["target"]["devices"]`` when
+the caller sent a device set (#769), else ``options["device"]`` when the key
+is present, else the graph's ``settings.device``, else ``cpu``; ``auto``
+resolves to the best accelerator this server has. The same string becomes ``exec_runs.queue_key``
 and ``ExecutionContext.device``. The seed follows the same rule:
 ``options["seed"]`` when the key is present (``null`` is an unseeded run),
 else the graph's ``settings.seed``, else none.
@@ -129,6 +130,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 import weakref
 from collections import deque
@@ -149,6 +151,7 @@ from .device_utils import (
     graph_settings_device,
     graph_settings_seed,
     resolve_device,
+    split_device,
 )
 from .env_fingerprint import collect_fingerprint, execution_facts
 from .execution_context import (
@@ -176,6 +179,7 @@ from .run_store import (
     STATUS_SUCCEEDED,
     EventRecord,
     MetricPoint,
+    WORKER_LOCAL,
     RunProvenance,
     RunStore,
     json_safe,
@@ -282,6 +286,10 @@ OPTION_KEYS = frozenset({
     "auto_backward",
     # Engine error policy, likewise straight off the execute message.
     "error_mode", "max_retries",
+    # Where the run executes (#769): ``{"worker": ..., "devices": [...]}``.
+    # Stored only when the caller sent it, so a run without a target keeps
+    # exactly the options row it had before; see :func:`normalize_target`.
+    "target",
 })
 
 #: Default lane, and the one the per-device FIFO schedules. Every lane that
@@ -550,11 +558,165 @@ class InteractiveSession:
     node_state_store: NodeStateStore | None = None
 
 
+#: The one worker a run can target today: this control-plane process. The
+#: same string ``run_store`` writes for a run with no target.
+TARGET_WORKER_LOCAL = WORKER_LOCAL
+#: "Place it wherever there is room" -- reserved, refused until #772.
+TARGET_WORKER_ANY = "any"
+#: Worker names (#769), matched with ``fullmatch``. ``local`` and ``any``
+#: match it too; they are the two reserved names a worker cannot enroll
+#: under.
+TARGET_WORKER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+#: Upper bound on ``target.devices``. A device set names cards on ONE
+#: host; the cap keeps a stored row bounded like every other option.
+MAX_TARGET_DEVICES = 64
+#: The refusal for any target that is not this process. One string so the
+#: REST layer, the CLI and the tests cannot drift apart.
+TARGET_NOT_ENROLLED = (
+    "no workers are enrolled on this server; remote targets arrive with #772")
+
+#: What each device field accepts, for its refusal message.
+_DEVICE_VOCABULARY = "cpu, auto, cuda, cuda:N, mps or mps:N"
+_TARGET_DEVICE_VOCABULARY = "cpu, cuda:N, mps or mps:N"
+
+
+def _checked_device(value: str, *, field: str,
+                    allow_auto: bool = True) -> str:
+    """Trim, lowercase and check one device string against ``DEVICE_PATTERN``.
+
+    The one device check shared by ``options.device``,
+    ``graph.settings.device`` and every ``target.devices`` entry; callers
+    have already established *value* is a string. ``allow_auto=False`` is
+    the device-set rule: ``auto`` names no card.
+    """
+    device = value.strip().lower()
+    if DEVICE_PATTERN.match(device) is None \
+            or (device == "auto" and not allow_auto):
+        vocabulary = (_DEVICE_VOCABULARY if allow_auto
+                      else _TARGET_DEVICE_VOCABULARY)
+        raise RunSubmitError(
+            f"unknown {field} {device!r}; expected {vocabulary}")
+    return device
+
+
+def _concrete_device(device: str) -> str:
+    """One ``target.devices`` entry in canonical form, or ``RunSubmitError``.
+
+    A device set lists cards, so an entry must name one: ``cpu``,
+    ``cuda:N`` or ``mps:N``. ``mps`` alone is ``mps:0`` (there is one), and
+    the index is re-spelled from its integer so ``cuda:00`` and ``cuda:0``
+    are the same entry. A bare ``cuda`` is refused: which card it means
+    depends on the process, and the set is supposed to say.
+    """
+    kind, index = split_device(device)
+    if kind == "cpu":
+        return "cpu"
+    if index is None and kind == "mps":
+        index = 0
+    if index is None:
+        raise RunSubmitError(
+            f"target.devices entry {device!r} names a device kind, not a "
+            f"device; use {kind}:N")
+    return f"{kind}:{index}"
+
+
+def normalize_target(raw: Any) -> dict[str, Any] | None:
+    """Validate ``options.target`` (#769). ``None`` means "not given".
+
+    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...]}``, both
+    keys optional and no others. ``worker`` is trimmed and lowercased;
+    absent, it is ``local``. Only ``local`` is accepted here: there is no
+    worker registry yet, so any other name, and ``any``, is refused with
+    :data:`TARGET_NOT_ENROLLED`.
+
+    ``devices`` absent (or null) means the run's ``device`` option as
+    today. Given, it is a non-empty list of concrete devices in canonical
+    form (see :func:`_concrete_device`), with no duplicates after
+    canonicalising and one kind (``cuda:0`` with ``cpu`` is not a device
+    set).
+
+    ``devices`` records the REQUESTED set. In this release only its first
+    entry is used: it becomes the run's ``device`` (see
+    :func:`normalize_options`), and so its queue and the device it executes
+    on. The rest is stored as asked and is not checked for availability;
+    using it is #773 / #774.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RunSubmitError(
+            f"target must be an object, got {type(raw).__name__}")
+    unknown = sorted(set(raw) - {"worker", "devices"})
+    if unknown:
+        raise RunSubmitError(
+            f"unknown target key(s) {unknown}; supported: "
+            "['devices', 'worker']")
+
+    worker = raw.get("worker")
+    if worker is None:
+        worker = TARGET_WORKER_LOCAL
+    if isinstance(worker, str):
+        worker = worker.strip().lower()
+    if not isinstance(worker, str) \
+            or TARGET_WORKER_PATTERN.fullmatch(worker) is None:
+        raise RunSubmitError(
+            "target.worker must be 'local', 'any' or a worker name "
+            "(lowercase letters, digits and '-', at most 63 chars)")
+    if worker != TARGET_WORKER_LOCAL:
+        raise RunSubmitError(TARGET_NOT_ENROLLED)
+
+    devices = raw.get("devices")
+    if devices is not None:
+        if not isinstance(devices, list) or not devices:
+            raise RunSubmitError("target.devices must be a non-empty list")
+        if len(devices) > MAX_TARGET_DEVICES:
+            raise RunSubmitError(
+                f"target.devices must list at most {MAX_TARGET_DEVICES} "
+                "devices")
+        cleaned: list[str] = []
+        for entry in devices:
+            if not isinstance(entry, str):
+                raise RunSubmitError("target.devices entries must be strings")
+            device = _concrete_device(_checked_device(
+                entry, field="target device", allow_auto=False))
+            if device in cleaned:
+                raise RunSubmitError(
+                    f"target.devices lists {device!r} twice")
+            cleaned.append(device)
+        kinds = sorted({split_device(device)[0] for device in cleaned})
+        if len(kinds) > 1:
+            raise RunSubmitError(
+                f"target.devices mixes device kinds {kinds}; a device set is "
+                "one kind")
+        devices = cleaned
+    return {"worker": worker, "devices": devices}
+
+
+def target_devices(options: Any) -> Any:
+    """``options["target"]["devices"]``, or None when there is none.
+
+    Reads raw and normalised options alike. On a normalised dict the
+    answer is the canonical device list; on raw options, ``is not None``
+    is the test "the caller named a device set" (#769).
+    """
+    target = options.get("target") if isinstance(options, dict) else None
+    return target.get("devices") if isinstance(target, dict) else None
+
+
+def target_worker(options: Any) -> str:
+    """The worker a NORMALISED options dict targets; ``local`` without one."""
+    target = options.get("target") if isinstance(options, dict) else None
+    worker = target.get("worker") if isinstance(target, dict) else None
+    return worker or TARGET_WORKER_LOCAL
+
+
 def normalize_options(raw: Any) -> dict[str, Any]:
     """Validate the submit options and fill in defaults.
 
-    Strict on purpose (see ``OPTION_KEYS``). Returns a NEW dict with every
-    key present, so ``exec_runs.options`` always records the full effective
+    Strict on purpose (see ``OPTION_KEYS``). Returns a NEW dict carrying
+    every key except ``target`` -- which appears only when the caller sent
+    one, so a run without a target stores the row it stored before #769 --
+    so ``exec_runs.options`` always records the full effective
     configuration rather than "whatever the client happened to send" — a
     stored run has to be readable years later without knowing which defaults
     were in force at submit time.
@@ -563,6 +725,22 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     checked here: that resolution happens at start time via
     ``resolve_device`` and lands in ``exec_runs.queue_key``, so the row keeps
     both what was asked for and what was used.
+
+    With ``target.devices`` (#769) the list is the more specific statement,
+    and ``devices[0]`` relates to ``device`` in one of three ways:
+
+    - ``device`` absent, or ``"auto"``: ``devices[0]`` becomes the device.
+    - ``device`` a bare kind (``cuda``, ``mps``, ``cpu``) that matches the
+      kind of ``devices[0]``: they agree, and ``devices[0]`` becomes the
+      device (``cuda`` + ``["cuda:1"]`` is ``cuda:1``).
+    - anything else that names a different device after trimming,
+      lowercasing and canonicalising (``cuda:0`` + ``["cuda:1"]``, ``cpu``
+      + ``["cuda:0"]``): ``RunSubmitError``
+      ``target.devices and device disagree``. ``cuda:00`` + ``["cuda:0"]``
+      agrees, and the device becomes ``cuda:0``.
+
+    Only ``devices[0]`` takes effect in this release; see
+    :func:`normalize_target`.
     """
     if raw is None:
         raw = {}
@@ -574,14 +752,23 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         raise RunSubmitError(
             f"unknown option(s) {unknown}; supported: {sorted(OPTION_KEYS)}")
 
-    device = raw.get("device", "cpu")
+    target = normalize_target(raw.get("target"))
+    devices = None if target is None else target["devices"]
+
+    # ``target.devices`` against ``device`` (#769); see the docstring.
+    device = raw.get("device", devices[0] if devices else "cpu")
     if not isinstance(device, str) or not device.strip():
         raise RunSubmitError("device must be a non-empty string")
-    device = device.strip().lower()
-    if DEVICE_PATTERN.match(device) is None:
-        raise RunSubmitError(
-            f"unknown device {device!r}; expected cpu, auto, cuda, cuda:N, "
-            "mps or mps:N")
+    device = _checked_device(device, field="device")
+    if devices and device != devices[0]:
+        kind, index = split_device(device)
+        first_kind, first_index = split_device(devices[0])
+        agrees = (device == "auto"
+                  or (kind == first_kind
+                      and (index is None or index == first_index)))
+        if not agrees:
+            raise RunSubmitError("target.devices and device disagree")
+        device = devices[0]
 
     seed = raw.get("seed")
     if seed is not None:
@@ -632,7 +819,7 @@ def normalize_options(raw: Any) -> dict[str, Any]:
             raise RunSubmitError(f"{key} must be true or false")
         flags[key] = value
 
-    return {
+    normalized = {
         "device": device,
         "seed": seed,
         "lane": lane.strip(),
@@ -641,6 +828,11 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         "max_retries": max_retries,
         **flags,
     }
+    # Only when sent: a run without a target stores the same options row it
+    # stored before #769.
+    if target is not None:
+        normalized["target"] = target
+    return normalized
 
 
 def normalize_name(raw: Any) -> str | None:
@@ -704,11 +896,7 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
     if device is not None:
         if not isinstance(device, str):
             raise RunSubmitError("graph.settings.device must be a string")
-        device = device.strip().lower()
-        if DEVICE_PATTERN.match(device) is None:
-            raise RunSubmitError(
-                f"unknown graph.settings.device {device!r}; expected cpu, "
-                "auto, cuda, cuda:N, mps or mps:N")
+        device = _checked_device(device, field="graph.settings.device")
     seed = (settings or {}).get("seed")
     if seed is not None:
         # Strict like ``GraphSettings.seed``: ``"7"``, ``true`` or ``2.0``
@@ -736,10 +924,33 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
     return normalized
 
 
+def fill_graph_device(graph: Any, options: Any) -> Any:
+    """Fill an absent ``options["device"]`` from the graph's ``settings.device``.
+
+    The device half of :func:`apply_graph_settings`, shared with the sweep
+    route, which applies the device rule but owns its seed. Returns
+    *options* itself when there is nothing to fill: a non-dict (for
+    :func:`normalize_options` to refuse), a ``device`` key already present,
+    a graph with no device, or a ``target.devices`` list (#769) -- that
+    names the device itself, so ``settings.device`` is not consulted and
+    cannot "disagree" with a set the caller chose on purpose.
+    """
+    if options is not None and not isinstance(options, dict):
+        return options
+    if options is not None and ("device" in options
+                                or target_devices(options) is not None):
+        return options
+    device = graph_settings_device(graph)
+    if not device:
+        return options
+    return {**(options or {}), "device": device}
+
+
 def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
     """Fill the run options the caller left out from the graph's settings.
 
-    ``options["device"]`` absent takes ``settings.device`` and
+    ``options["device"]`` absent takes ``settings.device`` (unless
+    ``target.devices`` names the device; see :func:`fill_graph_device`) and
     ``options["seed"]`` absent takes ``settings.seed`` (#704). Key absence
     is the test, so a caller that names a value keeps it: an explicit
     ``"seed": null`` is an unseeded run of a seeded graph, and an explicit
@@ -752,11 +963,7 @@ def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
     """
     if options is not None and not isinstance(options, dict):
         return options
-    filled = dict(options or {})
-    if "device" not in filled:
-        device = graph_settings_device(graph)
-        if device:
-            filled["device"] = device
+    filled = dict(fill_graph_device(graph, options) or {})
     if "seed" not in filled:
         seed = graph_settings_seed(graph)
         if seed is not None:
@@ -1594,8 +1801,11 @@ class RunService:
         The device is resolved ONCE here and handed to both the row
         (``queue_key``) and the run (``ExecutionContext.device``), so the
         queue a run waits in and the device it eventually uses cannot
-        disagree. The effective device is ``options["device"]`` when that
-        key is present, else the graph's ``settings.device``, else ``cpu``;
+        disagree. The effective device is ``target.devices[0]`` when the
+        options carry a device set (#769; ``settings.device`` is then not
+        consulted, and see :func:`normalize_options` for how it combines
+        with ``device``), else ``options["device"]`` when that key is
+        present, else the graph's ``settings.device``, else ``cpu``;
         the effective value is written into the stored options so the row
         stays self-describing. ``options["seed"]`` falls back to the graph's
         ``settings.seed`` the same way (see :func:`apply_graph_settings`). ``auto`` resolves to the best accelerator
@@ -1668,6 +1878,8 @@ class RunService:
             run_id=run_id,
             study_id=study_id,
             study_attempt_id=study_attempt_id,
+            worker_id=target_worker(normalized_options),
+            devices=target_devices(normalized_options),
         )
         if self._shutting_down:
             # The same re-check ``_start`` makes, for the same reason and at
@@ -1727,6 +1939,8 @@ class RunService:
             record = await self.store.create_run(
                 graph_snapshot=stored_graph, options=options, name=name,
                 status=STATUS_QUEUED, queue_key=queue_key,
+                worker_id=target_worker(options),
+                devices=target_devices(options),
             )
             return self._start(record.id, graph, options,
                                queue_key=queue_key, lane=LANE_INTERACTIVE,

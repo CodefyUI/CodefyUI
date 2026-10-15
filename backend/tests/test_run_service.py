@@ -585,9 +585,77 @@ def test_options_accept_every_documented_key():
         "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
         "backward_mode": True, "auto_backward": True,
         "error_mode": "retry", "max_retries": 3, "deterministic": True,
+        "target": {"devices": [" CUDA:1 "]},
     }
     assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
-    assert normalize_options(asked) == {**asked, "device": "cuda"}
+    # " CUDA " is the bare kind, so the device set's first card wins.
+    assert normalize_options(asked) == {
+        **asked, "device": "cuda:1",
+        "target": {"worker": "local", "devices": ["cuda:1"]}}
+
+
+@pytest.mark.parametrize("device,devices,effective", [
+    # (a) absent or auto: devices[0], silently.
+    (None, ["cuda:1", "cuda:0"], "cuda:1"),
+    ("auto", ["cuda:1"], "cuda:1"),
+    (" AUTO ", ["mps:0"], "mps:0"),
+    # (b) a bare kind agrees with any devices[0] of that kind.
+    ("cuda", ["cuda:1", "cuda:0"], "cuda:1"),
+    ("mps", ["mps:0"], "mps:0"),
+    ("cpu", ["cpu"], "cpu"),
+    # Equal after trim/lowercase, or after canonicalising.
+    (" CUDA:1 ", ["cuda:1"], "cuda:1"),
+    ("cuda:01", ["cuda:1"], "cuda:1"),
+    ("mps:0", ["mps"], "mps:0"),
+])
+def test_device_set_precedence_accepts(device, devices, effective):
+    """#769: the device list is the more specific statement."""
+    raw = {"target": {"devices": devices}}
+    if device is not None:
+        raw["device"] = device
+    options = normalize_options(raw)
+    assert options["device"] == effective
+    assert options["target"]["devices"][0] == effective
+
+
+@pytest.mark.parametrize("devices,canonical", [
+    ([" CUDA:1 ", "cuda:00"], ["cuda:1", "cuda:0"]),
+    (["mps"], ["mps:0"]),
+    (["MPS:0"], ["mps:0"]),
+    (["cpu"], ["cpu"]),
+])
+def test_device_set_entries_are_canonical(devices, canonical):
+    target = normalize_options({"target": {"devices": devices}})["target"]
+    assert target == {"worker": "local", "devices": canonical}
+
+
+@pytest.mark.parametrize("worker", ["local", " LOCAL ", "Local"])
+def test_target_worker_is_trimmed_and_lowercased(worker):
+    assert normalize_options(
+        {"target": {"worker": worker}})["target"]["worker"] == "local"
+
+
+def test_target_worker_pattern_must_match_the_whole_name():
+    """Matched with ``fullmatch`` (the repo convention): ``match`` with a
+    ``$`` anchor would let a trailing newline through."""
+    from app.core.run_service import TARGET_WORKER_PATTERN
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu-box-1")
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu-box-1\n") is None
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu box") is None
+
+
+@pytest.mark.parametrize("device,devices", [
+    # (c) anything else that differs is a disagreement.
+    ("cuda:0", ["cuda:1"]),
+    ("cpu", ["cuda:0"]),
+    ("cuda", ["mps:0"]),
+    ("mps:1", ["mps:0"]),
+])
+def test_device_set_precedence_refuses(device, devices):
+    with pytest.raises(RunSubmitError,
+                       match="^target.devices and device disagree$"):
+        normalize_options({"device": device,
+                           "target": {"devices": devices}})
 
 
 @pytest.mark.parametrize("lane", [LANE_INTERACTIVE, "queued", "gpu"])

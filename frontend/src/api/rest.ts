@@ -212,6 +212,18 @@ export interface RunSummary {
   sweep_id?: string | null;
   /** Zero-based compiled variant index within its sweep. */
   sweep_variant?: number | null;
+  /**
+   * Where the run executes (#769). `local` (this server process) is the
+   * only worker today, and a row from before #769 reads `local` too.
+   * Optional: a server before #769 does not send it.
+   */
+  worker_id?: string;
+  /**
+   * The run's device set (`options.target.devices`), e.g. `['cuda:0',
+   * 'cuda:1']`, or `null` when the run named a single `device`. The run's
+   * queue is still `queue_key`.
+   */
+  devices?: string[] | null;
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */

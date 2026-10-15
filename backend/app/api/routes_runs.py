@@ -260,6 +260,11 @@ async def submit_run(request: Request):
     best accelerator this server has. The resolved device is the row's
     ``queue_key`` and the device the run executes on.
 
+    ``options.target`` (#769) is ``{"worker": "local", "devices": [...]}``.
+    Only ``local`` is accepted until remote workers exist; ``devices[0]`` is
+    the effective device when ``device`` is absent, and a ``device`` that
+    disagrees is a 400. The row reports ``worker_id`` and ``devices``.
+
     The body is parsed here rather than declared as a pydantic parameter —
     see ``_read_submit_body``. Its size ceiling is enforced by
     ``core.body_limit`` for every route, not by this one.

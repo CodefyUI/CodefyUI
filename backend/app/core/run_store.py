@@ -105,10 +105,15 @@ ARTIFACT_KIND_IMAGE = "image"
 #: ``test_the_two_spellings_of_the_tensorboard_kind_agree`` pins them equal.
 ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
+#: The worker id of a run executed by this process (#769). Also what a
+#: pre-MIGRATION_008 row's NULL ``worker_id`` reads back as.
+WORKER_LOCAL = "local"
+
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
     "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant, "
-    "fingerprint_digest, execution_facts, study_id, study_attempt_id"
+    "fingerprint_digest, execution_facts, study_id, study_attempt_id, "
+    "worker_id, devices"
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
@@ -338,6 +343,16 @@ class RunRecord:
     #: ``sweep_id``.
     study_id: str | None = None
     study_attempt_id: str | None = None
+    #: Where the run executes (#769). ``local`` -- this control-plane
+    #: process -- is the only worker today; a row written before
+    #: MIGRATION_008 has NULL and reads back as ``local``, which is where it
+    #: ran.
+    worker_id: str = WORKER_LOCAL
+    #: The REQUESTED device set (``options.target.devices``), or None when
+    #: the run named one ``device`` as every run before #769 did. In this
+    #: release only the first entry is used -- it is the run's device and
+    #: so its ``queue_key``; the rest is recorded as asked and not checked.
+    devices: list[str] | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
@@ -367,6 +382,8 @@ class RunRecord:
             execution_facts=_loads(row["execution_facts"]),
             study_id=row["study_id"],
             study_attempt_id=row["study_attempt_id"],
+            worker_id=row["worker_id"] or WORKER_LOCAL,
+            devices=_loads(row["devices"]),
         )
 
 
@@ -541,6 +558,8 @@ class RunStore:
         sweep_variant: int | None = None,
         study_id: str | None = None,
         study_attempt_id: str | None = None,
+        worker_id: str = WORKER_LOCAL,
+        devices: list[str] | None = None,
     ) -> RunRecord:
         """Insert a run and return its row.
 
@@ -561,11 +580,19 @@ class RunStore:
 
         *study_id* / *study_attempt_id* stamp the run as the child of one
         study attempt (#343); the ``studies`` row must exist (enforced FK).
+
+        *worker_id* / *devices* record where the run executes (#769): the
+        worker (a non-empty string; ``local`` is the only one today) and
+        the REQUESTED ``target.devices`` list, or None for a run that named
+        a single ``device``. Only the first device is used in this release.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
                 f"unknown run status {status!r}; expected one of "
                 f"{sorted(RUN_STATUSES)}")
+        if not isinstance(worker_id, str) or not worker_id:
+            raise ValueError(
+                f"worker_id must be a non-empty string, got {worker_id!r}")
         if provenance is None:
             provenance = await asyncio.to_thread(RunProvenance.capture)
 
@@ -593,6 +620,8 @@ class RunStore:
             sweep_variant=sweep_variant,
             study_id=study_id,
             study_attempt_id=study_attempt_id,
+            worker_id=worker_id,
+            devices=None if devices is None else list(devices),
         )
         params = (
             record.id, record.name, _dumps(graph_snapshot),
@@ -602,6 +631,8 @@ class RunStore:
             None if record.plugin_pins is None else _dumps(record.plugin_pins),
             record.sweep_id, record.sweep_variant,
             record.study_id, record.study_attempt_id,
+            record.worker_id,
+            None if record.devices is None else _dumps(record.devices),
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
@@ -609,8 +640,8 @@ class RunStore:
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
                 "plugin_pins, sweep_id, sweep_variant, study_id, "
-                "study_attempt_id) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "study_attempt_id, worker_id, devices) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
