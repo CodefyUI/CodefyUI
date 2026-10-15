@@ -68,7 +68,7 @@ cdui run train.json --target any --device cuda
 
 - **`local`** (the default) is this server. A run here executes on one device: with a device set it holds a slot on every device of the set, so nothing else is placed on them, and executes on the first.
 - **A worker name** sends the run to that worker. The worker must have connected since the server started and must offer the devices, or the submit fails with `400`. A worker that is away now is not a refusal: the run waits for it to reconnect.
-- **`any`** takes the first connected, non-draining worker with a free slot, in name order, and this server last.
+- **`any`** takes the first connected, non-draining worker with a free slot, in name order, and this server last. An `any` run with a device set runs on a worker only, because only a worker renumbers the set from `cuda:0` for the run (see below); the submit fails with `400` when no worker the server has seen offers the whole set.
 
 **In-run device names.** A run on a worker sees only its own cards, renumbered from 0 in the order you listed them. With `--devices cuda:2,cuda:0`, the run's `cuda:0` is the machine's `cuda:2` and its `cuda:1` is the machine's `cuda:0`. A node whose **device** parameter is `auto` follows the run's device (the first card); to put a node on another card of the set, set its **device** to that card's in-run name, here `cuda:1`. The run records the mapping in `execution_facts` as `visible_devices` and `device_aliases`. See [Device Backends](/advanced/device-backends#addressing-one-card-out-of-several).
 
