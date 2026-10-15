@@ -88,9 +88,16 @@ def _devices(*values: str) -> list[wp.DeviceReport]:
 
 
 async def test_every_device_carries_its_slots_and_this_server_is_listed(
-        registry, tmp_path, monkeypatch):
+        tmp_path, monkeypatch):
     """#773: ``slots: {limit, taken}`` per device, for each worker and for
-    this server (``local``); a same-host worker reads this server's."""
+    this server (``local``); a same-host worker's shared card says
+    ``shared_with: "local"`` and reads this server's slot."""
+    from app.core.resources import DeviceFact
+
+    registry = WorkerRegistry(local_devices=lambda: [
+        DeviceFact("cpu", "cpu", None, "", None, None, "none"),
+        DeviceFact("cuda:0", "cuda", 0, "", None, None, "none", "u-0")])
+    app.state.worker_registry = registry
     database = Database(tmp_path / "codefyui.db")
     database.connect()
     service = RunService(RunStore(database), workers=registry,
@@ -103,9 +110,10 @@ async def test_every_device_carries_its_slots_and_this_server_is_listed(
                                   devices=_devices("cpu", "cuda:0",
                                                    "cuda:1", "tpu")),
                          send=_noop, close=_noop)
-        registry.connect(wp.Hello(name="here", version="t",
-                                  devices=_devices("cuda:0")),
-                         send=_noop, close=_noop, same_host=True)
+        registry.connect(wp.Hello(name="here", version="t", devices=[
+            wp.DeviceReport(value="cuda:0", kind="cuda", uuid="u-0"),
+            wp.DeviceReport(value="cuda:1", kind="cuda", uuid="u-9")]),
+            send=_noop, close=_noop, same_host=True)
         # What two running runs would hold: one on far's first card, one
         # on this machine's (shared with the same-host worker).
         service._slots.update({("far", "cuda:0"): 1, ("local", "cuda:0"): 1})
@@ -116,7 +124,10 @@ async def test_every_device_carries_its_slots_and_this_server_is_listed(
         assert [d["slots"] for d in far["devices"]] == [
             {"limit": 2, "taken": 0}, {"limit": 1, "taken": 1},
             {"limit": 3, "taken": 0}, None]
-        assert here["devices"][0]["slots"] == {"limit": 1, "taken": 1}
+        assert {d["shared_with"] for d in far["devices"]} == {None}
+        assert [(d["shared_with"], d["slots"]) for d in here["devices"]] == [
+            ("local", {"limit": 1, "taken": 1}),
+            (None, {"limit": 1, "taken": 0})]
         assert body["local"] == {"id": "local", "devices": [
             {"value": "cpu", "kind": "cpu",
              "slots": {"limit": 2, "taken": 0}},
@@ -127,7 +138,9 @@ async def test_every_device_carries_its_slots_and_this_server_is_listed(
         assert drained["devices"][1]["slots"] == {"limit": 1, "taken": 1}
     finally:
         await service.shutdown()
+        await registry.shutdown()
         del app.state.run_service
+        del app.state.worker_registry
         database.close()
 
 

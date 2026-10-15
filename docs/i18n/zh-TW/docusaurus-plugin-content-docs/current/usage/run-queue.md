@@ -21,7 +21,9 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互相等待。同一條佇列內的 run 依**送出順序**啟動，先送出的先執行。
 
-**准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。等待期間它不佔用任何名額，因此只需要其中一張卡的 run 可以從那張卡自己的佇列先啟動。與伺服器在同一台機器上的 [worker](#workers) 和這台伺服器共用名額，因為它的 `cuda:0` 就是同一張卡：在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
+**准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。它排在佇列最前面等待時不佔用任何名額，但會**保留**這些卡：在它啟動之前，其他 run 都不能在保留的卡上啟動；已在這些卡上執行的 run 照常結束，結束後它就會啟動。代價是閒置：已經空出的保留卡會一直閒置到集合中其他卡也空出，最長等於那些卡上已在執行的最久的 run。保留依先來後到，因此兩個共用一張卡的裝置集合 run 會依序啟動。`"worker": "any"` 的裝置集合 run 不保留任何卡，因為它要用哪台機器的卡要到啟動時才決定。
+
+與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）；只是從 loopback 連入並不算，因為 SSH 通道也是 loopback。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
 
 :::note 同一張卡的別名會併成同一條佇列
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
@@ -35,7 +37,7 @@ run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"targ
 
 ### Worker {/* #workers */}
 
-Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。這個版本的 agent 必須與伺服器在同一台機器上。`GET /api/workers` 列出各 agent 與其裝置，每個裝置附上 `slots`（`limit`、`taken`）；回應的 `local` 欄位以相同格式列出這台伺服器的裝置，`same_host: true` 標示與這台伺服器共用名額的 agent。`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
+Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。這個版本的 agent 必須與伺服器在同一台機器上。`GET /api/workers` 列出各 agent 與其裝置，每個裝置附上 `slots`（`limit`、`taken`）；回應的 `local` 欄位以相同格式列出這台伺服器的裝置，`same_host: true` 標示在這台機器上的 agent。這種 agent 中屬於這台伺服器的裝置會帶有 `shared_with: "local"`，其 `slots` 就是這台伺服器那張卡的名額（同一個計數與上限），加總用量時只能算一次。`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
 
 `target.worker` 決定 run 放在哪裡：
 
@@ -333,7 +335,7 @@ study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後�
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | 儲存及分送的單一事件 payload 上限；超過上限的輸出項目會換成省略標記，但仍會指出它的 port。`0` 或更小的值會停用上限。 |
 | `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` | `4194304` (4 MB) | 單一 `GET /api/runs/{id}/events` page 的 byte 預算；提早停止的 page 會回傳 cursor，供下一次接續。 |
 
-例如 `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` 讓這台伺服器的 `cuda:0` 可同時執行兩個 run、`gpu-box-1` 的 `cuda:0` 可同時執行三個，其他卡維持 1。與伺服器在同一台機器上的 worker 對它的裝置使用這台伺服器的上限，因為兩者是同一個名額。
+例如 `gpu-box-1` 是另一台機器上的 worker 時，`CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` 讓這台伺服器的 `cuda:0` 可同時執行兩個 run、`gpu-box-1` 的 `cuda:0` 可同時執行三個，其他卡維持 1。同一台機器上的 worker 與這台伺服器共用的卡一律使用這台伺服器的上限；指向這種卡的 `<worker>/<device>` 覆寫會被忽略，並在 worker 連線時記錄警告。`local/<device>` 是只寫裝置的另一種寫法。
 
 格式錯誤的覆寫項目會被忽略並記錄警告，不會讓伺服器啟動失敗。小於 1 的上限一律視為 1，避免佇列因無法排空而停滯。三項 sweep 上限列在[參數掃描](#sweeps)一節。
 

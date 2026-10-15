@@ -23,6 +23,7 @@ from app.agent.connection import (
 )
 from app.agent.runner import Runner
 from app.core import worker_protocol as wp
+from app.core.machine_identity import machine_identity
 
 from . import _helpers as h
 
@@ -168,6 +169,8 @@ async def test_hello_heartbeats_and_a_run_match_in_process(tmp_path):
         assert [d.value for d in hello.devices] == ["cpu"]
         assert set(hello.platform) == {"system", "release", "machine",
                                        "python"}
+        # A digest of this machine's id, never the raw id (#773).
+        assert hello.machine_id == machine_identity()
         query = parse_qs(urlsplit(cp.paths[0]).query)
         assert urlsplit(cp.paths[0]).path == wp.WORKER_WS_PATH
         assert query == {"token": ["tok en/1"]}

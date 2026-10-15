@@ -169,6 +169,10 @@ class DeviceReport(_Frame):
     total_bytes: int | None = None
     free_bytes: int | None = None
     source: str = "none"
+    #: A CUDA card's physical identity (NVML UUID, lower case, no ``GPU-``
+    #: prefix), or None. A same-host worker's card shares this server's
+    #: slot only when the UUIDs match (#773).
+    uuid: str | None = None
 
 
 class MetricPointReport(_Frame):
@@ -204,6 +208,10 @@ class Hello(_Frame):
     mounts: dict[str, str] = Field(default_factory=dict)
     #: ``{"system", "release", "machine", "python"}``.
     platform: dict[str, str] = Field(default_factory=dict)
+    #: ``core.machine_identity.machine_identity()`` (a digest, never the raw
+    #: OS id), or None. Equal to the control plane's own: the worker runs on
+    #: the same machine and shares its devices (#773).
+    machine_id: str | None = None
 
 
 class Heartbeat(_Frame):

@@ -205,6 +205,9 @@ def test_torch_free_lists_every_nvml_card(monkeypatch):
         ("cuda:1", "cuda", "RTX 3060", 12 * GIB, 11 * GIB, "nvml"),
     ]
     assert [f.index for f in facts[1:]] == [0, 1]
+    # The physical identity a same-host worker's card is matched by (#773).
+    assert [f.uuid for f in facts[1:]] == [UUID_A.lower(), UUID_B.lower()]
+    assert facts[0].uuid is None
     assert nvml.shutdowns == 1
 
 
@@ -312,6 +315,8 @@ def test_nvml_is_matched_to_torch_by_uuid_not_index(monkeypatch):
         ("cuda:0", "cuda", "fast", 24 * GIB, 20 * GIB, "nvml"),
         ("cuda:1", "cuda", "slow", 8 * GIB, 7 * GIB, "nvml"),
     ]
+    assert [f.uuid for f in probe_devices()[1:]] == [UUID_B.lower(),
+                                                    UUID_A.lower()]
 
 
 def test_torch_uuid_with_gpu_prefix_still_matches(monkeypatch):

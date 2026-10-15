@@ -185,6 +185,7 @@ import logging
 import time
 import weakref
 from collections import deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -329,6 +330,10 @@ WORKER_QUEUE_SEPARATOR = "/"
 #: An outcome object without a ``peak_memory`` attribute (#770): the
 #: executor did not measure, which is different from measuring None.
 _NOT_MEASURED = object()
+
+#: What a slot reserved for an earlier waiting run counts as in
+#: ``RunService._admission_view``: more than any cap, so it reads as full.
+_RESERVED = 1 << 30
 
 #: The frames that END a run's log: a client replaying it over the WS
 #: attach view (the canvas) takes one of them as the run's end.
@@ -525,10 +530,6 @@ class QueueLimits:
                 return max(1, value)
         return max(1, self.cpu if device == CPU_QUEUE_KEY else self.gpu)
 
-    def for_key(self, queue_key: str) -> int:
-        """The cap of this process's slot for one resolved device string."""
-        return self.for_slot((LOCAL_WORKER_ID, queue_key))
-
     @classmethod
     def from_settings(cls) -> "QueueLimits":
         """Read the caps out of ``config.settings``.
@@ -552,12 +553,17 @@ def parse_queue_overrides(raw: str) -> tuple[tuple[str, int], ...]:
     Two key shapes (#773):
 
     - ``device`` (``cuda:0``, ``cpu``): this process's slot only, as before
-      workers existed. It never applies to a worker's card of the same
-      number. ``local/<device>`` is the same key spelled out.
+      workers existed, stored as written (lower-cased). It never applies to
+      a worker's card of the same number.
+    - ``local/<device>``: the same, validated and canonicalised like a
+      worker key's device and stored as the bare device.
     - ``<worker>/<device>`` (``gpu-box-1/cuda:0``): that worker's slot only.
       The worker part must be a valid worker name (not ``any``), the device
       a concrete one (``cpu``, ``cuda:N``, ``mps:N``), which is stored in
-      canonical form (``mps`` -> ``mps:0``, ``cuda:01`` -> ``cuda:1``).
+      canonical form (``mps`` -> ``mps:0``, ``cuda:01`` -> ``cuda:1``). A
+      card a same-host worker shares with this process has this process's
+      slot and cap, so such an override does not apply to it
+      (``RunService.check_worker_overrides`` warns).
 
     Split on the LAST ``=`` so a key may contain one; a key legitimately
     contains a colon (``cuda:0``), which is why this is not a simple
@@ -601,9 +607,8 @@ def _worker_override_key(entry: str, key: str) -> str | None:
     """The stored key of a ``<worker>/<device>`` override, or None (warned)."""
     worker, _, device = key.partition(WORKER_QUEUE_SEPARATOR)
     worker, device = worker.strip(), device.strip()
-    if worker == TARGET_LOCAL and device:
-        return device
-    if worker == TARGET_ANY or not WORKER_NAME_PATTERN.fullmatch(worker):
+    if worker != TARGET_LOCAL and (
+            worker == TARGET_ANY or not WORKER_NAME_PATTERN.fullmatch(worker)):
         logger.warning("ignoring run queue override %r: %r is not a worker "
                        "name", entry, worker)
         return None
@@ -613,7 +618,8 @@ def _worker_override_key(entry: str, key: str) -> str | None:
         device = ""
     # A bare ``cuda`` canonicalises to itself, but a slot is always one card.
     if device and device != "cuda":
-        return f"{worker}{WORKER_QUEUE_SEPARATOR}{device}"
+        return (device if worker == TARGET_LOCAL
+                else f"{worker}{WORKER_QUEUE_SEPARATOR}{device}")
     logger.warning("ignoring run queue override %r: expected "
                    "<worker>/<device> with a concrete device such as "
                    "cuda:0, mps:0 or cpu", entry)
@@ -1559,6 +1565,13 @@ class RunService:
         # promotion is both slower and easier to get subtly wrong than
         # incrementing where the slot is actually taken and released.
         self._slots: dict[SlotKey, int] = {}
+        # Slots a refused device-set run at the front of its FIFO needs,
+        # kept off-limits to every later run until it starts (#773; see
+        # ``scheduling``'s module docstring). Insertion order is the
+        # first-come, first-served order ``_admission_view`` relies on.
+        self._reservations: dict[str, tuple[SlotKey, ...]] = {}
+        # ``(worker, device)`` overrides already reported as shadowed.
+        self._shadowed_overrides_logged: set[tuple[str, str]] = set()
         # No reproducibility gate here on purpose: ``_drive`` reaches it
         # through ``run_exclusion()``. It is orthogonal to the queue's
         # admission (the queue decides how many runs may be IN FLIGHT, the
@@ -1694,6 +1707,23 @@ class RunService:
         """
         return {"limit": self._limits.for_slot(slot),
                 "taken": self._slots.get(slot, 0)}
+
+    def check_worker_overrides(self, worker: Any) -> None:
+        """Warn once per card when a ``<worker>/<device>`` override cannot
+        apply because the card is shared with this process (#773): a
+        shared card has this process's slot, and this process's cap."""
+        for device, local in (getattr(worker, "shared", None) or {}).items():
+            key = f"{worker.id}{WORKER_QUEUE_SEPARATOR}{device}"
+            if not any(k == key for k, _ in self._limits.overrides):
+                continue
+            if (worker.id, device) in self._shadowed_overrides_logged:
+                continue
+            self._shadowed_overrides_logged.add((worker.id, device))
+            logger.warning(
+                "run queue override %r is ignored: worker %s runs on this "
+                "machine and its %s is this server's %s, which uses the "
+                "local limit (%d)", key, worker.id, device, local,
+                self._limits.for_slot((LOCAL_WORKER_ID, local)))
 
     @staticmethod
     def local_devices() -> list[str]:
@@ -2046,7 +2076,47 @@ class RunService:
                 pass
             if not queue:
                 self._pending.pop(entry.queue_key, None)
+        if self._reservations.pop(run_id, None) is not None:
+            # Cards it kept other runs off are open to them again.
+            self.reschedule()
         return entry
+
+    def _reserve(self, entry: _QueuedRun) -> None:
+        """Record (or drop) what the refused front-of-line *entry* reserves.
+
+        Asked of the scheduler each time the entry is refused, so a run
+        that stops qualifying (its worker went away or is draining) stops
+        holding cards idle. An existing reservation keeps its place in the
+        first-come order.
+        """
+        reservation = getattr(self._scheduler, "reservation", None)
+        try:
+            slots = None if reservation is None else reservation(entry)
+        except Exception:  # noqa: BLE001 -- a reservation is an optimisation
+            logger.exception("could not compute run %s's reservation",
+                             entry.run_id)
+            slots = None
+        if slots:
+            self._reservations[entry.run_id] = tuple(slots)
+        else:
+            self._reservations.pop(entry.run_id, None)
+
+    def _admission_view(self, run_id: str) -> Mapping[SlotKey, int]:
+        """``taken`` as *run_id* may see it: slots reserved ahead of it full.
+
+        A reservation blocks every run that is not itself holding an
+        EARLIER one (first come, first served), so the oldest waiting set
+        run always makes progress and two set runs cannot block each other.
+        """
+        if not self._reservations:
+            return self._slots
+        view = dict(self._slots)
+        for holder, slots in self._reservations.items():
+            if holder == run_id:
+                break
+            for slot in slots:
+                view[slot] = _RESERVED
+        return view
 
     def _pump(self, queue_key: str) -> None:
         """Start waiting runs while the scheduler places them. SYNCHRONOUS.
@@ -2075,13 +2145,15 @@ class RunService:
                 # Inside the guard: a scheduler that raises must not unwind
                 # ``_finalize`` or ``submit`` any more than a failed start
                 # may. The run stays first in line.
-                placement = self._scheduler.place(queue[0], self._slots)
+                placement = self._scheduler.place(
+                    queue[0], self._admission_view(queue[0].run_id))
             except Exception:
                 logger.exception(
                     "the scheduler failed to place run %s off the %s queue; "
                     "it stays queued", queue[0].run_id, queue_key)
                 break
             if placement is None:
+                self._reserve(queue[0])
                 break
             if not placement.slots:
                 # A placement that holds no slot would never be counted,
@@ -2093,6 +2165,7 @@ class RunService:
                 break
             entry = queue.popleft()
             self._pending_by_id.pop(entry.run_id, None)
+            self._reservations.pop(entry.run_id, None)
             try:
                 # The graph is NOT passed: ``_drive`` re-reads it from the
                 # row. The signal and the subscriber set ARE — same objects,
@@ -3215,6 +3288,7 @@ class RunService:
         waiting = list(self._pending_by_id.values())
         self._pending_by_id.clear()
         self._pending.clear()
+        self._reservations.clear()
         if not waiting:
             return 0
         logger.info("shutdown: retiring %d queued run(s)", len(waiting))

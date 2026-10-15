@@ -177,3 +177,14 @@ def test_apple_silicon_offers_mps_without_torch(monkeypatch):
     monkeypatch.setattr(cli, "apple_silicon", lambda: False)
     assert not [f for f in cli._probe_facts() if f.kind == "mps"]
 
+
+def test_a_device_report_carries_the_cards_uuid():
+    """The control plane matches a same-host card by it (#773)."""
+    from app.core.resources import DeviceFact
+
+    report = cli._report(DeviceFact("cuda:0", "cuda", 0, "RTX", 8, 4, "nvml",
+                                    "abcd"))
+    assert (report.value, report.uuid, report.source) == ("cuda:0", "abcd",
+                                                          "nvml")
+    assert cli._report(DeviceFact("cpu", "cpu", None, "", None, None,
+                                  "none")).uuid is None

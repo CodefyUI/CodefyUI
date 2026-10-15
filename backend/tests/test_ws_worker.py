@@ -21,6 +21,7 @@ from app.core.auth import TOKEN_HEADER, TOKEN_QUERY_PARAM, session_token
 from app.core.db import Database
 from app.core.run_service import RunService
 from app.core.run_store import RunStore
+from app.core.resources import DeviceFact
 from app.core.workers import WorkerRegistry
 from app.main import app
 
@@ -46,7 +47,9 @@ def _graph() -> dict[str, Any]:
 async def env(tmp_path):
     database = Database(tmp_path / "codefyui.db")
     database.connect()
-    registry = WorkerRegistry(heartbeat_s=10)
+    registry = WorkerRegistry(heartbeat_s=10, local_devices=lambda: [
+        DeviceFact("cpu", "cpu", None, "", None, None, "none"),
+        DeviceFact("cuda:0", "cuda", 0, "", None, None, "none", "u-0")])
     service = RunService(RunStore(database), workers=registry,
                          shutdown_grace_s=5.0)
     app.state.db = database
@@ -385,15 +388,37 @@ async def test_drain_holds_runs_and_undrain_releases_them(env):
         assert (await _terminal(service, run_id)).status == "succeeded"
 
 
-async def test_any_on_a_same_host_worker_shares_this_process_slots(env):
-    """A loopback agent's ``cpu`` is this machine's ``cpu`` (#773): one
+@pytest.fixture
+def same_machine_id(monkeypatch):
+    """The server's machine identity, pinned so CI without one still runs."""
+    from app.api import ws_worker
+
+    monkeypatch.setattr(ws_worker, "machine_identity", lambda: "m-test")
+    return "m-test"
+
+
+@pytest.mark.parametrize("machine_id", [None, "m-other"])
+async def test_a_loopback_agent_is_not_same_host_without_the_machine_id(
+        env, same_machine_id, machine_id):
+    """Loopback is not proof of one machine (an ``ssh -R`` tunnel is
+    loopback too): only an equal ``machine_id`` is (#773)."""
+    _service, registry = env
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        await FakeAgent(ws).hello(machine_id=machine_id)
+        worker = registry.get("box")
+        assert (worker.same_host, worker.shared) == (False, {})
+
+
+async def test_any_on_a_same_host_worker_shares_this_process_slots(
+        env, same_machine_id):
+    """A same-machine agent's ``cpu`` is this machine's ``cpu`` (#773): one
     budget of two, so the third ``any`` run waits instead of also running
     here. (The fall-back-here path with a remote worker is
     ``test_worker_scheduler``'s.)"""
     service, registry = env
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         agent = FakeAgent(ws)
-        await agent.hello()
+        await agent.hello(machine_id=same_machine_id)
         assert registry.get("box").same_host
         ids = [(await client.post("/api/runs", json={
             "graph": _graph(), "options": {"target": {"worker": "any"}}})
@@ -470,8 +495,8 @@ async def test_a_slow_run_does_not_starve_heartbeats(env):
         registry.close_run("box", "slowrun")
 
 
-async def test_a_local_run_waits_for_a_same_host_workers_card(env,
-                                                              monkeypatch):
+async def test_a_local_run_waits_for_a_same_host_workers_card(
+        env, monkeypatch, same_machine_id):
     """#773 review of #772: an in-process run and a loopback worker's run
     must not both get ``cuda:0`` under ``gpu=1``."""
     from app.core import run_service as run_service_module
@@ -481,7 +506,13 @@ async def test_a_local_run_waits_for_a_same_host_workers_card(env,
     service, registry = env
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         agent = FakeAgent(ws)
-        await agent.hello(devices=("cpu", "cuda:0"))
+        await agent.send(wp.Hello(
+            name="box", version="t", machine_id=same_machine_id, devices=[
+                wp.DeviceReport(value="cpu", kind="cpu"),
+                wp.DeviceReport(value="cuda:0", kind="cuda", uuid="u-0")]))
+        await agent.recv()
+        assert registry.get("box").shared == {"cpu": "cpu",
+                                              "cuda:0": "cuda:0"}
         remote = (await client.post("/api/runs", json={
             "graph": _graph(), "options": {
                 "device": "cuda:0", "target": {"worker": "box"}}})).json()

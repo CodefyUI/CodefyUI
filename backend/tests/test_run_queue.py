@@ -66,7 +66,7 @@ from app.core.run_store import (
     RunStore,
 )
 from app.core.scheduling import Placement, WorkerScheduler
-from app.core.workers import Worker
+from app.core.workers import Worker, WorkerRegistry
 
 # ── the probe node ────────────────────────────────────────────────────────
 
@@ -360,13 +360,13 @@ async def _wait_until(predicate, *, timeout: float = 15.0,
 
 def test_limits_default_by_device_class():
     limits = QueueLimits(cpu=2, gpu=1)
-    assert limits.for_key("cpu") == 2
+    assert limits.for_slot(("local", "cpu")) == 2
     # Everything that is not cpu is treated as an accelerator, including a
     # backend nobody has added yet. (``cuda`` / ``mps`` never reach here as
     # keys — see canonical_queue_key — but the classification is by prefix,
     # not by an allowlist, so it holds for them too.)
     for key in ("cuda:0", "cuda:7", "mps:0", "xpu"):
-        assert limits.for_key(key) == 1
+        assert limits.for_slot(("local", key)) == 1
 
 
 def test_device_aliases_canonicalise_onto_one_key():
@@ -394,15 +394,15 @@ def test_a_bare_cuda_follows_the_process_current_device(monkeypatch):
 
 def test_limits_overrides_beat_the_class_default():
     limits = QueueLimits(cpu=2, gpu=1, overrides=(("cuda:0", 4),))
-    assert limits.for_key("cuda:0") == 4
-    assert limits.for_key("cuda:1") == 1     # untouched
-    assert limits.for_key("cpu") == 2
+    assert limits.for_slot(("local", "cuda:0")) == 4
+    assert limits.for_slot(("local", "cuda:1")) == 1     # untouched
+    assert limits.for_slot(("local", "cpu")) == 2
 
 
 def test_limits_never_admit_zero():
     """A cap of zero is a queue that cannot drain — a hang, not a policy."""
-    assert QueueLimits(cpu=0, gpu=0).for_key("cpu") == 1
-    assert QueueLimits(overrides=(("cpu", -3),)).for_key("cpu") == 1
+    assert QueueLimits(cpu=0, gpu=0).for_slot(("local", "cpu")) == 1
+    assert QueueLimits(overrides=(("cpu", -3),)).for_slot(("local", "cpu")) == 1
 
 
 def test_override_parsing_splits_on_the_last_equals():
@@ -428,7 +428,6 @@ def test_a_bare_override_is_local_and_a_worker_override_is_that_worker():
     limits = QueueLimits(overrides=parse_queue_overrides(
         "cuda:0=2,gpu-box-1/cuda:1=3"))
     assert limits.for_slot(("local", "cuda:0")) == 2
-    assert limits.for_key("cuda:0") == 2            # the local wrapper
     assert limits.for_slot(("gpu-box-1", "cuda:0")) == 1
     assert limits.for_slot(("gpu-box-1", "cuda:1")) == 3
     assert limits.for_slot(("other-box", "cuda:1")) == 1
@@ -451,12 +450,14 @@ async def _noop(*_: Any) -> None:
     return None
 
 
-def _two_card_worker(name: str, *, same_host: bool = False) -> Worker:
+def _two_card_worker(name: str, *,
+                     shared: dict[str, str] | None = None) -> Worker:
     return Worker(
         id=name, name=name, version="t", fingerprint=None, platform={},
         mounts={}, devices=[wp.DeviceReport(value=d, kind="cuda")
                             for d in ("cuda:0", "cuda:1")],
-        send=_noop, close=_noop, heartbeat_s=10, same_host=same_host)
+        send=_noop, close=_noop, heartbeat_s=10, same_host=bool(shared),
+        shared=dict(shared or {}))
 
 
 class _Registry:
@@ -521,34 +522,83 @@ def test_a_worker_override_raises_only_that_workers_card():
 
 
 def test_a_same_host_worker_shares_this_processs_slots():
-    """An agent on this machine (loopback at the handshake) runs on the
-    same cards: its slots ARE this process's, one budget under the local
-    cap, so a local run and a worker run never both get ``cuda:0`` under
-    ``gpu=1``."""
+    """A worker on this machine runs on the same cards: each card it shares
+    has this process's slot, one budget under the local cap, so a local run
+    and a worker run never both get one card under ``gpu=1``. Matched by
+    card identity, so the worker's ``cuda:0`` may be this process's
+    ``cuda:1`` (another ``CUDA_VISIBLE_DEVICES``)."""
+    here = _two_card_worker("here-box", shared={"cuda:0": "cuda:1",
+                                                "cuda:1": "cuda:0"})
     scheduler = WorkerScheduler(QueueLimits(), _Registry(
-        _two_card_worker("here-box", same_host=True),
-        _two_card_worker("far-box")), lambda: ["cpu", "cuda:0", "cuda:1"])
-    local = _Entry("l", "cuda:0", {"device": "cuda:0"})
+        here, _two_card_worker("far-box")), lambda: ["cpu", "cuda:0", "cuda:1"])
+    local = _Entry("l", "cuda:1", {"device": "cuda:1"})
     on_worker = _on("here-box", "cuda:0")
     placed = scheduler.place(on_worker, {})
     assert placed == Placement("here-box", ("cuda:0",),
-                               (("local", "cuda:0"),))
+                               (("local", "cuda:1"),))
     taken: dict = {}
     _hold(taken, placed)
     assert scheduler.place(local, taken) is None
-    assert scheduler.place(on_worker, {("local", "cuda:0"): 1}) is None
+    assert scheduler.place(on_worker, {("local", "cuda:1"): 1}) is None
     # A worker device set holds the shared slots too.
     pair = scheduler.place(_on("here-box", "cuda:0", ["cuda:0", "cuda:1"]),
                            {})
-    assert pair.slots == (("local", "cuda:0"), ("local", "cuda:1"))
+    assert pair.slots == (("local", "cuda:1"), ("local", "cuda:0"))
     # A worker on another machine keeps slots of its own.
     assert scheduler.place(_on("far-box", "cuda:0"), taken).slots == (
         ("far-box", "cuda:0"),)
     # The local override is the shared card's cap.
     raised = WorkerScheduler(
-        QueueLimits(overrides=(("cuda:0", 2),)),
-        _Registry(_two_card_worker("here-box", same_host=True)), lambda: [])
+        QueueLimits(overrides=(("cuda:1", 2),)), _Registry(here), lambda: [])
     assert raised.place(on_worker, taken) is not None
+
+
+class _Fact:
+    def __init__(self, value: str, uuid: str | None = None) -> None:
+        self.value, self.uuid = value, uuid
+
+
+def _hello(name: str, *devices: tuple[str, str | None]) -> wp.Hello:
+    return wp.Hello(name=name, version="t", devices=[
+        wp.DeviceReport(value=v, kind=v.split(":")[0], uuid=u)
+        for v, u in devices])
+
+
+async def test_shared_cards_are_matched_by_uuid_and_logged_once_otherwise(
+        caplog):
+    calls = []
+
+    def local_devices():
+        calls.append(1)
+        return [_Fact("cpu"), _Fact("cuda:0", "aaa"), _Fact("cuda:1", "bbb"),
+                _Fact("mps")]
+
+    registry = WorkerRegistry(local_devices=local_devices)
+    try:
+        with caplog.at_level("WARNING", logger="app.core.workers"):
+            here, _ = registry.connect(
+                _hello("here", ("cpu", None), ("cuda:0", "BBB"),
+                       ("cuda:1", None), ("cuda:2", "zzz"), ("mps", None)),
+                send=_noop, close=_noop, same_host=True)
+            assert here.shared == {"cpu": "cpu", "cuda:0": "cuda:1",
+                                   "mps:0": "mps:0"}
+            # A heartbeat with the same cards: no second warning.
+            registry.heartbeat(here, wp.Heartbeat(devices=list(here.devices)
+                                                  + [wp.DeviceReport(
+                                                      value="cuda:3",
+                                                      kind="cuda",
+                                                      uuid="aaa")]))
+            assert here.shared["cuda:3"] == "cuda:0"
+        unshared = [r.getMessage() for r in caplog.records
+                    if "matches no card" in r.getMessage()]
+        assert len(unshared) == 2      # cuda:1 (no uuid), cuda:2 (no match)
+        far, _ = registry.connect(_hello("far", ("cpu", None),
+                                         ("cuda:0", "aaa")),
+                                  send=_noop, close=_noop)
+        assert far.shared == {} and not far.same_host
+        assert calls == [1]            # probed once, lazily
+    finally:
+        await registry.shutdown()
 
 
 # ── FIFO ──────────────────────────────────────────────────────────────────
@@ -1338,3 +1388,128 @@ async def test_a_local_device_set_waits_for_every_card_and_frees_them_together(
     assert probe.started[:2] == ["c1", "pair"]
     assert sorted(probe.started[2:]) == ["after0", "after1"]
     assert service.slot_usage(("local", "cuda:0"))["taken"] == 0
+
+
+# ── reservations: a waiting device-set run makes progress (#773) ──────────
+
+
+async def test_a_set_run_starts_once_its_card_frees_under_steady_traffic(
+        service, store, probe):
+    """Without a reservation every cuda:1 run queued behind the busy card
+    would take it the moment it frees, and the set run would wait forever."""
+    gates = {label: probe.hold(label) for label in ("a", "b1", "b2", "pair")}
+    try:
+        a = await _submit(service, "a", device="cuda:1")
+        await probe.wait_entered("a")
+        pair = await _submit_set(service, "pair", ["cuda:0", "cuda:1"])
+        b1 = await _submit(service, "b1", device="cuda:1")
+        b2 = await _submit(service, "b2", device="cuda:1")
+        assert pair.status == b1.status == STATUS_QUEUED
+        assert service._reservations == {
+            pair.run_id: (("local", "cuda:0"), ("local", "cuda:1"))}
+
+        gates["a"].set()
+        await _await_terminal(store, a.run_id)
+        await probe.wait_entered("pair")       # pair, not b1, got cuda:1
+        assert service.is_queued(b1.run_id)
+        assert service._reservations == {}
+
+        gates["pair"].set()
+        await probe.wait_entered("b1")
+        gates["b1"].set()
+        gates["b2"].set()
+        for result in (pair, b1, b2):
+            assert (await _await_terminal(store, result.run_id)).status == (
+                STATUS_SUCCEEDED)
+    finally:
+        for gate in gates.values():
+            gate.set()
+    assert probe.started == ["a", "pair", "b1", "b2"]
+
+
+async def test_overlapping_set_runs_are_served_first_come(service, store,
+                                                          probe):
+    """Two set runs sharing cuda:1 cannot reserve each other into a
+    deadlock: the earlier reservation wins, the later waits for it."""
+    gates = {label: probe.hold(label) for label in ("a", "x", "y", "d")}
+    try:
+        a = await _submit(service, "a", device="cuda:1")
+        await probe.wait_entered("a")
+        x = await _submit_set(service, "x", ["cuda:0", "cuda:1"])
+        y = await _submit_set(service, "y", ["cuda:1", "cuda:2"])
+        assert list(service._reservations) == [x.run_id, y.run_id]
+        # cuda:2 is free but reserved for y: a new run there waits.
+        d = await _submit(service, "d", device="cuda:2")
+        assert d.status == STATUS_QUEUED
+
+        gates["a"].set()
+        await probe.wait_entered("x")
+        assert service.is_queued(y.run_id) and service.is_queued(d.run_id)
+        gates["x"].set()
+        await probe.wait_entered("y")
+        gates["y"].set()
+        await probe.wait_entered("d")
+        gates["d"].set()
+        for result in (a, x, y, d):
+            await _await_terminal(store, result.run_id)
+    finally:
+        for gate in gates.values():
+            gate.set()
+    assert probe.started == ["a", "x", "y", "d"]
+
+
+async def test_cancelling_a_waiting_set_run_lifts_its_reservation(
+        service, store, probe):
+    gate = probe.hold("a")
+    try:
+        await _submit(service, "a", device="cuda:1")
+        await probe.wait_entered("a")
+        pair = await _submit_set(service, "pair", ["cuda:0", "cuda:1"])
+        d = await _submit(service, "d0", device="cuda:0", seconds=0.01)
+        assert d.status == STATUS_QUEUED          # behind pair in cuda:0
+        await service.cancel(pair.run_id)
+        assert service._reservations == {}
+        assert (await _await_terminal(store, d.run_id)).status == (
+            STATUS_SUCCEEDED)
+    finally:
+        gate.set()
+
+
+def test_which_runs_reserve():
+    box = _two_card_worker("box-a")
+    gone = Worker(**{**box.__dict__, "id": "gone", "name": "gone",
+                     "status": "disconnected"})
+    scheduler = WorkerScheduler(QueueLimits(), _Registry(box, gone),
+                                lambda: ["cpu", "cuda:0", "cuda:1"])
+    assert scheduler.reservation(_on("box-a", "cuda:0", [
+        "cuda:0", "cuda:1"])) == (("box-a", "cuda:0"), ("box-a", "cuda:1"))
+    assert scheduler.reservation(_on("box-a", "cuda:0")) is None
+    assert scheduler.reservation(_on("gone", "cuda:0", [
+        "cuda:0", "cuda:1"])) is None
+    assert scheduler.reservation(_on("box-a", "cuda:0", [
+        "cuda:0", "cuda:7"])) is None
+    assert scheduler.reservation(_on("any", "cuda:0", [
+        "cuda:0", "cuda:1"])) is None
+    local = _Entry("l", "cuda:0", {"device": "cuda:0", "target": {
+        "worker": "local", "devices": ["cuda:0", "cuda:1"]}})
+    assert scheduler.reservation(local) == (("local", "cuda:0"),
+                                            ("local", "cuda:1"))
+    assert scheduler.reservation(_Entry("p", "cuda:0",
+                                        {"device": "cuda:0"})) is None
+
+
+async def test_an_override_on_a_shared_card_is_reported_once(make_service,
+                                                             caplog):
+    """A same-host worker's shared card uses this server's limit, so a
+    ``<worker>/<device>`` override for it cannot apply: warned, once."""
+    service = make_service(overrides=(("here-box/cuda:0", 3),
+                                      ("here-box/cuda:1", 4)))
+    here = _two_card_worker("here-box", shared={"cuda:0": "cuda:1"})
+    with caplog.at_level("WARNING", logger="app.core.run_service"):
+        service.check_worker_overrides(here)
+        service.check_worker_overrides(here)
+        service.check_worker_overrides(_two_card_worker("here-box"))
+    warnings = [r.getMessage() for r in caplog.records
+                if "is ignored" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "'here-box/cuda:0'" in warnings[0] and "cuda:1" in warnings[0]

@@ -14,12 +14,16 @@ httpx's ASGITransport).
 Slots (#773): every device entry carries ``slots: {"limit", "taken"}``,
 the run queue's cap for that ``(worker, device)`` slot and how many running
 runs hold it; ``null`` when the run service is not on ``app.state`` or the
-device report cannot be parsed. A worker with ``same_host: true`` dialled
-in from loopback and shares this server's slots, so its numbers are this
-server's for the same device. The list's ``local`` field describes this
-server the same way (``{"id": "local", "devices": [{"value", "kind",
-"slots"}]}``; ``null`` without a run service), so a Workers panel can draw
-this server beside its workers.
+device report cannot be parsed. ``same_host: true`` marks a worker on this
+machine (its ``hello.machine_id`` equals this server's). A device of such a
+worker that is physically one of this server's (``cpu``, ``mps:0``, a CUDA
+card with a matching UUID) carries ``shared_with: "local"``, otherwise
+``null``: its ``slots`` ARE this server's slot for that card (the same
+counter, under this server's limit), so a panel adding up usage must count
+it once. The list's ``local`` field describes this server the same way
+(``{"id": "local", "devices": [{"value", "kind", "slots"}]}``; ``null``
+without a run service), so a Workers panel can draw this server beside its
+workers.
 """
 
 from __future__ import annotations
@@ -48,15 +52,16 @@ def _service(request: Request) -> Any:
 def _describe(worker: Any, service: Any) -> dict[str, Any]:
     """``worker.describe()`` with each device's slot usage filled in."""
     entry = worker.describe()
+    shared = getattr(worker, "shared", None) or {}
     for device in entry["devices"]:
-        slots = None
-        if service is not None:
-            try:
-                slots = service.slot_usage(
-                    slot_for(worker, canonical_device(device["value"])))
-            except ValueError:
-                slots = None
-        device["slots"] = slots
+        try:
+            value = canonical_device(device["value"])
+        except ValueError:
+            value = None
+        device["shared_with"] = (LOCAL_WORKER_ID if value in shared
+                                 else None)
+        device["slots"] = (None if service is None or value is None
+                           else service.slot_usage(slot_for(worker, value)))
     return entry
 
 

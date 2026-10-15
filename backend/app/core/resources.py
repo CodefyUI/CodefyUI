@@ -42,6 +42,7 @@ or an odd answer yields ``None`` fields (or no entry) and a debug log line.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import platform
@@ -65,6 +66,10 @@ class DeviceFact:
     ``torch.mps``, ``psutil``) or ``none`` when no probe answered, in which
     case both byte counts are ``None``. ``free_bytes`` alone may be ``None``
     (``torch.cuda`` without an initialised CUDA context).
+    ``uuid`` is a CUDA card's physical identity (the NVML / torch UUID,
+    lower case, without the ``GPU-`` prefix), or None when nothing reported
+    one; it is how a same-host worker's card is matched to this process's
+    (#773).
     """
 
     value: str
@@ -74,6 +79,7 @@ class DeviceFact:
     total_bytes: int | None
     free_bytes: int | None
     source: str
+    uuid: str | None = None
 
     def memory(self) -> dict[str, Any] | None:
         """The ``memory`` object ``GET /api/system/devices`` serves, or None."""
@@ -266,9 +272,10 @@ def _nvml_fact(position: int, card: _NvmlCard | None) -> DeviceFact:
     if card is None:
         return DeviceFact(value, "cuda", position, "", None, None, "none")
     if not card.usable:
-        return DeviceFact(value, "cuda", position, card.name, None, None, "none")
+        return DeviceFact(value, "cuda", position, card.name, None, None,
+                          "none", card.uuid)
     return DeviceFact(value, "cuda", position, card.name,
-                      card.total_bytes, card.free_bytes, "nvml")
+                      card.total_bytes, card.free_bytes, "nvml", card.uuid)
 
 
 def _cuda_facts_from_nvml(cards: list[_NvmlCard] | None = None) -> list[DeviceFact]:
@@ -338,9 +345,11 @@ def _cuda_facts_with_torch() -> list[DeviceFact]:
         if card is not None:
             facts.append(DeviceFact(f"cuda:{index}", kind, index,
                                     name or card.name, card.total_bytes,
-                                    card.free_bytes, "nvml"))
+                                    card.free_bytes, "nvml", uuid))
         else:
-            facts.append(_torch_cuda_fact(torch, index, kind, name, props))
+            fact = _torch_cuda_fact(torch, index, kind, name, props)
+            facts.append(dataclasses.replace(fact, uuid=uuid)
+                         if uuid and kind == "cuda" else fact)
     return facts
 
 

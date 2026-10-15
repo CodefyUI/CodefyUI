@@ -2814,8 +2814,10 @@ def test_queue_overrides_accept_a_worker_device_key():
         "box/cpu=6") == (
         ("cuda:0", 2), ("gpu-box-1/cuda:0", 3), ("gpu-box-1/mps:0", 4),
         ("box/cuda:1", 5), ("box/cpu", 6))
-    # ``local/<device>`` is the bare key spelled out.
-    assert parse_queue_overrides("local/cuda:1=2") == (("cuda:1", 2),)
+    # ``local/<device>`` is the bare key, validated and canonicalised like
+    # a worker key's device.
+    assert parse_queue_overrides("local/cuda:01=2,LOCAL/mps=3") == (
+        ("cuda:1", 2), ("mps:0", 3))
 
 
 @pytest.mark.parametrize("entry", [
@@ -2828,6 +2830,9 @@ def test_queue_overrides_accept_a_worker_device_key():
     "box/cuda:0/x=2",        # more than one separator
     "box/cuda:0=0",          # count below 1
     "box/cuda:0=two",        # not a number
+    "local/cuda=2",          # this server, but a kind, not a card
+    "local/tpu:0=2",         # this server, unknown device
+    "local/=2",              # this server, no device
 ])
 def test_a_malformed_worker_override_warns_and_is_skipped(entry, caplog):
     from app.core.run_service import parse_queue_overrides

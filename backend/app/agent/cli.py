@@ -510,7 +510,7 @@ def _report(fact: Any) -> Any:
     return wp.DeviceReport(
         value=fact.value, kind=fact.kind, index=fact.index, name=fact.name,
         total_bytes=fact.total_bytes, free_bytes=fact.free_bytes,
-        source=fact.source)
+        source=fact.source, uuid=getattr(fact, "uuid", None))
 
 
 def cmd_start(args: argparse.Namespace) -> int:
