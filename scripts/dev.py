@@ -542,9 +542,82 @@ def _uv_install_timeout() -> int:
         return 180
 
 
+#: Set across the re-exec that follows a uv install. A relaunched process that
+#: still cannot find uv fails with the bootstrap error instead of downloading
+#: again: without it, an install that lands somewhere this process cannot see
+#: repeats until somebody kills it (#809).
+_UV_BOOTSTRAP_ENV = "CODEFYUI_UV_BOOTSTRAPPED"
+
+
+def _uv_install_dirs() -> list:
+    """Where astral's installer puts uv, in the order it picks them.
+
+    The installer edits shell rc files to put its directory on PATH, and a
+    non-interactive shell (`ssh host 'cdui ...'`) reads none of them, so a uv
+    that is installed can still be missing from PATH.
+    """
+    if sys.platform == "win32":
+        profile = os.environ.get("USERPROFILE")
+        base = Path(profile) if profile else Path.home()
+        return [base / ".local" / "bin", base / ".cargo" / "bin"]
+    dirs = [Path(os.environ[name]) for name in ("UV_INSTALL_DIR", "XDG_BIN_HOME")
+            if os.environ.get(name)]
+    home = Path.home()
+    return [*dirs, home / ".local" / "bin", home / ".cargo" / "bin"]
+
+
+def _find_installed_uv_dir():
+    """The first `_uv_install_dirs()` entry holding a runnable uv, or None."""
+    name = "uv.exe" if sys.platform == "win32" else "uv"
+    for directory in _uv_install_dirs():
+        exe = directory / name
+        if exe.is_file() and os.access(exe, os.X_OK):
+            return directory
+    return None
+
+
+def _prepend_to_path(directory: Path) -> None:
+    """Put *directory* first on PATH, for this process and everything it starts."""
+    os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _uv_bootstrap_failed(why_zh: str, why_en: str) -> None:
+    print(t(
+        f"\n錯誤：自動安裝 uv {why_zh}。\n"
+        f"  CodefyUI 需要 uv 才能執行任何指令。若這台機器連不到網際網路\n"
+        f"  （教室或實驗室網路常見），請改用下列任一方式：\n"
+        f"    1. 自行安裝 uv 後重試：https://docs.astral.sh/uv/getting-started/installation/\n"
+        f"    2. 從別處下載 uv，放進 PATH 之後再執行同一個指令\n"
+        f"    3. 網路很慢但可用時，加大逾時：CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
+        f"\nError: installing uv {why_en}.\n"
+        f"  CodefyUI needs uv before it can run any command. If this machine\n"
+        f"  cannot reach the internet (common on school and lab networks),\n"
+        f"  use one of these instead:\n"
+        f"    1. Install uv yourself, then retry:\n"
+        f"       https://docs.astral.sh/uv/getting-started/installation/\n"
+        f"    2. Copy a uv binary onto this machine, put it on PATH, rerun the command\n"
+        f"    3. On a slow but working link, raise the limit:\n"
+        f"       CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
+    ), file=sys.stderr)
+    sys.exit(1)
+
+
 def _ensure_uv() -> None:
     if shutil.which("uv"):
+        os.environ.pop(_UV_BOOTSTRAP_ENV, None)
         return
+    installed = _find_installed_uv_dir()
+    if installed is not None:
+        _prepend_to_path(installed)
+        os.environ.pop(_UV_BOOTSTRAP_ENV, None)
+        return
+    if os.environ.get(_UV_BOOTSTRAP_ENV):
+        # The previous process installed uv and relaunched us, and uv is still
+        # nowhere to be found. Downloading again would only loop.
+        _uv_bootstrap_failed(
+            "完成，但在 PATH 與安裝目錄中都找不到 uv",
+            "finished, but uv is on neither PATH nor the installer's directories",
+        )
     # This runs before EVERY command, so an unbounded download here wedges
     # `cdui status`, `cdui stop`, everything. School and lab networks commonly
     # drop packets rather than refusing them, which is indistinguishable from
@@ -577,29 +650,16 @@ def _ensure_uv() -> None:
             )
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as exc:
         timed_out = isinstance(exc, subprocess.TimeoutExpired)
-        why = t(
+        _uv_bootstrap_failed(
             f"逾時（超過 {timeout} 秒）" if timed_out else "失敗",
             f"timed out after {timeout}s" if timed_out else "failed",
         )
-        print(t(
-            f"\n錯誤：自動安裝 uv {why}。\n"
-            f"  CodefyUI 需要 uv 才能執行任何指令。若這台機器連不到網際網路\n"
-            f"  （教室或實驗室網路常見），請改用下列任一方式：\n"
-            f"    1. 自行安裝 uv 後重試：https://docs.astral.sh/uv/getting-started/installation/\n"
-            f"    2. 從別處下載 uv，放進 PATH 之後再執行同一個指令\n"
-            f"    3. 網路很慢但可用時，加大逾時：CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
-            f"\nError: installing uv {why}.\n"
-            f"  CodefyUI needs uv before it can run any command. If this machine\n"
-            f"  cannot reach the internet (common on school and lab networks),\n"
-            f"  use one of these instead:\n"
-            f"    1. Install uv yourself, then retry:\n"
-            f"       https://docs.astral.sh/uv/getting-started/installation/\n"
-            f"    2. Copy a uv binary onto this machine, put it on PATH, rerun the command\n"
-            f"    3. On a slow but working link, raise the limit:\n"
-            f"       CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
-        ), file=sys.stderr)
-        sys.exit(1)
-    # 安裝後重新啟動自身，讓新 PATH 生效
+    # The installer only edits shell rc files, so the directory it used goes
+    # on PATH here, and the marker stops the relaunch from installing again.
+    installed = _find_installed_uv_dir()
+    if installed is not None:
+        _prepend_to_path(installed)
+    os.environ[_UV_BOOTSTRAP_ENV] = "1"
     _reexec(sys.executable, sys.argv)
 
 

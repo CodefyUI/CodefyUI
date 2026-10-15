@@ -4,6 +4,11 @@ rem Usage: cdui <install|dev|stop|test|clean>
 setlocal
 set "SCRIPT_DIR=%~dp0"
 
+rem uv's installer puts uv in one of these and only edits the user PATH, which
+rem a console opened before the install never sees (#809).
+where uv >nul 2>&1
+if not %errorlevel% == 0 call :add_uv_to_path
+
 rem 1. Prefer uv's managed Python (what install.ps1 sets up)
 where uv >nul 2>&1
 if %errorlevel% == 0 (
@@ -26,3 +31,8 @@ if %errorlevel% == 0 (
 
 echo Error: no Python interpreter found. Run install.ps1 first. 1>&2
 exit /b 1
+
+:add_uv_to_path
+if exist "%USERPROFILE%\.local\bin\uv.exe" set "PATH=%USERPROFILE%\.local\bin;%PATH%" & goto :eof
+if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+goto :eof

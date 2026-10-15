@@ -33,6 +33,8 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **`cdui` no longer reinstalls uv in an endless loop when `~/.local/bin` is not on PATH** ([#809]). A non-interactive shell such as `ssh host 'cdui ...'` reads no rc file, so the uv the astral installer put in `~/.local/bin` stayed invisible: `cdui` downloaded it again, relaunched itself with the same PATH, and repeated until killed. `cdui` (the Python side and both launchers) now looks for uv in the installer's directories (`$UV_INSTALL_DIR`, `$XDG_BIN_HOME`, `~/.local/bin`, `~/.cargo/bin`; `%USERPROFILE%\.local\bin` and `%USERPROFILE%\.cargo\bin` on Windows) and puts the one it finds first on PATH before downloading anything. After an install it does the same before relaunching, and a relaunch that still finds no uv prints the usual install-failed advice and exits 1 instead of downloading again.
+
 - **A node `device` set to a specific card (`cuda:1`, `mps:0`) now runs and exports** ([#802]). On a machine with more than one CUDA card the node config panel offers `cuda:0`, `cuda:1`, ... for every node-level `device` param, but graph validation compared the value with the param's static options (`auto`, `cpu`, `cuda`, `mps`) and refused the run or the Python export with "value 'cuda:1' is not one of its options". Validation now also accepts `cuda:N` and `mps:N` on those params; any other value is refused with the same message as before, and the generated script of a graph that already validated is unchanged.
 
 ### Internal
@@ -6192,5 +6194,6 @@ Release candidates before 1.0.0 are on the
 [#771]: https://github.com/CodefyUI/CodefyUI/issues/771
 [#772]: https://github.com/CodefyUI/CodefyUI/issues/772
 [#802]: https://github.com/CodefyUI/CodefyUI/issues/802
+[#809]: https://github.com/CodefyUI/CodefyUI/issues/809
 [#774]: https://github.com/CodefyUI/CodefyUI/issues/774
 [#775]: https://github.com/CodefyUI/CodefyUI/issues/775
