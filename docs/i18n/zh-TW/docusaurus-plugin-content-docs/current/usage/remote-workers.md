@@ -157,7 +157,7 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
 
 **安全性。**
 
-- 通道只監聽遠端主機的 loopback（`-R 127.0.0.1:...`）。該主機上的每個使用者仍可連到那個埠，因此經由它的請求只能到達 `/ws/worker` 與 `POST /api/workers/enroll`；其他路徑一律回 `421`，而這兩個端點都需要 token。
+- 通道只監聽遠端主機的 loopback（`-R 127.0.0.1:...`）。該主機上的每個使用者仍可連到那個埠，因此經由它的請求只能到達 `/ws/worker` 與 `POST /api/workers/enroll`，以及在帶有有效 worker token 時，transfer 後端使用的路徑（[儲存：沒有共用檔案系統](#storage-no-shared-filesystem)）：三個輸入下載路徑（`GET /api/files/download/...`、`/api/images/download/...`、`/api/models/download/...`）與 `POST /api/runs/{id}/artifacts/upload`。這些下載路徑在區網上是公開讀取，但經由通道時沒有 worker token 會回 `403`。其他路徑一律回 `421`。
 - `StrictHostKeyChecking=accept-new` 會在第一次見到主機時信任它，金鑰改變時拒絕連線。設定 `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes` 則要求主機已在伺服器帳號的 `known_hosts` 中。
 - 伺服器使用執行它的作業系統使用者的 SSH 存取權，就像 Source Control 分頁使用 git 一樣。能操作這台伺服器的人，就能在該使用者連得到的每台主機上啟動 SSH worker。
 - 通道後面的 agent 從 `127.0.0.1` 連線，但只有在它的 machine id 與伺服器相同時才會被視為這台機器上的 worker，所以 GPU 伺服器不會被誤認為伺服器本機。它以自己的 worker token 驗證身分。

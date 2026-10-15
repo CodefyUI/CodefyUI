@@ -22,7 +22,7 @@ description: 節點、圖、run、sweep、已發佈應用程式、外掛、選�
 | enrollment token | `abcdef.0123456789abcdef`，由 `POST /api/workers/enrollments` 產生。只有 `POST /api/workers/enroll` 接受它（放在 JSON body，不需 session token）；該 route 依用戶端位址限速（10 次，之後每分鐘 10 次；超過回 `429` 並附 `Retry-After`）。 |
 | key-or-token | 接受任一種憑證。這些 metadata 讀取是 `GET` 通常開放之外的另一組例外。兩種憑證都沒有時，會回傳 `401 {"detail": "..."}`。 |
 
-Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁面與 WebSocket。`Host` header 不在 allowlist 內時，會回傳 `421 {"detail": "Misdirected Request (Host not allowed)"}`。allowlist 由 `CODEFYUI_HOST` 與 `CODEFYUI_PORT` 推導，並可透過 `CODEFYUI_EXTRA_ALLOWED_HOSTS` 擴充。SSH worker 的通道占用某個遠端連接埠期間，`Host: 127.0.0.1:<該連接埠>` 也會被接受，但只限 `/ws/worker` 與 `POST /api/workers/enroll`（[遠端 Worker，透過 SSH 連線](/usage/remote-workers#connecting-over-ssh)）；請參閱[發佈，第 6 節](/usage/publish#6-serving-on-your-lan)與[放在反向代理後面](/usage/deployment)。token middleware 會略過 `GET /api/auth/bootstrap`，讓前端取得 token。只要 `Host` 獲准就能呼叫此端點，包括伺服器綁定至區網位址時的遠端 client。
+Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁面與 WebSocket。`Host` header 不在 allowlist 內時，會回傳 `421 {"detail": "Misdirected Request (Host not allowed)"}`。allowlist 由 `CODEFYUI_HOST` 與 `CODEFYUI_PORT` 推導，並可透過 `CODEFYUI_EXTRA_ALLOWED_HOSTS` 擴充。SSH worker 的通道占用某個遠端連接埠期間，`Host: 127.0.0.1:<該連接埠>` 也會被接受，但只限 `/ws/worker` 與 `POST /api/workers/enroll`，以及帶有有效 worker token（沒有則回 `403`）時 transfer 後端的輸入下載路徑與 `POST /api/runs/{run_id}/artifacts/upload`（[遠端 Worker，透過 SSH 連線](/usage/remote-workers#connecting-over-ssh)）；請參閱[發佈，第 6 節](/usage/publish#6-serving-on-your-lan)與[放在反向代理後面](/usage/deployment)。token middleware 會略過 `GET /api/auth/bootstrap`，讓前端取得 token。只要 `Host` 獲准就能呼叫此端點，包括伺服器綁定至區網位址時的遠端 client。
 
 ## 健康狀態與系統 {/* #health-and-system */}
 

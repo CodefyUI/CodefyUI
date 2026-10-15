@@ -432,9 +432,15 @@ def test_submit_refuses_a_named_worker_without_the_mount(data_label):
         check(_options(worker="any", device="cuda"), NEEDS_DATA)
 
 
-def test_prepare_computes_needs_only_for_a_worker_run(data_label):
+def test_prepare_computes_needs_only_for_a_worker_run(data_label, tmp_path,
+                                                      monkeypatch):
     """The 3.0 path never reads the graph for storage; a worker run's
     needs are what submit checks and the queue entry carries."""
+    from app.config import settings
+
+    # An upload store of its own: whatever the install's holds is not this
+    # test's business.
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", tmp_path / "files")
     service = _service(_registry_with(_worker("gpu-box-1", "cpu")))
     graph = {"nodes": [
         {"id": "s", "type": "Start", "data": {"params": {}}},

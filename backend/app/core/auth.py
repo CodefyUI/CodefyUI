@@ -198,12 +198,14 @@ def host_is_allowed(host_header: str) -> bool:
 # An SSH worker's agent dials ``http://127.0.0.1:<remote port>`` on ITS
 # machine; ``ssh -R`` carries that to this server, so the request arrives
 # from a loopback peer with ``Host: 127.0.0.1:<remote port>``. Those hosts
-# are accepted for the two paths an agent uses and nothing else: every
-# user on the remote host can reach that loopback port, and the open
-# reads of this API are none of their business.
+# are accepted for the two paths an agent uses to connect, and for the
+# transfer backend's routes (#785) with a valid worker token, and nothing
+# else: every user on the remote host can reach that loopback port, and
+# the open reads of this API are none of their business.
 
 _TUNNEL_PORTS: set[int] = set()
-#: The only paths a tunnel ``Host`` may reach.
+#: The paths a tunnel ``Host`` may reach with no further check; the
+#: transfer backend's routes need a worker token too (:func:`tunnel_token_route`).
 TUNNEL_PATHS = frozenset({"/ws/worker", "/api/workers/enroll"})
 
 
@@ -225,6 +227,22 @@ def tunnel_port(host_header: str | None) -> int | None:
     if host not in ("127.0.0.1", "localhost") or not port.isdigit():
         return None
     return int(port) if int(port) in _TUNNEL_PORTS else None
+
+
+def tunnel_token_route(method: str, path: str) -> bool:
+    """Whether *method* *path* is one of the transfer backend's routes an
+    agent uses through its tunnel (#785): the three input downloads and
+    the output upload (``core.transfer``, the one spelling of both). A
+    tunnel ``Host`` reaches them only with a valid worker token (the
+    ``host_guard`` middleware checks it): for a LAN client the downloads
+    are open reads, but every user on the worker's machine can reach the
+    tunnel's loopback port."""
+    from .transfer import DOWNLOAD_ROUTES, UPLOAD_PATH_PATTERN
+
+    if method == "GET":
+        return any(path.startswith(route) and len(path) > len(route)
+                   for route in DOWNLOAD_ROUTES.values())
+    return method == "POST" and UPLOAD_PATH_PATTERN.fullmatch(path) is not None
 
 
 def tunnel_host_allows(host_header: str, path: str) -> bool:

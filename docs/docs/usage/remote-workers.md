@@ -157,7 +157,7 @@ The remote command puts `~/.local/bin` on PATH first: a non-interactive ssh shel
 
 **Security.**
 
-- The tunnel listens on the remote host's loopback only (`-R 127.0.0.1:...`). Every user of that host can still connect to that port, so requests through it reach `/ws/worker` and `POST /api/workers/enroll` only; every other path answers `421`, and both of those need a token.
+- The tunnel listens on the remote host's loopback only (`-R 127.0.0.1:...`). Every user of that host can still connect to that port, so requests through it reach `/ws/worker` and `POST /api/workers/enroll`, and, with a valid worker token, the routes the transfer backend uses ([Storage: no shared filesystem](#storage-no-shared-filesystem)): the three input downloads (`GET /api/files/download/...`, `/api/images/download/...`, `/api/models/download/...`) and `POST /api/runs/{id}/artifacts/upload`. Those downloads are open reads on the LAN, but through a tunnel one without a worker token answers `403`. Every other path answers `421`.
 - `StrictHostKeyChecking=accept-new` trusts a host the first time and refuses a changed key. Set `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING=yes` to require that the host is already in the server account's `known_hosts`.
 - The server uses the SSH access of the OS user that runs it, as the Source Control tab does with git. Anyone who controls this server can start an SSH worker on every host that user reaches.
 - The agent behind the tunnel connects from `127.0.0.1`, but it counts as a worker on this machine only when its machine id equals the server's, so a GPU server is never mistaken for the server's own machine. It authenticates with its worker token.

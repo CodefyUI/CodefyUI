@@ -343,3 +343,62 @@ def test_a_real_ssh_worker(live_server):  # noqa: F811
         assert record["worker_id"] == name
     finally:
         client.delete(f"/api/workers/{name}")
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="the fake ssh is a POSIX shell shim")
+def test_a_transfer_run_goes_through_the_ssh_tunnel(
+        fake_remote, live_server, tmp_path, monkeypatch):  # noqa: F811
+    """#784 + #785: an SSH worker with no shared folder runs a graph that
+    reads an uploaded CSV and writes a checkpoint. The agent fetches the
+    input and uploads the checkpoint through the reverse tunnel (``Host:
+    127.0.0.1:<remote port>``) with its worker token; the tunnel guard lets
+    exactly those routes through."""
+    from app.config import settings
+
+    from .test_worker_e2e import _csv_and_checkpoint_graph, _transfer_events
+
+    control = tmp_path / "control"
+    (control / "files").mkdir(parents=True)
+    (control / "files" / "train.csv").write_bytes(
+        b"a,b,label\n1,2,0\n3,4,1\n5,6,0\n")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    for attr, sub in (("DATA_FILES_DIR", "files"), ("IMAGES_DIR", "images"),
+                      ("MODELS_DIR", "models"), ("MEDIA_DIR", "media")):
+        monkeypatch.setattr(settings, attr, control / sub)
+    import app.api.ws_worker as ws_worker
+
+    # Another machine, as a real GPU box is: no directory is lent to it.
+    monkeypatch.setattr(ws_worker, "machine_identity",
+                        lambda: "not-this-agents-machine")
+    name = "ssh-transfer"
+    _, remote_home, cdui = fake_remote
+    client = _client(live_server)
+    added = client.post("/api/workers/ssh", json={
+        "target": "tester@fake-gpu-box", "remote_cdui": str(cdui),
+        "name": name})
+    assert added.status_code == 200, added.text
+    try:
+        _wait(lambda: _up(client, name), "the SSH worker never came up",
+              client, name)
+        assert _worker(client, name)["mounts"] == {}
+        run = client.post("/api/runs", json={
+            "graph": _csv_and_checkpoint_graph(),
+            "options": {"target": {"worker": name}}})
+        assert run.status_code in (200, 201, 202), run.text
+        run_id = run.json()["run_id"]
+        record = _wait_terminal(client, run_id, timeout=180)
+        assert record["status"] == "succeeded", record
+        progress = _transfer_events(client, run_id)
+        assert progress and "train.csv" in progress[-1] \
+            and "fetched" in progress[-1], progress
+        artifacts = client.get(f"/api/runs/{run_id}/artifacts").json()[
+            "artifacts"]
+        [checkpoint] = [a for a in artifacts if a["kind"] == "checkpoint"]
+        assert checkpoint["backend"] == "transfer"
+        assert Path(checkpoint["path"]).is_file()
+        assert Path(checkpoint["path"]).is_relative_to(control.resolve())
+        assert list((remote_home / "agent-cache").glob("[0-9a-f]" * 64))
+    finally:
+        client.delete(f"/api/workers/{name}")
