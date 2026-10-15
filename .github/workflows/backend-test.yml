@@ -383,6 +383,47 @@ jobs:
         working-directory: backend
         run: .venv/bin/python -m pytest tests/ -q
 
+  # ── single-node parity (#765) ────────────────────────────────────────────
+  #
+  # Exam insurance for the control-plane / worker split (#764). Two modules,
+  # both also part of the full suite above; this job exists so the check is
+  # visible BY NAME on every pull request:
+  #
+  #   * test_export_run_parity.py exports every CPU example the smoke suite
+  #     runs, runs the script the way a grader does (`python -I`, scrubbed
+  #     environment, empty folder) and compares node order and output with
+  #     the engine run in-process;
+  #   * test_single_node_parity.py submits three graphs over POST /api/runs
+  #     with the real lifespan and default settings and compares their event
+  #     sequence with tests/snapshots/single_node_parity.json.
+  #
+  # 3.11 because the install scripts pin it, as in the job above.
+  single-node-parity:
+    name: single-node-parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Provision Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv and install backend (with [dev] extra)
+        working-directory: backend
+        run: |
+          uv venv --python 3.11
+          uv pip install -e ".[dev]"
+
+      - name: pytest (export parity and default-submit snapshot)
+        working-directory: backend
+        run: |
+          .venv/bin/python -m pytest tests/test_export_run_parity.py tests/test_single_node_parity.py -q
+
   # ── ruff (core#245 item 2) ───────────────────────────────────────────────
   #
   # Its own job rather than a step in the matrix: lint is platform- and
