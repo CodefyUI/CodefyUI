@@ -40,6 +40,8 @@ const en = {
   'queueRun.error.noDevice': 'Choose at least one device.',
   'queueRun.submit': 'Queue',
   'queueRun.submitting': 'Queueing...',
+  'queueRun.queued': 'Queued {name}',
+  'queueRun.show': 'Show',
   'toolbar.device.aria': 'Device for this graph',
   // Says nothing about overriding Settings: the first option in this select
   // is "Follow Settings", and it is a choice the graph stores like any other.

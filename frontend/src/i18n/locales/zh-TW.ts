@@ -38,6 +38,8 @@ const zhTW: Record<TranslationKey, string> = {
   'queueRun.error.noDevice': '請至少選一個裝置。',
   'queueRun.submit': '排入佇列',
   'queueRun.submitting': '送出中...',
+  'queueRun.queued': '已排入佇列：{name}',
+  'queueRun.show': '顯示',
   'toolbar.device.aria': '此圖的裝置',
   'toolbar.device.title': '這張圖要在哪個裝置上執行；選擇會存進圖檔',
   'toolbar.device.follow': '跟隨設定（{device}）',

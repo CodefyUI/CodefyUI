@@ -7,6 +7,7 @@ import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { isRunSeed } from '../../utils/graphSettings';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import {
   buildRangeDomain,
@@ -35,8 +36,6 @@ interface DomainEditor {
   scale: 'linear' | 'log';
 }
 
-/** The planner seed range the server accepts (`sweep_compiler.MAX_PLANNER_SEED`). */
-const MAX_PLANNER_SEED = 0xFFFFFFFF;
 /**
  * Objectives offered before any listed run has recorded a series: what the
  * built-in TrainingLoop logs every epoch, and with validation data.
@@ -58,7 +57,9 @@ function isNumeric(entry: EligibleSweepParam | null | undefined): boolean {
 
 function parseSeed(raw: string): number {
   const value = Number(raw);
-  if (raw.trim() === '' || !Number.isInteger(value) || value < 0 || value > MAX_PLANNER_SEED) {
+  // The planner seed range (`sweep_compiler.MAX_PLANNER_SEED`) is the run
+  // seed range, so the one run-seed check serves both.
+  if (raw.trim() === '' || !isRunSeed(value)) {
     throw new SweepInputError('seed');
   }
   return value;

@@ -70,6 +70,8 @@ describe('defaultDevices', () => {
   it('falls back to the first accelerator for auto or a device the target lacks', () => {
     expect(defaultDevices(choices, 'auto')).toEqual(['cuda:0']);
     expect(defaultDevices([choice('cpu'), choice('mps')], 'cuda:3')).toEqual(['mps']);
+    // A card the target lacks still names its kind.
+    expect(defaultDevices([choice('cpu'), choice('cuda:0'), choice('cuda:1')], 'cuda:3')).toEqual(['cuda:0']);
   });
 
   it('falls back to the first device, or nothing', () => {
@@ -80,10 +82,17 @@ describe('defaultDevices', () => {
 
 describe('toggleDevice', () => {
   it('adds a device of the same kind, removes one already in, and replaces across kinds', () => {
-    expect(toggleDevice(['cuda:0'], 'cuda:2')).toEqual(['cuda:0', 'cuda:2']);
-    expect(toggleDevice(['cuda:0', 'cuda:2'], 'cuda:0')).toEqual(['cuda:2']);
-    expect(toggleDevice(['cuda:0', 'cuda:2'], 'cpu')).toEqual(['cpu']);
-    expect(toggleDevice([], 'cpu')).toEqual(['cpu']);
+    const order = ['cpu', 'cuda:0', 'cuda:1', 'cuda:2'];
+    expect(toggleDevice(['cuda:0'], 'cuda:2', order)).toEqual(['cuda:0', 'cuda:2']);
+    expect(toggleDevice(['cuda:0', 'cuda:2'], 'cuda:0', order)).toEqual(['cuda:2']);
+    expect(toggleDevice(['cuda:0', 'cuda:2'], 'cpu', order)).toEqual(['cpu']);
+    expect(toggleDevice([], 'cpu', order)).toEqual(['cpu']);
+  });
+
+  it('keeps the set in the reported order, whatever the click order', () => {
+    const order = ['cpu', 'cuda:0', 'cuda:1', 'cuda:2'];
+    expect(toggleDevice(['cuda:2'], 'cuda:0', order)).toEqual(['cuda:0', 'cuda:2']);
+    expect(toggleDevice(['cuda:2', 'cuda:0'].sort(), 'cuda:1', order)).toEqual(['cuda:0', 'cuda:1', 'cuda:2']);
   });
 });
 

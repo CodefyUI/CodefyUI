@@ -1,0 +1,97 @@
+/* The frame of a compact form dialog: backdrop, panel, header, footer and
+   the primary action. Shared by the New Sweep dialog and the Queue run
+   dialog (#775); each module `composes` these and keeps its own body. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8800;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  background: var(--surface-scrim);
+}
+
+.dialog {
+  /* A dialog sets --dialog-width to differ: a plain `width` in its own
+     module could lose to this rule, which may load after it. */
+  width: min(var(--dialog-width, 600px), 100%);
+  max-height: min(760px, calc(100vh - var(--sp-8)));
+  overflow-y: auto;
+  color: var(--text-secondary);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.dialog form {
+  display: flex;
+  flex-direction: column;
+}
+
+.header,
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+}
+
+.header {
+  border-bottom: 1px solid var(--border-base);
+}
+
+.header h2 {
+  flex: 1;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+}
+
+.close {
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: var(--fs-xl);
+  cursor: pointer;
+}
+
+.footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-base);
+}
+
+.footer button {
+  min-height: var(--h-control-sm);
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.footer .primary {
+  color: var(--text-on-accent);
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
+}
+
+.dialog :focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* The dialog itself only catches the focus a click between controls would
+   drop; it is not a control, so it draws no ring. */
+.dialog:focus {
+  outline: none;
+}
+
+@media (max-width: 859px) {
+  .dialog {
+    max-height: calc(100vh - var(--sp-4));
+  }
+}

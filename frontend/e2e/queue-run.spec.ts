@@ -33,14 +33,17 @@ test('queues a CPU graph on This server and follows it in the Runs panel', async
   const response = await submitted;
   expect(response.status()).toBe(200);
   const body = response.request().postDataJSON() as {
-    options: { target: unknown; device: string };
+    options: { target: unknown; device: string; seed: unknown };
     name: string;
   };
   expect(body.options.target).toEqual({ worker: 'local', devices: ['cpu'] });
   expect(body.options.device).toBe('cpu');
+  // A blank seed field is an unseeded run, sent as such.
+  expect(body.options.seed).toBeNull();
   expect(body.name).toBe(name);
   const { run_id: runId } = (await response.json()) as { run_id: string };
   await expect(dialog).toBeHidden();
+  await expect(page.getByText(`Queued ${name}`)).toBeVisible();
 
   // The Runs tab is in front, with the new run's row and its detail open.
   const row = page.locator(`[data-run-id="${runId}"]`);

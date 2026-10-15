@@ -9,6 +9,7 @@ import { isAnyModalOpen } from '../../store/modalState';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
 import { _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
+import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { renderSettled, settle } from '../../test/utils';
 
@@ -89,6 +90,7 @@ beforeEach(() => {
   patchTab({ graphDevice: null, seed: null, deterministic: false, recordOutputs: true });
   useUIStore.setState({ globalDevice: 'cpu', queueRunOpen: true, runsTabRequest: 0 });
   useRunStore.setState({ refresh, select });
+  useToastStore.setState({ toasts: [] });
   useSweepStore.setState({ closeSweep });
   api.fetchDevices.mockResolvedValue({ default: 'cpu', devices: [CPU] });
   api.listWorkers.mockResolvedValue([]);
@@ -113,7 +115,7 @@ describe('QueueRunDialog: this server', () => {
     expect(targetSelect()).toHaveFocus();
     expect(screen.getByRole('radio', { name: /cpu/ })).toBeChecked();
     expect(screen.getByText('A run on this server uses one device.')).toBeInTheDocument();
-    expect(screen.getByRole('spinbutton', { name: 'Random seed' })).toHaveValue(7);
+    expect(screen.getByRole('textbox', { name: 'Random seed' })).toHaveValue('7');
     expect(screen.getByRole('checkbox', { name: 'Deterministic algorithms' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Record node outputs' })).toBeChecked();
     expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('placeholder', 'My graph');
@@ -144,9 +146,41 @@ describe('QueueRunDialog: this server', () => {
     expect(refresh).toHaveBeenCalled();
     expect(select).toHaveBeenCalledWith('run-1');
     expect(onClose).toHaveBeenCalled();
+    // Confirmed whether or not the dock is in view, with a way to it.
+    const toast = useToastStore.getState().toasts[0];
+    expect(toast).toMatchObject({ message: 'Queued My graph', type: 'success' });
+    select.mockClear();
+    act(() => toast.action!.onClick());
+    expect(useUIStore.getState().runsTabRequest).toBe(2);
+    await waitFor(() => expect(select).toHaveBeenCalledWith('run-1'));
   });
 
-  it('sends no seed when the field is blank, the typed name, and the edited checkboxes', async () => {
+  it('names the run by its id in the toast when it has no name', async () => {
+    patchTab({ name: '' });
+    api.submitRun.mockResolvedValueOnce({ run_id: 'abcdef123456', status: 'running' });
+    await open();
+    await submit();
+    expect(useToastStore.getState().toasts[0].message).toBe('Queued abcdef12');
+  });
+
+  it('treats a failed list refresh after the submit as non-blocking', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    refresh.mockRejectedValueOnce(new Error('offline'));
+    select.mockRejectedValueOnce(new Error('gone'));
+    await open();
+    await submit();
+    await settle();
+    // Queued once, closed, confirmed: no error, no second chance to submit.
+    expect(api.submitRun).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Queueing...' })).toBeDisabled();
+    expect(select).toHaveBeenCalledWith('run-1');
+    expect(useToastStore.getState().toasts[0].type).toBe('success');
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends an explicit null seed when the field is blank, the typed name, and the edited checkboxes', async () => {
     await open();
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: '  nightly  ' } });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Deterministic algorithms' }));
@@ -154,7 +188,7 @@ describe('QueueRunDialog: this server', () => {
     await submit();
     const { options, name } = sentRequest();
     expect(name).toBe('nightly');
-    expect(options).not.toHaveProperty('seed');
+    expect(options).toHaveProperty('seed', null);
     expect(options).toMatchObject({ deterministic: true, record_outputs: false });
   });
 
@@ -169,12 +203,19 @@ describe('QueueRunDialog: this server', () => {
     expect(sentRequest().options).toMatchObject({ target: { worker: 'local', devices: ['cpu'] }, device: 'cpu' });
   });
 
-  it('refuses a seed that is not a whole number without asking the server', async () => {
+  it.each(['12a', '1.5', '-1', '1e3', '4294967296'])('refuses the seed %s without asking the server', async (raw) => {
     await open();
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'Random seed' }), { target: { value: '1.5' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Random seed' }), { target: { value: raw } });
     await submit();
     expect(screen.getByRole('alert')).toHaveTextContent('The seed must be a whole number, 0 or more.');
     expect(api.submitRun).not.toHaveBeenCalled();
+  });
+
+  it('takes the largest run seed, spaces trimmed', async () => {
+    await open();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Random seed' }), { target: { value: ' 4294967295 ' } });
+    await submit();
+    expect(sentRequest().options).toHaveProperty('seed', 4294967295);
   });
 
   it('says so when this server lists no device a set can name', async () => {
@@ -218,11 +259,20 @@ describe('QueueRunDialog: workers', () => {
     expect(screen.getByRole('checkbox', { name: /^cuda:1 / })).toBeChecked();
     expect(screen.getByText('cuda:1 -> cuda:0 in this run')).toBeInTheDocument();
 
-    // A card of the same kind joins the set; the order is the in-run order.
+    // A card of the same kind joins the set, which stays in the worker's
+    // order: the in-run names follow the cards, not the clicks.
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:2 / }));
-    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    expect(screen.getByText('cuda:1 -> cuda:0 in this run')).toBeInTheDocument();
     expect(screen.getByText('cuda:2 -> cuda:1 in this run')).toBeInTheDocument();
-    expect(screen.getByText('cuda:0 -> cuda:2 in this run')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    expect(screen.getByText('cuda:0 -> cuda:0 in this run')).toBeInTheDocument();
+    expect(screen.getByText('cuda:1 -> cuda:1 in this run')).toBeInTheDocument();
+    expect(screen.getByText('cuda:2 -> cuda:2 in this run')).toBeInTheDocument();
+    // Unticked and ticked again, cuda:0 goes back to the front.
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    expect(screen.getByText('cuda:1 -> cuda:0 in this run')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    expect(screen.getByText('cuda:0 -> cuda:0 in this run')).toBeInTheDocument();
 
     // Outputs cannot be recorded on a worker yet (#789).
     const record = screen.getByRole('checkbox', { name: 'Record node outputs' });
@@ -232,8 +282,8 @@ describe('QueueRunDialog: workers', () => {
 
     await submit();
     expect(sentRequest().options).toMatchObject({
-      target: { worker: 'gpu-box', devices: ['cuda:1', 'cuda:2', 'cuda:0'] },
-      device: 'cuda:1',
+      target: { worker: 'gpu-box', devices: ['cuda:0', 'cuda:1', 'cuda:2'] },
+      device: 'cuda:0',
       record_outputs: false,
     });
   });
@@ -246,8 +296,12 @@ describe('QueueRunDialog: workers', () => {
     expect(screen.getByRole('checkbox', { name: /^cpu/ })).toBeChecked();
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     expect(screen.getByRole('checkbox', { name: /^cpu/ })).not.toBeChecked();
-    // A lone cuda:0 keeps its name in the run: no alias line.
+    // A lone cuda:0 keeps its name in the run, and says so.
+    expect(screen.getByText('cuda:0 -> cuda:0 in this run')).toBeInTheDocument();
+    // A CPU device has no in-run name.
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cpu/ }));
     expect(screen.queryByText(/in this run/)).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     await submit();
     expect(screen.getByRole('alert')).toHaveTextContent('Choose at least one device.');
@@ -282,7 +336,7 @@ describe('QueueRunDialog: workers', () => {
     await submit();
     expect(screen.getByRole('button', { name: 'Queueing...' })).toBeDisabled();
     await act(async () => finish({ run_id: 'run-2', status: 'queued' }));
-    expect(select).toHaveBeenCalledWith('run-2');
+    await waitFor(() => expect(select).toHaveBeenCalledWith('run-2'));
   });
 });
 

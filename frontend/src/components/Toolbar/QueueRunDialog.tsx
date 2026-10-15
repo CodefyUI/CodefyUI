@@ -8,6 +8,8 @@ import { useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { aliasForDevice } from '../../utils/deviceAliases';
+import { isRunSeed } from '../../utils/graphSettings';
+import { useToastStore } from '../../store/toastStore';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import {
   TARGET_ANY,
@@ -29,11 +31,17 @@ interface QueueRunDialogProps {
   onClose: () => void;
 }
 
-/** A seed field's text as the option, or `undefined` for "not a seed". */
+/**
+ * A seed field's text as the option: `null` for a blank field (an unseeded
+ * run), `undefined` for text that is not a run seed (`12a`, `-1`, `1.5`, or
+ * past `MAX_RUN_SEED`). Digits only: `Number` would read `1e3` or `0x10`.
+ */
 function parseSeed(raw: string): number | null | undefined {
-  if (raw.trim() === '') return null;
-  const value = Number(raw);
-  return Number.isInteger(value) && value >= 0 ? value : undefined;
+  const text = raw.trim();
+  if (text === '') return null;
+  if (!/^\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  return isRunSeed(value) ? value : undefined;
 }
 
 /**
@@ -41,6 +49,21 @@ function parseSeed(raw: string): number | null | undefined {
  * (`POST /api/runs`) to this server, a connected worker or whichever has
  * room, with a device set. The canvas's own Run stays interactive and local.
  */
+/**
+ * Show a queued run where queued runs live: the Runs tab of the Results
+ * dock (expanded if collapsed), with the run open. The list refresh is
+ * best effort: a failure is logged, and the next poll catches up.
+ */
+function showQueuedRun(runId: string): void {
+  useSweepStore.getState().closeSweep();
+  useUIStore.getState().requestRunsTab();
+  const runs = useRunStore.getState();
+  void runs.refresh()
+    .catch((err: unknown) => console.warn('Runs list refresh after a queued run failed', err))
+    .then(() => useRunStore.getState().select(runId))
+    .catch((err: unknown) => console.warn('Opening the queued run failed', err));
+}
+
 export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   const { t } = useI18n();
   const baseId = useId();
@@ -98,6 +121,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   );
   const kinds = useMemo(() => anyKinds(localChoices, online), [localChoices, online]);
   const selected = chosenDevices ?? defaultDevices(choices, graphDevice);
+  // A set is kept in the worker's own (physical) order, so the in-run names
+  // depend on which cards are ticked, never on the order they were ticked.
+  const choiceOrder = useMemo(() => choices.map((c) => c.value), [choices]);
   const kind = chosenKind ?? defaultKind(kinds, graphDevice);
 
   const changeTarget = (next: string) => {
@@ -156,26 +182,34 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       weights_persistent: active.weightsPersistent,
       backward_mode: active.backwardMode,
       auto_backward: active.autoBackward,
-      ...(seedValue !== null ? { seed: seedValue } : {}),
+      // Sent even when blank: `seed: null` is an unseeded run, said outright.
+      seed: seedValue,
       ...(deterministic ? { deterministic: true } : {}),
     };
+    const runName = storableRunName(name) || tabDefaultName(active) || null;
     setSubmitting(true);
+    let runId: string;
     try {
       const result = await submitRun({
         graph,
         options,
-        name: storableRunName(name) || tabDefaultName(active) || null,
+        name: runName,
       });
-      // Show it where queued runs live: the Runs list, with this run open.
-      useSweepStore.getState().closeSweep();
-      useUIStore.getState().requestRunsTab();
-      await useRunStore.getState().refresh();
-      void useRunStore.getState().select(result.run_id);
-      onClose();
+      runId = result.run_id;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
+      return;
     }
+    // Queued: nothing after this point may reopen the form, or a second
+    // click would queue the graph twice.
+    showQueuedRun(runId);
+    useToastStore.getState().addToast(
+      t('queueRun.queued', { name: runName ?? runId.slice(0, 8) }),
+      'success',
+      { action: { label: t('queueRun.show'), onClick: () => showQueuedRun(runId) } },
+    );
+    onClose();
   };
 
   const workerLabel = (candidate: WorkerInfo): string => {
@@ -221,11 +255,11 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
                 name={`${baseId}-device`}
                 value={choice.value}
                 checked={checked}
-                onChange={() => setChosenDevices(isWorker ? toggleDevice(selected, choice.value) : [choice.value])}
+                onChange={() => setChosenDevices(isWorker ? toggleDevice(selected, choice.value, choiceOrder) : [choice.value])}
               />
               <span className={styles.deviceId}>{choice.value}</span>
               {choice.detail && <span>{choice.detail}</span>}
-              {alias !== null && alias !== choice.value && (
+              {alias !== null && (
                 <span className={styles.alias}>
                   {t('queueRun.alias', { device: choice.value, alias })}
                 </span>
@@ -291,9 +325,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
               <label className={styles.field}>
                 {t('queueRun.seed')}
                 <input
-                  type="number"
-                  min="0"
-                  step="1"
+                  inputMode="numeric"
                   value={seed}
                   placeholder={t('queueRun.seedNone')}
                   onChange={(event) => setSeed(event.target.value)}

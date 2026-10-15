@@ -65,15 +65,17 @@ const ACCELERATORS = ['cuda', 'mps'];
 /**
  * The device set a target starts with: the graph's device resolved against
  * the target's devices, else the first accelerator, else the first device.
- * A concrete device the target has is itself; a bare kind (`cuda`) is the
- * target's first device of that kind; `auto` is the first accelerator.
+ * A concrete device the target has is itself; a bare kind (`cuda`), or a
+ * card the target lacks (`cuda:3`), is the target's first device of that
+ * kind; `auto` is the first accelerator.
  */
 export function defaultDevices(choices: readonly DeviceChoice[], graphDevice: string): string[] {
   const wanted = graphDevice.trim().toLowerCase();
   const exact = choices.find((c) => c.value === wanted || (wanted === 'mps' && c.value === 'mps:0'));
   if (exact) return [exact.value];
   if (wanted !== 'auto') {
-    const sameKind = choices.find((c) => c.kind === wanted);
+    // `cuda:3` on a target without it still means a CUDA card.
+    const sameKind = choices.find((c) => c.kind === deviceKind(wanted));
     if (sameKind) return [sameKind.value];
   }
   const accelerator = choices.find((c) => ACCELERATORS.includes(c.kind));
@@ -84,11 +86,15 @@ export function defaultDevices(choices: readonly DeviceChoice[], graphDevice: st
 /**
  * Add *value* to a device set, or take it out. A set is one kind (the server
  * refuses `cuda:0` with `cpu`), so a device of another kind replaces it.
+ * The result is in *order* (the target's devices as it reported them), so
+ * the set, its first device (the run's device) and every card's in-run name
+ * (#774) depend on which cards are in it, never on the order of the clicks.
  */
-export function toggleDevice(selected: readonly string[], value: string): string[] {
+export function toggleDevice(selected: readonly string[], value: string, order: readonly string[]): string[] {
   if (selected.includes(value)) return selected.filter((v) => v !== value);
   const kind = deviceKind(value);
-  return selected.every((v) => deviceKind(v) === kind) ? [...selected, value] : [value];
+  const next = selected.every((v) => deviceKind(v) === kind) ? [...selected, value] : [value];
+  return next.sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
 
 /**
