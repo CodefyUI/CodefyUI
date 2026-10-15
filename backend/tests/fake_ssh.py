@@ -33,7 +33,8 @@ mode it prints the remote script's pid line.
 
 With ``$FAKE_SSH_HANG_S`` above 0 a one-shot writes its pid to
 ``$FAKE_SSH_LOG.pid`` and sleeps that long (a remote host that never
-answers), for the launcher's timeout to kill.
+answers, or, with ``$FAKE_SSH_HANG_SAY``, one that prints that line
+first and then stalls), for the launcher's timeout to kill.
 """
 
 from __future__ import annotations
@@ -133,6 +134,8 @@ def main() -> int:
             # A one-shot that never finishes: the launcher must kill it.
             with open(log + ".pid", "a", encoding="utf-8") as handle:
                 handle.write(f"{os.getpid()}\n")
+            if os.environ.get("FAKE_SSH_HANG_SAY"):
+                print(os.environ["FAKE_SSH_HANG_SAY"], flush=True)
             time.sleep(hang)
             return 0
         if mode != "tunnel":
