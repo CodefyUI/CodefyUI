@@ -93,7 +93,7 @@ A project directory is a Git repository used as the service's storage. It contai
 
 ## Agent commands
 
-A worker agent runs graphs for a CodefyUI server (the control plane), each run in a subprocess of its own, so a crash, an out-of-memory kill or a forced stop ends that run and nothing else. The agent connects out to the server's `/ws/worker` socket and never listens on a port. This release supports same-host mode only: the agent runs beside `cdui start` on the same machine. The server side of the connection, and `--target` choosing an agent, arrive with [#772](https://github.com/CodefyUI/CodefyUI/issues/772).
+A worker agent runs graphs for a CodefyUI server (the control plane), each run in a subprocess of its own, so a crash, an out-of-memory kill or a forced stop ends that run and nothing else. The agent connects out to the server's `/ws/worker` socket and never listens on a port. This release supports same-host mode only: the agent runs beside `cdui start` on the same machine. Send a run to it with `cdui run --target <name>` or `options.target` (see [Run Queue, Workers](/usage/run-queue#workers)).
 
 | Command | Description |
 |---------|-------------|

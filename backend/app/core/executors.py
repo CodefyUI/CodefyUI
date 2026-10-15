@@ -58,6 +58,7 @@ from .run_output_store import RunOutputStore
 from .run_store import (
     STATUS_CANCELLED,
     STATUS_FAILED,
+    STATUS_INTERRUPTED,
     STATUS_SUCCEEDED,
     MetricPoint,
 )
@@ -65,6 +66,8 @@ from .seeding import seed_rngs
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; run_service imports us
     from .run_service import InteractiveSession
+    from .scheduling import Placement
+    from .workers import WorkerRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,10 @@ class RunSinks:
     record_metrics: Callable[[list[MetricPoint]], Awaitable[Any]]
     record_artifact: Callable[[ArtifactSignal], Awaitable[Any]]
     warn: Callable[[WarningSignal], Awaitable[Any]]
+    #: Merge a patch into the run's ``execution_facts`` (#772: what a worker
+    #: reports about where the run executes). None: nothing records them.
+    record_execution_facts: (
+        Callable[[dict[str, Any]], Awaitable[Any]] | None) = None
 
 
 @dataclass
@@ -109,6 +116,9 @@ class ExecutionRequest:
     record_outputs: bool
     sinks: RunSinks
     explicit_metric_nodes: set[str]
+    #: Where the scheduler put the run (#768); ``WorkerExecutor`` reads its
+    #: worker and devices. None on the interactive lane.
+    placement: "Placement | None" = None
 
 
 @dataclass(frozen=True)
@@ -495,3 +505,223 @@ def _signal_bridge(request: ExecutionRequest) -> Callable[[Any], Any]:
                            type(signal).__name__, exc_info=True)
 
     return on_signal
+
+
+# ── WorkerExecutor (#772) ─────────────────────────────────────────────────
+
+#: How often the cancel watcher looks at the run's stop flag. The flag is a
+#: ``threading.Event`` with no loop hook; a fifth of a second is invisible
+#: next to a run subprocess's cancel grace.
+CANCEL_POLL_S = 0.2
+
+#: ``run_warning`` kind when a run ends because its worker went away.
+WARNING_WORKER_DISCONNECTED = "worker_disconnected"
+
+
+class WorkerExecutor:
+    """Execute the graph on a worker agent (#771) over ``/ws/worker``.
+
+    The run's placement names the worker and its devices. ``run`` sends
+    ``assign`` (the graph arrives with its secret params restored; the
+    worker has no vault), then turns the worker's frames for the run into
+    the same sink calls ``InProcessExecutor`` makes:
+
+    - ``run_started`` -> its ``execution_facts`` (where the run executes,
+      #774) merged into the row's;
+    - ``event`` -> ``sinks.emit`` (``RunService._emit`` caps and sanitises
+      it again, which changes nothing: the run subprocess applied the same
+      policy), then ``sinks.record_metrics([])``, the batcher's clock check
+      the in-process bridge makes on every progress frame;
+    - ``metrics`` -> ``sinks.record_metrics``; ``artifact`` ->
+      ``sinks.record_artifact``; ``warning`` -> ``sinks.warn``;
+    - ``run_finished`` -> the outcome. ``succeeded`` / ``failed`` /
+      ``cancelled`` map one to one (a crash's output tail is appended to its
+      error). The agent's ``interrupted`` (the subprocess ended without
+      reporting, after a cancel) is a stop when THIS server asked for one,
+      so ``cancelled`` and the service's ``_stopped_status`` decides; with
+      no stop asked it is ``interrupted``, with the agent's error.
+
+    A stop is watched for (``context.should_stop()``) and forwarded as a
+    ``cancel``. A worker that goes away ends the run after a ``run_warning``
+    saying so: ``interrupted``, or ``cancelled`` when a stop had been asked
+    (a user's Stop stays the user's).
+
+    Every send looks the worker up in the registry AT SEND TIME: a
+    reconnect replaces the ``Worker`` object, and a frame sent through the
+    old one would go to a closed socket.
+    """
+
+    def __init__(self, registry: "WorkerRegistry") -> None:
+        self._registry = registry
+
+    async def _send(self, worker_id: str, frame: Any) -> bool:
+        """Send *frame* to *worker_id*'s current connection. False if none."""
+        worker = self._registry.get(worker_id)
+        if worker is None or not worker.online:
+            return False
+        await worker.send(frame)
+        return True
+
+    async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
+        from . import worker_protocol as wp
+        from .workers import WORKER_GONE
+
+        placement = request.placement
+        if placement is None:
+            return ExecutionOutcome(STATUS_FAILED,
+                                    "a worker run needs a placement")
+        worker_id = placement.worker_id
+        worker = self._registry.get(worker_id)
+        if worker is None or not worker.online:
+            detail = f"worker {worker_id} is not connected"
+            await _worker_gone_warning(request, detail)
+            return self._gone(request, detail)
+        devices = list(placement.devices)
+        run = self._registry.open_run(worker, request.run_id)
+        watcher: asyncio.Task | None = None
+        try:
+            await worker.send(wp.Assign(
+                run_id=request.run_id, graph=request.graph,
+                options=request.options, device=devices[0],
+                devices=devices))
+            watcher = asyncio.create_task(
+                self._forward_cancel(request, worker_id),
+                name=f"cancel-watch:{request.run_id}")
+            while True:
+                item = await run.inbox.get()
+                if isinstance(item, tuple) and item and item[0] is WORKER_GONE:
+                    detail = f"worker {worker_id} went away: {item[1]}"
+                    await _worker_gone_warning(request, detail)
+                    return self._gone(request, detail)
+                outcome = await self._deliver(request, item, devices)
+                if outcome is not None:
+                    return outcome
+        except asyncio.CancelledError:
+            # A hard Task.cancel (shutdown's last resort): tell the worker,
+            # best effort, so the subprocess does not outlive its row.
+            try:
+                await self._send(worker_id, wp.Cancel(
+                    run_id=request.run_id, grace_s=0))
+            except Exception:  # noqa: BLE001
+                logger.warning("run %s: could not tell worker %s to stop",
+                               request.run_id, worker_id, exc_info=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- e.g. the socket closed under send
+            logger.warning("run %s: worker %s failed: %s", request.run_id,
+                           worker_id, exc, exc_info=True)
+            detail = f"could not reach worker {worker_id}: {exc}"
+            await _worker_gone_warning(request, detail)
+            return self._gone(request, detail)
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+            self._registry.close_run(worker_id, request.run_id)
+
+    @staticmethod
+    def _gone(request: ExecutionRequest, detail: str) -> ExecutionOutcome:
+        """The outcome of a run whose worker is gone: a stop if one was
+        asked (``_stopped_status`` keeps a user's Stop ``cancelled``),
+        else ``interrupted``."""
+        if request.context.should_stop():
+            return ExecutionOutcome(STATUS_CANCELLED, None)
+        return ExecutionOutcome(STATUS_INTERRUPTED, detail)
+
+    async def _forward_cancel(self, request: ExecutionRequest,
+                              worker_id: str) -> None:
+        """Watcher task: forward the run's stop as ``cancel``. Never raises."""
+        from . import worker_protocol as wp
+
+        try:
+            while not request.context.should_stop():
+                await asyncio.sleep(CANCEL_POLL_S)
+            if not await self._send(worker_id,
+                                    wp.Cancel(run_id=request.run_id)):
+                logger.info("run %s: stop requested, but worker %s is not "
+                            "connected", request.run_id, worker_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- the run ends via WORKER_GONE
+            logger.warning("run %s: could not forward the stop to worker %s",
+                           request.run_id, worker_id, exc_info=True)
+
+    async def _deliver(self, request: ExecutionRequest, frame: Any,
+                       devices: list[str]) -> ExecutionOutcome | None:
+        """Hand one frame to the sinks; the outcome on ``run_finished``."""
+        from . import worker_protocol as wp
+
+        sinks = request.sinks
+        if isinstance(frame, wp.RunStarted):
+            if frame.execution_facts and sinks.record_execution_facts:
+                try:
+                    await sinks.record_execution_facts(frame.execution_facts)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 -- observability
+                    logger.warning("run %s: could not record the worker's "
+                                   "execution facts", request.run_id,
+                                   exc_info=True)
+        elif isinstance(frame, wp.Event):
+            await sinks.emit(frame.event_type, frame.payload)
+            await sinks.record_metrics([])
+        elif isinstance(frame, wp.Metrics):
+            await sinks.record_metrics([
+                MetricPoint(name=p.name, value=p.value, step=p.step,
+                            node_id=p.node_id) for p in frame.points])
+        elif isinstance(frame, wp.Artifact):
+            await sinks.record_artifact(ArtifactSignal(
+                kind=frame.kind, path=frame.path, meta=frame.meta,
+                node_id=frame.node_id))
+        elif isinstance(frame, wp.RunWarning):
+            await sinks.warn(WarningSignal(kind=frame.kind,
+                                           detail=frame.detail,
+                                           node_id=frame.node_id))
+        elif isinstance(frame, wp.RunFinished):
+            return self._outcome(frame, devices,
+                                 stop_asked=request.context.should_stop())
+        return None
+
+    @staticmethod
+    def _outcome(frame: Any, devices: list[str], *,
+                 stop_asked: bool) -> ExecutionOutcome:
+        peak = _physical_peak(frame.peak_memory, devices)
+        if frame.status == STATUS_SUCCEEDED:
+            return ExecutionOutcome(STATUS_SUCCEEDED, None, peak_memory=peak)
+        if frame.status == STATUS_CANCELLED or (
+                frame.status == STATUS_INTERRUPTED and stop_asked):
+            return ExecutionOutcome(STATUS_CANCELLED, None, peak_memory=peak)
+        error = frame.error or "the run failed on its worker"
+        if frame.stderr_tail:
+            error = f"{error}\n--- output tail ---\n{frame.stderr_tail}"
+        if frame.status == STATUS_INTERRUPTED:
+            return ExecutionOutcome(STATUS_INTERRUPTED, error,
+                                    peak_memory=peak)
+        return ExecutionOutcome(STATUS_FAILED, error, peak_memory=peak)
+
+
+async def _worker_gone_warning(request: ExecutionRequest, detail: str) -> None:
+    try:
+        await request.sinks.emit(EVENT_WARNING, {
+            "kind": WARNING_WORKER_DISCONNECTED, "detail": detail,
+            "node_id": None})
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- observability
+        logger.warning("run %s: could not record %s", request.run_id, detail)
+
+
+def _physical_peak(peak: Any, devices: list[str]) -> Any:
+    """A worker's peak-memory map with its card keys renamed back to this
+    worker's numbering: the run subprocess saw only its set, so its
+    ``cuda:0`` is the set's first CUDA card."""
+    if not isinstance(peak, dict):
+        return None
+    cuda = [d for d in devices if d.startswith("cuda:")]
+    renamed: dict[str, Any] = {}
+    for key, value in peak.items():
+        if isinstance(key, str) and key.startswith("cuda:"):
+            try:
+                key = cuda[int(key.split(":", 1)[1])]
+            except (ValueError, IndexError):
+                pass
+        renamed[key] = value
+    return renamed

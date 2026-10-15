@@ -2230,7 +2230,7 @@ async def test_an_executor_that_raises_still_files_a_failed_run(store):
     assert events[-1].payload == {"error": "executor exploded"}
 
 
-@pytest.mark.parametrize("bad", ["running", "queued", "interrupted", "", None])
+@pytest.mark.parametrize("bad", ["running", "queued", "", None])
 async def test_an_unknown_executor_status_is_filed_as_failed(store, bad):
     from app.core.executors import ExecutionOutcome
 
@@ -2244,6 +2244,25 @@ async def test_an_unknown_executor_status_is_filed_as_failed(store, bad):
 
     assert record.status == STATUS_FAILED
     assert record.error == f"the executor reported an unknown status {bad!r}"
+
+
+async def test_an_interrupted_outcome_is_filed_interrupted(store):
+    """#772: an executor whose worker went away reports ``interrupted``:
+    nobody asked for the stop, so it is not a user's ``cancelled``."""
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(ExecutionOutcome("interrupted", "gone"))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == "interrupted"
+    assert record.error == "gone"
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].payload == {"reason": "interrupted"}
 
 
 async def test_a_cancelled_outcome_stores_no_error(store):

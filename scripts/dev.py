@@ -47,8 +47,9 @@
                                         （省略時用圖檔的 settings.device，
                                         再沒有就是 cpu；auto 表示這台伺服器
                                         最好的加速器；解析後的裝置就是佇列 key）
-                      --target <名稱>   在哪裡執行；目前只接受 local（這台伺服器），
-                                        遠端 worker 由 #772 提供
+                      --target <名稱>   在哪裡執行：local（這台伺服器，預設）、
+                                        已連線的 worker 名稱（cdui agent start），
+                                        或 any（先找有空位的 worker，最後才是這台）
                       --devices <清單>  同一種類的裝置集合，逗號分隔，如
                                         cuda:0,cuda:1；--device 省略、為 auto
                                         或只寫種類（cuda）時，第一個就是 run
@@ -4356,8 +4357,10 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
                         "best accelerator this server has. The RESOLVED "
                         "device is the queue this run joins.")
     p.add_argument("--target", default=None, metavar="NAME",
-                   help="where the run executes. Only `local` (this server) "
-                        "is accepted today; remote workers arrive with #772.")
+                   help="where the run executes: `local` (this server, the "
+                        "default), the name of a connected worker agent "
+                        "(cdui agent start), or `any` (a worker with a free "
+                        "slot, this server last).")
     p.add_argument("--devices", default=None, metavar="LIST",
                    help="comma-separated device set of one kind, e.g. "
                         "cuda:0,cuda:1. Its first entry is the run's device "

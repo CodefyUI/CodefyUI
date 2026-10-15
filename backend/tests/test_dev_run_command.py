@@ -30,11 +30,11 @@ from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import registry
 from app.core.output_entries import build_node_output_entries
 from app.core.run_service import (
-    TARGET_NOT_ENROLLED,
     RunService,
     normalize_graph,
     normalize_name,
     normalize_options,
+    worker_not_connected,
 )
 from app.core.run_store import RunStore
 
@@ -657,7 +657,7 @@ def test_a_rejected_submit_shows_the_servers_reason(monkeypatch, graph_file,
 
 def test_a_refused_target_shows_the_servers_reason(monkeypatch, graph_file,
                                                    capsys):
-    detail = TARGET_NOT_ENROLLED
+    detail = worker_not_connected("gpu-box-1")
     error = HTTPError(f"{BASE}/api/runs", 400, "Bad Request", {},
                       _Body(json.dumps({"detail": detail})))
     monkeypatch.setattr(dev, "urlopen",

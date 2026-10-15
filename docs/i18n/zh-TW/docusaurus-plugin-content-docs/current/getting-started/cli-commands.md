@@ -93,7 +93,7 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 ## Agent 指令 {/* #agent-commands */}
 
-Worker agent 替 CodefyUI 伺服器（控制面）執行圖，每個 run 在自己的子程序裡跑：崩潰、記憶體不足被系統終止或被強制停止，都只影響那一個 run。Agent 主動連到伺服器的 `/ws/worker`，自己不開任何埠。這個版本只支援同機模式：agent 與 `cdui start` 跑在同一台機器上。伺服器端的連線處理，以及用 `--target` 指定 agent，會在 [#772](https://github.com/CodefyUI/CodefyUI/issues/772) 加入。
+Worker agent 替 CodefyUI 伺服器（控制面）執行圖，每個 run 在自己的子程序裡跑：崩潰、記憶體不足被系統終止或被強制停止，都只影響那一個 run。Agent 主動連到伺服器的 `/ws/worker`，自己不開任何埠。這個版本只支援同機模式：agent 與 `cdui start` 跑在同一台機器上。用 `cdui run --target <名稱>` 或 `options.target` 把 run 交給它（見 [Run 佇列，Worker](/usage/run-queue#workers)）。
 
 | 指令 | 說明 |
 |---------|-------------|

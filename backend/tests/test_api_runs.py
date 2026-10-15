@@ -40,7 +40,7 @@ from app.core.node_base import (
 )
 from app.core.node_registry import registry
 from app.core.run_output_store import RunOutputStore
-from app.core.run_service import TARGET_NOT_ENROLLED, QueueLimits, RunService
+from app.core.run_service import QueueLimits, RunService, worker_not_connected
 from app.core.run_store import MetricRecord, RunProvenance, RunStore
 from app.main import app
 
@@ -402,13 +402,13 @@ async def test_a_matching_device_and_device_set_are_accepted(client):
     assert response.status_code == 200, response.text
 
 
-_NOT_ENROLLED = TARGET_NOT_ENROLLED
+_NOT_CONNECTED = worker_not_connected("gpu-box-1")
 
 
 @pytest.mark.parametrize("target,detail", [
-    ({"worker": "gpu-box-1"}, _NOT_ENROLLED),
-    ({"worker": "any"}, _NOT_ENROLLED),
-    ({"worker": "gpu-box-1", "devices": ["cuda:0"]}, _NOT_ENROLLED),
+    # A named worker must be connected at submit (#772).
+    ({"worker": "gpu-box-1"}, _NOT_CONNECTED),
+    ({"worker": "gpu-box-1", "devices": ["cuda:0"]}, _NOT_CONNECTED),
     ({"devices": ["cuda:0", "cpu"]}, "mixes device kinds"),
     ({"devices": ["cuda:0", "cuda:0"]}, "twice"),
     # Duplicates are found after canonicalising.

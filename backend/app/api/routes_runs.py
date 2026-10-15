@@ -177,11 +177,15 @@ async def _queue_positions(service: RunService,
 
 def _run_payload(record: RunRecord, *, queue_position: int | None,
                  active: bool, last_cursor: int | None = None,
+                 queue_reason: str | None = None,
                  final_metrics: dict[str, float] | None = None,
                  metric_producers: dict[str, list[str | None]] | None = None,
                  ) -> dict[str, Any]:
     payload = asdict(record)
     payload["queue_position"] = queue_position
+    # Why a queued run is not starting beyond its place in line (#772):
+    # "waiting for worker X to reconnect". None otherwise.
+    payload["queue_reason"] = queue_reason
     payload["active"] = active
     payload["final_metrics"] = final_metrics or {}
     payload["metric_producers"] = metric_producers or {}
@@ -327,6 +331,7 @@ async def list_runs(
         "runs": [
             _run_payload(record,
                          queue_position=positions.get(record.id),
+                         queue_reason=service.queue_reason(record.id),
                          active=service.is_active(record.id),
                          final_metrics=finals.get(record.id),
                          metric_producers=producers.get(record.id))
@@ -356,6 +361,7 @@ async def get_run(run_id: str, request: Request):
     payload = _run_payload(
         record,
         queue_position=positions.get(record.id),
+        queue_reason=service.queue_reason(record.id),
         active=service.is_active(run_id),
         last_cursor=await service.store.latest_cursor(run_id),
         final_metrics=finals.get(record.id),

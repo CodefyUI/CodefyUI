@@ -98,6 +98,27 @@ and gets back a ``Placement`` (start it, holding these slots) or ``None``
 one slot ``("local", queue_key)`` under the cap above, which is the #123
 rule unchanged. The FIFOs themselves stay keyed by the device string.
 
+Workers (#772)
+--------------
+With a :class:`~app.core.workers.WorkerRegistry` (the lifespan always
+passes one), ``options["target"]`` can name a connected worker agent
+(``cdui agent start``) or ``any``. Such a run is resolved against the
+WORKER, not this process: its FIFO key is ``<worker>/<device as asked>``
+(``gpu-box/cuda``, ``any/cpu``), a named worker must be connected and offer
+the device at submit (else ``RunSubmitError``), and ``record_outputs`` and
+the interactive lane are refused (the canvas always executes here).
+:class:`~app.core.scheduling.WorkerScheduler` places it on
+``(worker, device)`` slots, capped per device like a local slot; ``any``
+tries the connected workers in name order and this process last. The
+placement decides the executor (``WorkerExecutor`` for a worker,
+``InProcessExecutor`` here), the context device (the placement's first
+device), and what the row records once the run starts: ``queue_key``
+``<worker>/<device>`` and the ``worker_id`` / ``devices`` it got. A worker
+run does not take this process's seed gate (its subprocess has RNGs of its
+own) and records no environment fingerprint (#781). A worker connecting,
+draining, undraining or going away calls :meth:`RunService.reschedule`.
+A run without a target never meets any of this.
+
 ``interactive`` runs BYPASS the FIFO entirely — a classroom demo must not
 sit behind a training job — and are bounded two other ways instead:
 
@@ -157,13 +178,19 @@ import asyncio
 import contextlib
 import functools
 import logging
-import re
 import time
 import weakref
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    NamedTuple,
+)
 
 from ..config import settings
 from .cache import ExecutionCache
@@ -173,6 +200,7 @@ from .db import utc_now_iso
 #: decision, and #135 gave ``device_utils`` a second copy of it for the
 #: index-validation fallback. Two copies of a policy drift.
 from .device_utils import (
+    get_available_devices,
     DEVICE_PATTERN,
     _current_cuda_index,
     graph_settings_device,
@@ -180,7 +208,11 @@ from .device_utils import (
     resolve_device,
     split_device,
 )
-from .env_fingerprint import collect_fingerprint, execution_facts
+from .env_fingerprint import (
+    collect_fingerprint,
+    execution_facts,
+    worker_execution_facts,
+)
 from .execution_context import (
     ArtifactSignal,
     ExecutionContext,
@@ -192,6 +224,7 @@ from .executors import (
     Executor,
     InProcessExecutor,
     RunSinks,
+    WorkerExecutor,
 )
 from .node_state_store import NodeStateStore
 from .run_events import (
@@ -238,13 +271,26 @@ from .run_store import (
     RunStore,
     json_safe,
 )
-from .scheduling import LocalScheduler, Placement, Scheduler, SlotKey
+from .scheduling import (
+    LocalScheduler,
+    Placement,
+    Scheduler,
+    SlotKey,
+    WorkerScheduler,
+    candidate_devices,
+    entry_target,
+    on_a_worker,
+)
 from .secret_params import (
     SecretVault,
     restore_graph_secrets,
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
+from .worker_protocol import TARGET_ANY, WORKER_NAME_PATTERN
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .workers import WorkerRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +310,11 @@ STOP_REASON_INTERRUPTED = "interrupted"
 #: is filed as a failure naming the bad value (#766): an executor's bug must
 #: not leave a row in a status the rest of the service does not expect.
 EXECUTOR_STATUSES = frozenset({STATUS_SUCCEEDED, STATUS_FAILED,
-                               STATUS_CANCELLED})
+                               STATUS_CANCELLED, STATUS_INTERRUPTED})
+
+#: Between the worker and the device in a worker run's queue key
+#: (``gpu-box/cuda:0``, ``any/cpu``). Never part of a device string.
+WORKER_QUEUE_SEPARATOR = "/"
 
 #: An outcome object without a ``peak_memory`` attribute (#770): the
 #: executor did not measure, which is different from measuring None.
@@ -373,6 +423,28 @@ DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
 #: tomorrow inherits the conservative limit instead of silently getting the
 #: CPU one.
 CPU_QUEUE_KEY = "cpu"
+
+
+def _local_queue_key(device: Any) -> str:
+    """The FIFO key of a run executing in this process: its device,
+    resolved here and canonical (the rule since #123)."""
+    return canonical_queue_key(resolve_device(device))
+
+
+def _local_device_values() -> list[str]:
+    """This process's devices as queue keys (``cpu``, ``cuda:0``, ``mps:0``):
+    what an ``any`` run can be placed on here (#772)."""
+    values: list[str] = []
+    for device in get_available_devices():
+        key = canonical_queue_key(device)
+        if key not in values:
+            values.append(key)
+    return values
+
+
+def _on_worker(active: Any) -> bool:
+    """Whether *active* was placed on a worker agent rather than here."""
+    return on_a_worker(getattr(active, "placement", None))
 
 
 def canonical_queue_key(device: str) -> str:
@@ -561,19 +633,35 @@ class InteractiveSession:
 #: The one worker a run can target today: this control-plane process. The
 #: same string ``run_store`` writes for a run with no target.
 TARGET_WORKER_LOCAL = WORKER_LOCAL
-#: "Place it wherever there is room" -- reserved, refused until #772.
-TARGET_WORKER_ANY = "any"
+#: "Place it wherever there is room": the connected workers first, then
+#: this process (#772).
+TARGET_WORKER_ANY = TARGET_ANY
 #: Worker names (#769), matched with ``fullmatch``. ``local`` and ``any``
 #: match it too; they are the two reserved names a worker cannot enroll
 #: under.
-TARGET_WORKER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
 #: Upper bound on ``target.devices``. A device set names cards on ONE
 #: host; the cap keeps a stored row bounded like every other option.
 MAX_TARGET_DEVICES = 64
-#: The refusal for any target that is not this process. One string so the
-#: REST layer, the CLI and the tests cannot drift apart.
-TARGET_NOT_ENROLLED = (
-    "no workers are enrolled on this server; remote targets arrive with #772")
+
+
+def worker_not_connected(name: str) -> str:
+    """The refusal for a ``target.worker`` no connected agent answers to.
+
+    One function so the REST layer, the CLI and the tests cannot drift
+    apart.
+    """
+    return (f"worker {name!r} is not connected to this server; start it "
+            "with `cdui agent start`, or target 'local' or 'any'")
+
+
+#: Refusals for what a worker run cannot do in this wave.
+WORKER_REFUSES_RECORD_OUTPUTS = (
+    "record_outputs is not supported for runs on a worker yet (#789); "
+    "target 'local' to capture outputs")
+WORKER_REFUSES_INTERACTIVE = (
+    "the interactive lane always runs on this server; drop the target or "
+    "target 'local'")
 
 #: What each device field accepts, for its refusal message.
 _DEVICE_VOCABULARY = "cpu, auto, cuda, cuda:N, mps or mps:N"
@@ -625,9 +713,9 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
 
     Shape: ``{"worker": "local" | "any" | <name>, "devices": [...]}``, both
     keys optional and no others. ``worker`` is trimmed and lowercased;
-    absent, it is ``local``. Only ``local`` is accepted here: there is no
-    worker registry yet, so any other name, and ``any``, is refused with
-    :data:`TARGET_NOT_ENROLLED`.
+    absent, it is ``local``. Whether a named worker is connected is not
+    known here: :meth:`RunService.submit` checks it against the worker
+    registry (#772).
 
     ``devices`` absent (or null) means the run's ``device`` option as
     today. Given, it is a non-empty list of concrete devices in canonical
@@ -635,11 +723,11 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     canonicalising and one kind (``cuda:0`` with ``cpu`` is not a device
     set).
 
-    ``devices`` records the REQUESTED set. In this release only its first
-    entry is used: it becomes the run's ``device`` (see
-    :func:`normalize_options`), and so its queue and the device it executes
-    on. The rest is stored as asked and is not checked for availability;
-    using it is #773 / #774.
+    ``devices`` records the REQUESTED set. Its first entry becomes the
+    run's ``device`` (see :func:`normalize_options`). On this process only
+    that entry is used, to queue and to execute; the rest is stored as
+    asked (#773 / #774). On a worker (#772) the run holds a slot for every
+    device in the set and its subprocess sees all of them.
     """
     if raw is None:
         return None
@@ -662,8 +750,6 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
         raise RunSubmitError(
             "target.worker must be 'local', 'any' or a worker name "
             "(lowercase letters, digits and '-', at most 63 chars)")
-    if worker != TARGET_WORKER_LOCAL:
-        raise RunSubmitError(TARGET_NOT_ENROLLED)
 
     devices = raw.get("devices")
     if devices is not None:
@@ -1280,6 +1366,9 @@ class _ActiveRun:
     #: given back on release. ``None`` on the interactive lane, which holds
     #: no device slot.
     placement: Placement | None = None
+    #: What ``exec_runs.queue_key`` records once the run starts: the device
+    #: for a run in this process, ``<worker>/<device>`` on a worker (#772).
+    row_queue_key: str = CPU_QUEUE_KEY
     session: "InteractiveSession | None" = None
     record_outputs: bool = False
     #: True once this run's admission — its device slot, or its interactive
@@ -1354,8 +1443,15 @@ class RunService:
         limits: QueueLimits | None = None,
         executor: Executor | None = None,
         scheduler: Scheduler | None = None,
+        workers: "WorkerRegistry | None" = None,
     ) -> None:
         self.store = store
+        # The connected worker agents (#772). With a registry, a run that
+        # targets a worker is placed by ``WorkerScheduler`` and executed by
+        # ``WorkerExecutor``; a run without a target never meets either.
+        self._workers = workers
+        self._worker_executor: Executor | None = (
+            None if workers is None else WorkerExecutor(workers))
         # Where a run's graph executes (#766). In this process unless a
         # caller hands over another executor; the service schedules, records
         # and fans out the same way whichever one it is.
@@ -1380,8 +1476,15 @@ class RunService:
         self._metric_flush_interval_s = metric_flush_interval_s
         self._limits = QueueLimits.from_settings() if limits is None else limits
         # Who may leave the front of a FIFO, and on which slots (#768).
-        self._scheduler: Scheduler = (LocalScheduler(self._limits)
-                                      if scheduler is None else scheduler)
+        if scheduler is None:
+            scheduler = (LocalScheduler(self._limits) if workers is None
+                         else WorkerScheduler(self._limits, workers,
+                                              _local_device_values))
+        self._scheduler: Scheduler = scheduler
+        if workers is not None:
+            # A worker connecting, draining, undraining or going away is
+            # capacity appearing or vanishing somewhere no queue key names.
+            workers.add_listener(self.reschedule)
         self._runs: dict[str, _ActiveRun] = {}
         # ── the queue (#123) ─────────────────────────────────────────────
         # One FIFO per resolved device, plus a by-id index so cancel is O(1)
@@ -1484,6 +1587,24 @@ class RunService:
             if waiting.run_id == run_id:
                 return index
         return None  # pragma: no cover - as above
+
+    def queue_reason(self, run_id: str) -> str | None:
+        """Why a waiting run cannot start, beyond a busy slot, or None.
+
+        The scheduler's word (``WorkerScheduler.explain``, #772): "waiting
+        for worker X to reconnect", "worker X is draining". None for a run
+        that is not waiting, or that waits only for its turn.
+        """
+        entry = self._pending_by_id.get(run_id)
+        explain = getattr(self._scheduler, "explain", None)
+        if entry is None or explain is None:
+            return None
+        try:
+            return explain(entry)
+        except Exception:  # noqa: BLE001 -- a description, never an error
+            logger.debug("could not explain run %s's wait", run_id,
+                         exc_info=True)
+            return None
 
     def queue_snapshot(self) -> dict[str, list[str]]:
         """``{queue_key: [run_id, ...]}`` in service order. Waiting runs only.
@@ -1611,8 +1732,7 @@ class RunService:
                 f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
                 "are queued, and the interactive lane refuses past its cap "
                 "instead of queuing")
-        queue_key = canonical_queue_key(
-            resolve_device(normalized_options.get("device")))
+        queue_key = self._submit_queue_key(normalized_options)
 
         if lane == LANE_INTERACTIVE:
             return await self._submit_interactive(
@@ -1670,6 +1790,52 @@ class RunService:
             run_id=record.id,
             status=(STATUS_RUNNING if record.id in self._runs
                     else STATUS_QUEUED))
+
+    def _submit_queue_key(self, options: dict[str, Any]) -> str:
+        """The FIFO a submitted run joins, or ``RunSubmitError``.
+
+        Without a target, or with ``target.worker == "local"``: the
+        resolved device, exactly as before #772. On a worker the device is
+        the WORKER's to resolve, so the key is ``<worker>/<device as
+        asked>`` (``gpu-box/cuda:1``, ``gpu-box/cuda``) and ``any/<device>``
+        for ``any``; :data:`WORKER_QUEUE_SEPARATOR` cannot occur in a device
+        string, so the two families never collide. A worker run's row
+        records ``<worker>/<device it got>`` once it starts.
+
+        A named worker must be connected now, offer every device of the
+        set (or the requested device, or one of the requested kind), and
+        the run must be one a worker can do in this wave (no
+        ``record_outputs``, not the interactive lane).
+        """
+        worker_id, devices = entry_target(options)
+        if worker_id == TARGET_WORKER_LOCAL:
+            return _local_queue_key(options.get("device"))
+        if options.get("lane") == LANE_INTERACTIVE:
+            raise RunSubmitError(WORKER_REFUSES_INTERACTIVE)
+        if options.get("record_outputs"):
+            raise RunSubmitError(WORKER_REFUSES_RECORD_OUTPUTS)
+        requested = str(options.get("device") or "cpu")
+        if worker_id == TARGET_WORKER_ANY:
+            can_serve = getattr(self._scheduler, "can_serve_any", None)
+            if can_serve is not None and not can_serve(requested, devices):
+                wanted = ", ".join(devices) if devices else requested
+                raise RunSubmitError(
+                    f"neither this server nor a connected worker offers "
+                    f"{wanted}")
+            return f"{TARGET_WORKER_ANY}{WORKER_QUEUE_SEPARATOR}{requested}"
+        worker = None if self._workers is None else self._workers.get(worker_id)
+        if worker is None or not worker.online:
+            raise RunSubmitError(worker_not_connected(worker_id))
+        offered = worker.device_values()
+        wanted = devices or []
+        missing = [d for d in wanted if not worker.offers(d)]
+        if not wanted and not candidate_devices(offered, requested):
+            missing = [requested]
+        if missing:
+            raise RunSubmitError(
+                f"worker {worker_id!r} does not offer {', '.join(missing)} "
+                f"(it offers {', '.join(offered) or 'nothing'})")
+        return f"{worker_id}{WORKER_QUEUE_SEPARATOR}{requested}"
 
     async def _submit_interactive(
         self, graph: dict[str, Any], options: dict[str, Any],
@@ -1918,9 +2084,17 @@ class RunService:
         """
         if self._shutting_down:
             raise RunServiceUnavailable(SHUTDOWN_AFTER_PERSIST)
+        # Where it executes: the first device of its placement (#772) --
+        # for a run placed in this process by ``LocalScheduler`` that is its
+        # queue key, as it always was -- else (the interactive lane) the
+        # queue key.
+        on_worker = on_a_worker(placement)
+        device = (placement.devices[0]
+                  if placement is not None and placement.devices
+                  and lane != LANE_INTERACTIVE else queue_key)
         context = ExecutionContext(
             execution_id=run_id,
-            device=queue_key,
+            device=device,
             max_workers=settings.MAX_PARALLEL_NODES,
             verbose=bool(options.get("verbose")),
             graph_id=str(options.get("graph_id") or ""),
@@ -1949,6 +2123,8 @@ class RunService:
             signal=_Broadcast() if signal is None else signal,
             queue_key=queue_key, lane=lane,
             placement=None if lane == LANE_INTERACTIVE else placement,
+            row_queue_key=(f"{placement.worker_id}{WORKER_QUEUE_SEPARATOR}"
+                           f"{device}" if on_worker else device),
             session=session,
             record_outputs=bool(options.get("record_outputs")),
             subscribers=set() if subscribers is None else subscribers,
@@ -2068,7 +2244,11 @@ class RunService:
             # Taken BEFORE ``_begin`` so a seeded run waiting its turn is
             # still reported as `queued` rather than as a `running` run
             # emitting nothing — the status stays true while it waits.
-            async with run_exclusion().for_seed(options.get("seed")):
+            # A worker run executes in a subprocess with RNGs of its own, so
+            # it neither waits for nor holds this process's seed gate.
+            gate = (contextlib.nullcontext() if _on_worker(active)
+                    else run_exclusion().for_seed(options.get("seed")))
+            async with gate:
                 if not await self._begin(active, graph, options):
                     return
                 status, error = await self._execute(active, graph, options,
@@ -2149,10 +2329,28 @@ class RunService:
         never fails the run; a failure is logged and leaves the columns
         NULL, which reads as "not recorded" rather than as a wrong answer.
         """
-        fingerprint, facts = await self._environment_record(
-            active, graph, options)
+        on_worker = _on_worker(active)
+        if on_worker:
+            # This process's environment is not the one executing the run:
+            # no fingerprint (the worker's is #781's; NULL reads as "not
+            # recorded", which is true) and only the facts that do not
+            # depend on this process. The worker's ``run_started`` merges in
+            # the rest (``WorkerExecutor``).
+            fingerprint = None
+            facts = worker_execution_facts(
+                options=options or {}, graph=graph,
+                worker_id=active.placement.worker_id,
+                devices=list(active.placement.devices))
+        else:
+            fingerprint, facts = await self._environment_record(
+                active, graph, options)
         started = await self.store.mark_running(
-            active.run_id, queue_key=active.context.device,
+            active.run_id, queue_key=active.row_queue_key,
+            # The worker it got (an ``any`` run's row said ``any``); a local
+            # run rewrites the ``local`` it already had.
+            worker_id=(active.placement.worker_id
+                       if active.placement is not None else None),
+            devices=list(active.placement.devices) if on_worker else None,
             fingerprint=fingerprint, execution_facts=facts)
         if not started:
             logger.warning("run %s vanished before it could start",
@@ -2196,8 +2394,11 @@ class RunService:
         ``_stopped_status`` turns that into ``interrupted`` when the server
         asked rather than a user.
         """
+        executor = (self._worker_executor
+                    if _on_worker(active) and self._worker_executor is not None
+                    else self._executor)
         try:
-            outcome = await self._executor.run(ExecutionRequest(
+            outcome = await executor.run(ExecutionRequest(
                 run_id=active.run_id,
                 graph=graph,
                 options=options,
@@ -2207,6 +2408,7 @@ class RunService:
                 record_outputs=active.record_outputs,
                 sinks=self._sinks(active),
                 explicit_metric_nodes=active.explicit_metric_nodes,
+                placement=active.placement,
             ))
         except asyncio.CancelledError:
             raise
@@ -2234,6 +2436,9 @@ class RunService:
         if status == STATUS_CANCELLED:
             # A stop carries no error, whatever the executor attached.
             return self._stopped_status(active), None
+        # ``interrupted`` (#772) falls through with its error: nobody here
+        # asked for the stop -- the run's worker went away, or ended it on
+        # its own -- and the error says which.
         return status, outcome.error
 
     async def _finalize(
@@ -2327,6 +2532,8 @@ class RunService:
             record_metrics=functools.partial(self._record_metrics, active),
             record_artifact=functools.partial(self._record_artifact, active),
             warn=functools.partial(self._warn, active),
+            record_execution_facts=functools.partial(
+                self.store.update_execution_facts, active.run_id),
         )
 
     async def _warn(self, active: _ActiveRun, signal: WarningSignal) -> None:

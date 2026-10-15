@@ -111,13 +111,11 @@ def child_device(device: str, devices: list[str]) -> str:
 
 
 def canonical_device(device: str) -> str:
-    """One spelling per device: ``cuda:01`` -> ``cuda:1``, ``mps`` ->
-    ``mps:0`` (there is one), ``cpu`` -> ``cpu``. A bare ``cuda`` stays
-    bare: which card it means is the child's to decide."""
-    kind, index = split_device(device)
-    if kind == "mps" and index is None:
-        index = 0
-    return kind if index is None else f"{kind}:{index}"
+    """``worker_protocol.canonical_device``, refusing what it cannot parse."""
+    try:
+        return wp.canonical_device(device)
+    except ValueError as exc:
+        raise AssignmentRefused(str(exc)) from None
 
 
 #: Removed from every run subprocess's environment: the database it must

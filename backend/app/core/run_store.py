@@ -64,6 +64,7 @@ from ..config import settings
 from .db import Database, transaction, utc_now_iso
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
+from .worker_protocol import TARGET_LOCAL
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
 #: The worker id of a run executed by this process (#769). Also what a
 #: pre-MIGRATION_008 row's NULL ``worker_id`` reads back as.
-WORKER_LOCAL = "local"
+WORKER_LOCAL = TARGET_LOCAL
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
@@ -803,6 +804,8 @@ class RunStore:
         self, run_id: str, *, queue_key: str | None = None,
         fingerprint: dict[str, Any] | None = None,
         execution_facts: dict[str, Any] | None = None,
+        worker_id: str | None = None,
+        devices: list[str] | None = None,
     ) -> bool:
         """Move a run to ``running``. False when no such run exists.
 
@@ -821,6 +824,10 @@ class RunStore:
         leaves the stored value alone, like *queue_key*; a re-mark that does
         pass them records the environment that started the run most
         recently, which is the one that executes it.
+
+        *worker_id* / *devices* record where a worker run was PLACED
+        (#772): the worker it got and the devices it holds, replacing what
+        submit stored (``any`` and the requested set). None leaves them.
         """
         stamp = utc_now_iso()
         digest: str | None = None
@@ -851,9 +858,13 @@ class RunStore:
                     "started_at = COALESCE(started_at, ?), "
                     "queue_key = COALESCE(?, queue_key), "
                     "fingerprint_digest = COALESCE(?, fingerprint_digest), "
-                    "execution_facts = COALESCE(?, execution_facts) "
+                    "execution_facts = COALESCE(?, execution_facts), "
+                    "worker_id = COALESCE(?, worker_id), "
+                    "devices = COALESCE(?, devices) "
                     "WHERE id = ?",
-                    (STATUS_RUNNING, stamp, queue_key, digest, facts, run_id),
+                    (STATUS_RUNNING, stamp, queue_key, digest, facts,
+                     worker_id, None if devices is None else _dumps(devices),
+                     run_id),
                 ).rowcount
 
         return await self.db.run(_update) > 0

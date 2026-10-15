@@ -38,10 +38,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-#: Same alphabet as ``run_service.TARGET_WORKER_PATTERN`` (#769), which
-#: a ``target.worker`` is matched against.
-WORKER_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
-RESERVED_NAMES = frozenset({"local", "any"})
+from ..core import worker_protocol as _wp
+
+#: The ``target.worker`` alphabet and the two names no worker may take,
+#: from the protocol module both ends share.
+WORKER_NAME_PATTERN = _wp.WORKER_NAME_PATTERN
+RESERVED_NAMES = _wp.RESERVED_WORKER_NAMES
 
 #: Env var carrying a token into the background process (never argv, which
 #: any local user can read with ``ps``).
