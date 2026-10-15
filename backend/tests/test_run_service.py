@@ -2634,6 +2634,56 @@ async def test_a_broken_driver_records_null_and_never_fails_the_run(
     assert (await _run_in_process(monkeypatch, "cuda:0")).peak_memory is None
 
 
+async def test_an_exclusive_process_reports_exact_and_never_shared(
+        monkeypatch, no_active_scopes):
+    """``exclusive_process=True`` (the worker child): every card reset
+    regardless of other scopes, ``exact: true``, no ``shared`` even when a
+    reset failed; the default executor still reports ``exact: false``."""
+    import sys
+    from types import SimpleNamespace
+
+    from app.core.execution_context import ExecutionContext
+    from app.core.executors import InProcessExecutor, PeakMemoryScope
+
+    async def _ok(request):
+        from app.core.executors import ExecutionOutcome
+        return ExecutionOutcome(STATUS_SUCCEEDED)
+
+    request = SimpleNamespace(run_id="r",
+                              context=ExecutionContext(device="cuda:0"))
+
+    cuda = _FakeCuda(count=2, allocated={0: GiB, 1: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    other = PeakMemoryScope("cuda:0").open()
+    cuda.calls.clear()
+    exclusive = InProcessExecutor(exclusive_process=True)
+    monkeypatch.setattr(exclusive, "_execute", _ok)
+    outcome = await exclusive.run(request)
+    assert cuda.resets() == [0, 1]
+    assert outcome.peak_memory == {
+        "cuda:0": {"allocated_bytes": GiB, "reserved_bytes": 2 * GiB,
+                   "exact": True},
+        "cuda:1": {"allocated_bytes": GiB, "reserved_bytes": 2 * GiB,
+                   "exact": True},
+    }
+    assert no_active_scopes == [other]
+    other.close()
+
+    broken = _FakeCuda(fail_reset=True)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(broken))
+    monkeypatch.setattr(exclusive, "_execute", _ok)
+    entry = (await exclusive.run(request)).peak_memory["cuda:0"]
+    assert entry == {"allocated_bytes": 6 * GiB, "reserved_bytes": 7 * GiB,
+                     "exact": True}
+
+    default = InProcessExecutor()
+    assert default.exclusive_process is False
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(_FakeCuda()))
+    monkeypatch.setattr(default, "_execute", _ok)
+    assert (await default.run(request)).peak_memory["cuda:0"]["exact"] \
+        is False
+
+
 async def test_a_hard_cancel_unregisters_the_run(monkeypatch, no_active_scopes):
     import sys
 

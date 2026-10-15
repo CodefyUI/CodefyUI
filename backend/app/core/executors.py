@@ -153,20 +153,31 @@ class InProcessExecutor:
     now build their payloads with ``core.run_events`` and persist through
     ``request.sinks``, and the outcome comes back as an
     :class:`ExecutionOutcome` instead of a tuple.
+
+    *exclusive_process* says this process executes this run and nothing
+    else (the worker child, ``agent.child``, #771). Its peak-memory figures
+    are then exact: the counters are reset unconditionally and no card is
+    ever ``shared``. The server's executor keeps the default, False.
     """
+
+    def __init__(self, *, exclusive_process: bool = False) -> None:
+        self.exclusive_process = exclusive_process
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph, classify the outcome and attach its peak memory.
 
         Never raises but cancel. The peak is read whatever the outcome: a
         run that failed with an out-of-memory error is the one whose number
-        matters most. ``exact`` is False here: in-process runs share one
-        CUDA context (see :class:`PeakMemoryScope`).
+        matters most. ``exact`` is False unless the process is exclusive:
+        runs in the server process share one CUDA context (see
+        :class:`PeakMemoryScope`).
         """
-        scope = PeakMemoryScope(request.context.device).open()
+        scope = PeakMemoryScope(request.context.device,
+                                exclusive=self.exclusive_process).open()
         try:
             outcome = await self._execute(request)
-            return replace(outcome, peak_memory=scope.read(exact=False))
+            return replace(outcome, peak_memory=scope.read(
+                exact=self.exclusive_process))
         finally:
             scope.close()
 
@@ -257,8 +268,11 @@ class PeakMemoryScope:
     closed in a ``finally`` so a hard cancel still unregisters it.
     """
 
-    def __init__(self, device: str | None) -> None:
+    def __init__(self, device: str | None, *, exclusive: bool = False) -> None:
         self.kind, index = split_device(device or "")
+        #: The process runs this run and nothing else (a worker child,
+        #: #771): reset every card unconditionally, never shared.
+        self.exclusive = exclusive
         self.card: int | None = None
         #: Another in-process run shared this run's card at some point.
         self.shared = False
@@ -274,6 +288,13 @@ class PeakMemoryScope:
             return self
         torch = sys.modules.get("torch")
         initialised = _cuda_initialised(torch)
+        if self.exclusive:
+            # Nothing else runs in this process, so nothing to share with
+            # or to protect: no registration, every card reset.
+            self.fresh = torch is not None and not initialised
+            if initialised:
+                self._reset_cards(torch, busy=set())
+            return self
         others = [scope for scope in _ACTIVE_SCOPES if scope is not self]
         # A CPU run has no card of its own (``card`` stays None) but is
         # measured the same way: a node can pin a CUDA card.
@@ -295,7 +316,11 @@ class PeakMemoryScope:
             return self
         if self.shared:
             return self
-        busy = {scope.card for scope in others}
+        self._reset_cards(torch, busy={scope.card for scope in others})
+        return self
+
+    def _reset_cards(self, torch: Any, *, busy: set[int | None]) -> None:
+        """Reset the peak counters of every card not in *busy*."""
         try:
             for card in range(int(torch.cuda.device_count())):
                 if card not in busy:
@@ -304,7 +329,6 @@ class PeakMemoryScope:
         except Exception:  # noqa: BLE001 - observability never fails a run
             logger.debug("could not reset the CUDA peak memory statistics",
                          exc_info=True)
-        return self
 
     def close(self) -> None:
         """Unregister. Idempotent."""
@@ -334,9 +358,12 @@ class PeakMemoryScope:
         - torch never loaded, CUDA never initialised, no card holding
           memory (a plain CPU run), or a read failing: None.
 
-        *exact* is the caller's to say: in-process runs share one CUDA
-        context and pass False; a run alone in its own process (the worker
-        subprocess, #771) can pass True. A ``shared`` card is never exact.
+        *exact* is the caller's to say: runs in the server process share
+        one CUDA context and pass False; a run alone in its own process
+        (the worker child, #771, opened with ``exclusive=True``) passes
+        True, and an exclusive scope never marks a card ``shared``. A
+        ``shared`` card is never exact. The MPS figure stays
+        ``exact: false`` either way: it includes the driver's cache.
         """
         torch = sys.modules.get("torch")
         if torch is None:
@@ -366,7 +393,7 @@ class PeakMemoryScope:
                         card in self.reset_cards
                         or torch.cuda.memory_reserved(card) <= 0):
                     continue
-                shared = (
+                shared = not self.exclusive and (
                     (self.shared and card == self.card)
                     or card in busy
                     or (not self.fresh and card not in self.reset_cards)

@@ -49,6 +49,69 @@ async def test_events_are_byte_identical_to_in_process_executor():
     assert worker == local
 
 
+class _ExclusiveFakeCuda:
+    """Just enough of ``torch.cuda`` for the peak-memory scope (#770)."""
+
+    def __init__(self) -> None:
+        self.resets: list[int] = []
+
+    def is_initialized(self):
+        return True
+
+    def current_device(self):
+        return 0
+
+    def device_count(self):
+        return 2
+
+    def reset_peak_memory_stats(self, card):
+        self.resets.append(card)
+
+    def max_memory_allocated(self, card):
+        return 5 * 1024 ** 3 if card == 0 else 0
+
+    def max_memory_reserved(self, card):
+        return 6 * 1024 ** 3 if card == 0 else 0
+
+    def memory_reserved(self, card):
+        return self.max_memory_reserved(card)
+
+
+def test_the_child_reports_an_exact_peak(monkeypatch):
+    """The child's process holds this run alone: every card is reset
+    unconditionally, even with a server-side scope registered on the same
+    card (the module state a forked child could inherit), and the figure
+    is ``exact: true`` and never ``shared``."""
+    import sys
+    from types import SimpleNamespace
+
+    from app.core import executors
+
+    cuda = _ExclusiveFakeCuda()
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=cuda, backends=SimpleNamespace()))
+
+    async def _succeeds(self, request):
+        assert request.context.device == "cuda:0"
+        return executors.ExecutionOutcome("succeeded")
+
+    monkeypatch.setattr(executors.InProcessExecutor, "_execute", _succeeds)
+    inherited = executors.PeakMemoryScope("cuda:0")
+    inherited.card = 0
+    monkeypatch.setattr(executors, "_ACTIVE_SCOPES", [inherited])
+
+    sent = _run(_spec(h.tensor_graph(), device="cuda:0"))
+
+    assert cuda.resets == [0, 1]
+    assert sent[-1] == (child.MSG_FINISHED, {
+        "status": "succeeded", "error": None,
+        "peak_memory": {"cuda:0": {"allocated_bytes": 5 * 1024 ** 3,
+                                   "reserved_bytes": 6 * 1024 ** 3,
+                                   "exact": True}}})
+    # The child's scope never registered next to the inherited one.
+    assert executors._ACTIVE_SCOPES == [inherited]
+
+
 async def test_a_failing_graph_reports_failed_and_never_raises():
     graph = {"nodes": [h.node("bad", "NoSuchNodeType")], "edges": []}
     sent = await asyncio.to_thread(_run, _spec(graph))
