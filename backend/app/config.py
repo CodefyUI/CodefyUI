@@ -168,6 +168,12 @@ class Settings(BaseSettings):
     # this. Measured on an RTX PRO 6000 (torch 2.11, cuBLAS loaded):
     # ~650 MiB; rounded up.
     EXECUTION_CUDA_CONTEXT_MIB: int = 768
+    # Seconds a run waits for a one-shot worker (#790: ``target.pool:
+    # "one-shot"``, or ``target.worker`` naming a one-shot worker) before it
+    # fails. The GitHub runner rule: a job stays queued until a matching
+    # runner comes online, and fails after 24 h. 0 waits forever. Runs that
+    # wait for anything else are not timed.
+    WORKER_ONE_SHOT_QUEUE_TIMEOUT_S: float = 86400.0
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real

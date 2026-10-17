@@ -8,6 +8,7 @@ import type {
   WorkerDeviceAdmission,
   WorkerInfo,
   WorkerNodeCatalog,
+  WorkerOneShot,
   WorkerRejection,
   WorkerStatus,
 } from '../../api/workers';
@@ -333,6 +334,22 @@ function SshOnlyCard({ entry }: { entry: SshWorker }) {
 /** Statuses whose worker has no live connection: removing one ends nothing. */
 const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
 
+/**
+ * A one-shot worker's run (#790): the run it took, else what it waits for,
+ * or that it left without one.
+ */
+function OneShotLine({ oneShot, away }: { oneShot: WorkerOneShot; away: boolean }) {
+  const { t } = useI18n();
+  if (oneShot.took !== null) return <RunLinks runIds={[oneShot.took]} />;
+  if (away) return <span className={styles.muted}>{t('workers.oneShot.none')}</span>;
+  if (oneShot.run_id === null) return <span className={styles.muted}>{t('workers.oneShot.waiting')}</span>;
+  return (
+    <span className={styles.muted} title={oneShot.run_id}>
+      {t('workers.oneShot.waitingFor', { id: oneShot.run_id.slice(0, RUN_ID_SHORT_LENGTH) })}
+    </span>
+  );
+}
+
 function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey }: {
   worker: WorkerInfo;
   /** Its name's last refused handshake, if the server remembers one (#781). */
@@ -396,17 +413,25 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
             {t('workers.plainHttp')}
           </span>
         )}
+        {worker.one_shot && (
+          <span className={`${styles.chip} ${styles.chip_neutral}`} title={t('workers.oneShot.title')}>
+            {t('workers.oneShot')}
+          </span>
+        )}
         <span className={styles.spacer} />
-        <button
-          ref={actionRef}
-          type="button"
-          className={styles.btn}
-          aria-disabled={busy}
-          title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
-          onClick={() => void toggleDrain()}
-        >
-          {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
-        </button>
+        {/* A one-shot worker takes one run and leaves: nothing to drain (#790). */}
+        {!worker.one_shot && (
+          <button
+            ref={actionRef}
+            type="button"
+            className={styles.btn}
+            aria-disabled={busy}
+            title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
+            onClick={() => void toggleDrain()}
+          >
+            {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
+          </button>
+        )}
         <button
           type="button"
           className={styles.btn}
@@ -447,6 +472,12 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           <>
             <dt>{t('workers.rejected')}</dt>
             <dd><RejectionLine rejection={rejection} now={now} /></dd>
+          </>
+        )}
+        {worker.one_shot && (
+          <>
+            <dt>{t('workers.oneShot.run')}</dt>
+            <dd><OneShotLine oneShot={worker.one_shot} away={AWAY_STATUSES.has(worker.status)} /></dd>
           </>
         )}
         <dt>{t('workers.mounts')}</dt>

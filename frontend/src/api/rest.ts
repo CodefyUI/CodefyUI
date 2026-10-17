@@ -370,6 +370,8 @@ export interface RunTarget {
   memory_gib?: number;
   /** Wait when the budget does not fit a shared card now (#788). */
   wait?: boolean;
+  /** `one-shot`: any one-shot worker, and nothing else (#790). */
+  pool?: 'one-shot';
 }
 
 /**

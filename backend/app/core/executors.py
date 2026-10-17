@@ -705,7 +705,7 @@ class WorkerExecutor:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
-                return ExecutionOutcome(STATUS_FAILED, (
+                    return ExecutionOutcome(STATUS_FAILED, (
                     f"cannot send this run's input files to worker "
                     f"{worker_id}: {exc}"))
         run = self._registry.open_run(worker, request.run_id)
@@ -720,6 +720,10 @@ class WorkerExecutor:
                 memory_budgets=({device: placement.memory_budget
                                  for device in placement.budget_devices}
                                 if placement.memory_budget else {})))
+            # The agent has it: a one-shot worker's claim stays (#790).
+            assigned = getattr(self._registry, "one_shot_assigned", None)
+            if assigned is not None:
+                assigned(worker_id, request.run_id)
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")

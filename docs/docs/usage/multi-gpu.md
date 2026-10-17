@@ -101,7 +101,7 @@ The server keeps a ledger per card: its total and free memory from the worker's 
 When a budget does not fit:
 
 - a run for a named worker is refused at once, with the reason: `needs 12.0 GiB, cuda:1 on gpu-box has 6.3 GiB free (runs a1b2c3d4, c3d4e5f6)`. With `target.wait: true` (**Wait in the queue when it does not fit now** in the dialog) it waits instead;
-- a run for `any` waits until a card has room, unless its budget is larger than every candidate card (refused), or `target.wait` is `false` (refused instead of waiting);
+- a run for `any` waits until a card has room, unless its budget is larger than every candidate card (refused), or `target.wait` is `false` (refused instead of waiting). A run for the one-shot pool (`target.pool`) is judged the same way, on the one-shot workers' cards;
 - a run waiting for memory says so under its worker in the Runs panel.
 
 A run without a budget never goes to a shared card, and a run on a shared card that holds no budget (a canvas run on a same-host worker's card, or one that started before the card was shared) keeps it to itself until it ends. The Runs panel's **Budget** column shows each run's budget, and the Workers panel draws each shared card's memory: in use, reserved, and what a new budget may take (its CUDA context already taken off). A run that waited for a card while it was Exclusive gets its graph's default budget when the card is set to Shared; one that still has none keeps waiting, and the Runs panel says why.

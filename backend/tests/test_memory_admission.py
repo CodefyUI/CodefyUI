@@ -176,7 +176,7 @@ def test_target_memory_gib_and_wait_are_validated_and_kept_only_when_given():
         normalize_options({"target": {"worker": "any", "wait": "no"}})
     with pytest.raises(RunSubmitError, match="needs a worker"):
         normalize_options({"target": {"memory_gib": 2}})
-    with pytest.raises(RunSubmitError, match="'memory_gib', 'wait'"):
+    with pytest.raises(RunSubmitError, match="'memory_gib', 'pool', 'wait'"):
         normalize_options({"target": {"worker": "box", "budget": 1}})
 
 
@@ -1050,3 +1050,29 @@ async def test_the_last_peak_is_found_by_an_indexed_column(tmp_path):
             older, {"cuda:0": {"reserved_bytes": GIB}})
     finally:
         database.close()
+
+
+def test_the_one_shot_pool_is_judged_on_its_one_shot_workers_only():
+    """#790 with #788: a pool run's candidates are the one-shot workers
+    (never this process, never a regular worker), and ``any``'s are every
+    other worker, as ``place`` picks them."""
+    one_shot = _worker("job-1", _card("cuda:0", total=8 * GIB))
+    one_shot.one_shot = True
+    scheduler = _sched(_worker("box", _card("cuda:0")), one_shot,
+                       shared=(("box", "cuda:0"), ("job-1", "cuda:0")),
+                       here=("cpu", "cuda:0"))
+    pool = _options(worker="any", device="cuda", pool="one-shot")
+    places, here = scheduler.places(pool)
+    assert here is False
+    assert [[(w.id, d) for w, d in p] for p in places] == [
+        [("job-1", "cuda:0")]]
+    places, here = scheduler.places(_options(worker="any", device="cuda"))
+    assert here is True and [p[0][0].id for p in places] == ["box"]
+    assert "has no memory budget" in scheduler.memory_refusal(
+        pool, None, {}, wait=True)
+    assert scheduler.memory_refusal(pool, 12 * GIB, {}, wait=True) == (
+        "needs 12.0 GiB, cuda:0 on job-1 has 8.0 GiB in total")
+    entry = _Entry("r1", "any/cuda", pool, mem.Budget(6 * GIB))
+    placement = scheduler.place(entry, {})
+    assert placement.worker_id == "job-1"
+    assert placement.memory_budget == 6 * GIB

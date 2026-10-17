@@ -25,6 +25,21 @@ received — each links to the release it was published as.
 ### Added
 
 - **A worker's GPU can be shared by memory: runs declare a budget, share the card while their budgets fit, and are capped to it** ([#788]). The Workers panel sets each CUDA or MPS card of a worker to Exclusive (the default: one run at a time, as before) or Shared by memory (`PUT /api/workers/{id}/devices/{device}/policy`, stored in the new `worker_device_policies` table, migration 014). A run for a shared card declares `options.target.memory_gib` (per card); without it, the last CUDA peak of a succeeded run of the same graph times 1.2 is used (looked up by the new indexed `exec_runs.graph_hash` column, also migration 014) (`POST /api/runs/estimate` returns that suggestion, and the Queue on... dialog fills it in), and with neither the run is refused; a sweep or study is checked whole, with each child's budget derived, before any row is written, and a run queued while its card was Exclusive gets its default when the card is set to Shared. The control plane keeps a ledger per card (total and free memory from the heartbeat, budgets reserved for runs assigned but not started, budgets of running runs) and admits a run when its budget plus the CUDA context the cap does not cover (`CODEFYUI_EXECUTION_CUDA_CONTEXT_MIB`, 768 MiB; 0 on MPS) is at most `min(free - reserved, total - reserved - running)`. A run for a named worker that does not fit is refused at once with the reason (`needs 12.0 GiB (+0.8 GiB CUDA context), cuda:1 on gpu-box has 6.3 GiB free (runs a1b2c3d4, c3d4e5f6)`, or that a run without a budget holds the card), unless `target.wait: true` or the worker is away; an `any` run waits unless its budget exceeds every card's total or `target.wait: false`; a waiting run says it waits for memory. The `assign` frame carries `memory_budgets` (capability `memory_budget`); the run subprocess calls `torch.cuda.set_per_process_memory_fraction` (MPS: `torch.mps.set_per_process_memory_fraction`) for each budgeted card before the run starts, and the agent sends `run_started` only then, with what was applied in `execution_facts.memory_limit`; a cap that cannot be set fails the run. A run that outgrows its budget runs out of memory alone. Worker-targeted runs record `graph_hash` and, when admitted by memory, `memory_budget` in `execution_facts`. The Runs panel adds a Budget column, and the Workers panel draws a shared card's memory (in use, reserved, room for a new budget) with the runs holding budgets. English and zh-TW. A card left Exclusive, and every run without a worker target, is admitted exactly as before.
+- **One-shot workers for SLURM jobs and ssh commands.** `cdui agent start
+  --one-shot` takes exactly one run, reports it and exits with a code a job
+  script can read (`0` succeeded, `1` failed, cancelled or interrupted, `2`
+  refused, `3` stopped before a run arrived, `4` could not start); `--run-id` takes one specific
+  run. **Any available** never sends a run to a one-shot worker: a run
+  reaches one by naming it or through the new one-shot pool
+  (`"target": {"pool": "one-shot"}`, **Queue on... → A one-shot worker**),
+  where it waits for one to appear and fails after
+  `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` (24 hours). The Workers panel
+  badges one-shot workers and links the run each took; a one-shot worker
+  that left after its run reads **Offline**. A run on any worker started
+  under a batch system's `CUDA_VISIBLE_DEVICES` now gets the card the
+  system allocated instead of the card with the same index. The guide's new
+  section has an `sbatch` script
+  (`docs/docs/usage/remote-workers.md#one-shot-workers`). [#790]
 
 ## [3.1.0] — 2026-10-17
 
@@ -6262,6 +6277,7 @@ Release candidates before 1.0.0 are on the
 [#784]: https://github.com/CodefyUI/CodefyUI/issues/784
 [#785]: https://github.com/CodefyUI/CodefyUI/issues/785
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
+[#790]: https://github.com/CodefyUI/CodefyUI/issues/790
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
 [#788]: https://github.com/CodefyUI/CodefyUI/issues/788

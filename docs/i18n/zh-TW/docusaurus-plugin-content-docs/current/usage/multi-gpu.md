@@ -101,7 +101,7 @@ worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 
 預算放不下時：
 
 - 指定 worker 的 run 會立即被拒並說明原因：`needs 12.0 GiB, cuda:1 on gpu-box has 6.3 GiB free (runs a1b2c3d4, c3d4e5f6)`。加上 `target.wait: true`（對話框中的 **目前放不下時在佇列中等待**）則改為等待；
-- `any` 的 run 會等到有卡放得下，除非它的預算比每張候選卡都大（拒絕），或 `target.wait` 為 `false`（拒絕而不等待）；
+- `any` 的 run 會等到有卡放得下，除非它的預算比每張候選卡都大（拒絕），或 `target.wait` 為 `false`（拒絕而不等待）。送往 one-shot pool（`target.pool`）的 run 以同樣方式判斷，候選卡是 one-shot worker 的卡；
 - 等待記憶體的 run，Runs 面板會在它的 worker 下方說明。
 
 沒有預算的 run 不會被送到共用卡；共用卡上沒有預算的 run（同機 worker 卡上的畫布 run，或在該卡改為共用之前就開始的 run）會獨佔該卡直到結束。Runs 面板的 **預算** 欄顯示每個 run 的預算，Workers 面板則畫出每張共用卡的記憶體：使用中、已保留，以及新預算可用的量（已扣除 CUDA context）。在卡為獨佔時排入等待的 run，會在該卡改為共用時取得其圖的預設預算；仍然沒有預算的 run 會繼續等待，Runs 面板會說明原因。

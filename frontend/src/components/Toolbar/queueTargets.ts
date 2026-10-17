@@ -10,6 +10,12 @@ import type { WorkerDevice, WorkerInfo } from '../../api/workers';
 /** `target.worker` for this server, and for "wherever there is room". */
 export const TARGET_LOCAL = 'local';
 export const TARGET_ANY = 'any';
+/** The picker's value for the one-shot pool (#790): `target.pool`, not a
+ * worker. The `:` keeps it apart from every worker name. */
+export const TARGET_ONE_SHOT = 'pool:one-shot';
+/** The device kinds a one-shot pool run can ask for: any, since the worker
+ * that will take it may not exist yet. */
+export const ONE_SHOT_KINDS = ['cpu', 'cuda', 'mps'];
 
 /** One device a target offers: a concrete id (`cpu`, `cuda:1`, `mps`). */
 export interface DeviceChoice {
@@ -113,7 +119,10 @@ export function toggleDevice(selected: readonly string[], value: string, order: 
 export function anyKinds(local: readonly DeviceChoice[], workers: readonly WorkerInfo[]): string[] {
   const offered = new Set<string>([
     ...local.map((c) => c.kind),
-    ...connectedWorkers(workers).flatMap((w) => workerDeviceChoices(w).map((c) => c.kind)),
+    // `any` never places a run on a one-shot worker (#790).
+    ...connectedWorkers(workers)
+      .filter((w) => !w.one_shot)
+      .flatMap((w) => workerDeviceChoices(w).map((c) => c.kind)),
   ]);
   return ['cpu', ...ACCELERATORS.filter((kind) => offered.has(kind))];
 }

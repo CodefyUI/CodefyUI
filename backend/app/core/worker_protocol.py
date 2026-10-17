@@ -127,13 +127,22 @@ PROTOCOL_VERSION = 3
 #: caps each listed card with ``set_per_process_memory_fraction`` in the run
 #: subprocess and sends ``run_started`` only once the cap is in place. A
 #: worker that does not list it is never given a ``shared`` card's runs.
+#: ``one_shot`` (#790): ``hello.one_shot`` (with
+#: ``one_shot_run_id`` and ``instance_id``) is understood: the control plane
+#: keeps such a worker out of ``any`` and gives it exactly one run; a
+#: one-shot agent refuses a control plane whose ``welcome`` lacks it.
 CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
-                                 "memory_budget")
+                                 "memory_budget", "one_shot")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
 #: The capability name of enforced memory budgets (#788).
 CAPABILITY_MEMORY_BUDGET = "memory_budget"
+#: The capability name of one-shot workers (#790).
+CAPABILITY_ONE_SHOT = "one_shot"
+#: ``target.pool`` value (#790): any connected one-shot worker. The only
+#: pool there is.
+POOL_ONE_SHOT = "one-shot"
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -307,6 +316,22 @@ class Hello(_Frame):
     #: OS id), or None. Equal to the control plane's own: the worker runs on
     #: the same machine and shares its devices (#773).
     machine_id: str | None = None
+    #: ``cdui agent start --one-shot`` (#790): this agent takes exactly one
+    #: run, reports it and exits. The control plane keeps it out of ``any``
+    #: placement; only a run naming it (``target.worker``) or the one-shot
+    #: pool (``target.pool``) goes there.
+    one_shot: bool = False
+    #: ``--run-id``: the one run this one-shot agent takes, or None (the
+    #: first one placed on it).
+    one_shot_run_id: RunId | None = None
+    #: Random per agent process, so the control plane can tell this agent
+    #: reconnecting from another agent taking the same name (#790). None
+    #: from an agent that does not say.
+    instance_id: str | None = Field(default=None, max_length=64)
+    #: The run this one-shot agent already took, on a reconnect (#790):
+    #: a control plane that restarted since has no other record of it, and
+    #: keeps it from placing a second run there.
+    one_shot_taken: RunId | None = None
 
 
 class Heartbeat(_Frame):

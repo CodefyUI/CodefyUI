@@ -112,6 +112,11 @@ describe('anyKinds / defaultKind', () => {
     expect(anyKinds([choice('cpu'), choice('mps')], [])).toEqual(['cpu', 'mps']);
   });
 
+  it('leaves out a one-shot worker, which any never picks (#790)', () => {
+    const oneShot = { ...worker('s', 'online', [['cuda:0', 'cuda']]), one_shot: { run_id: null, took: null } };
+    expect(anyKinds([choice('cpu')], [oneShot])).toEqual(['cpu']);
+  });
+
   it('starts from the graph device kind, else the first accelerator, else CPU', () => {
     expect(defaultKind(['cpu', 'cuda'], 'cuda:1')).toBe('cuda');
     expect(defaultKind(['cpu', 'cuda'], 'auto')).toBe('cuda');

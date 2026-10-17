@@ -18,7 +18,8 @@ the id stable across reconnects, which is what slots
 Status: ``online`` -> ``degraded`` (a heartbeat is late) -> ``disconnected``
 (the socket closed, or :data:`MISSED_HEARTBEATS` heartbeats in a row
 missed). ``offline`` is an enrolled worker that has not connected since
-this server started. Draining is a separate flag (no new assignments); the API's
+this server started, or a one-shot worker (#790) that left with no run in
+flight (it reported its run and exited, as it should). Draining is a separate flag (no new assignments); the API's
 ``status`` reads ``draining`` for a connected worker that has it, because
 that is what decides whether a run can go there, and keeps the
 ``draining`` flag beside it.
@@ -75,6 +76,18 @@ produce. A replay after a long disconnect is not bounded that way (#783),
 so past the high water mark a warning is logged once per run and the
 socket handler stops reading until the inbox drains to half of it
 (:meth:`WorkerRegistry.backpressure`).
+
+One-shot workers (#790, ``cdui agent start --one-shot``): ``hello.one_shot``
+marks the worker; ``target: any`` never places a run there (only a run
+naming it or ``target.pool: "one-shot"`` does, see ``core.scheduling``),
+and it takes ONE run: :meth:`WorkerRegistry.claim_one_shot` records it
+the moment the run is placed (``Worker.one_shot_claim``), which keeps every
+other run off it, across reconnects of the same agent (``instance_id``),
+and across a restart of this server (the agent says which run it took in
+``hello.one_shot_taken``). Once its ``assign`` went out
+(:meth:`WorkerRegistry.one_shot_assigned`) the claim is for good; a run
+that ends before that, however it ends, hands it back
+(:meth:`release_one_shot`, called when the run gives back its slots).
 
 When a replacing connection arrives while runs are still in flight on the
 old one, those runs move to the new connection and wait for its
@@ -230,10 +243,37 @@ class Worker:
     catalog_against: str | None = None
     #: Its registry compares catalogs (it has a ``node_catalog`` source).
     catalog_checked: bool = False
+    #: A ``cdui agent start --one-shot`` agent (#790): ``any`` never
+    #: places a run here, and it takes exactly one run.
+    one_shot: bool = False
+    #: The one run it takes (``--run-id``), or None.
+    one_shot_run_id: str | None = None
+    #: The run it took (set when the run is placed here), or None. Carried
+    #: across a reconnect of the same agent; a new agent starts without.
+    one_shot_claim: str | None = None
+    #: The claimed run's ``assign`` went out: the agent has it, so the claim
+    #: is not handed back when the run ends.
+    one_shot_assigned: bool = False
+    #: ``hello.instance_id``: which agent process holds the name (#790).
+    instance_id: str | None = None
 
     @property
     def online(self) -> bool:
         return self.status not in (STATUS_DISCONNECTED, STATUS_OFFLINE)
+
+    @property
+    def one_shot_available(self) -> bool:
+        """A one-shot worker that has not taken its run yet (#790)."""
+        return self.one_shot and self.one_shot_claim is None
+
+    def one_shot_takes(self, run_id: str) -> bool:
+        """Whether a run may be placed here as far as one-shot rules go:
+        any run on a regular worker; on a one-shot worker, only while it
+        has not taken one, and only its ``--run-id`` when it named one."""
+        if not self.one_shot:
+            return True
+        return self.one_shot_claim is None and (
+            self.one_shot_run_id is None or self.one_shot_run_id == run_id)
 
     @property
     def skipped_by_any(self) -> bool:
@@ -298,11 +338,16 @@ class Worker:
             } for d in self.devices],
             "running": sorted(self.running),
             "connected_at": (None if self.status == STATUS_OFFLINE
-                             else self.connected_at),
+                             and not self.one_shot else self.connected_at),
             "last_heartbeat_at": self.last_heartbeat_at,
             "enrolled": self.enrolled,
             "credential": self.credential,
             "plain_http": self.plain_http,
+            # #790: None for a regular worker.
+            "one_shot": None if not self.one_shot else {
+                "run_id": self.one_shot_run_id,
+                "took": self.one_shot_claim,
+            },
         }
 
 
@@ -613,7 +658,20 @@ class WorkerRegistry:
             node_catalog_hash=hello.node_catalog_hash,
             node_types=tuple(hello.node_types),
             capabilities=tuple(hello.capabilities),
-            catalog_checked=self._node_catalog is not None)
+            catalog_checked=self._node_catalog is not None,
+            one_shot=hello.one_shot, one_shot_run_id=hello.one_shot_run_id,
+            instance_id=hello.instance_id)
+        if old is not None and old.one_shot and hello.one_shot \
+                and old.instance_id == hello.instance_id:
+            # The same one-shot agent reconnecting (#790): the run it took
+            # is still the one it took.
+            worker.one_shot_claim = old.one_shot_claim
+            worker.one_shot_assigned = old.one_shot_assigned
+        if hello.one_shot and hello.one_shot_taken is not None:
+            # The agent says it already took a run (#790): after a restart
+            # of this server nothing else remembers that.
+            worker.one_shot_claim = hello.one_shot_taken
+            worker.one_shot_assigned = True
         worker.shared = self._shared_devices(worker)
         self._rejections.pop(hello.name, None)
         self._check_catalog(worker)
@@ -743,6 +801,16 @@ class WorkerRegistry:
             return
         if worker.status == STATUS_DISCONNECTED:
             return
+        if worker.one_shot and not worker.running:
+            # A one-shot agent leaving with nothing in flight (#790): it
+            # reported its run and exited, or was stopped before one came.
+            # Nothing waits for it to come back.
+            worker.status = STATUS_OFFLINE
+            logger.info("one-shot worker %s left (%s)", worker.name,
+                        f"after run {worker.one_shot_claim}"
+                        if worker.one_shot_claim else "without a run")
+            self._changed()
+            return
         worker.status = STATUS_DISCONNECTED
         logger.warning("worker %s disconnected: %s", worker.name, reason)
         for run in list(worker.running.values()):
@@ -858,6 +926,36 @@ class WorkerRegistry:
                         "draining" if draining else "undrained")
             self._changed()
         return worker
+
+    # ── one-shot workers (#790) ───────────────────────────────────────────
+
+    def claim_one_shot(self, worker_id: str, run_id: str) -> None:
+        """*run_id* was placed on *worker_id*: a one-shot worker takes no
+        other. Called synchronously where the run's slots are taken, so no
+        second placement can slip in before the assignment goes out."""
+        worker = self._workers.get(worker_id)
+        if worker is not None and worker.one_shot \
+                and worker.one_shot_claim is None:
+            worker.one_shot_claim = run_id
+            logger.info("one-shot worker %s takes run %s", worker.name,
+                        run_id)
+
+    def one_shot_assigned(self, worker_id: str, run_id: str) -> None:
+        """*run_id*'s ``assign`` went out to *worker_id*: its claim stays."""
+        worker = self._workers.get(worker_id)
+        if worker is not None and worker.one_shot_claim == run_id:
+            worker.one_shot_assigned = True
+
+    def release_one_shot(self, worker_id: str, run_id: str) -> None:
+        """*run_id* gave back its slots: if its ``assign`` never went out
+        to *worker_id* (cancelled while starting, refused here, the socket
+        failed under the send), the one-shot worker may take another run.
+        Idempotent; an assigned claim stays."""
+        worker = self._workers.get(worker_id)
+        if worker is not None and worker.one_shot_claim == run_id \
+                and not worker.one_shot_assigned:
+            worker.one_shot_claim = None
+            self._changed()
 
     # ── runs ──────────────────────────────────────────────────────────────
 
