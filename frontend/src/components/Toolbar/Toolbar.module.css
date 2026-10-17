@@ -118,7 +118,7 @@
   border-radius: var(--radius);
   cursor: pointer;
   font-family: inherit;
-  max-width: 14rem;
+  max-width: 13rem;
   flex-shrink: 0;
 }
 
@@ -318,14 +318,25 @@
 }
 
 /* ----- Status indicator ----- */
+/* A fixed width, sized for "Completed" (#841): sized by its label, the
+   indicator grew from "Idle" to "Completed" when a run ended and pushed the
+   right-hand buttons onto a second row at 1440 px. A longer label (a queued
+   run's) is cut, with the whole label on hover. */
 .status {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+  width: 4.875rem;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  padding: 0 var(--sp-2);
   flex-shrink: 0;
+}
+
+.statusLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .statusDot {

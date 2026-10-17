@@ -36,6 +36,7 @@ from .run_store import (
     RunRecord,
     last_metric_values,
     producer_last_value,
+    producer_metric_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -344,7 +345,12 @@ def _harvest_one(conn: sqlite3.Connection, attempt: sqlite3.Row,
     value = (producer_last_value(conn, run["id"], metric, node_id)
              if isinstance(metric, str) and isinstance(node_id, str)
              else None)
-    metrics = last_metric_values(conn, run["id"])
+    # The summary beside the objective comes from the objective's node
+    # (#841): the run-wide one collapses a name two branches log into
+    # whichever wrote last, i.e. possibly the other branch's numbers.
+    metrics = (producer_metric_values(conn, run["id"], node_id)
+               if isinstance(node_id, str)
+               else last_metric_values(conn, run["id"]))
     conn.execute(
         "UPDATE study_attempts SET run_id = ?, status = ?, error = ?, "
         "started_at = ?, finished_at = ?, objective_value = ?, "

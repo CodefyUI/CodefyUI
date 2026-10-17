@@ -425,6 +425,9 @@ describe('Toolbar', () => {
     [{ reason: 'device', device: 'cpu', position: 2 }, 'Queued (#2 on cpu)'],
     [{ reason: 'device', device: 'cuda:0', position: null }, 'Queued (on cuda:0)'],
     [{ reason: 'seed' }, 'Queued (waiting for a seeded run)'],
+    // A queue entry that does not say which device still reads as a sentence.
+    [{ reason: 'device', position: 3 }, 'Queued (#3 on ?)'],
+    [{ reason: 'device', position: null }, 'Queued (on ?)'],
   ] as const)('queued %o: says why the run has not started, and Stop stays enabled', async (runQueue, label) => {
     setActiveTab({ status: 'running', runQueue });
     await renderSettled(<Toolbar />);
@@ -895,6 +898,34 @@ describe('Toolbar', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalled();
   });
 
+  it('Export JSON: a tab with no description exports an empty one', async () => {
+    setActiveTab({
+      ...SAVED,
+      description: undefined,
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
+    });
+    await renderSettled(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as JSON'));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
+    const blob = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
+    const text = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsText(blob);
+    });
+    expect(JSON.parse(text).description).toBe('');
+  });
+
+  it('Templates opens the template gallery', async () => {
+    useUIStore.setState({ templateGalleryOpen: false });
+    await renderSettled(<Toolbar />);
+    fireEvent.click(screen.getByText('Templates'));
+    expect(useUIStore.getState().templateGalleryOpen).toBe(true);
+    useUIStore.setState({ templateGalleryOpen: false });
+  });
+
   it('Export JSON: writes settings.device when assigned and no settings key otherwise', async () => {
     const readBlob = () => {
       const calls = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls;
@@ -1308,7 +1339,10 @@ describe('Toolbar', () => {
     // A coded refusal whose field is missing (an older or partial server)
     // must not render the placeholder: `{character}` on screen is worse than
     // the generic sentence.
-    it.each(['name_separator', 'name_reserved_character', 'name_too_long'])(
+    it.each([
+      'name_separator', 'name_reserved_character', 'name_too_long',
+      'name_reserved_device', 'name_control_character', 'preset_file_exists', 'preset_exists',
+    ])(
       'falls back rather than printing an unfilled placeholder for %s',
       async (code) => {
         const again = await askedAgain(refusal(400, { code }));
@@ -1336,6 +1370,23 @@ describe('Toolbar', () => {
       const message = await exportFailureToast(refusal(400, { code: 'preset_from_a_newer_server' }));
       expect(message).toContain('preset_from_a_newer_server');
       expect(message).not.toMatch(/letters, numbers/);
+    });
+
+    // A refusal of the graph whose field is missing has no sentence to fill,
+    // and a name sentence would be wrong for it, so its code is shown.
+    it.each(['preset_card_unknown', 'preset_node_unknown'])(
+      'shows %s without its field as its code',
+      async (code) => {
+        const message = await exportFailureToast(refusal(400, { code }));
+        expect(message).toBe(`Export failed: ${code}`);
+      },
+    );
+
+    // Something thrown that is not an Error at all (a rejected string) still
+    // reads as text rather than as "[object ...]".
+    it('shows a thrown non-Error as text', async () => {
+      const message = await exportFailureToast('network down');
+      expect(message).toBe('Export failed: network down');
     });
 
     // The engine refuses some canvases with PROSE -- the sentence a Run of the
@@ -1445,6 +1496,19 @@ describe('Toolbar', () => {
     fireEvent.click(screen.getByText('Export as Subgraph'));
     const errors = useToastStore.getState().toasts.filter((t) => t.type === 'error');
     expect(errors[0].message).toContain('blk');
+  });
+
+  it('Export Subgraph: names a bare `subgraph:` instance with no definition as unnamed', async () => {
+    setActiveTab({
+      nodes: [
+        { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:', params: {} } },
+      ],
+    });
+    await renderSettled(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Subgraph'));
+    const errors = useToastStore.getState().toasts.filter((t) => t.type === 'error');
+    expect(errors[0].message).toContain('an unnamed block');
   });
 
   it('Export Python: empty canvas warns', async () => {
@@ -1986,6 +2050,13 @@ describe('Toolbar', () => {
       fireEvent.keyDown(document, { key: 'Escape' });
       expect(screen.queryByText('Layout All')).toBeNull();
       expect(applyLayout).not.toHaveBeenCalled();
+    });
+
+    it('stays open on any other key', async () => {
+      await renderSettled(<Toolbar />);
+      fireEvent.click(caret());
+      fireEvent.keyDown(document, { key: 'a' });
+      expect(screen.getByText('Layout All')).toBeInTheDocument();
     });
 
     it('opens inside nothing that clips it', async () => {

@@ -16,6 +16,7 @@ import {
   previewSweepVariants,
   SWEEP_LIMIT_DEFAULTS,
   SweepInputError,
+  sweepParamLabel,
   type EligibleSweepParam,
   type SweepLimitWarning,
 } from './sweepParams';
@@ -161,7 +162,10 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
 
   const addEditor = () => {
     const next = eligible.find((entry) => !usedAddresses.has(addressOf(entry)));
+    // Add shows only while editors < eligible, and eligible addresses are unique.
+    /* v8 ignore start */
     if (!next) return;
+    /* v8 ignore stop */
     const added = newEditor(addressOf(next));
     focusEditor.current = added.id;
     setEditors((current) => [...current, added]);
@@ -170,7 +174,10 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const removeEditor = (id: number) => {
     const index = editors.findIndex((editor) => editor.id === id);
     const remaining = editors.filter((editor) => editor.id !== id);
+    // Remove shows only with two or more editors, so one always remains.
+    /* v8 ignore start */
     focusEditor.current = remaining[Math.min(index, remaining.length - 1)]?.id ?? null;
+    /* v8 ignore stop */
     setEditors(remaining);
   };
 
@@ -207,9 +214,13 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       case 'params':
         return t('sweeps.new.limitParams', { count: warning.count, limit: SWEEP_LIMIT_DEFAULTS.params });
       case 'values': {
+        // The preview is built from these editors in order, and buildDomains
+        // throws for an address eligibleByAddress lacks: both fallbacks are dead.
+        /* v8 ignore start */
         const entry = eligibleByAddress.get(editors[warning.index]?.address ?? '');
         return t('sweeps.new.limitValues', {
-          name: entry ? `${entry.nodeLabel} · ${entry.param.name}` : String(warning.index + 1),
+          name: entry ? sweepParamLabel(entry) : String(warning.index + 1),
+          /* v8 ignore stop */
           count: warning.count,
           limit: SWEEP_LIMIT_DEFAULTS.values,
         });
@@ -345,7 +356,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
                       }}
                     >{eligible.map((entry) => {
                       const address = addressOf(entry);
-                      return <option key={address} value={address} disabled={usedAddresses.has(address) && address !== editor.address}>{entry.nodeLabel} · {entry.param.name}</option>;
+                      return <option key={address} value={address} disabled={usedAddresses.has(address) && address !== editor.address}>{sweepParamLabel(entry)}</option>;
                     })}</select>
                     {numeric && <label className={styles.mode}>{t('sweeps.new.domain')}<select value={editor.mode} onChange={(event) => updateEditor(editor.id, { mode: event.target.value as DomainMode })}><option value="values">{t('sweeps.new.values')}</option><option value="range">{t('sweeps.new.range')}</option></select></label>}
                     {editors.length > 1 && <button type="button" className={styles.remove} onClick={() => removeEditor(editor.id)} aria-label={t('sweeps.new.removeParameter', { index: editorIndex + 1 })}>{t('sweeps.new.remove')}</button>}

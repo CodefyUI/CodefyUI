@@ -904,3 +904,21 @@ async def test_the_objective_needs_an_exact_producer(client):
     body = _body()
     body["variants"][0] = {"label": "A", "ops": [], "graph": _graph()}
     assert (await client.post("/api/studies", json=body)).status_code == 422
+
+
+async def test_attempt_final_metrics_come_from_the_objective_node(client):
+    """#841: a second node logging the same names AFTER the objective node
+    (another branch) must not become the attempt's summary, which the
+    run-wide one would make it."""
+    graph = _graph()
+    graph["nodes"].append({"id": "probe2", "type": "_StudyProbe",
+                           "data": {"params": {"tag": "Z", "value": 9.0}}})
+    graph["edges"].append({"id": "e2", "source": "probe", "target": "probe2",
+                           "sourceHandle": "value", "targetHandle": "value"})
+    created = await client.post("/api/studies", json=_body(
+        [("A", 1.0)], repetitions=1, base_graph=graph))
+    assert created.status_code == 201, created.text
+    done = await _wait_status(client, created.json()["study_id"], "succeeded")
+    attempt = done["variants"][0]["attempts"][0]
+    assert attempt["objective_value"] == 1.0
+    assert attempt["final_metrics"] == {"val_loss": 1.0, "train_loss": 2.0}

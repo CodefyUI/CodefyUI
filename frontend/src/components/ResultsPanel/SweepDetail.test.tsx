@@ -372,8 +372,8 @@ describe('SweepDetail', () => {
 
     const named = screen.getByRole('columnheader', { name: 'Trainer · rate' });
     expect(named).toHaveAttribute('title', 'train.rate');
-    // A node the open graph does not have keeps its id, shortened.
-    const unknown = screen.getByRole('columnheader', { name: '3f1c9ab2 · lr' });
+    // A node the open graph does not have keeps its id, shortened when long.
+    const unknown = screen.getByRole('columnheader', { name: '3f1c9ab2… · lr' });
     expect(unknown).toHaveAttribute('title', '3f1c9ab2-c04e-4d5f-8b1a-7e6d2c930f45.lr');
   });
 
@@ -454,5 +454,184 @@ describe('SweepDetail', () => {
     view();
     expect(screen.getByText('This sweep no longer exists on the server.')).toBeInTheDocument();
     expect(screen.queryByText(/Loading sweep/)).toBeNull();
+  });
+
+  it('tells apart two columns whose node labels match by adding the node ids (#841)', () => {
+    useTabStore.getState().setNodes([
+      { id: 'opt-plain', type: 'customNode', position: { x: 0, y: 0 },
+        data: { type: 'Train', label: 'Optimizer', params: { rate: 0.1 } } },
+      { id: 'opt-decay', type: 'customNode', position: { x: 0, y: 0 },
+        data: { type: 'Train', label: 'Optimizer', params: { rate: 0.1 } } },
+      { id: 'train', type: 'customNode', position: { x: 0, y: 0 },
+        data: { type: 'Train', label: 'Trainer', params: { rate: 0.1 } } },
+    ] as never);
+    const detail = sweep('finished');
+    detail.params = [
+      { node_id: 'opt-plain', param: 'rate', domain: [0.1] },
+      { node_id: 'opt-decay', param: 'rate', domain: [0.1] },
+      { node_id: 'train', param: 'rate', domain: [0.1] },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.getByRole('columnheader', { name: 'Optimizer (opt-plain) · rate' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Optimizer (opt-decay) · rate' })).toBeInTheDocument();
+    // A title no other column shares stays short.
+    expect(screen.getByRole('columnheader', { name: 'Trainer · rate' })).toBeInTheDocument();
+  });
+
+  it('says which node the final metrics come from (#841)', () => {
+    const header = () => screen.getByRole('columnheader', { name: 'Final metrics' });
+    const scoped = sweep('finished');
+    scoped.variants = scoped.variants.map((entry) => ({ ...entry, final_metrics_node_id: 'train' }));
+    useSweepStore.setState({ detail: scoped, selectedSweepId: 's1' });
+    const first = view();
+    expect(header()).toHaveAttribute('title', 'Last value of each series Trainer (train) logged');
+    first.unmount();
+
+    // A run-wide summary (several producers, or a server before #841).
+    act(() => {
+      useSweepStore.setState({ detail: sweep('finished') });
+    });
+    const second = view();
+    expect(header()).toHaveAttribute('title', useI18n.getState().t('sweeps.col.metricsRun'));
+    second.unmount();
+
+    // No variant has numbers to describe.
+    const empty = sweep('finished');
+    empty.variants = empty.variants.map((entry) => ({ ...entry, final_metrics: undefined }));
+    act(() => {
+      useSweepStore.setState({ detail: empty });
+    });
+    view();
+    expect(header()).not.toHaveAttribute('title');
+  });
+
+  it('shows why a sweep did not load', () => {
+    useSweepStore.setState({ selectedSweepId: 's1', detail: null, notFound: false, error: 'connection refused' });
+    view();
+    expect(screen.getByText('connection refused')).toBeInTheDocument();
+    expect(screen.queryByText(/Loading sweep/)).toBeNull();
+  });
+
+  it('reads a count the server left out as zero', () => {
+    const detail = sweep('finished');
+    detail.counts = {} as SweepDetailData['counts'];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    const summary = screen.getByText(/val_loss.*minimize/i).parentElement!;
+    expect(summary).not.toHaveTextContent(/active or queued|succeeded|failed|cancelled|interrupted|missing/);
+    expect(screen.queryByRole('button', { name: /^Stop sweep$/i })).toBeNull();
+  });
+
+  it('names an unnamed sweep and keeps the store errors on screen beside it', () => {
+    const detail = { ...sweep('finished'), name: null };
+    useSweepStore.setState({ detail, selectedSweepId: 's1', error: 'poll failed' });
+    const first = view();
+    expect(screen.getByRole('heading', { name: useI18n.getState().t('sweeps.detail.unnamed') })).toBeInTheDocument();
+    expect(screen.getByText('poll failed')).toBeInTheDocument();
+    first.unmount();
+
+    // Gone from the server: that is the banner, not the poll error.
+    act(() => {
+      useSweepStore.setState({ notFound: true });
+    });
+    view();
+    expect(screen.getByText('This sweep no longer exists on the server.')).toBeInTheDocument();
+    expect(screen.queryByText('poll failed')).toBeNull();
+  });
+
+  it('keeps a failed CSV export on screen, whatever was thrown', async () => {
+    useSweepStore.setState({ detail: sweep('finished'), selectedSweepId: 's1' });
+    view();
+    api.downloadSweepCsv.mockRejectedValueOnce(new Error('disk full'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Download CSV/i }));
+    });
+    expect(screen.getByText('disk full')).toBeInTheDocument();
+
+    api.downloadSweepCsv.mockRejectedValueOnce('export refused');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Download CSV/i }));
+    });
+    expect(screen.queryByText('disk full')).toBeNull();
+    expect(screen.getByText('export refused')).toBeInTheDocument();
+  });
+
+  it('lists the run level first among the ambiguous producers', () => {
+    const detail = sweep('finished');
+    detail.variants = [
+      { ...variant(0, 'succeeded', null, null), ambiguous_producers: ['train', 'b-node', null] },
+      { ...variant(1, 'succeeded', null, null), ambiguous_producers: ['a-node', null] },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.getByText(/more than one node \(run level, a-node, b-node, Trainer \(train\)\)/)).toBeInTheDocument();
+  });
+
+  it('lists the series of the variants that have any when the objective is missing', () => {
+    const detail = sweep('finished');
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 2, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.variants = [
+      { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5 } },
+      { ...variant(1, 'succeeded', null, null), final_metrics: undefined },
+    ];
+    detail.best = null;
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(screen.getByText('No variant recorded a metric named "val_loss"; the runs recorded train_loss.')).toBeInTheDocument();
+  });
+
+  it('shows an unknown or absent status as it is, and sorts it after the known ones', () => {
+    const detail = sweep('finished');
+    detail.variants = [
+      { ...variant(0, 'succeeded', 0.4, 1), status: null as unknown as SweepVariant['status'] },
+      { ...variant(1, 'succeeded', 0.5, 2), status: 'paused' as SweepVariant['status'] },
+      variant(2, 'running', 0.8, 3),
+      { ...variant(3, 'succeeded', 0.6, null), status: null as unknown as SweepVariant['status'] },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    const statusOf = (index: string) => within(screen.getByTestId(`sweep-variant-${index}`)).getAllByRole('cell')[2].textContent;
+    expect(statusOf('0')).toBe('-');
+    expect(statusOf('1')).toBe('paused');
+
+    const status = screen.getByRole('button', { name: /^Status/ });
+    // Other keys leave the order alone; Space sorts like Enter.
+    fireEvent.keyDown(status, { key: 'a' });
+    expect(rowOrder()).toEqual(['0', '1', '2', '3']);
+    fireEvent.keyDown(status, { key: ' ' });
+    expect(rowOrder()).toEqual(['2', '1', '0', '3']);
+  });
+
+  it('sorts by rank, an unranked variant last', () => {
+    const detail = sweep('finished');
+    detail.variants = [
+      { ...variant(0, 'succeeded', 0.4, null), rank: undefined as unknown as number | null },
+      variant(1, 'succeeded', 0.5, 2),
+      variant(2, 'succeeded', 0.3, 1),
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    const rank = screen.getByRole('button', { name: /^Rank/ });
+    fireEvent.click(rank);
+    expect(rowOrder()).toEqual(['2', '1', '0']);
+    expect(rank.closest('th')).toHaveAttribute('aria-sort', 'ascending');
+    fireEvent.click(rank);
+    expect(rowOrder()).toEqual(['1', '2', '0']);
+    expect(rank.closest('th')).toHaveAttribute('aria-sort', 'descending');
+    fireEvent.click(rank);
+    expect(rank.closest('th')).toHaveAttribute('aria-sort', 'ascending');
+  });
+
+  it('shows a bool or text param value as it is', () => {
+    const detail = sweep('finished');
+    detail.variants = [
+      { ...variant(0, 'succeeded', 0.4, 1), params: [{ node_id: 'train', param: 'rate', value: true }] },
+      { ...variant(1, 'succeeded', 0.5, 2), params: [{ node_id: 'train', param: 'rate', value: 'fast' }] },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    expect(within(screen.getByTestId('sweep-variant-0')).getAllByRole('cell')[3]).toHaveTextContent('true');
+    expect(within(screen.getByTestId('sweep-variant-1')).getAllByRole('cell')[3]).toHaveTextContent('fast');
   });
 });
