@@ -391,6 +391,27 @@ def test_the_registry_keeps_policies_by_name():
     assert registry.device_policy("box", "cuda:1") == mem.POLICY_EXCLUSIVE
 
 
+async def test_a_heartbeat_with_new_memory_figures_reschedules_a_shared_card():
+    """Free memory is capacity on a shared card: a run waiting for it is
+    offered again on the next heartbeat, not only when a run ends."""
+    registry = WorkerRegistry()
+    calls: list[int] = []
+    worker, _ = registry.connect(
+        wp.Hello(name="box", version="t", devices=[_card("cuda:0")]),
+        send=_noop, close=_noop)
+    registry.add_listener(lambda: calls.append(1))
+    registry.heartbeat(worker, wp.Heartbeat(devices=[
+        _card("cuda:0", free=14 * GIB)]))
+    assert calls == []  # exclusive: memory figures are not capacity
+    registry.set_device_policy("box", "cuda:0", "shared")
+    registry.heartbeat(worker, wp.Heartbeat(devices=[
+        _card("cuda:0", free=13 * GIB)]))
+    registry.heartbeat(worker, wp.Heartbeat(devices=[
+        _card("cuda:0", free=13 * GIB)]))  # unchanged: nothing
+    assert calls == [1, 1]
+    await registry.shutdown()
+
+
 async def test_the_store_keeps_policies_and_revoking_drops_them(tmp_path):
     database = Database(tmp_path / "codefyui.db")
     database.connect()

@@ -548,6 +548,13 @@ class WorkerRegistry:
         logger.info("worker %s: %s is now %s", worker_id, canonical, policy)
         self._changed()
 
+    def _shares_by_memory(self, worker: Worker) -> bool:
+        """Whether one of *worker*'s cards is set to ``shared``."""
+        from .memory_admission import POLICY_SHARED
+
+        return any(key[0] == worker.id and policy == POLICY_SHARED
+                   for key, policy in self._policies.items())
+
     def forget_policies(self, worker_id: str) -> None:
         for key in [k for k in self._policies if k[0] == worker_id]:
             del self._policies[key]
@@ -777,7 +784,10 @@ class WorkerRegistry:
                 worker.shared = self._shared_devices(worker)
                 # A device appearing (or a card changing its slot) is
                 # capacity a waiting run may now take. Memory figures
-                # change on every heartbeat and are not.
+                # change on every heartbeat and are not, except on a card
+                # shared by memory (#788): there free memory IS capacity.
+                self._changed()
+            elif self._shares_by_memory(worker):
                 self._changed()
         if frame.mounts is not None and frame.mounts != worker.mounts:
             # A share that appeared (or went away) on the worker (#782):
