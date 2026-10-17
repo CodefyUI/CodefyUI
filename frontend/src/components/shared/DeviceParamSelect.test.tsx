@@ -7,9 +7,12 @@ import { useI18n } from '../../i18n';
 import { useWorkerStore } from '../../store/workerStore';
 import {
   DeviceParamSelect,
+  WORKER_LIST_MAX_AGE_MS,
   _resetWorkerListRequestForTesting,
+  canonical,
   inRunChoicesKey,
   isDeviceParam,
+  requestWorkerList,
 } from './DeviceParamSelect';
 import { ParamField } from './ParamField';
 
@@ -86,6 +89,37 @@ describe('isDeviceParam', () => {
     expect(isDeviceParam(deviceParam({ name: 'mode' }))).toBe(false);
     expect(isDeviceParam(deviceParam({ param_type: 'string' }))).toBe(false);
     expect(isDeviceParam(deviceParam({ options: ['0', '1'] }))).toBe(false);
+  });
+});
+
+describe('canonical (second review, item 9)', () => {
+  it.each([
+    ['cuda:00', ['cpu'], 'cuda:0'],
+    ['CUDA:01', ['cpu'], 'cuda:1'],
+    [' cuda ', ['cpu'], 'cuda'],
+    ['MPS:0', ['cpu'], 'mps'],
+    ['mps', ['cpu'], 'mps'],
+    ['mps:1', ['cpu'], 'mps:1'],
+    ['cuda:0', ['auto', 'cpu', 'cuda'], 'cuda'],
+    ['cuda:00', ['auto', 'cpu', 'cuda'], 'cuda'],
+    ['cuda:0', ['auto', 'cpu', 'cuda', 'cuda:0'], 'cuda:0'],
+    ['CPU', ['cpu'], 'cpu'],
+    [' Serial0 ', ['cpu'], 'serial0'],
+  ])('%s against %j is %s', (value, local, expected) => {
+    expect(canonical(value, local)).toBe(expected);
+  });
+
+  it('selects the option a differently spelled stored device names', () => {
+    renderSelect(' MPS:00 ');
+    expect(select().value).toBe('mps');
+    expect(screen.queryByText(/This server has no/)).toBeNull();
+  });
+
+  it('a stored CUDA:00 on a Mac selects the in-run cuda:0', () => {
+    useWorkerStore.setState({ workers: [gpuBox(1)] });
+    renderSelect('CUDA:00');
+    expect(select().value).toBe('cuda:0');
+    expect(optionTexts()).toEqual(['auto', 'cpu', 'mps', 'cuda:0']);
   });
 });
 
@@ -200,6 +234,62 @@ describe('DeviceParamSelect', () => {
   it('does not read when the list is loaded', () => {
     renderSelect('auto');
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('second review, item 3: a failed read is retried by the next select', async () => {
+    useWorkerStore.setState({ loaded: false });
+    refresh.mockImplementationOnce(async () => {
+      useWorkerStore.setState({ loaded: true, error: 'offline' });
+    });
+    const first = renderSelect('auto');
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    first.unmount();
+    refresh.mockImplementationOnce(async () => {
+      useWorkerStore.setState({ loaded: true, error: null, workers: [gpuBox(1)] });
+    });
+    renderSelect('auto');
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(optionTexts()).toEqual(['auto', 'cpu', 'mps', 'cuda:0']));
+  });
+
+  it('second review, item 3: focusing reads a stale list again, at most once per interval', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      renderSelect('auto');
+      expect(refresh).not.toHaveBeenCalled();
+      refresh.mockImplementation(async () => {
+        useWorkerStore.setState({ workers: [gpuBox(2)] });
+      });
+      // First focus: nothing has been read by a select yet.
+      await act(async () => {
+        fireEvent.focus(select());
+      });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(optionTexts()).toEqual(['auto', 'cpu', 'mps', 'cuda:0', 'cuda:1']);
+      // Within the interval: kept.
+      await act(async () => {
+        fireEvent.focus(select());
+      });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + WORKER_LIST_MAX_AGE_MS + 1);
+      await act(async () => {
+        fireEvent.focus(select());
+      });
+      expect(refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a read in flight is joined, not repeated', async () => {
+    let finish: () => void = () => {};
+    refresh.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const a = requestWorkerList(0);
+    const b = requestWorkerList(0);
+    expect(a).toBe(b);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    finish();
+    await a;
   });
 
   it('review 8: a poll that changes nothing does not re-render the select', () => {

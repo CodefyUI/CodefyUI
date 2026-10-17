@@ -7,11 +7,9 @@ the registry is the one ``conftest`` populated (``discover=False``).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import multiprocessing
 import os
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -242,40 +240,7 @@ def test_children_ignore_ctrl_c():
         signal.signal(signal.SIGINT, previous)
 
 
-# ── the run subprocess works in the install's backend/ (#839) ────────────
-
-
-@contextlib.contextmanager
-def _environ_restored():
-    """``enter_install_dir`` rewrites any relative ``CODEFYUI_*_DIR`` in
-    ``os.environ``; put the whole environment back afterwards, whatever it
-    touched (monkeypatch restores ``chdir``)."""
-    snapshot = dict(os.environ)
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(snapshot)
-
-
-@pytest.fixture
-def saved_environ():
-    with _environ_restored():
-        yield
-
-
-def test_saved_environ_undoes_what_enter_install_dir_changes(
-        monkeypatch, tmp_path):
-    """Review item 10: a relative setting set OUTSIDE monkeypatch (as the
-    test process may have) is rewritten, and must not leak to later
-    tests."""
-    monkeypatch.chdir(tmp_path)
-    os.environ["CODEFYUI_ZZ_TEST_DIR"] = "relative/here"
-    with _environ_restored():
-        child.enter_install_dir(tmp_path)
-        assert os.path.isabs(os.environ["CODEFYUI_ZZ_TEST_DIR"])
-    assert os.environ["CODEFYUI_ZZ_TEST_DIR"] == "relative/here"
-    del os.environ["CODEFYUI_ZZ_TEST_DIR"]
+# ── in-run card names for the device_fallback report (#839) ───────────
 
 
 def test_child_run_cards_read_the_agents_environment():
@@ -290,52 +255,3 @@ def test_child_run_cards_read_the_agents_environment():
     assert child.run_cards(spec("cpu", [])) == {}
     assert child.run_cards(spec("cuda", [])) is None
     assert child.run_cards({}) is None
-
-
-def test_enter_install_dir_moves_to_the_install_and_pins_relative_settings(
-        monkeypatch, tmp_path, saved_environ):
-    started_in = tmp_path / "home"
-    install = tmp_path / "install"
-    started_in.mkdir()
-    install.mkdir()
-    monkeypatch.chdir(started_in)
-    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", "rel/user-data")
-    monkeypatch.setenv("CODEFYUI_DB_PATH", str(tmp_path / "abs.db"))
-    monkeypatch.setenv("CODEFYUI_MODELS_DIR", "")
-    monkeypatch.setenv("CODEFYUI_MOUNT_LABEL", "data")
-    child.enter_install_dir(install)
-    assert Path.cwd().resolve() == install.resolve()
-    pinned = Path(os.environ["CODEFYUI_USER_DATA_DIR"])
-    assert pinned.is_absolute()
-    assert pinned == started_in.resolve() / "rel" / "user-data"
-    assert os.environ["CODEFYUI_DB_PATH"] == str(tmp_path / "abs.db")
-    assert os.environ["CODEFYUI_MODELS_DIR"] == ""
-    assert os.environ["CODEFYUI_MOUNT_LABEL"] == "data"
-
-
-def test_the_install_dir_is_backend():
-    assert (child.INSTALL_DIR / "app" / "agent" / "child.py").is_file()
-    assert (child.INSTALL_DIR / "data" / "samples" / "iris.csv").is_file()
-
-
-def _sample_csv_graph():
-    return {"nodes": [h.node("start", "Start"),
-                      h.node("csv", "CSVReader", path="data/samples/iris.csv")],
-            "edges": [h.trigger("start", "csv")]}
-
-
-def test_a_bundled_sample_reads_from_any_starting_directory(
-        monkeypatch, tmp_path, saved_environ):
-    """B2 of #839: an agent started over SSH runs in the home directory,
-    where ``data/samples/iris.csv`` is not; the run failed with
-    ``CSVReader: file not found``. In the install's directory it reads."""
-    monkeypatch.chdir(tmp_path)
-    missed = _run(_spec(_sample_csv_graph()))
-    assert missed[-1][1]["status"] == "failed"
-    assert "file not found" in missed[-1][1]["error"]
-
-    child.enter_install_dir()
-    sent = _run(_spec(_sample_csv_graph()))
-    assert sent[-1] == (child.MSG_FINISHED, {
-        "status": "succeeded", "error": None, "peak_memory": None})
-

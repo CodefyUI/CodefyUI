@@ -48,7 +48,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Callable
 
 MSG_EVENT = "event"
@@ -66,7 +65,6 @@ def main(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
     ignore_interrupts()
     apply_environment(spec.get("env") or {})
     _redirect_output(spec.get("log_path"))
-    enter_install_dir()
     # Logging to the redirected stderr, so a node's warnings land in the
     # per-run log next to its prints.
     import logging
@@ -100,38 +98,6 @@ def apply_environment(env: dict[str, Any]) -> None:
         os.environ.pop(name, None)
     for name, value in (env.get("set") or {}).items():
         os.environ[name] = str(value)
-
-
-#: The install's ``backend/`` directory: the working directory the server
-#: runs in (``cdui start``), which a graph's relative paths are read from.
-INSTALL_DIR = Path(__file__).resolve().parents[2]
-
-
-def enter_install_dir(install_dir: Path = INSTALL_DIR) -> None:
-    """Run in the install's ``backend/``, as the server does (#839).
-
-    A graph's relative paths resolve against the working directory: the
-    bundled samples (``data/samples/iris.csv``, the ``data/samples/rag``
-    folder) are spelled that way, and ``core.run_needs`` lets such a run go
-    to a worker without the ``data`` mount because every install has them.
-    An agent started over SSH or from a terminal keeps the directory it was
-    started in (the home directory, say), so without this the sample was
-    looked for there and the run failed on the worker.
-
-    The ``CODEFYUI_*_DIR`` / ``*_PATH`` settings the child inherited are
-    made absolute first, against the directory they were given in, so a
-    relative one keeps naming the same place.
-    """
-    here = Path.cwd()
-    for name, value in list(os.environ.items()):
-        if not name.startswith("CODEFYUI_") or not value:
-            continue
-        if not (name.endswith("_DIR") or name.endswith("_PATH")):
-            continue
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            os.environ[name] = str(here / path)
-    os.chdir(install_dir)
 
 
 def _redirect_output(log_path: str | None) -> None:
@@ -361,7 +327,7 @@ def run_assignment(spec: dict[str, Any], send: Send,
         # This process runs this one run and nothing else, so its peak
         # memory figures are exact (#770).
         outcome = asyncio.run(
-            InProcessExecutor(exclusive_process=True,
+            InProcessExecutor(exclusive_process=True, worker_run=True,
                               run_cards=run_cards(spec)).run(request))
         status, error = outcome.status, outcome.error
         peak_memory = getattr(outcome, "peak_memory", None)

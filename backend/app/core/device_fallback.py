@@ -46,9 +46,7 @@ from .device_utils import DEVICE_SYNTAX, split_device
 #: ``run_warning`` kind for a device the run asked for and does not get.
 WARNING_DEVICE_FALLBACK = "device_fallback"
 
-_DEVICE_KINDS = ("cpu", "cuda", "mps")
-
-#: Set while :func:`_resolve_quietly` asks ``resolve_device``; the filter
+#: Set while :func:`_node_device` asks ``resolve_device``; the filter
 #: below drops that call's log records and nothing else's (a context
 #: variable, so a node resolving on another thread still logs).
 _QUIET: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -63,15 +61,6 @@ class _QuietFilter(logging.Filter):
 _FILTER = _QuietFilter()
 if not any(isinstance(f, _QuietFilter) for f in device_utils.logger.filters):
     device_utils.logger.addFilter(_FILTER)
-
-
-def _resolve_quietly(value: str) -> str:
-    """``resolve_device(value)`` without its fallback log line."""
-    token = _QUIET.set(True)
-    try:
-        return device_utils.resolve_device(value)
-    finally:
-        _QUIET.reset(token)
 
 
 def substituted(requested: str, resolved: str) -> bool:
@@ -98,27 +87,32 @@ def substituted(requested: str, resolved: str) -> bool:
     return got_index is not None and got_index != want_index
 
 
-def _device_shaped(value: Any) -> str | None:
-    """*value* trimmed and lowercased when it is meant as a device (its kind
-    is cpu, cuda or mps, as ``node_target_device`` decides), ``auto`` and
-    blanks excepted. Malformed spellings of those kinds are kept: they
-    fall back too."""
-    if not isinstance(value, str):
-        return None
-    probe = value.strip().lower()
-    if not probe or probe == "auto":
-        return None
-    if split_device(probe)[0] not in _DEVICE_KINDS:
-        return None
-    return probe
+#: Stands for the run's device in :func:`_node_device`: a value no real
+#: device spelling can equal.
+_RUN_DEVICE = "<run device>"
 
 
-def _declares_device(node_cls: Any) -> bool:
+class _RunContext:
+    device = _RUN_DEVICE
+
+
+def _node_device(params: Mapping[str, Any], node_cls: Any) -> str | None:
+    """The device a node pinned through its own ``device`` param lands on,
+    or None when it follows the run's device.
+
+    Asked of ``device_utils.node_target_device`` itself, the function the
+    engine uses for the node, so the guards cannot drift from it: only a
+    param the node declares, only a device-shaped value, ``auto`` never.
+    The run's device is a marker here, so "follows the run" is told apart
+    from "resolved to the same device". Quiet: no second log line.
+    """
+    token = _QUIET.set(True)
     try:
-        return any(getattr(p, "name", None) == "device"
-                   for p in node_cls.define_params())
-    except Exception:  # noqa: BLE001 -- a broken node is not ours to judge
-        return False
+        resolved = device_utils.node_target_device(dict(params), _RunContext,
+                                                    node_cls)
+    finally:
+        _QUIET.reset(token)
+    return None if resolved == _RUN_DEVICE else resolved
 
 
 def _cards_text(run_cards: Mapping[str, str]) -> str:
@@ -131,14 +125,16 @@ def _cards_text(run_cards: Mapping[str, str]) -> str:
 
 def _node_sentence(node_id: Any, node_type: Any, value: str, resolved: str,
                    where: str, run_cards: Mapping[str, str] | None) -> str:
-    head = f"Node {node_id} ({node_type}) asks for device {value}"
+    # Worded as the node's setting: a node the run serves from its cache
+    # never executes, and the sentence stays true for it.
+    head = f"Node {node_id} ({node_type}) is set to device {value}"
+    tail = f"when it executes, it runs on {resolved}."
     if run_cards is not None and split_device(value)[0] == "cuda":
         # In a worker's run subprocess: a cuda name is an in-run name.
         if run_cards:
-            return (f"{head}; this run has {_cards_text(run_cards)}, "
-                    f"so it runs on {resolved}.")
-        return f"{head}; this run has no CUDA card, so it runs on {resolved}."
-    return f"{head}, which {where} does not have; it runs on {resolved}."
+            return f"{head}; this run has {_cards_text(run_cards)}, so {tail}"
+        return f"{head}; this run has no CUDA card, so {tail}"
+    return f"{head}, which {where} does not have; {tail}"
 
 
 def device_fallbacks(nodes: Iterable[Mapping[str, Any]], requested: Any,
@@ -162,29 +158,32 @@ def device_fallbacks(nodes: Iterable[Mapping[str, Any]], requested: Any,
     from .node_registry import registry
 
     found: list[dict[str, Any]] = []
-    asked = _device_shaped(requested)
-    if check_run and asked is not None and substituted(asked, run_device):
+    asked = requested.strip().lower() if isinstance(requested, str) else ""
+    if (check_run and asked and asked != "auto"
+            and substituted(asked, run_device)):
         found.append({
             "detail": (f"The run asked for device {asked}, which {where} "
                        f"does not have; it runs on {run_device}."),
             "node_id": None,
         })
-    seen: dict[str, str] = {}
+    seen: dict[tuple[Any, Any], str | None] = {}
     for node in nodes:
         data = node.get("data")
         params = data.get("params") if isinstance(data, Mapping) else None
         if not isinstance(params, Mapping):
             continue
-        value = _device_shaped(params.get("device"))
-        if value is None:
+        raw = params.get("device")
+        if not isinstance(raw, str):
             continue
         node_cls = registry.get(node.get("type"))
-        if node_cls is None or not _declares_device(node_cls):
+        if node_cls is None:
             continue
-        if value not in seen:
-            seen[value] = _resolve_quietly(value)
-        resolved = seen[value]
-        if not substituted(value, resolved):
+        key = (node.get("type"), raw)
+        if key not in seen:
+            seen[key] = _node_device(params, node_cls)
+        resolved = seen[key]
+        value = raw.strip().lower()
+        if resolved is None or not substituted(value, resolved):
             continue
         node_id = node.get("id")
         found.append({

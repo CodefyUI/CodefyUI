@@ -195,11 +195,17 @@ class InProcessExecutor:
     """
 
     def __init__(self, *, exclusive_process: bool = False,
+                 worker_run: bool = False,
                  run_cards: Mapping[str, str] | None = None) -> None:
         self.exclusive_process = exclusive_process
-        #: A worker's run subprocess (#839): each in-run CUDA name and the
-        #: worker's card it is (``{"cuda:0": "cuda:1"}``), for the
-        #: ``device_fallback`` sentence. None on the server.
+        #: This executes a run a worker was assigned (``agent.child``),
+        #: for the ``device_fallback`` report (#839): the run's own device
+        #: is not judged there, and the sentence names the worker.
+        self.worker_run = worker_run
+        #: In a worker run, each in-run CUDA name and the worker's card it
+        #: is (``{"cuda:0": "cuda:1"}``; empty when it sees no card). None
+        #: when the numbering is not the run's own (the server, or a worker
+        #: run that kept the agent's visibility).
         self.run_cards = None if run_cards is None else dict(run_cards)
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
@@ -241,9 +247,8 @@ class InProcessExecutor:
             found = device_fallbacks(
                 expanded, request.options.get("device"),
                 request.context.device,
-                where="this worker" if self.exclusive_process
-                else "this server",
-                check_run=not self.exclusive_process,
+                where="this worker" if self.worker_run else "this server",
+                check_run=not self.worker_run,
                 run_cards=self.run_cards)
             for entry in found:
                 await request.sinks.warn(WarningSignal(

@@ -29,17 +29,27 @@ export function isDeviceParam(param: ParamDefinition): boolean {
   return param.param_type === 'select' && param.name === 'device' && param.options.includes('cpu');
 }
 
+const DEVICE_SYNTAX = /^(cpu|cuda|mps)(?::(\d+))?$/;
+
 /**
- * One spelling per device for comparing a stored value with an option:
- * `mps:0` is `mps` (there is one), and `cuda:0` is `cuda` when *local* lists
- * only the bare `cuda` (a one-card server, which lists no `cuda:N`).
+ * One spelling per device for comparing a stored value with an option, as
+ * the server's `canonical_device` reads it: trimmed and lower-cased, the
+ * index without leading zeros (`CUDA:01` is `cuda:1`), `mps` and `mps:0`
+ * one device, and `cuda:0` the bare `cuda` when *local* lists only that (a
+ * one-card server, which lists no `cuda:N`). A value that is not a device
+ * spelling is compared as written, trimmed and lower-cased.
  */
-function canonical(value: string, local: readonly string[]): string {
-  if (value === 'mps:0') return 'mps';
-  if (value === 'cuda:0' && local.includes('cuda') && !local.some((v) => v.startsWith('cuda:'))) {
+export function canonical(value: string, local: readonly string[]): string {
+  const probe = value.trim().toLowerCase();
+  const match = DEVICE_SYNTAX.exec(probe);
+  if (match === null) return probe;
+  const [, kind, digits] = match;
+  const index = digits === undefined ? null : Number.parseInt(digits, 10);
+  if (kind === 'mps' && (index === null || index === 0)) return 'mps';
+  if (kind === 'cuda' && index === 0 && local.includes('cuda') && !local.some((v) => v.startsWith('cuda:'))) {
     return 'cuda';
   }
-  return value;
+  return index === null ? kind : `${kind}:${index}`;
 }
 
 /**
@@ -62,12 +72,39 @@ export function inRunChoicesKey(workers: readonly WorkerInfo[], local: readonly 
   return names.filter((name) => !have.has(canonical(name, local))).join(' ');
 }
 
-/** The worker list is read once per page by whichever select mounts first. */
-let workerListRequested = false;
+/** A focused select reads the list again only when it is older than this. */
+export const WORKER_LIST_MAX_AGE_MS = 5000;
 
-/** Test seam: let the next mount read the worker list again. */
+/** The read in flight, shared by every select, so they never stack up. */
+let inFlight: Promise<void> | null = null;
+/** When a read last answered without an error; 0 before one has. */
+let lastGoodRead = 0;
+
+/**
+ * Read the worker list for the device selects. A read already in flight is
+ * joined; a list read successfully within *maxAgeMs* is kept (`Infinity`:
+ * once one read succeeded, never again). A failed read leaves `lastGoodRead`
+ * alone, so the next mount or focus tries again.
+ */
+export function requestWorkerList(maxAgeMs: number): Promise<void> {
+  if (inFlight !== null) return inFlight;
+  if (lastGoodRead > 0 && Date.now() - lastGoodRead < maxAgeMs) return Promise.resolve();
+  const store = useWorkerStore.getState();
+  inFlight = store
+    .refresh()
+    .then(() => {
+      if (useWorkerStore.getState().error === null) lastGoodRead = Date.now();
+    })
+    .finally(() => {
+      inFlight = null;
+    });
+  return inFlight;
+}
+
+/** Test seam: forget the last read and any read in flight. */
 export function _resetWorkerListRequestForTesting(): void {
-  workerListRequested = false;
+  inFlight = null;
+  lastGoodRead = 0;
 }
 
 export function DeviceParamSelect({
@@ -86,12 +123,13 @@ export function DeviceParamSelect({
   const local = param.options;
   const choicesKey = useWorkerStore((s) => (s.loaded ? inRunChoicesKey(s.workers, local) : ''));
 
-  // One read per page when nothing has read the list yet; the Workers
-  // panel's poll keeps it fresh while that is open.
+  // Read when nothing has read the list successfully yet (a failed read is
+  // retried by the next mount), and again when the select is focused and
+  // the list is older than WORKER_LIST_MAX_AGE_MS, so a worker connected
+  // since shows up. The Workers panel's poll writes the same store.
   useEffect(() => {
-    if (workerListRequested || useWorkerStore.getState().loaded) return;
-    workerListRequested = true;
-    void useWorkerStore.getState().refresh();
+    const { loaded, error } = useWorkerStore.getState();
+    if (!loaded || error !== null) void requestWorkerList(Infinity);
   }, []);
 
   const selected = value ?? param.default;
@@ -119,6 +157,7 @@ export function DeviceParamSelect({
         onChange={(e) => onChange(param.name, e.target.value)}
         className={`${styles.input} ${styles.select}`}
         aria-describedby={describedBy || undefined}
+        onFocus={() => void requestWorkerList(WORKER_LIST_MAX_AGE_MS)}
       >
         {local.map((option) => (
           <option key={option} value={option} style={{ background: 'var(--surface-input)' }}>

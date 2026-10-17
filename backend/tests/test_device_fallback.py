@@ -101,8 +101,9 @@ def test_check_run_false_leaves_the_runs_device_alone():
 def test_a_pinned_node_falls_back_on_the_server(cpu_only):
     nodes = [_node("train", "TrainingLoop", device="cuda:0")]
     assert device_fallbacks(nodes, "cpu", "cpu") == [{
-        "detail": ("Node train (TrainingLoop) asks for device cuda:0, which "
-                   "this server does not have; it runs on cpu."),
+        "detail": ("Node train (TrainingLoop) is set to device cuda:0, which "
+                   "this server does not have; when it executes, it runs on "
+                   "cpu."),
         "node_id": "train"}]
 
 
@@ -112,7 +113,15 @@ def test_a_malformed_node_device_is_reported(one_card):
              _node("b", "TrainingLoop", device="cuda: 0")]
     found = device_fallbacks(nodes, "cpu", "cpu")
     assert [entry["node_id"] for entry in found] == ["a", "b"]
-    assert "asks for device cuda:abc" in found[0]["detail"]
+    assert "is set to device cuda:abc" in found[0]["detail"]
+
+
+def test_a_spelling_the_engine_ignores_is_not_reported(one_card):
+    """Second review, item 5: the check asks ``node_target_device`` itself,
+    so it agrees with the engine. ``cuda : 0`` is not a device to it (the
+    run's device stands), so nothing falls back."""
+    nodes = [_node("a", "TrainingLoop", device="cuda : 0")]
+    assert device_fallbacks(nodes, "cpu", "cpu") == []
 
 
 # ── in-run names on a worker (review item 1) ─────────────────────────────
@@ -125,9 +134,9 @@ def test_a_worker_node_is_described_in_the_runs_card_names(one_card):
     found = device_fallbacks(nodes, "cuda:1", "cuda:0", where="this worker",
                              check_run=False, run_cards={"cuda:0": "cuda:1"})
     assert found == [{
-        "detail": ("Node train (TrainingLoop) asks for device cuda:1; this "
-                   "run has 1 card (cuda:0 = the worker's cuda:1), so it "
-                   "runs on cuda:0."),
+        "detail": ("Node train (TrainingLoop) is set to device cuda:1; this "
+                   "run has 1 card (cuda:0 = the worker's cuda:1), so when "
+                   "it executes, it runs on cuda:0."),
         "node_id": "train"}]
 
 
@@ -145,7 +154,8 @@ def test_several_cards_are_all_named(monkeypatch):
         nodes, "cuda:2", "cuda:0", where="this worker", check_run=False,
         run_cards={"cuda:0": "cuda:2", "cuda:1": "cuda:0"})
     assert ("this run has 2 cards (cuda:0 = the worker's cuda:2, cuda:1 = "
-            "the worker's cuda:0), so it runs on cuda:0.") in found[0]["detail"]
+            "the worker's cuda:0), so when it executes, it runs on "
+            "cuda:0.") in found[0]["detail"]
 
 
 def test_a_cpu_run_on_a_worker_sees_no_card(cpu_only):
@@ -154,10 +164,10 @@ def test_a_cpu_run_on_a_worker_sees_no_card(cpu_only):
     found = device_fallbacks(nodes, "cpu", "cpu", where="this worker",
                              check_run=False, run_cards={})
     assert [entry["detail"] for entry in found] == [
-        ("Node train (TrainingLoop) asks for device cuda:0; this run has no "
-         "CUDA card, so it runs on cpu."),
-        ("Node eval (TrainingLoop) asks for device mps, which this worker "
-         "does not have; it runs on cpu.")]
+        ("Node train (TrainingLoop) is set to device cuda:0; this run has no "
+         "CUDA card, so when it executes, it runs on cpu."),
+        ("Node eval (TrainingLoop) is set to device mps, which this worker "
+         "does not have; when it executes, it runs on cpu.")]
 
 
 # ── guards ────────────────────────────────────────────────────────────────
@@ -225,6 +235,7 @@ def test_the_check_does_not_log_the_fallback_a_second_time(caplog):
 
 async def _execute(graph: dict[str, Any], options: dict[str, Any],
                    device: str, *, exclusive: bool = False,
+                   worker_run: bool = False,
                    run_cards=None, warn=None) -> list[tuple[str, Any]]:
     from app.core.executors import ExecutionRequest, InProcessExecutor, RunSinks
 
@@ -240,6 +251,7 @@ async def _execute(graph: dict[str, Any], options: dict[str, Any],
         return None
 
     await InProcessExecutor(exclusive_process=exclusive,
+                            worker_run=worker_run,
                             run_cards=run_cards).run(
         ExecutionRequest(
             run_id="r", graph=graph, options=options,
@@ -362,6 +374,7 @@ async def test_the_graph_is_expanded_once(probe, monkeypatch, cpu_only):
 async def test_a_worker_subprocess_uses_in_run_names(probe, one_card):
     seen = await _execute(_probe_graph("cuda:1"),
                           {"device": "cuda:1"}, "cuda:0", exclusive=True,
+                          worker_run=True,
                           run_cards={"cuda:0": "cuda:1"})
     (warning,) = _warnings(seen)
     assert warning.node_id == "train"
@@ -390,3 +403,52 @@ async def test_a_failing_check_never_fails_the_run(probe, monkeypatch):
                           "cpu")
     assert _warnings(seen) == []
     assert any(kind == "node_status" for kind, _ in seen)
+
+
+async def test_an_exclusive_process_alone_is_not_a_worker_run(probe,
+                                                              cpu_only):
+    """Second review, item 6: ``exclusive_process`` is about peak memory;
+    whether the run is a worker's is its own flag."""
+    seen = await _execute(_probe_graph("cuda"), {"device": "cuda"}, "cpu",
+                          exclusive=True)
+    details = [w.detail for w in _warnings(seen)]
+    assert details[0].startswith("The run asked for device cuda")
+    assert "which this server does not have" in details[1]
+    seen = await _execute(_probe_graph("cuda"), {"device": "cuda"}, "cpu",
+                          worker_run=True, run_cards={})
+    details = [w.detail for w in _warnings(seen)]
+    assert len(details) == 1 and "this run has no CUDA card" in details[0]
+
+
+async def test_a_cached_node_is_described_as_its_setting(probe, cpu_only):
+    """Second review, item 7: a canvas run may serve a node from its cache,
+    and that node never executes. The sentence is about the setting and
+    what happens when it executes, true either way."""
+    from app.core.cache import ExecutionCache
+
+    class _Session:
+        cache = ExecutionCache()
+        changed_nodes: list[str] = []
+
+    from app.core.executors import ExecutionRequest, InProcessExecutor, RunSinks
+
+    warned: list[Any] = []
+
+    async def warn(signal):
+        warned.append(signal)
+
+    async def ignore(*_: Any) -> None:
+        return None
+
+    for _ in range(2):  # the second run serves the node from the cache
+        await InProcessExecutor().run(ExecutionRequest(
+            run_id="r", graph=_probe_graph("cuda"), options={"device": "cpu"},
+            context=ExecutionContext(device="cpu"), session=_Session(),
+            output_store=None, record_outputs=False,
+            sinks=RunSinks(emit=ignore, record_metrics=ignore,
+                           record_artifact=ignore, warn=warn),
+            explicit_metric_nodes=set()))
+    assert len(warned) == 2
+    assert all("is set to device cuda" in w.detail
+               and "when it executes, it runs on cpu" in w.detail
+               for w in warned)
