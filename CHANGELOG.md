@@ -26,6 +26,19 @@ received — each links to the release it was published as.
 
 - **An SSH worker stops retrying what a retry cannot fix, and a removed worker's agent stops instead of retrying forever** ([#840]). An SSH worker whose host key does not verify, or whose `cdui` path the remote shell cannot run in the session (exit 127 / 126), now stops at once with the reason and a **Retry** button, instead of retrying every minute. A refused login (`Permission denied`) or a host name that does not resolve can heal by itself (an ssh-agent unlocked later, a network coming up), so it is still retried with the usual backoff, the card says why, and the retries stop only once it has lasted 10 minutes without a break. **Retry** is shown on every failed tunnel and tries again at once, also during a backoff. A new SSH worker whose host fails before the session starts is now backed off as usual (2 s doubling to a minute) instead of retried every 2 s. **Recent ssh output** holds the last attempt's lines instead of the same line once per attempt, and no remote agent pid is shown for an agent that never started. An agent whose stored worker credential (from an enrollment) the server refuses with HTTP 401 (the worker was removed or re-keyed, or the credential belongs to another control plane) now logs why and exits with status 2 instead of retrying; an agent on the session token, read from its file or given with `--token`, still retries and says how to get the new token after a server restart, and an SSH worker still restarts its agent with a fresh enrollment. The server remembers the credentials it revoked since it started, so such an attempt is listed under **Refused connections** with its worker's name. Worker device lists name the CPU by its brand (`Apple M3`, `AMD Ryzen 9 9950X 16-Core Processor`) instead of `arm` / `x86_64`, and MPS as `mps:0`, as this server does.
 
+## [3.1.1] — 2026-10-17
+
+Fixes a data-loss bug in 3.1.0's transfer backend: on a worker without a
+shared folder, checkpoint file names were cut at 48 characters, so a later
+checkpoint could overwrite an earlier one (epoch 100 replaced epoch 10).
+Names now arrive whole. Checkpoints 3.1.0 already overwrote cannot be
+recovered; runs on this server or on workers with a shared folder were not
+affected.
+
+### Fixed
+
+- **A worker without a shared folder no longer overwrites one checkpoint with another** ([#838]). The transfer backend cut every received file name at 48 characters, the cap meant for one run or node id. A periodic checkpoint is named `<run id>-<node id>-e<epoch>.pt`, so with a 32-character run id the name lost its extension and the end of its epoch stamp: epoch 100 came back as `-e10` and replaced the epoch-10 file, and both artifact rows downloaded epoch 100. Received names now map one to one to stored names: a name that is already safe and at most 128 characters (240 bytes) is kept whole, and any other name (one with spaces or other unsafe characters, or a longer one) is cleaned and gets a short hash of the name as sent before its extension; a long one is shortened in the middle, keeping its start (`events.out.tfevents.` for TensorBoard), the end with the epoch stamp, and the extension. So the same name sent again replaces its file (a retry, or a file that grew), as before, and two names, or two folders, never share one. On Windows the last name is shortened further to keep the whole path within 259 characters, and a path that still cannot fit is refused with HTTP 400, which the worker reports as a failed upload at once instead of retrying. This covers TensorBoard event files and writer outputs (`ModelSaver`, `ImageWriter`) as well. Rows recorded by 3.1.0 keep downloading the file they name; a checkpoint 3.1.0 already overwrote cannot be recovered.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6113,7 +6126,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.1.1...main
+[3.1.1]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...3.1.1
 [3.1.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...3.1.0
 [3.0.2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.1...3.0.2
 [3.0.1]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0...3.0.1
@@ -6264,4 +6278,5 @@ Release candidates before 1.0.0 are on the
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
+[#838]: https://github.com/CodefyUI/CodefyUI/issues/838
 [#840]: https://github.com/CodefyUI/CodefyUI/issues/840

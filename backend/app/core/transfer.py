@@ -21,17 +21,19 @@ Without a shared filesystem the control plane is the artifact repository
 
   * ``run``: a file the run reported as an artifact (a checkpoint, a
     TensorBoard folder file by file), kept at
-    ``<data root>/runs/<run_id>/<kind>/<name>`` (:func:`run_key`); the run
-    owns it.
+    ``<data root>/runs/<run_id>/<kind>/<name>`` (:func:`run_key`); the
+    run owns it.
   * ``data``: a file a writer node wrote (``CheckpointSaver``,
     ``ModelSaver``, ``ImageWriter``, ``VideoWrite``), kept where the same
     node writes on a local run: this server's ``MODELS_DIR``, ``MEDIA_DIR``
     or ``<data root>/output``, at the same relative path (:data:`DATA_PLACES`).
-    A different file already there is kept, and the new one is suffixed
-    (``saved-1.pt``); the same content is the same file. Like a local
-    run's, these are the user's: retention leaves them.
+    Like a local run's, these are the user's: retention leaves them.
 
-  Either way the worker reports the key the upload answered with in its
+  ``run``: one name as sent maps to one key and back (:func:`file_part`),
+  so the same name sent again replaces its file (a retry, a file that
+  grew) and two names never share a key (#838). ``data``: a different file
+  already there is kept and the new one suffixed (``saved-1.pt``); the same
+  content is the same file. Either way the worker reports the key the upload answered with in its
   ``artifact`` frame (``backend: "transfer"``), which records the row in
   the run's event order; :func:`key_path` maps a key back to a file and
   refuses one that is neither of those shapes.
@@ -50,6 +52,7 @@ constants and helpers (nothing here imports anything heavy at module level).
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import logging
 import os
@@ -326,9 +329,120 @@ class ContentIndex:
 
 
 def _part(value: str) -> str:
+    """One id component (a run id, an artifact kind): capped at
+    ``checkpoints.MAX_NAME_PART`` like the checkpoint builders' own."""
     from .checkpoints import _safe_part
 
     return _safe_part(value)
+
+
+#: Caps on one file-name component of a received file (:func:`file_part`):
+#: characters, and UTF-8 bytes (most filesystems allow 255 bytes per name).
+#: Long enough for every name a checkpoint builder makes (two 48-character
+#: id components plus the ``-e<epoch>b<batch>.pt`` stamp).
+MAX_FILE_NAME = 128
+MAX_FILE_NAME_BYTES = 240
+#: Characters a shortened name keeps from the end of its stem (the
+#: position stamp).
+KEEP_TAIL = 40
+#: The fewest it keeps when its start up to the first digit takes the rest.
+MIN_TAIL = 8
+#: Starts a shortened name always keeps when they fit (TensorBoard finds
+#: its event files by ``tfevents`` in the name).
+KEEP_PREFIXES = ("events.out.tfevents.",)
+#: The longest extension kept apart from the stem (``.pt``, ``.0``).
+MAX_EXTENSION = 10
+#: The shortest a name may be cut to (:func:`file_part`): below it the
+#: name is refused (:class:`NameTooLong`) rather than cut to nothing.
+MIN_FILE_NAME = 24
+#: The longest absolute path a received file may have, in UTF-16 code
+#: units, or None for no limit beyond the per-name caps. Windows without
+#: long paths enabled refuses a path over 259 (MAX_PATH less its NUL), so
+#: there the last name is shortened to fit the folder it lands in (#838).
+PATH_BUDGET: int | None = 259 if os.name == "nt" else None
+
+
+class NameTooLong(ValueError):
+    """A received file's path cannot fit this server's path limit."""
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8", "surrogatepass"))
+
+
+def _path_len(path: Path | str) -> int:
+    """Length as Windows counts it: UTF-16 code units."""
+    return len(str(path).encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _bytes_prefix(text: str, limit: int) -> str:
+    """The longest start of *text* within *limit* UTF-8 bytes."""
+    used = 0
+    for index, char in enumerate(text):
+        used += _utf8_len(char)
+        if used > limit:
+            return text[:index]
+    return text
+
+
+def file_part(value: str, limit: int = MAX_FILE_NAME) -> str:
+    """One path component of a received file, one to one with *value*
+    (#838).
+
+    A name that is already safe (``checkpoints._clean_part`` leaves it as
+    it is) and fits *limit* characters (at most :data:`MAX_FILE_NAME`) and
+    :data:`MAX_FILE_NAME_BYTES` bytes is kept as it is: a name of up to 48
+    characters comes out exactly as 3.1.0 made it. Any other name is
+    cleaned and gets ``-<8 hex of sha256(value)>`` before its extension,
+    so two names never share a result and the same name always gets the
+    same one, with no state. One too long is cut in the middle: it keeps
+    its start up to the first digit (``events.out.tfevents.``), the end of
+    its stem (up to :data:`KEEP_TAIL` characters: the epoch stamp) and its
+    extension. ``NameTooLong`` when *limit* is under :data:`MIN_FILE_NAME`.
+
+    3.1.0 cut every name at 48 characters, so ``<run>-<node>-e100.pt``
+    became ``...-e10`` and replaced the epoch-10 checkpoint.
+    """
+    from .checkpoints import _clean_part
+
+    limit = min(limit, MAX_FILE_NAME)
+    cleaned = _clean_part(value)
+    if cleaned == value and len(cleaned) <= limit \
+            and _utf8_len(cleaned) <= MAX_FILE_NAME_BYTES:
+        return cleaned
+    if limit < MIN_FILE_NAME:
+        raise NameTooLong(f"{value!r} does not fit this server's path limit")
+    tag = "-" + hashlib.sha256(
+        value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    stem, dot, ext = cleaned.rpartition(".")
+    if not (dot and stem and 0 < len(ext) <= MAX_EXTENSION):
+        stem, ext = cleaned, ""
+    else:
+        ext = "." + ext
+    room = limit - len(tag) - len(ext)
+    spare = MAX_FILE_NAME_BYTES - len(tag) - _utf8_len(ext)
+    if len(stem) <= room and _utf8_len(stem) <= spare:
+        return f"{stem}{tag}{ext}"
+    room = min(room, len(stem))
+    # Keep the start that names the file's kind: a known prefix, or the
+    # start up to the first digit when that leaves the end a few
+    # characters; otherwise half the room.
+    known = next((p for p in KEEP_PREFIXES if stem.startswith(p)), None)
+    digits = re.search(r"\d", stem)
+    if known and len(known) <= room:
+        keep = len(known)
+    elif digits and digits.start() <= room - MIN_TAIL - 1:
+        keep = digits.start()
+    else:
+        keep = room // 2
+    tail_len = min(KEEP_TAIL, room - keep - 1)
+    tail = stem[len(stem) - tail_len:] if tail_len > 0 else ""
+    head = stem[:room - len(tail) - (1 if tail else 0)]
+    if _utf8_len(head) + _utf8_len(tail) + 1 > spare:  # multi-byte
+        while _utf8_len(tail) > spare // 2:
+            tail = tail[1:]
+        head = _bytes_prefix(head, spare - _utf8_len(tail) - 1)
+    return f"{head}-{tail}{tag}{ext}" if tail else f"{head}{tag}{ext}"
 
 
 def checked_relative(name: str) -> PurePosixPath:
@@ -342,8 +456,9 @@ def checked_relative(name: str) -> PurePosixPath:
 
 
 def clean_name(name: str) -> PurePosixPath:
-    """:func:`checked_relative`, each part made a safe file name."""
-    return PurePosixPath(*(_part(p) for p in checked_relative(name).parts))
+    """:func:`checked_relative`, each part made a safe file name
+    (:func:`file_part`)."""
+    return PurePosixPath(*(file_part(p) for p in checked_relative(name).parts))
 
 
 def runs_root() -> Path:
@@ -381,10 +496,15 @@ def owned_run_dir(run_id: str) -> Path | None:
 
 
 def run_key(run_id: str, kind: str, name: str) -> str:
-    """``runs/<run_id>/<kind>/<name>``: a ``place=run`` key, relative to the
-    data root."""
-    return PurePosixPath(RUNS_DIRNAME, _part(run_id), _part(kind),
-                         clean_name(name)).as_posix()
+    """``runs/<run_id>/<kind>/<name>``: the key a ``place=run`` upload of
+    *name* is stored under, relative to the data root. Each part of *name*
+    through :func:`file_part`, the last one also shortened to fit
+    :data:`PATH_BUDGET` (:func:`_fit_name`)."""
+    raw = checked_relative(name).parts
+    folders = [file_part(part) for part in raw[:-1]]
+    folder = run_files_dir(run_id).joinpath(_part(kind), *folders)
+    return PurePosixPath(RUNS_DIRNAME, _part(run_id), _part(kind), *folders,
+                         _fit_name(raw[-1], folder)).as_posix()
 
 
 def _data_base(first: str) -> Path | None:
@@ -488,47 +608,109 @@ def sweep_incoming() -> int:
     return removed
 
 
-def _suffixed(path: Path, n: int) -> Path:
-    return path.with_name(f"{path.stem}-{n}{path.suffix}")
+def _fit_name(raw: str, folder: Path, n: int = 0) -> str:
+    """:func:`file_part` of *raw* for a file in *folder*, suffixed ``-n``
+    when *n*, shortened to fit :data:`PATH_BUDGET`."""
+    tag = f"-{n}" if n else ""
+    limit = MAX_FILE_NAME - len(tag)
+    if PATH_BUDGET is not None:
+        limit = min(limit, PATH_BUDGET - _path_len(folder) - 1 - len(tag))
+    name = file_part(raw, limit)
+    if not tag:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}{tag}.{ext}" if dot and stem else f"{name}{tag}"
+
+
+def _over_budget(path: Path) -> bool:
+    return PATH_BUDGET is not None and _path_len(path) > PATH_BUDGET
+
+
+def _check_budget(path: Path) -> None:
+    if _over_budget(path):
+        raise NameTooLong(f"{path} is over this server's path limit of "
+                          f"{PATH_BUDGET} characters")
+
+
+def _too_long(exc: OSError, path: Path) -> bool:
+    """Whether *exc*, raised writing *path*, says the path is too long.
+    ``ENAMETOOLONG`` and Windows' error 206 always do; Windows reports a
+    path over MAX_PATH as "not found" (error 3, ``FileNotFoundError``), so
+    those count only for a *path* over :data:`PATH_BUDGET`, and a genuine
+    missing file still surfaces as itself."""
+    if exc.errno == errno.ENAMETOOLONG \
+            or getattr(exc, "winerror", None) == 206:
+        return True
+    return (isinstance(exc, FileNotFoundError)
+            or getattr(exc, "winerror", None) == 3) and _over_budget(path)
 
 
 def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
                sha256: str) -> str:
     """Move the received *tmp* to its place; the key. Blocking.
 
-    ``run``: :func:`run_key`, replaced atomically (an upload of the same
-    name again, a retry, is the same file). ``data``: the writer's path
-    under :data:`DATA_PLACES`; never over a different file: the same
-    content there is the same file (the upload is a no-op), a different one
-    is kept and this one is suffixed ``-1``, ``-2`` ... (``os.link``, which
-    refuses an existing name, so two uploads cannot take one name).
-    ``ValueError`` for a name that fits neither.
+    ``run``: :func:`run_key`, replaced atomically: one name maps to one
+    key, so the same name sent again (a retry, a file that grew) is the
+    same file and two names never share one (#838). ``data``: the writer's
+    path under :data:`DATA_PLACES`, never over a different file
+    (:func:`_claim`). Either way the last name is shortened to fit
+    :data:`PATH_BUDGET`. ``ValueError`` for a name that fits neither,
+    ``NameTooLong`` (a ``ValueError`` too) for a path this server cannot
+    hold.
     """
-    if place == PLACE_RUN:
-        key = run_key(run_id, kind, name)
-        destination = key_location(key)
-        assert destination is not None
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if owned_run_dir(run_id) is None:
-            raise ValueError("the run's directory is not a plain directory")
-        os.replace(tmp, destination)
-        return key
-    if place != PLACE_DATA:
-        raise ValueError(f"unknown place {place!r}")
-    relative = clean_name(name)
-    if relative.parts[0] not in DATA_PLACES or len(relative.parts) < 2:
-        raise ValueError(f"{name!r} is not under {', '.join(DATA_PLACES)}")
-    target = key_location(relative.as_posix())
-    assert target is not None
-    target.parent.mkdir(parents=True, exist_ok=True)
+    destination: Path = tmp
+    try:
+        if place == PLACE_RUN:
+            key = run_key(run_id, kind, name)
+            destination = key_location(key)
+            assert destination is not None
+            _check_budget(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if owned_run_dir(run_id) is None:
+                raise ValueError(
+                    "the run's directory is not a plain directory")
+            os.replace(tmp, destination)
+            return key
+        if place != PLACE_DATA:
+            raise ValueError(f"unknown place {place!r}")
+        raw = checked_relative(name).parts
+        relative = clean_name(name)
+        if relative.parts[0] not in DATA_PLACES or len(relative.parts) < 2:
+            raise ValueError(f"{name!r} is not under "
+                             f"{', '.join(DATA_PLACES)}")
+        base = _data_base(relative.parts[0])
+        assert base is not None
+        folder = destination = base.joinpath(*relative.parts[1:-1])
+        folder.mkdir(parents=True, exist_ok=True)
+        candidate = _claim(
+            tmp, lambda n: folder / _fit_name(raw[-1], folder, n), sha256)
+        key_parts = (relative.parts[0], *candidate.relative_to(base).parts)
+        return PurePosixPath(*key_parts).as_posix()
+    except OSError as exc:
+        if _too_long(exc, destination):
+            raise NameTooLong(f"{name!r}: {exc.strerror or exc}") from None
+        raise
+
+
+def _claim(tmp: Path, candidate_at: Callable[[int], Path],
+           sha256: str) -> Path:
+    """Move *tmp* to ``candidate_at(0)``, or ``candidate_at(1)``, ``(2)``
+    ... when a different file holds the name; the path it landed at. A file
+    with the same content already there (same size, then same sha256) is
+    taken as this one (*tmp* is dropped). ``os.link`` refuses an existing
+    name, so two uploads cannot take one name."""
+    size = tmp.stat().st_size
     n = 0
     while True:
-        candidate = target if n == 0 else _suffixed(target, n)
+        candidate = candidate_at(n)
+        _check_budget(candidate)
         try:
             os.link(tmp, candidate)
         except FileExistsError:
             try:
-                same = candidate.is_file() and sha256_file(candidate) == sha256
+                same = candidate.is_file() \
+                    and candidate.stat().st_size == size \
+                    and sha256_file(candidate) == sha256
             except OSError:
                 same = False
             if same:
@@ -536,7 +718,9 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
                 break
             n += 1
             continue
-        except OSError:  # no hard links here: claim the name exclusively
+        except OSError as exc:  # no hard links here: claim the name alone
+            if _too_long(exc, candidate):
+                raise
             try:
                 fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             except FileExistsError:
@@ -547,9 +731,7 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
             break
         tmp.unlink(missing_ok=True)
         break
-    key_parts = (relative.parts[0],
-                 *candidate.relative_to(_data_base(relative.parts[0])).parts)
-    return PurePosixPath(*key_parts).as_posix()
+    return candidate
 
 
 class Receiver:

@@ -274,6 +274,15 @@ def owned_checkpoint_path(path: str | Path) -> Path | None:
     return resolved
 
 
+def _clean_part(value: str) -> str:
+    """*value* as a safe filename component, any length: everything outside
+    ``[A-Za-z0-9._-]`` becomes an underscore, leading and trailing ``.``
+    and ``_`` go, and an empty result is ``unnamed``. Shared with
+    ``core.transfer.file_part``, which caps the length its own way."""
+    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in value)
+    return cleaned.strip("._") or "unnamed"
+
+
 def _safe_part(value: str) -> str:
     """One filename component from an arbitrary id.
 
@@ -281,9 +290,7 @@ def _safe_part(value: str) -> str:
     but a plugin or an imported graph can put anything in either. Everything
     outside ``[A-Za-z0-9._-]`` becomes an underscore.
     """
-    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in value)
-    cleaned = cleaned.strip("._") or "unnamed"
-    return cleaned[:MAX_NAME_PART]
+    return _clean_part(value)[:MAX_NAME_PART]
 
 
 def interrupt_checkpoint_path(
