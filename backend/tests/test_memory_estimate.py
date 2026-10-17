@@ -319,6 +319,9 @@ def test_the_rl_models_are_counted_by_formula():
             {"nodes": [_node("m", node_type, **params)], "edges": []})
         assert estimate is not None, node_type
         assert estimate.parameters == real, node_type
+        # No forward probe for these: no activation term, and it says so.
+        assert estimate.activation_bytes == 0
+        assert estimate.activation_phase == "none"
 
 
 def test_a_causal_lm_is_counted_without_allocating_it():

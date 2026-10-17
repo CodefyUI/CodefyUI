@@ -291,7 +291,8 @@ class StaticEstimate:
     #: No batch size in the graph: :data:`DEFAULT_BATCH` was assumed.
     batch_assumed: bool = False
     #: Which pass the activation term is mostly from: ``training`` (at
-    #: ``batch_size``) or ``evaluation`` (at ``eval_batch_size``).
+    #: ``batch_size``), ``evaluation`` (at ``eval_batch_size``), or
+    #: ``none`` (no activation term: only models counted by formula).
     activation_phase: str = "training"
 
     def describe(self) -> dict[str, Any]:
@@ -819,8 +820,10 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
         activation_bytes=int(activations), workspace_bytes=WORKSPACE_BYTES,
         models=models, uncounted=sorted(set(uncounted)), notes=notes,
         batch_assumed=batch_assumed,
-        activation_phase=("evaluation" if by_phase["evaluation"]
-                          > by_phase["training"] else "training"))
+        activation_phase=(
+            "none" if activations <= 0
+            else "evaluation" if by_phase["evaluation"] > by_phase["training"]
+            else "training"))
 
 
 async def estimate_static_async(graph: Mapping[str, Any], *,
