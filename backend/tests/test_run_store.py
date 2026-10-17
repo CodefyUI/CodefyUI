@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 7
+    assert _user_version(db) == len(MIGRATIONS) == 13
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -162,6 +162,8 @@ def test_exec_runs_has_the_full_column_list(db):
         "fingerprint_digest", "execution_facts",
         # MIGRATION_007 (#343): the study attempt that submitted the run.
         "study_id", "study_attempt_id",
+        # MIGRATION_008 (#769): where the run executes.
+        "worker_id", "devices",
     ]
 
 
@@ -171,7 +173,9 @@ def test_child_tables_have_the_specified_columns(db):
     assert _columns(db, "exec_run_events") == [
         "id", "run_id", "cursor", "type", "payload", "ts"]
     assert _columns(db, "exec_run_artifacts") == [
-        "id", "run_id", "kind", "path", "meta", "created_at"]
+        "id", "run_id", "kind", "path", "meta", "created_at",
+        # MIGRATION_010 (#782): where the file lives, and who wrote it.
+        "backend", "mount_label", "worker_id"]
 
 
 def test_required_indexes_exist(db):
@@ -290,6 +294,75 @@ def test_migration_004_upgrades_a_v3_db(tmp_path, monkeypatch):
             "SELECT COUNT(*) FROM exec_run_metrics").fetchone()[0] == 1
         assert new._conn.execute(
             "SELECT COUNT(*) FROM sweeps").fetchone()[0] == 0
+    finally:
+        new.close()
+
+
+@pytest.mark.parametrize("worker_id", ["", None, 3])
+async def test_create_run_refuses_a_blank_worker_id(store, worker_id):
+    with pytest.raises(ValueError, match="worker_id"):
+        await _make_run(store, worker_id=worker_id)
+
+
+async def test_migration_008_upgrades_a_v7_db(tmp_path, monkeypatch):
+    """#769's two columns land on a populated v7 database in place.
+
+    A pre-migration row keeps its data, stores NULL in both columns, and
+    reads back as ``worker_id="local"`` (where it ran) and ``devices=None``
+    through ``get_run`` and ``list_runs`` alike. A run written after the
+    upgrade round-trips its device set.
+    """
+    from app.core import db as dbmod
+
+    old_list = list(MIGRATIONS[:7])
+    monkeypatch.setattr(dbmod, "MIGRATIONS", old_list)
+    old = Database(tmp_path / "w.db")
+    old.connect()
+    assert _user_version(old) == 7
+    assert "worker_id" not in _columns(old, "exec_runs")
+    now = "2026-01-01T00:00:00.000000Z"
+    old._conn.execute(
+        "INSERT INTO exec_runs (id, name, graph_snapshot, options, status, "
+        "queue_key, created_at) VALUES ('legacy-run', 'pre-target', '{}', "
+        "'{\"device\": \"cpu\"}', 'succeeded', 'cpu', ?)", (now,),
+    )
+    old.close()
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS))
+    new = Database(tmp_path / "w.db")
+    new.connect()
+    try:
+        assert _user_version(new) == len(MIGRATIONS)
+        row = new._conn.execute(
+            "SELECT worker_id, devices FROM exec_runs "
+            "WHERE id = 'legacy-run'").fetchone()
+        assert row["worker_id"] is None and row["devices"] is None
+
+        store = RunStore(new)
+        legacy = await store.get_run("legacy-run")
+        assert legacy.name == "pre-target"            # old data intact
+        assert legacy.options == {"device": "cpu"}
+        assert legacy.queue_key == "cpu"
+        assert legacy.worker_id == "local"
+        assert legacy.devices is None
+        listed = await store.list_runs()
+        assert [(r.id, r.worker_id, r.devices) for r in listed] == [
+            ("legacy-run", "local", None)]
+
+        fresh = await store.create_run(
+            graph_snapshot={}, options={"device": "cuda:0"},
+            queue_key="cuda:0", devices=["cuda:0", "cuda:1"],
+            provenance=RunProvenance())
+        assert fresh.worker_id == "local"
+        assert fresh.devices == ["cuda:0", "cuda:1"]
+        again = await store.get_run(fresh.id)
+        assert again.worker_id == "local"
+        assert again.devices == ["cuda:0", "cuda:1"]
+        stored = new._conn.execute(
+            "SELECT worker_id, devices FROM exec_runs WHERE id = ?",
+            (fresh.id,)).fetchone()
+        assert stored["worker_id"] == "local"
+        assert json.loads(stored["devices"]) == ["cuda:0", "cuda:1"]
     finally:
         new.close()
 
@@ -428,9 +501,9 @@ def test_the_sweep_columns_arrived_without_a_table_rebuild(db):
     MIGRATION_004 ships it, it asserts what the stand-in was a proxy for."""
     from app.core.migrations import MIGRATION_003, iter_statements
 
-    # MIGRATION_006's two ALTERs (#344) and MIGRATION_007's two (#343)
-    # come after the sweep pair.
-    assert _columns(db, "exec_runs")[-6:-4] == ["sweep_id", "sweep_variant"]
+    # MIGRATION_006's two ALTERs (#344), MIGRATION_007's two (#343) and
+    # MIGRATION_008's two (#769) come after the sweep pair.
+    assert _columns(db, "exec_runs")[-8:-6] == ["sweep_id", "sweep_variant"]
     ddl = db._conn.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'exec_runs'").fetchone()[0]
     # THE rebuild detector, and it has to be structural rather than a
@@ -593,6 +666,58 @@ async def test_mark_running_keeps_the_first_started_at(store):
     assert (await store.get_run(run.id)).started_at == first
 
 
+async def test_update_execution_facts_merges_top_level_keys(store):
+    """#770: the peak-memory patch lands next to what ``_begin`` wrote,
+    replaces only its own key, and an explicit null is stored as null."""
+    run = await _make_run(store)
+    facts = {"schema_version": 1, "resolved": {"device": "cuda:0"},
+             "peak_memory": {"stale": True}}
+    await store.mark_running(run.id, execution_facts=facts)
+
+    peak = {"cuda:0": {"allocated_bytes": 6, "reserved_bytes": 8,
+                       "exact": False}}
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": peak}) is True
+    assert (await store.get_run(run.id)).execution_facts == {
+        "schema_version": 1, "resolved": {"device": "cuda:0"},
+        "peak_memory": peak}
+
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": None}) is True
+    stored = (await store.get_run(run.id)).execution_facts
+    assert "peak_memory" in stored and stored["peak_memory"] is None
+    assert stored["resolved"] == {"device": "cuda:0"}
+
+
+async def test_update_execution_facts_leaves_unrecorded_facts_alone(store):
+    """A NULL column means "not recorded"; a patch must not invent a
+    document holding only itself. Unknown runs report False too."""
+    run = await _make_run(store)
+    await store.mark_running(run.id)
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": None}) is False
+    assert (await store.get_run(run.id)).execution_facts is None
+    assert await store.update_execution_facts(
+        "ghost", {"peak_memory": None}) is False
+    with pytest.raises(TypeError):
+        await store.update_execution_facts(run.id, [])  # type: ignore[arg-type]
+
+
+async def test_update_execution_facts_ignores_a_non_object_document(
+        store, db):
+    run = await _make_run(store)
+    await store.mark_running(run.id, execution_facts={"schema_version": 1})
+
+    def _corrupt(conn):
+        conn.execute("UPDATE exec_runs SET execution_facts = '[1]' "
+                     "WHERE id = ?", (run.id,))
+
+    await db.run(_corrupt)
+    assert await store.update_execution_facts(
+        run.id, {"peak_memory": None}) is False
+    assert (await store.get_run(run.id)).execution_facts == [1]
+
+
 async def test_mark_finished_records_terminal_status_and_error(store):
     run = await _make_run(store)
     await store.mark_running(run.id)
@@ -710,8 +835,8 @@ async def test_count_runs_ignores_paging(store):
 def test_status_constants_partition_the_vocabulary():
     assert ACTIVE_STATUSES | TERMINAL_STATUSES == RUN_STATUSES
     assert not (ACTIVE_STATUSES & TERMINAL_STATUSES)
-    assert RUN_STATUSES == {"queued", "running", "succeeded", "failed",
-                            "cancelled", "interrupted"}
+    assert RUN_STATUSES == {"queued", "running", "disconnected", "succeeded",
+                            "failed", "cancelled", "interrupted"}
 
 
 async def test_sweep_id_is_null_for_a_run_created_outside_a_sweep(store):
@@ -1670,3 +1795,151 @@ async def test_explicit_provenance_overrides_capture(store, monkeypatch):
                                  plugin_pins={}))
     assert run.git_commit == "c" * 40
     assert (await store.get_run(run.id)).git_dirty is False
+
+
+# ── 6c. artifact rows on a shared mount (#782) ───────────────────────────
+
+
+async def test_migration_010_upgrades_a_v9_db(tmp_path, monkeypatch):
+    """#782's three columns land on a populated v9 database in place. A row
+    from before reads back as a ``local`` row with its absolute path."""
+    from app.core import db as dbmod
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS[:9]))
+    old = Database(tmp_path / "a.db")
+    old.connect()
+    assert _user_version(old) == 9
+    assert "backend" not in _columns(old, "exec_run_artifacts")
+    now = "2026-01-01T00:00:00.000000Z"
+    old._conn.execute(
+        "INSERT INTO exec_runs (id, name, graph_snapshot, options, status, "
+        "queue_key, created_at) VALUES ('legacy', NULL, '{}', '{}', "
+        "'succeeded', 'cpu', ?)", (now,))
+    old._conn.execute(
+        "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
+        "created_at) VALUES ('legacy', 'checkpoint', '/abs/old.pt', NULL, ?)",
+        (now,))
+    old.close()
+
+    monkeypatch.setattr(dbmod, "MIGRATIONS", list(MIGRATIONS))
+    new = Database(tmp_path / "a.db")
+    new.connect()
+    try:
+        assert _user_version(new) == len(MIGRATIONS)
+        row = new._conn.execute(
+            "SELECT backend, mount_label FROM exec_run_artifacts").fetchone()
+        assert row["backend"] is None and row["mount_label"] is None
+        [legacy] = await RunStore(new).list_artifacts("legacy")
+        assert legacy.path == "/abs/old.pt"
+        assert legacy.backend == "local"
+        assert legacy.mount_label is None
+        assert legacy.worker_id == "local"
+    finally:
+        new.close()
+
+
+async def test_a_mount_row_is_stored_relative_and_read_translated(
+    store, db, tmp_path, monkeypatch,
+):
+    """The row keeps the path relative to the mount; every read gives this
+    server's path for it. A local row is untouched."""
+    data = tmp_path / "data"
+    monkeypatch.setattr(settings, "MODELS_DIR", data / "models")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    run = await _make_run(store)
+    mounted = await store.add_artifact(
+        run.id, "checkpoint", "models/periodic/r-n-e1.pt", backend="mount",
+        mount_label="data", worker_id="gpu-box-1")
+    local = await store.add_artifact(run.id, "checkpoint", "/abs/here.pt")
+
+    expected = str(data.resolve() / "models" / "periodic" / "r-n-e1.pt")
+    assert mounted.path == expected
+    assert mounted.stored_path == "models/periodic/r-n-e1.pt"
+    assert (mounted.backend, mounted.mount_label) == ("mount", "data")
+    assert (mounted.worker_id, local.worker_id) == ("gpu-box-1", "local")
+    assert (local.path, local.backend, local.mount_label) == (
+        "/abs/here.pt", "local", None)
+    assert await store.list_artifacts(run.id) == [mounted, local]
+    stored = db._conn.execute(
+        "SELECT path, backend, mount_label, worker_id FROM "
+        "exec_run_artifacts ORDER BY id").fetchall()
+    assert [tuple(r) for r in stored] == [
+        ("models/periodic/r-n-e1.pt", "mount", "data", "gpu-box-1"),
+        ("/abs/here.pt", "local", None, "local")]
+
+    # Another label is not this server's to translate; nor is a path that
+    # leaves the mount. No local path is made up for either: path is None,
+    # and the relative path and label stay.
+    other = await store.add_artifact(run.id, "checkpoint", "x.pt",
+                                     backend="mount", mount_label="scratch")
+    assert (other.path, other.stored_path, other.mount_label) == (
+        None, "x.pt", "scratch")
+    escaping = await store.add_artifact(run.id, "checkpoint", "../db.pt",
+                                        backend="mount", mount_label="data")
+    assert escaping.path is None
+    absolute = await store.add_artifact(run.id, "checkpoint", "/etc/x.pt",
+                                        backend="mount", mount_label="data")
+    assert absolute.path is None
+
+
+async def test_a_mount_row_translates_to_the_project_dir_in_project_mode(
+    store, tmp_path, monkeypatch,
+):
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setattr(settings, "PROJECT_DIR", project)
+    run = await _make_run(store)
+    art = await store.add_artifact(
+        run.id, "checkpoint", "assets/models/a.pt", backend="mount",
+        mount_label=settings.MOUNT_LABEL)
+    assert art.path == str(project.resolve() / "assets" / "models" / "a.pt")
+
+
+async def test_add_artifact_refuses_an_unknown_backend_or_a_bare_mount(store):
+    run = await _make_run(store)
+    with pytest.raises(ValueError, match="backend"):
+        await store.add_artifact(run.id, "checkpoint", "a.pt", backend="ftp")
+    with pytest.raises(ValueError, match="mount_label"):
+        await store.add_artifact(run.id, "checkpoint", "a.pt",
+                                 backend="mount")
+
+
+async def test_prune_deletes_a_mount_rows_checkpoint_at_this_servers_path(
+    store, tmp_path, monkeypatch,
+):
+    """Retention finds a worker's checkpoint where THIS server sees the
+    mount, through the same translation the list uses."""
+    data = tmp_path / "data"
+    (data / "models" / "periodic").mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", data / "models")
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+    run = await _make_run(store)
+    checkpoint = data / "models" / "periodic" / "w-node1-e1.pt"
+    checkpoint.write_bytes(b"from a worker")
+    await store.add_artifact(run.id, "checkpoint",
+                             "models/periodic/w-node1-e1.pt",
+                             backend="mount",
+                             mount_label=settings.MOUNT_LABEL)
+    await store.mark_finished(run.id, "succeeded")
+    assert await store.prune(keep_last=0) == 1
+    assert not checkpoint.exists()
+
+
+async def test_a_mount_rows_event_names_it_and_a_local_rows_is_unchanged(
+    store, monkeypatch,
+):
+    from app.core.run_events import artifact_payload
+
+    monkeypatch.setattr(settings, "MOUNT_LABEL", "data")
+    run = await _make_run(store)
+    local = await store.add_artifact(run.id, "checkpoint", "/abs/a.pt")
+    assert set(artifact_payload(local, "n")) == {
+        "artifact_id", "kind", "path", "meta", "node_id"}
+    elsewhere = await store.add_artifact(
+        run.id, "checkpoint", "models/b.pt", backend="mount",
+        mount_label="scratch", worker_id="gpu-box-1")
+    payload = artifact_payload(elsewhere, "n")
+    assert payload["path"] is None
+    assert (payload["mount_label"], payload["relative_path"],
+            payload["worker_id"]) == ("scratch", "models/b.pt", "gpu-box-1")

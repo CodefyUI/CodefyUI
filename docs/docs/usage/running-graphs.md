@@ -117,7 +117,7 @@ With no seed set, the edu pack's `FFNLayer` and `TrainAndEvaluate` are the excep
 
 Two runs of the same graph with the same seed produce bitwise-identical loss curves on CPU. Different seeds produce genuinely different ones.
 
-"Another run" means every graph this server is executing, including a headless `POST /api/graph/run/{name}` call: it waits while a seeded run is going, and a seeded run waits for it. Headless calls that are not seeded still overlap each other freely.
+"Another run" means every graph this server is executing, including a headless `POST /api/graph/run/{name}` call: it waits while a seeded run is going, and a seeded run waits for it. Headless calls that are not seeded still overlap each other freely. A run executed by a [worker agent](./run-queue#workers) has a process of its own, so it is alone in that process and neither waits for this server's runs nor holds them up.
 
 The cost is worth stating plainly: a seeded run is slower (about 3-4x on a graph of independent branches, near zero on the usual mostly-linear teaching graph), and it can wait behind a long job even when started from the canvas. Reproducibility is opt-in, and a run that asked for it would rather be late than wrong.
 

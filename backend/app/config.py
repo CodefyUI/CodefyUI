@@ -122,10 +122,14 @@ class Settings(BaseSettings):
     # ordinary events are a couple of KB.
     RUN_EVENTS_RESPONSE_CAP_BYTES: int = 4 * 1024 * 1024
     # ── Run queue admission (#123) ─────────────────────────────────────
-    # How many QUEUED-lane runs may execute at once on one device. The
-    # queue key is the RESOLVED device string ("cpu", "cuda:0", "mps"), so
-    # every accelerator gets its own FIFO and a six-hour CUDA job never
-    # blocks a CPU run.
+    # How many QUEUED-lane runs may execute at once on one device SLOT: one
+    # device on one machine, keyed (worker, device) (#768, #773). A run with
+    # no worker target queues on its RESOLVED device string ("cpu",
+    # "cuda:0", "mps:0") and holds this server's slot for it, so every
+    # accelerator gets its own FIFO and a six-hour CUDA job never blocks a
+    # CPU run. A run on a worker agent (`cdui agent start`) holds that
+    # worker's slots under the same two defaults; a worker on this machine
+    # shares this server's slot for each physically shared card.
     #
     # One is the honest GPU default: a second concurrent run on the same
     # card competes for the same VRAM, and the usual outcome of guessing
@@ -136,11 +140,13 @@ class Settings(BaseSettings):
     # one run); the two multiply.
     RUN_QUEUE_MAX_CONCURRENT_GPU: int = 1
     RUN_QUEUE_MAX_CONCURRENT_CPU: int = 2
-    # Per-key overrides, e.g. "cuda:0=2,cuda:1=1,cpu=8". A str, not a
-    # dict[str, int]: pydantic mapping env vars demand JSON-in-env quote
-    # hell, the same reason EXTRA_ALLOWED_HOSTS below is a string. Split on
-    # the LAST '=' so a key may contain a colon; malformed entries are
-    # ignored with a warning rather than failing startup.
+    # Per-slot overrides, e.g. "cuda:0=2,cpu=8" for this server's slots and
+    # "gpu-box-1/cuda:0=3" for a worker's (#773; "local/cuda:0" is another
+    # spelling of "cuda:0"). A str, not a dict[str, int]: pydantic mapping
+    # env vars demand JSON-in-env quote hell, the same reason
+    # EXTRA_ALLOWED_HOSTS below is a string. Split on the LAST '=' so a key
+    # may contain a colon; malformed entries are ignored with a warning
+    # rather than failing startup.
     RUN_QUEUE_MAX_CONCURRENT: str = ""
     # Hard ceiling on concurrent INTERACTIVE-lane runs (the canvas). That
     # lane bypasses the per-device FIFO on purpose — a classroom demo must
@@ -150,6 +156,13 @@ class Settings(BaseSettings):
     # user in front of it who can retry, and a silently queued click looks
     # exactly like a hang.
     RUN_INTERACTIVE_MAX_CONCURRENT: int = 2
+    # Seconds a worker's run waits, ``disconnected``, for its worker to
+    # reconnect before it is marked ``interrupted`` (#783). The run's
+    # subprocess keeps running on the worker meanwhile and the agent spools
+    # its events; a reconnect within the grace replays them and the run
+    # carries on. Five minutes is Kubernetes' pod eviction timeout. 0 ends
+    # the runs at once, as before #783.
+    WORKER_RESUME_GRACE_S: float = 300.0
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real
@@ -169,6 +182,24 @@ class Settings(BaseSettings):
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
     EXTRA_ALLOWED_HOSTS: str = ""
+    # The certificate (PEM, leaf first, e.g. the proxy's fullchain.pem) the
+    # TLS proxy in front of this server presents (#786). CodefyUI serves no
+    # TLS itself, so it cannot see that certificate otherwise; given a
+    # readable file, the Add worker dialog shows its SPKI fingerprint and
+    # puts --ca-fingerprint in the agent command. Empty: the dialog shows
+    # the openssl command that computes it on the proxy host instead.
+    TLS_CERT_FILE: str = ""
+    # ── SSH workers (#784) ─────────────────────────────────────────────
+    # Slot numbers for SSH workers, as "low-high": one per entry, naming its
+    # state directory on the remote host (~/.codefyui-ssh/<id>-<slot>/, where
+    # the reverse tunnel's Unix socket is) and the control URL its credential
+    # is stored under (http://cp-<id>.invalid:<slot>). No TCP port is opened
+    # for them on either machine.
+    SSH_REMOTE_PORT_RANGE: str = "18000-18100"
+    # ssh's StrictHostKeyChecking for SSH workers: "accept-new" (default:
+    # trust a host the first time, refuse a changed key) or "yes" (the host
+    # must already be in known_hosts). Anything else is read as "yes".
+    SSH_STRICT_HOST_KEY_CHECKING: str = "accept-new"
 
     # ── Package Center (optional packs) ────────────────────────────────
     # Let a request from another machine start a pack install. OFF by
@@ -289,6 +320,27 @@ class Settings(BaseSettings):
     # the graph/asset roots derive from it UNLESS the specific root was
     # explicitly provided (env/init) — see _derive_project_roots.
     PROJECT_DIR: Path | None = None
+
+    # ── Storage mount label (#782) ─────────────────────────────────────
+    # The name this server gives its data directory (the project directory
+    # in project mode) when worker agents share it over a network
+    # filesystem: an agent started with `--mount data=/nas/...` holds the
+    # same files, so runs that read uploads or write checkpoints may go
+    # there. See core/mounts.py. Only read when workers are in use.
+    MOUNT_LABEL: str = "data"
+
+    # ── Transfer storage backend (#785) ────────────────────────────────
+    # A run that reads uploads or writes files may go to a worker WITHOUT
+    # the mount above: this server ships the uploads it reads (by content
+    # hash; the agent caches them) and receives what it writes (stored
+    # under <data root>/runs/<run_id>/, removed by run retention). A
+    # worker holding the mount is still preferred. On by default because it
+    # only ever applies to a run that targets a worker; 0 restores #782's
+    # refusal. See core/transfer.py.
+    TRANSFER_ENABLED: bool = True
+    # The most a run's inputs may add up to (bytes). A run over it can use
+    # only a worker with the mount; with none, it is refused at submit.
+    TRANSFER_MAX_INPUT_BYTES: int = 2 * 1024 * 1024 * 1024
 
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"

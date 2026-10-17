@@ -348,6 +348,37 @@ Add your SSO in front of `location /` in whatever form your organisation uses --
 vendor's nginx module. CodefyUI does not need to know it is there; it has no
 identity model to integrate with, and that is the whole point.
 
+## Workers behind this proxy {/* #workers-behind-this-proxy */}
+
+A [remote worker](./remote-workers) reaches this server through the same
+proxy: `cdui agent start --control https://codefyui.example.com`. The site
+above already carries it, because everything an agent uses is under
+`location /`:
+
+- **`/ws/worker`** is a WebSocket held open for as long as the agent runs.
+  It needs the same `Upgrade` / `Connection` headers and the long
+  `proxy_read_timeout` as `/ws/execution`. If you split the site into
+  several `location` blocks, give the one that serves `/ws/worker` those
+  three lines and the timeouts too; without them the agent's handshake
+  fails, or its connection is cut and its runs wait `disconnected`.
+- **Artifact uploads.** A worker with no shared folder uploads every file a
+  run writes to `POST /api/runs/{run_id}/artifacts/upload`, one file per
+  request, up to `CODEFYUI_MAX_UPLOAD_SIZE` (500 MB). `client_max_body_size`
+  must be at least that; a smaller value turns the larger outputs into a
+  bare 413, and those files stay on the worker with a `transfer_failed`
+  warning.
+- **`--forwarded-allow-ips`** (in the unit above) lets uvicorn report the
+  agent's connection as `wss`, so the Workers panel does not mark a worker
+  behind this proxy **Plain HTTP**.
+
+If you put SSO in front of `location /`, exempt the paths an agent uses: it
+authenticates with its worker token and cannot complete a browser login.
+They are `/ws/worker`, `POST /api/workers/enroll`,
+`POST /api/runs/{run_id}/artifacts/upload`, and the input downloads under
+`/api/files/download/`, `/api/images/download/` and `/api/models/download/`.
+The agent checks the proxy's certificate; a self-signed one needs
+`--ca-fingerprint` ([Remote Workers, Trust](./remote-workers#trust-between-agent-and-control-plane)).
+
 ## TLS terminates at the proxy
 
 Nothing has to be rebuilt or reconfigured in the frontend for HTTPS. The

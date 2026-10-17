@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { WelcomeToolbar } from './components/Toolbar/WelcomeToolbar';
@@ -23,8 +23,10 @@ import { WorkspaceLockOverlay } from './components/WorkspaceLock/WorkspaceLockOv
 import { settleAutosave } from './components/WorkspaceLock/settleAutosave';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
+import { useWorkerStore } from './store/workerStore';
 import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
+import { lazyRetry } from './components/shared/lazyRetry';
 import { PluginHost } from './plugins/PluginHost';
 import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
 import { useTabStore } from './store/tabStore';
@@ -88,6 +90,28 @@ function RightColumn() {
       {(hasSelection || hasSegment) && <InspectorPanel />}
       <PluginRightPanels />
     </div>
+  );
+}
+
+/**
+ * The Workers panel (#776) in a chunk of its own, loaded the first time it
+ * opens: it is reached from a button, and keeping it out of the entry chunk
+ * leaves room under the 500 kB build limit. `workerStore` stays in the main
+ * chunk, since the Runs panel, Settings and `isAnyModalOpen` read it.
+ */
+const WorkersPanel = lazyRetry(
+  () => import('./components/Workers/WorkersPanel').then((module) => module.WorkersPanel),
+  () => useWorkerStore.getState().closePanel(),
+);
+
+/** Mounts the lazy Workers panel only while it is open. */
+function WorkersPanelSlot() {
+  const open = useWorkerStore((s) => s.panelOpen);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <WorkersPanel />
+    </Suspense>
   );
 }
 
@@ -190,6 +214,7 @@ function App() {
       <GitDiffModal />
       <ToastContainer />
       <ShortcutsModal />
+      <WorkersPanelSlot />
       <GuideTour />
       <DialogContainer />
       <PluginHost />

@@ -21,6 +21,7 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 - **Source Control** — A sidebar tab that runs git on a project directory: stage, commit, branches, remotes, stash, fetch / pull / push, history and diffs
 - **WebSocket Execution** — Real-time per-node progress, Print node output displayed in the Execution Log panel
 - **Run Queue & Sweeps** — Runs belong to the server and queue per device; `cdui run` submits a graph from a terminal; `POST /api/sweeps` runs one graph over a grid or random sample of parameter values
+- **Remote Workers** — Send queued runs to other machines: enroll a GPU server from the **Workers** panel (`cdui agent start`), reach it over the LAN, a TLS proxy or SSH, and each run executes in a subprocess of its own
 - **Partial Re-Execution** — Dirty node tracking: only re-runs changed nodes and their downstream dependencies
 - **Quick Node Search** — Double-click the canvas to open an instant search panel for adding nodes and presets
 - **Custom Node Manager** — GUI for uploading, enabling/disabling, and deleting custom nodes
@@ -85,7 +86,7 @@ Not shown: `cdui run` (below), the `cdui packs`, `cdui cache` and `cdui project`
 | Flag | Env var | Values | Purpose |
 |------|---------|--------|---------|
 | `--gpu <choice>` | `CODEFYUI_GPU` | `auto` / `cu118` / `cu121` / `cu124` / `cu126` / `cu128` / `rocm6.1` / `rocm6.2` / `cpu` / `mps` / `skip` | Select PyTorch wheel index. `auto` detects via `nvidia-smi` / `rocm-smi` / Apple Silicon. `skip` chooses no wheel index: a torch that already satisfies `torch>=2.5` is kept; otherwise the dependency install pulls PyPI's default wheel (CPU-only on Windows). |
-| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, tensorboard). Required for `cdui test`. Off by default, including at the interactive `[y/N]` prompt; contributors pass `--dev`. |
+| `--dev` / `--no-dev` | `CODEFYUI_DEV` | `1` / `0` | Install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, trustme, tensorboard). Required for `cdui test`. Off by default, including at the interactive `[y/N]` prompt; contributors pass `--dev`. |
 | `--yes` / `-y` | — | — | Accept all defaults non-interactively (CI / headless). |
 | `--lang <code>` | `CODEFYUI_LANG` | `en` / `zh` (the env var also accepts `zh-TW`) | The flag localises the `cdui install` / `cdui update` run it is passed to; the env var sets the language of every `cdui` command. The `plugin`, `project`, `packs` and `cache` groups recognise only `zh` itself, not `zh-TW`. |
 | — | `CODEFYUI_DIR` | path | Install directory (default: `~/CodefyUI`). |

@@ -57,6 +57,7 @@ other run whose submitter's process is gone.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -68,13 +69,14 @@ from uuid import uuid4
 from .run_service import (
     MAX_NAME_LENGTH,
     MAX_SEED,
+    NEEDS_UNKNOWN,
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
     _Broadcast,
     _swallow_task_result,
 )
-from .run_store import TERMINAL_STATUSES
+from .run_store import STATUS_DISCONNECTED, TERMINAL_STATUSES
 from .secret_params import (
     SecretVault,
     restore_graph_secrets,
@@ -101,6 +103,7 @@ from .study_store import (
     STUDY_RUNNING,
     STUDY_SUCCEEDED,
     AttemptRecord,
+    IdempotencyConflict,
     NewVariant,
     StudyEventRecord,
     StudyRecord,
@@ -181,6 +184,10 @@ class StudyCoordinator:
         self._locks: dict[str, asyncio.Lock] = {}
         self._signals: dict[str, _Broadcast] = {}
         self._secrets: dict[tuple[str, int], SecretVault] = {}
+        #: Each variant's storage needs (#782) from the placement check, by
+        #: ``(study id, variant index)``; a child submitted without one (a
+        #: study resumed after a restart) has them computed at submit.
+        self._needs: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
         service.add_terminal_listener(self._on_terminal)
@@ -239,6 +246,7 @@ class StudyCoordinator:
             if still:
                 await asyncio.gather(*still, return_exceptions=True)
         self._secrets.clear()
+        self._needs.clear()
 
     # ── submission ───────────────────────────────────────────────────────
 
@@ -246,7 +254,9 @@ class StudyCoordinator:
         """Persist the study (or find it by idempotency key), then tick.
 
         Raises ``study_store.IdempotencyConflict`` for a key reused with a
-        different request.
+        different request, and ``RunSubmitError`` /
+        ``RunServiceUnavailable`` for a NEW study whose children the run
+        service would refuse (see ``RunService.check_placeable_batch``).
         """
         scrubbed: list[NewVariant] = []
         vaults: list[SecretVault] = []
@@ -257,6 +267,24 @@ class StudyCoordinator:
                                        graph=dict(stored)))
             vaults.append(vault)
         digest = request_digest(spec.identity, [v.graph for v in scrubbed])
+        # The idempotency lookup comes FIRST, so whether a retry gets its
+        # study back (or a 409) never depends on what the workers are doing
+        # now; only a NEW study is checked for placement (#777). The store
+        # repeats the lookup inside its insert transaction, which is what
+        # settles two concurrent submits with one key.
+        if spec.idempotency_key is not None:
+            existing = await self.store.find_by_idempotency_key(
+                spec.idempotency_key)
+            if existing is not None:
+                if existing.request_digest != digest:
+                    raise IdempotencyConflict(spec.idempotency_key,
+                                              existing.id)
+                return existing, False
+        # Every child inherits options.target; refuse what the run service
+        # would refuse for any of them (a worker it has never seen, a device
+        # nobody offers, record_outputs on a worker) before any row exists.
+        variant_needs = self.service.check_placeable_batch(
+            (graph for _label, _ops, graph in spec.variants), spec.options)
         study, created = await self.store.create_study(
             name=spec.name, objective=spec.objective,
             repetitions=spec.repetitions, seed=spec.seed,
@@ -270,6 +298,8 @@ class StudyCoordinator:
             for index, vault in enumerate(vaults):
                 if vault:
                     self._secrets[(study.id, index)] = vault
+            for index, needs in enumerate(variant_needs):
+                self._needs[(study.id, index)] = needs
             self._notify(study.id)
             study = await self.tick(study.id) or study
         return study, created
@@ -419,7 +449,9 @@ class StudyCoordinator:
                 graph, options=options,
                 name=_child_name(study, label, attempt.repetition),
                 run_id=run_id, study_id=study.id,
-                study_attempt_id=attempt.id)
+                study_attempt_id=attempt.id,
+                needs=self._needs.get((study.id, attempt.variant_index),
+                                      NEEDS_UNKNOWN))
         except RunSubmitError as exc:
             await self.store.mark_lost(
                 attempt.id, f"the run service refused the child: {exc}")
@@ -492,8 +524,10 @@ class StudyCoordinator:
                 changed = True
             elif child.status in TERMINAL_STATUSES:
                 terminal.append(child.id)
-            elif child.status == ATTEMPT_RUNNING \
+            elif child.status in (ATTEMPT_RUNNING, STATUS_DISCONNECTED) \
                     and attempt.status == ATTEMPT_QUEUED:
+                # A ``disconnected`` child (#783) started too: its worker
+                # is away, and the attempt stays running while it waits.
                 await self.store.mark_started(attempt.id, child.started_at)
                 changed = True
         if terminal and await self.store.harvest_runs(terminal):
@@ -528,13 +562,18 @@ class StudyCoordinator:
                     event_type="study_cancel_requested") or study
             delivered: list[str] = []
             current = current_attempts(await self.store.list_attempts(study_id))
-            for attempt in sorted(current.values(),
-                                  key=lambda a: (a.repetition,
-                                                 a.variant_index)):
-                if attempt.status in ATTEMPT_ACTIVE and attempt.run_id:
-                    outcome = await self.service.cancel(attempt.run_id)
-                    if outcome is not None and outcome.cancelled:
-                        delivered.append(attempt.run_id)
+            # One reschedule after the loop, so cancelling one child does
+            # not start a queued sibling that the next iteration cancels.
+            hold = getattr(self.service, "deferred_reschedule",
+                           contextlib.nullcontext)
+            with hold():
+                for attempt in sorted(current.values(),
+                                      key=lambda a: (a.repetition,
+                                                     a.variant_index)):
+                    if attempt.status in ATTEMPT_ACTIVE and attempt.run_id:
+                        outcome = await self.service.cancel(attempt.run_id)
+                        if outcome is not None and outcome.cancelled:
+                            delivered.append(attempt.run_id)
             await self._reconcile(study_id)
             study = await self._advance(
                 await self.store.get_study(study_id) or study)

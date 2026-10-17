@@ -19,7 +19,8 @@ responsibilities, and nothing else:
   fanned out to live subscribers; scalar progress values are batched into
   ``exec_run_metrics``. Since #122 the same path also carries what nodes
   report DIRECTLY from their worker threads — ``context.log_metric`` and
-  ``context.log_artifact`` — through ``_signal_bridge``.
+  ``context.log_artifact`` — through the engine's ``on_signal`` callback
+  (``core.executors``, since #766).
 - **cancel** — cooperative, via the ``ExecutionContext`` flag (never
   ``Task.cancel``; see ``cancel``).
 - **survive** — startup recovery retires rows a dead process left
@@ -33,12 +34,32 @@ function-local import of the #117 output-entry builders out of
 ``core.output_entries``, where they belong now that the WebSocket is a
 *view* over this service rather than the thing that produces node_status.
 
+Since #766 the service no longer calls the engine itself. Three layers, each
+importing only the one below it:
+
+- ``core.run_events`` -- pure functions that turn engine callback arguments
+  into event payloads (``node_status``, ``inner_node_status``, metric points,
+  the signal frames), plus the event types. No I/O, no ``RunService``, so a
+  worker subprocess can build the very same bytes.
+- ``core.executors`` -- an ``Executor`` runs one ``ExecutionRequest`` and
+  returns an ``ExecutionOutcome``. ``InProcessExecutor`` (the default, and
+  the only one a run without a worker target meets) is what ``_execute``
+  used to do: ``execute_graph`` in this process, its callbacks bridged
+  through ``run_events`` into the run's ``RunSinks``. ``WorkerExecutor``
+  (#772) executes a run placed on a worker agent; see Workers below.
+- this module -- scheduling, the row, and persistence: ``RunSinks`` lands in
+  ``_emit`` (where ``cap_event_payload`` applies), the metric batcher and the
+  artifact table. Classifying a stop as ``cancelled`` or ``interrupted``
+  stays here too (``_stopped_status``); an executor only knows that the
+  engine stopped.
+
 Lanes
 -----
 The run's device is resolved once, in :meth:`RunService.submit`: the
-effective value is ``options["device"]`` when the key is present, else the
-graph's ``settings.device``, else ``cpu``; ``auto`` resolves to the best
-accelerator this server has. The same string becomes ``exec_runs.queue_key``
+effective value is the first entry of ``options["target"]["devices"]`` when
+the caller sent a device set (#769), else ``options["device"]`` when the key
+is present, else the graph's ``settings.device``, else ``cpu``; ``auto``
+resolves to the best accelerator this server has. The same string becomes ``exec_runs.queue_key``
 and ``ExecutionContext.device``. The seed follows the same rule:
 ``options["seed"]`` when the key is present (``null`` is an unseeded run),
 else the graph's ``settings.seed``, else none.
@@ -69,6 +90,51 @@ admits :data:`QueueLimits` runs at once — 1 for an accelerator, 2 for
 pending run holds a run id, its options and a wake-up channel, and nothing
 else; its graph is re-read from ``exec_runs.graph_snapshot`` at promotion,
 so a queue two hundred deep costs no more memory than the rows already do.
+
+Who may start is asked of a :class:`~app.core.scheduling.Scheduler`
+(#768): ``_pump`` hands it the front of a FIFO and the slots already taken,
+and gets back a ``Placement`` (start it, holding these slots) or ``None``
+(it stays first in line). Slots are keyed by ``(worker_id, device)``;
+:class:`~app.core.scheduling.LocalScheduler`, the default, gives a run the
+one slot ``("local", queue_key)`` under the cap above, which is the #123
+rule unchanged. The FIFOs themselves stay keyed by the device string.
+Since #773 the caps are per slot (``QueueLimits.for_slot``; an override
+is ``cuda:0=2`` for this process, ``<worker>/cuda:0=2`` for a worker), a
+run with a device set holds a slot on every device of it (all free, or it
+waits), and a worker on this machine shares this process's slots.
+
+Workers (#772)
+--------------
+With a :class:`~app.core.workers.WorkerRegistry` (the lifespan always
+passes one), ``options["target"]`` can name a connected worker agent
+(``cdui agent start``) or ``any``. Such a run is resolved against the
+WORKER, not this process: its FIFO key is ``<worker>/<device as asked>``
+(``gpu-box/cuda``, ``any/cpu``), a named worker must be one this server has
+seen since it started and offer the device at submit (else
+``RunSubmitError``; one that is away is waited for, #777), and
+``record_outputs`` and
+the interactive lane are refused (the canvas always executes here).
+:class:`~app.core.scheduling.WorkerScheduler` places it on
+``(worker, device)`` slots, capped per device like a local slot; ``any``
+tries the connected workers in name order and this process last (a CUDA
+set a worker would renumber: the workers only). The
+placement decides the executor (``WorkerExecutor`` for a worker,
+``InProcessExecutor`` here), the context device (the placement's first
+device), and what the row records once the run starts: ``queue_key``
+``<worker>/<device>`` and the ``worker_id`` / ``devices`` it got. A worker
+run does not take this process's seed gate (its subprocess has RNGs of its
+own) and records the WORKER's environment fingerprint, the one its
+``hello`` carried (#781). A worker whose node catalog differs from this
+server's is ``degraded``. ``any`` skips a worker that LACKS types this
+server has, or reported no catalog; a run naming a degraded worker is
+refused at submit unless it has every node type the graph uses
+(``worker_handshake.catalog_refusal``). The type set is computed once at
+submit, in a thread, for every run that targets a worker, and travels with
+the queued run to ``WorkerExecutor``, which checks it again before
+``assign`` against the worker as it is then. A worker
+connecting, draining, undraining or going away calls
+:meth:`RunService.reschedule`.
+A run without a target never meets any of this.
 
 ``interactive`` runs BYPASS the FIFO entirely — a classroom demo must not
 sit behind a training job — and are bounded two other ways instead:
@@ -127,14 +193,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import heapq
+import itertools
 import json
 import logging
 import time
 import weakref
 from collections import deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    NamedTuple,
+)
 
 from ..config import settings
 from .cache import ExecutionCache
@@ -144,28 +223,60 @@ from .db import utc_now_iso
 #: decision, and #135 gave ``device_utils`` a second copy of it for the
 #: index-validation fallback. Two copies of a policy drift.
 from .device_utils import (
+    get_available_devices,
     DEVICE_PATTERN,
     _current_cuda_index,
     graph_settings_device,
     graph_settings_seed,
     resolve_device,
+    split_device,
 )
-from .env_fingerprint import collect_fingerprint, execution_facts
+from .env_fingerprint import (
+    collect_fingerprint,
+    execution_facts,
+    worker_execution_facts,
+)
 from .execution_context import (
     ArtifactSignal,
-    CancellationError,
-    DroppedSignal,
     ExecutionContext,
-    MetricSignal,
     WarningSignal,
 )
-from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
-from .node_state_store import NodeStateStore
-from .output_entries import (
-    OUTPUT_KIND_TEXT,
-    build_node_output_entries,
-    declared_media_ports,
+from .executors import (
+    ExecutionOutcome,
+    ExecutionRequest,
+    Executor,
+    InProcessExecutor,
+    RunSinks,
+    WorkerExecutor,
 )
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_TRANSFER, holds_mount
+from .node_state_store import NodeStateStore
+from .run_events import (
+    DEFAULT_ERROR_MODE,
+    EVENT_ARTIFACT,
+    EVENT_METRIC,
+    EVENT_RUN_COMPLETED,
+    EVENT_RUN_FAILED,
+    EVENT_RUN_STARTED,
+    EVENT_RUN_STOPPED,
+    EVENT_WARNING,
+    artifact_meta,
+    artifact_payload,
+    warning_payload,
+)
+# Moved to ``run_events`` by #766 and re-exported under the names this module
+# has always published (the redundant ``as`` marks each one as a re-export).
+from .run_events import EVENT_INNER_NODE_STATUS as EVENT_INNER_NODE_STATUS
+from .run_events import EVENT_NODE_STATUS as EVENT_NODE_STATUS
+from .run_events import NON_METRIC_EVENTS as NON_METRIC_EVENTS
+from .run_events import NON_METRIC_KEYS as NON_METRIC_KEYS
+from .run_events import metric_step as metric_step
+from .run_events import scalar_metrics as scalar_metrics
+# The payload cap moved to ``run_events`` by #771 (the worker subprocess
+# applies it too); re-exported under the names this module published.
+from .run_events import TRUNCATION_MARKER as TRUNCATION_MARKER
+from .run_events import cap_event_payload as cap_event_payload
+from .run_events import json_size as json_size
 from .run_output_store import RunOutputStore
 from .run_store import (
     STATUS_CANCELLED,
@@ -176,9 +287,23 @@ from .run_store import (
     STATUS_SUCCEEDED,
     EventRecord,
     MetricPoint,
+    WORKER_LOCAL,
     RunProvenance,
     RunStore,
     json_safe,
+)
+from .scheduling import (
+    LOCAL_WORKER_ID,
+    LocalScheduler,
+    Placement,
+    Scheduler,
+    SlotKey,
+    WorkerScheduler,
+    candidate_devices,
+    entry_target,
+    no_mount,
+    on_a_worker,
+    renumbered_on_a_worker,
 )
 from .secret_params import (
     SecretVault,
@@ -186,67 +311,48 @@ from .secret_params import (
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
-from .seeding import seed_rngs
+from .worker_handshake import catalog_refusal, graph_node_types
+from .worker_protocol import (
+    TARGET_ANY,
+    TARGET_LOCAL,
+    WORKER_NAME_PATTERN,
+    canonical_device,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .workers import WorkerRegistry
 
 logger = logging.getLogger(__name__)
 
 
 # ── event vocabulary ──────────────────────────────────────────────────────
 #
-# Deliberately the WebSocket message types, verbatim. The durable event log
-# exists to be replayed onto that wire (#121: attach to a running run and
-# catch up), so a 1:1 mapping means the bridge is
-# ``{"type": event.type, **(event.payload or {})}`` and there is no second
-# vocabulary to keep in sync. The ``type`` key itself is NOT stored in the
-# payload — the column already carries it.
-EVENT_RUN_STARTED = "execution_start"
-EVENT_NODE_STATUS = "node_status"
-EVENT_RUN_COMPLETED = "execution_complete"
-EVENT_RUN_FAILED = "execution_error"
-EVENT_RUN_STOPPED = "execution_stopped"
-
-#: #122's additions. New TYPES rather than new node_status payloads, because
-#: neither is about a node changing state: a client that only knows the five
-#: types above ignores them (the WS bridge is
-#: ``{"type": event.type, **payload}`` for every type), and a client that
-#: wants live charts subscribes to ``metric`` instead of re-deriving series
-#: from progress frames.
-#:
-#: ``metric`` carries a whole FLUSH, not one point: the batcher already
-#: groups points by size or by 0.5 s, and reusing that cadence is what keeps
-#: a per-batch series from writing one event row per batch. Payload is
-#: ``{"points": [{"name", "value", "step", "node_id"}, ...]}``, emitted only
-#: after the points are durable.
-EVENT_METRIC = "metric"
-#: One row appended to ``exec_run_artifacts``: ``{"kind", "path", "meta",
-#: "node_id"}``. The interrupt checkpoint is the first producer.
-EVENT_ARTIFACT = "artifact"
-#: Something was lost or degraded but the run continues:
-#: ``{"kind": <what>, ...}``. Today the only kind is ``dropped_signals``.
-EVENT_WARNING = "run_warning"
-#: A node the canvas draws INSIDE a block or preset card (#559), which
-#: ``node_status`` rolls up into the outermost card: ``{"node_id",
-#: "container_id", "status"}`` plus ``error``/``error_type`` on an error
-#: frame, and ``outputs`` when the node produced something: the entries a
-#: ``node_status`` would carry for it (its media, by the ports the node
-#: declares, and its port summary) minus its text, which the card's own
-#: frames relay already. ``node_id`` is the id the run gives the node --
-#: ``blk/nest/mul``, the entered instances in front of the canvas id -- so
-#: two copies of one block never share a status or a value; ``container_id``
-#: is the outermost card. The card's own ``node_status`` frames keep their
-#: shape; its terminal one now carries the values on its drawn output ports
-#: as its port summary. A container nested inside another reports here too,
-#: rolled up the same way. A new TYPE so a client
-#: that only knows ``node_status`` keeps reading one status per card. A
-#: progress frame from inside a card stays a ``node_status`` for the card and
-#: names the inner node in ``inner_node_id``: one frame, both cards.
-EVENT_INNER_NODE_STATUS = "inner_node_status"
+# The event TYPES and their payload builders live in ``core.run_events``
+# since #766 (re-exported above); what stays here is how a run's log ENDS.
 
 #: ``execution_stopped`` payload discriminator. The WS protocol has one
 #: "stopped" frame; the run ROW distinguishes cancelled from interrupted,
 #: and this key carries the same fact into the replay log.
 STOP_REASON_CANCELLED = "cancelled"
 STOP_REASON_INTERRUPTED = "interrupted"
+
+#: What an executor may report (``ExecutionOutcome.status``). Anything else
+#: is filed as a failure naming the bad value (#766): an executor's bug must
+#: not leave a row in a status the rest of the service does not expect.
+EXECUTOR_STATUSES = frozenset({STATUS_SUCCEEDED, STATUS_FAILED,
+                               STATUS_CANCELLED, STATUS_INTERRUPTED})
+
+#: Between the worker and the device in a worker run's queue key
+#: (``gpu-box/cuda:0``, ``any/cpu``). Never part of a device string.
+WORKER_QUEUE_SEPARATOR = "/"
+
+#: An outcome object without a ``peak_memory`` attribute (#770): the
+#: executor did not measure, which is different from measuring None.
+_NOT_MEASURED = object()
+
+#: What a slot reserved for an earlier waiting run counts as in
+#: ``RunService._admission_view``: more than any cap, so it reads as full.
+_RESERVED = 1 << 30
 
 #: The frames that END a run's log: a client replaying it over the WS
 #: attach view (the canvas) takes one of them as the run's end.
@@ -282,6 +388,10 @@ OPTION_KEYS = frozenset({
     "auto_backward",
     # Engine error policy, likewise straight off the execute message.
     "error_mode", "max_retries",
+    # Where the run executes (#769): ``{"worker": ..., "devices": [...]}``.
+    # Stored only when the caller sent it, so a run without a target keeps
+    # exactly the options row it had before; see :func:`normalize_target`.
+    "target",
 })
 
 #: Default lane, and the one the per-device FIFO schedules. Every lane that
@@ -308,8 +418,9 @@ MAX_SEED = SEEDING_MAX_SEED
 #: the same reason ``device`` is: a typo'd ``"fail-fast"`` would silently
 #: become "continue past every failure" and the run would report success
 #: over a graph half of which never executed.
+#: ``DEFAULT_ERROR_MODE`` is defined in ``run_events`` (#766) because the
+#: executor that passes it to the engine needs it too, and imported above.
 ERROR_MODES = frozenset({"fail_fast", "continue", "retry"})
-DEFAULT_ERROR_MODE = "fail_fast"
 
 #: Retry ceiling. ``retry`` mode re-runs a failing node ``max_retries``
 #: times; unbounded, one client typo parks a worker thread forever.
@@ -322,25 +433,6 @@ MAX_RETRIES_LIMIT = 10
 #: that entirely if only the key is checked. ``auto`` resolves to the best
 #: accelerator present (``describe_accelerator()["default"]``); an absent
 #: device is ``cpu`` unless the graph carries ``settings.device``.
-
-#: Progress-payload keys that describe the LOOP, not a measurement. Turning
-#: ``epoch`` into a series named "epoch" whose value equals its own step is
-#: noise; ``total_epochs`` is a constant repeated once per point. #122 added
-#: the per-batch pair for exactly the same reason.
-NON_METRIC_KEYS = frozenset({"event", "step", "epoch", "total_epochs",
-                             "start_epoch", "batch", "total_batches"})
-
-#: Progress ``event`` values whose payload must NOT be mined for metrics.
-#: A per-batch frame (#122) is throttled by WALL CLOCK, so several of them
-#: legitimately share one step and their count depends on how fast the
-#: machine is -- turning that into rows would make the series a measure of
-#: the hardware. The node logs the authoritative per-batch series itself,
-#: through ``context.log_metric`` under its ``batch_metrics`` option.
-#:
-#: Mirrors ``core.loop_control.EVENT_BATCH``; not imported from there
-#: because this module must not depend on the node-side toolkit, and the
-#: string is the wire contract either way.
-NON_METRIC_EVENTS = frozenset({"batch"})
 
 #: Flush thresholds for the metric batcher (see ``_flush_metrics``).
 METRIC_FLUSH_MAX_POINTS = 64
@@ -365,6 +457,23 @@ DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
 #: tomorrow inherits the conservative limit instead of silently getting the
 #: CPU one.
 CPU_QUEUE_KEY = "cpu"
+
+
+def _local_queue_key(device: Any) -> str:
+    """The FIFO key of a run executing in this process: its device,
+    resolved here and canonical (the rule since #123)."""
+    return canonical_queue_key(resolve_device(device))
+
+
+def _local_device_values() -> list[str]:
+    """This process's devices as queue keys (``cpu``, ``cuda:0``, ``mps:0``):
+    what an ``any`` run can be placed on here (#772)."""
+    values: list[str] = []
+    for device in get_available_devices():
+        key = canonical_queue_key(device)
+        if key not in values:
+            values.append(key)
+    return values
 
 
 def canonical_queue_key(device: str) -> str:
@@ -396,7 +505,7 @@ def canonical_queue_key(device: str) -> str:
 
 @dataclass(frozen=True)
 class QueueLimits:
-    """How many runs each queue key admits at once.
+    """How many runs each device slot admits at once.
 
     A value object rather than four ``settings`` reads scattered through the
     scheduler: the limits are consulted on every promotion, tests need to
@@ -405,7 +514,10 @@ class QueueLimits:
 
     ``overrides`` beats the per-class default, which is the point of it:
     ``cuda:0=2`` on a 48 GB card is a legitimate thing to want without
-    changing what ``cuda:1`` does.
+    changing what ``cuda:1`` does. A slot is ``(worker_id, device)`` (#768);
+    an override key is the bare device for this process (``cuda:0``) and
+    ``<worker>/<device>`` for a worker agent (``gpu-box-1/cuda:0``, #773),
+    so raising one card's cap never moves the same card number elsewhere.
     """
 
     cpu: int = 2
@@ -413,17 +525,24 @@ class QueueLimits:
     interactive: int = 2
     overrides: tuple[tuple[str, int], ...] = ()
 
-    def for_key(self, queue_key: str) -> int:
-        """The concurrency cap for one resolved device string. Always >= 1.
+    def for_slot(self, slot: SlotKey) -> int:
+        """The concurrency cap of one ``(worker_id, device)`` slot. >= 1.
+
+        The override for the slot's key, else the per-kind default: ``cpu``
+        for ``cpu``, ``gpu`` for every accelerator (including a backend
+        nobody has added yet: the classification is "not cpu").
 
         Never zero: a cap of 0 would accept runs into a queue that can never
         drain, which is a hang dressed up as a configuration. A user who
         wants that should not submit the run.
         """
-        for key, value in self.overrides:
-            if key == queue_key:
+        worker_id, device = slot
+        key = (device if worker_id == LOCAL_WORKER_ID
+               else f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}")
+        for override, value in self.overrides:
+            if override == key:
                 return max(1, value)
-        return max(1, self.cpu if queue_key == CPU_QUEUE_KEY else self.gpu)
+        return max(1, self.cpu if device == CPU_QUEUE_KEY else self.gpu)
 
     @classmethod
     def from_settings(cls) -> "QueueLimits":
@@ -443,11 +562,26 @@ class QueueLimits:
 
 
 def parse_queue_overrides(raw: str) -> tuple[tuple[str, int], ...]:
-    """``"cuda:0=2,cpu=8"`` -> ``(("cuda:0", 2), ("cpu", 8))``.
+    """``"cuda:0=2,gpu-box/cuda:1=3"`` -> ``(("cuda:0", 2), ("gpu-box/cuda:1", 3))``.
+
+    Two key shapes (#773):
+
+    - ``device`` (``cuda:0``, ``cpu``): this process's slot only, as before
+      workers existed, stored as written (lower-cased). It never applies to
+      a worker's card of the same number.
+    - ``local/<device>``: the same, validated and canonicalised like a
+      worker key's device and stored as the bare device.
+    - ``<worker>/<device>`` (``gpu-box-1/cuda:0``): that worker's slot only.
+      The worker part must be a valid worker name (not ``any``), the device
+      a concrete one (``cpu``, ``cuda:N``, ``mps:N``), which is stored in
+      canonical form (``mps`` -> ``mps:0``, ``cuda:01`` -> ``cuda:1``). A
+      card a same-host worker shares with this process has this process's
+      slot and cap, so such an override does not apply to it
+      (``RunService.check_worker_overrides`` warns).
 
     Split on the LAST ``=`` so a key may contain one; a key legitimately
     contains a colon (``cuda:0``), which is why this is not a simple
-    ``dict(pair.split("=") for ...)``.
+    ``dict(pair.split("=") for ...)``. Keys are lower-cased.
 
     A malformed entry is skipped with a warning and never raises: this is
     parsed during startup, and one typo in an env var must not stop the
@@ -465,6 +599,10 @@ def parse_queue_overrides(raw: str) -> tuple[tuple[str, int], ...]:
             logger.warning("ignoring run queue override %r: expected key=count",
                            entry)
             continue
+        if WORKER_QUEUE_SEPARATOR in key:
+            key = _worker_override_key(entry, key)
+            if key is None:
+                continue
         try:
             count = int(value.strip())
         except ValueError:
@@ -477,6 +615,29 @@ def parse_queue_overrides(raw: str) -> tuple[tuple[str, int], ...]:
             continue
         out.append((key, count))
     return tuple(out)
+
+
+def _worker_override_key(entry: str, key: str) -> str | None:
+    """The stored key of a ``<worker>/<device>`` override, or None (warned)."""
+    worker, _, device = key.partition(WORKER_QUEUE_SEPARATOR)
+    worker, device = worker.strip(), device.strip()
+    if worker != TARGET_LOCAL and (
+            worker == TARGET_ANY or not WORKER_NAME_PATTERN.fullmatch(worker)):
+        logger.warning("ignoring run queue override %r: %r is not a worker "
+                       "name", entry, worker)
+        return None
+    try:
+        device = canonical_device(device)
+    except ValueError:
+        device = ""
+    # A bare ``cuda`` canonicalises to itself, but a slot is always one card.
+    if device and device != "cuda":
+        return (device if worker == TARGET_LOCAL
+                else f"{worker}{WORKER_QUEUE_SEPARATOR}{device}")
+    logger.warning("ignoring run queue override %r: expected "
+                   "<worker>/<device> with a concrete device such as "
+                   "cuda:0, mps:0 or cpu", entry)
+    return None
 
 
 class RunSubmitError(ValueError):
@@ -550,11 +711,197 @@ class InteractiveSession:
     node_state_store: NodeStateStore | None = None
 
 
+#: ``submit(needs=...)`` default: compute the run's storage needs (#782).
+NEEDS_UNKNOWN = object()
+
+#: The worker that is this control-plane process: what a run without a
+#: target runs on, and the string ``run_store`` writes for one.
+TARGET_WORKER_LOCAL = WORKER_LOCAL
+#: "Place it wherever there is room": the connected workers first, then
+#: this process (#772).
+TARGET_WORKER_ANY = TARGET_ANY
+#: Worker names (#769), matched with ``fullmatch``. ``local`` and ``any``
+#: match it too; they are the two reserved names a worker cannot enroll
+#: under.
+TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
+#: Upper bound on ``target.devices``. A device set names cards on ONE
+#: host; the cap keeps a stored row bounded like every other option.
+MAX_TARGET_DEVICES = 64
+
+
+def _content_index(store: Any) -> Any:
+    """The transfer backend's hash index over *store*'s database (#785),
+    or None for a store without one (a test double)."""
+    from .transfer import ContentIndex
+
+    db = getattr(store, "db", None)
+    return None if db is None else ContentIndex(db)
+
+
+def worker_not_connected(name: str) -> str:
+    """The refusal for a ``target.worker`` no agent has connected as since
+    this server started (one that connected and went away is waited for).
+
+    One function so the REST layer, the CLI and the tests cannot drift
+    apart.
+    """
+    return (f"worker {name!r} has not connected to this server since it "
+            "started; start it with `cdui agent start`, or target 'local' "
+            "or 'any'")
+
+
+#: Refusals for what a worker run cannot do in this wave.
+WORKER_REFUSES_RECORD_OUTPUTS = (
+    "record_outputs is not supported for runs on a worker yet (#789); "
+    "target 'local' to capture outputs")
+WORKER_REFUSES_INTERACTIVE = (
+    "the interactive lane always runs on this server; drop the target or "
+    "target 'local'")
+
+#: What each device field accepts, for its refusal message.
+_DEVICE_VOCABULARY = "cpu, auto, cuda, cuda:N, mps or mps:N"
+_TARGET_DEVICE_VOCABULARY = "cpu, cuda:N, mps or mps:N"
+
+
+def _checked_device(value: str, *, field: str,
+                    allow_auto: bool = True) -> str:
+    """Trim, lowercase and check one device string against ``DEVICE_PATTERN``.
+
+    The one device check shared by ``options.device``,
+    ``graph.settings.device`` and every ``target.devices`` entry; callers
+    have already established *value* is a string. ``allow_auto=False`` is
+    the device-set rule: ``auto`` names no card.
+    """
+    device = value.strip().lower()
+    if DEVICE_PATTERN.match(device) is None \
+            or (device == "auto" and not allow_auto):
+        vocabulary = (_DEVICE_VOCABULARY if allow_auto
+                      else _TARGET_DEVICE_VOCABULARY)
+        raise RunSubmitError(
+            f"unknown {field} {device!r}; expected {vocabulary}")
+    return device
+
+
+def _concrete_device(device: str) -> str:
+    """One ``target.devices`` entry in canonical form, or ``RunSubmitError``.
+
+    A device set lists cards, so an entry must name one: ``cpu``,
+    ``cuda:N`` or ``mps:N``. ``mps`` alone is ``mps:0`` (there is one), and
+    the index is re-spelled from its integer so ``cuda:00`` and ``cuda:0``
+    are the same entry. A bare ``cuda`` is refused: which card it means
+    depends on the process, and the set is supposed to say.
+    """
+    kind, index = split_device(device)
+    if kind == "cpu":
+        return "cpu"
+    if index is None and kind == "mps":
+        index = 0
+    if index is None:
+        raise RunSubmitError(
+            f"target.devices entry {device!r} names a device kind, not a "
+            f"device; use {kind}:N")
+    return f"{kind}:{index}"
+
+
+def normalize_target(raw: Any) -> dict[str, Any] | None:
+    """Validate ``options.target`` (#769). ``None`` means "not given".
+
+    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...]}``, both
+    keys optional and no others. ``worker`` is trimmed and lowercased;
+    absent, it is ``local``. Whether a named worker is connected is not
+    known here: :meth:`RunService.submit` checks it against the worker
+    registry (#772).
+
+    ``devices`` absent (or null) means the run's single ``device``
+    option, as before #769. Given, it is a non-empty list of concrete
+    devices in canonical form (see :func:`_concrete_device`), with no
+    duplicates after
+    canonicalising and one kind (``cuda:0`` with ``cpu`` is not a device
+    set).
+
+    ``devices`` records the REQUESTED set. Its first entry becomes the
+    run's ``device`` (see :func:`normalize_options`). On this process that
+    entry is the queue and the device the run executes on, and the run
+    holds a slot on every device of the set (#773). On a worker (#772) the
+    run holds a slot for every device in the set and its subprocess sees
+    all of them (#774), renumbered from ``cuda:0`` in the set's order.
+    An ``any`` run with a CUDA set that renumbering changes is therefore
+    placed on a worker only (``scheduling.renumbered_on_a_worker``).
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RunSubmitError(
+            f"target must be an object, got {type(raw).__name__}")
+    unknown = sorted(set(raw) - {"worker", "devices"})
+    if unknown:
+        raise RunSubmitError(
+            f"unknown target key(s) {unknown}; supported: "
+            "['devices', 'worker']")
+
+    worker = raw.get("worker")
+    if worker is None:
+        worker = TARGET_WORKER_LOCAL
+    if isinstance(worker, str):
+        worker = worker.strip().lower()
+    if not isinstance(worker, str) \
+            or TARGET_WORKER_PATTERN.fullmatch(worker) is None:
+        raise RunSubmitError(
+            "target.worker must be 'local', 'any' or a worker name "
+            "(lowercase letters, digits and '-', at most 63 chars)")
+
+    devices = raw.get("devices")
+    if devices is not None:
+        if not isinstance(devices, list) or not devices:
+            raise RunSubmitError("target.devices must be a non-empty list")
+        if len(devices) > MAX_TARGET_DEVICES:
+            raise RunSubmitError(
+                f"target.devices must list at most {MAX_TARGET_DEVICES} "
+                "devices")
+        cleaned: list[str] = []
+        for entry in devices:
+            if not isinstance(entry, str):
+                raise RunSubmitError("target.devices entries must be strings")
+            device = _concrete_device(_checked_device(
+                entry, field="target device", allow_auto=False))
+            if device in cleaned:
+                raise RunSubmitError(
+                    f"target.devices lists {device!r} twice")
+            cleaned.append(device)
+        kinds = sorted({split_device(device)[0] for device in cleaned})
+        if len(kinds) > 1:
+            raise RunSubmitError(
+                f"target.devices mixes device kinds {kinds}; a device set is "
+                "one kind")
+        devices = cleaned
+    return {"worker": worker, "devices": devices}
+
+
+def target_devices(options: Any) -> Any:
+    """``options["target"]["devices"]``, or None when there is none.
+
+    Reads raw and normalised options alike. On a normalised dict the
+    answer is the canonical device list; on raw options, ``is not None``
+    is the test "the caller named a device set" (#769).
+    """
+    target = options.get("target") if isinstance(options, dict) else None
+    return target.get("devices") if isinstance(target, dict) else None
+
+
+def target_worker(options: Any) -> str:
+    """The worker a NORMALISED options dict targets; ``local`` without one."""
+    target = options.get("target") if isinstance(options, dict) else None
+    worker = target.get("worker") if isinstance(target, dict) else None
+    return worker or TARGET_WORKER_LOCAL
+
+
 def normalize_options(raw: Any) -> dict[str, Any]:
     """Validate the submit options and fill in defaults.
 
-    Strict on purpose (see ``OPTION_KEYS``). Returns a NEW dict with every
-    key present, so ``exec_runs.options`` always records the full effective
+    Strict on purpose (see ``OPTION_KEYS``). Returns a NEW dict carrying
+    every key except ``target`` -- which appears only when the caller sent
+    one, so a run without a target stores the row it stored before #769 --
+    so ``exec_runs.options`` always records the full effective
     configuration rather than "whatever the client happened to send" — a
     stored run has to be readable years later without knowing which defaults
     were in force at submit time.
@@ -563,6 +910,22 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     checked here: that resolution happens at start time via
     ``resolve_device`` and lands in ``exec_runs.queue_key``, so the row keeps
     both what was asked for and what was used.
+
+    With ``target.devices`` (#769) the list is the more specific statement,
+    and ``devices[0]`` relates to ``device`` in one of three ways:
+
+    - ``device`` absent, or ``"auto"``: ``devices[0]`` becomes the device.
+    - ``device`` a bare kind (``cuda``, ``mps``, ``cpu``) that matches the
+      kind of ``devices[0]``: they agree, and ``devices[0]`` becomes the
+      device (``cuda`` + ``["cuda:1"]`` is ``cuda:1``).
+    - anything else that names a different device after trimming,
+      lowercasing and canonicalising (``cuda:0`` + ``["cuda:1"]``, ``cpu``
+      + ``["cuda:0"]``): ``RunSubmitError``
+      ``target.devices and device disagree``. ``cuda:00`` + ``["cuda:0"]``
+      agrees, and the device becomes ``cuda:0``.
+
+    How the rest of the set is used depends on where the run executes;
+    see :func:`normalize_target`.
     """
     if raw is None:
         raw = {}
@@ -574,14 +937,23 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         raise RunSubmitError(
             f"unknown option(s) {unknown}; supported: {sorted(OPTION_KEYS)}")
 
-    device = raw.get("device", "cpu")
+    target = normalize_target(raw.get("target"))
+    devices = None if target is None else target["devices"]
+
+    # ``target.devices`` against ``device`` (#769); see the docstring.
+    device = raw.get("device", devices[0] if devices else "cpu")
     if not isinstance(device, str) or not device.strip():
         raise RunSubmitError("device must be a non-empty string")
-    device = device.strip().lower()
-    if DEVICE_PATTERN.match(device) is None:
-        raise RunSubmitError(
-            f"unknown device {device!r}; expected cpu, auto, cuda, cuda:N, "
-            "mps or mps:N")
+    device = _checked_device(device, field="device")
+    if devices and device != devices[0]:
+        kind, index = split_device(device)
+        first_kind, first_index = split_device(devices[0])
+        agrees = (device == "auto"
+                  or (kind == first_kind
+                      and (index is None or index == first_index)))
+        if not agrees:
+            raise RunSubmitError("target.devices and device disagree")
+        device = devices[0]
 
     seed = raw.get("seed")
     if seed is not None:
@@ -632,7 +1004,7 @@ def normalize_options(raw: Any) -> dict[str, Any]:
             raise RunSubmitError(f"{key} must be true or false")
         flags[key] = value
 
-    return {
+    normalized = {
         "device": device,
         "seed": seed,
         "lane": lane.strip(),
@@ -641,6 +1013,11 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         "max_retries": max_retries,
         **flags,
     }
+    # Only when sent: a run without a target stores the same options row it
+    # stored before #769.
+    if target is not None:
+        normalized["target"] = target
+    return normalized
 
 
 def normalize_name(raw: Any) -> str | None:
@@ -704,11 +1081,7 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
     if device is not None:
         if not isinstance(device, str):
             raise RunSubmitError("graph.settings.device must be a string")
-        device = device.strip().lower()
-        if DEVICE_PATTERN.match(device) is None:
-            raise RunSubmitError(
-                f"unknown graph.settings.device {device!r}; expected cpu, "
-                "auto, cuda, cuda:N, mps or mps:N")
+        device = _checked_device(device, field="graph.settings.device")
     seed = (settings or {}).get("seed")
     if seed is not None:
         # Strict like ``GraphSettings.seed``: ``"7"``, ``true`` or ``2.0``
@@ -736,10 +1109,33 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
     return normalized
 
 
+def fill_graph_device(graph: Any, options: Any) -> Any:
+    """Fill an absent ``options["device"]`` from the graph's ``settings.device``.
+
+    The device half of :func:`apply_graph_settings`, shared with the sweep
+    route, which applies the device rule but owns its seed. Returns
+    *options* itself when there is nothing to fill: a non-dict (for
+    :func:`normalize_options` to refuse), a ``device`` key already present,
+    a graph with no device, or a ``target.devices`` list (#769) -- that
+    names the device itself, so ``settings.device`` is not consulted and
+    cannot "disagree" with a set the caller chose on purpose.
+    """
+    if options is not None and not isinstance(options, dict):
+        return options
+    if options is not None and ("device" in options
+                                or target_devices(options) is not None):
+        return options
+    device = graph_settings_device(graph)
+    if not device:
+        return options
+    return {**(options or {}), "device": device}
+
+
 def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
     """Fill the run options the caller left out from the graph's settings.
 
-    ``options["device"]`` absent takes ``settings.device`` and
+    ``options["device"]`` absent takes ``settings.device`` (unless
+    ``target.devices`` names the device; see :func:`fill_graph_device`) and
     ``options["seed"]`` absent takes ``settings.seed`` (#704). Key absence
     is the test, so a caller that names a value keeps it: an explicit
     ``"seed": null`` is an unseeded run of a seeded graph, and an explicit
@@ -752,276 +1148,12 @@ def apply_graph_settings(graph: dict[str, Any], options: Any) -> Any:
     """
     if options is not None and not isinstance(options, dict):
         return options
-    filled = dict(options or {})
-    if "device" not in filled:
-        device = graph_settings_device(graph)
-        if device:
-            filled["device"] = device
+    filled = dict(fill_graph_device(graph, options) or {})
     if "seed" not in filled:
         seed = graph_settings_seed(graph)
         if seed is not None:
             filled["seed"] = seed
     return filled if filled or options is not None else options
-
-
-def json_size(value: Any) -> int:
-    """Bytes this value would occupy as a stored JSON column.
-
-    Matches ``run_store._dumps``' encoding (compact separators, the default
-    ``ensure_ascii=True``), so the number is the real storage cost and not
-    an estimate. ``ensure_ascii`` also means every character encodes to one
-    byte, which is why ``len`` of the string is the byte count with no
-    encode step. ``default=str`` keeps MEASURING from ever raising on
-    something exotic — a sizer that throws would fail the run it was only
-    trying to bound.
-    """
-    try:
-        return len(json.dumps(value, separators=(",", ":"), default=str))
-    except (TypeError, ValueError, RecursionError):  # pragma: no cover
-        return 0
-
-
-def _elide_entry(entry: Any, budget_bytes: int) -> Any:
-    """Replace one over-budget output entry with a placeholder.
-
-    ``output_kind`` and ``port`` survive so a UI can render "image, elided"
-    in the right slot rather than a hole. The payload key (``image``,
-    ``tensor_summary``, …) is DROPPED rather than stuffed with a marker
-    object: a consumer that reads ``entry["text"]`` expecting a string must
-    not silently receive a dict instead. ``"elided" in entry`` is the check.
-    """
-    if not isinstance(entry, dict):
-        return entry
-    size = json_size(entry)
-    if size <= budget_bytes:
-        return entry
-    elided: dict[str, Any] = {"output_kind": entry.get("output_kind"),
-                              "elided": True, "bytes": size,
-                              "cap_bytes": budget_bytes}
-    if "port" in entry:
-        elided["port"] = entry["port"]
-    return elided
-
-
-#: Appended to a string that was cut short. ASCII by construction, so its
-#: contribution to the encoded payload is exactly ``len`` bytes.
-TRUNCATION_MARKER = "... [truncated]"
-
-
-def _fit_prefix(value: str, budget_bytes: int) -> str:
-    """The LONGEST prefix of *value* whose JSON encoding fits the budget.
-
-    Binary search rather than ``value[:budget_bytes]`` because
-    ``ensure_ascii=True`` (``run_store._dumps``' encoding, which
-    ``json_size`` mirrors) makes one source character cost anywhere from 1
-    to 12 bytes — a CJK traceback sliced by character count would still
-    blow the cap and collapse to the marker this exists to avoid. The
-    encoded size is monotonic in the prefix length, so the search is exact;
-    it costs ~log2(len) measurements and only ever runs on the rare
-    over-cap path.
-    """
-    low, high = 0, len(value)
-    while low < high:
-        mid = (low + high + 1) // 2
-        if json_size(value[:mid]) <= budget_bytes:
-            low = mid
-        else:
-            high = mid - 1
-    return value[:low]
-
-
-def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, Any]:
-    """Cut over-long top-level strings down to a head + marker.
-
-    The bug this fixes: an ``execution_error`` carrying a 200 KB traceback
-    has no ``outputs`` to elide, so it fell straight through to the marker
-    and the user got a red banner with NO message — on the one payload
-    where the text is the entire point. A first paragraph of a traceback is
-    almost always enough to diagnose the failure; nothing is.
-
-    Largest string first, re-measuring after each: the budget for one
-    string is the cap minus everything else in the payload AS IT NOW
-    STANDS, so a payload with several strings spends its bytes where they
-    are actually needed instead of splitting them evenly between a 200 KB
-    ``error`` and a 6-character ``status``.
-
-    Two whole-payload measurements per string sounds expensive, and would
-    be if the key count were open-ended. It is not: every payload reaching
-    here is built by ``_progress_bridge`` or ``_finalize`` and has at most a
-    handful of top-level keys (``node_id``, ``status``, ``error``,
-    ``error_type``, ``outputs``, ``reason``, ``run_id``). Nothing a client
-    sends becomes a key here.
-    """
-    keys = sorted((k for k, v in payload.items() if isinstance(v, str)),
-                  key=lambda k: len(payload[k]), reverse=True)
-    out = dict(payload)
-    for key in keys:
-        if json_size(out) <= cap_bytes:
-            break
-        room = (cap_bytes - json_size({**out, key: ""})
-                - len(TRUNCATION_MARKER))
-        if room <= 0:
-            continue
-        kept = _fit_prefix(out[key], room)
-        # Only when the result is genuinely SHORTER. With a tiny budget the
-        # marker can outweigh what it replaces ("ok" -> "o... [truncated]"),
-        # and growing a payload that is already over cap helps nobody — the
-        # marker fallback is the right answer for that one.
-        if len(kept) + len(TRUNCATION_MARKER) < len(out[key]):
-            out[key] = kept + TRUNCATION_MARKER
-    return out
-
-
-def _error_fields(
-    status: str, result: dict[str, Any] | None,
-) -> dict[str, str]:
-    """``error`` and, when the engine named the class, ``error_type``.
-
-    Only on an error frame. ``error_type`` is copied out rather than left in
-    ``result`` because ``str(exc)`` never contains the class name --
-    ``str(KeyError('x'))`` is ``"'x'"`` -- so a client that wants to say
-    something kinder than the raw message for one exception KIND has nothing
-    else to key on. Absent when the engine did not supply one, so a client
-    can tell "no type" from a type it does not recognise.
-    """
-    if not result or status != "error":
-        return {}
-    fields = {"error": result.get("error", "")}
-    error_type = result.get("error_type")
-    if isinstance(error_type, str) and error_type:
-        fields["error_type"] = error_type
-    return fields
-
-
-def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
-    """Bound one event payload before it becomes a durable row.
-
-    Retention counts RUNS, not bytes. Nothing else stops a graph whose nodes
-    emit base64 PNGs (#117 image entries are the full image) from writing
-    hundreds of megabytes of ``exec_run_events`` for a single run — with
-    ``record_outputs`` off, because this path is the live status stream, not
-    the output capture. Same for a training payload whose per-batch array
-    grows every epoch.
-
-    Four steps, cheapest first, each preserving more meaning than the next:
-
-    1. Measure once. Under cap — the overwhelmingly common case, an ordinary
-       ``node_status`` is a couple of KB — and the payload is returned
-       untouched, having cost exactly one ``json.dumps``.
-    2. Over cap, elide the output entries that are pulling more than their
-       equal share of the budget. Equal share, rather than the whole cap,
-       so a payload made of several medium entries degrades entry by entry
-       instead of collapsing wholesale.
-    3. Still over, and the weight is in a top-level string (an ``error``
-       with a giant traceback): keep its head and mark it truncated.
-    4. Still over — nothing left to trim — and the payload collapses to a
-       marker that keeps the identifying keys. Losing the body beats
-       refusing the event.
-
-    ``cap_bytes <= 0`` disables the whole thing.
-    """
-    if cap_bytes <= 0 or payload is None:
-        return payload
-    size = json_size(payload)
-    if size <= cap_bytes:
-        return payload
-
-    if isinstance(payload, dict):
-        entries = payload.get("outputs")
-        if isinstance(entries, list) and entries:
-            budget = max(1, cap_bytes // len(entries))
-            payload = {**payload,
-                       "outputs": [_elide_entry(e, budget) for e in entries]}
-            size = json_size(payload)
-            if size <= cap_bytes:
-                return payload
-
-        payload = _truncate_strings(payload, cap_bytes=cap_bytes)
-        size = json_size(payload)
-        if size <= cap_bytes:
-            return payload
-
-    marker: dict[str, Any] = {"elided": True, "bytes": size,
-                              "cap_bytes": cap_bytes}
-    if isinstance(payload, dict):
-        # ``error_type`` is a class name, so it can never be what pushed the
-        # payload over the cap -- and the frontend keys its whole error
-        # mapping on it (``errorMessages.ts``). Without it here the marker
-        # is the one shape that leaves the UI scanning a traceback that is
-        # no longer in the payload.
-        for key in ("node_id", "status", "run_id", "reason", "error_type"):
-            if key in payload:
-                marker[key] = payload[key]
-    return marker
-
-
-def scalar_metrics(
-    payload: Any, *, node_id: str | None, step: int,
-) -> list[MetricPoint]:
-    """Extract chartable scalars from one progress payload.
-
-    Every finite top-level number that is not a loop descriptor becomes a
-    point of a series named after its key. Booleans are excluded (a flag is
-    not a measurement), as are strings, lists and nested objects — a
-    ``losses`` array is per-batch detail that belongs in the event payload,
-    not as one row per element in the metrics table.
-
-    This is INFERENCE, and it exists for nodes that report progress but
-    know nothing about metrics. A node that calls ``context.log_metric``
-    says what it means; see ``RunService._collect_metrics``, which stops
-    inferring from a node the moment that node speaks for itself.
-    """
-    if not isinstance(payload, dict):
-        return []
-    if payload.get("event") in NON_METRIC_EVENTS:
-        return []
-    points: list[MetricPoint] = []
-    for key, value in payload.items():
-        if key in NON_METRIC_KEYS or isinstance(value, bool):
-            continue
-        if not isinstance(value, (int, float)):
-            continue
-        points.append(MetricPoint(name=key, value=float(value), step=step,
-                                  node_id=node_id))
-    return points
-
-
-def metric_step(payload: Any, *, fallback: int) -> int:
-    """The step a progress payload belongs to.
-
-    ``step`` wins over ``epoch``; both beat the caller's running counter, so
-    a producer that reports nothing still gets a monotonic x-axis instead of
-    every point piling up on step 0.
-    """
-    if isinstance(payload, dict):
-        for key in ("step", "epoch"):
-            value = payload.get(key)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, int):
-                return value
-            if isinstance(value, float) and value.is_integer():
-                return int(value)
-    return fallback
-
-
-def apply_seed(seed: int | None) -> None:
-    """Seed the RNGs a run might touch, before the graph starts.
-
-    Thin alias for :func:`app.core.seeding.seed_rngs`, kept because it is
-    this module's published name for the operation. It sets the RUN-level
-    baseline: anything that draws outside a node's ``execute`` (preset
-    expansion, a validator) is covered by it.
-
-    It is no longer what makes a run reproducible. That is the per-node
-    derivation in ``graph_engine`` — this call alone leaves the answer
-    dependent on the order in which concurrently-scheduled nodes happened to
-    draw, which is exactly the bug #134 fixed. Still PROCESS-GLOBAL, so two
-    runs with different seeds executing at once do not get independent
-    streams; the per-node seeding narrows that window to one node's execute
-    but does not close it.
-    """
-    seed_rngs(seed)
 
 
 # ── run exclusion ─────────────────────────────────────────────────────────
@@ -1300,6 +1432,16 @@ class _QueuedRun:
     options: dict[str, Any]
     signal: _Broadcast
     subscribers: set[RunSubscription] = field(default_factory=set)
+    #: Submit order across EVERY queue (``RunService._submit_seq``):
+    #: ``reschedule`` offers a freed slot to the oldest front first.
+    seq: int = 0
+    #: ``run_needs.needs`` for a run that targets a worker (#782): the
+    #: scheduler places it only where its mount is. None for a local run.
+    #: In memory only, like the entry itself: a restart retires the queue.
+    needs: dict[str, Any] | None = None
+    #: The node types the run executes (``graph_node_types``), for a run
+    #: that targets a worker (#781); None for a local one.
+    node_types: frozenset[str] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails.
@@ -1329,8 +1471,21 @@ class _ActiveRun:
     #: already terminal.
     queue_key: str = CPU_QUEUE_KEY
     lane: str = DEFAULT_LANE
+    #: The slots a queued-lane run took at promotion (#768); every one is
+    #: given back on release. ``None`` on the interactive lane, which holds
+    #: no device slot.
+    placement: Placement | None = None
+    #: ``run_needs.needs`` of a run that targets a worker (#782), handed to
+    #: ``WorkerExecutor``, which picks the storage backend from it (#785).
+    needs: dict[str, Any] | None = None
+    #: What ``exec_runs.queue_key`` records once the run starts: the device
+    #: for a run in this process, ``<worker>/<device>`` on a worker (#772).
+    row_queue_key: str = CPU_QUEUE_KEY
     session: "InteractiveSession | None" = None
     record_outputs: bool = False
+    #: The node types it executes, computed at submit for a run that
+    #: targets a worker (#781); the executor's pre-assignment check.
+    node_types: frozenset[str] | None = None
     #: True once this run's admission — its device slot, or its interactive
     #: slot and session key — has been given back. Released EARLY (see
     #: ``_release_admission``), so the flag is what keeps ``_drive``'s
@@ -1352,13 +1507,19 @@ class _ActiveRun:
     #: still being written, and a poller should keep waiting for it.
     finished: bool = False
     pending_metrics: list[MetricPoint] = field(default_factory=list)
-    last_metric_step: int = 0
     last_flush_monotonic: float = field(default_factory=time.monotonic)
     #: Nodes that have logged an EXPLICIT metric (#122). Progress payloads
     #: from these are no longer mined by ``scalar_metrics`` — otherwise a
     #: training loop that logs ``val_loss`` and also puts ``val_loss`` in its
     #: epoch payload would write the same point twice.
     explicit_metric_nodes: set[str] = field(default_factory=set)
+    #: True once the executor reported a measurement for this run, and the
+    #: ``peak_memory`` it reported (#770; None is a measurement: a CPU
+    #: run). ``_finalize`` records only a measured run: one stopped before
+    #: its first node, an unusable snapshot, or an executor that raised has
+    #: no number to report, not a null one.
+    peak_measured: bool = False
+    peak_memory: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -1395,8 +1556,23 @@ class RunService:
         metric_flush_max_points: int = METRIC_FLUSH_MAX_POINTS,
         metric_flush_interval_s: float = METRIC_FLUSH_INTERVAL_S,
         limits: QueueLimits | None = None,
+        executor: Executor | None = None,
+        scheduler: Scheduler | None = None,
+        workers: "WorkerRegistry | None" = None,
     ) -> None:
         self.store = store
+        # The connected worker agents (#772). With a registry, a run that
+        # targets a worker is placed by ``WorkerScheduler`` and executed by
+        # ``WorkerExecutor``; a run without a target never meets either.
+        self._workers = workers
+        self._worker_executor: Executor | None = (
+            None if workers is None else WorkerExecutor(
+                workers, content_index=_content_index(store)))
+        # Where a run's graph executes (#766). In this process unless a
+        # caller hands over another executor; the service schedules, records
+        # and fans out the same way whichever one it is.
+        self._executor: Executor = (InProcessExecutor() if executor is None
+                                    else executor)
         self._output_store = output_store
         self._retention_keep_last = retention_keep_last
         # ONE source for the ceiling, read HERE rather than defaulted to a
@@ -1415,6 +1591,19 @@ class RunService:
         self._metric_flush_max_points = metric_flush_max_points
         self._metric_flush_interval_s = metric_flush_interval_s
         self._limits = QueueLimits.from_settings() if limits is None else limits
+        # Who may leave the front of a FIFO, and on which slots (#768).
+        if scheduler is None:
+            scheduler = (LocalScheduler(self._limits) if workers is None
+                         else WorkerScheduler(self._limits, workers,
+                                              _local_device_values))
+        self._scheduler: Scheduler = scheduler
+        if workers is not None:
+            # A worker connecting, draining, undraining or going away is
+            # capacity appearing or vanishing somewhere no queue key names.
+            workers.add_listener(self.reschedule)
+            # A run that ended here while its worker was away, and that the
+            # worker later reports finished (#783).
+            workers.on_late_result = self._record_late_result
         self._runs: dict[str, _ActiveRun] = {}
         # ── the queue (#123) ─────────────────────────────────────────────
         # One FIFO per resolved device, plus a by-id index so cancel is O(1)
@@ -1423,11 +1612,28 @@ class RunService:
         # only places that touch both, so they cannot drift.
         self._pending: dict[str, deque[_QueuedRun]] = {}
         self._pending_by_id: dict[str, _QueuedRun] = {}
-        # Slots taken per queue key. NOT derived from ``_runs`` on demand:
-        # counting a dict by predicate on every promotion is both slower and
-        # easier to get subtly wrong than incrementing where the slot is
-        # actually taken and released.
-        self._slots: dict[str, int] = {}
+        # One monotonic submit counter for every queue: several FIFOs can
+        # share one slot (``cuda:0``, ``any/cuda`` and a same-host worker's
+        # ``<worker>/cuda:0``), and ``reschedule`` serves their fronts in
+        # this order so no queue starves the others.
+        self._submit_seq = itertools.count(1)
+        # A reschedule asked for by a cancel runs on the loop AFTER the
+        # cancel, coalesced (``_request_reschedule``); while a bulk cancel
+        # holds ``deferred_reschedule`` it waits for the whole batch.
+        self._reschedule_holds = 0
+        self._reschedule_requested = False
+        # Runs holding each ``(worker_id, device)`` slot (#768). NOT derived
+        # from ``_runs`` on demand: counting a dict by predicate on every
+        # promotion is both slower and easier to get subtly wrong than
+        # incrementing where the slot is actually taken and released.
+        self._slots: dict[SlotKey, int] = {}
+        # Slots a refused device-set run at the front of its FIFO needs,
+        # kept off-limits to every later run until it starts (#773; see
+        # ``scheduling``'s module docstring). Insertion order is the
+        # first-come, first-served order ``_admission_view`` relies on.
+        self._reservations: dict[str, tuple[SlotKey, ...]] = {}
+        # ``(worker, device)`` overrides already reported as shadowed.
+        self._shadowed_overrides_logged: set[tuple[str, str]] = set()
         # No reproducibility gate here on purpose: ``_drive`` reaches it
         # through ``run_exclusion()``. It is orthogonal to the queue's
         # admission (the queue decides how many runs may be IN FLIGHT, the
@@ -1482,6 +1688,14 @@ class RunService:
     def is_active(self, run_id: str) -> bool:
         return run_id in self._runs
 
+    def running_on(self, run_id: str) -> str | None:
+        """The worker *run_id* is executing on now, or None: not active
+        here, or running in this process. What the transfer upload route
+        (#785) checks a worker's upload against."""
+        active = self._runs.get(run_id)
+        placement = None if active is None else active.placement
+        return placement.worker_id if on_a_worker(placement) else None
+
     def pending_secret_count(self) -> int:
         """How many runs this process is holding SECRET params for (#251).
 
@@ -1506,6 +1720,14 @@ class RunService:
         Position 1 is next to start. A run that is running, finished, or
         unknown to this process has no position — the answer is ``None`` for
         all three, because "not waiting" is the fact a caller acts on.
+
+        An approximation once a run needs more than one slot (#773): the
+        position is counted in the ONE FIFO the run waits in (its queue
+        key; for a device set, its first device's). Position 1 means
+        nothing in that line is ahead of it, not that it starts next: it
+        also needs every other slot of its set, and the runs waiting for
+        those cards in their own FIFOs are not counted here, nor are the
+        runs a same-host worker has on a shared card.
         """
         entry = self._pending_by_id.get(run_id)
         if entry is None:
@@ -1518,6 +1740,24 @@ class RunService:
                 return index
         return None  # pragma: no cover - as above
 
+    def queue_reason(self, run_id: str) -> str | None:
+        """Why a waiting run cannot start, beyond a busy slot, or None.
+
+        The scheduler's word (``WorkerScheduler.explain``, #772): "waiting
+        for worker X to reconnect", "worker X is draining". None for a run
+        that is not waiting, or that waits only for its turn.
+        """
+        entry = self._pending_by_id.get(run_id)
+        explain = getattr(self._scheduler, "explain", None)
+        if entry is None or explain is None:
+            return None
+        try:
+            return explain(entry)
+        except Exception:  # noqa: BLE001 -- a description, never an error
+            logger.debug("could not explain run %s's wait", run_id,
+                         exc_info=True)
+            return None
+
     def queue_snapshot(self) -> dict[str, list[str]]:
         """``{queue_key: [run_id, ...]}`` in service order. Waiting runs only.
 
@@ -1527,6 +1767,38 @@ class RunService:
         """
         return {key: [entry.run_id for entry in queue]
                 for key, queue in self._pending.items() if queue}
+
+    def slot_usage(self, slot: SlotKey) -> dict[str, int]:
+        """``{"limit": N, "taken": M}`` for one ``(worker_id, device)`` slot.
+
+        What ``GET /api/workers`` shows per device (#773): the cap
+        :class:`QueueLimits` gives the slot and how many running runs hold
+        it now. Waiting runs are not counted; they hold no slot.
+        """
+        return {"limit": self._limits.for_slot(slot),
+                "taken": self._slots.get(slot, 0)}
+
+    def check_worker_overrides(self, worker: Any) -> None:
+        """Warn once per card when a ``<worker>/<device>`` override cannot
+        apply because the card is shared with this process (#773): a
+        shared card has this process's slot, and this process's cap."""
+        for device, local in (getattr(worker, "shared", None) or {}).items():
+            key = f"{worker.id}{WORKER_QUEUE_SEPARATOR}{device}"
+            if not any(k == key for k, _ in self._limits.overrides):
+                continue
+            if (worker.id, device) in self._shadowed_overrides_logged:
+                continue
+            self._shadowed_overrides_logged.add((worker.id, device))
+            logger.warning(
+                "run queue override %r is ignored: worker %s runs on this "
+                "machine and its %s is this server's %s, which uses the "
+                "local limit (%d)", key, worker.id, device, local,
+                self._limits.for_slot((LOCAL_WORKER_ID, local)))
+
+    @staticmethod
+    def local_devices() -> list[str]:
+        """This process's devices, canonical (``cpu``, ``cuda:0``, ``mps:0``)."""
+        return _local_device_values()
 
     # ── terminal listeners (#343) ─────────────────────────────────────────
 
@@ -1575,6 +1847,7 @@ class RunService:
         run_id: str | None = None,
         study_id: str | None = None,
         study_attempt_id: str | None = None,
+        needs: Any = NEEDS_UNKNOWN,
     ) -> SubmitResult:
         """Persist a run, then SCHEDULE it. Raises ``RunSubmitError`` on input.
 
@@ -1594,8 +1867,11 @@ class RunService:
         The device is resolved ONCE here and handed to both the row
         (``queue_key``) and the run (``ExecutionContext.device``), so the
         queue a run waits in and the device it eventually uses cannot
-        disagree. The effective device is ``options["device"]`` when that
-        key is present, else the graph's ``settings.device``, else ``cpu``;
+        disagree. The effective device is ``target.devices[0]`` when the
+        options carry a device set (#769; ``settings.device`` is then not
+        consulted, and see :func:`normalize_options` for how it combines
+        with ``device``), else ``options["device"]`` when that key is
+        present, else the graph's ``settings.device``, else ``cpu``;
         the effective value is written into the stored options so the row
         stays self-describing. ``options["seed"]`` falls back to the graph's
         ``settings.seed`` the same way (see :func:`apply_graph_settings`). ``auto`` resolves to the best accelerator
@@ -1619,30 +1895,30 @@ class RunService:
         attempt BEFORE calling this, and the stamp on the row is how a child
         whose linkage write was lost is found again. Like a sweep, a study
         child cannot use the interactive lane.
+
+        *needs* is this run's ``run_needs.needs`` when the caller already
+        has it (:meth:`check_placeable_batch` computes it for every child
+        of a sweep or study), so it is not computed twice (#782).
         """
-        if self._shutting_down:
-            raise RunServiceUnavailable("run service is shutting down")
-        normalized_graph = normalize_graph(graph)
-        options = apply_graph_settings(normalized_graph, options)
-        normalized_options = normalize_options(options)
+        normalized_graph, normalized_options, queue_key, needs = self._prepare(
+            graph, options,
+            batch_child=sweep_id is not None or study_id is not None,
+            needs=needs)
+        node_types = None
+        if needs is not None:
+            # A run that targets a worker (``_prepare`` leaves ``needs`` None
+            # only for a local one): the node types it runs, once, off the
+            # loop (#781). Checked here for a named worker and carried to the
+            # executor, which checks them again before ``assign``.
+            node_types = frozenset(await asyncio.to_thread(
+                graph_node_types, normalized_graph))
+            self._check_worker_catalog(normalized_options, node_types)
         normalized_name = normalize_name(name)
         lane = normalized_options["lane"]
         if session is not None and lane != LANE_INTERACTIVE:
             raise RunSubmitError(
                 f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
                 f"got {lane!r}")
-        if (sweep_id is not None or study_id is not None) \
-                and lane == LANE_INTERACTIVE:
-            # Refused for the same reason a session on the wrong lane is:
-            # _submit_interactive admits against RUN_INTERACTIVE_MAX_CONCURRENT
-            # and REFUSES past it rather than queuing, so a 32-variant
-            # interactive sweep would be two runs and thirty 503s.
-            raise RunSubmitError(
-                f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
-                "are queued, and the interactive lane refuses past its cap "
-                "instead of queuing")
-        queue_key = canonical_queue_key(
-            resolve_device(normalized_options.get("device")))
 
         if lane == LANE_INTERACTIVE:
             return await self._submit_interactive(
@@ -1668,6 +1944,8 @@ class RunService:
             run_id=run_id,
             study_id=study_id,
             study_attempt_id=study_attempt_id,
+            worker_id=target_worker(normalized_options),
+            devices=target_devices(normalized_options),
         )
         if self._shutting_down:
             # The same re-check ``_start`` makes, for the same reason and at
@@ -1691,13 +1969,230 @@ class RunService:
         # a run overtaking a queue that filled between the check and the
         # start.
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
-                           options=normalized_options, signal=_Broadcast())
+                           options=normalized_options, signal=_Broadcast(),
+                           seq=next(self._submit_seq),
+                           needs=needs, node_types=node_types)
         self._enqueue(entry)
         self._pump(queue_key)
         return SubmitResult(
             run_id=record.id,
             status=(STATUS_RUNNING if record.id in self._runs
                     else STATUS_QUEUED))
+
+    def _prepare(
+        self, graph: Any, options: Any, *, batch_child: bool = False,
+        needs: Any = NEEDS_UNKNOWN,
+    ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any] | None]:
+        """``(graph, options, queue_key, needs)`` for a submit, or the refusal.
+
+        The one place a submission is validated, shared by :meth:`submit`
+        and :meth:`check_placeable_batch` so the two cannot drift: the
+        shutdown check, the graph and options normalisation (the graph's
+        settings fill what the options leave out), the batch-child lane
+        guard and the queue key, which is where a ``target`` is checked.
+        *batch_child* is a sweep variant or a study child. ``needs`` is
+        ``run_needs.needs`` for a run that targets a worker (#782) and None
+        for a local one, which never computes it: the 3.0 path unchanged.
+        The queue key's refusals (an unknown worker, a device nobody
+        offers, ``record_outputs``) come first; only a run they let through
+        has its graph read for storage (:meth:`_check_storage`). A *needs*
+        given by the caller (anything but :data:`NEEDS_UNKNOWN`) is used as
+        it is.
+        """
+        if self._shutting_down:
+            raise RunServiceUnavailable("run service is shutting down")
+        normalized_graph = normalize_graph(graph)
+        normalized_options = normalize_options(
+            apply_graph_settings(normalized_graph, options))
+        if batch_child and normalized_options["lane"] == LANE_INTERACTIVE:
+            # Refused for the same reason a session on the wrong lane is:
+            # _submit_interactive admits against RUN_INTERACTIVE_MAX_CONCURRENT
+            # and REFUSES past it rather than queuing, so a 32-variant
+            # interactive sweep would be two runs and thirty 503s.
+            raise RunSubmitError(
+                f"a sweep cannot use lane={LANE_INTERACTIVE!r}; its variants "
+                "are queued, and the interactive lane refuses past its cap "
+                "instead of queuing")
+        queue_key = self._submit_queue_key(normalized_options)
+        if entry_target(normalized_options)[0] == TARGET_WORKER_LOCAL:
+            return normalized_graph, normalized_options, queue_key, None
+        if needs is NEEDS_UNKNOWN:
+            needs = self._needs_of(normalized_graph)
+        self._check_storage(normalized_options, needs)
+        return normalized_graph, normalized_options, queue_key, needs
+
+    def _check_worker_catalog(self, options: dict[str, Any],
+                              node_types: frozenset[str]) -> None:
+        """Refuse a run naming a worker whose node catalog differs from this
+        server's and that lacks a type the run uses (#781). ``any`` is not
+        checked here: placement skips the workers that lack types, and the
+        executor checks the one it picked."""
+        worker_id, _devices = entry_target(options)
+        if worker_id in (TARGET_WORKER_LOCAL, TARGET_WORKER_ANY) \
+                or self._workers is None:
+            return
+        worker = self._workers.get(worker_id)
+        refusal = (None if worker is None
+                   else catalog_refusal(worker, node_types))
+        if refusal is not None:
+            raise RunSubmitError(refusal)
+
+    @staticmethod
+    def _needs_of(graph: dict[str, Any]) -> dict[str, Any]:
+        """``run_needs.needs``, with the transfer backend's verdict
+        (``needs["transfer"]``, #785) when the run names a mount."""
+        from .run_needs import needs as run_needs
+        from .transfer import annotate
+
+        return annotate(run_needs(graph))
+
+    def check_placeable_batch(self, graphs: Iterable[Any],
+                              options: Any) -> list[dict[str, Any] | None]:
+        """Refuse, before anything is written, what :meth:`submit` would
+        refuse for any child of a sweep or study (#777).
+
+        Every child gets *options*; they differ only in their graph, and
+        of the graph only ``settings`` (device, seed) reaches the options,
+        so the options and the queue key are checked once per distinct
+        ``settings``. Storage (#782) depends on the whole graph (a variant
+        may switch ``checkpoint_every`` on), so each child's needs are
+        computed and checked; they are returned in order, for the caller
+        to hand to :meth:`submit` (``needs=``) instead of computing them
+        again. None for a child that runs here. Raises ``RunSubmitError``
+        (or ``RunServiceUnavailable``) with the message ``submit`` would
+        give. A ``target`` naming a worker this server has seen but that
+        is away is not refused: its children wait for it, as one run does.
+        """
+        checked: dict[str, dict[str, Any]] = {}
+        result: list[dict[str, Any] | None] = []
+        for graph in graphs:
+            settings_ = graph.get("settings") if isinstance(graph, dict) \
+                else None
+            key = json.dumps(settings_, sort_keys=True, default=str)
+            if key not in checked:
+                _, checked[key], _, _ = self._prepare(
+                    graph, options, batch_child=True, needs=None)
+            child_options = checked[key]
+            if entry_target(child_options)[0] == TARGET_WORKER_LOCAL:
+                result.append(None)
+                continue
+            child_graph = normalize_graph(graph)
+            child_needs = self._needs_of(child_graph)
+            self._check_storage(child_options, child_needs)
+            # Per child, not per ``settings``: a variant may change what
+            # runs (a Map's preset, a bypass) (#781). Only a named worker
+            # whose catalog differs is checked, so the common case costs
+            # nothing.
+            worker = (None if self._workers is None
+                      else self._workers.get(entry_target(child_options)[0]))
+            if worker is not None and worker.catalog.degraded:
+                self._check_worker_catalog(
+                    child_options, frozenset(graph_node_types(child_graph)))
+            result.append(child_needs)
+        return result
+
+    def _submit_queue_key(self, options: dict[str, Any]) -> str:
+        """The FIFO a submitted run joins, or ``RunSubmitError``.
+
+        Without a target, or with ``target.worker == "local"``: the
+        resolved device, exactly as before #772. On a worker the device is
+        the WORKER's to resolve, so the key is ``<worker>/<device as
+        asked>`` (``gpu-box/cuda:1``, ``gpu-box/cuda``) and ``any/<device>``
+        for ``any``; :data:`WORKER_QUEUE_SEPARATOR` cannot occur in a device
+        string, so the two families never collide. A worker run's row
+        records ``<worker>/<device it got>`` once it starts.
+
+        A named worker must be one this server has seen since it started
+        (connected now or away: a run for a worker that is away WAITS for
+        it to reconnect, #777), and must offer every device of the set (or
+        the requested device, or one of the requested kind) as it last
+        reported them; ``any`` likewise needs this server or a worker it
+        has seen to offer the device (a CUDA set a worker would renumber:
+        a worker it has seen, since this server never takes such an
+        ``any`` run, see ``WorkerScheduler``). The run must be one a
+        worker can do
+        in this wave (no ``record_outputs``, not the interactive lane).
+        Only an unknown worker name, a device nobody offers, or one of
+        those two options is refused, so a worker disconnecting halfway
+        through a sweep's or a study's submissions does not fail it.
+        Storage is checked after this, by :meth:`_check_storage`.
+        """
+        worker_id, devices = entry_target(options)
+        if worker_id == TARGET_WORKER_LOCAL:
+            return _local_queue_key(options.get("device"))
+        if options.get("lane") == LANE_INTERACTIVE:
+            raise RunSubmitError(WORKER_REFUSES_INTERACTIVE)
+        if options.get("record_outputs"):
+            raise RunSubmitError(WORKER_REFUSES_RECORD_OUTPUTS)
+        requested = str(options.get("device") or "cpu")
+        if worker_id == TARGET_WORKER_ANY:
+            can_serve = getattr(self._scheduler, "can_serve_any", None)
+            if can_serve is not None and not can_serve(requested, devices):
+                if renumbered_on_a_worker(devices):
+                    raise RunSubmitError(
+                        f"no known worker offers the device set "
+                        f"{', '.join(devices or [])} (with target 'any', a "
+                        f"CUDA set other than cuda:0 alone runs on a worker "
+                        f"only, never on this server)")
+                wanted = ", ".join(devices) if devices else requested
+                raise RunSubmitError(
+                    f"neither this server nor a known worker offers "
+                    f"{wanted}")
+            return f"{TARGET_WORKER_ANY}{WORKER_QUEUE_SEPARATOR}{requested}"
+        worker = None if self._workers is None else self._workers.get(worker_id)
+        if worker is None:
+            raise RunSubmitError(worker_not_connected(worker_id))
+        offered = worker.device_values()
+        wanted = devices or []
+        missing = [d for d in wanted if not worker.offers(d)]
+        if not wanted and not candidate_devices(offered, requested):
+            missing = [requested]
+        if missing:
+            raise RunSubmitError(
+                f"worker {worker_id!r} does not offer {', '.join(missing)} "
+                f"(it offers {', '.join(offered) or 'nothing'})")
+        return f"{worker_id}{WORKER_QUEUE_SEPARATOR}{requested}"
+
+    def _check_storage(self, options: dict[str, Any],
+                       needs: Mapping[str, Any] | None) -> None:
+        """Refuse a worker run whose *needs* name a mount nobody it may go
+        to holds (#782), unless the transfer backend can ship its files
+        instead (#785).
+
+        A named worker must hold the mount, as it last reported its mounts
+        (``mounts.holds_mount``: a same-host worker holds this server's
+        label without declaring it), or the run must fit the transfer
+        backend (``needs["transfer"]``, decided by ``core.transfer``). For
+        ``any``, this server or a known worker that can serve the files
+        must offer the device; this server always holds its own label.
+        Called after :meth:`_submit_queue_key`, so the worker is known and
+        offers the device.
+        """
+        from .transfer import refusal, transferable
+
+        mount = needs.get("mount") if isinstance(needs, Mapping) else None
+        if not mount:
+            return
+        transfer = transferable(needs)
+        worker_id, devices = entry_target(options)
+        requested = str(options.get("device") or "cpu")
+        if worker_id == TARGET_WORKER_ANY:
+            can_serve = getattr(self._scheduler, "can_serve_any", None)
+            if can_serve is not None and not can_serve(
+                    requested, devices, mount=mount, transfer=transfer):
+                wanted = ", ".join(devices) if devices else requested
+                why = refusal(needs)
+                raise RunSubmitError(
+                    f"this run reads or writes files under the `{mount}` "
+                    f"mount, and neither this server nor a known worker "
+                    f"with that mount offers {wanted}"
+                    + (f" (the transfer backend cannot ship them: {why})"
+                       if why else ""))
+            return
+        worker = None if self._workers is None else self._workers.get(worker_id)
+        if worker is not None and not holds_mount(worker, mount) \
+                and not transfer:
+            raise RunSubmitError(no_mount(worker_id, mount, refusal(needs)))
 
     async def _submit_interactive(
         self, graph: dict[str, Any], options: dict[str, Any],
@@ -1727,6 +2222,8 @@ class RunService:
             record = await self.store.create_run(
                 graph_snapshot=stored_graph, options=options, name=name,
                 status=STATUS_QUEUED, queue_key=queue_key,
+                worker_id=target_worker(options),
+                devices=target_devices(options),
             )
             return self._start(record.id, graph, options,
                                queue_key=queue_key, lane=LANE_INTERACTIVE,
@@ -1815,6 +2312,7 @@ class RunService:
         if entry is None:
             return None
         queue = self._pending.get(entry.queue_key)
+        was_front = bool(queue) and queue[0] is entry
         if queue is not None:
             try:
                 queue.remove(entry)
@@ -1822,15 +2320,109 @@ class RunService:
                 pass
             if not queue:
                 self._pending.pop(entry.queue_key, None)
+        reserved = self._reservations.pop(run_id, None) is not None
+        if was_front or reserved:
+            # The run behind it is the new front, and nothing else would
+            # offer it to the scheduler: a front that was waiting for a
+            # worker, or whose placement raised, holds no slot whose
+            # release would pump its queue. Cards it reserved are open
+            # to every other run again too. Deferred, not done here: a
+            # "cancel all" dequeues its runs one by one, and the sibling
+            # behind this one must not start just to be cancelled next.
+            self._request_reschedule()
         return entry
 
-    def _pump(self, queue_key: str) -> None:
-        """Start as many waiting runs as this device has room for. SYNCHRONOUS.
+    def _request_reschedule(self) -> None:
+        """Reschedule once, on the loop, after the current step. Coalesced.
 
-        Called on submit and again whenever a run of this key ends, so there
-        is no scheduler task, no polling interval, and nothing to drain at
-        shutdown. Being synchronous is what makes it safe to call from
-        ``_drive``'s ``finally``: the slot is released and the next run
+        Inside :meth:`deferred_reschedule` it waits for the block to end.
+        Outside a running loop (a synchronous caller) it reschedules now.
+        """
+        if self._reschedule_requested:
+            return
+        self._reschedule_requested = True
+        if self._reschedule_holds:
+            return
+        try:
+            asyncio.get_running_loop().call_soon(self._run_requested_reschedule)
+        except RuntimeError:
+            self._run_requested_reschedule()
+
+    def _run_requested_reschedule(self) -> None:
+        if self._reschedule_holds or not self._reschedule_requested:
+            return  # the hold's end runs it
+        self._reschedule_requested = False
+        self.reschedule()
+
+    @contextlib.contextmanager
+    def deferred_reschedule(self) -> Iterator[None]:
+        """Hold back rescheduling for a bulk cancel; reschedule once after.
+
+        Cancelling a sweep's or a study's runs one at a time would
+        otherwise start each queued sibling as the one ahead of it leaves
+        (a cancelled front, a running sibling releasing its slot), only to
+        cancel it a moment later. Nestable; the outermost exit reschedules
+        if anything asked for it.
+        """
+        self._reschedule_holds += 1
+        try:
+            yield
+        finally:
+            self._reschedule_holds -= 1
+            if not self._reschedule_holds and self._reschedule_requested:
+                self._reschedule_requested = False
+                self.reschedule()
+
+    def _reserve(self, entry: _QueuedRun) -> None:
+        """Record (or drop) what the refused front-of-line *entry* reserves.
+
+        Asked of the scheduler each time the entry is refused, so a run
+        that stops qualifying (its worker went away or is draining) stops
+        holding cards idle. An existing reservation keeps its place in the
+        first-come order.
+        """
+        reservation = getattr(self._scheduler, "reservation", None)
+        try:
+            slots = None if reservation is None else reservation(entry)
+        except Exception:  # noqa: BLE001 -- a reservation is an optimisation
+            logger.exception("could not compute run %s's reservation",
+                             entry.run_id)
+            slots = None
+        if slots:
+            self._reservations[entry.run_id] = tuple(slots)
+        else:
+            self._reservations.pop(entry.run_id, None)
+
+    def _admission_view(self, run_id: str) -> Mapping[SlotKey, int]:
+        """``taken`` as *run_id* may see it: slots reserved ahead of it full.
+
+        A reservation blocks every run that is not itself holding an
+        EARLIER one (first come, first served), so the oldest waiting set
+        run always makes progress and two set runs cannot block each other.
+        """
+        if not self._reservations:
+            return self._slots
+        view = dict(self._slots)
+        for holder, slots in self._reservations.items():
+            if holder == run_id:
+                break
+            for slot in slots:
+                view[slot] = _RESERVED
+        return view
+
+    def _pump(self, queue_key: str) -> None:
+        """Start waiting runs while the scheduler places them. SYNCHRONOUS.
+
+        Strict FIFO per queue key: the scheduler is asked about the FRONT
+        entry only, and a ``None`` stops the pump, so nothing overtakes a
+        run that cannot start yet.
+
+        Called on submit; a run ending, a waiting run leaving the front of
+        its line and a worker changing go through :meth:`reschedule`, which
+        asks every queue. So there is no scheduler task, no polling
+        interval, and nothing to drain at shutdown. Being synchronous is
+        what makes it safe to call from ``_drive``'s ``finally``: the slot
+        is released and the next run
         registered without an await in between, so no third party can slip
         into a slot that has already been promised.
 
@@ -1839,48 +2431,89 @@ class RunService:
         promoting one into a task nobody drains is the exact failure
         ``_start``'s own re-check exists to prevent.
         """
+        while self._pump_one(queue_key):
+            pass
+
+    def _pump_one(self, queue_key: str) -> bool:
+        """Start the front of *queue_key* if the scheduler places it.
+
+        True when a run started (the queue may move again), False when the
+        front stays where it is or the queue is empty. ``_pump``'s body,
+        one entry at a time, so :meth:`reschedule` can interleave queues.
+        """
         if self._shutting_down:
-            return
+            return False
         queue = self._pending.get(queue_key)
-        while queue and self._slots.get(queue_key, 0) < self._limits.for_key(
-                queue_key):
-            entry = queue.popleft()
-            self._pending_by_id.pop(entry.run_id, None)
-            try:
-                # The graph is NOT passed: ``_drive`` re-reads it from the
-                # row. The signal and the subscriber set ARE — same objects,
-                # so a client that parked on the queued run keeps both its
-                # generation and its live feed across the promotion.
-                self._start(entry.run_id, None, entry.options,
-                            queue_key=queue_key, lane=entry.options.get(
-                                "lane", DEFAULT_LANE),
-                            signal=entry.signal, subscribers=entry.subscribers)
-            except Exception:
-                # Two things must not happen here, and both did before this
-                # guard. The entry must not be LOST — it has already left
-                # both indexes — so it goes back at the FRONT, keeping its
-                # place in line for the next pump. And the exception must
-                # not escape: this method is called from ``_finalize``,
-                # inside the PREVIOUS run's task and before that run's
-                # terminal event and row write, so letting it through would
-                # make one run's failed promotion silently strand another
-                # run's outcome.
-                logger.exception(
-                    "run %s could not be started off the %s queue; it stays "
-                    "queued", entry.run_id, queue_key)
-                queue.appendleft(entry)
-                self._pending_by_id[entry.run_id] = entry
-                break
         if not queue:
             self._pending.pop(queue_key, None)
+            return False
+        front = queue[0]
+        try:
+            # Inside the guard: a scheduler that raises must not unwind
+            # ``_finalize`` or ``submit`` any more than a failed start
+            # may. The run stays first in line.
+            placement = self._scheduler.place(
+                front, self._admission_view(front.run_id))
+        except Exception:
+            logger.exception(
+                "the scheduler failed to place run %s off the %s queue; "
+                "it stays queued", front.run_id, queue_key)
+            return False
+        if placement is None:
+            self._reserve(front)
+            return False
+        if not placement.slots:
+            # A placement that holds no slot would never be counted,
+            # so the loop would drain the whole FIFO uncapped.
+            logger.warning(
+                "the scheduler placed run %s without any slot; treating "
+                "it as a refusal, the run stays queued", front.run_id)
+            return False
+        entry = queue.popleft()
+        if not queue:
+            self._pending.pop(queue_key, None)
+        self._pending_by_id.pop(entry.run_id, None)
+        self._reservations.pop(entry.run_id, None)
+        try:
+            # The graph is NOT passed: ``_drive`` re-reads it from the
+            # row. The signal and the subscriber set ARE — same objects,
+            # so a client that parked on the queued run keeps both its
+            # generation and its live feed across the promotion.
+            self._start(entry.run_id, None, entry.options,
+                        queue_key=queue_key, lane=entry.options.get(
+                            "lane", DEFAULT_LANE),
+                        placement=placement,
+                        signal=entry.signal, subscribers=entry.subscribers,
+                        node_types=entry.node_types,
+                        needs=entry.needs)
+        except Exception:
+            # Two things must not happen here, and both did before this
+            # guard. The entry must not be LOST — it has already left
+            # both indexes — so it goes back at the FRONT, keeping its
+            # place in line for the next pump. And the exception must
+            # not escape: this method is called from ``_finalize``,
+            # inside the PREVIOUS run's task and before that run's
+            # terminal event and row write, so letting it through would
+            # make one run's failed promotion silently strand another
+            # run's outcome.
+            logger.exception(
+                "run %s could not be started off the %s queue; it stays "
+                "queued", entry.run_id, queue_key)
+            self._pending.setdefault(queue_key, deque()).appendleft(entry)
+            self._pending_by_id[entry.run_id] = entry
+            return False
+        return True
 
     def _start(
         self, run_id: str, graph: dict[str, Any] | None,
         options: dict[str, Any], *, queue_key: str,
         lane: str = DEFAULT_LANE,
+        placement: Placement | None = None,
         session: InteractiveSession | None = None,
         signal: _Broadcast | None = None,
         subscribers: set[RunSubscription] | None = None,
+        node_types: frozenset[str] | None = None,
+        needs: dict[str, Any] | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -1902,6 +2535,9 @@ class RunService:
         first step; a client that reads the row in that microsecond sees
         ``queued``, which is simply true.
 
+        *placement* is the scheduler's answer for a queued-lane run (the
+        slots it takes here); the interactive lane passes none.
+
         *graph* may be ``None``, meaning "read it from the row" — the shape
         every promoted run takes, since a deferred start cannot rely on the
         submitting request still being in memory.
@@ -1916,19 +2552,27 @@ class RunService:
         """
         if self._shutting_down:
             raise RunServiceUnavailable(SHUTDOWN_AFTER_PERSIST)
+        # Where it executes: the first device of its placement (#772) --
+        # for a run placed in this process by ``LocalScheduler`` that is its
+        # queue key, as it always was -- else (the interactive lane) the
+        # queue key.
+        on_worker = on_a_worker(placement)
+        device = (placement.devices[0]
+                  if placement is not None and placement.devices
+                  and lane != LANE_INTERACTIVE else queue_key)
         context = ExecutionContext(
             execution_id=run_id,
-            device=queue_key,
+            device=device,
             max_workers=settings.MAX_PARALLEL_NODES,
             verbose=bool(options.get("verbose")),
             graph_id=str(options.get("graph_id") or ""),
             backward_mode=bool(options.get("backward_mode")),
             auto_backward=bool(options.get("auto_backward")),
             # Reproducibility (#134). The seed reaching the CONTEXT — not
-            # just ``apply_seed`` before the graph starts — is what lets the
-            # engine derive a per-node seed and lets a node build its own
-            # generator, which is the difference between "seeded" and
-            # "actually reproducible".
+            # just the executor's ``seed_rngs`` before the graph starts — is
+            # what lets the engine derive a per-node seed and lets a node
+            # build its own generator, which is the difference between
+            # "seeded" and "actually reproducible".
             seed=options.get("seed"),
             deterministic=bool(options.get("deterministic")),
             # A server-owned run is an isolated, reproducible unit by
@@ -1945,9 +2589,15 @@ class RunService:
         active = _ActiveRun(
             run_id=run_id, context=context,
             signal=_Broadcast() if signal is None else signal,
-            queue_key=queue_key, lane=lane, session=session,
+            queue_key=queue_key, lane=lane,
+            placement=None if lane == LANE_INTERACTIVE else placement,
+            row_queue_key=(f"{placement.worker_id}{WORKER_QUEUE_SEPARATOR}"
+                           f"{device}" if on_worker else device),
+            session=session,
             record_outputs=bool(options.get("record_outputs")),
             subscribers=set() if subscribers is None else subscribers,
+            node_types=node_types,
+            needs=needs,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -1962,7 +2612,8 @@ class RunService:
             # Taken HERE, not in ``_pump``, so the one path that starts a run
             # is the one path that accounts for it. The interactive lane's
             # slot was taken in ``_admit_interactive`` before its row existed.
-            self._slots[queue_key] = self._slots.get(queue_key, 0) + 1
+            for slot in active.placement.slots if active.placement else ():
+                self._slots[slot] = self._slots.get(slot, 0) + 1
         elif self._session_key(session) is not None:
             self._interactive_sessions[self._session_key(session)] = run_id
         active.task = task
@@ -1996,12 +2647,49 @@ class RunService:
         if active.lane == LANE_INTERACTIVE:
             self._release_interactive(active.session)
             return
-        remaining = self._slots.get(active.queue_key, 0) - 1
-        if remaining > 0:
-            self._slots[active.queue_key] = remaining
+        slots = active.placement.slots if active.placement else ()
+        for slot in slots:
+            remaining = self._slots.get(slot, 0) - 1
+            if remaining > 0:
+                self._slots[slot] = remaining
+            else:
+                self._slots.pop(slot, None)
+        if self._reschedule_holds:
+            self._request_reschedule()  # a bulk cancel is in progress
         else:
-            self._slots.pop(active.queue_key, None)
-        self._pump(active.queue_key)
+            self.reschedule()
+
+    def reschedule(self) -> None:
+        """Offer the front of every waiting FIFO to the scheduler. SYNCHRONOUS.
+
+        For the moments capacity can appear somewhere a single queue key
+        cannot name: a run releasing its slots, a waiting run leaving the
+        front of its line, and (#772) a worker coming online or draining.
+        Every non-empty FIFO is asked, because which queue a freed slot
+        unblocks is the scheduler's knowledge, not this method's; there are
+        a handful of FIFOs, so asking all of them is cheap.
+
+        One run at a time, oldest front first (by submit order across all
+        queues, ``_QueuedRun.seq``): several FIFOs can share one slot
+        (``cuda:0``, ``any/cuda`` and a same-host worker's
+        ``<worker>/cuda:0`` all take ``("local", "cuda:0")``), and serving
+        the releasing run's own queue first would let one long line keep
+        the slot forever. A queue whose front is refused is not asked
+        again in this pass, so strict FIFO per queue still holds.
+        """
+        fronts = [(queue[0].seq, key)
+                  for key, queue in self._pending.items() if queue]
+        heapq.heapify(fronts)
+        while fronts:
+            seq, key = heapq.heappop(fronts)
+            queue = self._pending.get(key)
+            if not queue or queue[0].seq != seq:
+                continue  # stale: that queue moved since it was pushed
+            if not self._pump_one(key):
+                continue  # refused: not asked again in this pass
+            queue = self._pending.get(key)
+            if queue:
+                heapq.heappush(fronts, (queue[0].seq, key))
 
     # ── the run task ──────────────────────────────────────────────────────
 
@@ -2044,7 +2732,11 @@ class RunService:
             # Taken BEFORE ``_begin`` so a seeded run waiting its turn is
             # still reported as `queued` rather than as a `running` run
             # emitting nothing — the status stays true while it waits.
-            async with run_exclusion().for_seed(options.get("seed")):
+            # A worker run executes in a subprocess with RNGs of its own, so
+            # it neither waits for nor holds this process's seed gate.
+            gate = (contextlib.nullcontext() if on_a_worker(active.placement)
+                    else run_exclusion().for_seed(options.get("seed")))
+            async with gate:
                 if not await self._begin(active, graph, options):
                     return
                 status, error = await self._execute(active, graph, options,
@@ -2125,11 +2817,35 @@ class RunService:
         never fails the run; a failure is logged and leaves the columns
         NULL, which reads as "not recorded" rather than as a wrong answer.
         """
-        fingerprint, facts = await self._environment_record(
-            active, graph, options)
+        on_worker = on_a_worker(active.placement)
+        if on_worker:
+            # This process's environment is not the one executing the run:
+            # the worker's fingerprint, as its ``hello`` reported it (#781;
+            # None, which reads as "not recorded", when it reported none),
+            # and only the facts that do not depend on this process. The
+            # worker's ``run_started`` merges in the rest (``WorkerExecutor``).
+            worker = (None if self._workers is None
+                      else self._workers.get(active.placement.worker_id))
+            fingerprint = (None if worker is None
+                           else worker.fingerprint_document)
+            digest = None if worker is None else worker.fingerprint
+            facts = worker_execution_facts(
+                options=options or {}, graph=graph,
+                worker_id=active.placement.worker_id,
+                devices=list(active.placement.devices))
+        else:
+            digest = None
+            fingerprint, facts = await self._environment_record(
+                active, graph, options)
         started = await self.store.mark_running(
-            active.run_id, queue_key=active.context.device,
-            fingerprint=fingerprint, execution_facts=facts)
+            active.run_id, queue_key=active.row_queue_key,
+            # The worker it got (an ``any`` run's row said ``any``); a local
+            # run rewrites the ``local`` it already had.
+            worker_id=(active.placement.worker_id
+                       if active.placement is not None else None),
+            devices=list(active.placement.devices) if on_worker else None,
+            fingerprint=fingerprint, fingerprint_digest=digest,
+            execution_facts=facts)
         if not started:
             logger.warning("run %s vanished before it could start",
                            active.run_id)
@@ -2164,57 +2880,62 @@ class RunService:
         self, active: _ActiveRun, graph: dict[str, Any],
         options: dict[str, Any], session: InteractiveSession | None = None,
     ) -> tuple[str, str | None]:
-        """Run the graph and classify the outcome. Never raises but cancel."""
-        media_ports = declared_media_ports(graph["nodes"])
-        on_progress = self._progress_bridge(active, media_ports)
+        """Hand the run to the executor and read back its outcome.
+
+        Never raises but cancel. Where the graph executes is the executor's
+        business (#766); what a stop MEANS is this service's: an executor
+        reports ``cancelled`` for any cooperative stop, and
+        ``_stopped_status`` turns that into ``interrupted`` when the server
+        asked rather than a user.
+        """
+        executor = (self._worker_executor
+                    if on_a_worker(active.placement) and self._worker_executor is not None
+                    else self._executor)
         try:
-            apply_seed(options.get("seed"))
-            # Determinism is NOT applied here any more: ``execute_graph``
-            # owns it through ``deterministic_scope``, which also takes it
-            # back when the run ends. Setting it here would latch the
-            # process outside that scope — the one-way latch the #188
-            # review found.
-            await execute_graph(
-                graph["nodes"],
-                graph["edges"],
-                on_progress=on_progress,
-                on_inner_status=self._inner_status_bridge(
-                    active, on_progress, media_ports),
-                # The nodes inside blocks and preset cards declare media too:
-                # read once, from the node list the run executes (#559).
-                on_expanded=lambda expanded: media_ports.update(
-                    declared_media_ports(expanded)),
-                on_signal=self._signal_bridge(active),
-                context=active.context,
-                error_mode=options.get("error_mode", DEFAULT_ERROR_MODE),
-                max_retries=int(options.get("max_retries", 0)),
-                # No ExecutionCache by default: nothing is re-executed
-                # within a run, and sharing one ACROSS server-owned runs
-                # would serve a later run stale tensors under a matching
-                # key. The canvas lends its own — one per socket, cleared by
-                # the same reconnect that always cleared it — because
-                # incremental re-execution IS the editing loop.
-                cache=None if session is None else session.cache,
-                changed_nodes=(None if session is None
-                               else list(session.changed_nodes) or None),
+            outcome = await executor.run(ExecutionRequest(
                 run_id=active.run_id,
+                graph=graph,
+                options=options,
+                context=active.context,
+                session=session,
                 output_store=self._output_store,
                 record_outputs=active.record_outputs,
-                preset_fallback=build_preset_fallback(graph["presets"]),
-                subgraphs=graph["subgraphs"],
-            )
-            return STATUS_SUCCEEDED, None
-        except CancellationError:
-            # Why it stopped is a different fact from that it stopped: a user
-            # pressing Stop is `cancelled`, the server going away is
-            # `interrupted`. The engine raises the same exception for both.
-            return self._stopped_status(active), None
-        except GraphValidationError as exc:
-            return STATUS_FAILED, str(exc)
+                sinks=self._sinks(active),
+                explicit_metric_nodes=active.explicit_metric_nodes,
+                placement=active.placement,
+                node_types=active.node_types,
+                needs=active.needs,
+            ))
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            logger.warning("run %s failed: %s", active.run_id, exc,
-                           exc_info=True)
-            return STATUS_FAILED, str(exc)
+            # The executor is supposed to classify every failure itself;
+            # one that raises anyway must still leave a terminal row and a
+            # closing event, so the run is FAILED rather than abandoned.
+            logger.warning("run %s: the executor raised: %s", active.run_id,
+                           exc, exc_info=True)
+            outcome = ExecutionOutcome(STATUS_FAILED, str(exc))
+        else:
+            # Only an outcome the executor itself reported carries a
+            # measurement; a raise, or a value that is neither a map nor
+            # null, records nothing (key absent = not recorded).
+            peak_memory = getattr(outcome, "peak_memory", _NOT_MEASURED)
+            if peak_memory is None or isinstance(peak_memory, dict):
+                active.peak_measured = True
+                active.peak_memory = peak_memory
+        status = getattr(outcome, "status", None)
+        if status not in EXECUTOR_STATUSES:
+            logger.warning("run %s: the executor reported status %r",
+                           active.run_id, status)
+            return STATUS_FAILED, (
+                f"the executor reported an unknown status {status!r}")
+        if status == STATUS_CANCELLED:
+            # A stop carries no error, whatever the executor attached.
+            return self._stopped_status(active), None
+        # ``interrupted`` (#772) falls through with its error: nobody here
+        # asked for the stop -- the run's worker went away, or ended it on
+        # its own -- and the error says which.
+        return status, outcome.error
 
     async def _finalize(
         self, active: _ActiveRun, status: str, error: str | None,
@@ -2235,10 +2956,16 @@ class RunService:
         The run's ADMISSION goes back in the same breath, and before the
         terminal event rather than after it — see ``_release_admission`` for
         the window that closes.
+
+        A run its executor measured has its device memory merged into
+        ``execution_facts`` after the metric flush (#770, see
+        ``_record_peak_memory``).
         """
         active.terminating = True
         self._release_admission(active)
         await self._flush_metrics(active, force=True)
+        if active.peak_measured:
+            await self._record_peak_memory(active)
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
         elif status == STATUS_FAILED:
@@ -2265,133 +2992,114 @@ class RunService:
             await self._notify_terminal(active.run_id, status)
         await self.prune_retention()
 
-    def _progress_bridge(
-        self, active: _ActiveRun, media_ports: dict[str, dict[str, list[str]]],
-    ) -> Callable[[str, str, dict[str, Any] | None], Any]:
-        """Build the engine's ``on_progress`` callback for one run.
+    async def _record_peak_memory(self, active: _ActiveRun) -> None:
+        """Merge the executor's peak memory into ``execution_facts`` (#770).
 
-        The message body is byte-for-byte what ``ws_execution`` puts on the
-        wire minus its ``type`` key — see the event-vocabulary block above.
-        A ``node_status`` payload is ``{"node_id", "status"}`` plus, on an
-        error frame only, ``error`` and (when the engine named the class)
-        ``error_type`` (see :func:`_error_fields`); plus ``outputs`` whenever
-        the node produced any; plus ``inner_node_id`` on a progress frame a
-        node inside the card sent (#559).
-
-        ``media_ports`` is :func:`declared_media_ports` of the graph, read
-        when a frame is built: the run adds the nodes inside its containers
-        to it before anything runs.
+        Before the terminal event, so a reader woken by it finds the number
+        on the row. ``null`` is a recorded answer (a CPU run, no torch);
+        a facts document that was never written stays unwritten (see
+        ``RunStore.update_execution_facts``). Never raises but cancel: a
+        run must not fail because the thing describing it did.
         """
-        async def on_progress(
-            node_id: str, status: str, result: dict[str, Any] | None,
-            inner_node_id: str | None = None,
-        ) -> None:
-            message: dict[str, Any] = {"node_id": node_id, "status": status}
-            if inner_node_id is not None:
-                message["inner_node_id"] = inner_node_id
-            message.update(_error_fields(status, result))
-            entries = build_node_output_entries(
-                status, result, media_ports.get(node_id))
-            if entries:
-                message["outputs"] = entries
-            await self._emit(active.run_id, EVENT_NODE_STATUS, message)
-            if status == "progress":
-                self._collect_metrics(active, node_id, result)
-                await self._flush_metrics(active)
+        try:
+            landed = await self.store.update_execution_facts(
+                active.run_id, {"peak_memory": active.peak_memory})
+            if not landed:
+                logger.info(
+                    "run %s: no execution facts recorded, so its peak "
+                    "memory is dropped", active.run_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("run %s: could not record its peak memory",
+                           active.run_id, exc_info=True)
 
-        return on_progress
+    # ── sinks (#766) ──────────────────────────────────────────────────────
+    #
+    # The persistence half of what used to be the three engine bridges
+    # (``_progress_bridge``, ``_inner_status_bridge``, ``_signal_bridge``).
+    # The payloads are built by ``core.run_events``; the executor calls these
+    # through the run's ``RunSinks`` (see ``_sinks``).
 
-    def _inner_status_bridge(
-        self, active: _ActiveRun,
-        on_progress: Callable[..., Any],
-        media_ports: dict[str, dict[str, list[str]]],
-    ) -> Callable[[str, str, str, dict[str, Any] | None], Any]:
-        """Build the engine's ``on_inner_status`` callback for one run (#559).
+    def _sinks(self, active: _ActiveRun) -> RunSinks:
+        """The ``RunSinks`` one run's executor reports into."""
+        return RunSinks(
+            emit=functools.partial(self._emit, active.run_id),
+            record_metrics=functools.partial(self._record_metrics, active),
+            record_artifact=functools.partial(self._record_artifact, active),
+            warn=functools.partial(self._warn, active),
+            record_execution_facts=functools.partial(
+                self.store.update_execution_facts, active.run_id),
+            record_worker_connection=functools.partial(
+                self._record_worker_connection, active),
+        )
 
-        A status becomes one ``inner_node_status`` event (see
-        :data:`EVENT_INNER_NODE_STATUS`): the status, on an error what
-        failed, and what the node produced -- a picture or chart it drew and
-        its port summary -- under its own id, so an image made inside a block
-        reaches the run's log like one made at the top level. Its text is
-        left out: the card relays every line already (#601). A progress
-        frame goes to ``on_progress`` as the card's, naming the inner node,
-        so its metrics are filed under the card as before.
+    async def _record_worker_connection(self, active: _ActiveRun,
+                                        connected: bool) -> None:
+        """The row's ``running`` <-> ``disconnected`` (#783). The run keeps
+        its slots either way: they go back when it ends."""
+        if active.terminating:
+            return
+        await self.store.mark_worker_connection(active.run_id, connected)
+        self._wake(active.run_id)
+
+    async def _record_late_result(self, worker: str, run_id: str,
+                                  frame: Any) -> None:
+        """A worker reported how a run ended after it had ended here (#783).
+
+        Recorded as ``execution_facts.late_result`` (``{status, error,
+        at}``) and logged. Never as an event: the run's log already ended
+        with its terminal event, and a reader that stops there must not
+        find more. Never as a status: ``mark_finished`` only lands on
+        active rows, and a late report does not overwrite history.
         """
-        async def on_inner_status(
-            node_id: str, container_id: str, status: str,
-            result: dict[str, Any] | None,
-        ) -> None:
-            if status == "progress":
-                await on_progress(container_id, status, result,
-                                  inner_node_id=node_id)
-                return
-            message: dict[str, Any] = {
-                "node_id": node_id, "container_id": container_id,
-                "status": status,
-            }
-            message.update(_error_fields(status, result))
-            entries = [
-                entry for entry in build_node_output_entries(
-                    status, result, media_ports.get(node_id))
-                if entry.get("output_kind") != OUTPUT_KIND_TEXT
-            ]
-            if entries:
-                message["outputs"] = entries
-            await self._emit(active.run_id, EVENT_INNER_NODE_STATUS, message)
+        record = await self.store.get_run(run_id)
+        if record is None:
+            logger.info("run %s: late result from worker %s, but the run "
+                        "is gone", run_id, worker)
+            return
+        logger.warning("run %s ended here as %s; worker %s reports it %s",
+                       run_id, record.status, worker, frame.status)
+        await self.store.update_execution_facts(run_id, {"late_result": {
+            "status": frame.status, "error": frame.error,
+            "worker_id": worker, "at": utc_now_iso()}})
 
-        return on_inner_status
+    def worker_status(self, run_id: str) -> dict[str, Any] | None:
+        """Where an active worker run's worker stands (#783), or None.
 
-    def _signal_bridge(
-        self, active: _ActiveRun,
-    ) -> Callable[[Any], Any]:
-        """Build the engine's ``on_signal`` callback for one run (#122).
-
-        Everything a node reports that is not a node status arrives here,
-        already serialised onto the loop by the engine's single pump — so
-        this can await the database without a lock and without reordering
-        anything.
-
-        Nothing in here is allowed to raise. A metric, an artifact row and a
-        dropped-signal notice are all observability; a run must not fail
-        because the thing describing it did.
+        ``{"worker_id", "state", "disconnected_at", "resume_deadline"}``:
+        ``state`` is ``connected`` or ``disconnected``; the two times are
+        Unix seconds while it is disconnected, else None. None for a run
+        that is not active or does not execute on a worker.
         """
-        async def on_signal(signal: Any) -> None:
-            try:
-                if isinstance(signal, MetricSignal):
-                    await self._record_metric(active, signal)
-                elif isinstance(signal, ArtifactSignal):
-                    await self._record_artifact(active, signal)
-                elif isinstance(signal, DroppedSignal):
-                    await self._emit(active.run_id, EVENT_WARNING, {
-                        "kind": "dropped_signals", "count": signal.count,
-                        "detail": ("progress/metric signals were dropped to "
-                                   "keep the run's outbox bounded; the "
-                                   "series may have gaps"),
-                    })
-                elif isinstance(signal, WarningSignal):
-                    await self._emit(active.run_id, EVENT_WARNING, {
-                        "kind": signal.kind, "detail": signal.detail,
-                        "node_id": signal.node_id,
-                    })
-                else:  # pragma: no cover - a node pack's own signal type
-                    logger.debug("run %s: ignoring unknown signal %r",
-                                 active.run_id, type(signal).__name__)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("run %s: could not record a %s", active.run_id,
-                               type(signal).__name__, exc_info=True)
+        active = self._runs.get(run_id)
+        if active is None or not on_a_worker(active.placement) \
+                or self._workers is None:
+            return None
+        worker_id = active.placement.worker_id
+        run = self._workers.run_state(worker_id, run_id)
+        since = None if run is None else run.detached_wall
+        grace = getattr(self._workers, "resume_grace_s", 0.0)
+        return {
+            "worker_id": worker_id,
+            "state": "connected" if since is None else "disconnected",
+            "disconnected_at": since,
+            "resume_deadline": None if since is None else since + grace,
+        }
 
-        return on_signal
+    async def _warn(self, active: _ActiveRun, signal: WarningSignal) -> None:
+        """A ``WarningSignal`` a node sent, as a ``run_warning`` event."""
+        await self._emit(active.run_id, EVENT_WARNING, warning_payload(signal))
 
-    async def _record_metric(
-        self, active: _ActiveRun, signal: MetricSignal,
+    async def _record_metrics(
+        self, active: _ActiveRun, points: list[MetricPoint],
     ) -> None:
-        """Buffer one explicitly-logged point and claim the node for it."""
-        active.explicit_metric_nodes.add(signal.node_id or "")
-        active.pending_metrics.append(MetricPoint(
-            name=signal.name, value=signal.value, step=signal.step,
-            node_id=signal.node_id))
+        """Buffer points, then let the batcher decide whether to flush.
+
+        Called on every progress frame, even with no points: the time rule
+        in ``_flush_metrics`` is checked on this path.
+        """
+        active.pending_metrics.extend(points)
         await self._flush_metrics(active)
 
     async def _record_artifact(
@@ -2401,17 +3109,40 @@ class RunService:
 
         Store first: an ``artifact`` event pointing at a row that failed to
         insert would send a client looking for something that is not there.
+
+        A signal carrying a ``mount_label`` (a worker child's file under a
+        shared mount, #782) is stored as a ``mount`` row whose path is
+        relative to that mount; every other one as before, a ``local`` row
+        with the path as produced. Either way the row names the worker that
+        produced it (``local`` for this process), so a path from another
+        machine is never mistaken for one of this machine's.
         """
-        meta = signal.meta
-        if signal.node_id:
-            meta = {**(meta or {}), "node_id": signal.node_id}
+        mount_label = getattr(signal, "mount_label", None)
+        placement = active.placement
+        if getattr(signal, "backend", None) == BACKEND_TRANSFER:
+            # Uploaded here by the worker (#785): the path is the key the
+            # upload answered with, and only one of this run's own keys is
+            # recorded (a row that pointed elsewhere would let retention
+            # delete it).
+            from .transfer import key_path
+
+            if key_path(active.run_id, signal.path) is None:
+                logger.warning("run %s: ignoring a transferred artifact "
+                               "outside the run's directory: %r",
+                               active.run_id, signal.path)
+                return
+            backend = BACKEND_TRANSFER
+        else:
+            backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
         record = await self.store.add_artifact(
-            active.run_id, signal.kind, signal.path, meta=meta)
-        await self._emit(active.run_id, EVENT_ARTIFACT, {
-            "artifact_id": record.id, "kind": record.kind,
-            "path": record.path, "meta": record.meta,
-            "node_id": signal.node_id,
-        })
+            active.run_id, signal.kind, signal.path,
+            meta=artifact_meta(signal),
+            backend=backend,
+            mount_label=mount_label or None,
+            worker_id=(placement.worker_id if placement is not None
+                       else LOCAL_WORKER_ID))
+        await self._emit(active.run_id, EVENT_ARTIFACT,
+                         artifact_payload(record, signal.node_id))
 
     # ── events ────────────────────────────────────────────────────────────
 
@@ -2594,26 +3325,6 @@ class RunService:
 
     # ── metrics ───────────────────────────────────────────────────────────
 
-    def _collect_metrics(
-        self, active: _ActiveRun, node_id: str, payload: Any,
-    ) -> None:
-        """Infer series from a progress payload — unless the node speaks.
-
-        Explicit beats inferred (#122). ``TrainingLoop`` logs ``train_loss``
-        and ``val_loss`` through ``context.log_metric`` AND keeps
-        ``loss``/``val_loss`` in its epoch payload for the live chart that
-        has always read them; mining both would file every validation loss
-        twice. The first explicit point from a node retires the inference
-        for that node, which also leaves every node that has no metric API
-        (a plugin, a chart pack) working exactly as it did.
-        """
-        if node_id in active.explicit_metric_nodes:
-            return
-        step = metric_step(payload, fallback=active.last_metric_step + 1)
-        active.last_metric_step = step
-        active.pending_metrics.extend(
-            scalar_metrics(payload, node_id=node_id, step=step))
-
     async def _flush_metrics(
         self, active: _ActiveRun, *, force: bool = False,
     ) -> int:
@@ -2750,6 +3461,32 @@ class RunService:
             record = await self.store.get_run(run_id) or record
         return CancelOutcome(run_id=run_id, status=record.status,
                              cancelled=False)
+
+    async def fail_queued_for_worker(self, worker_id: str,
+                                     error: str) -> list[str]:
+        """Fail every run still waiting for *worker_id* (#780: the worker
+        was removed, so nothing will ever place them). Running runs are not
+        touched here; closing the worker's socket interrupts those.
+        Returns the run ids that were failed."""
+        failed: list[str] = []
+        for run_id, waiting in list(self._pending_by_id.items()):
+            if entry_target(waiting.options)[0] != worker_id:
+                continue
+            entry = self._dequeue(run_id)
+            if entry is None:  # pragma: no cover - same loop, same index
+                continue
+            self._run_secrets.pop(run_id, None)
+            landed = await self.store.mark_finished(
+                run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
+            if landed:
+                await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
+            entry.close()
+            if landed:
+                await self._notify_terminal(run_id, STATUS_FAILED)
+                failed.append(run_id)
+        if failed:
+            logger.warning("%d queued run(s) failed: %s", len(failed), error)
+        return failed
 
     async def _retire_waiting(
         self, entry: _QueuedRun, status: str, reason: str,
@@ -2999,6 +3736,7 @@ class RunService:
         waiting = list(self._pending_by_id.values())
         self._pending_by_id.clear()
         self._pending.clear()
+        self._reservations.clear()
         if not waiting:
             return 0
         logger.info("shutdown: retiring %d queued run(s)", len(waiting))

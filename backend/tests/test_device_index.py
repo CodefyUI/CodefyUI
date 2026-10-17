@@ -359,7 +359,7 @@ def test_a_bad_index_cannot_open_a_queue_for_a_card_that_is_not_there(
 
 def test_every_device_param_offers_the_indexed_forms(four_cards):
     """The node API is the only place a saved graph's device can come from."""
-    from app.api.routes_nodes import _node_to_definition
+    from app.core.node_registry import node_definition
     from app.core.node_registry import registry
 
     checked = 0
@@ -374,8 +374,44 @@ def test_every_device_param_offers_the_indexed_forms(four_cards):
         assert raw.options == list(DEVICE_PARAM_OPTIONS), name
         # DiffusionTrainingLoop was exempt while its text was Chinese (#693).
         assert raw.description == DEVICE_PARAM_DESCRIPTION, name
-        definition = _node_to_definition(name, cls)
+        definition = node_definition(name, cls)
         device_param = next(p for p in definition.params if p.name == "device")
         assert "cuda:2" in device_param.options, name
         checked += 1
     assert checked == 13, "expected the thirteen device-aware nodes"
+
+
+# ── device sets (#774) ────────────────────────────────────────────────────
+
+
+def test_the_device_description_explains_the_in_run_aliases():
+    """The text every device param shows, as #774 specifies it. The old one
+    said a graph runs on one device; a run given a set may use several."""
+    assert DEVICE_PARAM_DESCRIPTION == (
+        "Device for this node. 'auto' follows the run's device. A run sent to "
+        "a worker with several devices sees them as cuda:0..N-1 in the order "
+        "they were listed, so a node can be pinned to any of them by that "
+        "position."
+    )
+
+
+def test_an_alias_inside_a_two_card_run_resolves_unchanged(monkeypatch):
+    """A run subprocess with CUDA_VISIBLE_DEVICES=0,2 sees two cards; its
+    ``cuda:1`` is valid there and resolve_device leaves it alone (the CUDA
+    runtime is what maps it to physical card 2)."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    get_available_devices.cache_clear()
+    try:
+        assert resolve_device("cuda:1") == "cuda:1"
+    finally:
+        get_available_devices.cache_clear()
+
+
+def test_the_served_options_stay_machine_wide(four_cards):
+    """The server keeps serving every card; narrowing the select to a run's
+    set is the submit dialog's job (#775)."""
+    assert device_options("device", list(DEVICE_PARAM_OPTIONS)) == [
+        "auto", "cpu", "cuda", "cuda:0", "cuda:1", "cuda:2", "cuda:3"]

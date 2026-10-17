@@ -11,7 +11,7 @@ frontend/   React 19 · TypeScript · React Flow 12 · Zustand 5 · Vite 6
 backend/    Python 3.10+ · FastAPI · PyTorch
 ```
 
-單一 uvicorn 行程同時提供 REST API、執行 WebSocket，以及預先建置好的 React 應用程式。
+單一 uvicorn 行程同時提供 REST API、執行 WebSocket，以及預先建置好的 React 應用程式。預設情況下，它也執行每一個 run。queued run 也可以改以 worker agent（`cdui agent start`）為目標，由它在自己的子程序中執行；這個拆分見[執行架構](./execution-architecture)，使用方式見[多 GPU 執行](/usage/multi-gpu)。
 
 ## 核心原則 {/* #core-principles */}
 
@@ -31,6 +31,8 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 5. **平行執行**——獨立節點並行執行，一次最多 `CODEFYUI_MAX_PARALLEL_NODES` 個。設定了亂數種子的 run 一次只執行一個節點，因為每個節點的種子設定會改動整個行程共用的亂數產生器。收到同一個模型或 optimizer 物件的節點會依固定順序輪流執行，因為訓練、`eval()` 與搬移裝置都會改動這個物件；同一個模型輸出被多個 TrainingLoop 或 Optimizer 訓練時，會顯示警告。
 6. **快取／髒節點追蹤**——具決定性的節點輸出會依 WebSocket 連線個別快取（預設 256 筆與 1 GB），快取鍵包含節點類型、params、每條輸入邊的一份參照（上游鍵加上兩端的連接埠名稱）、解析後的裝置，以及讀檔節點的內容指紋；變更一個節點會把它與其下游標記為 dirty，因此只有受影響的子圖會重新執行。非決定性節點（或 `cacheable = False`）一律執行。
 7. **裝置解析**——沒有指定裝置時為 `cpu`，`auto` 代表最佳的加速器（依序為 `cuda`、`mps`、`cpu`）。無法使用的 `cuda` 或 `mps` 會退回 CPU 並發出警告；在有 CUDA 的機器上，超出範圍或格式錯誤的 `cuda:N` 會改用目前的 CUDA 裝置。節點自己的 `device` 參數不是 `auto` 時，會覆寫 run 的裝置。請參閱[裝置後端](./device-backends)。
+
+第 2 到第 7 步都在 `execute_graph` 內進行，由 executor 呼叫。沒有 `target`、或 `target.worker: local` 的 run，executor 是 `InProcessExecutor`，在這個行程內執行。被放到 worker agent 上的 queued run，會在該 worker 的 run 子程序中執行同樣的步驟，事件經 `/ws/worker` 回到同一份事件紀錄。畫布（interactive 通道）一律在這裡執行。請參閱[執行架構](./execution-architecture)。
 
 ## 狀態、輸出與梯度 {/* #state-outputs-and-gradients */}
 
@@ -100,6 +102,12 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | 節點註冊表 + 命名空間 | `backend/app/core/node_registry.py` |
 | 圖驗證 + 執行 | `backend/app/core/graph_engine.py` |
 | Run service（排程、事件紀錄、取消、復原） | `backend/app/core/run_service.py` |
+| Executor（程序內與 worker） | `backend/app/core/executors.py` |
+| 排程器、slot、placement | `backend/app/core/scheduling.py` |
+| Worker registry | `backend/app/core/workers.py` |
+| Worker 傳輸協定 | `backend/app/core/worker_protocol.py` |
+| Worker agent（`cdui agent`） | `backend/app/agent/` |
+| Worker 的 WebSocket 與 REST 路由 | `backend/app/api/ws_worker.py`、`backend/app/api/routes_workers.py` |
 | Run 儲存區（SQLite 資料列、保留政策） | `backend/app/core/run_store.py` |
 | Run REST 路由 | `backend/app/api/routes_runs.py` |
 | 參數掃描 | `backend/app/api/routes_sweeps.py`, `backend/app/core/sweep_compiler.py` |

@@ -3,6 +3,8 @@ import { cleanup, render, screen, fireEvent, act, within } from '@testing-librar
 import { ResultsPanel } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
+import { useWorkerStore } from '../../store/workerStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import {
   _clearPluginPanels, registerPluginPanel, removePluginPanel,
@@ -197,6 +199,24 @@ describe('ResultsPanel — log tab basics', () => {
     expect(clearBtn).not.toBeDisabled();
     fireEvent.click(clearBtn);
     expect(useTabStore.getState().getActiveTab().logs).toHaveLength(0);
+  });
+});
+
+describe('ResultsPanel — asked to show the Runs tab (#775)', () => {
+  it('switches to Runs, expanding a collapsed dock, on each new request only', () => {
+    useUIStore.setState({ runsTabRequest: 4 });
+    render(<ResultsPanel />);
+    // A request made before the panel mounted is not replayed.
+    expect(screen.queryByTestId('runs-panel')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    act(() => useUIStore.getState().requestRunsTab());
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
+    expect(screen.getByLabelText(t('results.collapse'))).toBeInTheDocument();
+
+    // Already open: a second request keeps it so.
+    act(() => useUIStore.getState().requestRunsTab());
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
   });
 });
 
@@ -862,6 +882,21 @@ describe('ResultsPanel — Runs tab', () => {
     // The attach streams into the log, so that is where the user is put.
     expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
     expect(screen.getByText('a log line')).toBeInTheDocument();
+  });
+
+  it('shows the Runs tab, expanded, when a Workers panel run link asks for it (#776)', () => {
+    seedLogs([]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    act(() => useWorkerStore.getState().revealRuns());
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
+  });
+
+  it('does not jump to Runs for a link clicked before it mounted (#776)', () => {
+    act(() => useWorkerStore.getState().revealRuns());
+    seedLogs([]);
+    render(<ResultsPanel />);
+    expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
   });
 
   it('hides the Runs panel while the dock is collapsed', () => {

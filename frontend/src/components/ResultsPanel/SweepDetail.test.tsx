@@ -48,7 +48,7 @@ function sweep(state: SweepState = 'running'): SweepDetailData {
     objective: { metric: 'val_loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null,
     error: 'one child failed', objective_warning: 'metric absent from one run',
-    counts: { queued: 2, running: 1, succeeded: 1, failed: 1, cancelled: 0, interrupted: 0, missing: 1 },
+    counts: { queued: 2, running: 1, disconnected: 0, succeeded: 1, failed: 1, cancelled: 0, interrupted: 0, missing: 1 },
     params: [{ node_id: 'train', param: 'rate', domain: [0.1, 0.2, 0.3] }],
     variants: [variant(0, 'succeeded', 0.4, 1), variant(1, 'missing', null, null), variant(2, 'running', 0.8, 2)],
     best: { index: 0, run_id: 'r0', objective: 0.4 },
@@ -105,7 +105,7 @@ describe('SweepDetail', () => {
     // The server warns whenever nothing is ranked yet, which for real
     // training is every sweep until its first variant ends, hours later.
     const detail = sweep();
-    detail.counts = { queued: 2, running: 1, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 2, running: 1, disconnected: 0, succeeded: 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [variant(0, 'running', null, null), variant(1, 'queued', null, null), variant(2, 'queued', null, null)];
     detail.best = null;
     detail.objective_warning = "no variant recorded a metric named 'val_loss'";
@@ -116,7 +116,7 @@ describe('SweepDetail', () => {
 
   it('warns in the active language once a variant finished without the objective', () => {
     const detail = sweep();
-    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 1, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5, lr: 0.1 } },
       { ...variant(1, 'running', null, null), final_metrics: { train_loss: 0.7 } },
@@ -138,7 +138,7 @@ describe('SweepDetail', () => {
     // Ranks come only once a variant ends, but a live run that logs the
     // objective proves the name right.
     const detail = sweep();
-    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 1, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'succeeded', null, null), final_metrics: { train_loss: 0.5 } },
       { ...variant(1, 'running', null, null), final_metrics: { val_loss: 0.9 } },
@@ -151,7 +151,7 @@ describe('SweepDetail', () => {
 
   it('warns when the sweep ended with nothing ranked', () => {
     const detail = sweep('finished');
-    detail.counts = { queued: 0, running: 0, succeeded: 0, failed: 2, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 0, failed: 2, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'failed', null, null), final_metrics: {} },
       { ...variant(1, 'failed', null, null), final_metrics: {} },
@@ -173,7 +173,7 @@ describe('SweepDetail', () => {
 
   it('names the objective node and explains an ambiguous name in each language (#641)', () => {
     const detail = sweep('finished');
-    detail.counts = { queued: 0, running: 0, succeeded: 2, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 2, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [
       { ...variant(0, 'succeeded', 0.4, 1), objective_node_id: 'train' },
       { ...variant(1, 'succeeded', null, null), ambiguous_producers: [null, 'train', 'block/inner'] },
@@ -199,7 +199,7 @@ describe('SweepDetail', () => {
     // would show that the chosen node did.
     const detail = sweep('finished');
     detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'block/inner' };
-    detail.counts = { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [{ ...variant(0, 'succeeded', null, null), final_metrics: { val_loss: 0.3 } }];
     detail.best = null;
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
@@ -211,7 +211,7 @@ describe('SweepDetail', () => {
   it('does not warn by node once the chosen node recorded the objective', () => {
     const detail = sweep('running');
     detail.objective = { metric: 'val_loss', direction: 'minimize', node_id: 'train' };
-    detail.counts = { queued: 0, running: 1, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 1, disconnected: 0, succeeded: 1, failed: 0, cancelled: 0, interrupted: 0, missing: 0 };
     detail.variants = [{ ...variant(0, 'succeeded', 0.2, null), objective_node_id: 'train' }];
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
     view();
@@ -220,7 +220,7 @@ describe('SweepDetail', () => {
 
   it('leaves out a status no variant has', () => {
     const detail = sweep('finished');
-    detail.counts = { queued: 0, running: 0, succeeded: 2, failed: 0, cancelled: 1, interrupted: 0, missing: 0 };
+    detail.counts = { queued: 0, running: 0, disconnected: 0, succeeded: 2, failed: 0, cancelled: 1, interrupted: 0, missing: 0 };
     useSweepStore.setState({ detail, selectedSweepId: 's1' });
     view();
     const summary = screen.getByText('2 succeeded').parentElement!;
@@ -273,6 +273,14 @@ describe('SweepDetail', () => {
     expect(cancelSweep).toHaveBeenCalledTimes(1);
   });
 
+  it('counts a child waiting for its worker as active (#783)', () => {
+    const detail = sweep('failed');
+    detail.counts = { queued: 0, running: 0, disconnected: 1, succeeded: 1, failed: 1, cancelled: 0, interrupted: 0, missing: 0 };
+    useSweepStore.setState({ detail, selectedSweepId: 's1', cancelSweep: vi.fn() });
+    view();
+    expect(screen.getByRole('button', { name: /^Stop sweep$/i })).toBeInTheDocument();
+  });
+
   it('holds Stop while a stop is in flight and keeps the focus in the view', () => {
     const cancelSweep = vi.fn(async () => {
       useSweepStore.setState({ cancelPending: true });
@@ -321,6 +329,34 @@ describe('SweepDetail', () => {
     expect(within(missing).getByRole('button', { name: /Unavailable/i })).toBeDisabled();
     fireEvent.click(within(best).getByRole('button', { name: /Open run/i }));
     expect(onOpenRun).toHaveBeenCalledWith('r0');
+  });
+
+  it('shows where each variant runs: its worker and devices (#777)', () => {
+    const detail = sweep('running');
+    detail.variants = [
+      { ...variant(0, 'running', null, null), worker_id: 'gpu-box', devices: ['cuda:2', 'cuda:0'], queue_key: 'gpu-box/cuda:2' },
+      { ...variant(1, 'missing', null, null) },
+      { ...variant(2, 'queued', null, null), worker_id: 'any', devices: null, queue_key: 'any/cuda' },
+      { ...variant(3, 'succeeded', null, null), worker_id: 'local', devices: null, queue_key: 'cpu' },
+      // A server from before #777 sends no placement: this server.
+      { ...variant(4, 'succeeded', null, null) },
+    ];
+    useSweepStore.setState({ detail, selectedSweepId: 's1' });
+    view();
+    const cells = (index: number) => within(screen.getByTestId(`sweep-variant-${index}`)).getAllByRole('cell')
+      .map((cell) => cell.textContent);
+    const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
+    const worker = headers.indexOf('Worker');
+    expect(headers[worker + 1]).toBe('Devices');
+    expect(cells(0).slice(worker, worker + 2)).toEqual(['gpu-box', 'cuda:2, cuda:0']);
+    // The in-run names of a worker's cards (#774), on hover.
+    const devicesCell = within(screen.getByTestId('sweep-variant-0')).getAllByRole('cell')[worker + 1];
+    expect(devicesCell).toHaveAttribute('title', 'cuda:2 -> cuda:0 in this run\ncuda:0 -> cuda:1 in this run');
+    expect(cells(1).slice(worker, worker + 2)).toEqual(['-', '-']);
+    expect(cells(2).slice(worker, worker + 2)).toEqual(['Any available', 'cuda']);
+    expect(cells(3).slice(worker, worker + 2)).toEqual(['This server', 'cpu']);
+    expect(within(screen.getByTestId('sweep-variant-3')).getAllByRole('cell')[worker + 1]).not.toHaveAttribute('title');
+    expect(cells(4).slice(worker, worker + 2)).toEqual(['This server', '-']);
   });
 
   it('heads a swept param by node label and param, with the full address as its title', () => {

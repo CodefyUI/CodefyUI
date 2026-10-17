@@ -531,6 +531,73 @@ async def test_restart_marks_running_rows_interrupted(store):
     assert await fresh.recover_interrupted() == 0
 
 
+async def test_disconnected_is_an_active_status_between_running_ones(store):
+    """``running`` <-> ``disconnected`` (#783): only between those two, a
+    disconnected row finishes like a running one, and a restart retires
+    it like any other active row."""
+    from app.core.run_store import (
+        ACTIVE_STATUSES,
+        STATUS_DISCONNECTED,
+        TERMINAL_STATUSES,
+    )
+
+    assert STATUS_DISCONNECTED in ACTIVE_STATUSES
+    assert STATUS_DISCONNECTED not in TERMINAL_STATUSES
+    run = await store.create_run(graph_snapshot=_graph(), options={},
+                                 provenance=RunProvenance())
+    # A queued row never ran: it cannot lose a worker.
+    assert await store.mark_worker_connection(run.id, False) is False
+    await store.mark_running(run.id)
+    assert await store.mark_worker_connection(run.id, True) is False
+    assert await store.mark_worker_connection(run.id, False) is True
+    assert (await store.get_run(run.id)).status == STATUS_DISCONNECTED
+    assert await store.mark_worker_connection(run.id, False) is False
+    assert await store.mark_worker_connection(run.id, True) is True
+    assert (await store.get_run(run.id)).status == STATUS_RUNNING
+    await store.mark_worker_connection(run.id, False)
+    assert await store.mark_finished(run.id, "succeeded") is True
+    # A finished row stays finished.
+    assert await store.mark_worker_connection(run.id, True) is False
+    assert (await store.get_run(run.id)).status == "succeeded"
+
+    orphan = await store.create_run(graph_snapshot=_graph(), options={},
+                                    provenance=RunProvenance())
+    await store.mark_running(orphan.id)
+    await store.mark_worker_connection(orphan.id, False)
+    assert await RunService(store).recover_interrupted() == 1
+    assert (await store.get_run(orphan.id)).status == STATUS_INTERRUPTED
+    listed = await store.list_runs(status=[STATUS_DISCONNECTED])
+    assert listed == []
+
+
+async def test_a_late_result_is_a_warning_and_never_a_status(store):
+    """#783: a worker's report for a run that already ended here."""
+    from app.core import worker_protocol as wp
+    from app.core.workers import WorkerRegistry
+
+    registry = WorkerRegistry()
+    service = RunService(store, workers=registry)
+    assert registry.on_late_result == service._record_late_result
+    run = await store.create_run(graph_snapshot=_graph(), options={},
+                                 provenance=RunProvenance())
+    await store.mark_running(run.id, execution_facts={"schema_version": 2})
+    await store.mark_finished(run.id, STATUS_INTERRUPTED, error="away")
+    await service._record_late_result("box", run.id, wp.RunFinished(
+        run_id=run.id, seq=9, status="failed", error="boom"))
+    await service._record_late_result("box", "gone", wp.RunFinished(
+        run_id="gone", seq=1, status="succeeded"))
+    row = await store.get_run(run.id)
+    assert (row.status, row.error) == (STATUS_INTERRUPTED, "away")
+    late = row.execution_facts["late_result"]
+    assert (late["status"], late["error"], late["worker_id"]) == (
+        "failed", "boom", "box")
+    assert late["at"].endswith("Z")
+    # Never an event: the log already ended with its terminal one.
+    assert await store.get_events(run.id) == []
+    assert service.worker_status(run.id) is None
+    await registry.shutdown()
+
+
 async def test_recovery_refuses_to_run_with_live_runs(store, service):
     """Recovery is a STARTUP call; running it mid-flight would falsify rows."""
     await service.submit(_graph("_RunSlow", params={"seconds": 0.2}))
@@ -585,9 +652,77 @@ def test_options_accept_every_documented_key():
         "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
         "backward_mode": True, "auto_backward": True,
         "error_mode": "retry", "max_retries": 3, "deterministic": True,
+        "target": {"devices": [" CUDA:1 "]},
     }
     assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
-    assert normalize_options(asked) == {**asked, "device": "cuda"}
+    # " CUDA " is the bare kind, so the device set's first card wins.
+    assert normalize_options(asked) == {
+        **asked, "device": "cuda:1",
+        "target": {"worker": "local", "devices": ["cuda:1"]}}
+
+
+@pytest.mark.parametrize("device,devices,effective", [
+    # (a) absent or auto: devices[0], silently.
+    (None, ["cuda:1", "cuda:0"], "cuda:1"),
+    ("auto", ["cuda:1"], "cuda:1"),
+    (" AUTO ", ["mps:0"], "mps:0"),
+    # (b) a bare kind agrees with any devices[0] of that kind.
+    ("cuda", ["cuda:1", "cuda:0"], "cuda:1"),
+    ("mps", ["mps:0"], "mps:0"),
+    ("cpu", ["cpu"], "cpu"),
+    # Equal after trim/lowercase, or after canonicalising.
+    (" CUDA:1 ", ["cuda:1"], "cuda:1"),
+    ("cuda:01", ["cuda:1"], "cuda:1"),
+    ("mps:0", ["mps"], "mps:0"),
+])
+def test_device_set_precedence_accepts(device, devices, effective):
+    """#769: the device list is the more specific statement."""
+    raw = {"target": {"devices": devices}}
+    if device is not None:
+        raw["device"] = device
+    options = normalize_options(raw)
+    assert options["device"] == effective
+    assert options["target"]["devices"][0] == effective
+
+
+@pytest.mark.parametrize("devices,canonical", [
+    ([" CUDA:1 ", "cuda:00"], ["cuda:1", "cuda:0"]),
+    (["mps"], ["mps:0"]),
+    (["MPS:0"], ["mps:0"]),
+    (["cpu"], ["cpu"]),
+])
+def test_device_set_entries_are_canonical(devices, canonical):
+    target = normalize_options({"target": {"devices": devices}})["target"]
+    assert target == {"worker": "local", "devices": canonical}
+
+
+@pytest.mark.parametrize("worker", ["local", " LOCAL ", "Local"])
+def test_target_worker_is_trimmed_and_lowercased(worker):
+    assert normalize_options(
+        {"target": {"worker": worker}})["target"]["worker"] == "local"
+
+
+def test_target_worker_pattern_must_match_the_whole_name():
+    """Matched with ``fullmatch`` (the repo convention): ``match`` with a
+    ``$`` anchor would let a trailing newline through."""
+    from app.core.run_service import TARGET_WORKER_PATTERN
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu-box-1")
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu-box-1\n") is None
+    assert TARGET_WORKER_PATTERN.fullmatch("gpu box") is None
+
+
+@pytest.mark.parametrize("device,devices", [
+    # (c) anything else that differs is a disagreement.
+    ("cuda:0", ["cuda:1"]),
+    ("cpu", ["cuda:0"]),
+    ("cuda", ["mps:0"]),
+    ("mps:1", ["mps:0"]),
+])
+def test_device_set_precedence_refuses(device, devices):
+    with pytest.raises(RunSubmitError,
+                       match="^target.devices and device disagree$"):
+        normalize_options({"device": device,
+                           "target": {"devices": devices}})
 
 
 @pytest.mark.parametrize("lane", [LANE_INTERACTIVE, "queued", "gpu"])
@@ -1982,3 +2117,844 @@ async def test_a_cancelled_waiter_does_not_block_the_next_run():
             return "in"
 
     assert await asyncio.wait_for(_reader(), timeout=2.0) == "in"
+
+
+# ── the Executor seam (#766) ──────────────────────────────────────────────
+#
+# ``RunService`` no longer calls the engine; it builds one ``ExecutionRequest``
+# per run and hands it to its executor. These pin the seam itself: what the
+# executor is given, and that what it returns is what lands on the row.
+
+
+class _RecordingExecutor:
+    """Records every request and answers with a fixed outcome."""
+
+    def __init__(self, outcome) -> None:
+        self.outcome = outcome
+        self.requests: list[Any] = []
+
+    async def run(self, request):
+        self.requests.append(request)
+        return self.outcome
+
+
+def test_the_default_executor_is_in_process(store):
+    from app.core.executors import InProcessExecutor
+
+    assert isinstance(RunService(store)._executor, InProcessExecutor)
+
+
+async def test_a_recording_executor_gets_one_request_per_run(store):
+    from app.core.executors import ExecutionOutcome, RunSinks
+
+    executor = _RecordingExecutor(ExecutionOutcome(STATUS_SUCCEEDED, None))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    session = InteractiveSession(cache=ExecutionCache())
+    try:
+        queued = await svc.submit(_graph(), options={"device": "cpu",
+                                                     "seed": 5})
+        await _await_terminal(store, queued.run_id)
+        interactive = await svc.submit(
+            _graph(), options={"lane": LANE_INTERACTIVE}, session=session)
+        await _await_terminal(store, interactive.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert [r.run_id for r in executor.requests] == [queued.run_id,
+                                                     interactive.run_id]
+    first, second = executor.requests
+    for request, submitted in ((first, queued), (second, interactive)):
+        assert request.context.execution_id == submitted.run_id
+        assert request.context.device == "cpu"
+        assert isinstance(request.sinks, RunSinks)
+        assert [n["id"] for n in request.graph["nodes"]] == [
+            "start", "src", "print"]
+        assert request.output_store is None
+        assert request.record_outputs is False
+        assert request.explicit_metric_nodes == set()
+    assert first.session is None
+    assert first.options["seed"] == 5
+    assert first.context.seed == 5
+    assert second.session is session
+    assert second.sinks is not first.sinks
+
+    for submitted in (queued, interactive):
+        record = await store.get_run(submitted.run_id)
+        assert record is not None and record.status == STATUS_SUCCEEDED
+        types = [e.type for e in await store.get_events(submitted.run_id)]
+        assert types == [EVENT_RUN_STARTED, EVENT_RUN_COMPLETED]
+
+
+async def test_the_executors_failure_lands_on_the_row(store):
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(
+        ExecutionOutcome(STATUS_FAILED, "worker lost its card"))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_FAILED
+    assert record.error == "worker lost its card"
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].type == EVENT_RUN_FAILED
+    assert events[-1].payload == {"error": "worker lost its card"}
+
+
+async def test_the_sinks_land_in_the_event_log_and_metrics(store):
+    """What an executor reports through its sinks is persisted the way the
+    in-process bridges' reports always were."""
+    from app.core.execution_context import ArtifactSignal, WarningSignal
+    from app.core.executors import ExecutionOutcome
+    from app.core.run_store import MetricPoint
+
+    class _Reporting:
+        async def run(self, request):
+            await request.sinks.emit(EVENT_NODE_STATUS,
+                                     {"node_id": "src", "status": "running"})
+            await request.sinks.record_metrics(
+                [MetricPoint(name="loss", value=0.5, step=1, node_id="src")])
+            await request.sinks.record_artifact(ArtifactSignal(
+                kind="checkpoint", path="x.pt", meta={"epoch": 1},
+                node_id="src"))
+            await request.sinks.warn(WarningSignal(
+                kind="node_state_evicted", detail="gone", node_id="src"))
+            return ExecutionOutcome(STATUS_SUCCEEDED)
+
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Reporting())
+    try:
+        submitted = await svc.submit(_graph())
+        await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    events = await store.get_events(submitted.run_id)
+    assert [e.type for e in events] == [
+        EVENT_RUN_STARTED, EVENT_NODE_STATUS, EVENT_ARTIFACT, EVENT_WARNING,
+        EVENT_METRIC, EVENT_RUN_COMPLETED]
+    assert events[2].payload["meta"] == {"epoch": 1, "node_id": "src"}
+    assert events[3].payload == {"kind": "node_state_evicted",
+                                 "detail": "gone", "node_id": "src"}
+    metrics = await store.get_metrics(submitted.run_id, name="loss")
+    assert [(m.value, m.step) for m in metrics] == [(0.5, 1)]
+
+
+async def test_a_cancelled_outcome_is_interrupted_when_the_server_stops(
+        store):
+    """The executor only knows the engine stopped; the service says why."""
+    from app.core.executors import ExecutionOutcome
+
+    started = asyncio.Event()
+
+    class _Waits:
+        async def run(self, request):
+            started.set()
+            while not request.context.should_stop():
+                await asyncio.sleep(0.01)
+            return ExecutionOutcome(STATUS_CANCELLED)
+
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Waits())
+    submitted = await svc.submit(_graph())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    await svc.shutdown()
+    record = await store.get_run(submitted.run_id)
+    assert record is not None and record.status == STATUS_INTERRUPTED
+
+    started.clear()
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Waits())
+    try:
+        submitted = await svc.submit(_graph())
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await svc.cancel(submitted.run_id)
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert record.status == STATUS_CANCELLED
+
+
+async def test_an_executor_that_raises_still_files_a_failed_run(store):
+    """``_finalize`` runs whatever the executor does: the row is FAILED with
+    the exception's message, and the log has its closing frame."""
+
+    class _Raises:
+        async def run(self, request):
+            raise RuntimeError("executor exploded")
+
+    svc = RunService(store, shutdown_grace_s=2.0, executor=_Raises())
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_FAILED
+    assert record.error == "executor exploded"
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].type == EVENT_RUN_FAILED
+    assert events[-1].payload == {"error": "executor exploded"}
+
+
+@pytest.mark.parametrize("bad", ["running", "queued", "", None])
+async def test_an_unknown_executor_status_is_filed_as_failed(store, bad):
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(ExecutionOutcome(bad, None))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_FAILED
+    assert record.error == f"the executor reported an unknown status {bad!r}"
+
+
+async def test_an_interrupted_outcome_is_filed_interrupted(store):
+    """#772: an executor whose worker went away reports ``interrupted``:
+    nobody asked for the stop, so it is not a user's ``cancelled``."""
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(ExecutionOutcome("interrupted", "gone"))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == "interrupted"
+    assert record.error == "gone"
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].payload == {"reason": "interrupted"}
+
+
+async def test_a_cancelled_outcome_stores_no_error(store):
+    """A stop is not a failure: whatever text the executor attached, the
+    row's error stays empty, as it did before #766."""
+    from app.core.executors import ExecutionOutcome
+
+    executor = _RecordingExecutor(
+        ExecutionOutcome(STATUS_CANCELLED, "stopped at epoch 3"))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.status == STATUS_CANCELLED
+    assert record.error is None
+    events = await store.get_events(submitted.run_id)
+    assert events[-1].type == EVENT_RUN_STOPPED
+    assert events[-1].payload == {"reason": STOP_REASON_CANCELLED}
+
+
+# ── peak memory (#770) ────────────────────────────────────────────────────
+#
+# The executor reads the allocator off ``sys.modules["torch"]``, so a fake
+# namespace stands in for torch there: no CUDA card needed, and the code
+# under test never imports torch itself.
+
+
+class _FakeCuda:
+    """A strict fake: without a context, anything but ``is_initialized``
+    would have created one, so it raises."""
+
+    def __init__(self, *, initialized=True, count=2, current=0,
+                 allocated=None, reserved=None, fail_read=False,
+                 fail_reset=False) -> None:
+        self.initialized = initialized
+        self.count = count
+        self.current = current
+        # Peaks per card; a card missing from the map has none.
+        self.allocated = {0: 6 * 1024 ** 3} if allocated is None else allocated
+        self.reserved = ({card: value + 1024 ** 3
+                          for card, value in self.allocated.items()}
+                         if reserved is None else reserved)
+        self.fail_read = fail_read
+        self.fail_reset = fail_reset
+        self.calls: list[tuple[str, int | None]] = []
+
+    def _touch(self, name, card=None):
+        if not self.initialized:
+            raise AssertionError(f"{name} would initialise CUDA")
+        self.calls.append((name, card))
+
+    def is_initialized(self):
+        return self.initialized
+
+    def current_device(self):
+        self._touch("current_device")
+        return self.current
+
+    def device_count(self):
+        self._touch("device_count")
+        return self.count
+
+    def reset_peak_memory_stats(self, card):
+        self._touch("reset", card)
+        if self.fail_reset:
+            raise RuntimeError("driver gone")
+
+    def max_memory_allocated(self, card):
+        self._touch("allocated", card)
+        if self.fail_read:
+            raise RuntimeError("driver gone")
+        return self.allocated.get(card, 0)
+
+    def max_memory_reserved(self, card):
+        self._touch("max_reserved", card)
+        return self.reserved.get(card, 0)
+
+    def memory_reserved(self, card):
+        self._touch("reserved", card)
+        return self.reserved.get(card, 0)
+
+    def resets(self):
+        return [card for name, card in self.calls if name == "reset"]
+
+
+def _fake_torch(cuda=None, *, mps_available=False, mps_bytes=0,
+                mps_backend=True):
+    from types import SimpleNamespace
+
+    backends = SimpleNamespace()
+    if mps_backend:
+        backends.mps = SimpleNamespace(is_available=lambda: mps_available)
+    return SimpleNamespace(
+        cuda=cuda or _FakeCuda(initialized=False),
+        backends=backends,
+        mps=SimpleNamespace(driver_allocated_memory=lambda: mps_bytes),
+    )
+
+
+@pytest.fixture
+def no_active_scopes():
+    from app.core import executors
+
+    executors._ACTIVE_SCOPES.clear()
+    yield executors._ACTIVE_SCOPES
+    executors._ACTIVE_SCOPES.clear()
+
+
+async def _run_in_process(monkeypatch, device, outcome=None, during=None):
+    """``InProcessExecutor.run`` with the graph part stubbed out."""
+    from types import SimpleNamespace
+
+    from app.core.execution_context import ExecutionContext
+    from app.core.executors import ExecutionOutcome, InProcessExecutor
+
+    executor = InProcessExecutor()
+
+    async def _execute(request):
+        if during is not None:
+            during()
+        return outcome or ExecutionOutcome(STATUS_SUCCEEDED)
+
+    monkeypatch.setattr(executor, "_execute", _execute)
+    request = SimpleNamespace(run_id="r",
+                              context=ExecutionContext(device=device))
+    return await executor.run(request)
+
+
+GiB = 1024 ** 3
+
+
+async def test_cuda_peak_covers_every_used_card_run_card_first(
+        monkeypatch, no_active_scopes):
+    """A node pinned to another card is counted; a card with nothing on it
+    is left out; the run's own card comes first; any outcome carries it."""
+    import sys
+
+    from app.core.executors import ExecutionOutcome
+
+    cuda = _FakeCuda(count=3, allocated={0: 2 * GiB, 1: 6 * GiB},
+                     reserved={0: 3 * GiB, 1: 7 * GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(
+        monkeypatch, "cuda:1", ExecutionOutcome(STATUS_FAILED, "CUDA OOM"))
+
+    assert (outcome.status, outcome.error) == (STATUS_FAILED, "CUDA OOM")
+    assert list(outcome.peak_memory) == ["cuda:1", "cuda:0"]
+    assert outcome.peak_memory["cuda:1"] == {
+        "allocated_bytes": 6 * GiB, "reserved_bytes": 7 * GiB,
+        "exact": False}
+    assert outcome.peak_memory["cuda:0"]["allocated_bytes"] == 2 * GiB
+    # Alone in the process: every card was reset before the graph ran.
+    assert cuda.resets() == [0, 1, 2]
+    assert no_active_scopes == []
+
+
+async def test_reserved_only_memory_counts_unless_it_is_old_cache(
+        monkeypatch, no_active_scopes):
+    """Reserved memory with no allocation is counted on a card the run
+    could not reset (a context it created, or a shared card), and skipped
+    on a card it did reset: there it is cache an earlier run left."""
+    import sys
+
+    cached = _FakeCuda(count=1, allocated={}, reserved={0: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cached))
+    assert (await _run_in_process(monkeypatch, "cuda:0")).peak_memory is None
+
+    fresh = _FakeCuda(initialized=False, count=1, allocated={},
+                      reserved={0: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(fresh))
+
+    def _init():
+        fresh.initialized = True
+
+    outcome = await _run_in_process(monkeypatch, "cuda:0", during=_init)
+    assert outcome.peak_memory == {"cuda:0": {
+        "allocated_bytes": 0, "reserved_bytes": GiB, "exact": False}}
+
+
+async def test_no_card_used_records_null(monkeypatch, no_active_scopes):
+    import sys
+
+    cuda = _FakeCuda(allocated={}, reserved={})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    assert (await _run_in_process(monkeypatch, "cuda:0")).peak_memory is None
+
+
+async def test_an_uninitialised_cuda_context_is_never_created(
+        monkeypatch, no_active_scopes):
+    """Neither the reset nor the read may create a context: the strict fake
+    raises on any call but ``is_initialized``."""
+    import sys
+
+    cuda = _FakeCuda(initialized=False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    for device in ("cuda:0", "cuda"):
+        outcome = await _run_in_process(monkeypatch, device)
+        assert outcome.peak_memory is None
+    assert cuda.calls == []
+
+
+async def test_a_context_created_by_the_run_is_read_as_its_own(
+        monkeypatch, no_active_scopes):
+    """No context at the start means every counter was zero: what the run
+    leaves is its own, not shared, although nothing was reset. A bare
+    ``cuda`` is card 0 then (asking would have created the context)."""
+    import sys
+
+    cuda = _FakeCuda(initialized=False, current=1)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+
+    def _init():
+        cuda.initialized = True
+
+    outcome = await _run_in_process(monkeypatch, "cuda", during=_init)
+    assert cuda.resets() == []
+    assert ("current_device", None) not in cuda.calls
+    assert outcome.peak_memory == {"cuda:0": {
+        "allocated_bytes": 6 * GiB, "reserved_bytes": 7 * GiB,
+        "exact": False}}
+
+
+async def test_a_bare_cuda_device_uses_the_current_card(
+        monkeypatch, no_active_scopes):
+    import sys
+
+    cuda = _FakeCuda(count=3, current=2, allocated={0: GiB, 2: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(monkeypatch, "cuda")
+    assert list(outcome.peak_memory) == ["cuda:2", "cuda:0"]
+
+
+async def test_concurrent_runs_on_one_card_do_not_reset_each_other(
+        monkeypatch, no_active_scopes):
+    """The second run on a card must not wipe the first one's peak: it skips
+    the reset, and both report that card as shared. A run on another card
+    resets only the cards nobody else is on."""
+    import sys
+
+    from app.core.executors import PeakMemoryScope
+
+    cuda = _FakeCuda(count=2, allocated={0: GiB, 1: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+
+    first = PeakMemoryScope("cuda:0").open()
+    assert cuda.resets() == [0, 1]
+    cuda.calls.clear()
+
+    second = PeakMemoryScope("cuda:0").open()
+    assert cuda.resets() == []
+    shared = second.read(exact=True)
+    assert shared["cuda:0"] == {"allocated_bytes": GiB,
+                                "reserved_bytes": 2 * GiB,
+                                "exact": False, "shared": True}
+    # Card 1 was not reset by the second run either: an earlier peak may
+    # still be in its counters.
+    assert shared["cuda:1"]["shared"] is True
+    assert first.read(exact=True)["cuda:0"]["shared"] is True
+    second.close()
+    second.close()  # idempotent
+
+    other = PeakMemoryScope("cuda:1").open()
+    assert cuda.resets() == [1]
+    reading = other.read(exact=True)
+    assert reading["cuda:1"] == {"allocated_bytes": GiB,
+                                 "reserved_bytes": 2 * GiB, "exact": True}
+    assert reading["cuda:0"]["shared"] is True
+    other.close()
+    first.close()
+    assert no_active_scopes == []
+
+    alone = PeakMemoryScope("cuda:0").open()
+    assert alone.read(exact=True)["cuda:0"]["exact"] is True
+    alone.close()
+
+
+@pytest.mark.parametrize("device", ["cpu", ""])
+async def test_a_plain_cpu_run_records_null(
+        monkeypatch, no_active_scopes, device):
+    """No CUDA context, or no card holding memory: null, nothing created."""
+    import sys
+
+    cuda = _FakeCuda(initialized=False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    assert (await _run_in_process(monkeypatch, device)).peak_memory is None
+    assert cuda.calls == []
+
+    idle = _FakeCuda(allocated={}, reserved={})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(idle))
+    assert (await _run_in_process(monkeypatch, device)).peak_memory is None
+    assert no_active_scopes == []
+
+
+async def test_a_cpu_run_lists_the_cards_its_nodes_used(
+        monkeypatch, no_active_scopes):
+    """A node that pinned a CUDA card in a CPU run: the card is listed, in
+    card order, reset at the start like any run alone on it."""
+    import sys
+
+    cuda = _FakeCuda(count=3, allocated={2: GiB, 1: 2 * GiB},
+                     reserved={2: 2 * GiB, 1: 3 * GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    outcome = await _run_in_process(monkeypatch, "cpu")
+    assert cuda.resets() == [0, 1, 2]
+    assert outcome.peak_memory == {
+        "cuda:1": {"allocated_bytes": 2 * GiB, "reserved_bytes": 3 * GiB,
+                   "exact": False},
+        "cuda:2": {"allocated_bytes": GiB, "reserved_bytes": 2 * GiB,
+                   "exact": False},
+    }
+    assert list(outcome.peak_memory) == ["cuda:1", "cuda:2"]
+
+
+async def test_a_cpu_run_beside_a_cuda_run_marks_that_card_shared(
+        monkeypatch, no_active_scopes):
+    import sys
+
+    from app.core.executors import PeakMemoryScope
+
+    cuda = _FakeCuda(count=2, allocated={0: GiB, 1: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    gpu_run = PeakMemoryScope("cuda:0").open()
+    cpu_run = PeakMemoryScope("cpu").open()
+    # The CPU run did not reset card 0 under the CUDA run.
+    assert cuda.resets() == [0, 1, 1]
+    reading = cpu_run.read(exact=True)
+    assert reading["cuda:0"]["shared"] is True
+    assert reading["cuda:1"] == {"allocated_bytes": GiB,
+                                 "reserved_bytes": 2 * GiB, "exact": True}
+    cpu_run.close()
+    gpu_run.close()
+
+
+async def test_no_torch_loaded_records_null_and_imports_nothing(
+        monkeypatch, no_active_scopes):
+    import sys
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    for device in ("cuda:0", "cuda", "mps"):
+        assert (await _run_in_process(monkeypatch, device)).peak_memory is None
+    assert "torch" not in sys.modules
+
+
+async def test_a_broken_driver_records_null_and_never_fails_the_run(
+        monkeypatch, no_active_scopes):
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(sys.modules, "torch",
+                        _fake_torch(_FakeCuda(fail_read=True)))
+    outcome = await _run_in_process(monkeypatch, "cuda:0")
+    assert outcome.status == STATUS_SUCCEEDED
+    assert outcome.peak_memory is None
+
+    resetless = _FakeCuda(fail_reset=True)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(resetless))
+    outcome = await _run_in_process(monkeypatch, "cuda:0")
+    assert outcome.peak_memory["cuda:0"]["allocated_bytes"] == 6 * GiB
+
+    def _raises():
+        raise RuntimeError("no driver")
+
+    broken = _fake_torch()
+    broken.cuda = SimpleNamespace(is_initialized=_raises)
+    monkeypatch.setitem(sys.modules, "torch", broken)
+    assert (await _run_in_process(monkeypatch, "cuda:0")).peak_memory is None
+
+
+async def test_an_exclusive_process_reports_exact_and_never_shared(
+        monkeypatch, no_active_scopes):
+    """``exclusive_process=True`` (the worker child): every card reset
+    regardless of other scopes, ``exact: true``, no ``shared`` even when a
+    reset failed; the default executor still reports ``exact: false``."""
+    import sys
+    from types import SimpleNamespace
+
+    from app.core.execution_context import ExecutionContext
+    from app.core.executors import InProcessExecutor, PeakMemoryScope
+
+    async def _ok(request):
+        from app.core.executors import ExecutionOutcome
+        return ExecutionOutcome(STATUS_SUCCEEDED)
+
+    request = SimpleNamespace(run_id="r",
+                              context=ExecutionContext(device="cuda:0"))
+
+    cuda = _FakeCuda(count=2, allocated={0: GiB, 1: GiB})
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda))
+    other = PeakMemoryScope("cuda:0").open()
+    cuda.calls.clear()
+    exclusive = InProcessExecutor(exclusive_process=True)
+    monkeypatch.setattr(exclusive, "_execute", _ok)
+    outcome = await exclusive.run(request)
+    assert cuda.resets() == [0, 1]
+    assert outcome.peak_memory == {
+        "cuda:0": {"allocated_bytes": GiB, "reserved_bytes": 2 * GiB,
+                   "exact": True},
+        "cuda:1": {"allocated_bytes": GiB, "reserved_bytes": 2 * GiB,
+                   "exact": True},
+    }
+    assert no_active_scopes == [other]
+    other.close()
+
+    broken = _FakeCuda(fail_reset=True)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(broken))
+    monkeypatch.setattr(exclusive, "_execute", _ok)
+    entry = (await exclusive.run(request)).peak_memory["cuda:0"]
+    assert entry == {"allocated_bytes": 6 * GiB, "reserved_bytes": 7 * GiB,
+                     "exact": True}
+
+    default = InProcessExecutor()
+    assert default.exclusive_process is False
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(_FakeCuda()))
+    monkeypatch.setattr(default, "_execute", _ok)
+    assert (await default.run(request)).peak_memory["cuda:0"]["exact"] \
+        is False
+
+
+async def test_a_hard_cancel_unregisters_the_run(monkeypatch, no_active_scopes):
+    import sys
+
+    from app.core.execution_context import ExecutionContext
+    from app.core.executors import InProcessExecutor
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(_FakeCuda()))
+    executor = InProcessExecutor()
+
+    async def _cancelled(request):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(executor, "_execute", _cancelled)
+    from types import SimpleNamespace
+
+    with pytest.raises(asyncio.CancelledError):
+        await executor.run(SimpleNamespace(
+            run_id="r", context=ExecutionContext(device="cuda:0")))
+    assert no_active_scopes == []
+
+
+async def test_mps_records_what_the_driver_holds_at_the_end(
+        monkeypatch, no_active_scopes):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(
+        mps_available=True, mps_bytes=3 * GiB))
+    outcome = await _run_in_process(monkeypatch, "mps:0")
+    assert outcome.peak_memory == {"mps": {"held_bytes": 3 * GiB,
+                                           "exact": False}}
+
+    for torch in (_fake_torch(mps_available=False),
+                  _fake_torch(mps_backend=False)):
+        monkeypatch.setitem(sys.modules, "torch", torch)
+        assert (await _run_in_process(monkeypatch, "mps")).peak_memory is None
+
+
+async def test_a_cpu_run_stores_peak_memory_null(store, service):
+    """The real in-process executor end to end: a CPU run's facts carry an
+    explicit ``peak_memory: null`` next to what ``_begin`` recorded."""
+    submitted = await service.submit(_graph(), options={"device": "cpu"})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED
+    assert "peak_memory" in record.execution_facts
+    assert record.execution_facts["peak_memory"] is None
+    assert record.execution_facts["resolved"]["device"] == "cpu"
+
+
+async def test_the_executors_peak_memory_lands_in_the_facts(
+        store, monkeypatch):
+    """Merged before the terminal event, so a reader woken by it sees it."""
+    from app.core.executors import ExecutionOutcome
+
+    peak = {"cuda:0": {"allocated_bytes": 5, "reserved_bytes": 9,
+                       "exact": True}}
+    seen_at_terminal: list[Any] = []
+    original_emit = RunService._emit
+
+    async def _spy(self, run_id, event_type, payload):
+        if event_type == EVENT_RUN_COMPLETED:
+            row = await self.store.get_run(run_id)
+            seen_at_terminal.append(row.execution_facts.get("peak_memory"))
+        return await original_emit(self, run_id, event_type, payload)
+
+    monkeypatch.setattr(RunService, "_emit", _spy)
+    executor = _RecordingExecutor(
+        ExecutionOutcome(STATUS_SUCCEEDED, None, peak_memory=peak))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    assert record.execution_facts["peak_memory"] == peak
+    assert seen_at_terminal == [peak]
+    types = [e.type for e in await store.get_events(submitted.run_id)]
+    assert types == [EVENT_RUN_STARTED, EVENT_RUN_COMPLETED]
+
+
+@pytest.mark.parametrize("kind", ["raises", "not_a_dict", "unmeasured"])
+async def test_no_measurement_records_nothing(store, kind):
+    """Key absent means "not recorded": an executor that raised, reported
+    something that is not a map, or did not measure at all."""
+    from types import SimpleNamespace
+
+    from app.core.executors import ExecutionOutcome
+
+    class _Raises:
+        async def run(self, request):
+            raise RuntimeError("executor exploded")
+
+    executor = {
+        "raises": _Raises(),
+        "not_a_dict": _RecordingExecutor(ExecutionOutcome(
+            STATUS_SUCCEEDED, None, peak_memory=[1, 2])),  # type: ignore[arg-type]
+        "unmeasured": _RecordingExecutor(
+            SimpleNamespace(status=STATUS_SUCCEEDED, error=None)),
+    }[kind]
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert record.execution_facts is not None
+    assert "peak_memory" not in record.execution_facts
+
+
+async def test_a_run_that_never_executed_records_no_peak(store):
+    """Finalized without an executor outcome (stopped before its first
+    node, an unusable snapshot): no number, and not a null one either."""
+    from app.core.execution_context import ExecutionContext
+    from app.core.run_service import _ActiveRun, _Broadcast
+
+    run = await store.create_run(graph_snapshot=_graph())
+    await store.mark_running(run.id, execution_facts={"schema_version": 1})
+    svc = RunService(store, shutdown_grace_s=2.0)
+    try:
+        active = _ActiveRun(run_id=run.id, context=ExecutionContext(),
+                            signal=_Broadcast())
+        await svc._finalize(active, STATUS_CANCELLED, None)
+    finally:
+        await svc.shutdown()
+    record = await store.get_run(run.id)
+    assert record.status == STATUS_CANCELLED
+    assert record.execution_facts == {"schema_version": 1}
+
+
+async def test_a_peak_with_no_facts_to_join_is_logged(
+        store, monkeypatch, caplog):
+    import logging
+
+    from app.core.executors import ExecutionOutcome
+
+    async def _not_recorded(run_id, patch):
+        return False
+
+    monkeypatch.setattr(store, "update_execution_facts", _not_recorded)
+    executor = _RecordingExecutor(ExecutionOutcome(STATUS_SUCCEEDED))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        with caplog.at_level(logging.INFO, logger="app.core.run_service"):
+            submitted = await svc.submit(_graph())
+            record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert record.status == STATUS_SUCCEEDED
+    assert any("peak memory is dropped" in r.getMessage()
+               and r.levelno == logging.INFO for r in caplog.records)
+
+
+async def test_a_failing_facts_write_does_not_fail_the_run(store, monkeypatch):
+    from app.core.executors import ExecutionOutcome
+
+    async def _boom(run_id, patch):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "update_execution_facts", _boom)
+    executor = _RecordingExecutor(ExecutionOutcome(STATUS_SUCCEEDED))
+    svc = RunService(store, shutdown_grace_s=2.0, executor=executor)
+    try:
+        submitted = await svc.submit(_graph())
+        record = await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+    assert record.status == STATUS_SUCCEEDED
+
+
+# ── per-(worker, device) overrides (#773) ────────────────────────────────
+
+
+def test_queue_overrides_accept_a_worker_device_key():
+    from app.core.run_service import parse_queue_overrides
+
+    assert parse_queue_overrides(
+        "cuda:0=2, GPU-Box-1/CUDA:0=3,gpu-box-1/mps=4,box/cuda:01=5,"
+        "box/cpu=6") == (
+        ("cuda:0", 2), ("gpu-box-1/cuda:0", 3), ("gpu-box-1/mps:0", 4),
+        ("box/cuda:1", 5), ("box/cpu", 6))
+    # ``local/<device>`` is the bare key, validated and canonicalised like
+    # a worker key's device.
+    assert parse_queue_overrides("local/cuda:01=2,LOCAL/mps=3") == (
+        ("cuda:1", 2), ("mps:0", 3))
+
+
+@pytest.mark.parametrize("entry", [
+    "any/cuda:0=2",          # reserved, not a worker
+    "-box/cuda:0=2",         # not a worker name
+    "box/=2",                # no device
+    "/cuda:0=2",             # no worker
+    "box/tpu:0=2",           # unknown device
+    "box/cuda=2",            # a kind, not a card
+    "box/cuda:0/x=2",        # more than one separator
+    "box/cuda:0=0",          # count below 1
+    "box/cuda:0=two",        # not a number
+    "local/cuda=2",          # this server, but a kind, not a card
+    "local/tpu:0=2",         # this server, unknown device
+    "local/=2",              # this server, no device
+])
+def test_a_malformed_worker_override_warns_and_is_skipped(entry, caplog):
+    from app.core.run_service import parse_queue_overrides
+
+    with caplog.at_level("WARNING", logger="app.core.run_service"):
+        assert parse_queue_overrides(f"{entry},cpu=3") == (("cpu", 3),)
+    assert any("ignoring run queue override" in r.getMessage()
+               for r in caplog.records)

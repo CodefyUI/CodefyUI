@@ -12,7 +12,7 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 ## 每個裝置一條佇列 {/* #one-queue-per-device */}
 
-每個 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps`。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。解析順序是：run 自己的 `device` 選項、圖檔的 `settings.device`、最後是 `cpu`；只有明確指定 `auto` 才會挑選目前最好的加速器。
+沒有 worker 目標的 run 都依它**解析後的裝置**排程 — `cpu`、`cuda:0`、`mps` — 並在伺服器程序內執行。這個字串就是佇列 key，因此每個裝置都有獨立的佇列與並行上限。解析順序是：run 自己的 `device` 選項、圖檔的 `settings.device`、最後是 `cpu`；只有明確指定 `auto` 才會挑選目前最好的加速器。
 
 | 佇列 key | 同時執行數（預設） | 為什麼 |
 | --- | --- | --- |
@@ -21,13 +21,37 @@ description: 依裝置排隊並在背景執行圖形 — 通道、FIFO 順序、
 
 GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互相等待。同一條佇列內的 run 依**送出順序**啟動，先送出的先執行。
 
+**准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。它排在佇列最前面等待時不佔用任何名額，但會**保留**這些卡：在它啟動之前，其他 run 都不能在保留的卡上啟動；已在這些卡上執行的 run 照常結束，結束後它就會啟動。代價是閒置：已經空出的保留卡會一直閒置到集合中其他卡也空出，最長等於那些卡上已在執行的最久的 run。保留依先來後到，因此兩個共用一張卡的裝置集合 run 會依序啟動。`"worker": "any"` 的裝置集合 run 不保留任何卡，因為它要用哪台機器的卡要到啟動時才決定。
+
+與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 從 loopback 位址連入，且回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）。兩者缺一不可：SSH 通道也是 loopback，而 machine id 是 agent 自己回報的。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。數條佇列共用的名額空出時，由這些佇列最前面的等待 run 中最早送出的那個取得，所以一條很長的佇列不會讓另一條餓死。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
+
 :::note 同一張卡的別名會併成同一條佇列
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
 :::
 
 :::note run 的裝置從哪裡來
-沒有明確指定 `device` 的 run 會使用圖檔裡的 `settings.device`；圖檔也沒有指定時就在 `cpu` 上執行，不會有任何機制替你選加速器。`--device auto`（或請求本文中的 `"device": "auto"`）是唯一的例外：它會解析成這台伺服器能看到的最佳加速器（依序 `cuda`、`mps`、`cpu`），並排在那條佇列上。指定了不存在的加速器會退回 `cpu` 並發出警告。
+沒有明確指定 `device` 的 run 會使用圖檔裡的 `settings.device`；圖檔也沒有指定時就在 `cpu` 上執行，不會有任何機制替你選加速器。指定了裝置集合（`target.devices`，或 `cdui run` 的 `--devices`）的 run 則改用集合的第一個裝置，不會參考 `settings.device`。`--device auto`（或請求本文中的 `"device": "auto"`）是唯一的例外：它會解析成這台伺服器能看到的最佳加速器（依序 `cuda`、`mps`、`cpu`），並排在那條佇列上。指定了不存在的加速器會退回 `cpu` 並發出警告。
 :::
+
+run 也可以指定**目標**（target）：在請求的 `options` 裡寫 `"target": {"worker": "local", "devices": ["cuda:0", "cuda:1"]}`，或在 `cdui run` 加上 `--target` / `--devices`。`worker` 可以是 `local`（這台伺服器；省略 `worker` 時也是它）、已連線的 worker agent 名稱（見 [Worker](#workers)），或 `any`。`devices` 列出同一種類的具體裝置（`cpu`、`cuda:N`、`mps:N`；只寫 `mps` 視為 `mps:0`，只寫 `cuda` 會被拒絕；不能用 `auto`、不能重複，也不能把 `cuda` 和 `cpu` 混在一起）。`device` 省略或為 `auto` 時，清單的第一個就是 run 的裝置，也就是它的佇列；`device` 只寫種類時也一樣（`"device": "cuda"` 搭配 `["cuda:1", "cuda:0"]` 會在 `cuda:1` 上執行）。`device` 指向其他裝置則會被拒絕。run 的資料列以 `worker_id` 與 `devices` 回報這兩項。在這台伺服器上，run 用第一個裝置排隊與執行，並在集合中每一個裝置各佔一個名額；在 worker 上，run 會佔用並使用集合中的每一個裝置。沒有指定 target 的 run 行為與以往完全相同。
+
+### Worker {/* #workers */}
+
+Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-commands#agent-commands)）連到這台伺服器，把交給它的每個 run 放在自己的子程序裡執行。它可以與伺服器在同一台機器上，也可以在另一台機器上，以 Workers 面板產生的 token 加入（見[遠端 Worker](/usage/remote-workers#adding-a-worker)）；已加入的 worker 在連線前列為 `offline`，這段期間 run 仍可指定它（**Queue on...** 也可以）並在佇列中等待。移除 worker 時，仍在佇列中等它的 run 會失敗。`GET /api/workers` 列出各 agent 與其裝置，每個裝置附上 `slots`（`limit`、`taken`）；回應的 `local` 欄位以相同格式列出這台伺服器的裝置，`same_host: true` 標示在這台機器上的 agent。這種 agent 中屬於這台伺服器的裝置會帶有 `shared_with: "local"`，其 `slots` 就是這台伺服器那張卡的名額（同一個計數與上限），加總用量時只能算一次。`POST /api/workers/{id}/drain` 讓某個 agent 不再接新的 run（`/undrain` 恢復）。
+
+`target.worker` 決定 run 放在哪裡：
+
+- **省略或 `local`**：這台伺服器，排在解析後裝置的佇列上，與沒有 worker 時完全相同。
+- **worker 名稱**：那個 worker。它必須在這台伺服器啟動後連線過，而且依它最後回報的裝置，必須提供該裝置集合、指定的裝置，或指定種類的裝置（`cuda`、`mps`；`auto` 依序選 CUDA、MPS、CPU），否則送出會回 `400`。降級的 worker（節點型別與這台伺服器不同）只接受它擁有全部節點型別的圖；其他圖會回 `400` 並列出缺少的型別（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。曾經連線、目前離線的 worker 不會造成拒絕：run 會排入佇列，等它重新連線。當該裝置在 worker 上的名額都被佔用（每張加速卡一個 run，CPU 兩個，與這台伺服器相同），或 worker 正在 drain 或離線時，run 會在 `<worker>/<device>` 佇列等待；後兩種情況會寫在 run 的 `queue_reason`（`worker gpu-box is draining`、`waiting for worker gpu-box to reconnect`）。
+- **`any`**：依名稱順序，第一個已連線、未 drain、該裝置有空位，且不缺少這台伺服器有的節點型別的 worker（缺少型別或未回報節點目錄的 worker 會被略過），最後才是這台伺服器。worker 會重新編號的 CUDA 裝置集合（超過一張卡，或不是 `cuda:0` 的單張卡）不會在這台伺服器上執行：在 worker 上，集合會為該 run 從 `cuda:0` 重新編號，在這台伺服器上則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。這種 run 會等待提供整個集合的 worker。`cpu`、`mps` 或 `["cuda:0"]` 的集合，只要這台伺服器有，仍可在這裡執行。這台伺服器與它啟動後見過的所有 worker 都不可能執行的 run，送出時回 `400`；只有離線中的 worker 提供的裝置，會讓 run 排入佇列，直到提供該裝置的 worker 連線。
+
+在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。
+
+Worker 斷線時，它的 run 會在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內繼續執行；會讀寫檔案的 run 需要兩台機器共用的資料夾，或 transfer 後端：見[遠端 Worker：連線中斷時](/usage/remote-workers#when-the-connection-drops)與[遠端 Worker：儲存](/usage/remote-workers#storage)。
+
+worker 上的 seeded run 是**在自己的程序裡**單獨執行：[可重現的執行](./running-graphs#reproducible-runs-seed)中「seeded run 單獨執行」的規則保護的是這台伺服器整個程序共用的亂數狀態，而 worker 的子程序有自己的亂數狀態。因此不同 worker 或不同卡上的 seeded run 可以同時執行，worker 上的 seeded run 既不等待這台伺服器的 run，也不會擋住它們。在這台伺服器上執行的 seeded run（包括落在這裡的 `any` run）仍然一次執行一個。
+
+要在多 GPU 機器上同時執行多個工作、啟動 worker 與選擇裝置，請參閱[多 GPU 執行](./multi-gpu)。
 
 這項限制控制的是**每個裝置的 run 數量**，與 `CODEFYUI_MAX_PARALLEL_NODES` 不同；後者限制*單一 run 內*可同時執行的節點數。兩項並行上限的效果會相乘。
 
@@ -65,7 +89,7 @@ run 的圖完成後會立即歸還裝置名額，再寫入最終狀態與結束�
 
 ### 執行任務面板 {/* #runs-panel */}
 
-結果面板的 **執行任務** 分頁會列出伺服器持有的最新 50 個 run，不論它是從哪個分頁、`cdui run` 或 API 啟動，並依最新到最舊排列。篩選 chip 包含 **全部／執行中／排隊中／已成功／失敗／已取消／已中斷**，欄位是**名稱、狀態、裝置、開始、耗時、最終損失**。從分頁啟動的 run 會以該分頁的名稱列出，最多 64 個字元。篩選 chip 會在取前 50 筆之前套用，**重新整理**旁的數字會顯示符合條件的 run 列出了幾筆（`50 / 312`）。更早的 run 可以用 `GET /api/runs?offset=` 取得。等待中的 run 會在裝置旁顯示 `佇列第 N 位`。**新增掃描**可建立[參數掃描](#in-the-runs-panel)。每一列最多提供四個動作：
+結果面板的 **執行任務** 分頁會列出伺服器持有的最新 50 個 run，不論它是從哪個分頁、**排入佇列...**、`cdui run` 或 API 啟動，並依最新到最舊排列。篩選 chip 包含 **全部／執行中／排隊中／已成功／失敗／已取消／已中斷**，欄位是**名稱、狀態、Worker、裝置、開始、耗時、最終損失**。**Worker** 對本機 run 顯示**本伺服器**，對尚未放置的 `any` run 顯示**任一可用**，其餘顯示 worker 名稱；**裝置**列出 run 的裝置集合或裝置，worker 上的 run 在滑鼠停留時會顯示每張卡在 run 內的名稱。從分頁啟動的 run 會以該分頁的名稱列出，最多 64 個字元。篩選 chip 會在取前 50 筆之前套用，**重新整理**旁的數字會顯示符合條件的 run 列出了幾筆（`50 / 312`）。更早的 run 可以用 `GET /api/runs?offset=` 取得。等待中的 run 會在裝置旁顯示 `佇列第 N 位`，若有等待原因，也會在 worker 下方顯示（`queue_reason`，例如 `waiting for worker gpu-box to reconnect`）。**新增掃描**可建立[參數掃描](#in-the-runs-panel)。每一列最多提供四個動作：
 
 | 動作 | 用途 |
 | --- | --- |
@@ -108,7 +132,9 @@ cdui run infer.json --record-outputs
 | 旗標 | 意義 |
 | --- | --- |
 | `--name <text>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
-| `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
+| `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` \| `mps:N`。省略時用圖檔的 `settings.device`，再沒有就是 `cpu`；有 `--devices` 時改用集合的第一個裝置（此時不參考圖檔的 `settings.device`）。`auto` 表示這台伺服器最好的加速器。解析後的裝置就是它加入的佇列。 |
+| `--target <名稱>` | run 在哪裡執行：`local`（這台伺服器）、已連線的 worker agent 名稱，或 `any`。見 [Worker](#workers)。省略時為 `local`。 |
+| `--devices <清單>` | 同一種類的裝置集合，以逗號分隔，例如 `cuda:0,cuda:1`。`--device` 省略、為 `auto` 或只寫種類（`cuda`）時，第一個就是 run 的裝置；其他 `--device` 必須與它相同。 |
 | `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。省略時使用圖檔的 `settings.seed`（若有）。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#reproducible-runs-seed)**。 |
 | `--no-seed` | 即使圖檔有 `settings.seed`，也不設種子執行（送出 `"seed": null`） |
 | `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |
@@ -124,6 +150,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 === Run submitted ===
   Run ID          3f1c9ab2c04e4d5f8b1a7e6d2c930f45
   Graph           sweep-3.json
+  Target          local
   Device          cuda:0
   Status          queued
 
@@ -182,7 +209,9 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **`objective.node_id` 指定以哪個節點的 series 排名。** 此欄位可省略；block 內的節點以攤平後的 id（`block/inner`）指定。指定後，每個 variant 的 objective 是該節點記錄的最後一點（`step` 最大者，同 step 取最後寫入者），其他節點記錄同名 series 不會改變這個值。省略時只以名稱選取：只有一個節點記錄該指標時，使用該節點的最後一點。同一個 run 中有多個節點記錄它時，該 variant 沒有 objective 也不排名，其 `ambiguous_producers` 會列出這些節點，`objective_warning` 也會提示指定節點。系統不會替你挑選節點。在 `node_id` 推出前建立的 sweep 依相同的名稱規則處理：已收回的值會保留，之後收回且由多個節點記錄的 variant 不排名。
 
-**`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，也不會有其他 run 同時執行。seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
+**`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，同一個程序裡也不會有其他 run 同時執行。在這台伺服器上的 seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
+
+**`options.target`** 同樣會交給每個 variant（見 [Workers](#workers)）。使用 `"target": {"worker": "any"}` 且不指定 `devices` 時，每個 variant 會在任一已連線的 worker 上（最後才是這台伺服器）取得 sweep 裝置種類的下一個空閒名額；因此在兩個各有一張卡的 agent 上，4 個 variant 的 sweep 會同時執行兩個，哪張卡先空出來就在那張卡上開始下一個。worker 上的 seeded variant 也會並行執行，因為每個都在自己的程序裡。單一 run 會被拒絕的 target（這台伺服器從未見過的 worker、沒有人提供的裝置、在 worker 上使用 `record_outputs`）會讓整個 sweep 在建立任何資料列前以 `400` 拒絕。離線中的 worker 不會讓 sweep 失敗，即使它在 variant 送出途中離線也一樣：它的 variant 會等它重新連線。沒有 target 的 sweep 行為與以往完全相同：每個 variant 都在這台伺服器上該裝置的佇列中等待。
 
 **可以掃描什麼：** 已註冊節點上的 int、float、bool、string 與 select 參數。不支援 preset 實例的內部參數、subgraph 實例的參數、`SECRET` 參數（選中的值會以明文存入 sweep 資料列），也不支援在圖中出現兩次的 node id。
 
@@ -196,7 +225,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 ### 讀取結果 {/* #reading-the-results */}
 
-`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 是執行任務表格的摘要，不用來選取 objective：多個節點記錄同一名稱時，它仍只顯示一個數字。
+`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`、`worker_id`、`devices` 與 `queue_key`（執行的位置；等待中的 `any` variant 在被放置前顯示 `any` 與 `any/<device>`）。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 是執行任務表格的摘要，不用來選取 objective：多個節點記錄同一名稱時，它仍只顯示一個數字。
 
 即使 child run 被移除，結果仍會保留：每次 `GET /api/sweeps/{id}` 與每次取消，都會把每個已結束 variant 的 status 與 objective 複製到 sweep 資料列上，而 retention 會在刪減 run 前對任何尚未讀取的結果做同樣的事。因此，被 retention 刪減的 child 會保留已收回的 `status`、`objective`、`objective_node_id` 與 `ambiguous_producers`，並顯示 `run_exists: false`，不含 `final_metrics`。在任何讀取或取消收回結果之前就以 `DELETE /api/runs/{id}` 刪除的 child，會顯示 `status: "missing"` 與 `objective: null`。兩種情況下，該 variant 的資料列都會保留。
 
@@ -206,15 +235,15 @@ sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `erro
 
 `POST /api/sweeps/{id}/cancel` 會要求每個排隊中或執行中的 child 停止 — 每個各送一次協作式取消 — 並回報 `cancelled` 與 `already_finished` 的數量，以及按 index 排列的逐 variant 清單。從未取得 run 的 variant，以及 run 仍顯示 `running` 但取消請求無法送達的 variant（例如由使用同一個資料庫的另一個伺服器行程啟動的 run），都不會計入這兩個數量。只有至少一個 child 當時仍在活動時，sweep 的 state 才會變成 `cancelling`；它永遠不會變成 `cancelled`：前 30 個 variant 完成、最後 2 個停止的 sweep，是一個帶有 2 列 cancelled 的 finished sweep。所有 child 都進入終止狀態後，下一次讀取（如果它們原本都已終止，也就是 cancel 回覆本身）會把 state 確定為 `finished`。重複要求不會有副作用（`cancelled: 0`）。
 
-取消是一個請求，不是保證。停止是協作式的：伺服器立起旗標，節點得自己去讀。訓練、評估與取樣節點每個 batch 都會檢查，因此會在一個 batch 之內停下；從不檢查的節點則會像沒有人要求過一樣一路跑完。這個請求背後沒有強制停止，也沒有逾時：要強加期限，唯一的做法是在訓練步驟中途把 run 砍掉，那會丟掉它已經做完的工作，在 GPU 上還可能讓裝置直到伺服器結束前都無法使用。
+取消是一個請求，不是保證。停止是協作式的：伺服器立起旗標，節點得自己去讀。訓練、評估與取樣節點每個 batch 都會檢查，因此會在一個 batch 之內停下；從不檢查的節點則會像沒有人要求過一樣一路跑完。對伺服器程序內的 run，這個請求背後沒有強制停止，也沒有逾時：要強加期限，唯一的做法是在訓練步驟中途把 run 砍掉，那會丟掉它已經做完的工作，在 GPU 上還可能讓裝置直到伺服器結束前都無法使用。[worker](#workers) 上的 run 有自己的程序，若它在寬限時間（預設 30 秒）內沒有停下，worker 會終止它，結束的只有那個 run 的程序。
 
 所以 `cancelling` 沒有時間上限。它結束於最後一個 child 進入終止狀態，而不是等滿某個時間；重新啟動伺服器也會結束它，因為舊行程遺留的 run 會在啟動過程中被收尾。想知道取消還在等什麼，請讀 `GET /api/sweeps/{id}` 的 `counts.running` 加 `counts.queued`：那些就是已被要求、但還沒停下的 child，`variants` 會指出是哪幾個。sweep 顯示 `cancelling` 已經多久，說明不了任何事。
 
 ### 在執行任務面板中 {/* #in-the-runs-panel */}
 
-[執行任務面板](#runs-panel)工具列上的**新增掃描**會從目前開啟的圖建立 sweep。對話框會列出圖中最上層已註冊節點的 int、float、bool 與 select 參數；在 block 內編輯時，列出的仍是最上層的圖，因為 sweep 執行的是那張圖。自由文字的 string 參數只能透過 API 掃描。每個參數可以填一串值，數值參數也可以用區間，對話框會顯示這樣會產生幾個 variant。超過上表三個預設上限之一時，對話框會發出警告並指出對應的設定，但仍會送出 sweep：伺服器可能已調高上限，無法執行的請求則由伺服器拒絕。目標指標預設為 `train_loss`，`TrainingLoop` 每個 epoch 都會記錄它；欄位也會建議清單中各 run 記錄過的 series。**目標節點**會列出這些 run 中記錄所選指標的節點；選擇**任一節點**時只送出名稱，若列出的 run 顯示有多個節點記錄它，對話框會發出警告。各 variant 沿用分頁的裝置與執行設定，但不包括亂數種子（請改用**每個變體都設定亂數種子**），也不錄製輸出。**名稱**留白時，sweep 會以分頁的名稱命名，最多 64 個字元。
+[執行任務面板](#runs-panel)工具列上的**新增掃描**會從目前開啟的圖建立 sweep。對話框會列出圖中最上層已註冊節點的 int、float、bool 與 select 參數；在 block 內編輯時，列出的仍是最上層的圖，因為 sweep 執行的是那張圖。自由文字的 string 參數只能透過 API 掃描。每個參數可以填一串值，數值參數也可以用區間，對話框會顯示這樣會產生幾個 variant。超過上表三個預設上限之一時，對話框會發出警告並指出對應的設定，但仍會送出 sweep：伺服器可能已調高上限，無法執行的請求則由伺服器拒絕。目標指標預設為 `train_loss`，`TrainingLoop` 每個 epoch 都會記錄它；欄位也會建議清單中各 run 記錄過的 series。**目標節點**會列出這些 run 中記錄所選指標的節點；選擇**任一節點**時只送出名稱，若列出的 run 顯示有多個節點記錄它，對話框會發出警告。各 variant 沿用分頁的裝置與執行設定，但不包括亂數種子（請改用**每個變體都設定亂數種子**），也不錄製輸出。**目標**與**裝置**和 [Queue on...](#workers) 對話框相同：**本伺服器**、已連線的 worker 加上裝置集合，或**任一可用**加上裝置種類，後者會把 variant 分散到所有空閒的卡上（見上方的 `options.target`）。選擇器一開始是**本伺服器**與分頁的裝置；`auto`（由伺服器選擇）或這台伺服器沒有的裝置會照原樣列出。維持不變時，sweep 會像以往一樣以分頁的裝置送出，不帶 target。**名稱**留白時，sweep 會以分頁的名稱命名，最多 64 個字元。
 
-**開始掃描**會開啟該 sweep：狀態、目標指標、各狀態的數量，以及每個 variant 一列的表格，列出參數值、目標值、排名與最終指標，表格下方是目標曲線。sweep 結束前，畫面每 2 秒重新讀取一次。點**排名**、**狀態**或**目標值**的欄位標題即可排序；沒有值的列一律排在最後。**查看**會開啟該 variant 的 run，child run 詳細資訊中的**開啟所屬掃描**則會回到 sweep。**停止掃描**會送出 `POST /api/sweeps/{id}/cancel`，**下載 CSV** 會下載 `?format=csv` 的表格。
+**開始掃描**會開啟該 sweep：狀態、目標指標、各狀態的數量，以及每個 variant 一列的表格，列出參數值、目標值、排名、最終指標，以及執行所在的 **Worker** 與**裝置**（`any` variant 被放置前顯示 `any`），表格下方是目標曲線。sweep 結束前，畫面每 2 秒重新讀取一次。點**排名**、**狀態**或**目標值**的欄位標題即可排序；沒有值的列一律排在最後。**查看**會開啟該 variant 的 run，child run 詳細資訊中的**開啟所屬掃描**則會回到 sweep。**停止掃描**會送出 `POST /api/sweeps/{id}/cancel`，**下載 CSV** 會下載 `?format=csv` 的表格。
 
 child 都是一般 run：它們在執行任務面板的清單中以 sweep 的 `name` 加上 variant 編號列出，編號與 sweep 表格上的相同，即其 `index` 加一（`lr x batch #3`）；兩者合計超過 64 個字元時，會截短 sweep 的名稱。沒有名稱的 sweep，其 child 也沒有名稱。`GET /api/runs` 的每一列都帶有 `sweep_id` 與 `sweep_variant`。要跟隨某一個 variant，可像其他 run 一樣使用 `GET /api/runs/{id}/events`。編輯器沒有過往 sweep 的清單；要再次開啟，請使用 child run 的**開啟所屬掃描**。
 
@@ -252,7 +281,7 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 
 **冪等性（idempotency）。** 請送出 `Idempotency-Key` header（或 body 欄位 `idempotency_key`；兩者同時送出時必須相同）。以同一個 key 重送相同請求時，會以 `200` 與 `created: false` 回傳同一個 study，且不建立任何 run，因此遺失第一次回覆的用戶端可以放心重送。同一個 key 用於不同請求時回傳 `409`，並指出既有的 study。比對請求時會先清空 `SECRET` 值，因此只有 secret 值不同的重送會被視為同一個請求。
 
-**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。由於每個 child 都指定了種子，child 仍會一次執行一個；較大的值只是讓後面的 child 提早進入佇列。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。用完 `max_runs` 時仍有重複未完成的 study 會以 `failed` 結束。單一 run 的時間上限與總執行時間上限目前尚未實作。
+**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。每個 child 都指定了種子，所以在這台伺服器上執行的 child 仍會一次執行一個，較大的值只是讓後面的 child 提早進入佇列。`options.target` 會像 sweep 的 variant 一樣交給每個 child，建立任何資料列前也套用同樣的 `400` 檢查（使用相同 idempotency key 的重試會先回傳既有的 study 或 `409`，再做這項檢查）；被放到 worker 上的 child 在自己的程序裡執行，因此使用 `"target": {"worker": "any"}` 且有兩張空閒的卡時，`max_parallel_runs: 2` 會同時執行兩個 child。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。用完 `max_runs` 時仍有重複未完成的 study 會以 `failed` 結束。單一 run 的時間上限與總執行時間上限目前尚未實作。
 
 **順序。** child 依重複逐輪送出：先送所有變體的第 0 次重複，再送所有變體的第 1 次重複，依此類推。因此中途停下的 study，所有變體都已在相同的種子上比較過。每個 child 都是一般 run，名稱為 `<study 名稱> / <label> / r<n>`，`GET /api/runs` 的每一列都帶有 `study_id` 與 `study_attempt_id`。
 
@@ -261,7 +290,7 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 `GET /api/studies/{id}` 會回傳 study 的 `status`、`revision`（study 或其 attempt 每次變動都會增加）、目前 attempt 依狀態分類的 `counts`，以及每個變體一筆資料，內容包括：
 
 - `repetitions`：每次重複的種子與目前的 attempt。
-- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`。
+- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`；child run 仍存在時另有 `worker_id`、`devices` 與 `queue_key`（執行的位置，與 sweep variant 相同）。每個重複的 `current` attempt 也帶有這些欄位。
 - `aggregate`：對記錄到目標值的目前 attempt 計算的 `count`、`mean` 與 `std`，以及 `values`，也就是每次重複的原始值（沒有值時為 `null`）。`std` 是樣本標準差，值少於兩個時為 `null`。
 - `eligible`、`ineligible_reasons`、`rank`、`tie` 與 `tied_with`。
 
@@ -289,11 +318,13 @@ study 的證據比它的 child 存在得更久。child 結束時，它的目標�
 
 ## 伺服器停止時 {/* #when-the-server-stops */}
 
-佇列不會在伺服器重啟後繼續執行。排程只存在伺服器記憶體中；如果保留等待中的資料列，它會持續等待已不存在的排程器。
+佇列不會在伺服器重啟後繼續執行。佇列只存在伺服器程序的記憶體中（worker 沒有自己的佇列）；如果保留等待中的資料列，它會持續等待已不存在的排程器。
 
 正常關閉會立即將每個等待中的 run 標記為 `interrupted`、寫入一般停止事件，並給執行中的 run 5 秒以協作方式停止。對[放在反向代理後面](./deployment#a-systemd-unit)中的 unit 執行 `systemctl stop` 就是以這種方式關閉伺服器，因為它會直接對伺服器行程送出 SIGTERM。在 Windows 上，於 `cdui start --foreground` 按一次 Ctrl+C 也是如此；若在 uvicorn 等待連線關閉時再按一次 Ctrl+C，就會略過這些步驟。
 
 在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，並寫入與正常關閉相同的停止事件；若該 run 的事件紀錄已經以結束事件收尾，就不再寫入。因此重新連上的編輯器分頁，以及讀取 `GET /api/runs/{id}/events` 的程式，都會看到這次 run 已結束。兩者都不會繼續執行。
+
+在 [worker](#workers) 上執行的 run，正常關閉時也受到相同處理：停止要求會送到 worker，超過這 5 秒仍在執行的 run 會在那裡被終止，接著伺服器關閉與 worker 的連線。agent 會繼續執行，等伺服器回來後重新連線。強制停止伺服器時，worker 不會收到任何通知：它的 run 子程序會一路跑完，回報的內容會被丟棄，復原程序會像其他 run 一樣把它們的資料列標記為 `interrupted`。
 
 若仍要執行這些工作，請重新送出。
 
@@ -307,12 +338,16 @@ study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後�
 | --- | --- | --- |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_GPU` | `1` | 每條加速器佇列的並行 run 數 |
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT_CPU` | `2` | `cpu` 佇列的並行 run 數 |
-| `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(空)* | 個別 key 的覆寫，例如 `cuda:0=2,cpu=8`。優先於上面兩個預設值。 |
+| `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(空)* | 個別名額的覆寫。只寫裝置時指這台伺服器（`cuda:0=2,cpu=8`）；`<worker>/<device>` 指該 worker（`gpu-box-1/cuda:0=2`），不影響這台伺服器。優先於上面兩個預設值。 |
 | `CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT` | `2` | 畫布 run 的並行上限 |
+| `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | 斷線 worker 的 run 等它重新連線的秒數，逾時以 `interrupted` 結束（見[遠端 Worker：連線中斷時](./remote-workers#when-the-connection-drops)）。`0` 表示立即結束。 |
 | `CODEFYUI_MAX_PARALLEL_NODES` | `4` | 單一 run 內同時執行的節點數 |
 | `CODEFYUI_RUN_RETENTION_KEEP_LAST` | `200` | 保留幾筆已結束的 run。`0` 表示完全不保留；負值會停用 retention。 |
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | 儲存及分送的單一事件 payload 上限；超過上限的輸出項目會換成省略標記，但仍會指出它的 port。`0` 或更小的值會停用上限。 |
 | `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` | `4194304` (4 MB) | 單一 `GET /api/runs/{id}/events` page 的 byte 預算；提早停止的 page 會回傳 cursor，供下一次接續。 |
+| `CODEFYUI_MOUNT_LABEL` | `data` | 這台伺服器的資料夾給共用它的 worker 使用的 label（[遠端 Worker：儲存](./remote-workers#storage-shared-filesystem)）。 |
+
+例如 `gpu-box-1` 是另一台機器上的 worker 時，`CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` 讓這台伺服器的 `cuda:0` 可同時執行兩個 run、`gpu-box-1` 的 `cuda:0` 可同時執行三個，其他卡維持 1。同一台機器上的 worker 與這台伺服器共用的卡一律使用這台伺服器的上限；指向這種卡的 `<worker>/<device>` 覆寫會被忽略，並在 worker 連線時記錄警告。`local/<device>` 是只寫裝置的另一種寫法。
 
 格式錯誤的覆寫項目會被忽略並記錄警告，不會讓伺服器啟動失敗。小於 1 的上限一律視為 1，避免佇列因無法排空而停滯。三項 sweep 上限列在[參數掃描](#sweeps)一節。
 
@@ -321,5 +356,6 @@ Retention 會在啟動時及每個 run 結束後執行，保留最新的 `KEEP_L
 ## 延伸閱讀 {/* #see-also */}
 
 - [執行圖](./running-graphs) — 單一 run 內部發生了什麼
+- [多 GPU 執行](./multi-gpu) — 多 GPU 機器上的 worker agent、裝置集合與 slot
 - [CLI 圖形執行器](./cli-runner) — 不開伺服器執行一張圖
 - [API 參考](../advanced/api-reference) — `/api/runs`、`/api/sweeps` 與 `/api/studies` 端點

@@ -13,6 +13,13 @@ and metrics from another.
     GET    /api/runs/{id}/events         replay after a cursor, optional long poll
     GET    /api/runs/{id}/metrics        series as JSON or CSV
     GET    /api/runs/{id}/artifacts      checkpoints and other recorded files
+    POST   /api/runs/{id}/artifacts/upload          a worker's output (#785)
+    GET    /api/runs/{id}/artifacts/{aid}/download  an uploaded output
+
+The upload route is the one POST here that does not take the session token
+alone: a worker agent (#785, the ``transfer`` storage backend) sends its
+worker token, so ``auth_guard`` lets the path through and the route checks
+the token itself (:func:`_uploader`).
 
 Auth follows the house rule in ``main.py`` exactly: ``auth_guard`` requires
 the session token for the two mutating routes (POST), reads are open like
@@ -34,18 +41,21 @@ them answer ``{"detail": ...}``; the 9-key run envelope belongs to
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ValidationError
 
 from ..config import settings
+from ..core.auth import TOKEN_HEADER, constant_time_equals, session_token
 from ..core.run_service import (
     RunService,
     RunServiceUnavailable,
@@ -177,11 +187,20 @@ async def _queue_positions(service: RunService,
 
 def _run_payload(record: RunRecord, *, queue_position: int | None,
                  active: bool, last_cursor: int | None = None,
+                 queue_reason: str | None = None,
                  final_metrics: dict[str, float] | None = None,
                  metric_producers: dict[str, list[str | None]] | None = None,
+                 worker_status: dict[str, Any] | None = None,
                  ) -> dict[str, Any]:
     payload = asdict(record)
+    # Where an active worker run's worker stands (#783): connected, or
+    # disconnected since ``disconnected_at`` (Unix seconds) and waiting for
+    # it until ``resume_deadline``. None for every other run.
+    payload["worker_status"] = worker_status
     payload["queue_position"] = queue_position
+    # Why a queued run is not starting beyond its place in line (#772):
+    # "waiting for worker X to reconnect". None otherwise.
+    payload["queue_reason"] = queue_reason
     payload["active"] = active
     payload["final_metrics"] = final_metrics or {}
     payload["metric_producers"] = metric_producers or {}
@@ -260,6 +279,11 @@ async def submit_run(request: Request):
     best accelerator this server has. The resolved device is the row's
     ``queue_key`` and the device the run executes on.
 
+    ``options.target`` (#769) is ``{"worker": "local", "devices": [...]}``.
+    Only ``local`` is accepted until remote workers exist; ``devices[0]`` is
+    the effective device when ``device`` is absent, and a ``device`` that
+    disagrees is a 400. The row reports ``worker_id`` and ``devices``.
+
     The body is parsed here rather than declared as a pydantic parameter —
     see ``_read_submit_body``. Its size ceiling is enforced by
     ``core.body_limit`` for every route, not by this one.
@@ -322,9 +346,11 @@ async def list_runs(
         "runs": [
             _run_payload(record,
                          queue_position=positions.get(record.id),
+                         queue_reason=service.queue_reason(record.id),
                          active=service.is_active(record.id),
                          final_metrics=finals.get(record.id),
-                         metric_producers=producers.get(record.id))
+                         metric_producers=producers.get(record.id),
+                         worker_status=service.worker_status(record.id))
             for record in records
         ],
         "total": total,
@@ -351,11 +377,18 @@ async def get_run(run_id: str, request: Request):
     payload = _run_payload(
         record,
         queue_position=positions.get(record.id),
+        queue_reason=service.queue_reason(record.id),
         active=service.is_active(run_id),
         last_cursor=await service.store.latest_cursor(run_id),
         final_metrics=finals.get(record.id),
         metric_producers=producers.get(record.id),
+        worker_status=service.worker_status(run_id),
     )
+    # How the run ended on its worker after it had ended here (#783),
+    # ``{status, error, worker_id, at}``, or None.
+    facts = record.execution_facts if isinstance(
+        record.execution_facts, dict) else {}
+    payload["late_result"] = facts.get("late_result")
     payload["fingerprint"] = (
         None if record.fingerprint_digest is None
         else await service.store.get_fingerprint(record.fingerprint_digest))
@@ -382,6 +415,11 @@ async def delete_run(run_id: str, request: Request):
     a checkpoint is the user's, not the run log's, and this endpoint is
     history cleanup rather than a delete-my-weights button.
 
+    The exception is a worker run's own directory (#785,
+    ``<data root>/runs/<run_id>``): what the worker uploaded for the run
+    has no index but these rows, so it goes with them. A writer node's file
+    a worker placed in this server's data folders stays, as a local run's.
+
     Captured OUTPUTS are a different matter and DO go: ``RunOutputStore``
     keys its in-memory tensors by the same run id, so leaving them behind
     would keep a deleted run's activations resident until its LRU slot was
@@ -389,7 +427,7 @@ async def delete_run(run_id: str, request: Request):
     run that answers 404 everywhere else.
     """
     service = _get_service(request)
-    await _require_run(service, run_id)
+    record = await _require_run(service, run_id)
     if service.is_active(run_id) or service.is_queued(run_id):
         raise HTTPException(
             status_code=409,
@@ -403,6 +441,12 @@ async def delete_run(run_id: str, request: Request):
     outputs = getattr(request.app.state, "run_output_store", None)
     if outputs is not None:
         await outputs.delete_run(run_id)
+    from ..core.run_store import WORKER_ANY, WORKER_LOCAL
+    from ..core.transfer import remove_run_files
+
+    if record.worker_id not in (WORKER_LOCAL, WORKER_ANY):
+        # What a worker uploaded for the run (#785) has no other index.
+        await asyncio.to_thread(remove_run_files, run_id)
     return {"run_id": run_id, "deleted": True}
 
 
@@ -590,6 +634,13 @@ async def get_run_artifacts(
     ``kind`` is not validated against a whitelist — the vocabulary is open
     by design (``ARTIFACT_KIND_*`` are conveniences, not a constraint), so
     an unknown kind is an empty list rather than a 400.
+
+    ``path`` is where the file is on this server. A file a worker wrote
+    under a shared mount (#782) is stored relative to it and reported here
+    translated: ``backend`` is ``mount``, ``mount_label`` names the mount
+    and ``relative_path`` is the stored path. Every other row is ``local``
+    with its absolute path and no ``relative_path``. ``worker_id`` names
+    the worker whose run wrote the file (``local``: this server).
     """
     service = _get_service(request)
     await _require_run(service, run_id)
@@ -598,7 +649,151 @@ async def get_run_artifacts(
         "run_id": run_id,
         "artifacts": [
             {"id": record.id, "kind": record.kind, "path": record.path,
-             "meta": record.meta, "created_at": record.created_at}
+             "meta": record.meta, "created_at": record.created_at,
+             "backend": record.backend, "mount_label": record.mount_label,
+             "worker_id": record.worker_id,
+             "relative_path": (record.stored_path
+                               if record.backend in ("mount", "transfer")
+                               else None)}
             for record in artifacts
         ],
     }
+
+
+# ── the transfer backend (#785) ────────────────────────────────────────────
+
+
+
+async def _uploader(request: Request) -> str | None:
+    """Who may upload: ``None`` for the session token (any worker run), a
+    worker's name for its worker token; 403 for anything else."""
+    provided = request.headers.get(TOKEN_HEADER)
+    if constant_time_equals(provided, session_token()):
+        return None
+    store = getattr(request.app.state, "worker_store", None)
+    name = None if store is None else await store.authenticate(provided)
+    if name is None:
+        raise HTTPException(status_code=403,
+                            detail=f"Missing or invalid {TOKEN_HEADER} header")
+    return name
+
+
+@router.post("/{run_id}/artifacts/upload")
+async def upload_run_artifact(run_id: str, request: Request):
+    """Receive a file a worker run wrote (#785, the ``transfer`` backend).
+
+    Multipart, form fields first: ``kind`` (the artifact kind), ``name`` (a
+    relative path; each part is made a safe file name), ``place`` (``run``,
+    the default, or ``data``) and optionally ``sha256``, then ``file``. The
+    body is streamed to a temporary file of its own beside its destination
+    (``core.transfer.Receiver``: no second spool), capped by
+    ``MAX_UPLOAD_SIZE`` (413) and hashed as it arrives, then moved into
+    place (``core.transfer.place_file``): ``run`` at
+    ``<data root>/runs/<run_id>/<kind>/<name>``, replaced atomically;
+    ``data`` (a writer node's file) at the same relative path in this
+    server's own data folders, never over a different file (the newer one
+    is suffixed; the same content is the same file). The answer's ``path``
+    is the key, which the worker then reports in its ``artifact`` frame
+    (that is what records the row, in the run's event order). Uploading the
+    same content again answers 200 with the same key.
+
+    Only for a run executing on a worker now, and with a worker token only
+    for a run on THAT worker (409 otherwise); the session token may upload
+    for any worker run. Authenticated before a byte of the body is read.
+    """
+    from ..core import transfer
+
+    service = _get_service(request)
+    worker = await _uploader(request)
+    running_on = service.running_on(run_id)
+    if running_on is None or (worker is not None and running_on != worker):
+        raise HTTPException(status_code=409, detail=(
+            f"run '{run_id}' is not running on "
+            f"{'a worker' if worker is None else f'worker {worker}'}"))
+
+    def destination_dir(fields: dict[str, str]) -> Path:
+        place = fields.get("place") or transfer.PLACE_RUN
+        if place == transfer.PLACE_RUN:
+            return transfer.run_files_dir(run_id)
+        if place != transfer.PLACE_DATA:
+            raise ValueError(f"unknown place {place!r}")
+        relative = transfer.clean_name(fields.get("name") or "")
+        location = transfer.key_location(relative.as_posix())
+        if location is None or relative.parts[0] not in transfer.DATA_PLACES:
+            raise ValueError(f"{relative} is not under "
+                             f"{', '.join(transfer.DATA_PLACES)}")
+        return location.parent
+
+    try:
+        receiver = transfer.Receiver(request.headers.get("content-type", ""),
+                                     destination_dir, settings.MAX_UPLOAD_SIZE)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    try:
+        pending = bytearray()
+        try:
+            async for chunk in request.stream():
+                pending += chunk
+                if len(pending) >= transfer.CHUNK:
+                    await asyncio.to_thread(receiver.write, bytes(pending))
+                    pending.clear()
+            await asyncio.to_thread(receiver.write, bytes(pending))
+            await asyncio.to_thread(receiver.close)
+        except OverflowError:
+            raise HTTPException(status_code=413,
+                                detail="File too large") from None
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        fields = receiver.fields
+        if not receiver.got_file or not fields.get("kind") \
+                or not fields.get("name"):
+            raise HTTPException(status_code=400, detail=(
+                "expected multipart kind, name, then file"))
+        expected = (fields.get("sha256") or "").lower() or None
+        if expected is not None and expected != receiver.sha256:
+            raise HTTPException(status_code=400, detail=(
+                f"sha256 mismatch: received {receiver.sha256}, "
+                f"expected {expected}"))
+        try:
+            key = await asyncio.to_thread(
+                transfer.place_file, receiver.tmp,
+                fields.get("place") or transfer.PLACE_RUN, run_id,
+                fields["kind"], fields["name"], receiver.sha256)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    finally:
+        await asyncio.to_thread(receiver.discard)
+    return {"path": key, "bytes": receiver.size, "sha256": receiver.sha256}
+
+
+@router.get("/{run_id}/artifacts/{artifact_id}/download")
+async def download_run_artifact(run_id: str, artifact_id: int,
+                                request: Request):
+    """Download a file a worker uploaded for the run (#785).
+
+    Only ``transfer`` rows: their file is under this run's own directory,
+    which a worker cannot point anywhere else. Any other row names a path
+    a node or a plugin wrote, which this open read must not serve (400).
+    A TensorBoard directory is not a file (400): point TensorBoard at the
+    row's ``path`` instead.
+    """
+    from ..core import transfer
+
+    service = _get_service(request)
+    await _require_run(service, run_id)
+    records = await service.store.list_artifacts(run_id)
+    record = next((r for r in records if r.id == artifact_id), None)
+    if record is None:
+        raise HTTPException(status_code=404,
+                            detail=f"artifact {artifact_id} not found")
+    if record.backend != "transfer":
+        raise HTTPException(status_code=400, detail=(
+            "only files a worker uploaded can be downloaded here; this one "
+            "is at its path"))
+    path = transfer.key_path(run_id, record.stored_path or "")
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="the file is gone")
+    if not path.is_file():
+        raise HTTPException(status_code=400, detail="not a file (a directory)")
+    return FileResponse(path=path, filename=path.name,
+                        media_type="application/octet-stream")

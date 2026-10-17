@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import pkgutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Type
+from typing import Any, Type
 
 from .node_base import BaseNode
 
@@ -37,7 +40,7 @@ CUSTOM_NODES_PACKAGE = "app.custom_nodes"
 #: Directly under ``app`` because the shipped example imports
 #: ``from ..core.node_base``, which resolves only one package below ``app``.
 #: Beginning with ``app.custom_nodes`` because that prefix is how
-#: ``routes_nodes._provider_for`` tells a custom node from a built-in.
+#: ``node_registry.provider_for`` tells a custom node from a built-in.
 CUSTOM_NODES_DIR_PACKAGE = "app.custom_nodes_dir"
 
 
@@ -165,6 +168,9 @@ def qualify(plugin_id: str | None, node_name: str) -> str:
 class NodeRegistry:
     def __init__(self) -> None:
         self._nodes: dict[str, Type[BaseNode]] = {}
+        #: Bumped on every change to the set of nodes, so a value derived
+        #: from it (:func:`node_catalog`) can be cached until the next one.
+        self.generation = 0
 
     @property
     def nodes(self) -> dict[str, Type[BaseNode]]:
@@ -187,6 +193,7 @@ class NodeRegistry:
             raise ValueError(f"{node_cls.__name__} has no NODE_NAME")
         qualified = qualify(plugin_id, name)
         self._nodes[qualified] = node_cls
+        self.generation += 1
         return qualified
 
     def get(self, name: str) -> Type[BaseNode] | None:
@@ -291,6 +298,169 @@ class NodeRegistry:
 
     def clear(self) -> None:
         self._nodes.clear()
+        self.generation += 1
 
 
 registry = NodeRegistry()
+
+
+# ── node definitions (``GET /api/nodes``) and the node catalog (#781) ─────
+
+
+def provider_for(qualified_name: str, cls: type[BaseNode]) -> str:
+    """Classify a node by where it was loaded from.
+
+    The module path says WHICH KIND of source a node came from, and that is
+    all it is used for here. For a plugin node the id itself comes from the
+    registry key, because that key is the plugin's manifest id — hyphens
+    included — threaded through discovery by
+    ``plugin_loader.discover_plugin_nodes``. The module path cannot supply
+    it: ``official-template`` is imported as ``cdui_plugins.official_template``
+    because a hyphen is not legal in a Python module name, and reading the id
+    back off that string returns the snake_case spelling no other part of the
+    API uses. ``/api/plugins`` says ``official-template`` and
+    ``/api/examples`` tags graphs ``plugin:official-template``; ``provider``
+    has to say the same thing about the same pack.
+    """
+    mod = cls.__module__ or ""
+    if mod.startswith("app.nodes"):
+        return "builtin"
+    if mod.startswith("app.custom_nodes"):
+        return "custom"
+    if mod.startswith("cdui_plugins."):
+        plugin_id, sep, _node = qualified_name.partition(":")
+        if sep:
+            return f"plugin:{plugin_id}"
+        # No prefix on the key: the node was registered bare even though it
+        # lives under the plugin namespace (only reachable by discovering a
+        # plugin package with the prefix explicitly suppressed). Fall back to
+        # the import spelling — wrong for a kebab-case id, but it is the only
+        # signal left, and it beats reporting the node's own name as the pack.
+        parts = mod.split(".")
+        if len(parts) >= 2:
+            return f"plugin:{parts[1]}"
+    return "builtin"
+
+
+def param_definition(p: Any, *, served: bool = True) -> Any:
+    """The wire shape of one param (``ParamDefinitionSchema``).
+
+    *served* (the node API): a ``device`` param's option list and its
+    default fallback come from one ``device_options`` call: the served list
+    is what this machine offers, and a saved default this machine lacks
+    (``cuda`` on a CPU box) is served as ``cpu`` so the dropdown never shows
+    a value it cannot run. ``served=False`` keeps both as the node declares
+    them, which is what :func:`node_catalog` hashes: the same node on a CPU
+    box and on a CUDA box must hash the same.
+    """
+    from ..schemas import ParamDefinitionSchema
+    from .device_utils import device_options
+
+    options = p.options
+    default = p.default
+    if served:
+        options = device_options(p.name, p.options)
+        if p.name == "device" and default != "auto" and default not in options:
+            default = "cpu"
+    return ParamDefinitionSchema(
+        name=p.name,
+        param_type=p.param_type.value,
+        default=default,
+        description=p.description,
+        options=options,
+        min_value=p.min_value,
+        max_value=p.max_value,
+        visible_when=p.visible_when,
+        advanced=p.advanced,
+        option_packs=p.option_packs,
+    )
+
+
+def node_definition(qualified_name: str, cls: type[BaseNode], *,
+                    served: bool = True) -> Any:
+    """Build the wire-shape definition (``NodeDefinition``) for one node.
+
+    ``qualified_name`` is the registry key — bare ``"Linear"`` for builtin
+    nodes, ``"c2:EduKNN"`` for plugin-provided nodes. The frontend palette
+    uses this as the display label and as the value it writes into saved
+    graph JSON, so two plugins shipping the same bare ``NODE_NAME`` no
+    longer collide and the graph JSON becomes self-documenting. *served*:
+    see :func:`param_definition`.
+    """
+    from ..schemas import NodeDefinition, PortDefinitionSchema
+
+    def ports(defined: list[Any]) -> list[Any]:
+        return [PortDefinitionSchema(
+            name=p.name, data_type=p.data_type.value,
+            description=p.description, optional=p.optional) for p in defined]
+
+    return NodeDefinition(
+        node_name=qualified_name,
+        category=cls.CATEGORY,
+        description=cls.DESCRIPTION,
+        # ``getattr`` for the same reason as ``requires_pack`` below: a class
+        # in the registry that never inherited this BaseNode should list
+        # without the field rather than 500.
+        details=getattr(cls, "DETAILS", ""),
+        provider=provider_for(qualified_name, cls),
+        # ``getattr`` rather than ``cls.REQUIRES_PACK``: the registry is a
+        # plain dict anything can be written into, and a node class that
+        # never inherited this BaseNode should still list, not 500.
+        requires_pack=getattr(cls, "REQUIRES_PACK", None),
+        inputs=ports(cls.define_inputs()),
+        outputs=ports(cls.define_outputs()),
+        params=[param_definition(p, served=served)
+                for p in cls.define_params()],
+    )
+
+
+@dataclass(frozen=True)
+class NodeCatalog:
+    """Which node types a process can execute, and a hash of how (#781)."""
+
+    #: sha256 hex over every type's name and definition (:func:`node_catalog`).
+    hash: str
+    #: The registered node types, sorted.
+    node_types: tuple[str, ...]
+
+
+_catalog_cache: tuple[int, int, NodeCatalog] | None = None
+
+
+def node_catalog(reg: NodeRegistry | None = None) -> NodeCatalog:
+    """This process's node catalog: its node types and their hash (#781).
+
+    The hash is the sha256 of one canonical JSON document (sorted keys, no
+    whitespace, UTF-8): ``[[type, definition], ...]`` in type order, each
+    definition being what ``GET /api/nodes`` serves for that type, except
+    that param options and defaults are as declared rather than narrowed to
+    this machine's devices (:func:`param_definition`, ``served=False``).
+    Two processes with the same CodefyUI version, plugins, packs and custom
+    nodes get the same hash on any hardware; a missing plugin, an extra
+    custom node or a plugin at another version gets a different one.
+
+    A node whose definition cannot be built (its ``define_params`` raises)
+    hashes as ``{"error": "<exception type>"}`` rather than failing the
+    catalog. Cached per registry generation, so calling it on every worker
+    handshake costs a compare until a node is registered.
+    """
+    global _catalog_cache
+    reg = registry if reg is None else reg
+    key = (id(reg), reg.generation)
+    if _catalog_cache is not None and _catalog_cache[:2] == key:
+        return _catalog_cache[2]
+    nodes = reg.nodes
+    entries = []
+    for name in sorted(nodes):
+        try:
+            definition: Any = node_definition(
+                name, nodes[name], served=False).model_dump(mode="json")
+        except Exception as exc:  # noqa: BLE001 -- a broken node, not a broken catalog
+            definition = {"error": type(exc).__name__}
+        entries.append([name, definition])
+    raw = json.dumps(entries, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=False, default=str).encode("utf-8")
+    catalog = NodeCatalog(hash=hashlib.sha256(raw).hexdigest(),
+                          node_types=tuple(name for name, _ in entries))
+    _catalog_cache = (key[0], key[1], catalog)
+    return catalog

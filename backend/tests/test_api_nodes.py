@@ -326,7 +326,7 @@ async def test_every_param_carries_the_advanced_flag(test_client):
     """The flag is on the WIRE, not just on the Python dataclass.
 
     ``ParamDefinitionSchema`` is a hand-written mirror of
-    ``ParamDefinition`` and ``_node_to_definition`` copies field by field, so
+    ``ParamDefinition`` and ``node_registry.node_definition`` copies field by field, so
     a new attribute is dropped silently unless both are updated. This is the
     test that notices.
     """

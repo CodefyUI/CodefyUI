@@ -5,6 +5,7 @@ import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { friendlyError } from '../../utils/errorMessages';
+import { deviceAliasLines, runDevices, runWorkerLabel } from '../../utils/runPlacement';
 import { LossChart } from './LossChart';
 import { producerLabel } from './sweepObjective';
 import { sweepParamTitle } from './sweepParams';
@@ -24,6 +25,7 @@ interface SweepDetailProps {
 /** A variant's status as the Runs list words it; `missing` is the sweep's own. */
 const STATUS_KEY: Record<string, TranslationKey> = {
   running: 'runs.status.running',
+  disconnected: 'runs.status.disconnected',
   queued: 'runs.status.queued',
   succeeded: 'runs.status.succeeded',
   failed: 'runs.status.failed',
@@ -33,7 +35,7 @@ const STATUS_KEY: Record<string, TranslationKey> = {
 };
 
 /** Live work first, then outcomes, so a status sort reads the same in every language. */
-const STATUS_ORDER = ['running', 'queued', 'succeeded', 'failed', 'cancelled', 'interrupted', 'missing'];
+const STATUS_ORDER = ['running', 'disconnected', 'queued', 'succeeded', 'failed', 'cancelled', 'interrupted', 'missing'];
 
 /** The summary's counts, in that order; one with no variants is left out. */
 const COUNT_KEYS: Array<[keyof SweepDetailData['counts'], TranslationKey]> = [
@@ -117,7 +119,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
     </section>
   );
 
-  const activeOrQueued = (detail.counts.running ?? 0) + (detail.counts.queued ?? 0);
+  const activeOrQueued = (detail.counts.running ?? 0) + (detail.counts.disconnected ?? 0)
+    + (detail.counts.queued ?? 0);
   const canCancel = detail.state === 'running'
     || (detail.state === 'failed' && activeOrQueued > 0);
   // Finished is not success: a stopped or partly failed sweep finishes too.
@@ -229,12 +232,17 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
             {columns.map((column) => <th key={column.address} title={column.address}>{column.title}</th>)}
             <SortableHeader label={t('sweeps.col.objective')} active={sortKey === 'objective'} direction={sortDirection} onSort={() => setSort('objective')} />
             <th>{t('sweeps.col.metrics')}</th>
+            <th>{t('runs.col.worker')}</th>
+            <th>{t('runs.col.devices')}</th>
             <th>{t('sweeps.col.run')}</th>
           </tr></thead>
           <tbody>{rows.map(({ variant }) => {
             const best = detail.best?.index === variant.index;
             const values = new Map(variant.params.map((param) => [`${param.node_id}.${param.param}`, param.value]));
             const statusKey = variant.status ? STATUS_KEY[variant.status] : undefined;
+            // Where it runs (#777), worded as the Runs list words it; a run
+            // that is gone has no placement to show.
+            const placed = variant.run_exists !== false;
             return <tr key={variant.index} className={best ? styles.best : undefined} data-testid={`sweep-variant-${variant.index}`}>
               <td>{variant.rank ?? '-'}</td>
               <td>{variant.index + 1}{best && <span className={styles.bestMark}>{t('sweeps.detail.best')}</span>}</td>
@@ -245,6 +253,8 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
                 ? <span title={variant.ambiguous_producers.map(nodeName).join(', ')}>{t('sweeps.detail.ambiguous')}</span>
                 : formatValue(variant.objective)}</td>
               <td>{formatMetrics(variant.final_metrics)}</td>
+              <td>{placed ? runWorkerLabel(variant, t) : '-'}</td>
+              <td title={placed ? deviceAliasLines(variant, t) ?? undefined : undefined}>{placed ? runDevices(variant) : '-'}</td>
               <td>{variant.run_id && variant.run_exists !== false
                 ? <button type="button" onClick={() => onOpenRun(variant.run_id!)}>{t('sweeps.detail.openRun')}</button>
                 : <button type="button" disabled>{t('sweeps.detail.unavailable')}</button>}</td>

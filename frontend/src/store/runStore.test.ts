@@ -565,6 +565,27 @@ describe('reduceRunEvents', () => {
     expect(noPath.artifacts).toHaveLength(1);
   });
 
+  it('keeps the transfer backend of a worker upload (#785)', () => {
+    const next = reduceRunEvents(emptyDetail(), eventsPage({
+      events: [{
+        cursor: 3,
+        type: 'artifact',
+        ts: 't',
+        payload: {
+          artifact_id: 4, kind: 'checkpoint', path: '/d/runs/r1/checkpoint/a.pt',
+          meta: null, backend: 'transfer', relative_path: 'runs/r1/checkpoint/a.pt',
+        },
+      }, {
+        cursor: 4,
+        type: 'artifact',
+        ts: 't',
+        payload: { artifact_id: 5, kind: 'checkpoint', path: 'b.pt', backend: 'mount' },
+      }],
+    }));
+    expect(next.artifacts[0]).toMatchObject({ id: 4, backend: 'transfer' });
+    expect(next.artifacts[1]).not.toHaveProperty('backend');
+  });
+
   it('falls back to the cursor when an artifact event carries no id', () => {
     const next = reduceRunEvents(emptyDetail(), eventsPage({
       events: [{ cursor: 42, type: 'artifact', ts: 't', payload: { path: 'a.pt' } }],

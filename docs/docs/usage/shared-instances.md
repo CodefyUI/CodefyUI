@@ -133,6 +133,29 @@ Three consequences:
   only complete fix for that window. See the CHANGELOG entry for which
   release carries the change.
 
+### Runs sent to a worker
+
+A run that targets a [remote worker](./remote-workers) leaves this machine:
+the assignment carries the graph with the SECRET values you typed restored,
+because the worker's run process needs them. **Send a run with a SECRET param
+to a worker only over a connection that encrypts it**: an `https://` control
+URL whose certificate the worker's CAs trust or that is pinned, or an SSH tunnel. Over
+plain HTTP to another machine the agent prints a warning when it starts and
+the Workers panel marks the worker **Plain HTTP**; the run is still sent, and
+the value crosses the network readable by anyone on the path. The agent hands
+the value to the run's subprocess in memory and writes it to no file of its
+own, but the worker machine holds it for the length of the run: whoever
+administers that machine is trusted with it. See [Trust between agent and control
+plane](./remote-workers#trust-between-agent-and-control-plane).
+
+A worker belongs to the instance like everything else: anyone who can reach
+the editor can send runs to every enrolled worker. A run on a worker uses the
+ambient credentials of the **worker's** agent account (its environment keys
+and the ChatGPT, Kaggle and Hugging Face credentials stored on that machine),
+not the control plane's. A graph that relies on an instance key needs
+that key configured on each worker it runs on, with the same caveat as
+above: whoever configured it pays for every run sent there.
+
 ## If you need per-person attribution
 
 There is no in-product answer today. Run one instance per person, and let each

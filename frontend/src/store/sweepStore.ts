@@ -118,7 +118,8 @@ function messageOf(error: unknown): string {
 
 function hasActiveChildren(detail: SweepDetail | null): boolean {
   return detail !== null
-    && ((detail.counts.running ?? 0) + (detail.counts.queued ?? 0)) > 0;
+    && ((detail.counts.running ?? 0) + (detail.counts.disconnected ?? 0)
+      + (detail.counts.queued ?? 0)) > 0;
 }
 
 function settled(detail: SweepDetail | null): boolean {

@@ -41,6 +41,7 @@ import {
   getRunArtifacts,
   downloadRunMetricsCsv,
   createSweep,
+  submitRun,
   getSweep,
   cancelSweep,
   downloadSweepCsv,
@@ -1068,7 +1069,7 @@ describe('download endpoints', () => {
 
 describe('run endpoints', () => {
   it('exposes status vocabularies that mirror the backend', () => {
-    expect([...ACTIVE_RUN_STATUSES]).toEqual(['queued', 'running']);
+    expect([...ACTIVE_RUN_STATUSES]).toEqual(['queued', 'running', 'disconnected']);
     expect([...TERMINAL_RUN_STATUSES]).toEqual([
       'succeeded', 'failed', 'cancelled', 'interrupted',
     ]);
@@ -1276,6 +1277,32 @@ describe('run endpoints', () => {
 });
 
 // ── Sweeps (#140) ────────────────────────────────────────────────────────
+
+describe('queued run submit (#775)', () => {
+  const request = {
+    graph: { nodes: [], edges: [], presets: [] },
+    options: { target: { worker: 'gpu-box', devices: ['cuda:0', 'cuda:1'] }, device: 'cuda:0' },
+    name: 'nightly',
+  };
+
+  it('posts the run with the session token and returns its id and status', async () => {
+    const fetchMock = mockFetch(200, { run_id: 'r1', status: 'queued' });
+    await expect(submitRun(request)).resolves.toEqual({ run_id: 'r1', status: 'queued' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/runs');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(init.body)).toEqual(request);
+  });
+
+  it('throws the server sentence of a refused placement, status kept', async () => {
+    mockFetch(400, { detail: "worker 'gpu-box' is not connected to this server" });
+    const error = await submitRun(request).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 400, message: "worker 'gpu-box' is not connected to this server" });
+  });
+});
 
 describe('sweep endpoints', () => {
   const request = {

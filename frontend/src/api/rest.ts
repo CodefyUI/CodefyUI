@@ -105,11 +105,22 @@ export async function fetchHealth(): Promise<HealthInfo> {
   };
 }
 
+/** Memory facts for one device (#767); display only. `null` byte counts
+ * mean the probe could not say. */
+export interface DeviceMemory {
+  total_bytes: number | null;
+  free_bytes: number | null;
+  /** `nvml`, `torch.cuda`, `torch.mps` or `psutil`. */
+  source: string;
+}
+
 export interface DeviceInfo {
   value: string;
   label: string;
   detail: string;
   available: boolean;
+  /** Absent from older servers; `null` when no probe answered. */
+  memory?: DeviceMemory | null;
 }
 
 export interface DevicesResponse {
@@ -127,16 +138,34 @@ export async function fetchDevices(): Promise<DevicesResponse> {
   return res.json();
 }
 
+/**
+ * A row's status. `disconnected` (#783) is a worker's run whose worker
+ * dropped off the network: still active, waiting for it to reconnect.
+ * Plugins never see it (`plugins/api.ts` reads it as `running`).
+ */
 export type RunStatus =
   | 'queued'
   | 'running'
+  | 'disconnected'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
   | 'interrupted';
 
 /** Mirrors the backend's `ACTIVE_STATUSES` — a run that still has a future. */
-export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running'];
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running', 'disconnected'];
+
+/**
+ * Where an active worker run's worker stands (#783). The times are Unix
+ * seconds, set while it is disconnected: since when, and until when the
+ * run waits for it before it is marked interrupted.
+ */
+export interface RunWorkerStatus {
+  worker_id: string;
+  state: 'connected' | 'disconnected';
+  disconnected_at: number | null;
+  resume_deadline: number | null;
+}
 
 /** Mirrors the backend's `TERMINAL_STATUSES` — the rows Delete accepts. */
 export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
@@ -212,6 +241,30 @@ export interface RunSummary {
   sweep_id?: string | null;
   /** Zero-based compiled variant index within its sweep. */
   sweep_variant?: number | null;
+  /**
+   * Where the run executes (#769 / #772): `local` (this server process), a
+   * worker's name once placed, or `any` while an `any` run waits. A row
+   * from before #769 reads `local`. Optional: a server before #769 does not
+   * send it.
+   */
+  worker_id?: string;
+  /**
+   * The run's device set (`options.target.devices`), e.g. `['cuda:0',
+   * 'cuda:1']`, or `null` when the run named a single `device`. The run's
+   * queue is still `queue_key`.
+   */
+  devices?: string[] | null;
+  /**
+   * Why a queued run is not starting beyond its place in line (#772), e.g.
+   * `waiting for worker gpu-box to reconnect`; `null` otherwise. Optional:
+   * a server before #772 does not send it.
+   */
+  queue_reason?: string | null;
+  /**
+   * An active worker run's connection to its worker (#783); `null` for
+   * every other run. Optional: a server before #783 does not send it.
+   */
+  worker_status?: RunWorkerStatus | null;
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */
@@ -304,6 +357,47 @@ export async function deleteRun(
   return res.json();
 }
 
+/**
+ * Where a queued run executes (#769 / #772): `local` (this server), `any`
+ * (the first connected worker with room, this server last) or a worker's
+ * name. `devices` is the device set: physical ids of one kind. Absent, the
+ * run's `device` option decides.
+ */
+export interface RunTarget {
+  worker: string;
+  devices?: string[];
+}
+
+export interface SubmitRunRequest {
+  /** A serialized graph, with its session secrets (the run needs them in memory; the server drops them before persisting). */
+  graph: Record<string, unknown>;
+  /** `target`, `device`, `seed`, `deterministic`, `record_outputs`, ... */
+  options: Record<string, unknown> & { target?: RunTarget };
+  name: string | null;
+}
+
+export interface SubmitRunResponse {
+  run_id: string;
+  /** `running` when it started at once, `queued` when it joined a FIFO. */
+  status: RunStatus;
+}
+
+/**
+ * Submit a run on the queued lane (`POST /api/runs`), as `cdui run` does.
+ * Returns once the run is scheduled. A refusal (400: a target the server
+ * cannot place, 503: the run service is not up) throws an `ApiError`
+ * carrying the server's sentence.
+ */
+export async function submitRun(request: SubmitRunRequest): Promise<SubmitRunResponse> {
+  const res = await apiFetch(`${BASE_URL}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) return detailError(res, 'Failed to submit run');
+  return res.json();
+}
+
 export type SweepValue = number | boolean | string;
 export type SweepMethod = 'grid' | 'random';
 export type SweepState = 'running' | 'cancelling' | 'finished' | 'failed';
@@ -380,6 +474,14 @@ export interface SweepVariant {
   rank?: number | null;
   run_exists?: boolean;
   final_metrics?: Record<string, number>;
+  /**
+   * Where the variant's run is placed (#777), while that run exists:
+   * `local`, a worker's name, or `any` until an `any` variant starts; its
+   * device set (or null); and its queue key (`cpu`, `gpu-box/cuda:0`).
+   */
+  worker_id?: string;
+  devices?: string[] | null;
+  queue_key?: string;
 }
 
 export interface CreateSweepVariant {
@@ -437,12 +539,12 @@ export interface CancelSweepResponse {
 }
 
 /**
- * A refused sweep request, as an `ApiError` so a caller can tell a 404 (the
- * sweep is gone) from a failure worth retrying. FastAPI's 422 carries a list
+ * A refused sweep or run request, as an `ApiError` so a caller can
+ * tell a 404 (the sweep is gone) from a failure worth retrying. FastAPI's 422 carries a list
  * of `{loc, msg}` entries, read here as `field: message` lines; `loc` starts
  * with `body`, which names no field.
  */
-async function sweepError(res: Response, fallback: string): Promise<never> {
+async function detailError(res: Response, fallback: string): Promise<never> {
   const raw = await res.json().catch(() => null);
   const body = raw !== null && typeof raw === 'object' ? raw as Record<string, unknown> : null;
   const detail = body?.detail;
@@ -470,7 +572,7 @@ export async function createSweep(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   });
-  if (!res.ok) return sweepError(res, 'Failed to create sweep');
+  if (!res.ok) return detailError(res, 'Failed to create sweep');
   return res.json();
 }
 
@@ -480,7 +582,7 @@ export async function getSweep(
 ): Promise<SweepDetail> {
   const url = `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}`;
   const res = signal ? await apiFetch(url, { signal }) : await apiFetch(url);
-  if (!res.ok) return sweepError(res, 'Failed to fetch sweep');
+  if (!res.ok) return detailError(res, 'Failed to fetch sweep');
   return res.json();
 }
 
@@ -489,7 +591,7 @@ export async function cancelSweep(sweepId: string): Promise<CancelSweepResponse>
     `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}/cancel`,
     { method: 'POST' },
   );
-  if (!res.ok) return sweepError(res, 'Failed to cancel sweep');
+  if (!res.ok) return detailError(res, 'Failed to cancel sweep');
   return res.json();
 }
 
@@ -497,7 +599,7 @@ export async function downloadSweepCsv(sweepId: string): Promise<void> {
   const res = await fetch(
     `${BASE_URL}/sweeps/${encodeURIComponent(sweepId)}?format=csv`,
   );
-  if (!res.ok) return sweepError(res, 'Failed to download sweep CSV');
+  if (!res.ok) return detailError(res, 'Failed to download sweep CSV');
   if (!res.headers.get('content-type')?.toLowerCase().startsWith('text/csv')) {
     throw new Error('Sweep export response is not CSV');
   }
@@ -605,10 +707,28 @@ export interface RunArtifact {
   id: number | string;
   /** Open vocabulary: `checkpoint`, `export`, `image`, or a node pack's own. */
   kind: string;
-  /** Path as the node wrote it, relative to the data root. */
-  path: string;
+  /**
+   * Where the file is on this server. `null` for a file a worker wrote on a
+   * shared mount this server does not hold: then only `mount_label` and
+   * `relative_path` say where it is, and neither is a path on this machine.
+   */
+  path: string | null;
   meta: Record<string, unknown> | null;
   created_at: string;
+  /**
+   * `local` (an absolute path), `mount` (a file on a shared mount) or
+   * `transfer` (a worker uploaded it to this server, #785: downloadable
+   * from `/api/runs/{id}/artifacts/{artifact_id}/download`).
+   */
+  backend?: string;
+  mount_label?: string | null;
+  /**
+   * The stored path under `mount_label`, for a `mount` row; the key under
+   * this server's data root, for a `transfer` row.
+   */
+  relative_path?: string | null;
+  /** The worker whose run wrote the file; `local` is this server. */
+  worker_id?: string;
 }
 
 /**

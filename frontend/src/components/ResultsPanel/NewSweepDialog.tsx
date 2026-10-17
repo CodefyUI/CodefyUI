@@ -7,6 +7,8 @@ import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { isRunSeed } from '../../utils/graphSettings';
+import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import {
   buildRangeDomain,
   buildValuesDomain,
@@ -18,6 +20,8 @@ import {
   type SweepLimitWarning,
 } from './sweepParams';
 import { metricProducers, producerLabel, recordedMetricNames } from './sweepObjective';
+import { trapTab } from '../shared/focusTrap';
+import { TargetSelector, useRunTargetChoice } from '../Toolbar/TargetSelector';
 import styles from './NewSweepDialog.module.css';
 
 type DomainMode = 'values' | 'range';
@@ -33,9 +37,6 @@ interface DomainEditor {
   scale: 'linear' | 'log';
 }
 
-const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
-/** The planner seed range the server accepts (`sweep_compiler.MAX_PLANNER_SEED`). */
-const MAX_PLANNER_SEED = 0xFFFFFFFF;
 /**
  * Objectives offered before any listed run has recorded a series: what the
  * built-in TrainingLoop logs every epoch, and with validation data.
@@ -57,41 +58,12 @@ function isNumeric(entry: EligibleSweepParam | null | undefined): boolean {
 
 function parseSeed(raw: string): number {
   const value = Number(raw);
-  if (raw.trim() === '' || !Number.isInteger(value) || value < 0 || value > MAX_PLANNER_SEED) {
+  // The planner seed range (`sweep_compiler.MAX_PLANNER_SEED`) is the run
+  // seed range, so the one run-seed check serves both.
+  if (raw.trim() === '' || !isRunSeed(value)) {
     throw new SweepInputError('seed');
   }
   return value;
-}
-
-/**
- * The server's run-name limit (`run_service.MAX_NAME_LENGTH`), in code points.
- * Also the Name field's `maxLength`, which counts UTF-16 units, at least one
- * per code point, so typing stops at the limit or before it. An input method
- * can compose past `maxLength`, so a typed name is cut when sent as well.
- */
-const MAX_RUN_NAME_LENGTH = 64;
-
-/**
- * A run name the server stores rather than refuses (#623). The sweep route
- * REFUSES a name over the limit instead of cutting it, so a sweep's name is
- * made storable here the way the server makes a canvas run's: trimmed, cut to
- * the limit in code points (`Array.from` counts them, as the server does), and
- * half of a surrogate pair, which the database cannot store, sent as "?".
- */
-function storableRunName(raw: string): string {
-  return Array.from(raw.trim(), (char) => {
-    const code = char.codePointAt(0) ?? 0;
-    return code >= 0xd800 && code <= 0xdfff ? '?' : char;
-  }).slice(0, MAX_RUN_NAME_LENGTH).join('').trimEnd();
-}
-
-/**
- * What a blank Name sends: the tab's name, as a canvas run is named (#623).
- * Checked to be text, since a tab restored from a damaged record may not
- * carry one.
- */
-function tabDefaultName(tab: { name?: unknown } | null): string {
-  return tab && typeof tab.name === 'string' ? storableRunName(tab.name) : '';
 }
 
 /** Compact, keyboard-contained editor for one sweep request. */
@@ -122,6 +94,11 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const tab = useTabStore((state) =>
     state.tabs.find((candidate) => candidate.id === state.activeTabId) ?? null,
   );
+  const globalDevice = useUIStore((state) => state.globalDevice);
+  // Where the variants run (#777): the Queue on... dialog's target picker.
+  // Left at This server with its default device, the sweep is sent exactly
+  // as before, with the graph's device and no target.
+  const target = useRunTargetChoice(tab?.graphDevice ?? globalDevice, { keepGraphDevice: true });
   // What a blank Name sends, shown as the field's placeholder.
   const defaultName = tabDefaultName(tab);
   // The ROOT graph, flushed exactly as Start serializes it: inside a block the
@@ -246,20 +223,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       onClose();
       return;
     }
-    if (event.key !== 'Tab') return;
-    const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    // The dialog itself holds the focus after a click between controls.
-    const atStart = document.activeElement === first || document.activeElement === dialogRef.current;
-    if (event.shiftKey && atStart) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    trapTab(event, dialogRef.current);
   };
 
   const seedUsed = method === 'random' || seedVariants;
@@ -274,6 +238,9 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       previewSweepVariants(method, params, method === 'random' ? Number(samples) : null);
       if (!objective.trim()) throw new Error(t('sweeps.new.objectiveRequired'));
       const sweepSeed = seedUsed ? parseSeed(seed) : null;
+      const resolved = target.touched ? target.resolve() : null;
+      // No device: the picker says so beside the devices.
+      if (target.touched && resolved === null) return;
       const store = useTabStore.getState();
       // The child runs need the session key in memory. RunService removes it
       // before persisting each child snapshot; this dialog/store keep no copy.
@@ -284,7 +251,8 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       // only the newest 20 runs, shared with the canvas, and the server
       // refuses record_outputs on a sweep larger than that.
       const options: Record<string, unknown> = {
-        device: graph.settings?.device ?? useUIStore.getState().globalDevice,
+        device: resolved?.device ?? graph.settings?.device ?? useUIStore.getState().globalDevice,
+        ...(resolved ? { target: resolved.target } : {}),
         verbose: active.verboseMode,
         graph_id: active.graphId,
         weights_persistent: active.weightsPersistent,
@@ -337,6 +305,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
               <label>{t('sweeps.new.name')}<input ref={firstRef} value={name} placeholder={defaultName} maxLength={MAX_RUN_NAME_LENGTH} onChange={(event) => setName(event.target.value)} /></label>
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
+            <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
             <div className={styles.pair}>
               <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => {
                 const metric = event.target.value;

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTabStore } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
+import { useWorkerStore } from '../../store/workerStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart, type ChartSeries } from './LossChart';
@@ -170,6 +172,18 @@ export function ResultsPanel() {
     }
   }, [hasTraining]);
 
+  // A run link in the Workers panel (#776) shows that run in the Runs tab.
+  // Only a change seen while mounted counts: a panel mounted later (another
+  // canvas tab) must not jump to Runs for a link clicked before it existed.
+  const runsRevealSeq = useWorkerStore((s) => s.runsRevealSeq);
+  const seenRevealSeq = useRef(runsRevealSeq);
+  useEffect(() => {
+    if (runsRevealSeq === seenRevealSeq.current) return;
+    seenRevealSeq.current = runsRevealSeq;
+    setPanelTab('runs');
+    setCollapsed(false);
+  }, [runsRevealSeq]);
+
   // Only non-progress logs for the Log tab
   const filteredLogs = useMemo(
     () => logs.filter((e) => e.kind !== 'progress'),
@@ -242,6 +256,18 @@ export function ResultsPanel() {
       return !prev;
     });
   }, [panelHeight]);
+
+  // "Show the Runs tab" from elsewhere (#775: a run queued from the
+  // toolbar), expanding the dock if it was collapsed. Mount-time 0 asks
+  // nothing; a later mount must not replay an old request either.
+  const runsTabRequest = useUIStore((s) => s.runsTabRequest);
+  const seenRunsTabRequest = useRef(runsTabRequest);
+  useEffect(() => {
+    if (runsTabRequest === seenRunsTabRequest.current) return;
+    seenRunsTabRequest.current = runsTabRequest;
+    setPanelTab('runs');
+    if (collapsed) toggleCollapse();
+  }, [runsTabRequest, collapsed, toggleCollapse]);
 
   const handleColDividerDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

@@ -8,7 +8,11 @@ Timestamps are ISO-8601 UTC TEXT (``app.core.db.utc_now_iso``).
 (see the naming-decision block above ``MIGRATION_003``); 004 is the sweep
 schema (#140); 005 indexes metrics by producer (#641); 006 records the
 environment that executed each run (#344); 007 is the durable study
-coordinator (#343).
+coordinator (#343); 008 records where each run executes (#769); 009 is
+worker enrollment (#780); 010 says where each artifact's file lives
+(#782); 011 records a worker's environment (#781); 012 the SSH workers
+the control plane launches (#784); 013 is the transfer backend's content
+index (#785).
 """
 
 from __future__ import annotations
@@ -439,9 +443,158 @@ CREATE INDEX idx_exec_runs_study_attempt ON exec_runs(study_attempt_id)
   WHERE study_attempt_id IS NOT NULL;
 """
 
+# ── Migration 008: where a run executes (#769) ────────────────────────────
+#
+# Part of the control-plane / worker split (#764). Two nullable columns:
+#
+# - ``worker_id``: the worker that runs it: ``local`` (this process), a
+#   worker's name, or ``any`` until such a run is placed (#772). NULL is a
+#   row from before this migration and reads back as ``local``
+#   (``RunRecord.from_row``), which is what it was.
+# - ``devices``: the device set as a JSON array (``target.devices`` as
+#   asked, then the devices a worker run was placed on), or NULL when the
+#   run asked for one ``device`` the way every run did before. The first
+#   entry is the run's device and so its ``queue_key``.
+MIGRATION_008 = """
+ALTER TABLE exec_runs ADD COLUMN worker_id TEXT;
+ALTER TABLE exec_runs ADD COLUMN devices TEXT;
+"""
+
+# ── Migration 009: enrolled workers (#780) ────────────────────────────────
+#
+# Two tables, and no secret in either: every credential is stored as the
+# sha256 hex of the secret (``core.worker_store.hash_secret``), the way
+# ``api_keys.token_hash`` is.
+#
+# - ``workers``: one row per enrolled worker agent. ``id`` IS the name (a
+#   worker's id is its name everywhere else: ``target.worker``,
+#   ``exec_runs.worker_id``, the registry); ``name`` is kept as its own
+#   UNIQUE column so the table reads like the spec. ``token_hash`` is the
+#   long-lived worker token's hash; a re-enrollment under the same name
+#   replaces it, so the old token stops working. ``platform``,
+#   ``mounts_json`` and ``devices_json`` are the facts the agent last
+#   reported (JSON), so a worker known from an earlier boot can be shown,
+#   and targeted, before it reconnects; ``machine_id`` is the digest its
+#   last ``hello`` reported (a record only: same-host also needs a loopback
+#   peer, see ``ws_worker``). ``enabled`` is 1 for every row this
+#   release writes; a revoked worker's row is deleted.
+# - ``worker_enrollments``: one-time join tokens. ``id`` is the token's
+#   public half (the six characters before the dot); ``uses_left`` counts
+#   down to 0 and a used-up or expired row stays listed until deleted.
+#   ``worker`` binds a token to one enrolled worker: it is the only kind
+#   of token that can enroll a name that is already taken (a re-key).
+MIGRATION_009 = """
+CREATE TABLE workers (
+  id            TEXT PRIMARY KEY,           -- the worker name
+  name          TEXT NOT NULL UNIQUE,
+  token_hash    TEXT NOT NULL UNIQUE,       -- sha256 hex of the worker token
+  platform      TEXT,                       -- JSON {system, release, machine, python}
+  mounts_json   TEXT,                       -- JSON {label: path}
+  devices_json  TEXT,                       -- JSON [DeviceReport]
+  machine_id    TEXT,                       -- hello.machine_id (a digest), last seen
+  created_at    TEXT NOT NULL,
+  last_seen_at  TEXT,
+  enabled       INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE worker_enrollments (
+  id          TEXT PRIMARY KEY,             -- the token's public half
+  token_hash  TEXT NOT NULL UNIQUE,         -- sha256 hex of the whole token
+  expires_at  TEXT NOT NULL,
+  uses_left   INTEGER NOT NULL,
+  created_at  TEXT NOT NULL,
+  label       TEXT,
+  worker      TEXT                          -- bound: may enroll (re-key) this name only
+);
+"""
+
+# ── Migration 010: where an artifact's file lives (#782) ─────────────────
+#
+# A worker run writes its checkpoints on the worker. With a shared
+# filesystem the file is under a mount both hosts hold, at a different
+# absolute path on each, so the row records it relative to the mount:
+#
+# - ``backend``: ``local`` (``path`` is absolute on this machine: every row
+#   before this migration, which reads back NULL and means ``local``),
+#   ``mount`` (``path`` is relative to the mount ``mount_label`` names),
+#   ``transfer`` (#785: ``path`` is the key the worker's upload was stored
+#   under, relative to this server's data root, ``core.transfer.key_path``);
+#   ``s3`` (#791) is reserved.
+# - ``mount_label``: the mount's label, for ``mount`` rows; else NULL.
+# - ``worker_id``: the worker whose run produced the file (``local`` for
+#   this process), so a path from another machine is never read as one of
+#   this machine's. NULL on a row from before and reads back as ``local``.
+#
+# ``RunStore`` translates a ``mount`` row to this server's path when it is
+# read (``core.mounts.translate``).
+MIGRATION_010 = """
+ALTER TABLE exec_run_artifacts ADD COLUMN backend TEXT;
+ALTER TABLE exec_run_artifacts ADD COLUMN mount_label TEXT;
+ALTER TABLE exec_run_artifacts ADD COLUMN worker_id TEXT;
+"""
+
+# ── Migration 011: a worker's environment (#781) ──────────────────────────
+#
+# ``workers.fingerprint_digest`` is the environment fingerprint digest the
+# worker's last ``hello`` carried (``core.env_fingerprint``), so a worker
+# known from an earlier boot shows it before it reconnects. The document
+# itself is in ``exec_run_fingerprints``, content-addressed like a run's
+# (``RunStore.record_fingerprint``). NULL: never reported, or the last
+# connection reported none.
+MIGRATION_011 = """
+ALTER TABLE workers ADD COLUMN fingerprint_digest TEXT;
+"""
+
+# ── Migration 012: SSH workers (#784) ────────────────────────────────────
+#
+# One row per worker the control plane starts itself over ``ssh -R``
+# (``core.ssh_launch``). ``id`` is the worker name (the same id as its
+# ``workers`` row once it has enrolled; a row here may exist before that).
+# ``target`` is what ``ssh`` is given (``user@host`` or a ``Host`` alias
+# from the server account's ssh config), ``port`` its ``-p``, ``identity``
+# an optional key path on THIS machine, ``remote_cdui`` the launcher on the
+# remote host, ``remote_port`` the remote loopback port of the reverse
+# forward (kept so a restart reuses it, and with it the credential the
+# agent stored for that address). ``enabled`` 0 keeps the row but no ssh.
+# No secret here: tokens travel on ssh's stdin, never stored.
+MIGRATION_012 = """
+CREATE TABLE ssh_workers (
+  id           TEXT PRIMARY KEY,            -- the worker name
+  target       TEXT NOT NULL,               -- user@host or an ssh Host alias
+  port         INTEGER NOT NULL DEFAULT 22,
+  identity     TEXT,                        -- key file on the control plane
+  remote_cdui  TEXT NOT NULL,               -- the cdui launcher on the remote
+  remote_port  INTEGER,                     -- remote loopback end of ssh -R
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT NOT NULL
+);
+"""
+
+# ── Migration 013: the transfer backend's content index (#785) ───────────
+#
+# A run sent to a worker without the shared mount names each upload it
+# reads by its sha256, so the worker can cache it by content. Hashing a
+# 2 GiB model on every assignment is not free, so the hash is kept here
+# per stored file and recomputed only when the file's size or mtime moved
+# (``core.transfer.ContentIndex``): ``(kind, name)`` is the upload store
+# (``data_file`` / ``image`` / ``model``) and the name the graph uses;
+# ``mtime`` is ``st_mtime_ns``. A cache, not a record: a row may name a
+# file that is gone, and nothing but the next lookup refreshes it.
+MIGRATION_013 = """
+CREATE TABLE file_hashes (
+  kind    TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  sha256  TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  mtime   INTEGER NOT NULL,
+  PRIMARY KEY (kind, name)
+);
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
-                         MIGRATION_007]
+                         MIGRATION_007, MIGRATION_008, MIGRATION_009,
+                         MIGRATION_010, MIGRATION_011,
+                         MIGRATION_012, MIGRATION_013]
 
 
 def _is_comment_only(statement: str) -> bool:

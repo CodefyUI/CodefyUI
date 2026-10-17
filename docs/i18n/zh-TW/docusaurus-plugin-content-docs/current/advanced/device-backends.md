@@ -12,7 +12,7 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 
 **預設是 CPU，而且不會有任何機制替你切走。** 一次執行依下列順序決定裝置，先命中者為準：
 
-1. 節點自己的 **device** 參數，且不是 `auto` 時（位於「進階」，為舊圖保留；一張圖只在一個裝置上執行，需要兩個裝置的工作應拆成兩張圖）。
+1. 節點自己的 **device** 參數，且不是 `auto` 時（位於「進階」）。`auto` 會依序落到下面的圖裝置與設定。它的說明是：「此節點的裝置。auto 跟隨這次執行的裝置。送到 worker 且拿到多個裝置的執行，會依列出的順序把它們看成 cuda:0..N-1，所以可以用這個位置把節點固定在其中任一個。」在 worker 上拿到多張卡的 run，會依目標列出的順序把它們看成 `cuda:0` 到 `cuda:N-1`（見 [cdui agent](/getting-started/cli-commands)），所以在拿到 `cuda:0` 與 `cuda:2` 的 run 裡，設成 `cuda:1` 的節點會跑在這台機器的 `cuda:2`。參數值不會被改寫，重新編號是 run 的 `CUDA_VISIBLE_DEVICES` 做的。
 2. 圖自己的裝置，也就是圖檔裡的 `settings.device`（[格式見下方](#the-graph-settings-object)），由**執行**旁邊的裝置選單設定。它會跟著圖一起存檔，所以 git 會追蹤它，圖在哪裡打開都跑在同一個裝置上。選單的第一個選項（設定為 CPU 時是**跟隨設定（CPU）**）會讓圖不指定自己的裝置。
 3. **設定**裡的裝置（這個瀏覽器記住的值，改動前是 `cpu`）。新圖與尚未指定裝置的圖會使用它；設定面板也會提示這台伺服器能看到的最佳裝置。設定的裝置若不在這台伺服器的清單上，兩個選單都會標示出來；參見[裝置無法使用時](/getting-started/gpu-device#when-a-device-is-unavailable)。
 4. `cpu`：請求完全沒有指定裝置時伺服器採用的值。
@@ -51,7 +51,11 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 
 在有一張以上 CUDA 裝置的機器上，每個下拉選單也會逐張列出——`cuda:0`、`cuda:1` 等等——並與單純的 `cuda` 並列，後者代表「torch 目前指向的那一張」。只有一張 GPU 的機器只會顯示 `cuda`，因為在那裡兩者指的是同一塊硬體。
 
-指定了這台機器上不存在的編號時，會退回**目前的 CUDA 裝置**而不是 CPU：一張在工作站上釘在 `cuda:2` 的圖，在筆電上打開時仍然應該用 GPU 訓練。每張卡也各自有自己的執行佇列。完整說明（包含刻意排除在外的分散式訓練）請參閱 **[訓練記憶體](./training-memory)**。
+指定了這台機器上不存在的編號時，會退回**目前的 CUDA 裝置**而不是 CPU：一張在工作站上釘在 `cuda:2` 的圖，在筆電上打開時仍然應該用 GPU 訓練。每張卡也各自有自己的執行佇列。完整說明（包含尚未支援的分散式訓練）請參閱 **[訓練記憶體](./training-memory)**。
+
+:::note 裝置集合
+送到 worker agent 的 queued run 可以指定同一種類的多張卡，也就是 `target.devices`（`cdui run` 的 `--devices cuda:2,cuda:0`）。run 的子程序以 `CUDA_VISIBLE_DEVICES` 拿到這些卡，並依列出的順序看成 `cuda:0` 到 `cuda:N-1`，所以 **device** 設為 `cuda:1` 的節點會在集合中的第二張卡上執行。節點的值從不被改寫，上面的規則在 run 內照樣適用。在伺服器程序內執行的 run 只用集合中的第一個裝置。匯出的腳本只接受一個 `--device`；要讓它使用部分的卡，請在啟動前自行設定 `CUDA_VISIBLE_DEVICES`。請參閱[多 GPU 執行](/usage/multi-gpu#choose-devices)。
+:::
 
 ## float64 + MPS 的限制 {/* #the-float64--mps-constraint */}
 

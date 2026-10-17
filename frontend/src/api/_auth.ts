@@ -111,17 +111,22 @@ export function _setSessionTokenForTesting(token: string | null): void {
  * differs from the one just refused: 403 is also how the server refuses a
  * remote plugin or pack install (`routes_plugins.py`, `routes_packs.py`), and
  * that refusal must cost one request, not two.
+ *
+ * `options.authenticate` sends the token on a GET too, for the few reads
+ * the server guards (`GET /api/workers/enrollments`, #780), with the same
+ * same-origin check and 403 retry.
  */
 export async function apiFetch(
   url: string,
   init: RequestInit = {},
+  options: { authenticate?: boolean } = {},
 ): Promise<Response> {
   // Typed as a string, but plugin JavaScript is untyped and can pass a
   // `Request`, whose own method, headers and body `fetch` uses when `init`
   // names none -- so its POST is a POST here too.
   const request = requestOf(url);
   const method = (init.method ?? request?.method ?? 'GET').toUpperCase();
-  if (!MUTATING_METHODS.has(method)) {
+  if (!MUTATING_METHODS.has(method) && !options.authenticate) {
     return fetch(url, init);
   }
   // Every send below, the retry included, uses what was checked.

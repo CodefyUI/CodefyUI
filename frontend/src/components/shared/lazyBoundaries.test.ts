@@ -4,14 +4,16 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The two lazy chunk boundaries (codemirrorSetup.ts, katexRenderer.tsx) are
+ * The lazy chunk boundaries (codemirrorSetup.ts, katexRenderer.tsx, the
+ * Queue on... dialog QueueRunDialog.tsx (#775), and the Workers panel
+ * WorkersPanel.tsx with its AddWorkerDialog.tsx (#776)) are
  * undone silently by a single static import: the code keeps working, the
  * chunk just moves into the first paint. vite.config.ts catches the package
  * side of that at build time; this test catches the module side in
  * `pnpm test`, by reading the sources from disk the way
  * SourceControl.integration.test.tsx reads its stylesheets.
  */
-const BOUNDARIES = ['codemirrorSetup', 'katexRenderer'];
+const BOUNDARIES = ['codemirrorSetup', 'katexRenderer', 'QueueRunDialog', 'WorkersPanel', 'AddWorkerDialog', 'NewSweepDialog'];
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -37,7 +39,7 @@ const STATIC_IMPORT = /^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]|^\
 describe('lazy chunk boundaries', () => {
   const files = sourceFiles(SRC);
 
-  it('sees both boundary modules', () => {
+  it('sees every boundary module', () => {
     for (const name of BOUNDARIES) {
       expect(files.some((file) => new RegExp(`/${name}\\.tsx?$`).test(file))).toBe(true);
     }

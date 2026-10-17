@@ -1,0 +1,99 @@
+/* The frame (backdrop, panel, header, footer, primary action) is shared
+   with the New Sweep dialog: shared/DialogFrame.module.css. */
+.backdrop {
+  composes: backdrop from '../shared/DialogFrame.module.css';
+}
+
+.dialog {
+  composes: dialog from '../shared/DialogFrame.module.css';
+  --dialog-width: 520px;
+}
+
+.header {
+  composes: header from '../shared/DialogFrame.module.css';
+}
+
+.close {
+  composes: close from '../shared/DialogFrame.module.css';
+}
+
+.footer {
+  composes: footer from '../shared/DialogFrame.module.css';
+}
+
+.primary {
+  composes: primary from '../shared/DialogFrame.module.css';
+}
+
+.footer button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.field input,
+.field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-control-sm);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: var(--fw-normal);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.check input {
+  margin: 0;
+}
+
+.hint,
+.error {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.hint {
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--status-error);
+}
+
+@media (max-width: 859px) {
+  .pair {
+    grid-template-columns: 1fr;
+  }
+}

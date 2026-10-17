@@ -60,7 +60,9 @@ from .api import (
     routes_studies,
     routes_sweeps,
     routes_system,
+    routes_workers,
     ws_execution,
+    ws_worker,
 )
 from .config import settings
 from .core.auth import (
@@ -79,7 +81,7 @@ from .core.db import Database
 from .core.git.service import GitService
 from .core import instance_lock
 from .core.logging_config import setup_logging
-from .core.node_registry import registry
+from .core.node_registry import node_catalog, registry
 from .core.node_state_store import NodeStateStore
 from .core.packs import restart as pack_restart
 from .core.packs.service import PackService
@@ -96,10 +98,15 @@ from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 from .core.run_service import RunService
+from .core.ssh_launch import SshLauncher
+from .core.worker_store import WorkerStore
+from .core.workers import WorkerRegistry
 from .core.run_store import RunStore
 from .core.study_coordinator import StudyCoordinator
 from .core.study_store import StudyStore
 from .core.sweep_store import SweepStore
+from .core.transfer import UPLOAD_PATH_PATTERN
+from .core.tunnel_listener import tunnel_of, worker_token_route
 
 logger = logging.getLogger(__name__)
 
@@ -123,10 +130,34 @@ _AUTH_EXEMPT_PATHS = frozenset({
     "/api/auth/bootstrap",
 })
 
+# (method, path) pairs that skip the session-token check, and nothing else
+# at those paths. Worker enrollment (#780) is called by an agent on another
+# machine, which holds an enrollment token and no session token; the route
+# checks that token and rate-limits itself.
+_AUTH_EXEMPT_ROUTES = frozenset({
+    ("POST", routes_workers.ENROLL_PATH),
+})
+
+# The same, for a path with a run id in it: a worker uploads its run's
+# outputs (#785) with its worker token, which the route checks itself
+# (``routes_runs._uploader``: the session token, or the token of the worker
+# the run is on). POST only; every other method at the path is guarded.
+_AUTH_EXEMPT_ROUTE_PATTERNS = (
+    ("POST", UPLOAD_PATH_PATTERN),
+)
+
 # Router prefixes whose routes carry their OWN route-level auth dependency
 # (exactly one each — enforced by tests/test_auth_drift.py). auth_guard
 # skips them entirely; host_guard still applies to everything.
 _AUTH_EXEMPT_PREFIXES = ("/api/apps", "/api/keys")
+
+
+def _local_device_facts() -> list:
+    """This process's devices with their CUDA UUIDs, for matching a
+    same-host worker's cards to ours (#773). Called once, lazily."""
+    from .core.resources import probe_devices
+
+    return probe_devices()
 
 
 def _prefix_exempt(path: str) -> bool:
@@ -373,10 +404,24 @@ async def _lifespan_body(app: FastAPI):
     # settings.RUN_EVENT_PAYLOAD_CAP_BYTES itself, so there is one place the
     # ceiling comes from rather than a lifespan-only override that leaves
     # every other construction of the service on a different number.
+    # Worker agents (#772) register here when they connect to /ws/worker.
+    # With none connected, the run service behaves exactly as without it:
+    # a run without a target is placed and executed in this process.
+    worker_registry = WorkerRegistry(
+        local_devices=_local_device_facts,
+        resume_grace_s=settings.WORKER_RESUME_GRACE_S,
+        node_catalog=node_catalog)
+    app.state.worker_registry = worker_registry
+    # Enrolled workers (#780) are known before they dial in, as offline, so
+    # a run can target one and wait. None enrolled: nothing changes.
+    worker_store = WorkerStore(db)
+    app.state.worker_store = worker_store
+    worker_registry.load_known(await worker_store.list_workers())
     run_service = RunService(
         RunStore(db),
         output_store=app.state.run_output_store,
         retention_keep_last=settings.RUN_RETENTION_KEEP_LAST,
+        workers=worker_registry,
     )
     app.state.run_service = run_service
     # Sweeps (#140) read and write their own table through the same
@@ -404,6 +449,14 @@ async def _lifespan_body(app: FastAPI):
     # a key surviving in a row that pruning was never going to reach.
     await run_service.scrub_stored_secrets()
     await run_service.prune_retention()
+    # Uploads a worker was sending when an earlier server died (#785):
+    # their `.incoming-*` temporary files would stay forever. Reads the
+    # upload ledger only; no walk of the data folders.
+    from .core.transfer import sweep_incoming
+    try:
+        await asyncio.to_thread(sweep_incoming)
+    except Exception:  # noqa: BLE001 -- housekeeping must not block startup
+        logger.warning("could not sweep unfinished uploads", exc_info=True)
 
     # ── Package Center: one optional-pack install at a time ────────────
     # Same lifetime rules as the run service above: it owns an asyncio.Task
@@ -451,6 +504,13 @@ async def _lifespan_body(app: FastAPI):
     app.state.git_service = GitService(
         project_dir=lambda: settings.PROJECT_DIR)
 
+    # ── SSH workers (#784): the ones this server starts itself ────────
+    # Each enabled ``ssh_workers`` row gets its ``ssh -R`` process back.
+    # None configured (the default): nothing is started, no port is held.
+    ssh_launcher = SshLauncher(worker_store, worker_registry, app=app)
+    app.state.ssh_launcher = ssh_launcher
+    await ssh_launcher.start_all()
+
     yield
 
     # An install in flight when the server stops is cancelled and waited for
@@ -475,8 +535,24 @@ async def _lifespan_body(app: FastAPI):
     # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
     # only database work in the process that nobody is awaiting, and
     # `Database.close` would otherwise race a run's final writes (#119).
-    await run_service.shutdown()
+    # The run service retires its queue first and then dispatches nothing,
+    # so no new run goes to a worker that is stopping.
+    #
+    # The SSH workers' sessions (#784) end at the same time, not before:
+    # ``stop`` on each ssh's stdin stops its remote agent at once, and its
+    # runs report how they ended while the run service is still here to
+    # record them (bounded by ``ssh_launch.SHUTDOWN_GRACE_S``; a run that
+    # did not report ends ``interrupted``, ``WorkerRegistry.stopped``).
+    # The local drain never waits behind that teardown. Under ``cdui
+    # stop``, which kills the server after about 2 s, the SSH runs' last
+    # reports are best effort: the next start marks them ``interrupted``.
+    await asyncio.gather(run_service.shutdown(), ssh_launcher.shutdown())
+    app.state.ssh_launcher = None
     app.state.run_service = None
+    # After the runs: a worker run's stop travels over its worker's socket.
+    await worker_registry.shutdown()
+    app.state.worker_registry = None
+    app.state.worker_store = None
 
     # Release the SQLite handle so `cdui stop` on Windows frees the DB and
     # its WAL sidecar files (spec Section 13, Windows file locking).
@@ -546,7 +622,10 @@ async def auth_guard(request: Request, call_next):
     frontend obtains the token in the first place.
     """
     path = request.url.path
-    if path in _AUTH_EXEMPT_PATHS:
+    if path in _AUTH_EXEMPT_PATHS \
+            or (request.method, path) in _AUTH_EXEMPT_ROUTES \
+            or any(request.method == method and pattern.fullmatch(path)
+                   for method, pattern in _AUTH_EXEMPT_ROUTE_PATTERNS):
         return await call_next(request)
     if _prefix_exempt(path):
         # /api/apps + /api/keys routes each declare exactly one explicit
@@ -577,13 +656,36 @@ async def host_guard(request: Request, call_next):
     ``Host: attacker.com`` (the browser doesn't know about the rebinding).
     """
     host = request.headers.get("host", "")
-    if not host_is_allowed(host):
-        logger.warning("rejected request with Host=%r path=%s", host, request.url.path)
-        return JSONResponse(
-            status_code=421,
-            content={"detail": "Misdirected Request (Host not allowed)"},
-        )
-    return await call_next(request)
+    path = request.url.path
+    tunnel = tunnel_of(request.scope)
+    if tunnel is not None:
+        # An SSH worker's own listener (#784), never this server's port:
+        # ``TunnelApp`` let only the agent routes through (its allow-list
+        # is the one place they are named) and set this mark. The ``Host``
+        # is whatever the far end of the forward sent, so it decides
+        # nothing here.
+        if worker_token_route(request.method, path):
+            # The transfer backend (#785): only with a worker token, never
+            # as the open read it is on the main port.
+            store = getattr(request.app.state, "worker_store", None)
+            provided = request.headers.get(TOKEN_HEADER)
+            if store is None or not provided \
+                    or await store.authenticate(provided) is None:
+                logger.warning("refused %s %s through SSH worker %s's "
+                               "tunnel without a worker token",
+                               request.method, path, tunnel)
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "a worker token is required through "
+                                       "an SSH tunnel"})
+        return await call_next(request)
+    if host_is_allowed(host):
+        return await call_next(request)
+    logger.warning("rejected request with Host=%r path=%s", host, path)
+    return JSONResponse(
+        status_code=421,
+        content={"detail": "Misdirected Request (Host not allowed)"},
+    )
 
 
 @app.exception_handler(RequestBodyTooLarge)
@@ -644,6 +746,7 @@ app.include_router(routes_data_files.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)
+app.include_router(routes_workers.router)
 app.include_router(routes_sweeps.router)
 app.include_router(routes_studies.router)
 app.include_router(routes_packs.router)
@@ -653,6 +756,7 @@ app.include_router(routes_llm.router)
 app.include_router(routes_apps.router)
 app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
+app.include_router(ws_worker.router)
 
 
 async def _cache_usage() -> dict[str, dict[str, int]]:

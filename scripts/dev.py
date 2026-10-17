@@ -47,6 +47,13 @@
                                         （省略時用圖檔的 settings.device，
                                         再沒有就是 cpu；auto 表示這台伺服器
                                         最好的加速器；解析後的裝置就是佇列 key）
+                      --target <名稱>   在哪裡執行：local（這台伺服器，預設）、
+                                        已連線的 worker 名稱（cdui agent start），
+                                        或 any（先找有空位的 worker，最後才是這台）
+                      --devices <清單>  同一種類的裝置集合，逗號分隔，如
+                                        cuda:0,cuda:1；--device 省略、為 auto
+                                        或只寫種類（cuda）時，第一個就是 run
+                                        的裝置；其他 --device 必須與它相同
                       --seed <n>        隨機種子（省略時用圖檔的 settings.seed）
                       --no-seed         不設種子執行，即使圖檔有 settings.seed
                       --deterministic   要求 torch 用確定性演算法（沒有確定性實作
@@ -131,6 +138,19 @@
                     cdui cache prune --yes               # 不問直接刪
                 離開碼：0 完成、1 取消或刪不掉、2 拒絕執行（參數錯誤、無法確認）、
                 3 伺服器執行中（圖可能正在讀這些檔），130 Ctrl+C 取消。
+
+    agent <start|stop|forget> ...
+                Worker agent：連到控制面的 /ws/worker，每個 run 在自己的子程序執行。
+                同機模式不需參數：位址與 token 取自上次 cdui start 的伺服器。
+                另一台機器：用 Workers 面板「新增 worker」產生的指令加入（一次性
+                enrollment token 換成長期 worker 憑證，存於本機，重啟時沿用）。
+                    cdui agent start                     # 背景執行（pidfile、agent.log）
+                    cdui agent start --foreground        # 前景（systemd）
+                    cdui agent start --control http://127.0.0.1:8000 --name gpu-box
+                    cdui agent start --control http://192.168.1.5:8000 --token abcdef.0123456789abcdef
+                    cdui agent start --devices cuda:0,cuda:1
+                    cdui agent forget http://192.168.1.5:8000   # 刪掉存下的憑證
+                    cdui agent stop
 
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要安裝的 release tag（預設：latest）。指定了版本
@@ -526,9 +546,82 @@ def _uv_install_timeout() -> int:
         return 180
 
 
+#: Set across the re-exec that follows a uv install. A relaunched process that
+#: still cannot find uv fails with the bootstrap error instead of downloading
+#: again: without it, an install that lands somewhere this process cannot see
+#: repeats until somebody kills it (#809).
+_UV_BOOTSTRAP_ENV = "CODEFYUI_UV_BOOTSTRAPPED"
+
+
+def _uv_install_dirs() -> list:
+    """Where astral's installer puts uv, in the order it picks them.
+
+    The installer edits shell rc files to put its directory on PATH, and a
+    non-interactive shell (`ssh host 'cdui ...'`) reads none of them, so a uv
+    that is installed can still be missing from PATH.
+    """
+    if sys.platform == "win32":
+        profile = os.environ.get("USERPROFILE")
+        base = Path(profile) if profile else Path.home()
+        return [base / ".local" / "bin", base / ".cargo" / "bin"]
+    dirs = [Path(os.environ[name]) for name in ("UV_INSTALL_DIR", "XDG_BIN_HOME")
+            if os.environ.get(name)]
+    home = Path.home()
+    return [*dirs, home / ".local" / "bin", home / ".cargo" / "bin"]
+
+
+def _find_installed_uv_dir():
+    """The first `_uv_install_dirs()` entry holding a runnable uv, or None."""
+    name = "uv.exe" if sys.platform == "win32" else "uv"
+    for directory in _uv_install_dirs():
+        exe = directory / name
+        if exe.is_file() and os.access(exe, os.X_OK):
+            return directory
+    return None
+
+
+def _prepend_to_path(directory: Path) -> None:
+    """Put *directory* first on PATH, for this process and everything it starts."""
+    os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _uv_bootstrap_failed(why_zh: str, why_en: str) -> None:
+    print(t(
+        f"\n錯誤：自動安裝 uv {why_zh}。\n"
+        f"  CodefyUI 需要 uv 才能執行任何指令。若這台機器連不到網際網路\n"
+        f"  （教室或實驗室網路常見），請改用下列任一方式：\n"
+        f"    1. 自行安裝 uv 後重試：https://docs.astral.sh/uv/getting-started/installation/\n"
+        f"    2. 從別處下載 uv，放進 PATH 之後再執行同一個指令\n"
+        f"    3. 網路很慢但可用時，加大逾時：CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
+        f"\nError: installing uv {why_en}.\n"
+        f"  CodefyUI needs uv before it can run any command. If this machine\n"
+        f"  cannot reach the internet (common on school and lab networks),\n"
+        f"  use one of these instead:\n"
+        f"    1. Install uv yourself, then retry:\n"
+        f"       https://docs.astral.sh/uv/getting-started/installation/\n"
+        f"    2. Copy a uv binary onto this machine, put it on PATH, rerun the command\n"
+        f"    3. On a slow but working link, raise the limit:\n"
+        f"       CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
+    ), file=sys.stderr)
+    sys.exit(1)
+
+
 def _ensure_uv() -> None:
     if shutil.which("uv"):
+        os.environ.pop(_UV_BOOTSTRAP_ENV, None)
         return
+    installed = _find_installed_uv_dir()
+    if installed is not None:
+        _prepend_to_path(installed)
+        os.environ.pop(_UV_BOOTSTRAP_ENV, None)
+        return
+    if os.environ.get(_UV_BOOTSTRAP_ENV):
+        # The previous process installed uv and relaunched us, and uv is still
+        # nowhere to be found. Downloading again would only loop.
+        _uv_bootstrap_failed(
+            "完成，但在 PATH 與安裝目錄中都找不到 uv",
+            "finished, but uv is on neither PATH nor the installer's directories",
+        )
     # This runs before EVERY command, so an unbounded download here wedges
     # `cdui status`, `cdui stop`, everything. School and lab networks commonly
     # drop packets rather than refusing them, which is indistinguishable from
@@ -561,29 +654,16 @@ def _ensure_uv() -> None:
             )
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as exc:
         timed_out = isinstance(exc, subprocess.TimeoutExpired)
-        why = t(
+        _uv_bootstrap_failed(
             f"逾時（超過 {timeout} 秒）" if timed_out else "失敗",
             f"timed out after {timeout}s" if timed_out else "failed",
         )
-        print(t(
-            f"\n錯誤：自動安裝 uv {why}。\n"
-            f"  CodefyUI 需要 uv 才能執行任何指令。若這台機器連不到網際網路\n"
-            f"  （教室或實驗室網路常見），請改用下列任一方式：\n"
-            f"    1. 自行安裝 uv 後重試：https://docs.astral.sh/uv/getting-started/installation/\n"
-            f"    2. 從別處下載 uv，放進 PATH 之後再執行同一個指令\n"
-            f"    3. 網路很慢但可用時，加大逾時：CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
-            f"\nError: installing uv {why}.\n"
-            f"  CodefyUI needs uv before it can run any command. If this machine\n"
-            f"  cannot reach the internet (common on school and lab networks),\n"
-            f"  use one of these instead:\n"
-            f"    1. Install uv yourself, then retry:\n"
-            f"       https://docs.astral.sh/uv/getting-started/installation/\n"
-            f"    2. Copy a uv binary onto this machine, put it on PATH, rerun the command\n"
-            f"    3. On a slow but working link, raise the limit:\n"
-            f"       CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
-        ), file=sys.stderr)
-        sys.exit(1)
-    # 安裝後重新啟動自身，讓新 PATH 生效
+    # The installer only edits shell rc files, so the directory it used goes
+    # on PATH here, and the marker stops the relaunch from installing again.
+    installed = _find_installed_uv_dir()
+    if installed is not None:
+        _prepend_to_path(installed)
+    os.environ[_UV_BOOTSTRAP_ENV] = "1"
     _reexec(sys.executable, sys.argv)
 
 
@@ -1332,7 +1412,7 @@ def _print_post_install_summary(gpu: str, dev: bool) -> None:
     print(f"  {DIM}Backend:{RESET}  {BACKEND_DIR}")
     print(f"  {DIM}Frontend:{RESET} {DIST_DIR if has_dist else t('(未建置)', '(not built)')}")
     if dev:
-        print(f"  {DIM}Dev tools:{RESET} pytest, pytest-asyncio, httpx, httpx-ws, tensorboard")
+        print(f"  {DIM}Dev tools:{RESET} pytest, pytest-asyncio, httpx, httpx-ws, trustme, tensorboard")
     print()
     print(f"{BOLD}{CYAN}▸ {t('下一步', 'Next steps')}{RESET}")
     print()
@@ -1687,18 +1767,22 @@ _UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port", "--ws-max-size", "--workers")
 # Owned flag -> the remedy to name when it is forwarded after `--`. A refusal
 # that does not point at the knob that DOES work is just a dead end.
 # --host/--port have cdui flags of their own; --ws-max-size is configured by
-# environment like every other app setting; --workers has no knob, and says so.
+# environment like every other app setting; --workers has no server knob, and
+# names the worker agent, which is how runs get processes of their own.
 _UVICORN_FLAG_ALTERNATIVE = {
     "--host": "使用 cdui start --host。",
     "--port": "使用 cdui start --port。",
     "--ws-max-size": "改設環境變數 CODEFYUI_WS_MAX_MESSAGE_BYTES。",
-    "--workers": "CodefyUI 只以單一行程提供服務。",
+    "--workers": ("CodefyUI 伺服器只以單一行程執行；要讓 run 在其他行程中執行，"
+                  "請用 cdui agent start 啟動 worker agent。"),
 }
 _UVICORN_FLAG_ALTERNATIVE_EN = {
     "--host": "use `cdui start --host` instead.",
     "--port": "use `cdui start --port` instead.",
     "--ws-max-size": "set CODEFYUI_WS_MAX_MESSAGE_BYTES instead.",
-    "--workers": "CodefyUI serves from a single process.",
+    "--workers": ("the CodefyUI server runs as a single process; to execute "
+                  "runs in other processes, start a worker agent with "
+                  "`cdui agent start`."),
 }
 
 # Mirrors app.config.Settings.WS_MAX_MESSAGE_BYTES, including its fallback to
@@ -2225,9 +2309,11 @@ def start() -> None:
     # --reload, which ignores workers.)
     web_concurrency = os.environ.pop("WEB_CONCURRENCY", None)
     if web_concurrency not in (None, "", "1"):
-        warn(f"忽略 WEB_CONCURRENCY={web_concurrency}：CodefyUI 只以單一行程提供服務。",
-             f"Ignoring WEB_CONCURRENCY={web_concurrency}: CodefyUI serves "
-             f"from a single process.")
+        warn(f"忽略 WEB_CONCURRENCY={web_concurrency}：CodefyUI 伺服器只以單一行程執行；"
+             f"要讓 run 在其他行程中執行，請用 cdui agent start 啟動 worker agent。",
+             f"Ignoring WEB_CONCURRENCY={web_concurrency}: the CodefyUI server "
+             f"runs as a single process; to execute runs in other processes, "
+             f"start a worker agent with `cdui agent start`.")
     uvicorn = _require_venv_tool("uvicorn")
     # Extras go last so `app.main:app` keeps its position — the process
     # matchers in `cdui stop` key on it. --ws-max-size is passed explicitly
@@ -4299,7 +4385,8 @@ RUN_POLL_WAIT_S = 5.0
 #: Statuses that mean the run is over. Mirrors run_store.TERMINAL_STATUSES —
 #: not imported from it because this command must work when the backend
 #: package cannot be imported (no venv yet), and the vocabulary is the REST
-#: contract either way.
+#: contract either way. ``disconnected`` (#783) is not one of them: the
+#: run waits for its worker to come back, and so does ``--wait``.
 RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled",
                                    "interrupted"})
 
@@ -4326,15 +4413,30 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
             "run is owned by the server: it joins that device's queue, "
             "survives this terminal, and is visible in the Runs panel."
         ),
+        # No prefix matching: --device and --devices (#769) made `--dev`
+        # and `--devic` ambiguous, and a flag added later must never change
+        # what an abbreviation in someone's script means. `--dev` stays an
+        # explicit alias of --device because it worked before.
+        allow_abbrev=False,
     )
     p.add_argument("graph", help="path to a graph .json file")
     p.add_argument("--name", default=None,
                    help="label for the run (shown in the Runs panel)")
-    p.add_argument("--device", default=None,
+    p.add_argument("--device", "--dev", dest="device", default=None,
                    help="cpu | auto | cuda | cuda:N | mps. Omitted: the "
                         "graph file's settings.device, else cpu. auto: the "
                         "best accelerator this server has. The RESOLVED "
                         "device is the queue this run joins.")
+    p.add_argument("--target", default=None, metavar="NAME",
+                   help="where the run executes: `local` (this server, the "
+                        "default), the name of a connected worker agent "
+                        "(cdui agent start), or `any` (a worker with a free "
+                        "slot, this server last).")
+    p.add_argument("--devices", default=None, metavar="LIST",
+                   help="comma-separated device set of one kind, e.g. "
+                        "cuda:0,cuda:1. Its first entry is the run's device "
+                        "when --device is omitted, auto, or only the kind "
+                        "(cuda); any other --device must equal it.")
     seeding = p.add_mutually_exclusive_group()
     seeding.add_argument("--seed", type=int, default=None,
                          help="seed for random / numpy / torch. Every node is "
@@ -4444,17 +4546,58 @@ def _run_submit_body(args) -> dict:
         options["seed"] = None
     if getattr(args, "deterministic", False):
         options["deterministic"] = True
+    # Sent only when asked for (#769): a run without a target is the run it
+    # always was. The server validates the worker name and the device set.
+    target = {}
+    if getattr(args, "target", None) is not None:
+        target["worker"] = args.target
+    devices = _run_devices_flag(args)
+    if devices is not None:
+        target["devices"] = devices
+    if target:
+        options["target"] = target
     body = {"graph": graph, "options": options}
     if args.name:
         body["name"] = args.name
     return body
 
 
+def _run_devices_flag(args) -> "list | None":
+    """``--devices cuda:0,cuda:1`` as a list; None when the flag is absent.
+
+    Split on commas, trimmed, lowercased (as the server will), blanks
+    dropped -- once, here, so the Target and Device lines print the same
+    spelling. The server owns the vocabulary, canonical form, uniqueness
+    and the one-kind rule.
+    """
+    raw = getattr(args, "devices", None)
+    if raw is None:
+        return None
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]
+
+
+def _run_display_target(args) -> str:
+    """The Target line printed after submit: the worker (``local`` when
+    ``--target`` is omitted), then the device set when one was asked for."""
+    worker = getattr(args, "target", None) or "local"
+    devices = _run_devices_flag(args)
+    return f"{worker} ({', '.join(devices)})" if devices else worker
+
+
 def _run_display_device(args, graph: dict) -> str:
-    """The device line printed after submit: the flag, else the graph file's
-    ``settings.device`` marked ``(graph)``, else ``cpu``. Display only; the
-    server resolves the effective device and reports it as ``queue_key``."""
-    if args.device is not None:
+    """The device line printed after submit: the effective device by the
+    server's rule. With ``--devices``, its first entry marked ``(target)``
+    when ``--device`` is omitted, ``auto`` or only the kind (``cuda``);
+    else the flag; else the graph file's ``settings.device`` marked
+    ``(graph)``; else ``cpu``. Display only; the server resolves the
+    effective device (refusing a ``--device`` that disagrees with the set)
+    and reports it as ``queue_key``."""
+    device = None if args.device is None else str(args.device).strip().lower()
+    devices = _run_devices_flag(args)
+    if devices and (device is None or device == "auto"
+                    or device == devices[0].partition(":")[0]):
+        return f"{devices[0]} (target)"
+    if device is not None:
         return str(args.device)
     graph_settings = graph.get("settings") if isinstance(graph, dict) else None
     value = graph_settings.get("device") if isinstance(graph_settings, dict) else None
@@ -4483,7 +4626,7 @@ def _run_status_color(status: str) -> str:
         return GREEN
     if status == "failed":
         return RED
-    if status in ("cancelled", "interrupted"):
+    if status in ("cancelled", "interrupted", "disconnected"):
         return YELLOW
     return CYAN
 
@@ -4743,6 +4886,7 @@ def run_graph() -> None:
     section("提交執行", "Run submitted")
     _kv(t("Run ID", "Run ID"), run_id)
     _kv(t("圖檔", "Graph"), str(path))
+    _kv(t("目標", "Target"), _run_display_target(args))
     _kv(t("裝置", "Device"), _run_display_device(args, body["graph"]))
     _kv(t("種子", "Seed"), _run_display_seed(args, body["graph"]))
     if args.name:
@@ -5071,6 +5215,25 @@ def _dispatch_packs_subcommand() -> int:
     return packs_cli.main(sys.argv[2:])
 
 
+def _dispatch_agent_subcommand() -> int:
+    """Hand off `cdui agent <start|stop|forget> ...` to scripts/agent.py (#771).
+
+    Same venv hop as the other subgroups: the agent is `app.agent`. No
+    `_ensure_uv()`, like `cache`: an agent spawns no package manager, and it
+    must start on a GPU box with no route to astral.sh. `_apply_dev_env()`
+    is what makes its same-host defaults right: the session token and
+    `server.addr` it reads are the ones the server `cdui start` launched
+    wrote.
+    """
+    _exec_into_venv_if_available()
+    _apply_dev_env()
+    for path in (Path(__file__).resolve().parent, BACKEND_DIR):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    import agent as agent_cli  # noqa: PLC0415 — late import: needs venv
+    return agent_cli.main(sys.argv[2:])
+
+
 #: `cdui <group> <subcmd> ...` — commands that hand their tail to a sibling
 #: script rather than to a function in this module. A table rather than a
 #: chain of `if`s in `__main__`, because `__main__` is not importable: the
@@ -5081,6 +5244,7 @@ SUBCOMMAND_GROUPS = {
     "project": _dispatch_project_subcommand,
     "packs": _dispatch_packs_subcommand,
     "cache": _dispatch_cache_subcommand,
+    "agent": _dispatch_agent_subcommand,
 }
 
 

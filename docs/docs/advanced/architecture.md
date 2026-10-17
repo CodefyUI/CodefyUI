@@ -11,7 +11,7 @@ frontend/   React 19 · TypeScript · React Flow 12 · Zustand 5 · Vite 6
 backend/    Python 3.10+ · FastAPI · PyTorch
 ```
 
-A single uvicorn process serves the REST API, the execution WebSocket, and the prebuilt React app.
+A single uvicorn process serves the REST API, the execution WebSocket, and the prebuilt React app. By default it also executes every run. A queued run can instead target a worker agent (`cdui agent start`), which executes it in a subprocess of its own; [Execution Architecture](./execution-architecture) describes that split, and [Multi-GPU Execution](/usage/multi-gpu) how to use it.
 
 ## Core principles
 
@@ -31,6 +31,8 @@ A single uvicorn process serves the REST API, the execution WebSocket, and the p
 5. **Parallel execution** — independent nodes run concurrently, at most `CODEFYUI_MAX_PARALLEL_NODES` at a time. A run with a seed executes one node at a time, because per-node seeding sets process-wide random number generators. Nodes that receive the same model or optimizer object take turns in a stable order, since training, `eval()` and a device move all change that one object; a warning names a model output trained by more than one TrainingLoop or Optimizer.
 6. **Caching / dirty tracking** — deterministic node outputs are cached per WebSocket connection (256 entries and 1 GB by default), keyed by node type, params, one reference per incoming edge (the upstream key plus both port names), the resolved device, and a content fingerprint for nodes that read files; changing a node marks it and its downstream dirty so only the affected subgraph re-runs. Non-deterministic nodes (or `cacheable = False`) always run.
 7. **Device resolution** — no device means `cpu`, and `auto` means the best accelerator (`cuda`, then `mps`, then `cpu`). An unavailable `cuda` or `mps` falls back to CPU with a warning; an out-of-range or malformed `cuda:N` on a machine with CUDA uses the current CUDA device instead. A node's own `device` parameter, when it is not `auto`, overrides the run's device. See [Device Backends](./device-backends).
+
+Steps 2 to 7 happen inside `execute_graph`, which an executor calls. For a run with no `target`, or `target.worker: local`, that is `InProcessExecutor`, in this process. A queued run placed on a worker agent executes the same steps in a run subprocess on that worker, and its events come back over `/ws/worker` into the same event log. The canvas (interactive lane) always executes here. See [Execution Architecture](./execution-architecture).
 
 ## State, outputs, and gradients
 
@@ -100,6 +102,12 @@ A plugin pack is a directory holding a `cdui.plugin.toml` manifest and its conte
 | Node registry + namespacing | `backend/app/core/node_registry.py` |
 | Graph validation + execution | `backend/app/core/graph_engine.py` |
 | Run service (scheduling, event log, cancel, recovery) | `backend/app/core/run_service.py` |
+| Executors (in-process and worker) | `backend/app/core/executors.py` |
+| Scheduler, slots, placement | `backend/app/core/scheduling.py` |
+| Worker registry | `backend/app/core/workers.py` |
+| Worker wire protocol | `backend/app/core/worker_protocol.py` |
+| Worker agent (`cdui agent`) | `backend/app/agent/` |
+| Worker WebSocket and REST routes | `backend/app/api/ws_worker.py`, `backend/app/api/routes_workers.py` |
 | Run store (SQLite rows, retention) | `backend/app/core/run_store.py` |
 | Run REST routes | `backend/app/api/routes_runs.py` |
 | Sweeps | `backend/app/api/routes_sweeps.py`, `backend/app/core/sweep_compiler.py` |

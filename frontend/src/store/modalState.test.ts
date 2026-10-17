@@ -5,6 +5,7 @@ import { useDialogStore } from './dialogStore';
 import { useSweepStore } from './sweepStore';
 import { useTabStore } from './tabStore';
 import { useUIStore } from './uiStore';
+import { useWorkerStore } from './workerStore';
 
 const ORIGINAL_TABS = useTabStore.getState().tabs;
 const ORIGINAL_ACTIVE = useTabStore.getState().activeTabId;
@@ -31,6 +32,8 @@ const MODALS: Array<[ModalName, () => void]> = [
   ['layersModal', () => setActiveTab({ layersModalNodeId: 'n1' })],
   ['vizModal', () => setActiveTab({ vizModalNodeId: 'n1' })],
   ['newSweep', () => useSweepStore.getState().setNewSweepOpen(true)],
+  ['workers', () => useWorkerStore.getState().openPanel()],
+  ['queueRun', () => useUIStore.getState().setQueueRunOpen(true)],
 ];
 
 beforeEach(() => {
@@ -54,9 +57,11 @@ beforeEach(() => {
     pluginCenterOpen: false,
     customNodeManagerOpen: false,
     gitDiff: null,
+    queueRunOpen: false,
   });
   useDialogStore.setState({ active: null, resolve: null });
   useSweepStore.setState({ newSweepOpen: false });
+  useWorkerStore.setState({ panelOpen: false });
 });
 
 afterEach(() => {

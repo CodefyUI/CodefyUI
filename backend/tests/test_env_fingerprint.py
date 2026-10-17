@@ -550,3 +550,91 @@ async def test_the_run_detail_carries_the_fingerprint_and_the_list_does_not(
 async def test_an_unknown_digest_is_a_404(client, digest):
     response = await client.get(f"/api/system/fingerprints/{digest}")
     assert response.status_code == 404
+
+
+# ── the node catalog hash (#781) ─────────────────────────────────────────
+
+
+class _CatalogNode(BaseNode):
+    NODE_NAME = "CatalogProbe"
+    CATEGORY = "Test"
+
+    @classmethod
+    def define_inputs(cls):
+        return []
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="out", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls):
+        from app.core.node_base import ParamDefinition, ParamType
+
+        return [ParamDefinition(name="device", param_type=ParamType.SELECT,
+                                default="cuda",
+                                options=["auto", "cpu", "cuda", "mps"])]
+
+    def execute(self, inputs, params):
+        return {"out": None}
+
+
+def test_the_catalog_hash_is_stable_and_cached_per_generation():
+    from app.core.node_registry import NodeRegistry, node_catalog
+
+    nodes = NodeRegistry()
+    nodes.register(_CatalogNode)
+    first = node_catalog(nodes)
+    assert node_catalog(nodes) is first
+    assert first.node_types == ("CatalogProbe",)
+    # Registered again (a reload): same definitions, same hash.
+    again = NodeRegistry()
+    again.register(_CatalogNode)
+    assert node_catalog(again).hash == first.hash
+    # Another type changes it, and so does the same node under a plugin id.
+    again.register(_FpGateNode)
+    assert node_catalog(again).hash != first.hash
+    prefixed = NodeRegistry()
+    prefixed.register(_CatalogNode, plugin_id="p")
+    assert node_catalog(prefixed).hash != first.hash
+
+
+def test_the_catalog_hash_does_not_depend_on_this_machines_devices(
+        monkeypatch):
+    """The node API narrows a ``device`` param to the devices this machine
+    has; the catalog hashes the param as declared, so a CPU box and a CUDA
+    box with the same plugins agree."""
+    from app.core import device_utils
+    from app.core.node_registry import (
+        NodeRegistry,
+        node_catalog,
+        node_definition,
+    )
+
+    nodes = NodeRegistry()
+    nodes.register(_CatalogNode)
+    monkeypatch.setattr(device_utils, "device_options",
+                        lambda name, options: ["cpu"])
+    cpu_box = node_catalog(nodes).hash
+    served = node_definition("CatalogProbe", _CatalogNode)
+    assert served.params[0].options == ["cpu"]
+    assert served.params[0].default == "cpu"
+    nodes.register(_CatalogNode)  # a new generation: recomputed
+    monkeypatch.setattr(device_utils, "device_options",
+                        lambda name, options: ["cpu", "cuda:0", "cuda:1"])
+    assert node_catalog(nodes).hash == cpu_box
+
+
+def test_a_broken_definition_hashes_instead_of_failing():
+    from app.core.node_registry import NodeRegistry, node_catalog
+
+    class _Broken(_CatalogNode):
+        NODE_NAME = "Broken"
+
+        @classmethod
+        def define_params(cls):
+            raise RuntimeError("boom")
+
+    nodes = NodeRegistry()
+    nodes.register(_Broken)
+    assert node_catalog(nodes).node_types == ("Broken",)

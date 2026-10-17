@@ -505,6 +505,17 @@ def rank_study(
     return rows
 
 
+def _select_by_idempotency_key(conn: sqlite3.Connection,
+                               key: str) -> StudyRecord | None:
+    """The study created with idempotency *key*, or None. Shared by the
+    lookup before a submit and the one inside ``create_study``'s insert
+    transaction, so the two cannot disagree on what "the same key" is."""
+    row = conn.execute(
+        f"SELECT {_STUDY_COLUMNS} FROM studies WHERE idempotency_key = ?",
+        (key,)).fetchone()
+    return None if row is None else StudyRecord.from_row(row)
+
+
 # ── the store ─────────────────────────────────────────────────────────────
 
 
@@ -536,12 +547,9 @@ class StudyStore:
         def _insert(conn: sqlite3.Connection) -> tuple[StudyRecord, bool]:
             with transaction(conn):
                 if idempotency_key is not None:
-                    row = conn.execute(
-                        f"SELECT {_STUDY_COLUMNS} FROM studies "
-                        "WHERE idempotency_key = ?",
-                        (idempotency_key,)).fetchone()
-                    if row is not None:
-                        existing = StudyRecord.from_row(row)
+                    existing = _select_by_idempotency_key(conn,
+                                                          idempotency_key)
+                    if existing is not None:
                         if existing.request_digest != request_digest:
                             raise IdempotencyConflict(idempotency_key,
                                                       existing.id)
@@ -590,6 +598,11 @@ class StudyStore:
 
     async def get_study(self, study_id: str) -> StudyRecord | None:
         return await self.db.run(lambda conn: _select_study(conn, study_id))
+
+    async def find_by_idempotency_key(self, key: str) -> StudyRecord | None:
+        """The study created with idempotency *key*, or None."""
+        return await self.db.run(
+            lambda conn: _select_by_idempotency_key(conn, key))
 
     async def list_studies(
         self, *, status: Sequence[str] | None = None, limit: int = 50,

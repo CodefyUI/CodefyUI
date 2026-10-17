@@ -1,0 +1,459 @@
+/* Workers panel (#776) and its Add worker dialog. The same rung as the New
+   Sweep dialog; the Add worker dialog sits one above the panel. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8800;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-4);
+  background: var(--surface-scrim);
+}
+
+.backdropTop {
+  z-index: 8810;
+}
+
+.dialog {
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100vh - var(--sp-8)));
+  overflow-y: auto;
+  color: var(--text-secondary);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.dialogNarrow {
+  width: min(560px, 100%);
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-base);
+}
+
+.header h2 {
+  flex: 1;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+}
+
+.close {
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: var(--fs-xl);
+  cursor: pointer;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.prose p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.subTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+}
+
+.options {
+  margin: 0;
+  padding-left: var(--sp-5);
+  line-height: 1.6;
+}
+
+.btn {
+  padding: var(--sp-1) var(--sp-3);
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--surface-hover);
+}
+
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.accent {
+  color: var(--accent-deep);
+  border-color: var(--accent-glow);
+  background: var(--accent-wash);
+}
+
+.linkBtn {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.commandLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.command {
+  padding: var(--sp-1) var(--sp-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--code-text);
+  background: var(--surface-code);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+
+/* A sha256:<64 hex> fingerprint (#786): long, so it may wrap anywhere. */
+.fingerprint {
+  overflow-wrap: anywhere;
+}
+
+.error {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--status-error);
+  background: var(--danger-wash);
+  border-radius: var(--radius-sm);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.ok {
+  color: var(--status-success);
+}
+
+.warn {
+  color: var(--status-warning);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.cardHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.workerName {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.facts dt {
+  color: var(--text-muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mount {
+  display: inline-block;
+  margin-right: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+}
+
+.devices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+}
+
+.deviceName {
+  min-width: 8em;
+}
+
+.fact {
+  color: var(--text-secondary);
+}
+
+.runLinks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ── status chips ── */
+
+.chip {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: var(--radius-sm);
+  border: 1px solid;
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.chip_online {
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: var(--success-wash);
+}
+
+.chip_degraded,
+.chip_draining {
+  color: var(--status-warning);
+  border-color: var(--status-warning);
+  background: var(--warning-wash);
+}
+
+.chip_disconnected {
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: var(--danger-wash);
+}
+
+.chip_offline,
+.chip_neutral {
+  color: var(--text-muted);
+  border-color: var(--border-base);
+  background: var(--surface-raised);
+}
+
+.chip_pending {
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: var(--success-wash);
+}
+
+.chip_expired,
+.chip_used {
+  color: var(--text-muted);
+  border-color: var(--border-base);
+  background: var(--surface-raised);
+}
+
+/* ── SSH tunnel state (#784) ── */
+
+.chip_up {
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: var(--success-wash);
+}
+
+.chip_connecting {
+  color: var(--status-warning);
+  border-color: var(--status-warning);
+  background: var(--warning-wash);
+}
+
+.chip_failed {
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: var(--danger-wash);
+}
+
+.chip_stopped {
+  color: var(--text-muted);
+  border-color: var(--border-base);
+  background: var(--surface-raised);
+}
+
+.tunnel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.tunnelError {
+  flex-basis: 100%;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--status-error);
+  background: var(--danger-wash);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tunnelTail {
+  flex-basis: 100%;
+}
+
+.tunnelTail pre {
+  margin: var(--sp-1) 0 0;
+  max-height: 12em;
+  overflow: auto;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── remove (#780) ── */
+
+.danger {
+  color: var(--status-error);
+  border-color: var(--status-error);
+}
+
+/* ── Add worker: another machine (#780) ── */
+
+.modeSwitch {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.modeSwitch [aria-pressed='true'] {
+  color: var(--accent-deep);
+  border-color: var(--accent-glow);
+  background: var(--accent-wash);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.fieldRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.input {
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.inputUrl {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.inputUses {
+  width: 5em;
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.tokens {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tokenRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-sm);
+}
+
+/* Node types that differ from this server's (#781). */
+.catalog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.typeList {
+  overflow-wrap: anywhere;
+}
+
+/* Agents the server refused that have no card (#781). */
+.rejections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.rejection {
+  display: contents;
+}

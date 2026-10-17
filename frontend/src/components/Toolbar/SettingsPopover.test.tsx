@@ -10,6 +10,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { useI18n } from '../../i18n';
 import {
   resetWeights,
@@ -627,6 +628,26 @@ describe('SettingsPopover', () => {
     );
   });
 
+  it('shows free / total memory on the device rows, not in the hint (#767)', async () => {
+    const GIB = 1024 ** 3;
+    vi.mocked(fetchDevices).mockResolvedValueOnce({
+      default: 'mps',
+      devices: [
+        { value: 'cpu', label: 'CPU', detail: '', available: true },
+        {
+          value: 'mps', label: 'Apple MPS', detail: 'Metal Performance Shaders', available: true,
+          memory: { total_bytes: 16 * GIB, free_bytes: 8 * GIB, source: 'torch.mps' },
+        },
+      ],
+    });
+    await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const select = screen.getByRole('combobox', { name: 'Compute device' });
+    expect(
+      await within(select).findByRole('option', { name: 'Apple MPS · 8.0 / 16.0 GiB free' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Best available device: Apple MPS')).toBeInTheDocument();
+  });
+
   it("shows the server's best device as a hint, without adopting it", async () => {
     await renderSettled(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     expect(await screen.findByText(/Best available device: Apple MPS/)).toBeInTheDocument();
@@ -1035,6 +1056,17 @@ describe('SettingsPopover', () => {
     expect(useUIStore.getState().guideOpen).toBe(true);
     useUIStore.getState().closeGuide();
     expect(useUIStore.getState().guideOpen).toBe(false);
+  });
+
+  it('opens the Workers panel from Execution, closing the popover (#776)', async () => {
+    useWorkerStore.setState({ panelOpen: false });
+    const onClose = vi.fn();
+    await renderSettled(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+    const row = rowFor('Workers');
+    fireEvent.click(within(row).getByRole('button', { name: 'Manage' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(useWorkerStore.getState().panelOpen).toBe(true);
+    useWorkerStore.setState({ panelOpen: false });
   });
 
   // ── Reset weights ─────────────────────────────────────────────────

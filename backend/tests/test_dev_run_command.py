@@ -34,6 +34,7 @@ from app.core.run_service import (
     normalize_graph,
     normalize_name,
     normalize_options,
+    worker_not_connected,
 )
 from app.core.run_store import RunStore
 
@@ -250,6 +251,81 @@ def test_submit_body_is_accepted_by_the_server_contract(graph_file):
     request = SubmitRunRequest(**body)
     assert "device" not in request.options
     assert normalize_options(request.options)["device"] == "cpu"
+
+
+def test_target_and_devices_build_options_target(graph_file):
+    """#769: ``--target`` / ``--devices`` become ``options.target``, and the
+    envelope survives the server's own validator."""
+    args = dev._parse_run_args([str(graph_file), "--target", "local",
+                                "--devices", "cpu"])
+    body = dev._run_submit_body(args)
+    assert body["options"]["target"] == {"worker": "local", "devices": ["cpu"]}
+    assert "device" not in body["options"]    # --device keeps its meaning
+    options = normalize_options(SubmitRunRequest(**body).options)
+    assert options["device"] == "cpu"
+    assert options["target"] == {"worker": "local", "devices": ["cpu"]}
+
+
+def test_devices_splits_on_commas_and_drops_blanks(graph_file):
+    args = dev._parse_run_args([str(graph_file), "--devices",
+                                " cuda:0, cuda:1 ,"])
+    body = dev._run_submit_body(args)
+    assert body["options"]["target"] == {"devices": ["cuda:0", "cuda:1"]}
+    options = normalize_options(body["options"])
+    assert options["device"] == "cuda:0"      # the first entry, server-side
+    assert options["target"]["worker"] == "local"
+
+
+def test_target_alone_sends_only_the_worker(graph_file):
+    args = dev._parse_run_args([str(graph_file), "--target", "gpu-box-1",
+                                "--device", "cuda:1"])
+    body = dev._run_submit_body(args)
+    assert body["options"]["target"] == {"worker": "gpu-box-1"}
+    assert body["options"]["device"] == "cuda:1"
+
+
+def test_no_target_flags_send_no_target(graph_file):
+    """A run without a target is the run it always was (#764 invariant 1)."""
+    body = dev._run_submit_body(dev._parse_run_args([str(graph_file)]))
+    assert "target" not in body["options"]
+
+
+def test_the_target_and_device_lines(graph_file):
+    graph = json.loads(graph_file.read_text(encoding="utf-8"))
+    plain = dev._parse_run_args([str(graph_file)])
+    assert dev._run_display_target(plain) == "local"
+    assert dev._run_display_device(plain, graph) == "cpu"
+    sets = dev._parse_run_args([str(graph_file), "--target", "local",
+                                "--devices", "CUDA:0,cuda:1"])
+    # Lowercased once, so both lines spell the device the same way.
+    assert dev._run_display_target(sets) == "local (cuda:0, cuda:1)"
+    assert dev._run_display_device(sets, graph) == "cuda:0 (target)"
+    assert dev._run_submit_body(sets)["options"]["target"]["devices"] == [
+        "cuda:0", "cuda:1"]
+    both = dev._parse_run_args([str(graph_file), "--device", "cuda:0",
+                                "--devices", "cuda:0"])
+    assert dev._run_display_device(both, graph) == "cuda:0"
+
+
+@pytest.mark.parametrize("device", ["auto", "cuda", "CUDA"])
+def test_the_device_line_is_the_effective_device(graph_file, device):
+    """The server's rule: --device auto or a bare kind defers to the set."""
+    graph = json.loads(graph_file.read_text(encoding="utf-8"))
+    args = dev._parse_run_args([str(graph_file), "--device", device,
+                                "--devices", "cuda:1,cuda:0"])
+    assert dev._run_display_device(args, graph) == "cuda:1 (target)"
+    assert normalize_options(
+        dev._run_submit_body(args)["options"])["device"] == "cuda:1"
+
+
+def test_dev_still_means_device_and_prefixes_are_refused(graph_file):
+    """#769 added --devices next to --device. ``--dev`` keeps working as an
+    explicit alias; any other prefix is refused instead of guessed."""
+    args = dev._parse_run_args([str(graph_file), "--dev", "cpu"])
+    assert args.device == "cpu" and args.devices is None
+    for flag in ("--devic", "--det", "--rec"):
+        with pytest.raises(SystemExit):
+            dev._parse_run_args([str(graph_file), flag, "cpu"])
 
 
 def test_every_device_the_cli_advertises_is_one_the_server_accepts():
@@ -577,6 +653,38 @@ def test_a_rejected_submit_shows_the_servers_reason(monkeypatch, graph_file,
         dev.run_graph()
     assert exc.value.code == 1
     assert "graph.nodes is empty" in capsys.readouterr().err
+
+
+def test_a_refused_target_shows_the_servers_reason(monkeypatch, graph_file,
+                                                   capsys):
+    detail = worker_not_connected("gpu-box-1")
+    error = HTTPError(f"{BASE}/api/runs", 400, "Bad Request", {},
+                      _Body(json.dumps({"detail": detail})))
+    monkeypatch.setattr(dev, "urlopen",
+                        _FakeServer().on("/api/runs", (0, error)))
+    monkeypatch.setattr(sys, "argv",
+                        _argv(graph_file, "--target", "gpu-box-1"))
+
+    with pytest.raises(SystemExit) as exc:
+        dev.run_graph()
+    assert exc.value.code == 1
+    assert detail in capsys.readouterr().err
+
+
+def test_the_summary_prints_the_target(monkeypatch, graph_file, capsys):
+    server = _FakeServer().on("/api/runs",
+                              (200, {"run_id": "r1", "status": "queued"}))
+    monkeypatch.setattr(dev, "urlopen", server)
+    monkeypatch.setattr(sys, "argv", _argv(graph_file, "--detach",
+                                           "--devices", "cpu"))
+
+    dev.run_graph()
+
+    out = capsys.readouterr().out
+    assert "Target" in out and "local (cpu)" in out
+    assert "cpu (target)" in out
+    sent = json.loads(server.requests[0].data)
+    assert sent["options"]["target"] == {"devices": ["cpu"]}
 
 
 def test_an_unreachable_server_names_the_address(monkeypatch, graph_file,

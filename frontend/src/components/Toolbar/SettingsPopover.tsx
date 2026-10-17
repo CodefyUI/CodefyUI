@@ -5,6 +5,7 @@ import { useToastStore } from '../../store/toastStore';
 import { usePackStore } from '../../store/packStore';
 import { selectPluginsById, usePluginStore, type PluginState } from '../../store/pluginStore';
 import { useDialogStore } from '../../store/dialogStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { useI18n } from '../../i18n';
 import {
   resetWeights,
@@ -16,7 +17,7 @@ import {
   type PackSummary,
   type PluginCatalogEntry,
 } from '../../api/rest';
-import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
+import { useDeviceOptions, deviceLabel, deviceOptionLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
@@ -523,10 +524,27 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 )}
                 {devices.map((d) => (
                   <option key={d.value} value={d.value}>
-                    {deviceLabel(d)}
+                    {deviceOptionLabel(d)}
                   </option>
                 ))}
               </select>
+            }
+          />
+
+          <Row
+            name={t('settings.workers.name')}
+            help={t('settings.workers.help')}
+            ctrl={
+              <button
+                type="button"
+                className={styles.action}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCenter(() => useWorkerStore.getState().openPanel());
+                }}
+              >
+                {t('settings.workers.action')}
+              </button>
             }
           />
         </section>

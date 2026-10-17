@@ -62,8 +62,10 @@ from uuid import uuid4
 
 from ..config import settings
 from .db import Database, transaction, utc_now_iso
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
+from .worker_protocol import TARGET_ANY, TARGET_LOCAL
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +85,15 @@ STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 STATUS_INTERRUPTED = "interrupted"
+#: A worker's run whose worker dropped off the network (#783): it may still
+#: be executing there, and it carries on if the worker reconnects in time.
+#: Active: it holds its slots, finishes like ``running``, and a restart
+#: retires it like any other active row.
+STATUS_DISCONNECTED = "disconnected"
 
 #: Not yet finished; cannot survive a server restart.
-ACTIVE_STATUSES: frozenset[str] = frozenset({STATUS_QUEUED, STATUS_RUNNING})
+ACTIVE_STATUSES: frozenset[str] = frozenset({
+    STATUS_QUEUED, STATUS_RUNNING, STATUS_DISCONNECTED})
 #: Finished, one way or another. Only these are eligible for retention.
 TERMINAL_STATUSES: frozenset[str] = frozenset({
     STATUS_SUCCEEDED, STATUS_FAILED, STATUS_CANCELLED, STATUS_INTERRUPTED,
@@ -105,14 +113,26 @@ ARTIFACT_KIND_IMAGE = "image"
 #: ``test_the_two_spellings_of_the_tensorboard_kind_agree`` pins them equal.
 ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
+#: The worker id of a run executed by this process (#769). Also what a
+#: pre-MIGRATION_008 row's NULL ``worker_id`` reads back as.
+WORKER_LOCAL = TARGET_LOCAL
+#: The worker id an ``any`` run carries until it is placed (#772).
+WORKER_ANY = TARGET_ANY
+
+#: SQL: an artifact row that is not a ``transfer`` row (#785), whose file
+#: retention removes with its run's directory instead.
+_NOT_TRANSFER = "(backend IS NULL OR backend != 'transfer')"
+
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
     "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant, "
-    "fingerprint_digest, execution_facts, study_id, study_attempt_id"
+    "fingerprint_digest, execution_facts, study_id, study_attempt_id, "
+    "worker_id, devices"
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
-_ARTIFACT_COLUMNS = "id, run_id, kind, path, meta, created_at"
+_ARTIFACT_COLUMNS = ("id, run_id, kind, path, meta, created_at, backend, "
+                     "mount_label, worker_id")
 
 #: Last value of every series in ONE run, by index seeks only — see
 #: ``RunStore.latest_metrics`` for why this is not a ``GROUP BY``.
@@ -338,6 +358,17 @@ class RunRecord:
     #: ``sweep_id``.
     study_id: str | None = None
     study_attempt_id: str | None = None
+    #: Where the run executes (#769): ``local`` (this control-plane
+    #: process), a worker's name, or ``any`` while such a run waits to be
+    #: placed (``mark_running`` then records the worker it got, #772). A
+    #: row written before MIGRATION_008 has NULL and reads back as
+    #: ``local``, which is where it ran.
+    worker_id: str = WORKER_LOCAL
+    #: The device set (``options.target.devices`` as asked, replaced by the
+    #: devices a worker run was placed on), or None when the run named one
+    #: ``device`` as every run before #769 did. The first entry is the run's
+    #: device and so its ``queue_key``; the run holds a slot on every entry.
+    devices: list[str] | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
@@ -367,6 +398,8 @@ class RunRecord:
             execution_facts=_loads(row["execution_facts"]),
             study_id=row["study_id"],
             study_attempt_id=row["study_attempt_id"],
+            worker_id=row["worker_id"] or WORKER_LOCAL,
+            devices=_loads(row["devices"]),
         )
 
 
@@ -428,20 +461,49 @@ class EventRecord:
 
 @dataclass(frozen=True)
 class ArtifactRecord:
-    """A file a run produced: checkpoint, export, image."""
+    """A file a run produced: checkpoint, export, image.
+
+    ``path`` is where the file is on THIS control plane: for a ``mount``
+    row (#782) the stored relative path joined onto this server's root for
+    ``mount_label`` (``core.mounts.translate``), else the stored absolute
+    path. It is None for a ``mount`` row this server cannot place (a label
+    it does not hold, a stored path that leaves the mount): a relative
+    path is never handed out as a local one. ``stored_path`` is the column
+    as written (relative for a ``mount`` row). ``backend`` is ``local`` for every row written before
+    #782. ``worker_id`` is the worker whose run wrote it (``local``: this
+    process, and every row from before #782).
+    """
 
     id: int
     run_id: str
     kind: str
-    path: str
+    path: str | None
     meta: Any
     created_at: str
+    backend: str = BACKEND_LOCAL
+    mount_label: str | None = None
+    stored_path: str | None = None
+    worker_id: str = WORKER_LOCAL
+
+    @classmethod
+    def build(cls, *, id: int, run_id: str, kind: str, stored_path: str,
+              meta: Any, created_at: str, backend: str | None,
+              mount_label: str | None,
+              worker_id: str | None = None) -> "ArtifactRecord":
+        backend = backend or BACKEND_LOCAL
+        return cls(id=id, run_id=run_id, kind=kind,
+                   path=translate(backend, mount_label, stored_path),
+                   meta=meta, created_at=created_at, backend=backend,
+                   mount_label=mount_label, stored_path=stored_path,
+                   worker_id=worker_id or WORKER_LOCAL)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ArtifactRecord":
-        return cls(id=row["id"], run_id=row["run_id"], kind=row["kind"],
-                   path=row["path"], meta=_loads(row["meta"]),
-                   created_at=row["created_at"])
+        return cls.build(id=row["id"], run_id=row["run_id"], kind=row["kind"],
+                         stored_path=row["path"], meta=_loads(row["meta"]),
+                         created_at=row["created_at"], backend=row["backend"],
+                         mount_label=row["mount_label"],
+                         worker_id=row["worker_id"])
 
 
 @dataclass(frozen=True)
@@ -515,6 +577,31 @@ def _capture_plugin_pins() -> dict[str, dict[str, Any]]:
 # ── the store ─────────────────────────────────────────────────────────────
 
 
+def _insert_fingerprint(conn: sqlite3.Connection,
+                        fingerprint: dict[str, Any], digest: str | None,
+                        stamp: str) -> str:
+    """Write *fingerprint* to the content-addressed ``exec_run_fingerprints``
+    (``INSERT OR IGNORE``: the first writer stores it, later ones point at
+    it) and return its digest: *digest* when given (computed from the same
+    canonical bytes by ``env_fingerprint.fingerprint_digest``), else the
+    sha256 of those bytes. One implementation for :meth:`RunStore.mark_running`
+    and :meth:`RunStore.record_fingerprint`."""
+    from .env_fingerprint import SCHEMA_VERSION, canonical_json
+
+    raw = canonical_json(fingerprint)
+    if digest is None:
+        digest = hashlib.sha256(raw).hexdigest()
+    version = fingerprint.get("schema_version")
+    conn.execute(
+        "INSERT OR IGNORE INTO exec_run_fingerprints "
+        "(digest, schema_version, fingerprint, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (digest, version if isinstance(version, int) else SCHEMA_VERSION,
+         raw.decode("utf-8"), stamp),
+    )
+    return digest
+
+
 @dataclass
 class RunStore:
     """Typed CRUD over the four ``exec_*`` tables.
@@ -541,6 +628,8 @@ class RunStore:
         sweep_variant: int | None = None,
         study_id: str | None = None,
         study_attempt_id: str | None = None,
+        worker_id: str = WORKER_LOCAL,
+        devices: list[str] | None = None,
     ) -> RunRecord:
         """Insert a run and return its row.
 
@@ -561,11 +650,20 @@ class RunStore:
 
         *study_id* / *study_attempt_id* stamp the run as the child of one
         study attempt (#343); the ``studies`` row must exist (enforced FK).
+
+        *worker_id* / *devices* record where the run executes (#769): the
+        target worker as submitted (a non-empty string: ``local``, a
+        worker's name, or ``any``) and the REQUESTED ``target.devices``
+        list, or None for a run that named a single ``device``.
+        ``mark_running`` replaces both with the placement of a worker run.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
                 f"unknown run status {status!r}; expected one of "
                 f"{sorted(RUN_STATUSES)}")
+        if not isinstance(worker_id, str) or not worker_id:
+            raise ValueError(
+                f"worker_id must be a non-empty string, got {worker_id!r}")
         if provenance is None:
             provenance = await asyncio.to_thread(RunProvenance.capture)
 
@@ -593,6 +691,8 @@ class RunStore:
             sweep_variant=sweep_variant,
             study_id=study_id,
             study_attempt_id=study_attempt_id,
+            worker_id=worker_id,
+            devices=None if devices is None else list(devices),
         )
         params = (
             record.id, record.name, _dumps(graph_snapshot),
@@ -602,6 +702,8 @@ class RunStore:
             None if record.plugin_pins is None else _dumps(record.plugin_pins),
             record.sweep_id, record.sweep_variant,
             record.study_id, record.study_attempt_id,
+            record.worker_id,
+            None if record.devices is None else _dumps(record.devices),
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
@@ -609,8 +711,8 @@ class RunStore:
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
                 "plugin_pins, sweep_id, sweep_variant, study_id, "
-                "study_attempt_id) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "study_attempt_id, worker_id, devices) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
@@ -772,6 +874,9 @@ class RunStore:
         self, run_id: str, *, queue_key: str | None = None,
         fingerprint: dict[str, Any] | None = None,
         execution_facts: dict[str, Any] | None = None,
+        worker_id: str | None = None,
+        devices: list[str] | None = None,
+        fingerprint_digest: str | None = None,
     ) -> bool:
         """Move a run to ``running``. False when no such run exists.
 
@@ -789,43 +894,105 @@ class RunStore:
         the same transaction as the status change. None for either argument
         leaves the stored value alone, like *queue_key*; a re-mark that does
         pass them records the environment that started the run most
-        recently, which is the one that executes it.
+        recently, which is the one that executes it. *fingerprint_digest*
+        is the document's digest when the caller already has it (a worker's,
+        computed once at its handshake by ``env_fingerprint``, #781), so it
+        is not hashed again for every run.
+
+        *worker_id* / *devices* record where a worker run was PLACED
+        (#772): the worker it got and the devices it holds, replacing what
+        submit stored (``any`` and the requested set). None leaves them.
         """
         stamp = utc_now_iso()
-        digest: str | None = None
-        canonical: str | None = None
-        schema_version: int | None = None
-        if fingerprint is not None:
-            from .env_fingerprint import SCHEMA_VERSION, canonical_json
-
-            raw = canonical_json(fingerprint)
-            canonical = raw.decode("utf-8")
-            digest = hashlib.sha256(raw).hexdigest()
-            version = fingerprint.get("schema_version")
-            schema_version = version if isinstance(version, int) \
-                else SCHEMA_VERSION
         facts = None if execution_facts is None else _dumps(execution_facts)
 
         def _update(conn: sqlite3.Connection) -> int:
             with transaction(conn):
-                if digest is not None:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO exec_run_fingerprints "
-                        "(digest, schema_version, fingerprint, created_at) "
-                        "VALUES (?, ?, ?, ?)",
-                        (digest, schema_version, canonical, stamp),
-                    )
+                digest = None if fingerprint is None else _insert_fingerprint(
+                    conn, fingerprint, fingerprint_digest, stamp)
                 return conn.execute(
                     "UPDATE exec_runs SET status = ?, "
                     "started_at = COALESCE(started_at, ?), "
                     "queue_key = COALESCE(?, queue_key), "
                     "fingerprint_digest = COALESCE(?, fingerprint_digest), "
-                    "execution_facts = COALESCE(?, execution_facts) "
+                    "execution_facts = COALESCE(?, execution_facts), "
+                    "worker_id = COALESCE(?, worker_id), "
+                    "devices = COALESCE(?, devices) "
                     "WHERE id = ?",
-                    (STATUS_RUNNING, stamp, queue_key, digest, facts, run_id),
+                    (STATUS_RUNNING, stamp, queue_key, digest, facts,
+                     worker_id, None if devices is None else _dumps(devices),
+                     run_id),
                 ).rowcount
 
         return await self.db.run(_update) > 0
+
+    async def mark_worker_connection(self, run_id: str,
+                                     connected: bool) -> bool:
+        """``running`` -> ``disconnected`` (*connected* False) or back (#783).
+
+        Only between those two: a row that finished, or was never started,
+        is left alone. True when the row moved.
+        """
+        old, new = ((STATUS_DISCONNECTED, STATUS_RUNNING) if connected
+                    else (STATUS_RUNNING, STATUS_DISCONNECTED))
+
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET status = ? WHERE id = ? AND status = ?",
+                (new, run_id, old),
+            ).rowcount
+
+        return await self.db.run(_update) > 0
+
+    async def update_execution_facts(
+        self, run_id: str, patch: dict[str, Any],
+    ) -> bool:
+        """Merge *patch* into a run's ``execution_facts``, key by key (#770).
+
+        A shallow merge: each top-level key of *patch* replaces the stored
+        one (``{"peak_memory": None}`` stores an explicit null). Read and
+        write happen in one ``BEGIN IMMEDIATE`` transaction, so two patches
+        cannot lose each other's keys.
+
+        False, and nothing written, when the run does not exist or has no
+        facts document: a NULL column means "not recorded" (the run never
+        started, or ``_begin`` could not collect its environment), and a
+        document holding only the patch would read as a recorded one with
+        every other field missing.
+        """
+        if not isinstance(patch, dict):
+            raise TypeError("execution_facts patch must be a dict")
+
+        def _update(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                row = conn.execute(
+                    "SELECT execution_facts FROM exec_runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None or row["execution_facts"] is None:
+                    return 0
+                facts = _loads(row["execution_facts"])
+                if not isinstance(facts, dict):
+                    return 0
+                facts.update(patch)
+                return conn.execute(
+                    "UPDATE exec_runs SET execution_facts = ? WHERE id = ?",
+                    (_dumps(facts), run_id),
+                ).rowcount
+
+        return await self.db.run(_update) > 0
+
+    async def record_fingerprint(self, fingerprint: dict[str, Any],
+                                 digest: str | None = None) -> str:
+        """Store an environment document without a run; returns its digest.
+
+        For a worker's fingerprint at its handshake (#781), so the digest
+        the Workers panel shows resolves (:meth:`get_fingerprint`) before
+        any run on that worker records it. *digest*, when the caller has
+        it, is not computed again (:func:`_insert_fingerprint`).
+        """
+        return await self.db.run(lambda conn: _insert_fingerprint(
+            conn, fingerprint, digest, utc_now_iso()))
 
     async def get_fingerprint(self, digest: str) -> dict[str, Any] | None:
         """The environment document a ``fingerprint_digest`` names, or None.
@@ -905,8 +1072,9 @@ class RunStore:
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
-        Call once at startup. Both active states are covered by default —
-        nothing resumes a ``running`` row after a restart, and a ``queued``
+        Call once at startup. Every active state is covered by default —
+        nothing resumes a ``running`` or ``disconnected`` row after a restart
+        (adopting a worker's runs is #793), and a ``queued``
         row would otherwise wait forever on a scheduler that lost its queue.
         Narrow it with *statuses* if a caller can genuinely re-adopt one.
         Idempotent: a second call finds nothing.
@@ -1336,12 +1504,22 @@ class RunStore:
 
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
+        backend: str = BACKEND_LOCAL, mount_label: str | None = None,
+        worker_id: str = WORKER_LOCAL,
     ) -> ArtifactRecord:
         """Register a file a run produced. *kind* is an open vocabulary.
 
         *meta* is sanitized once and both stored and returned from that
         copy, so the returned record always equals what a re-read gives.
+        A ``mount`` row (#782) stores *path* relative to the mount
+        *mount_label* names; the record returned carries this server's path
+        for it, as :meth:`list_artifacts` does. *worker_id* is the worker
+        whose run wrote the file (``local``: this process).
         """
+        if backend not in BACKENDS:
+            raise ValueError(f"unknown artifact backend {backend!r}")
+        if backend == BACKEND_MOUNT and not mount_label:
+            raise ValueError("a mount artifact needs its mount_label")
         created_at = utc_now_iso()
         meta = _json_safe(meta)
         encoded = None if meta is None else _dumps(meta)
@@ -1349,16 +1527,22 @@ class RunStore:
         def _insert(conn: sqlite3.Connection) -> int:
             cur = conn.execute(
                 "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
-                "created_at) VALUES (?, ?, ?, ?, ?)",
-                (run_id, kind, path, encoded, created_at),
+                "created_at, backend, mount_label, worker_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, kind, path, encoded, created_at, backend,
+                 mount_label if backend == BACKEND_MOUNT else None,
+                 worker_id),
             )
             # lastrowid is Optional in the driver's typing; after a
             # successful single-row INSERT it is always the new rowid.
             return int(cur.lastrowid or 0)
 
         artifact_id = await self.db.run(_insert)
-        return ArtifactRecord(id=artifact_id, run_id=run_id, kind=kind,
-                              path=path, meta=meta, created_at=created_at)
+        return ArtifactRecord.build(
+            id=artifact_id, run_id=run_id, kind=kind, stored_path=path,
+            meta=meta, created_at=created_at, backend=backend,
+            mount_label=mount_label if backend == BACKEND_MOUNT else None,
+            worker_id=worker_id)
 
     async def list_artifacts(
         self, run_id: str, *, kind: str | None = None,
@@ -1510,31 +1694,49 @@ class RunStore:
 
         def _prune(
             conn: sqlite3.Connection,
-        ) -> tuple[int, list[str], list[tuple[str, str]]]:
+        ) -> tuple[int, list[str], list[tuple[str, str]],
+                   list[tuple[str, bool]]]:
             with transaction(conn):
                 # Excludes STATUS_INTERRUPTED so its checkpoint file is
                 # never collected for unlinking -- see the docstring's
                 # "Runs left interrupted" section. The row itself is NOT
                 # exempted: it still goes with the ordinary DELETE below.
+                # A mount row's file is found at this server's path for it
+                # (#782), the same translation ``list_artifacts`` applies.
+                # A row this server cannot place (None) has no file here.
+                # A ``transfer`` row's file goes with its run's directory
+                # below (#785), not one by one.
+                checkpoint_rows = conn.execute(
+                    "SELECT path, backend, mount_label FROM "
+                    "exec_run_artifacts WHERE kind = ? "
+                    f"AND {_NOT_TRANSFER} "
+                    "AND run_id IN (SELECT id FROM exec_runs WHERE "
+                    f"{where_clause} AND status != ?)",
+                    (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
+                ).fetchall()
                 doomed_paths = [
-                    row["path"] for row in conn.execute(
-                        "SELECT path FROM exec_run_artifacts WHERE kind = ? "
-                        "AND run_id IN (SELECT id FROM exec_runs WHERE "
-                        f"{where_clause} AND status != ?)",
-                        (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
-                    ).fetchall()
+                    path for path in (
+                        translate(row["backend"], row["mount_label"],
+                                  row["path"]) for row in checkpoint_rows)
+                    if path is not None
                 ]
                 # No interrupted exemption here (#196), and ``run_id`` comes
                 # along because the ownership guard needs it: the directory
                 # a row may name is the one THIS run's writer would have
                 # built, not any directory of the right shape.
+                logdir_rows = conn.execute(
+                    "SELECT run_id, path, backend, mount_label FROM "
+                    "exec_run_artifacts WHERE "
+                    f"kind = ? AND {_NOT_TRANSFER} "
+                    "AND run_id IN (SELECT id FROM exec_runs "
+                    f"WHERE {where_clause})",
+                    (ARTIFACT_KIND_TENSORBOARD, *params),
+                ).fetchall()
                 doomed_logdirs = [
-                    (row["run_id"], row["path"]) for row in conn.execute(
-                        "SELECT run_id, path FROM exec_run_artifacts WHERE "
-                        "kind = ? AND run_id IN (SELECT id FROM exec_runs "
-                        f"WHERE {where_clause})",
-                        (ARTIFACT_KIND_TENSORBOARD, *params),
-                    ).fetchall()
+                    (row["run_id"], path) for row, path in (
+                        (row, translate(row["backend"], row["mount_label"],
+                                        row["path"])) for row in logdir_rows)
+                    if path is not None
                 ]
                 # A sweep's results must outlive its children (#140,
                 # RULING 4). Deferred import, in the method body, for the
@@ -1585,12 +1787,38 @@ class RunStore:
                         "retention: could not copy the evidence of study "
                         "children about to be deleted onto their attempts; "
                         "the delete proceeds", exc_info=True)
+                # Every file a worker uploaded for a run is under the run's
+                # own directory (#785), so a worker run's directory goes as
+                # a whole; an interrupted one keeps its checkpoints, as a
+                # local run's do above.
+                worker_runs = [
+                    (row["id"], row["status"] == STATUS_INTERRUPTED)
+                    for row in conn.execute(
+                        "SELECT id, status FROM exec_runs WHERE "
+                        f"{where_clause} AND worker_id IS NOT NULL "
+                        "AND worker_id NOT IN (?, ?)",
+                        (*params, WORKER_LOCAL, WORKER_ANY)).fetchall()]
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
-                return deleted, doomed_paths, doomed_logdirs
+                return deleted, doomed_paths, doomed_logdirs, worker_runs
 
-        deleted, doomed_paths, doomed_logdirs = await self.db.run(_prune)
+        deleted, doomed_paths, doomed_logdirs, worker_runs = \
+            await self.db.run(_prune)
+        if worker_runs:
+            from .transfer import remove_run_files
+
+            def _remove_runs(runs: list[tuple[str, bool]]) -> list[str]:
+                return [run_id for run_id, interrupted in runs
+                        if remove_run_files(run_id,
+                                            keep_checkpoints=interrupted)]
+
+            removed_runs = await asyncio.to_thread(_remove_runs, worker_runs)
+            if removed_runs:
+                logger.info(
+                    "run retention: removed the received files of %d "
+                    "worker run(s): %s", len(removed_runs),
+                    ", ".join(removed_runs))
         if doomed_paths:
             from .checkpoints import unlink_checkpoint
 

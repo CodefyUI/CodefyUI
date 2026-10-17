@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 
 from ..config import settings
 from ..core.data_paths import resolve_under
+from ..core.transfer import is_incoming
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,8 @@ async def list_media_files():
 
     files = []
     for f in sorted(media_dir.rglob("*")):
-        if f.is_file() and f.suffix.lower() in _MEDIA_TYPES:
+        if f.is_file() and f.suffix.lower() in _MEDIA_TYPES \
+                and not is_incoming(f):
             files.append({
                 "filename": f.relative_to(media_dir).as_posix(),
                 "size": f.stat().st_size,

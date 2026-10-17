@@ -628,6 +628,19 @@ async def test_children_inherit_the_base_graph_device(client, store):
     for child in children:
         await _await_terminal(store, child.id)
 
+    # So does a target device set (#769): its first entry is the device,
+    # and every child records the set.
+    response = await client.post("/api/sweeps", json=_body(
+        _values("lr", [0.1, 0.2]), graph=graph,
+        options={"target": {"devices": ["cpu"]}}))
+    assert response.status_code == 201, response.text
+    children = await store.list_runs_by_sweep(response.json()["sweep_id"])
+    assert {c.queue_key for c in children} == {"cpu"}
+    assert [c.devices for c in children] == [["cpu"], ["cpu"]]
+    assert {c.worker_id for c in children} == {"local"}
+    for child in children:
+        await _await_terminal(store, child.id)
+
 
 async def test_seed_variants_off_leaves_every_variant_unseeded(client, store):
     """RULING 1: an unseeded run takes the SHARED exclusion and overlaps up
@@ -921,6 +934,11 @@ async def test_every_variant_completes_unattended_and_the_table_ranks_them(
     assert body["variants"][0]["final_metrics"]["train_loss"] == \
         pytest.approx(0.02)
     assert all(v["run_exists"] for v in body["variants"])
+    # Placement (#777): a sweep without a target ran here, on the one
+    # device FIFO it always used.
+    assert {(v["worker_id"], v["queue_key"]) for v in body["variants"]} \
+        == {("local", "cpu")}
+    assert all(v["devices"] is None for v in body["variants"])
     assert "objective_warning" not in body
     # The pre-rank identity survives the sort, so a client can put the table
     # back into submission order (spec 5.3).
@@ -1259,7 +1277,8 @@ async def test_cancelling_a_sweep_stops_queued_and_running_children(
         # arrived while the final node was working. The partial result
         # survives the flip -- that is acceptance criterion 3, and it is why
         # a cancelled variant is ranked rather than blanked.
-        assert after["counts"] == {"queued": 0, "running": 0, "succeeded": 0,
+        assert after["counts"] == {"queued": 0, "running": 0, "disconnected": 0,
+                                   "succeeded": 0,
                                    "failed": 0, "cancelled": 5,
                                    "interrupted": 0, "missing": 0}
         # A container, never a run: `cancelled` is not a sweep state.
@@ -1400,6 +1419,50 @@ async def test_an_orphaned_running_child_is_counted_in_neither_tally(
     # Left alone: it may belong to another process, and a write here would
     # make that process's own guarded terminal write fail.
     assert (await store.get_run(orphan)).status == "running"
+
+
+class _FrontStuck:
+    """Refuses (raises for) the first run it is asked about, places the rest
+    on ``cpu``: the first child stays at the front, its siblings behind it."""
+
+    def __init__(self) -> None:
+        self.stuck: str | None = None
+
+    def place(self, entry: Any, taken: Any) -> Any:
+        from app.core.scheduling import Placement
+
+        if self.stuck is None:
+            self.stuck = entry.run_id
+        if entry.run_id == self.stuck:
+            raise RuntimeError("front run cannot be placed")
+        slot = ("local", "cpu")
+        if taken.get(slot, 0) >= 2:
+            return None
+        return Placement("local", ("cpu",), (slot,))
+
+
+async def test_cancelling_five_queued_children_starts_none_of_them(
+        make_service, store):
+    """Cancelling the front child must not start the one behind it just for
+    the next iteration of the loop to cancel it (#764)."""
+    make_service(scheduler=_FrontStuck())
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL,
+                           headers={TOKEN_HEADER: session_token()}) as http:
+        created = await http.post("/api/sweeps", json=_body(
+            _values("lr", [0.1, 0.2, 0.3, 0.4, 0.5])))
+        assert created.status_code in (200, 201), created.text
+        sweep_id = created.json()["sweep_id"]
+        children = await store.list_runs_by_sweep(sweep_id)
+        assert [c.status for c in children] == ["queued"] * 5
+
+        response = await http.post(f"/api/sweeps/{sweep_id}/cancel")
+        assert response.status_code == 200, response.text
+        assert response.json()["cancelled"] == 5
+        await asyncio.sleep(0.2)  # the deferred reschedule has run
+        for child in await store.list_runs_by_sweep(sweep_id):
+            assert child.status == "cancelled"
+            assert child.started_at is None
 
 
 async def test_cancelling_an_unknown_sweep_is_a_404(client):

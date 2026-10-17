@@ -545,7 +545,7 @@ async def execute_contract_run(
         """
         async with run_exclusion().for_seed(seed):
             if seed is not None:
-                # The run-level baseline, as RunService.apply_seed sets it;
+                # The run-level baseline, as InProcessExecutor sets it;
                 # the engine then seeds each node from (seed, node id).
                 seed_rngs(seed)
             return await execute_graph(

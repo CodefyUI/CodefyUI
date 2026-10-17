@@ -69,10 +69,12 @@ CheckpointLoader.grad_scaler_state  →  TrainingLoop.grad_scaler_state
 
 ```
 CPU
-NVIDIA CUDA          （torch 目前指向的那一張）
-NVIDIA CUDA #0       cuda:0
-NVIDIA CUDA #1       cuda:1
+NVIDIA CUDA · 可用 20.1 / 24.0 GiB                     （torch 目前指向的那一張）
+NVIDIA CUDA #0 · cuda:0 · RTX 4090 · 可用 20.1 / 24.0 GiB
+NVIDIA CUDA #1 · cuda:1 · RTX 3060 · 可用 11.4 / 12.0 GiB
 ```
+
+在**設定**與圖工具列的選單中，每個加速器最後會顯示伺服器在頁面載入時讀到的可用與總記憶體（NVIDIA 顯示卡由 NVML 讀取，其他由 PyTorch 讀取）；這只是參考讀數，不會因此拒絕任何 run，伺服器讀不到時就不顯示。
 
 只有一張 GPU 的機器只會顯示 `NVIDIA CUDA`，因為在那裡 `cuda` 和 `cuda:0` 是同一塊硬體，兩個都給等於在請使用者做一個沒有內容的選擇。
 
@@ -82,10 +84,10 @@ NVIDIA CUDA #1       cuda:1
 
 根本無法尋址的裝置字串——`cuda:`、`cuda:abc`（例如沒展開的 `${CUDA_INDEX}`）、`cuda:0:1`、`cuda: 0`——會落到同一個地方，理由也一樣：`cuda` 這個前綴仍然是明確要求 GPU，錯的只有編號。在這之前，這些字串會原封不動送到 PyTorch，換來 `RuntimeError: Invalid device string`——而那則錯誤既沒有說是哪張圖，也沒有說是哪個參數。
 
-:::note 分散式訓練不在範圍內
-一次執行是單一行程、單一裝置。沒有 `DistributedDataParallel`、沒有多卡資料平行、也沒有任何多機的東西——一次執行用一張卡。多次執行可以透過各裝置的佇列同時佔用多張卡，一張卡一個。
+:::note 尚未支援分散式訓練
+一個 run 在一個程序中執行：預設是伺服器程序，指定 worker agent 為目標時則是該 worker 上的 run 子程序。沒有 `DistributedDataParallel`、沒有多卡資料平行，也沒有多機訓練。在伺服器程序內執行的 run 使用一張卡。worker 上的 run 可以被指定一組裝置集合，並以 `cuda:0` 到 `cuda:N-1` 看到這些卡，因此它的節點可以固定到不同的卡上，但沒有任何節點會把一個模型的訓練拆到多張卡。多個 run 可以透過各裝置的佇列同時佔用多張卡；請參閱[多 GPU 執行](/usage/multi-gpu)。
 
-這是刻意畫下的界線，不是還沒補上的缺口。DDP 需要行程啟動、rendezvous、逐 rank 的記錄與逐 rank 的檢查點，而這每一項都會動到 run service、事件串流與 artifact 儲存。做一半會比完全不做更糟。
+DDP 需要啟動行程、rendezvous、逐 rank 的記錄與逐 rank 的檢查點，每一項都會動到 run service、事件串流與 artifact 儲存。它規劃為建立在 worker run 之上的 `TrainingLoop` 策略（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 :::
 
 ## 如果還是不夠用 {/* #when-the-card-runs-out-anyway */}

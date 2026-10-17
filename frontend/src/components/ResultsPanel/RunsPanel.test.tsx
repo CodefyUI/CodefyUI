@@ -4,18 +4,26 @@ import {
   DIGEST_SHORT_LENGTH,
   RunsPanel,
   formatDuration,
+  formatElapsed,
   formatStarted,
+  deviceMemoryEntries,
   requestedDeviceNote,
   runDevice,
+  runDevices,
+  runWorker,
+  deviceAliasLines,
 } from './RunsPanel';
 import styles from './RunsPanel.module.css';
+import { formatBytes } from '../../utils/formatBytes';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
+import { isAnyModalOpen } from '../../store/modalState';
 import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import type { NodeDefinition } from '../../types';
@@ -47,7 +55,16 @@ vi.mock('../../api/rest', async (importOriginal) => {
     downloadRunMetricsCsv: vi.fn(),
     getSweep: vi.fn(),
     createSweep: vi.fn(),
+    // The New sweep dialog's target picker (#777) asks for both; they stay
+    // in flight here, so the dialog shows its defaults and nothing updates
+    // after a test.
+    fetchDevices: vi.fn(() => new Promise(() => {})),
   };
+});
+
+vi.mock('../../api/workers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/workers')>();
+  return { ...actual, fetchWorkers: vi.fn(() => new Promise(() => {})) };
 });
 
 const api = vi.mocked(rest);
@@ -129,6 +146,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// ── peak memory helpers (#770) ────────────────────────────────────────────
+
+describe('deviceMemoryEntries', () => {
+  const withPeak = (peak: unknown) =>
+    makeRun({ id: 'p', execution_facts: { peak_memory: peak } as Record<string, unknown> });
+
+  it('is null when nothing was recorded', () => {
+    expect(deviceMemoryEntries(null)).toBeNull();
+    expect(deviceMemoryEntries(makeRun({ id: 'p' }))).toBeNull();
+    expect(deviceMemoryEntries(withPeak(null))).toBeNull();
+    expect(deviceMemoryEntries(withPeak('6 GiB'))).toBeNull();
+    expect(deviceMemoryEntries(withPeak({}))).toBeNull();
+  });
+
+  it('reads CUDA peaks and MPS held bytes, skipping what the server could not have written', () => {
+    expect(deviceMemoryEntries(withPeak({
+      'cuda:0': null,
+      'cuda:1': { allocated_bytes: '5' },
+      'cuda:2': { allocated_bytes: 9, shared: true },
+      mps: { held_bytes: 7, exact: true },
+    }))).toEqual([
+      { device: 'cuda:2', kind: 'peak', bytes: 9, reserved: null, exact: false, shared: true },
+      { device: 'mps', kind: 'held', bytes: 7, reserved: null, exact: true, shared: false },
+    ]);
+  });
+});
+
 // ── list rendering ────────────────────────────────────────────────────────
 
 describe('RunsPanel — the table', () => {
@@ -155,6 +199,13 @@ describe('RunsPanel — the table', () => {
     expect(screen.getByText(t('runs.showing', { shown: 1, total: 7 }))).toBeInTheDocument();
   });
 
+  it('falls back to any series named like a loss, alphabetically', async () => {
+    await renderPanel([
+      makeRun({ id: 'a', final_metrics: { zz_loss: 0.9, eval_loss: 0.25, acc: 0.8 } }),
+    ]);
+    expect(within(rowOf('a')).getByText('0.2500')).toBeInTheDocument();
+  });
+
   it('labels an unnamed run and dashes a run with no loss series', async () => {
     await renderPanel([makeRun({ id: 'a', started_at: null, finished_at: null })]);
     const row = rowOf('a');
@@ -172,6 +223,80 @@ describe('RunsPanel — the table', () => {
     // A null position must NOT render as 0.
     expect(within(rowOf('q2')).queryByText(/Queue #/)).not.toBeInTheDocument();
     expect(within(rowOf('q2')).queryByText(/Queue #0/)).not.toBeInTheDocument();
+  });
+
+  it('names where each run executes: This server, a worker, or any while it waits (#775)', async () => {
+    await renderPanel([
+      makeRun({ id: 'l', name: 'here', worker_id: 'local', devices: ['cpu'] }),
+      makeRun({ id: 'o', name: 'old-row', worker_id: undefined, queue_key: 'cpu' }),
+      makeRun({
+        id: 'w', name: 'on-box', status: 'running', worker_id: 'gpu-box',
+        queue_key: 'gpu-box/cuda:2', devices: ['cuda:2', 'cuda:0'], finished_at: null,
+      }),
+      makeRun({
+        id: 'a', name: 'waiting', status: 'queued', worker_id: 'any', queue_key: null,
+        options: { device: 'cuda' }, queue_position: 1, started_at: null, finished_at: null,
+        queue_reason: 'waiting for a worker that offers cuda',
+      }),
+    ]);
+    expect(screen.getByRole('columnheader', { name: 'Worker' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Devices' })).toBeInTheDocument();
+    expect(within(rowOf('l')).getByText('This server')).toBeInTheDocument();
+    expect(within(rowOf('o')).getByText('This server')).toBeInTheDocument();
+    expect(within(rowOf('o')).getByText('cpu')).toBeInTheDocument();
+    // The worker has its own column; the devices cell is the set.
+    expect(within(rowOf('w')).getByText('gpu-box')).toBeInTheDocument();
+    const set = within(rowOf('w')).getByText('cuda:2, cuda:0');
+    expect(set).toHaveAttribute('title', 'cuda:2 -> cuda:0 in this run\ncuda:0 -> cuda:1 in this run');
+    // A local run is not renumbered.
+    expect(within(rowOf('l')).getByText('cpu')).not.toHaveAttribute('title');
+    // Queued: position as before, and why it waits beside the worker.
+    const waiting = rowOf('a');
+    expect(within(waiting).getByText('Any available')).toBeInTheDocument();
+    expect(within(waiting).getByText(/Queue #1/)).toBeInTheDocument();
+    const reason = within(waiting).getByText('waiting for a worker that offers cuda');
+    expect(reason.parentElement).toHaveAttribute('title', 'waiting for a worker that offers cuda');
+  });
+
+  it('shows no reason for a queued run the server gave none, nor for a running one', async () => {
+    await renderPanel([
+      makeRun({ id: 'q', name: 'q', status: 'queued', queue_reason: null, started_at: null, finished_at: null }),
+      makeRun({ id: 'r', name: 'r', status: 'running', queue_reason: 'stale', finished_at: null }),
+    ]);
+    expect(within(rowOf('q')).getByText('This server')).not.toHaveAttribute('title');
+    expect(within(rowOf('r')).queryByText('stale')).toBeNull();
+  });
+
+  it('says how long a disconnected run has waited for its worker (#783)', async () => {
+    const since = Date.now() / 1000 - 42;
+    await renderPanel([
+      makeRun({
+        id: 'd', name: 'away', status: 'disconnected', worker_id: 'gpu-box', finished_at: null,
+        worker_status: {
+          worker_id: 'gpu-box', state: 'disconnected',
+          disconnected_at: since, resume_deadline: since + 300,
+        },
+      }),
+      makeRun({ id: 'n', name: 'no status', status: 'disconnected', finished_at: null }),
+    ]);
+    const row = rowOf('d');
+    expect(within(row).getByText(t('runs.status.disconnected'), { selector: 'span' }))
+      .toHaveClass(styles.chip_disconnected);
+    expect(within(row).getByText(/^worker disconnected 00:4\d ago$/)).toBeInTheDocument();
+    // Still active: it can be stopped and watched.
+    expect(within(row).getByText(t('runs.action.cancel'))).toBeInTheDocument();
+    expect(within(rowOf('n')).queryByText(/worker disconnected/)).toBeNull();
+    // A filter of its own.
+    fireEvent.click(screen.getByRole('button', { name: t('runs.status.disconnected') }));
+    await waitFor(() =>
+      expect(api.listRuns).toHaveBeenCalledWith(expect.objectContaining({ status: ['disconnected'] })),
+    );
+  });
+
+  it('formats a wait as mm:ss, or h:mm:ss from an hour on', () => {
+    expect(formatElapsed(42.9)).toBe('00:42');
+    expect(formatElapsed(-3)).toBe('00:00');
+    expect(formatElapsed(3600 + 61)).toBe('1:01:01');
   });
 
   it('falls back to the requested device when the run has not been scheduled yet', async () => {
@@ -511,6 +636,101 @@ describe('RunsPanel — detail view', () => {
     expect(chip.getAttribute('title')).toBe(t('runs.detail.environmentTitle', { digest }));
   });
 
+  // #770: the run's device memory, from execution_facts.peak_memory.
+  const openWithMemory = async (peak: Record<string, unknown>) => {
+    const recorded = { ...liveRun, execution_facts: { peak_memory: peak } };
+    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
+    await renderPanel([recorded]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    return screen.getByTestId('run-peak-memory');
+  };
+
+  it('shows the largest CUDA peak, with every card and the approximation on hover', async () => {
+    const chip = await openWithMemory({
+      'cuda:0': { allocated_bytes: 6.2 * 1024 ** 3, reserved_bytes: 7 * 1024 ** 3, exact: false },
+      'cuda:1': {
+        allocated_bytes: 512 * 1024 ** 2, reserved_bytes: 1024 ** 3, exact: false, shared: true,
+      },
+      'cuda:2': { allocated_bytes: 1024 ** 2, exact: true },
+    });
+    expect(chip.textContent).toBe(t('runs.detail.peakMemory', { amount: formatBytes(6.2 * 1024 ** 3) }));
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:0', allocated: formatBytes(6.2 * 1024 ** 3), reserved: formatBytes(7 * 1024 ** 3),
+      }),
+      `${t('runs.detail.peakMemoryDeviceReserved', {
+        device: 'cuda:1', allocated: formatBytes(512 * 1024 ** 2), reserved: formatBytes(1024 ** 3),
+      })} ${t('runs.detail.peakMemoryShared')}`,
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:2', allocated: formatBytes(1024 ** 2) }),
+      t('runs.detail.peakMemoryApproximate'),
+    ].join('\n'));
+  });
+
+  it('labels an MPS reading as memory held at the end, not a peak', async () => {
+    const chip = await openWithMemory({ mps: { held_bytes: 3 * 1024 ** 3, exact: false } });
+    expect(chip.textContent).toBe(t('runs.detail.memoryHeld', { amount: formatBytes(3 * 1024 ** 3) }));
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.memoryHeldDevice', { device: 'mps', held: formatBytes(3 * 1024 ** 3) }),
+      t('runs.detail.peakMemoryApproximate'),
+    ].join('\n'));
+  });
+
+  it('omits the approximation note when every reading is exact', async () => {
+    const chip = await openWithMemory({ 'cuda:0': { allocated_bytes: 1024 ** 3, exact: true } });
+    expect(chip.getAttribute('title')).toBe(
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:0', allocated: formatBytes(1024 ** 3) }),
+    );
+  });
+
+  it('renders every lifecycle line of the log tail', async () => {
+    const ts = '2026-08-01T10:00:00.000000Z';
+    api.getRunEvents.mockReset();
+    api.getRunEvents
+      .mockResolvedValueOnce({
+        run_id: 'r1', status: 'running', active: true, cursor: 9,
+        events: [
+          { cursor: 1, type: 'execution_start', ts, payload: {} },
+          { cursor: 2, type: 'run_warning', ts, payload: { detail: 'slow disk' } },
+          { cursor: 3, type: 'run_warning', ts, payload: {} },
+          { cursor: 4, type: 'execution_error', ts, payload: { error: 'boom' } },
+          { cursor: 5, type: 'execution_error', ts, payload: {} },
+          { cursor: 6, type: 'execution_stopped', ts, payload: { reason: 'interrupted' } },
+          { cursor: 7, type: 'execution_stopped', ts, payload: { reason: 'paused' } },
+          { cursor: 8, type: 'execution_stopped', ts, payload: {} },
+          { cursor: 9, type: 'execution_complete', ts, payload: {} },
+        ],
+      })
+      .mockResolvedValue({
+        run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 9,
+      });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    await waitFor(() =>
+      expect(detail.getByText(t('runs.log.completed'))).toBeInTheDocument(),
+    );
+    expect(detail.getByText(t('runs.log.started'))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: 'slow disk' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: '' }).trim())).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: 'boom' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: '' }).trim())).toBeInTheDocument();
+    expect(detail.getByText(
+      t('runs.log.stopped', { reason: t('runs.status.interrupted') }),
+    )).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.stopped', { reason: 'paused' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.stopped', { reason: '' }))).toBeInTheDocument();
+  });
+
+  it('shows no peak memory for a CPU run (null) or one that recorded none', async () => {
+    const cpu = { ...liveRun, execution_facts: { peak_memory: null } };
+    api.getRun.mockResolvedValue({ ...cpu, last_cursor: 4 });
+    await renderPanel([cpu]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    expect(screen.queryByTestId('run-peak-memory')).toBeNull();
+  });
+
   it('shows no environment digest for a run that recorded none', async () => {
     await renderPanel([liveRun]);
     fireEvent.click(rowOf('r1'));
@@ -610,6 +830,68 @@ describe('RunsPanel — detail view', () => {
     fireEvent.click(copy);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('runs/r1/interrupt.pt'));
     expect(lastToast()).toMatchObject({ type: 'success' });
+  });
+
+  it('names a file on a mount this server does not hold by its label, with nothing to copy', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 9, kind: 'checkpoint', path: null, meta: null,
+        created_at: '2026-10-15T00:00:00Z', backend: 'mount',
+        mount_label: 'scratch', relative_path: 'models/periodic/a.pt',
+        worker_id: 'gpu-box-1',
+      }, {
+        id: 10, kind: 'checkpoint', path: null, meta: null,
+        created_at: '2026-10-15T00:00:01Z', backend: 'mount',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const where = await screen.findByText('scratch:models/periodic/a.pt');
+    expect(where).toHaveAttribute(
+      'title', t('runs.detail.notOnThisServer', { label: 'scratch' }));
+    expect(screen.getByText('?:')).toHaveAttribute(
+      'title', t('runs.detail.notOnThisServer', { label: '?' }));
+    expect(screen.queryByTitle(t('runs.detail.copyPath'))).toBeNull();
+  });
+
+  it('offers a download for a file a worker uploaded here (#785)', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 12, kind: 'checkpoint', path: '/data/runs/r1/checkpoint/a.pt',
+        meta: null, created_at: '2026-10-15T00:00:00Z', backend: 'transfer',
+        relative_path: 'runs/r1/checkpoint/a.pt', worker_id: 'gpu-box-1',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const link = await screen.findByTitle(t('runs.detail.download'));
+    expect(link).toHaveAttribute('href', '/api/runs/r1/artifacts/12/download');
+    expect(link).toHaveAttribute('download');
+    // Still a path on this server, so it can be copied too.
+    expect(screen.getByTitle(t('runs.detail.copyPath'))).toBeInTheDocument();
+  });
+
+  it('offers no download for a transfer row known only by an event-log key', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 'cursor:7', kind: 'checkpoint', path: '/data/runs/r1/checkpoint/a.pt',
+        meta: null, created_at: '2026-10-15T00:00:00Z', backend: 'transfer',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTitle(t('runs.detail.copyPath'));
+    expect(screen.queryByTitle(t('runs.detail.download'))).toBeNull();
+  });
+
+  it('offers no download for a file that is only at its path', async () => {
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTitle(t('runs.detail.copyPath'));
+    expect(screen.queryByTitle(t('runs.detail.download'))).toBeNull();
   });
 
   it('reports a clipboard the browser refused', async () => {
@@ -943,7 +1225,7 @@ function sweepDetail(state: SweepState): SweepDetail {
     sweep_id: 's1', name: 'Search', state, method: 'grid', seed: null, seed_variants: false,
     objective: { metric: 'train_loss', direction: 'minimize' },
     created_at: '2026-10-01T00:00:00Z', finished_at: null, error: null,
-    counts: { queued: 0, running: done ? 0 : 1, succeeded: done ? 1 : 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
+    counts: { queued: 0, running: done ? 0 : 1, disconnected: 0, succeeded: done ? 1 : 0, failed: 0, cancelled: 0, interrupted: 0, missing: 0 },
     params: [{ node_id: 'train', param: 'epochs', domain: [2] }],
     variants: [{
       index: 0, domain_index: 0, run_id: 'child', status: done ? 'succeeded' : 'running',
@@ -975,15 +1257,38 @@ describe('RunsPanel — sweeps', () => {
     api.getSweep.mockResolvedValue(sweepDetail('running'));
   });
 
+  it('opens the Workers panel from its header button (#776)', async () => {
+    useWorkerStore.setState({ panelOpen: false });
+    await renderPanel([]);
+    const button = screen.getByRole('button', { name: 'Workers' });
+    expect(button).toHaveAttribute('title', 'Show the worker agents this server can send runs to');
+    fireEvent.click(button);
+    expect(useWorkerStore.getState().panelOpen).toBe(true);
+    useWorkerStore.setState({ panelOpen: false });
+  });
+
   it('opens a compact New Sweep dialog and restores focus when it closes', async () => {
     await renderPanel([]);
     const opener = screen.getByRole('button', { name: /New sweep/i });
     opener.focus();
     fireEvent.click(opener);
-    expect(screen.getByRole('dialog', { name: /New sweep/i })).toBeInTheDocument();
+    // Its own chunk (#777): it renders once the import resolves.
+    expect(await screen.findByRole('dialog', { name: /New sweep/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Close new sweep/i }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(opener);
+  });
+
+  it('stands the canvas shortcuts down on the click, before the dialog chunk loads (#777)', async () => {
+    const { unmount } = await renderPanel([]);
+    fireEvent.click(screen.getByRole('button', { name: /New sweep/i }));
+    // Synchronously, before React.lazy has resolved anything.
+    expect(useSweepStore.getState().newSweepOpen).toBe(true);
+    expect(isAnyModalOpen()).toBe(true);
+    await screen.findByRole('dialog', { name: /New sweep/i });
+    // The panel going away takes the flag with it.
+    unmount();
+    expect(useSweepStore.getState().newSweepOpen).toBe(false);
   });
 
   it('re-reads its sweep and polls it again when the panel comes back', async () => {
@@ -1143,6 +1448,24 @@ describe('RunsPanel helpers', () => {
     expect(runDevice(makeRun({ id: 'a', queue_key: null, options: { device: 'cpu' } })))
       .toBe('cpu');
     expect(runDevice(makeRun({ id: 'a', queue_key: null, options: {} }))).toBe('-');
+  });
+
+  it('reads the worker and the devices of a row (#775)', () => {
+    expect(runWorker(makeRun({ id: 'a' }))).toBe('local');
+    expect(runWorker(makeRun({ id: 'a', worker_id: 'gpu-box' }))).toBe('gpu-box');
+    expect(runDevices(makeRun({ id: 'a', devices: ['cuda:0', 'cuda:1'] }))).toBe('cuda:0, cuda:1');
+    expect(runDevices(makeRun({ id: 'a', devices: [], queue_key: 'gpu-box/cuda:1' }))).toBe('cuda:1');
+    expect(runDevices(makeRun({ id: 'a', devices: null, queue_key: 'cpu' }))).toBe('cpu');
+    expect(runDevices(makeRun({ id: 'a', queue_key: null, options: {} }))).toBe('-');
+  });
+
+  it('lists the in-run names of a worker run, and nothing when none changes', () => {
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: ['cuda:1'] }), t))
+      .toBe('cuda:1 -> cuda:0 in this run');
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: ['cuda:0'] }), t)).toBeNull();
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: ['cpu'] }), t)).toBeNull();
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'gpu-box', devices: null }), t)).toBeNull();
+    expect(deviceAliasLines(makeRun({ id: 'a', worker_id: 'local', devices: ['cuda:1'] }), t)).toBeNull();
   });
 
   it('notes the requested device only when the scheduler resolved another', () => {

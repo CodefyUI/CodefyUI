@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { friendlyError } from '../../utils/errorMessages';
+import { formatBytes } from '../../utils/formatBytes';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import {
@@ -13,15 +14,28 @@ import {
   type RunStatusFilter,
 } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
+import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
+import { deviceAliasLines, runDevice, runDevices, runWorkerLabel } from '../../utils/runPlacement';
 import { LossChart } from './LossChart';
-import { NewSweepDialog } from './NewSweepDialog';
 import { SweepDetail } from './SweepDetail';
+import { lazyRetry } from '../shared/lazyRetry';
 import styles from './RunsPanel.module.css';
+
+/**
+ * The New sweep dialog, in a chunk of its own: it is opened from a button,
+ * and with the target picker (#777) keeping it out of the first paint keeps
+ * the entry chunk under the 500 kB build limit.
+ */
+const NewSweepDialog = lazyRetry(
+  () => import('./NewSweepDialog').then((module) => module.NewSweepDialog),
+  (props) => props.onClose(),
+);
 
 const FILTERS: RunStatusFilter[] = [
   'all',
   'running',
+  'disconnected',
   'queued',
   'succeeded',
   'failed',
@@ -48,6 +62,27 @@ function finalLoss(run: RunSummary): number | null {
     .sort()
     .find((name) => name.toLowerCase().includes('loss'));
   return fallback === undefined ? null : metrics[fallback];
+}
+
+/**
+ * Seconds as `mm:ss`, or `h:mm:ss` from an hour on: how long a run's
+ * worker has been away (#783). Negative (clock skew) reads as zero.
+ */
+export function formatElapsed(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const hours = Math.floor(total / 3600);
+  const rest = `${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`;
+  return hours > 0 ? `${hours}:${rest}` : rest;
+}
+
+/** "worker disconnected 00:42 ago" for a `disconnected` run, else null. */
+export function disconnectedNote(
+  run: RunSummary, now: number, t: ReturnType<typeof useI18n.getState>['t'],
+): string | null {
+  const since = run.worker_status?.disconnected_at;
+  if (run.status !== 'disconnected' || typeof since !== 'number') return null;
+  return t('runs.workerDisconnected', { elapsed: formatElapsed(now / 1000 - since) });
 }
 
 function formatClock(iso: string | null): string {
@@ -100,12 +135,9 @@ export function formatDuration(
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
-/** The device a run is on: what it actually got, else what it asked for. */
-export function runDevice(run: RunSummary): string {
-  if (run.queue_key) return run.queue_key;
-  const requested = run.options?.device;
-  return typeof requested === 'string' && requested ? requested : '-';
-}
+// The placement cells (#769, #775) are worded by utils/runPlacement, which
+// the sweep view (#777) shares; re-exported for this panel's callers.
+export { deviceAliasLines, runDevice, runDevices, runWorker } from '../../utils/runPlacement';
 
 /**
  * The device the run ASKED for, when the scheduler gave it a different
@@ -118,6 +150,71 @@ export function requestedDeviceNote(run: RunSummary | null): string | null {
   const requested = run.options?.device;
   if (typeof requested !== 'string' || !requested) return null;
   return requested === run.queue_key ? null : requested;
+}
+
+/**
+ * One device of a run's recorded memory (#770). `peak` is a CUDA card's
+ * high-water mark over the run; `held` is what the MPS driver still held
+ * when the run ended (cache included), which is not a peak.
+ */
+export interface DeviceMemoryEntry {
+  device: string;
+  kind: 'peak' | 'held';
+  bytes: number;
+  reserved: number | null;
+  exact: boolean;
+  shared: boolean;
+}
+
+/**
+ * The run's recorded device memory, one entry per device, or `null` when
+ * there is nothing to show: a CPU run (`peak_memory: null`), a run that has
+ * not finished, or one from before the server recorded it. Entries the
+ * server could not have written are skipped rather than shown as zero.
+ */
+export function deviceMemoryEntries(run: RunSummary | null): DeviceMemoryEntry[] | null {
+  const recorded = run?.execution_facts?.peak_memory;
+  if (!recorded || typeof recorded !== 'object') return null;
+  const entries: DeviceMemoryEntry[] = [];
+  for (const [device, raw] of Object.entries(recorded as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const fields = raw as Record<string, unknown>;
+    const exact = fields.exact === true;
+    if (typeof fields.allocated_bytes === 'number') {
+      entries.push({
+        device,
+        kind: 'peak',
+        bytes: fields.allocated_bytes,
+        reserved: typeof fields.reserved_bytes === 'number' ? fields.reserved_bytes : null,
+        exact,
+        shared: fields.shared === true,
+      });
+    } else if (typeof fields.held_bytes === 'number') {
+      entries.push({
+        device, kind: 'held', bytes: fields.held_bytes, reserved: null, exact, shared: false,
+      });
+    }
+  }
+  return entries.length ? entries : null;
+}
+
+/** One hover line per device, for the header chip's title. */
+function deviceMemoryLine(entry: DeviceMemoryEntry, t: ReturnType<typeof useI18n.getState>['t']): string {
+  if (entry.kind === 'held') {
+    return t('runs.detail.memoryHeldDevice', {
+      device: entry.device, held: formatBytes(entry.bytes),
+    });
+  }
+  const line = entry.reserved === null
+    ? t('runs.detail.peakMemoryDevice', {
+        device: entry.device, allocated: formatBytes(entry.bytes),
+      })
+    : t('runs.detail.peakMemoryDeviceReserved', {
+        device: entry.device,
+        allocated: formatBytes(entry.bytes),
+        reserved: formatBytes(entry.reserved),
+      });
+  return entry.shared ? `${line} ${t('runs.detail.peakMemoryShared')}` : line;
 }
 
 /** How many hex characters of an environment digest the header shows. */
@@ -239,6 +336,29 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
   // whole digest on hover -- it is what a reader compares across runs.
   const digest = run?.fingerprint_digest ?? null;
   const requestedDevice = requestedDeviceNote(run);
+  // #770: the header shows the largest CUDA peak ("Peak memory"), or, for
+  // an MPS run, what the driver held at the end -- a different quantity,
+  // so a different label. The hover names every device and says when the
+  // number is approximate.
+  const memoryEntries = deviceMemoryEntries(run);
+  const peaks = memoryEntries?.filter((entry) => entry.kind === 'peak') ?? [];
+  const memoryLabel = !memoryEntries
+    ? ''
+    : peaks.length
+      ? t('runs.detail.peakMemory', {
+          amount: formatBytes(Math.max(...peaks.map((entry) => entry.bytes))),
+        })
+      : t('runs.detail.memoryHeld', {
+          amount: formatBytes(Math.max(...memoryEntries.map((entry) => entry.bytes))),
+        });
+  const memoryTitle = memoryEntries
+    ? [
+        ...memoryEntries.map((entry) => deviceMemoryLine(entry, t)),
+        ...(memoryEntries.every((entry) => entry.exact)
+          ? []
+          : [t('runs.detail.peakMemoryApproximate')]),
+      ].join('\n')
+    : '';
 
   return (
     <div className={styles.detail} data-testid="run-detail">
@@ -276,6 +396,15 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
             title={t('runs.detail.environmentTitle', { digest })}
           >
             {t('runs.detail.environment')} {digest.slice(0, DIGEST_SHORT_LENGTH)}
+          </span>
+        )}
+        {memoryEntries && (
+          <span
+            className={styles.detailMeta}
+            data-testid="run-peak-memory"
+            title={memoryTitle}
+          >
+            {memoryLabel}
           </span>
         )}
         <button
@@ -356,22 +485,54 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
           <div className={styles.detailEmpty}>{t('runs.detail.noArtifacts')}</div>
         ) : (
           <div className={styles.artifactList}>
-            {detail.artifacts.map((artifact) => (
-              <div key={artifact.id} className={styles.artifactRow}>
-                <span className={styles.artifactKind}>{artifact.kind}</span>
-                <span className={styles.artifactPath} title={artifact.path}>
-                  {artifact.path}
-                </span>
-                <button
-                  type="button"
-                  className={styles.rowBtn}
-                  onClick={() => void copyPath(artifact.path)}
-                  title={t('runs.detail.copyPath')}
-                >
-                  {t('runs.detail.copyPath')}
-                </button>
-              </div>
-            ))}
+            {detail.artifacts.map((artifact) => {
+              const { path } = artifact;
+              if (path === null) {
+                // On a shared mount this server does not hold: name it by
+                // label, never as a local path, and offer nothing to copy.
+                const where = `${artifact.mount_label ?? '?'}:${artifact.relative_path ?? ''}`;
+                return (
+                  <div key={artifact.id} className={styles.artifactRow}>
+                    <span className={styles.artifactKind}>{artifact.kind}</span>
+                    <span
+                      className={styles.artifactPath}
+                      title={t('runs.detail.notOnThisServer', { label: artifact.mount_label ?? '?' })}
+                    >
+                      {where}
+                    </span>
+                  </div>
+                );
+              }
+              return (
+                <div key={artifact.id} className={styles.artifactRow}>
+                  <span className={styles.artifactKind}>{artifact.kind}</span>
+                  <span className={styles.artifactPath} title={path}>
+                    {path}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.rowBtn}
+                    onClick={() => void copyPath(path)}
+                    title={t('runs.detail.copyPath')}
+                  >
+                    {t('runs.detail.copyPath')}
+                  </button>
+                  {artifact.backend === 'transfer' && typeof artifact.id === 'number' && (
+                    // Uploaded here by a worker without the shared mount
+                    // (#785): the server serves the file itself, by row id
+                    // (an event-log key like `cursor:7` names no row).
+                    <a
+                      className={styles.rowBtn}
+                      href={`/api/runs/${encodeURIComponent(detail.runId)}/artifacts/${artifact.id}/download`}
+                      download
+                      title={t('runs.detail.download')}
+                    >
+                      {t('runs.detail.download')}
+                    </a>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -415,7 +576,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   const exportCsv = useRunStore((s) => s.exportCsv);
   const selectedSweepId = useSweepStore((s) => s.selectedSweepId);
   const closeSweep = useSweepStore((s) => s.closeSweep);
-  const [newSweepOpen, setNewSweepOpen] = useState(false);
+  // In the sweep store, set on the click, so the canvas shortcuts stand
+  // down before the dialog's chunk has loaded; cleared when this panel
+  // goes, whether or not the dialog ever mounted.
+  const newSweepOpen = useSweepStore((s) => s.newSweepOpen);
+  const setNewSweepOpen = useSweepStore((s) => s.setNewSweepOpen);
+  useEffect(() => () => useSweepStore.getState().setNewSweepOpen(false), []);
   const rootRef = useRef<HTMLDivElement>(null);
   const newSweepRef = useRef<HTMLButtonElement>(null);
   const sweepBackRef = useRef<HTMLButtonElement>(null);
@@ -581,6 +747,14 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             >
               {t('sweeps.new.title')}
             </button>
+            <button
+              type="button"
+              className={styles.rowBtn}
+              title={t('workers.openTitle')}
+              onClick={() => useWorkerStore.getState().openPanel()}
+            >
+              {t('workers.open')}
+            </button>
             <span className={styles.countText}>
               {t('runs.showing', { shown: runs.length, total })}
             </span>
@@ -601,8 +775,11 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
           <div className={`${styles.row} ${styles.rowHeader}`} role="row">
             <span role="columnheader">{t('runs.col.name')}</span>
             <span role="columnheader">{t('runs.col.status')}</span>
+            <span role="columnheader" className={styles.colWorker}>
+              {t('runs.col.worker')}
+            </span>
             <span role="columnheader" className={styles.colDevice}>
-              {t('runs.col.device')}
+              {t('runs.col.devices')}
             </span>
             <span role="columnheader" className={styles.colStarted}>
               {t('runs.col.started')}
@@ -627,6 +804,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const active = isActiveRun(run.status);
               const expanded = selectedRunId === run.id;
               const toggle = () => void select(expanded ? null : run.id);
+              const workerName = runWorkerLabel(run, t);
+              // Why a queued run waits beyond its place in line (#772), or
+              // how long a running one has waited for its worker (#783).
+              const queueReason = run.status === 'queued'
+                ? run.queue_reason || null
+                : disconnectedNote(run, clock, t);
               return (
                 // Opening a run is this panel's primary interaction, so the
                 // row is a real control: focusable, Enter/Space activated,
@@ -653,8 +836,20 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                     {run.name || t('runs.unnamed')}
                   </span>
                   <StatusChip run={run} />
-                  <span className={`${styles.mono} ${styles.colDevice}`}>
-                    {runDevice(run)}
+                  <span
+                    className={`${styles.workerCell} ${styles.colWorker}`}
+                    title={queueReason ?? undefined}
+                  >
+                    {workerName}
+                    {queueReason && (
+                      <span className={styles.queueReason}>{queueReason}</span>
+                    )}
+                  </span>
+                  <span
+                    className={`${styles.mono} ${styles.colDevice}`}
+                    title={deviceAliasLines(run, t) ?? undefined}
+                  >
+                    {runDevices(run)}
                     {run.status === 'queued' && (
                       <span className={styles.queuePos}>
                         {/* A null position is "we cannot say", not zero — the
@@ -731,7 +926,11 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             })
           )}
         </div>
-        {newSweepOpen && <NewSweepDialog onClose={() => setNewSweepOpen(false)} />}
+        {newSweepOpen && (
+          <Suspense fallback={null}>
+            <NewSweepDialog onClose={() => setNewSweepOpen(false)} />
+          </Suspense>
+        )}
       </div>
 
       {selectedRunId !== null && (

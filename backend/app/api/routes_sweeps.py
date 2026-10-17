@@ -38,6 +38,7 @@ variants, and a caller who wants live progress long-polls each child's
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import logging
@@ -57,7 +58,6 @@ from pydantic import (
 )
 
 from ..config import settings
-from ..core.device_utils import graph_settings_device
 from ..core.run_service import (
     LANE_INTERACTIVE,
     MAX_NAME_LENGTH,
@@ -65,6 +65,7 @@ from ..core.run_service import (
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
+    fill_graph_device,
     normalize_graph,
     normalize_name,
     normalize_options,
@@ -225,10 +226,12 @@ class CreateSweepRequest(BaseModel):
     #: a 400 from the wrong validator with the wrong message.
     options: Any = None
     name: str | None = None
-    #: RULING 1. A run carrying options["seed"] takes a PROCESS-WIDE
-    #: exclusive lock, so seeding all 32 variants would serialise the sweep
-    #: regardless of the queue's concurrency AND freeze every interactive
-    #: canvas run for the sweep's whole duration.
+    #: RULING 1. A run carrying options["seed"] that executes in this
+    #: process takes a PROCESS-WIDE exclusive lock, so seeding all 32 local
+    #: variants would serialise the sweep regardless of the queue's
+    #: concurrency AND freeze every interactive canvas run for the sweep's
+    #: whole duration. A variant placed on a worker (#777) runs in a
+    #: subprocess of its own and takes no lock here.
     seed_variants: bool = False
 
 
@@ -445,12 +448,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         # An absent options.device means the base graph's own device, the
         # same rule RunService.submit applies to a single run; the resolved
         # options dict is then copied into every variant below.
-        raw_options = body.options
-        settings_device = graph_settings_device(body.base_graph)
-        if settings_device and (raw_options is None or (
-                isinstance(raw_options, dict) and "device" not in raw_options)):
-            raw_options = {**(raw_options or {}), "device": settings_device}
-        options = normalize_options(raw_options)
+        options = normalize_options(
+            fill_graph_device(body.base_graph, body.options))
         name = normalize_name(body.name)
         graph = normalize_graph(body.base_graph)
         compiled = compile_sweep(
@@ -458,8 +457,19 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
             max_runs=settings.MAX_SWEEP_RUNS,
             max_params=settings.MAX_SWEEP_PARAMS,
             max_domain=settings.MAX_SWEEP_DOMAIN)
+        # Every variant inherits options.target (#777), so a target the
+        # service would refuse (a worker it has never seen, a device nobody
+        # offers, record_outputs on a worker) is refused HERE, as a 400 with
+        # no rows, rather than at the first child as a 500 and a `failed`
+        # sweep. The service checks each distinct `settings` once; the
+        # variants of one sweep share the base graph's. Each variant's
+        # storage needs (#782) come back in order and go to its submit.
+        variant_needs = service.check_placeable_batch(
+            (variant.graph for variant in compiled.variants), options)
     except (RunSubmitError, SweepCompileError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RunServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     _refuse_unrecordable_outputs(request, options, len(compiled.variants))
 
@@ -496,7 +506,7 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                       for variant in compiled.variants],
             name=name)
 
-        for variant in compiled.variants:
+        for position, variant in enumerate(compiled.variants):
             variant_options = dict(options)
             seed: int | None = None
             if body.seed_variants:
@@ -516,7 +526,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                     variant.graph, options=variant_options,
                     name=_variant_run_name(name, variant.index),
                     provenance=provenance, sweep_id=sweep.id,
-                    sweep_variant=variant.index)
+                    sweep_variant=variant.index,
+                    needs=variant_needs[position])
                 # Patched once per variant, not once at the end: a single
                 # patch at the end would lose every id if the loop broke
                 # half-way, which is precisely the case RULING 2 says must
@@ -665,8 +676,8 @@ async def _harvested_sweep(
     return sweep, children, metrics
 
 
-_COUNT_KEYS = ("queued", "running", "succeeded", "failed", "cancelled",
-               "interrupted", _STATUS_MISSING)
+_COUNT_KEYS = ("queued", "running", "disconnected", "succeeded", "failed",
+               "cancelled", "interrupted", _STATUS_MISSING)
 
 
 def _variant_payload(variant: SweepVariant, rank: int | None,
@@ -700,6 +711,13 @@ def _variant_payload(variant: SweepVariant, rank: int | None,
         # as "this run recorded nothing" rather than "this run is no longer
         # here".
         payload["final_metrics"] = metrics.get(variant.run_id, {})
+        # Where the variant was placed (#777), read off the child row like
+        # the Runs list: `worker_id` is `any` and `queue_key` `any/<device>`
+        # until a `target: any` variant starts, then the worker it got and
+        # `<worker>/<device>`; `devices` is the set a worker run holds.
+        payload["worker_id"] = child.worker_id
+        payload["devices"] = child.devices
+        payload["queue_key"] = child.queue_key
     return payload
 
 
@@ -922,35 +940,40 @@ async def cancel_sweep(sweep_id: str, request: Request):
     results: list[dict[str, Any]] = []
     cancelled = 0
     already_finished = 0
-    for variant in sorted(sweep.variants, key=lambda entry: entry.index):
-        if variant.run_id is None:
-            # The failed-submit-loop case: there is nothing to cancel, and
-            # nothing FINISHED either, so it is counted in neither tally.
-            # `already_finished` counts runs that had ended or been deleted.
-            results.append({"index": variant.index, "run_id": None,
-                            "status": _STATUS_MISSING, "cancelled": False})
-            continue
-        outcome = await service.cancel(variant.run_id)
-        if outcome is None:
-            # The row is gone -- pruned, or DELETE /api/runs/{id}. It had a
-            # run, so it counts as already finished.
+    # One reschedule after the whole loop: cancelling variant k must not
+    # start variant k+1 (or let a running sibling's freed slot do so) only
+    # for the next iteration to cancel it.
+    hold = getattr(service, "deferred_reschedule", contextlib.nullcontext)
+    with hold():
+        for variant in sorted(sweep.variants, key=lambda entry: entry.index):
+            if variant.run_id is None:
+                # The failed-submit-loop case: there is nothing to cancel, and
+                # nothing FINISHED either, so it is counted in neither tally.
+                # `already_finished` counts runs that had ended or been deleted.
+                results.append({"index": variant.index, "run_id": None,
+                                "status": _STATUS_MISSING, "cancelled": False})
+                continue
+            outcome = await service.cancel(variant.run_id)
+            if outcome is None:
+                # The row is gone -- pruned, or DELETE /api/runs/{id}. It had a
+                # run, so it counts as already finished.
+                results.append({"index": variant.index, "run_id": variant.run_id,
+                                "status": variant.status or _STATUS_MISSING,
+                                "cancelled": False})
+                already_finished += 1
+                continue
             results.append({"index": variant.index, "run_id": variant.run_id,
-                            "status": variant.status or _STATUS_MISSING,
-                            "cancelled": False})
-            already_finished += 1
-            continue
-        results.append({"index": variant.index, "run_id": variant.run_id,
-                        "status": outcome.status,
-                        "cancelled": outcome.cancelled})
-        if outcome.cancelled:
-            cancelled += 1
-        elif outcome.status in TERMINAL_STATUSES:
-            already_finished += 1
-        # Anything else still says it is active although no cancel reached
-        # it: a run another process drives on this database, a row whose
-        # terminal write failed, or one this process is finishing right now.
-        # None of those has finished, so it is in neither tally, like a
-        # variant that never got a run.
+                            "status": outcome.status,
+                            "cancelled": outcome.cancelled})
+            if outcome.cancelled:
+                cancelled += 1
+            elif outcome.status in TERMINAL_STATUSES:
+                already_finished += 1
+            # Anything else still says it is active although no cancel reached
+            # it: a run another process drives on this database, a row whose
+            # terminal write failed, or one this process is finishing right now.
+            # None of those has finished, so it is in neither tally, like a
+            # variant that never got a run.
 
     if cancelled:
         # `cancelling` ONLY when at least one child was still active. If

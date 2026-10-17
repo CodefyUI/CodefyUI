@@ -237,6 +237,24 @@ describe('apiFetch after the server rotates its token', () => {
     expect(replay[1].body).toBe('{"inspection_id":"i1"}');
   });
 
+  it('sends the token on a GET that asks for it, with the same 403 retry (#780)', async () => {
+    _setSessionTokenForTesting('stale');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, 'Forbidden'))
+      .mockResolvedValueOnce(okResponse({ token: 'fresh' }))
+      .mockResolvedValueOnce(okResponse({ enrollments: [] }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await apiFetch('/api/workers/enrollments', {}, { authenticate: true });
+
+    expect(res.ok).toBe(true);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CodefyUI-Token')).toBe('stale');
+    const replay = fetchMock.mock.calls[2];
+    expect(replay[0]).toBe('/api/workers/enrollments');
+    expect(new Headers(replay[1].headers).get('X-CodefyUI-Token')).toBe('fresh');
+  });
+
   it('keeps the 403 when the token has not changed', async () => {
     // A refusal that is about the request, not the token: the server refuses
     // a remote plugin or pack install with 403 as well. One request, not two.
@@ -296,6 +314,15 @@ describe('apiFetch after the server rotates its token', () => {
  * token another way. The jsdom page is http://localhost:3000.
  */
 describe('apiFetch sends the token only to its own origin', () => {
+  it('refuses a target that is not a URL at all, naming it as given', async () => {
+    const fetchMock = vi.fn();
+    g.fetch = fetchMock as unknown as typeof fetch;
+    const sent = apiFetch('http://[bad', { method: 'POST' });
+    await expect(sent).rejects.toBeInstanceOf(TypeError);
+    await expect(sent).rejects.toThrow(/POST to http:\/\/\[bad would carry/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a POST to another origin before bootstrapping, and sends nothing', async () => {
     // No token cached, so the refusal has to come before the bootstrap GET too.
     const fetchMock = vi.fn().mockResolvedValue(okResponse({ token: 'tok' }));
@@ -552,6 +579,27 @@ describe('a failed or dropped bootstrap is not kept', () => {
     await expect(stale).resolves.toBe('old');
 
     await expect(getSessionToken()).resolves.toBe('new');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a dropped bootstrap that fails leaves the newer one in flight alone', async () => {
+    let failStale!: (e: Error) => void;
+    let resolveFresh!: (r: Response) => void;
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(new Promise<Response>((_, reject) => { failStale = reject; }))
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { resolveFresh = resolve; }));
+    g.fetch = fetchMock as unknown as typeof fetch;
+
+    const stale = getSessionToken();
+    invalidateSessionToken();
+    const fresh = getSessionToken();
+    failStale(new Error('server restarting'));
+    await expect(stale).rejects.toThrow('server restarting');
+    // The newer attempt is still the one in flight: no third request.
+    const again = getSessionToken();
+    resolveFresh(okResponse({ token: 'new' }));
+    await expect(fresh).resolves.toBe('new');
+    await expect(again).resolves.toBe('new');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

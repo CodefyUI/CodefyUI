@@ -228,7 +228,8 @@ describe('ShortcutsModal — stacking order', () => {
     ['the Custom Nodes manager', 'components/CustomNodeManager/CustomNodeManager.module.css', '.overlay'],
     ['the scatter viewer', 'components/shared/ScatterModal.module.css', '.backdrop'],
     ['the heatmap viewer', 'components/shared/HeatmapModal.module.css', '.backdrop'],
-    ['the New Sweep dialog', 'components/ResultsPanel/NewSweepDialog.module.css', '.backdrop'],
+    // The New Sweep and Queue run dialogs share their frame (#775).
+    ['the New Sweep and Queue run dialogs', 'components/shared/DialogFrame.module.css', '.backdrop'],
   ])('renders above %s', (_name, path, selector) => {
     expect(sheet()).toBeGreaterThan(zIndexOf(path, selector));
   });

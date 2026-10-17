@@ -426,7 +426,12 @@ def collect_with_digest() -> tuple[dict[str, Any], str]:
 
 
 #: Bump with :data:`SCHEMA_VERSION`'s rule, for ``execution_facts``.
-EXECUTION_FACTS_VERSION = 1
+#:
+#: 2 adds keys merged in after the run starts: ``peak_memory`` (#770, at
+#: finish) and, for a run on a worker, ``visible_devices`` and
+#: ``device_aliases`` (#774, from ``run_started``). A key a run never got
+#: is absent, as in version 1.
+EXECUTION_FACTS_VERSION = 2
 
 
 def numerics_settings() -> dict[str, Any]:
@@ -464,9 +469,31 @@ def numerics_settings() -> dict[str, Any]:
     return facts
 
 
+def worker_execution_facts(
+    *, options: dict[str, Any], graph: dict[str, Any] | None,
+    worker_id: str, devices: list[str],
+) -> dict[str, Any]:
+    """:func:`execution_facts` for a run placed on a worker agent (#772).
+
+    Only what this process knows without being the one that executes:
+    ``requested`` as usual, and ``resolved`` with the placement's first
+    device, the full device set, the seed and the determinism flag -- no
+    ``numerics``, which would be this process's switches. ``facts_source``
+    says the worker is the authority for the rest; its ``run_started``
+    frame merges its own facts in. Never raises.
+    """
+    facts = execution_facts(options=options, graph=graph,
+                            resolved_device=devices[0] if devices else None,
+                            numerics=False)
+    facts["facts_source"] = "worker"
+    facts["worker_id"] = worker_id
+    facts["resolved"]["devices"] = list(devices)
+    return facts
+
+
 def execution_facts(
     *, options: dict[str, Any], graph: dict[str, Any] | None,
-    resolved_device: str | None,
+    resolved_device: str | None, numerics: bool = True,
 ) -> dict[str, Any]:
     """Submitted intent next to what the run actually got. Never raises.
 
@@ -506,6 +533,6 @@ def execution_facts(
             "device": resolved_device,
             "seed": seed,
             "deterministic": deterministic,
-            "numerics": numerics_settings(),
+            **({"numerics": numerics_settings()} if numerics else {}),
         },
     }

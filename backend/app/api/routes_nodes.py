@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from ..core.device_utils import device_options
-from ..core.node_base import BaseNode
-from ..core.node_registry import registry
+from ..core.node_registry import (
+    node_definition,
+    registry,
+)
 from ..core.plugin_validator import PluginValidationError
 from ..core.script_policy import (
     MAX_SCRIPT_CHARS,
@@ -11,122 +12,9 @@ from ..core.script_policy import (
     defines_entry_point,
     validate_script_source,
 )
-from ..schemas import NodeDefinition, ParamDefinitionSchema, PortDefinitionSchema
+from ..schemas import NodeDefinition
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
-
-
-#: For params named 'device': drop backends this environment does not have,
-#: and expand ``cuda`` into ``cuda:0``/``cuda:1``/... on a multi-GPU box.
-#: The rule lives in ``core.device_utils`` so the node API and the global
-#: selector cannot drift apart; the alias is kept because it names what this
-#: module uses it for.
-_filter_device_options = device_options
-
-
-def _provider_for(qualified_name: str, cls: type[BaseNode]) -> str:
-    """Classify a node by where it was loaded from.
-
-    The module path says WHICH KIND of source a node came from, and that is
-    all it is used for here. For a plugin node the id itself comes from the
-    registry key, because that key is the plugin's manifest id — hyphens
-    included — threaded through discovery by
-    ``plugin_loader.discover_plugin_nodes``. The module path cannot supply
-    it: ``official-template`` is imported as ``cdui_plugins.official_template``
-    because a hyphen is not legal in a Python module name, and reading the id
-    back off that string returns the snake_case spelling no other part of the
-    API uses. ``/api/plugins`` says ``official-template`` and
-    ``/api/examples`` tags graphs ``plugin:official-template``; ``provider``
-    has to say the same thing about the same pack.
-    """
-    mod = cls.__module__ or ""
-    if mod.startswith("app.nodes"):
-        return "builtin"
-    if mod.startswith("app.custom_nodes"):
-        return "custom"
-    if mod.startswith("cdui_plugins."):
-        plugin_id, sep, _node = qualified_name.partition(":")
-        if sep:
-            return f"plugin:{plugin_id}"
-        # No prefix on the key: the node was registered bare even though it
-        # lives under the plugin namespace (only reachable by discovering a
-        # plugin package with the prefix explicitly suppressed). Fall back to
-        # the import spelling — wrong for a kebab-case id, but it is the only
-        # signal left, and it beats reporting the node's own name as the pack.
-        parts = mod.split(".")
-        if len(parts) >= 2:
-            return f"plugin:{parts[1]}"
-    return "builtin"
-
-
-def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinition:
-    """Build the wire-shape definition for one registered node.
-
-    ``qualified_name`` is the registry key — bare ``"Linear"`` for builtin
-    nodes, ``"c2:EduKNN"`` for plugin-provided nodes. The frontend palette
-    uses this as the display label and as the value it writes into saved
-    graph JSON, so two plugins shipping the same bare ``NODE_NAME`` no
-    longer collide and the graph JSON becomes self-documenting.
-    """
-    return NodeDefinition(
-        node_name=qualified_name,
-        category=cls.CATEGORY,
-        description=cls.DESCRIPTION,
-        # ``getattr`` for the same reason as ``requires_pack`` below: a class
-        # in the registry that never inherited this BaseNode should list
-        # without the field rather than 500.
-        details=getattr(cls, "DETAILS", ""),
-        provider=_provider_for(qualified_name, cls),
-        # ``getattr`` rather than ``cls.REQUIRES_PACK``: the registry is a
-        # plain dict anything can be written into, and a node class that
-        # never inherited this BaseNode should still list, not 500.
-        requires_pack=getattr(cls, "REQUIRES_PACK", None),
-        inputs=[
-            PortDefinitionSchema(
-                name=p.name,
-                data_type=p.data_type.value,
-                description=p.description,
-                optional=p.optional,
-            )
-            for p in cls.define_inputs()
-        ],
-        outputs=[
-            PortDefinitionSchema(
-                name=p.name,
-                data_type=p.data_type.value,
-                description=p.description,
-                optional=p.optional,
-            )
-            for p in cls.define_outputs()
-        ],
-        params=[_param_to_schema(p) for p in cls.define_params()],
-    )
-
-
-def _param_to_schema(p) -> ParamDefinitionSchema:
-    """The wire shape of one param.
-
-    A ``device`` param's option list and its default fallback come from one
-    ``device_options`` call: the served list is what this machine offers,
-    and a saved default this machine lacks (``cuda`` on a CPU box) is
-    served as ``cpu`` so the dropdown never shows a value it cannot run.
-    """
-    served = _filter_device_options(p.name, p.options)
-    default = p.default
-    if p.name == "device" and default != "auto" and default not in served:
-        default = "cpu"
-    return ParamDefinitionSchema(
-        name=p.name,
-        param_type=p.param_type.value,
-        default=default,
-        description=p.description,
-        options=served,
-        min_value=p.min_value,
-        max_value=p.max_value,
-        visible_when=p.visible_when,
-        advanced=p.advanced,
-        option_packs=p.option_packs,
-    )
 
 
 class ScriptValidationRequest(BaseModel):
@@ -182,7 +70,7 @@ async def validate_script(payload: ScriptValidationRequest) -> ScriptValidationR
 
 @router.get("", response_model=list[NodeDefinition])
 async def list_nodes():
-    return [_node_to_definition(name, cls) for name, cls in registry.nodes.items()]
+    return [node_definition(name, cls) for name, cls in registry.nodes.items()]
 
 
 @router.get("/{node_name}", response_model=NodeDefinition)
@@ -199,4 +87,4 @@ async def get_node(node_name: str):
             if v is cls:
                 qualified = k
                 break
-    return _node_to_definition(qualified, cls)
+    return node_definition(qualified, cls)

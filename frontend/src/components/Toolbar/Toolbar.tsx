@@ -1,6 +1,6 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect, useLayoutEffect } from 'react';
 import { useGraphExecution } from '../../hooks/useGraphExecution';
-import { useDeviceOptions, deviceLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
+import { useDeviceOptions, deviceLabel, deviceOptionLabel, isDeviceServed } from '../../hooks/useDeviceOptions';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
@@ -25,7 +25,18 @@ import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { ToolbarGlobalActions } from './ToolbarGlobalActions';
 import { ProjectBadge } from './ProjectBadge';
+import { lazyRetry } from '../shared/lazyRetry';
 import styles from './Toolbar.module.css';
+
+/**
+ * The Queue on... dialog (#775), in a chunk of its own: it is opened from a
+ * menu, and keeping it out of the first paint keeps the entry chunk under
+ * the 500 kB build limit.
+ */
+const QueueRunDialog = lazyRetry(
+  () => import('./QueueRunDialog').then((module) => module.QueueRunDialog),
+  (props) => props.onClose(),
+);
 
 /* ── Shared dropdown menu ───────────────────────────────────────── */
 
@@ -436,6 +447,40 @@ export function Toolbar() {
     return () => window.removeEventListener('resize', place);
   }, [layoutMenuOpen]);
 
+  // The Run split button's menu (#775): one item, "Queue on...". Opened, it
+  // takes the focus, so a keyboard user lands on the item; Escape and a
+  // press outside close it, as the layout menu's do.
+  const [runMenuOpen, setRunMenuOpen] = useState(false);
+  const runMenuRef = useRef<HTMLDivElement>(null);
+  const runCaretRef = useRef<HTMLButtonElement>(null);
+  const queueItemRef = useRef<HTMLButtonElement>(null);
+  const queueRunOpen = useUIStore((s) => s.queueRunOpen);
+  useEffect(() => {
+    if (!runMenuOpen) return;
+    queueItemRef.current!.focus();
+    const handler = (e: MouseEvent) => {
+      if (!runMenuRef.current!.contains(e.target as Node)) setRunMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setRunMenuOpen(false);
+      runCaretRef.current!.focus();
+    };
+    document.addEventListener('mousedown', handler, { capture: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handler, { capture: true });
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [runMenuOpen]);
+  const openQueueRun = useCallback(() => {
+    // The dialog hands focus back to what had it when it opened: the caret,
+    // since the item goes with the menu.
+    runCaretRef.current!.focus();
+    setRunMenuOpen(false);
+    useUIStore.getState().setQueueRunOpen(true);
+  }, []);
+
   const isRunning = status === 'running';
 
   const closeMenus = useCallback(() => setOpenMenu(null), []);
@@ -792,14 +837,40 @@ export function Toolbar() {
         {/* Both labels are always visible -- no responsive rule hides them --
             so "Run the graph" and "Stop execution" were the words on the
             button read back with the only object they could have. */}
-        <button type="button"
-          data-tour="run"
-          onClick={handleRun}
-          disabled={isRunning}
-          className={styles.runButton}
-        >
-          {!isRunning ? t('toolbar.run') : runQueue ? t('toolbar.queued') : t('toolbar.running')}
-        </button>
+        <div ref={runMenuRef} className={styles.runSplit}>
+          <button type="button"
+            data-tour="run"
+            onClick={handleRun}
+            disabled={isRunning}
+            className={styles.runButton}
+          >
+            {!isRunning ? t('toolbar.run') : runQueue ? t('toolbar.queued') : t('toolbar.running')}
+          </button>
+          {/* Enabled while the canvas runs: a queued run is a separate one
+              (#775), and the interactive Run above stays as it was. */}
+          <button type="button"
+            ref={runCaretRef}
+            className={styles.runCaret}
+            onClick={() => setRunMenuOpen((v) => !v)}
+            aria-label={t('toolbar.runMenu.aria')}
+            aria-haspopup="menu"
+            aria-expanded={runMenuOpen}
+          >
+            ▾
+          </button>
+          {runMenuOpen && (
+            <div className={styles.layoutDropdown} role="menu" aria-label={t('toolbar.runMenu.aria')}>
+              <button type="button" role="menuitem"
+                ref={queueItemRef}
+                className={styles.layoutDropdownItem}
+                title={t('toolbar.queueOn.title')}
+                onClick={openQueueRun}
+              >
+                {t('toolbar.queueOn')}
+              </button>
+            </div>
+          )}
+        </div>
         <button type="button"
           onClick={handleStop}
           disabled={!isRunning}
@@ -826,7 +897,7 @@ export function Toolbar() {
             <option value={storedDevice as string} disabled>{storedDevice}</option>
           )}
           {devices.map((d) => (
-            <option key={d.value} value={d.value}>{deviceLabel(d)}</option>
+            <option key={d.value} value={d.value}>{deviceOptionLabel(d)}</option>
           ))}
         </select>
         {/* Every separator is the LAST CHILD of the cluster it trails, never
@@ -980,6 +1051,11 @@ export function Toolbar() {
           Its own component since the welcome screen (no active tab) shows
           exactly this group and none of the graph controls above it. */}
       <ToolbarGlobalActions />
+      {queueRunOpen && (
+        <Suspense fallback={null}>
+          <QueueRunDialog onClose={() => useUIStore.getState().setQueueRunOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

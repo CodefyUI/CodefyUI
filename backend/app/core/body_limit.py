@@ -66,6 +66,8 @@ what stops that check from having to buffer an unbounded request first.
 
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -122,9 +124,18 @@ class RequestBodyTooLarge(HTTPException):
         super().__init__(status_code=413, detail=detail)
 
 
+def _upload_path_patterns() -> tuple[re.Pattern[str], ...]:
+    """Upload routes with a variable segment: a worker's run output (#785,
+    ``core.transfer.UPLOAD_PATH_PATTERN``, the one spelling of it)."""
+    from .transfer import UPLOAD_PATH_PATTERN
+
+    return (UPLOAD_PATH_PATTERN,)
+
+
 def limit_for_path(path: str) -> int:
     """Body ceiling in bytes for *path*. Read at request time, deliberately."""
-    if path in UPLOAD_PATHS:
+    if path in UPLOAD_PATHS or any(p.fullmatch(path)
+                                   for p in _upload_path_patterns()):
         return settings.MAX_UPLOAD_SIZE + MULTIPART_ENVELOPE_ALLOWANCE
     return settings.MAX_RUN_BODY_BYTES
 
