@@ -1580,6 +1580,10 @@ class _ActiveRun:
     #: last frame its previous process recorded. None for a run started
     #: here.
     resume_seq: int | None = None
+    #: The last seq stored in ``execution_facts.worker_resume`` (#793).
+    stored_seq: int = 0
+    #: When this process adopted the run (UTC ISO), or None (#793).
+    adopted_at: str | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -2840,6 +2844,7 @@ class RunService:
             node_types=node_types,
             needs=needs,
             resume_seq=resume_seq,
+            stored_seq=resume_seq or 0,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -3315,8 +3320,21 @@ class RunService:
         """Before a worker run's frames up to *seq* are acknowledged (#793):
         flush the metric buffer, so nothing the agent then forgets lives
         only in this process's memory, and persist *seq* for a restart."""
-        await self._flush_metrics(active, force=True)
-        await self.store.set_worker_seq(active.run_id, seq)
+        if seq <= active.stored_seq:
+            return  # nothing moved: no write
+        batch = list(active.pending_metrics)
+        # One transaction: the buffered points and the seq, both or
+        # neither. A failure raises (no ack goes out) and keeps the points
+        # buffered for the next try.
+        if not await self.store.checkpoint_worker_run(active.run_id, batch,
+                                                      seq):
+            raise RuntimeError(f"run {active.run_id} has no worker_resume "
+                               "record to store its seq in")
+        del active.pending_metrics[:len(batch)]
+        active.stored_seq = seq
+        if batch:
+            active.last_flush_monotonic = time.monotonic()
+            await self._announce_metrics(active, batch)
 
     def _resume_grace(self) -> float:
         """``CODEFYUI_WORKER_RESUME_GRACE_S`` as the registry has it; 0
@@ -3423,11 +3441,14 @@ class RunService:
             backend = BACKEND_TRANSFER
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
-        if getattr(active, "resume_seq", None) is not None \
-                and await self.store.has_artifact(
-                active.run_id, signal.kind, signal.path):
-            # An adopted run (#793): the worker replays what was recorded
-            # after the last stored seq, and a file is one row, not two.
+        adopted_at = getattr(active, "adopted_at", None)
+        if adopted_at is not None and await self.store.has_artifact(
+                active.run_id, signal.kind, signal.path,
+                meta=artifact_meta(signal), before=adopted_at):
+            # An adopted run (#793): the worker replays what the previous
+            # process recorded after its last stored seq. Only a row that
+            # process wrote, for the same file AND meta, is that replay; a
+            # file rewritten later (``latest.pt``) is recorded as usual.
             logger.info("run %s: artifact %s already recorded; replay "
                         "ignored", active.run_id, signal.path)
             return
@@ -3659,12 +3680,17 @@ class RunService:
                            active.run_id, len(batch), exc_info=True)
             return 0
         if written:
-            await self._emit(active.run_id, EVENT_METRIC, {"points": [
-                {"name": p.name, "value": p.value, "step": p.step,
-                 "node_id": p.node_id}
-                for p in batch
-            ]})
+            await self._announce_metrics(active, batch)
         return written
+
+    async def _announce_metrics(self, active: _ActiveRun,
+                                batch: list[MetricPoint]) -> None:
+        """The ``metric`` event for a batch that landed."""
+        await self._emit(active.run_id, EVENT_METRIC, {"points": [
+            {"name": p.name, "value": p.value, "step": p.step,
+             "node_id": p.node_id}
+            for p in batch
+        ]})
 
     # ── cancel ────────────────────────────────────────────────────────────
 
@@ -3742,6 +3768,18 @@ class RunService:
             if active.stop_reason is None:
                 active.stop_reason = STOP_REASON_CANCELLED
             active.context.cancel()
+            if on_a_worker(active.placement) and self._resume_grace() > 0:
+                # The stop may wait for an absent worker (#783); written
+                # down so a restarted server that adopts the run asks again
+                # instead of letting it finish against the user's Stop.
+                try:
+                    await self.store.mark_stop_requested(
+                        run_id, active.stop_reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 -- the stop still goes out
+                    logger.warning("run %s: could not record the stop",
+                                   run_id, exc_info=True)
             return CancelOutcome(run_id=run_id, status=STATUS_RUNNING,
                                  cancelled=True)
 
@@ -3971,6 +4009,16 @@ class RunService:
         except BaseException:
             self._workers.close_run(placement.worker_id, record.id)
             raise
+        self._runs[record.id].adopted_at = utc_now_iso()
+        facts = (record.execution_facts
+                 if isinstance(record.execution_facts, dict) else {})
+        stop = facts.get("stop_requested")
+        if stop in (STOP_REASON_CANCELLED, STOP_REASON_INTERRUPTED):
+            # A Stop the previous process could not deliver: the worker
+            # is asked again when it is back (``WorkerExecutor``).
+            active = self._runs[record.id]
+            active.stop_reason = stop
+            active.context.cancel()
 
     async def scrub_stored_secrets(self) -> int:
         """Remove values an older build persisted. Returns rows changed.
@@ -4144,6 +4192,8 @@ class RunService:
                 for task in pending:
                     task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+                await self._retire_unstopped_worker_runs(
+                    [entry for entry in active if entry.task in pending])
         finally:
             # Belt and braces (#251). ``_retire_queue`` above dropped every
             # waiting run's secrets and each drained task dropped its own, so
@@ -4152,6 +4202,30 @@ class RunService:
             # outlives its shutdown (tests, an embedded host) must not still
             # be holding keys.
             self._run_secrets.clear()
+
+    async def _retire_unstopped_worker_runs(
+            self, entries: list[_ActiveRun]) -> None:
+        """Worker runs a graceful shutdown could not stop within its grace
+        (#793): their rows end ``interrupted`` now, with a closing frame,
+        rather than staying active for the next start to adopt. A graceful
+        stop stops worker runs; the hard cancel already told each worker
+        to stop it, and a worker that still reports it later is told again
+        (an untracked run)."""
+        for entry in entries:
+            if not on_a_worker(entry.placement):
+                continue
+            worker_id = entry.placement.worker_id
+            try:
+                if await self.store.mark_finished(
+                        entry.run_id, STATUS_INTERRUPTED,
+                        error=(f"this server shut down before the run on "
+                               f"worker {worker_id} stopped")):
+                    await self.store.append_event(
+                        entry.run_id, EVENT_RUN_STOPPED,
+                        {"reason": STOP_REASON_INTERRUPTED})
+            except Exception:  # noqa: BLE001 -- the next start retires it
+                logger.warning("run %s: could not record its end at "
+                               "shutdown", entry.run_id, exc_info=True)
 
     async def _retire_queue(self) -> int:
         """File every waiting run ``interrupted``. Returns how many.

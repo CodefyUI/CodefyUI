@@ -113,6 +113,7 @@ async def _row(client: Any, run_id: str) -> dict[str, Any]:
 
 async def _start_and_crash(db: Any, tmp_path: Any, client: Any, *,
                            steps: int = 3, unacked: int = 0,
+                           before_crash: Any = None,
                            **kwargs: Any) -> tuple[Generation, str,
                                                    SpoolingAgent]:
     """A run on worker ``box`` that recorded *steps* acknowledged progress
@@ -142,6 +143,8 @@ async def _start_and_crash(db: Any, tmp_path: Any, client: Any, *,
                 await asyncio.sleep(0.02)
     spooler.agent = None
     await _until(lambda: first.registry.get("box").status == "disconnected")
+    if before_crash is not None:
+        await before_crash(first, run_id)
     await first.crash()
     record = await first.service.store.get_run(run_id)
     assert record.status in ("running", "disconnected")

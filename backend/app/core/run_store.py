@@ -982,21 +982,56 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
-    async def set_worker_seq(self, run_id: str, seq: int) -> bool:
-        """Store a worker run's acknowledged seq (#793) as
-        ``execution_facts.worker_resume.last_seq``, that key alone (one
-        ``json_set``, no read-modify-write of the document). False when the
-        run has no ``worker_resume`` to update."""
+    async def mark_stop_requested(self, run_id: str, reason: str) -> bool:
+        """Record that a stop was asked of an active worker run (#793) as
+        ``execution_facts.stop_requested``: a restarted server adopting
+        the run asks its worker again. False when the run has no facts
+        document or is no longer active."""
         def _update(conn: sqlite3.Connection) -> int:
             return conn.execute(
                 "UPDATE exec_runs SET execution_facts = json_set("
-                "execution_facts, '$.worker_resume.last_seq', ?) "
-                "WHERE id = ? AND json_type(execution_facts, "
-                "'$.worker_resume') = 'object'",
-                (int(seq), run_id),
+                "execution_facts, '$.stop_requested', ?) WHERE id = ? AND "
+                "execution_facts IS NOT NULL AND status IN (?, ?)",
+                (reason, run_id, STATUS_RUNNING, STATUS_DISCONNECTED),
             ).rowcount
 
         return await self.db.run(_update) > 0
+
+    async def checkpoint_worker_run(
+        self, run_id: str, points: Iterable[MetricPoint], seq: int,
+    ) -> bool:
+        """Write a worker run's buffered *points* and its acknowledged *seq*
+        (``execution_facts.worker_resume.last_seq``) in ONE transaction
+        (#793): either both are durable or neither is. True when the seq
+        landed (the run has a ``worker_resume`` record); False leaves
+        nothing written. Raises like :meth:`log_metrics` on a bad write.
+        """
+        rows = [
+            (run_id, p.node_id, p.name, p.step,
+             p.value if math.isfinite(p.value) else None,
+             p.ts or utc_now_iso())
+            for p in points
+        ]
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            with transaction(conn):
+                landed = conn.execute(
+                    "UPDATE exec_runs SET execution_facts = json_set("
+                    "execution_facts, '$.worker_resume.last_seq', ?) "
+                    "WHERE id = ? AND json_type(execution_facts, "
+                    "'$.worker_resume') = 'object'",
+                    (int(seq), run_id),
+                ).rowcount > 0
+                if not landed:
+                    return False
+                if rows:
+                    conn.executemany(
+                        "INSERT INTO exec_run_metrics (run_id, node_id, "
+                        "name, step, value, ts) VALUES (?, ?, ?, ?, ?, ?)",
+                        rows)
+                return True
+
+        return await self.db.run(_write)
 
     async def record_fingerprint(self, fingerprint: dict[str, Any],
                                  digest: str | None = None) -> str:
@@ -1551,14 +1586,24 @@ class RunStore:
 
     # ── artifacts ─────────────────────────────────────────────────────────
 
-    async def has_artifact(self, run_id: str, kind: str, path: str) -> bool:
+    async def has_artifact(self, run_id: str, kind: str, path: str, *,
+                           meta: Any = None,
+                           before: str | None = None) -> bool:
         """Whether *run_id* already has a *kind* row for *path* (as stored:
-        a mount or transfer row's relative path)."""
+        a mount or transfer row's relative path) with the same *meta*,
+        written before *before* (a UTC ISO stamp; None: any time). What a
+        restarted server's replay of an artifact frame the previous process
+        had already recorded looks like (#793)."""
+        encoded = None if meta is None else _dumps(_json_safe(meta))
+        sql = ("SELECT 1 FROM exec_run_artifacts WHERE run_id = ? AND "
+               "kind = ? AND path = ? AND meta IS ?")
+        params: list[Any] = [run_id, kind, path, encoded]
+        if before is not None:
+            sql += " AND created_at < ?"
+            params.append(before)
+
         def _select(conn: sqlite3.Connection) -> Any:
-            return conn.execute(
-                "SELECT 1 FROM exec_run_artifacts WHERE run_id = ? AND "
-                "kind = ? AND path = ? LIMIT 1", (run_id, kind, path),
-            ).fetchone()
+            return conn.execute(sql + " LIMIT 1", params).fetchone()
 
         return await self.db.run(_select) is not None
 

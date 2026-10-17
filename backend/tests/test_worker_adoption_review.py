@@ -132,12 +132,12 @@ async def test_the_seq_is_stored_alone_and_only_with_a_grace(
     gen = db()
     store = gen.service.store
     await _worker_row(store, facts={"resolved": {"device": "cpu"}, **RESUME})
-    assert await store.set_worker_seq("box-run", 42)
+    assert await store.checkpoint_worker_run("box-run", [], 42)
     assert (await store.get_run("box-run")).execution_facts == {
         "resolved": {"device": "cpu"},
         WORKER_RESUME_KEY: {"last_seq": 42, "slots": [["box", "cpu"]]}}
     await _worker_row(store, "old-run", facts={})
-    assert not await store.set_worker_seq("old-run", 1)
+    assert not await store.checkpoint_worker_run("old-run", [], 1)
     assert (await store.get_run("old-run")).execution_facts == {}
 
     active = _ActiveRun(run_id="box-run", context=ExecutionContext(),

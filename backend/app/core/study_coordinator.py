@@ -190,6 +190,10 @@ class StudyCoordinator:
         self._needs: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
+        #: Studies :meth:`recover` left active because a child was adopted
+        #: after the restart (#793): the restart policy (``resume_policy:
+        #: auto``) still applies once they stop on account of the restart.
+        self._restarted: set[str] = set()
         service.add_terminal_listener(self._on_terminal)
 
     # ── plumbing ─────────────────────────────────────────────────────────
@@ -309,7 +313,10 @@ class StudyCoordinator:
     async def tick(self, study_id: str) -> StudyRecord | None:
         """Reconcile one study and advance it. Returns the row after."""
         async with self._lock(study_id):
-            return await self._tick_locked(study_id)
+            study = await self._tick_locked(study_id)
+        if study_id in self._restarted:
+            study = await self._after_restart(study_id) or study
+        return study
 
     async def _tick_locked(self, study_id: str) -> StudyRecord | None:
         study = await self.store.get_study(study_id)
@@ -612,17 +619,49 @@ class StudyCoordinator:
                 if study is None or study.status not in STUDY_ACTIVE:
                     continue
                 await self._reconcile(study_id)
-                if await self._has_adopted_child(study_id):
+                adopted = await self._has_adopted_child(study_id)
+                if adopted:
                     logger.info("study %s carries on: a child of it was "
                                 "taken over from its worker", study_id)
-                    continue
-                await self._settle_recovered(study_id, study)
-                settled += 1
-            await self._auto_resume(study_id)
+                    if study.status == STUDY_CANCEL_REQUESTED:
+                        # The cancel may not have reached the adopted
+                        # child before the restart: ask again.
+                        await self._cancel_active_children(study_id)
+                    self._restarted.add(study_id)
+                    # A sibling retired by the restart interrupts it now,
+                    # a finished cancel settles it, as any tick would.
+                    await self._advance(study)
+                else:
+                    await self._settle_recovered(study_id, study)
+                    settled += 1
+            if adopted:
+                await self._after_restart(study_id)
+            else:
+                await self._auto_resume(study_id)
         if settled:
             logger.warning("settled %d study(ies) left active by the previous "
                            "process", settled)
         return settled
+
+    async def _cancel_active_children(self, study_id: str) -> None:
+        current = current_attempts(await self.store.list_attempts(study_id))
+        for attempt in current.values():
+            if attempt.status in ATTEMPT_ACTIVE and attempt.run_id:
+                await self.service.cancel(attempt.run_id)
+
+    async def _after_restart(self, study_id: str) -> StudyRecord | None:
+        """For a study :meth:`recover` left active (#793): once it is no
+        longer active with an adopted child, apply the restart policy: an
+        ``interrupted`` study with ``resume_policy: auto`` resumes itself,
+        as it would have at startup."""
+        async with self._lock(study_id):
+            study = await self.store.get_study(study_id)
+            if study is not None and study.status in STUDY_ACTIVE \
+                    and await self._has_adopted_child(study_id):
+                return None
+            self._restarted.discard(study_id)
+        await self._auto_resume(study_id)
+        return await self.store.get_study(study_id)
 
     async def _has_adopted_child(self, study_id: str) -> bool:
         """Whether an active attempt of *study_id* has a child the run

@@ -507,8 +507,19 @@ class WorkerRegistry:
 
     def run_state(self, worker_id: str, run_id: str) -> WorkerRun | None:
         """The run *worker_id* is executing as *run_id*, or None."""
-        worker = self._workers.get(worker_id) or self._adopted.get(worker_id)
-        return None if worker is None else worker.running.get(run_id)
+        holder = self._holder(worker_id, run_id)
+        return None if holder is None else holder.running[run_id]
+
+    def _holder(self, worker_id: str, run_id: str) -> Worker | None:
+        """The worker (or the unlisted placeholder of runs adopted after a
+        restart, #793) whose ``running`` holds *run_id*. Both are looked
+        in: a worker of the name may become known (enrolled) while the
+        placeholder still holds runs."""
+        for holder in (self._workers.get(worker_id),
+                       self._adopted.get(worker_id)):
+            if holder is not None and run_id in holder.running:
+                return holder
+        return None
 
     # ── same-host devices (#773) ─────────────────────────────────────────
 
@@ -610,7 +621,8 @@ class WorkerRegistry:
             # now: they move to it like a reconnect's.
             if old is None:
                 old = placeholder
-            else:  # pragma: no cover - adopt() uses a known worker first
+            else:
+                # The name became known (enrolled) during the grace.
                 old.running.update(placeholder.running)
         document, digest = verified_fingerprint(hello.fingerprint,
                                                 worker=hello.name)
@@ -968,8 +980,8 @@ class WorkerRegistry:
         """End *run_id* now if it waits for *worker_id* to come back (a
         drop, or adopted after a restart): this server is shutting down
         and nothing will come back for it here (#793). True if ended."""
-        worker = self._workers.get(worker_id) or self._adopted.get(worker_id)
-        run = None if worker is None else worker.running.get(run_id)
+        worker = self._holder(worker_id, run_id)
+        run = None if worker is None else worker.running[run_id]
         if run is None or run.detached_at is None:
             return False
         self._end(worker, run, reason)
