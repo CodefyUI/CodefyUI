@@ -30,7 +30,7 @@ from app.core.executors import (
 )
 from app.core.mounts import translate
 from app.core.run_store import RunStore
-from app.core.scheduling import Placement, no_mount_backend, speaks_transfer
+from app.core.scheduling import Placement, no_mount_backend, ships_files
 from app.main import app
 from tests import test_transfer_backend as _transfer_tests
 from tests.test_transfer_backend import SHIPPABLE, _needs, _request
@@ -117,8 +117,17 @@ def test_keys_sit_under_the_prefix_and_a_run_owns_only_its_own(
     assert s3.run_prefix("r1") == "codefyui/lab/runs/r1/"
     assert s3.owns_key("r1", "codefyui/lab/runs/r1/checkpoint/a.pt")
     assert s3.owns_key("r1", "codefyui/lab/runs/r1/tensorboard/t")
+    # A row's key carries its own prefix: one from before a prefix change
+    # is still the run's; the prefix a run was assigned is checked when its
+    # rows are recorded.
+    assert s3.owns_key("r1", "runs/r1/checkpoint/a.pt")
+    assert not s3.owns_key("r1", "runs/r1/checkpoint/a.pt",
+                           "codefyui/lab/runs/r1/")
+    assert s3.owns_key("r1", "codefyui/lab/runs/r1/checkpoint/a.pt",
+                       "codefyui/lab/runs/r1/")
     for key in ("codefyui/lab/runs/r2/checkpoint/a.pt",
-                "runs/r1/checkpoint/a.pt",
+                "codefyui/lab/runs/r10/checkpoint/a.pt",
+                "x/../runs/r1/checkpoint/a.pt",
                 "codefyui/lab/runs/r1/a.pt",
                 "codefyui/lab/runs/r1/checkpoint/../../r2/x",
                 "codefyui/lab/runs/r1//a.pt",
@@ -199,11 +208,29 @@ def test_auto_falls_back_to_static_and_sts_alone_refuses(s3_on, monkeypatch):
         def assume_role(self, **_: Any) -> Any:
             raise RuntimeError("not supported")
 
-    monkeypatch.setattr(s3, "control_client", lambda service="s3": _NoSts())
-    monkeypatch.setattr(s3, "_sts_warned", False)
+    asked: list[int] = []
+
+    class _CountingNoSts(_NoSts):
+        def assume_role(self, **kw: Any) -> Any:
+            asked.append(1)
+            return super().assume_role(**kw)
+
+    monkeypatch.setattr(s3, "control_client",
+                        lambda service="s3": _CountingNoSts())
+    monkeypatch.setattr(s3, "_sts_failed", None)
     monkeypatch.setattr(settings, "S3_CREDENTIALS", "auto")
     access = s3.issue_access("r1")
     assert access.access_key_id == "AK" and access.expires_at is None
+    # A refusal is remembered: the next runs do not ask STS again ...
+    s3.issue_access("r2")
+    assert len(asked) == 1
+    # ... until the settings change, or the pause is over.
+    monkeypatch.setattr(settings, "S3_STS_ROLE_ARN", "arn:aws:iam::1:role/x")
+    s3.issue_access("r3")
+    assert len(asked) == 2
+    monkeypatch.setattr(s3, "STS_RETRY_AFTER_S", 0.0)
+    s3.issue_access("r4")
+    assert len(asked) == 3
     monkeypatch.setattr(settings, "S3_CREDENTIALS", "sts")
     with pytest.raises(s3.S3Unavailable, match="STS AssumeRole failed"):
         s3.issue_access("r1")
@@ -272,14 +299,16 @@ def test_removing_a_runs_objects_keeps_writers_files_and_a_resume_point(
                 "runs/r10/checkpoint/x.pt", "inputs/aa"):
         _put(bucket, key)
     bucket.create_multipart_upload(Bucket="lab", Key="runs/r1/checkpoint/big")
-    assert s3.remove_run_objects("r1", keep_checkpoints=True) == 1
+    assert s3.remove_run_objects("r1", keep_checkpoints=True,
+                                 prefix="runs/r1/") == 1
     assert _keys(bucket) == ["inputs/aa", "runs/r1/checkpoint/i.pt",
                              "runs/r1/checkpoint/p.pt",
                              "runs/r1/output/models/best.pt",
                              "runs/r10/checkpoint/x.pt"]
     assert not bucket.list_multipart_uploads(Bucket="lab").get("Uploads")
-    assert s3.remove_runs_objects([("r1", False), ("r10", False)]) == \
-        ["r1", "r10"]
+    assert s3.remove_runs_objects([("r1", False, "lab", "runs/r1/"),
+                                   ("r10", False, "lab", "runs/r10/")]) == \
+        (["r1", "r10"], [])
     assert _keys(bucket) == ["inputs/aa", "runs/r1/output/models/best.pt"]
 
 
@@ -289,7 +318,8 @@ def test_a_bucket_that_cannot_be_reached_never_breaks_retention(
         raise s3.S3Unavailable("down")
 
     monkeypatch.setattr(s3, "control_client", broken)
-    assert s3.remove_runs_objects([("r1", False)]) == []
+    assert s3.remove_runs_objects([("r1", False, "lab", "runs/r1/")]) == \
+        ([], ["r1: S3Unavailable: down"])
 
 
 async def test_retention_removes_the_s3_objects_of_the_runs_it_drops(
@@ -355,7 +385,7 @@ def test_s3_goes_first_to_an_agent_that_speaks_it(s3_on, monkeypatch):
     # Transfer off, S3 on: only an agent that speaks S3 takes the run.
     monkeypatch.setattr(settings, "S3_ENABLED", True)
     monkeypatch.setattr(settings, "TRANSFER_ENABLED", False)
-    assert speaks_transfer(both) and not speaks_transfer(old)
+    assert ships_files(both) and not ships_files(old)
     assert transfer.check({"mount": "data", "inputs": [], "paths": []})["ok"]
     monkeypatch.setattr(settings, "S3_ENABLED", False)
     assert not transfer.check({"mount": "data", "inputs": [],
@@ -517,10 +547,15 @@ async def test_a_failed_renewal_is_retried(s3_on, monkeypatch):
     executor = WorkerExecutor(SimpleNamespace(get=lambda _: None))
     monkeypatch.setattr(executor, "_send", send)
     old = wp.S3Access(bucket="lab", prefix="runs/r1/", access_key_id="o",
-                      secret_access_key="s", expires_at=time.time())
+                      secret_access_key="s", expires_at=time.time() + 900)
+    executor._s3_runs["r1"] = executors._S3Run("lab", "runs/r1/", old)
+    monkeypatch.setattr(executors, "REFRESH_AT", 0.0)
     request = SimpleNamespace(run_id="r1")
-    await asyncio.wait_for(executor._refresh_credentials(
-        request, "box", old, []), 5)
+    started = time.monotonic()
+    await asyncio.wait_for(executor._refresh_credentials(request, "box", []),
+                           5)
+    # Retried after REFRESH_RETRY_S, not after 2/3 of what was left.
+    assert time.monotonic() - started < 2
     assert len(calls) == 2
     [frame] = sent
     assert frame.s3.access_key_id == "new"  # static now: no more renewals
@@ -619,7 +654,7 @@ async def test_a_download_says_when_the_bucket_cannot_be_reached(
                                         backend="s3", worker_id="gpu-1")
     url = f"/api/runs/r1/artifacts/{row.id}/download"
 
-    def down(key: str) -> Any:
+    def down(key: str, bucket: Any = None) -> Any:
         raise s3.S3Unavailable("EndpointConnectionError")
 
     monkeypatch.setattr(s3, "head", down)
@@ -656,3 +691,187 @@ async def test_deleting_a_run_removes_its_s3_objects_but_writers_files(
                                  headers={TOKEN_HEADER: session_token()})
     assert response.status_code == 200, response.text
     assert _keys(bucket) == ["runs/r1/output/a.pt"]
+
+
+# ── review fixes (#836) ───────────────────────────────────────────────────
+
+
+async def test_renewal_survives_a_failed_send_and_a_reconnect(
+        s3_on, monkeypatch):
+    """A send that raises (the socket closed after the online check) does
+    not end the renewals, and a reconnect re-sends the latest credentials."""
+    import time
+
+    issued: list[str] = []
+
+    def issue(run_id: str, input_keys: Any = ()) -> Any:
+        issued.append(f"k{len(issued) + 1}")
+        return wp.S3Access(bucket="lab", prefix="runs/r1/",
+                           access_key_id=issued[-1], secret_access_key="s",
+                           expires_at=time.time() + 0.05)
+
+    attempts: list[str] = []
+
+    async def send(worker_id: str, frame: Any) -> bool:
+        attempts.append(frame.s3.access_key_id)
+        if len(attempts) == 1:
+            raise ConnectionError("socket closed")
+        return True
+
+    monkeypatch.setattr(s3, "issue_access", issue)
+    monkeypatch.setattr(executors, "REFRESH_MIN_S", 0.0)
+    monkeypatch.setattr(executors, "CANCEL_POLL_S", 0.0)
+    executor = WorkerExecutor(SimpleNamespace(get=lambda _: None))
+    monkeypatch.setattr(executor, "_send", send)
+    executor._s3_runs["r1"] = executors._S3Run(
+        "lab", "runs/r1/", wp.S3Access(bucket="lab", prefix="runs/r1/",
+                                       access_key_id="k0",
+                                       secret_access_key="s",
+                                       expires_at=time.time()))
+    task = asyncio.create_task(executor._refresh_credentials(
+        SimpleNamespace(run_id="r1"), "box", []))
+    while len(issued) < 3:
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert attempts[:2] == ["k1", "k1"]  # the failed send went again
+    assert "k2" in attempts
+    # After a reconnect the latest goes out once more.
+    sent: list[Any] = []
+
+    async def record(worker_id: str, frame: Any) -> bool:
+        sent.append(frame)
+        return True
+
+    monkeypatch.setattr(executor, "_send", record)
+    request = SimpleNamespace(
+        run_id="r1", context=SimpleNamespace(should_stop=lambda: False),
+        sinks=_Recorder().sinks())
+
+    class _NoAcks:
+        async def resend(self) -> None:
+            return None
+
+    await executor._reconnected(request, "box", _NoAcks())
+    [frame] = [f for f in sent if isinstance(f, wp.Credentials)]
+    assert frame.s3.access_key_id == executor._s3_runs["r1"].access \
+        .access_key_id
+
+
+async def test_rows_keep_their_bucket_and_prefix_after_a_settings_change(
+        bucket, http, monkeypatch):
+    """A row records its bucket and its key carries its prefix: listing,
+    download and Delete keep finding the object after both settings
+    change."""
+    _put(bucket, "old/runs/r1/output/a.pt", b"kept")
+    _put(bucket, "old/runs/r1/checkpoint/c.pt", b"gone")
+    bucket.create_bucket(Bucket="lab2")
+    store = http.store
+    for kind, key in (("output", "old/runs/r1/output/a.pt"),
+                      ("checkpoint", "old/runs/r1/checkpoint/c.pt")):
+        await store.add_artifact("r1", kind, key, backend="s3",
+                                 mount_label="lab", worker_id="gpu-1")
+    monkeypatch.setattr(settings, "S3_BUCKET", "lab2")
+    monkeypatch.setattr(settings, "S3_PREFIX", "new/")
+    listed = (await http.get("/api/runs/r1/artifacts")).json()["artifacts"]
+    assert listed[0]["path"] == "s3://lab/old/runs/r1/output/a.pt"
+    response = await http.get(f"/api/runs/r1/artifacts/{listed[0]['id']}"
+                              "/download")
+    assert response.status_code == 200 and response.content == b"kept"
+    deleted = await http.delete("/api/runs/r1",
+                                headers={TOKEN_HEADER: session_token()})
+    assert deleted.json() == {"run_id": "r1", "deleted": True}
+    assert _keys(bucket) == ["old/runs/r1/output/a.pt"]
+
+
+async def test_retention_uses_the_rows_bucket_and_prefix(bucket, data_root,
+                                                        db, monkeypatch):
+    store = RunStore(db)
+    record = await store.create_run(graph_snapshot={"nodes": []},
+                                    status="running", worker_id="gpu-1")
+    key = f"old/runs/{record.id}/checkpoint/a.pt"
+    _put(bucket, key)
+    await store.add_artifact(record.id, "checkpoint", key, backend="s3",
+                             mount_label="lab", worker_id="gpu-1")
+    await store.mark_finished(record.id, "succeeded")
+    monkeypatch.setattr(settings, "S3_BUCKET", "elsewhere")
+    monkeypatch.setattr(settings, "S3_PREFIX", "new/")
+    assert await store.prune(keep_last=0) == 1
+    assert _keys(bucket) == []
+
+
+async def test_a_row_is_recorded_with_its_bucket_and_assigned_prefix(
+        s3_on, db):
+    from app.core.run_service import RunService
+
+    store = RunStore(db)
+    record = await store.create_run(graph_snapshot={"nodes": []},
+                                    status="running", worker_id="gpu-1")
+    service = RunService(store)
+    active = SimpleNamespace(
+        run_id=record.id,
+        placement=Placement("gpu-1", ("cpu",), (("gpu-1", "cpu"),)))
+    prefix = f"p/runs/{record.id}/"
+    for path in (f"{prefix}checkpoint/a.pt",
+                 f"runs/{record.id}/checkpoint/b.pt"):  # not its prefix
+        await service._record_artifact(active, TransferredArtifactSignal(
+            kind="checkpoint", path=path, backend="s3", bucket="lab9",
+            prefix=prefix))
+    [row] = await store.list_artifacts(record.id)
+    assert (row.mount_label, row.stored_path) == ("lab9",
+                                                  f"{prefix}checkpoint/a.pt")
+    assert row.path == f"s3://lab9/{prefix}checkpoint/a.pt"
+
+
+async def test_delete_says_when_the_objects_stay(s3_on, http, monkeypatch,
+                                                 caplog):
+    await http.store.add_artifact("r1", "checkpoint",
+                                  "runs/r1/checkpoint/a.pt", backend="s3",
+                                  mount_label="lab", worker_id="gpu-1")
+    monkeypatch.setattr(s3, "client_available", lambda: False)
+    response = await http.delete("/api/runs/r1",
+                                 headers={TOKEN_HEADER: session_token()})
+    assert response.status_code == 200
+    assert "stay" in response.json()["warning"]
+    assert "boto3" in response.json()["warning"]
+    assert "S3 objects stay" in caplog.text
+
+
+async def test_a_delete_reports_a_bucket_that_refuses(s3_on, http,
+                                                      monkeypatch):
+    await http.store.add_artifact("r1", "checkpoint",
+                                  "runs/r1/checkpoint/a.pt", backend="s3",
+                                  mount_label="lab", worker_id="gpu-1")
+
+    def broken(service: str = "s3") -> Any:
+        raise s3.S3Unavailable("down")
+
+    monkeypatch.setattr(s3, "control_client", broken)
+    response = await http.delete("/api/runs/r1",
+                                 headers={TOKEN_HEADER: session_token()})
+    assert response.status_code == 200
+    assert "r1: S3Unavailable: down" in response.json()["warning"]
+
+
+def test_a_presigned_download_encodes_a_non_ascii_name(bucket):
+    from urllib.parse import parse_qs, urlparse
+
+    url = s3.presigned_url("runs/r1/checkpoint/模型-e10.pt", "模型-e10.pt")
+    [disposition] = parse_qs(urlparse(url).query)[
+        "response-content-disposition"]
+    assert disposition == ("attachment; filename*=utf-8''"
+                           "%E6%A8%A1%E5%9E%8B-e10.pt")
+    assert disposition.isascii()
+    assert s3.content_disposition("a.pt") == 'attachment; filename="a.pt"'
+    assert s3.content_disposition('a"b.pt').startswith(
+        "attachment; filename*=utf-8''")
+
+
+def test_locations_read_each_rows_bucket_and_prefix(s3_on):
+    rows = [("r1", "lab", "old/runs/r1/checkpoint/a.pt"),
+            ("r1", "lab", "old/runs/r1/output/b.pt"),
+            ("r1", None, "runs/r1/checkpoint/c.pt"),
+            ("r1", "lab", "not-a-run-key")]
+    assert s3.locations(rows) == [("r1", "lab", "old/runs/r1/"),
+                                  ("r1", "lab", "runs/r1/")]

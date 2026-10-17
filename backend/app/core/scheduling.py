@@ -137,7 +137,7 @@ def no_mount_backend(worker: Any) -> str | None:
     return None
 
 
-def speaks_transfer(worker: Any) -> bool:
+def ships_files(worker: Any) -> bool:
     """Whether *worker* can take a run without the mount: its agent speaks
     a backend that ships the files (:func:`no_mount_backend`)."""
     return no_mount_backend(worker) is not None
@@ -149,7 +149,7 @@ def reaches(worker: Any, entry: Any) -> bool:
     and the worker speaks it (#785)."""
     mount = entry_mount(entry)
     return (mount is None or holds_mount(worker, mount)
-            or (entry_transfers(entry) and speaks_transfer(worker)))
+            or (entry_transfers(entry) and ships_files(worker)))
 
 
 class SlotLimits(Protocol):
@@ -359,7 +359,7 @@ class WorkerScheduler:
                    if mount is None or holds_mount(w, mount)]
         if mount is not None and entry_transfers(entry):
             ordered += [w for w in workers
-                        if not holds_mount(w, mount) and speaks_transfer(w)]
+                        if not holds_mount(w, mount) and ships_files(w)]
         for worker in ordered:
             placement = self._place_on(worker, requested, devices, taken)
             if placement is not None:
@@ -455,7 +455,7 @@ class WorkerScheduler:
             return True
         return any((w.online or not connected_only)
                    and (mount is None or holds_mount(w, mount)
-                        or (transfer and speaks_transfer(w)))
+                        or (transfer and ships_files(w)))
                    and not (usable_only and _skipped_by_any(w))
                    and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -64,6 +65,14 @@ logger = logging.getLogger(__name__)
 #: ``credentials`` frame on its way will fix: retried like an outage.
 EXPIRED_CODES = frozenset({"ExpiredToken", "TokenRefreshRequired",
                            "RequestExpired", "ExpiredTokenException"})
+#: What MinIO answers for STS credentials past their expiry: it forgets
+#: them, so they read as unknown keys. Retried like :data:`EXPIRED_CODES`
+#: only when the credentials used are temporary and at or past their
+#: ``expires_at`` (:data:`EXPIRY_SLACK_S`); otherwise a refusal (wrong
+#: static keys must fail at once).
+UNKNOWN_KEY_CODES = frozenset({"InvalidAccessKeyId", "InvalidToken"})
+#: Clock difference allowed between this worker and the endpoint.
+EXPIRY_SLACK_S = 60.0
 
 __all__ = ["S3Client", "client_available"]
 
@@ -82,11 +91,20 @@ class _NoSession:
         return None
 
 
-def _retryable(exc: BaseException) -> tuple[bool, bool]:
-    """``(retry, outage)`` for a failed S3 call: a refusal is neither; an
-    unreachable endpoint, a throttle or expired credentials an outage; any
-    other 5xx a quick retry."""
+def _expired(access: Any) -> bool:
+    """Whether *access* is temporary and at (or past) its expiry."""
+    expires_at = getattr(access, "expires_at", None)
+    return expires_at is not None \
+        and time.time() >= float(expires_at) - EXPIRY_SLACK_S
+
+
+def _retryable(exc: BaseException, access: Any = None) -> tuple[bool, bool]:
+    """``(retry, outage)`` for a failed S3 call made with *access*: a
+    refusal is neither; an unreachable endpoint, a throttle or expired
+    credentials an outage; any other 5xx a quick retry."""
     code, status = error_code(exc)
+    if code in UNKNOWN_KEY_CODES and _expired(access):
+        return True, True
     if code is None and status is None:
         # No answer at all: a connection, timeout or DNS failure is the
         # endpoint being away; a local error (the file vanished) is not.
@@ -204,7 +222,7 @@ class S3Client:
             except Exception as exc:  # noqa: BLE001 -- botocore, network
                 error = TransferError(f"fetching {entry.name} from S3: "
                                       f"{describe(exc)}")
-                retry, _ = _retryable(exc)
+                retry, _ = _retryable(exc, self.access)
                 if not retry:
                     raise error from None
                 last = error
@@ -223,6 +241,7 @@ class S3Client:
         checksum = sha256_file(path)
 
         def attempt() -> str:
+            access = self.access
             try:
                 s3, access = self._s3()
                 s3.upload_file(str(path), access.bucket, key, ExtraArgs={
@@ -230,7 +249,7 @@ class S3Client:
             except Exception as exc:  # noqa: BLE001 -- botocore / boto3
                 error = TransferError(f"uploading {name} to S3: "
                                       f"{describe(exc)}")
-                retry, outage = _retryable(exc)
+                retry, outage = _retryable(exc, access)
                 if not retry:
                     raise error from None
                 raise RetryableUpload(error, outage=outage) from None

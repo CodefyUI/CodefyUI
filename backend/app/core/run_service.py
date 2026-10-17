@@ -3141,14 +3141,18 @@ class RunService:
         elif getattr(signal, "backend", None) == BACKEND_S3:
             # Uploaded to the run's bucket by the worker (#791): the path is
             # the object key, recorded only under the run's own prefix.
+            # The bucket goes in ``mount_label``, unused for these rows,
+            # so the row keeps naming its object after a settings change.
             from .s3 import owns_key
 
-            if not owns_key(active.run_id, signal.path):
+            if not owns_key(active.run_id, signal.path,
+                            getattr(signal, "prefix", None)):
                 logger.warning("run %s: ignoring an S3 artifact outside the "
                                "run's prefix: %r", active.run_id,
                                signal.path)
                 return
             backend = BACKEND_S3
+            mount_label = getattr(signal, "bucket", None)
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
         record = await self.store.add_artifact(

@@ -159,30 +159,62 @@ def input_key(sha256: str) -> str:
     return f"{key_prefix()}{INPUTS_DIRNAME}/{sha256}"
 
 
-def owns_key(run_id: str, key: str) -> bool:
-    """Whether *key* is one of *run_id*'s objects: under :func:`run_prefix`,
-    at least ``<kind>/<name>`` deep, with no part that is empty, ``.`` or
-    ``..``. What a worker may record for the run, and what retention and
-    the download route touch."""
-    prefix = run_prefix(run_id)
+def _clean_parts(text: str) -> bool:
+    parts = text.split("/")
+    return "\\" not in text and all(p not in ("", ".", "..") for p in parts)
+
+
+def recorded_prefix(run_id: str, key: str) -> str | None:
+    """The run prefix *key* was written under: everything up to and
+    including its first ``runs/<run_id>/`` part, or None when it has none.
+    Read from the key itself, so a row keeps naming its object after
+    ``CODEFYUI_S3_PREFIX`` changes."""
+    marker = f"{RUNS_DIRNAME}/{key_part(run_id)}/"
     key = str(key)
-    if not key.startswith(prefix):
-        return False
-    rest = key[len(prefix):]
-    parts = rest.split("/")
-    if len(parts) < 2:
-        return False
-    return all(part not in ("", ".", "..") for part in parts) \
-        and "\\" not in rest
+    if key.startswith(marker):
+        start = 0
+    else:
+        found = key.find("/" + marker)
+        if found < 0:
+            return None
+        start = found + 1
+    head = key[:start].rstrip("/")
+    if head and not _clean_parts(head):
+        return None
+    return key[:start + len(marker)]
 
 
-def uri(key: str) -> str | None:
-    """``s3://<bucket>/<key>``, how a listing names an S3 row; None
-    without a bucket."""
+def owns_key(run_id: str, key: str, prefix: str | None = None) -> bool:
+    """Whether *key* is one of *run_id*'s objects: under its run prefix
+    (:func:`recorded_prefix`; *prefix* when given, the one the run was
+    assigned), at least ``<kind>/<name>`` deep, with no part that is empty,
+    ``.`` or ``..``. What a worker may record for the run, and what
+    retention and the download route touch."""
+    found = recorded_prefix(run_id, key)
+    if found is None or (prefix is not None and found != prefix):
+        return False
+    rest = str(key)[len(found):]
+    return len(rest.split("/")) >= 2 and _clean_parts(rest)
+
+
+def uri(key: str, bucket: str | None = None) -> str | None:
+    """``s3://<bucket>/<key>``, how a listing names an S3 row: the bucket
+    the row recorded, else ``CODEFYUI_S3_BUCKET``; None without either."""
     from ..config import settings
 
-    bucket = settings.S3_BUCKET
+    bucket = bucket or settings.S3_BUCKET
     return f"s3://{bucket}/{key}" if bucket else None
+
+
+def content_disposition(name: str) -> str:
+    """``Content-Disposition`` for downloading *name*: plain for an ASCII
+    name, RFC 5987 ``filename*`` otherwise (a non-ASCII header value is
+    not valid HTTP)."""
+    from urllib.parse import quote
+
+    if name.isascii() and '"' not in name and "\\" not in name:
+        return f'attachment; filename="{name}"'
+    return f"attachment; filename*=utf-8''{quote(name, safe='')}"
 
 
 # ── clients ───────────────────────────────────────────────────────────────
@@ -314,7 +346,17 @@ def session_policy(bucket: str, prefix: str,
     return policy
 
 
-_sts_warned = False
+#: In ``auto`` mode, how long a refused STS is not asked again (seconds);
+#: a settings change asks at once.
+STS_RETRY_AFTER_S = 600.0
+#: ``(settings key, monotonic time)`` of the last refused STS, or None.
+_sts_failed: tuple[tuple[Any, ...], float] | None = None
+
+
+def _sts_recently_failed(key: tuple[Any, ...]) -> bool:
+    failed = _sts_failed
+    return failed is not None and failed[0] == key \
+        and time.monotonic() - failed[1] < STS_RETRY_AFTER_S
 
 
 def issue_access(run_id: str, input_keys: Iterable[str] = ()) -> Any:
@@ -322,7 +364,7 @@ def issue_access(run_id: str, input_keys: Iterable[str] = ()) -> Any:
     credentials from STS, or this server's own (``CODEFYUI_S3_CREDENTIALS``,
     see the module docstring). ``S3Unavailable`` when ``sts`` was asked
     for and STS refused. Blocking."""
-    global _sts_warned
+    global _sts_failed
     from . import worker_protocol as wp
     from ..config import settings
 
@@ -332,7 +374,9 @@ def issue_access(run_id: str, input_keys: Iterable[str] = ()) -> Any:
                   bucket=settings.S3_BUCKET, prefix=prefix,
                   addressing_style=settings.S3_ADDRESSING_STYLE)
     mode = settings.S3_CREDENTIALS
-    if mode in ("sts", "auto"):
+    sts_key = _settings_key("sts") + (settings.S3_STS_ROLE_ARN,)
+    if mode == "sts" or (mode == "auto"
+                         and not _sts_recently_failed(sts_key)):
         try:
             answer = control_client("sts").assume_role(
                 RoleArn=(settings.S3_STS_ROLE_ARN
@@ -355,13 +399,13 @@ def issue_access(run_id: str, input_keys: Iterable[str] = ()) -> Any:
                 raise S3Unavailable(
                     f"STS AssumeRole failed: {describe(exc)} "
                     "(CODEFYUI_S3_CREDENTIALS=sts)") from None
-            if not _sts_warned:
-                _sts_warned = True
-                logger.warning(
-                    "S3: STS AssumeRole failed (%s); workers get this "
-                    "server's own S3 keys instead (CODEFYUI_S3_CREDENTIALS="
-                    "auto). Set it to `static` to skip STS, or `sts` to "
-                    "refuse such runs.", describe(exc))
+            _sts_failed = (sts_key, time.monotonic())
+            logger.warning(
+                "S3: STS AssumeRole failed (%s); workers get this server's "
+                "own S3 keys instead, and STS is not asked again for %.0f "
+                "min (CODEFYUI_S3_CREDENTIALS=auto). Set it to `static` to "
+                "skip STS, or `sts` to refuse such runs.", describe(exc),
+                STS_RETRY_AFTER_S / 60)
     return wp.S3Access(
         **common, access_key_id=settings.S3_ACCESS_KEY_ID,
         secret_access_key=settings.S3_SECRET_ACCESS_KEY.get_secret_value())
@@ -412,40 +456,41 @@ def ensure_inputs(manifest: Iterable[Mapping[str, Any]]
 # ── reading and removing a run's objects ──────────────────────────────────
 
 
-def head(key: str) -> dict[str, Any] | None:
-    """The object's metadata, or None when there is no such object."""
+def _bucket(bucket: str | None) -> str:
     from ..config import settings
 
+    return bucket or settings.S3_BUCKET
+
+
+def head(key: str, bucket: str | None = None) -> dict[str, Any] | None:
+    """The object's metadata, or None when there is no such object.
+    *bucket*: the row's; ``CODEFYUI_S3_BUCKET`` when None (so for the
+    helpers below)."""
     try:
-        return control_client().head_object(Bucket=settings.S3_BUCKET,
-                                            Key=key)
+        return control_client().head_object(Bucket=_bucket(bucket), Key=key)
     except Exception as exc:  # noqa: BLE001 -- botocore
         if _is_missing(exc):
             return None
         raise S3Unavailable(describe(exc)) from None
 
 
-def is_folder(key: str) -> bool:
+def is_folder(key: str, bucket: str | None = None) -> bool:
     """Whether *key* names a folder: objects exist under ``<key>/``."""
-    from ..config import settings
-
     try:
         answer = control_client().list_objects_v2(
-            Bucket=settings.S3_BUCKET, Prefix=key.rstrip("/") + "/",
+            Bucket=_bucket(bucket), Prefix=key.rstrip("/") + "/",
             MaxKeys=1)
     except Exception as exc:  # noqa: BLE001 -- botocore
         raise S3Unavailable(describe(exc)) from None
     return bool(answer.get("KeyCount") or answer.get("Contents"))
 
 
-def open_stream(key: str) -> Iterator[bytes]:
+def open_stream(key: str, bucket: str | None = None) -> Iterator[bytes]:
     """The object's bytes, :data:`CHUNK` at a time (a sync iterator, for a
     ``StreamingResponse``). The object is opened here, so a missing one or
     a refusal raises now (``S3Unavailable``), not mid-response."""
-    from ..config import settings
-
     try:
-        body = control_client().get_object(Bucket=settings.S3_BUCKET,
+        body = control_client().get_object(Bucket=_bucket(bucket),
                                            Key=key)["Body"]
     except Exception as exc:  # noqa: BLE001 -- botocore
         raise S3Unavailable(describe(exc)) from None
@@ -459,17 +504,15 @@ def open_stream(key: str) -> Iterator[bytes]:
     return chunks()
 
 
-def presigned_url(key: str, filename: str) -> str:
+def presigned_url(key: str, filename: str, bucket: str | None = None) -> str:
     """A pre-signed GET for *key*, valid ``CODEFYUI_S3_PRESIGN_TTL_S``, that
-    downloads as *filename*."""
+    downloads as *filename* (:func:`content_disposition`)."""
     from ..config import settings
 
-    safe = filename.replace('"', "")
     return control_client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.S3_BUCKET, "Key": key,
-                "ResponseContentDisposition":
-                    f'attachment; filename="{safe}"'},
+        Params={"Bucket": _bucket(bucket), "Key": key,
+                "ResponseContentDisposition": content_disposition(filename)},
         ExpiresIn=int(settings.S3_PRESIGN_TTL_S))
 
 
@@ -479,17 +522,33 @@ def _kept(relative: str, keep_checkpoints: bool) -> bool:
                                        and first == CHECKPOINT_DIRNAME)
 
 
-def remove_run_objects(run_id: str, *, keep_checkpoints: bool = False) -> int:
+def locations(rows: Iterable[tuple[str, str | None, str]]
+              ) -> list[tuple[str, str, str]]:
+    """``(run_id, bucket, run prefix)`` for each distinct place the S3 rows
+    ``(run_id, bucket, key)`` were written to, read from the rows (the
+    bucket and prefix of their time, :func:`recorded_prefix`). A row with
+    no recorded bucket is taken as ``CODEFYUI_S3_BUCKET``'s."""
+    found: dict[tuple[str, str, str], None] = {}
+    for run_id, bucket, key in rows:
+        prefix = recorded_prefix(run_id, key)
+        where = _bucket(bucket)
+        if prefix is not None and where:
+            found[(run_id, where, prefix)] = None
+    return list(found)
+
+
+def remove_run_objects(run_id: str, *, keep_checkpoints: bool = False,
+                       bucket: str | None = None,
+                       prefix: str | None = None) -> int:
     """Delete *run_id*'s objects (retention, ``DELETE``): everything under
-    :func:`run_prefix` but ``output/`` (a writer node's files) and, with
-    *keep_checkpoints* (an interrupted run under retention),
+    its run prefix (*prefix*, the one its rows recorded; :func:`run_prefix`
+    when None) in *bucket*, but ``output/`` (a writer node's files) and,
+    with *keep_checkpoints* (an interrupted run under retention),
     ``checkpoint/``; and abort the run's unfinished multipart uploads.
     Blocking. How many objects went."""
-    from ..config import settings
-
     client = control_client()
-    bucket = settings.S3_BUCKET
-    prefix = run_prefix(run_id)
+    bucket = _bucket(bucket)
+    prefix = prefix or run_prefix(run_id)
     doomed: list[str] = []
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
@@ -519,21 +578,26 @@ def remove_run_objects(run_id: str, *, keep_checkpoints: bool = False) -> int:
     return removed
 
 
-def remove_runs_objects(runs: Iterable[tuple[str, bool]]) -> list[str]:
-    """:func:`remove_run_objects` for each ``(run_id, keep_checkpoints)``;
-    the runs something was removed for. Never raises: a bucket that cannot
-    be reached is logged and its objects stay (the next retention pass does
-    not see the run again, so the bucket's lifecycle rule is the
+def remove_runs_objects(runs: Iterable[tuple[str, bool, str, str]]
+                        ) -> tuple[list[str], list[str]]:
+    """:func:`remove_run_objects` for each ``(run_id, keep_checkpoints,
+    bucket, prefix)``; ``(runs something was removed for, failures)``, a
+    failure being ``"<run_id>: <reason>"``. Never raises: a bucket that
+    cannot be reached is logged and its objects stay (the next retention
+    pass does not see the run again, so the bucket's lifecycle rule is the
     backstop). Blocking."""
     removed: list[str] = []
-    for run_id, keep in runs:
+    failed: list[str] = []
+    for run_id, keep, bucket, prefix in runs:
         try:
-            if remove_run_objects(run_id, keep_checkpoints=keep):
+            if remove_run_objects(run_id, keep_checkpoints=keep,
+                                  bucket=bucket, prefix=prefix):
                 removed.append(run_id)
         except Exception as exc:  # noqa: BLE001 -- botocore, network
-            logger.warning("S3: could not remove the objects of run %s: %s",
-                           run_id, describe(exc))
-    return removed
+            logger.warning("S3: could not remove the objects of run %s in "
+                           "bucket %s: %s", run_id, bucket, describe(exc))
+            failed.append(f"{run_id}: {describe(exc)}")
+    return removed, failed
 
 
 def filename(key: str) -> str:

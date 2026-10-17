@@ -336,3 +336,59 @@ def test_the_protocol_carries_an_s3_assignment_without_showing_secrets():
     frame = _s3_assign("p1")
     assert wp.decode_control_frame(wp.encode_frame(frame)) == frame
     assert "SK" not in repr(frame)
+
+
+
+def test_unknown_keys_wait_for_renewal_only_when_temporary_ones_expired(
+        tmp_path, monkeypatch):
+    """MinIO answers ``InvalidAccessKeyId`` once STS credentials expire
+    (it forgets them): retried like an outage then, until the renewal
+    arrives; with static keys, or temporary ones still valid, a refusal."""
+    import time
+
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setattr(tr, "RETRY_PAUSE_S", 0.0)
+
+    def unknown() -> ClientError:
+        return ClientError({"Error": {"Code": "InvalidAccessKeyId"},
+                            "ResponseMetadata": {"HTTPStatusCode": 403}},
+                           "PutObject")
+
+    source = tmp_path / "ck.pt"
+    source.write_bytes(b"w")
+    calls: list[str] = []
+
+    def factory(**kw: Any) -> Any:
+        class _Client:
+            def upload_file(self, *a: Any, **k: Any) -> None:
+                calls.append(kw["access_key_id"])
+                if kw["access_key_id"] == "OLD":
+                    raise unknown()
+
+        return _Client()
+
+    expired = _access(access_key_id="OLD", session_token="t",
+                      expires_at=time.time() - 1)
+    client = agent_s3.S3Client(expired, tr.InputCache(tmp_path / "c"),
+                               factory=factory)
+    real_sleep = tr._sleep
+
+    def renew_while_waiting(seconds: float, cancelled: Any) -> None:
+        client.update_access(_access(access_key_id="NEW", session_token="t",
+                                     expires_at=time.time() + 900))
+        real_sleep(0, cancelled)
+
+    monkeypatch.setattr(tr, "_sleep", renew_while_waiting)
+    assert client.upload("r1", "checkpoint", "ck.pt", source) == \
+        "runs/r1/checkpoint/ck.pt"
+    assert calls == ["OLD", "NEW"]
+    for access in (_access(access_key_id="OLD"),  # static
+                   _access(access_key_id="OLD", session_token="t",
+                           expires_at=time.time() + 900)):  # still valid
+        calls.clear()
+        refused = agent_s3.S3Client(access, tr.InputCache(tmp_path / "c"),
+                                    factory=factory)
+        with pytest.raises(tr.TransferError, match="InvalidAccessKeyId"):
+            refused.upload("r1", "checkpoint", "ck.pt", source)
+        assert calls == ["OLD"]

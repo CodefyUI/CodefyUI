@@ -80,3 +80,33 @@ def test_directions_do_not_mix():
         wp.decode_control_frame(wp.encode_frame(wp.Heartbeat()))
     with pytest.raises(wp.ProtocolError):
         wp.decode_agent_frame(wp.encode_frame(wp.Drain()))
+
+
+
+def test_a_bad_assign_never_shows_its_secrets_in_the_error():
+    """#791: ``ProtocolError`` is logged; an assign carries S3 credentials
+    and secret params, whatever level its validation fails at."""
+    import json as _json
+
+    secret = "TOPSECRET-KEY"
+    bad = [
+        {"type": "assign", "run_id": "r1", "graph": {"p": secret},
+         "storage": {"backend": "nope", "mount": "data",
+                     "s3": {"bucket": "b", "prefix": "p",
+                            "access_key_id": "AK",
+                            "secret_access_key": secret,
+                            "session_token": secret}}},
+        {"type": "assign", "run_id": "r1", "graph": {"p": secret},
+         "storage": {"backend": "s3", "mount": "data", "s3": secret}},
+        {"type": "assign", "run_id": "r1", "graph": {"p": secret},
+         "storage": secret},
+        {"type": "credentials", "run_id": "../x",
+         "s3": {"bucket": "b", "prefix": "p", "access_key_id": "AK",
+                "secret_access_key": secret}},
+        {"type": "nope", "secret": secret},
+    ]
+    for frame in bad:
+        with pytest.raises(wp.ProtocolError) as caught:
+            wp.decode_control_frame(_json.dumps(frame))
+        assert secret not in str(caught.value), frame
+        assert caught.value.__cause__ is None

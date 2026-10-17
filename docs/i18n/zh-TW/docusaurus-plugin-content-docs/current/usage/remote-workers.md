@@ -237,7 +237,7 @@ cdui start
 **檔案放在哪裡。** 放在 `CODEFYUI_S3_PREFIX` 之下（預設為空；設為 `codefyui/` 會把所有東西放在該資料夾下）：
 
 - `inputs/<sha256>`：run 讀取的上傳檔。第一次有 run 需要它時由控制面放入，以內容命名，同一個檔案不會上傳兩次。Worker 從這裡把它下載到 transfer 後端使用的同一個 `agent-cache`。
-- `runs/<run id>/<kind>/<name>`：run 記錄為 artifact 的每個檔案（週期 checkpoint 是 `runs/<run id>/checkpoint/<name>.pt`，TensorBoard 資料夾逐檔上傳），以及放在 `runs/<run id>/output/` 下、run 寫在 `models/`、`media/` 或 `output/` 中的其他檔案，保留它在那裡的路徑（ModelSaver 的 `iris/model.pt` 會是 `runs/<run id>/output/models/iris/model.pt`）。Agent 的上傳方式與 transfer 後端相同：與 run 並行、中斷 checkpoint 最後上傳、在回報 run 結束之前完成，並以相同的重試度過斷線。暫時憑證過期時也以同樣方式重試，直到新憑證送達。被 bucket 拒絕的檔案（`AccessDenied`、bucket 不存在）會留在 worker 上，並附上 `transfer_failed` 警告。
+- `runs/<run id>/<kind>/<name>`：run 記錄為 artifact 的每個檔案（週期 checkpoint 是 `runs/<run id>/checkpoint/<name>.pt`，TensorBoard 資料夾逐檔上傳），以及放在 `runs/<run id>/output/` 下、run 寫在 `models/`、`media/` 或 `output/` 中的其他檔案，保留它在那裡的路徑（ModelSaver 的 `iris/model.pt` 會是 `runs/<run id>/output/models/iris/model.pt`）。Agent 的上傳方式與 transfer 後端相同：與 run 並行、中斷 checkpoint 最後上傳、在回報 run 結束之前完成，並以相同的重試度過斷線。暫時憑證過期時也以同樣方式重試，直到新憑證送達（MinIO 對過期憑證回應 `InvalidAccessKeyId`；只有已到或超過期限的暫時憑證遇到這個回應才會重試）。被 bucket 拒絕的檔案（`AccessDenied`、bucket 不存在）會留在 worker 上，並附上 `transfer_failed` 警告。
 
 `GET /api/runs/{id}/artifacts` 以 `backend: "s3"` 列出它們，`path` 為 `s3://<bucket>/<key>`，`relative_path` 為 key。在執行任務面板中，**複製路徑** 會複製 `s3://` 位址（給 `mc` 或 `aws s3` 使用），**下載** 則取得檔案：預設經由控制面轉送（`CODEFYUI_S3_DOWNLOAD=proxy`），設為 `presign` 時會把瀏覽器導向有效 `CODEFYUI_S3_PRESIGN_TTL_S` 秒的預先簽署 URL，資料直接從 bucket 傳到瀏覽器（此時瀏覽器必須自己連得到 bucket 的位址）。與 transfer 後端不同，寫檔節點的檔案不會放進控制面的 `models/` 資料夾：本機 run 要讀它之前，請先下載。
 
@@ -245,11 +245,11 @@ cdui start
 
 - `sts`：向 endpoint 的 STS 取得暫時憑證（`AssumeRole`），附帶 session policy，只允許寫入 `runs/<run id>/` 之下，以及讀取該 run 的輸入，有效期為 `CODEFYUI_S3_STS_DURATION_S`（預設一小時）。只要 run 還在執行，控制面會在過期前送出新的憑證。MinIO 用一般使用者的 key 就能發出這種憑證；AWS 則需要可 assume 的 role（`CODEFYUI_S3_STS_ROLE_ARN`）。無法取得憑證的 run 會在送出之前失敗。
 - `static`：控制面自己的 key。請給 CodefyUI 一個只能存取這個 bucket 的使用者。
-- `auto`（預設）：先用 `sts`，STS 拒絕時改用控制面自己的 key，並在伺服器 log 留下一則警告。
+- `auto`（預設）：先用 `sts`，STS 拒絕時改用控制面自己的 key，並在伺服器 log 留下警告；之後 10 分鐘內，或在 S3 設定變更之前，不再向 STS 要求。
 
 憑證隨 run 的指派送出，與它的機密參數相同（[Agent 與控制面之間的信任](#trust-between-agent-and-control-plane)）：控制面位址是一般的 `http://` 時不會加密。Agent 只把它們放在記憶體中，不寫入檔案或 log，run 的子程序也拿不到。控制面從環境變數讀取自己的 key，不寫入任何資料庫或 log。
 
-**清理。** Run 保留機制與 **刪除** 會移除 run 在 `runs/<run id>/` 下的物件，並中止它未完成的上傳，但保留 `output/`（寫檔節點的檔案會保留，與 transfer 後端把它們留在資料夾中相同），以及保留機制移除以 `interrupted` 結束的 run 時，它的 `checkpoint/`。當時連不上的 bucket 會記錄在 log 中，物件保留不動。沒有任何 run 資料列指向的東西（保留下來的 `output/` 資料夾、`inputs/`、已終止的 worker 留下的上傳）交給 bucket 的 lifecycle 規則處理。在 AWS S3 上：
+**清理。** Run 保留機制與 **刪除** 會移除 run 在 `runs/<run id>/` 下的物件，並中止它未完成的上傳，但保留 `output/`（寫檔節點的檔案會保留，與 transfer 後端把它們留在資料夾中相同），以及保留機制移除以 `interrupted` 結束的 run 時，它的 `checkpoint/`。當時連不上的 bucket 會記錄在 log 中，物件保留不動；**刪除** 時回應的 `warning` 也會說明。沒有任何 run 資料列指向的東西（保留下來的 `output/` 資料夾、`inputs/`、已終止的 worker 留下的上傳）交給 bucket 的 lifecycle 規則處理。在 AWS S3 上：
 
 ```json
 {"Rules": [
@@ -262,7 +262,7 @@ cdui start
 
 （`aws s3api put-bucket-lifecycle-configuration --bucket codefyui --lifecycle-configuration file://rules.json`；若設定了 `CODEFYUI_S3_PREFIX`，prefix 要加在它之下）。MinIO 不接受 `AbortIncompleteMultipartUpload`：它會在 24 小時後自行移除未完成的上傳（`mc admin config get lab api` 會顯示 `stale_uploads_expiry`），因此只需要過期規則：`mc ilm rule add lab/codefyui --prefix "inputs/" --expire-days 30`。過期的輸入檔會由下一個需要它的 run 重新上傳。
 
-之後若變更 `CODEFYUI_S3_BUCKET` 或 `CODEFYUI_S3_PREFIX`，先前 run 的物件會留在原處；控制面改到新位置找它們，因此它們的下載會回 404。
+每筆資料列會記下它的 bucket，key 也帶著當時的 prefix，因此之後變更 `CODEFYUI_S3_BUCKET` 或 `CODEFYUI_S3_PREFIX` 只影響新的 run：先前 run 的檔案仍在原處列出、下載與移除（控制面的 key 必須仍能存取舊的 bucket）。
 
 ## 讓 worker 保持同步 {/* #keeping-workers-in-sync */}
 

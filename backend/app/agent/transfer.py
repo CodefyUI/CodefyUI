@@ -382,7 +382,13 @@ class TransferClient:
                     f"uploading {name}: {exc}"), outage=True) from None
             status = response.status_code
             if status == 200:
-                return str(response.json()["path"])
+                try:
+                    return str(response.json()["path"])
+                except Exception as exc:  # noqa: BLE001 -- a proxy's page
+                    # Not the control plane's answer (#785: retried as an
+                    # outage, like any other request that did not reach it).
+                    raise RetryableUpload(TransferError(
+                        f"uploading {name}: {exc}"), outage=True) from None
             error = TransferError(f"uploading {name}: HTTP {status} "
                                   f"{_detail(response)}")
             if status < 500 and status not in OUTAGE_STATUSES:

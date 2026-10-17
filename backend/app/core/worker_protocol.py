@@ -111,7 +111,7 @@ import json
 import re
 from typing import Annotated, Any, Iterable, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 #: Bumped on any change a peer of the previous version would misread. Sent
 #: in ``hello`` and ``welcome``; a mismatch is refused (#781). 2: ``ack`` and
@@ -238,7 +238,9 @@ class _Frame(BaseModel):
     # Additive growth (#781): a field this build does not know is dropped,
     # not refused, so a newer optional field never breaks an older reader.
     # A field whose meaning changes bumps PROTOCOL_VERSION instead.
-    model_config = ConfigDict(extra="ignore")
+    # No frame's input in a validation error (#791): an ``assign`` carries
+    # S3 credentials and secret params, and ``ProtocolError`` is logged.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
 
 class _RunFrame(_Frame):
@@ -443,8 +445,6 @@ class S3Access(_Frame):
     (#791). Secret fields stay out of ``repr`` and validation errors: the
     agent holds them in memory only (#251) and never logs them."""
 
-    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
-
     #: ``CODEFYUI_S3_ENDPOINT_URL``; None: AWS S3 for ``region``.
     endpoint_url: str | None = None
     region: str | None = None
@@ -542,8 +542,6 @@ class Credentials(_Frame):
     """New credentials for a running ``s3`` run (#791), sent before the
     previous temporary ones expire; only to an agent that lists ``s3``."""
 
-    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
-
     type: Literal["credentials"] = CREDENTIALS
     run_id: RunId
     s3: S3Access
@@ -577,8 +575,10 @@ ControlFrame = Annotated[
     Field(discriminator="type"),
 ]
 
-_AGENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(AgentFrame)
-_CONTROL_ADAPTER: TypeAdapter[Any] = TypeAdapter(ControlFrame)
+_AGENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(
+    AgentFrame, config=ConfigDict(hide_input_in_errors=True))
+_CONTROL_ADAPTER: TypeAdapter[Any] = TypeAdapter(
+    ControlFrame, config=ConfigDict(hide_input_in_errors=True))
 
 
 class ProtocolError(ValueError):
@@ -606,6 +606,15 @@ def _decode(adapter: TypeAdapter[Any], raw: str | bytes) -> Any:
         raise ProtocolError("frame is not a JSON object")
     try:
         return adapter.validate_python(data)
+    except ValidationError as exc:
+        # Locations and messages only, never the input (#791: an assign
+        # carries credentials), whatever the models' config says.
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors(include_url=False, include_input=False,
+                                    include_context=False))
+        raise ProtocolError(
+            f"invalid {data.get('type')!r} frame: {detail}") from None
     except ValueError as exc:
         raise ProtocolError(f"invalid {data.get('type')!r} frame: {exc}") from exc
 

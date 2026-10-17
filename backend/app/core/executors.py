@@ -93,9 +93,13 @@ class TransferredArtifactSignal(ArtifactSignal):
     (``core.transfer.key_location``). ``RunService`` stores a ``transfer``
     row. A subclass, like :class:`MountedArtifactSignal`. ``backend`` is
     ``s3`` (#791) for a file a worker uploaded to the run's bucket instead:
-    ``path`` is then its object key."""
+    ``path`` is then its object key, ``bucket`` the bucket and ``prefix``
+    the run's key prefix it was assigned (both recorded with the row, so a
+    later settings change does not lose the object)."""
 
     backend: str = "transfer"
+    bucket: str | None = None
+    prefix: str | None = None
 
 
 @dataclass
@@ -589,16 +593,25 @@ WARNING_WORKER_RECONNECTED = "worker_reconnected"
 ACK_EVERY = 64
 ACK_INTERVAL_S = 1.0
 
-#: ``run_warning`` kind (#791): S3 is on, but the run's worker cannot use
-#: it, so its files go through this server (``core.s3``'s constant).
-WARNING_STORAGE_FALLBACK = "storage_fallback"
 #: An ``s3`` run's temporary credentials are renewed once this share of
 #: their remaining lifetime has passed (#791), never sooner than
 #: :data:`REFRESH_MIN_S`; a failed renewal is retried every
-#: :data:`REFRESH_RETRY_S`.
+#: :data:`REFRESH_RETRY_S` until it succeeds.
 REFRESH_AT = 2 / 3
 REFRESH_MIN_S = 5.0
 REFRESH_RETRY_S = 60.0
+
+
+@dataclass
+class _S3Run:
+    """An ``s3`` run's storage on this side (#791): the bucket and prefix
+    its rows record, and the latest credentials sent (re-sent after a
+    reconnect)."""
+
+    bucket: str
+    prefix: str
+    access: Any
+    renewed: bool = False
 
 
 class WorkerExecutor:
@@ -658,6 +671,8 @@ class WorkerExecutor:
         #: that uses the transfer backend (#785). None: no such run is
         #: assigned (it fails with a message instead).
         self._content_index = content_index
+        #: The ``s3`` runs in flight (#791), by run id.
+        self._s3_runs: dict[str, _S3Run] = {}
 
     async def _send(self, worker_id: str, frame: Any) -> bool:
         """Send *frame* to *worker_id*'s current connection. False if none."""
@@ -706,10 +721,15 @@ class WorkerExecutor:
                 return ExecutionOutcome(STATUS_FAILED, (
                     f"cannot send this run's input files to {where}: {exc}"))
             if backend == "transfer" and _s3_skipped(worker):
-                await _warning(request, WARNING_STORAGE_FALLBACK, (
+                from . import s3
+                await _warning(request, s3.WARNING_STORAGE_FALLBACK, (
                     f"worker {worker_id} cannot use the S3 bucket (its agent "
                     "has no boto3); this run's files go through this "
                     "server instead"))
+        if storage.s3 is not None:
+            self._s3_runs[request.run_id] = _S3Run(
+                bucket=storage.s3.bucket, prefix=storage.s3.prefix,
+                access=storage.s3)
         run = self._registry.open_run(worker, request.run_id)
         watcher: asyncio.Task | None = None
         refresher: asyncio.Task | None = None
@@ -726,7 +746,7 @@ class WorkerExecutor:
             if storage.s3 is not None and storage.s3.expires_at is not None:
                 refresher = asyncio.create_task(
                     self._refresh_credentials(
-                        request, worker_id, storage.s3,
+                        request, worker_id,
                         [i.key for i in storage.inputs or [] if i.key]),
                     name=f"s3-credentials:{request.run_id}")
             acks = _Acks(self, request, worker_id, run.inbox)
@@ -779,6 +799,7 @@ class WorkerExecutor:
                 watcher.cancel()
             if refresher is not None:
                 refresher.cancel()
+            self._s3_runs.pop(request.run_id, None)
             if acks is not None:
                 acks.cancel_timer()
             self._registry.close_run(worker_id, request.run_id,
@@ -805,6 +826,11 @@ class WorkerExecutor:
         # Its replay starts after the last ack it got; tell it what this
         # side already has, and repeat a stop it may never have received.
         await acks.resend()
+        state = self._s3_runs.get(request.run_id)
+        if state is not None and state.renewed:
+            # New credentials may have gone to the dropped connection (#791).
+            await self._send_quietly(worker_id, wp.Credentials(
+                run_id=request.run_id, s3=state.access))
         if request.context.should_stop():
             await self._send(worker_id, wp.Cancel(run_id=request.run_id))
 
@@ -871,38 +897,58 @@ class WorkerExecutor:
             logger.warning("run %s: could not forward the stop to worker %s",
                            request.run_id, worker_id, exc_info=True)
 
-    async def _refresh_credentials(self, request: ExecutionRequest,
-                                   worker_id: str, access: Any,
-                                   input_keys: list[str]) -> None:
-        """Watcher task of an ``s3`` run with temporary credentials (#791):
-        new ones go out as ``credentials`` once :data:`REFRESH_AT` of the
-        current ones' lifetime has passed, for as long as the run lasts. A
-        refusal is logged and retried; a worker that is away gets them
-        when it is back. Never raises."""
-        from . import s3
-        from . import worker_protocol as wp
-
+    async def _send_quietly(self, worker_id: str, frame: Any) -> bool:
+        """:meth:`_send`, a failed send (the socket closed after the online
+        check) being False rather than an exception."""
         try:
-            while access.expires_at is not None:
-                left = access.expires_at - time.time()
-                await asyncio.sleep(max(REFRESH_MIN_S, left * REFRESH_AT))
-                try:
-                    fresh = await asyncio.to_thread(
-                        s3.issue_access, request.run_id, input_keys)
-                except Exception as exc:  # noqa: BLE001 -- STS refused
-                    logger.warning("run %s: could not renew its S3 "
-                                   "credentials: %s", request.run_id, exc)
-                    await asyncio.sleep(REFRESH_RETRY_S)
-                    continue
-                while not await self._send(worker_id, wp.Credentials(
-                        run_id=request.run_id, s3=fresh)):
-                    await asyncio.sleep(CANCEL_POLL_S)
-                access = fresh
+            return await self._send(worker_id, frame)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 -- the run goes on; uploads warn
-            logger.warning("run %s: stopped renewing its S3 credentials",
-                           request.run_id, exc_info=True)
+        except Exception:  # noqa: BLE001 -- a reconnect re-sends
+            logger.debug("worker %s: %s not sent", worker_id,
+                         getattr(frame, "type", frame), exc_info=True)
+            return False
+
+    async def _renewed_access(self, request: ExecutionRequest,
+                              input_keys: list[str]) -> Any:
+        """New credentials for the run, asked for every
+        :data:`REFRESH_RETRY_S` until they come (#791)."""
+        from . import s3
+
+        while True:
+            try:
+                return await asyncio.to_thread(s3.issue_access,
+                                               request.run_id, input_keys)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- STS refused, network
+                logger.warning("run %s: could not renew its S3 credentials "
+                               "(%s); trying again in %.0f s",
+                               request.run_id, exc, REFRESH_RETRY_S)
+                await asyncio.sleep(REFRESH_RETRY_S)
+
+    async def _refresh_credentials(self, request: ExecutionRequest,
+                                   worker_id: str,
+                                   input_keys: list[str]) -> None:
+        """Watcher task of an ``s3`` run with temporary credentials (#791):
+        new ones are asked for once :data:`REFRESH_AT` of the current ones'
+        remaining lifetime has passed (a refusal retried every
+        :data:`REFRESH_RETRY_S`) and go out as ``credentials``, for as long
+        as the run lasts. A send that fails (the worker is away, or its
+        socket closed under the send) is tried again until it goes; a
+        reconnect re-sends the latest too (:meth:`_reconnected`). Never
+        raises but a cancel."""
+        from . import worker_protocol as wp
+
+        state = self._s3_runs[request.run_id]
+        while state.access.expires_at is not None:
+            left = state.access.expires_at - time.time()
+            await asyncio.sleep(max(REFRESH_MIN_S, left * REFRESH_AT))
+            fresh = await self._renewed_access(request, input_keys)
+            state.access, state.renewed = fresh, True
+            while not await self._send_quietly(worker_id, wp.Credentials(
+                    run_id=request.run_id, s3=fresh)):
+                await asyncio.sleep(CANCEL_POLL_S)
 
     async def _deliver(self, request: ExecutionRequest, frame: Any,
                        devices: list[str]) -> ExecutionOutcome | None:
@@ -929,9 +975,13 @@ class WorkerExecutor:
                             node_id=p.node_id) for p in frame.points])
         elif isinstance(frame, wp.Artifact):
             if frame.backend in ("transfer", "s3"):
+                state = self._s3_runs.get(request.run_id) \
+                    if frame.backend == "s3" else None
                 signal: ArtifactSignal = TransferredArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
-                    node_id=frame.node_id, backend=frame.backend)
+                    node_id=frame.node_id, backend=frame.backend,
+                    bucket=state.bucket if state else None,
+                    prefix=state.prefix if state else None)
             elif frame.mount_label:
                 signal = MountedArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
@@ -1003,12 +1053,6 @@ def storage_backend(worker: Any, needs: Any) -> str | None:
     if not mount or holds_mount(worker, mount) or not transferable(needs):
         return None
     return no_mount_backend(worker)
-
-
-def uses_transfer(worker: Any, needs: Any) -> bool:
-    """Whether a run with *needs* goes to *worker* without the mount, its
-    files shipped by a backend (:func:`storage_backend`)."""
-    return storage_backend(worker, needs) is not None
 
 
 def _s3_skipped(worker: Any) -> bool:

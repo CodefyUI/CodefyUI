@@ -45,6 +45,7 @@ import asyncio
 import csv
 import io
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,8 @@ from ..core.run_store import (
     MetricRecord,
     RunRecord,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -439,10 +442,9 @@ async def delete_run(run_id: str, request: Request):
         raise HTTPException(
             status_code=409,
             detail=f"run '{run_id}' is queued or running; cancel it first")
-    # Read before the rows cascade away: whether the run wrote to the S3
+    # Read before the rows cascade away: where the run wrote in an S3
     # bucket (#791), whose objects then go with it.
-    in_s3 = any(a.backend == "s3"
-                for a in await service.store.list_artifacts(run_id))
+    s3_rows = await service.store.s3_objects(run_id)
     deleted = await service.store.delete_run(run_id)
     if not deleted:
         # The row existed at _require_run and is gone now: another client
@@ -458,14 +460,38 @@ async def delete_run(run_id: str, request: Request):
     if record.worker_id not in (WORKER_LOCAL, WORKER_ANY):
         # What a worker uploaded for the run (#785) has no other index.
         await asyncio.to_thread(remove_run_files, run_id)
-    if in_s3:
-        from ..core import s3
-
+    answer: dict[str, Any] = {"run_id": run_id, "deleted": True}
+    if s3_rows:
         # As retention does (#791): the run's objects but a writer node's
-        # files (``output/``). Never fails the delete: the rows are gone.
-        if s3.configured():
-            await asyncio.to_thread(s3.remove_runs_objects, [(run_id, False)])
-    return {"run_id": run_id, "deleted": True}
+        # files (``output/``), from the bucket and prefix the rows
+        # recorded. Never fails the delete (the rows are gone); what stays
+        # is logged and said in ``warning``.
+        warning = await _remove_s3_objects(run_id, s3_rows)
+        if warning is not None:
+            answer["warning"] = warning
+    return answer
+
+
+async def _remove_s3_objects(run_id: str, rows: list[Any]) -> str | None:
+    """Remove a deleted run's S3 objects (#791); why some stay, or None."""
+    from ..core import s3
+
+    reason = None
+    places = [(r, False, bucket, prefix)
+              for r, bucket, prefix in s3.locations(rows)]
+    if not s3.client_available():
+        reason = s3.unconfigured() or "boto3 is not installed"
+    elif not places:
+        reason = "CODEFYUI_S3_BUCKET is not set"
+    else:
+        _, failed = await asyncio.to_thread(s3.remove_runs_objects, places)
+        if failed:
+            return "the run's files in the S3 bucket stay: " + "; ".join(failed)
+    if reason is None:
+        return None
+    logger.warning("run %s deleted, but its S3 objects stay: %s", run_id,
+                   reason)
+    return f"the run's files in the S3 bucket stay: {reason}"
 
 
 @router.post("/{run_id}/cancel")
@@ -813,7 +839,8 @@ async def download_run_artifact(run_id: str, artifact_id: int,
         raise HTTPException(status_code=404,
                             detail=f"artifact {artifact_id} not found")
     if record.backend == "s3":
-        return await _download_s3(run_id, record.stored_path or "")
+        return await _download_s3(run_id, record.stored_path or "",
+                                  record.mount_label)
     if record.backend != "transfer":
         raise HTTPException(status_code=400, detail=(
             "only files a worker uploaded can be downloaded here; this one "
@@ -827,38 +854,40 @@ async def download_run_artifact(run_id: str, artifact_id: int,
                         media_type="application/octet-stream")
 
 
-async def _download_s3(run_id: str, key: str) -> Response:
-    """Serve one of *run_id*'s objects in the S3 bucket (#791)."""
+async def _download_s3(run_id: str, key: str, bucket: str | None) -> Response:
+    """Serve one of *run_id*'s objects in the S3 bucket (#791): *bucket*
+    and the key's prefix are the ones the row recorded."""
     from ..core import s3
 
     if not s3.owns_key(run_id, key):
         raise HTTPException(status_code=404, detail="the file is gone")
-    reason = s3.unconfigured()
+    bucket = bucket or settings.S3_BUCKET
+    reason = None
+    if not s3.client_available():
+        reason = s3.unconfigured() or "boto3 is not installed"
+    elif not bucket:
+        reason = "CODEFYUI_S3_BUCKET is not set"
     if reason is not None:
         raise HTTPException(status_code=503, detail=(
             f"the run's file is in an S3 bucket this server cannot reach: "
             f"{reason}"))
     name = s3.filename(key)
     try:
-        head = await asyncio.to_thread(s3.head, key)
+        head = await asyncio.to_thread(s3.head, key, bucket)
         if head is None:
-            if await asyncio.to_thread(s3.is_folder, key):
+            if await asyncio.to_thread(s3.is_folder, key, bucket):
                 raise HTTPException(status_code=400,
                                     detail="not a file (a directory)")
             raise HTTPException(status_code=404, detail="the file is gone")
         if settings.S3_DOWNLOAD == "presign":
-            url = await asyncio.to_thread(s3.presigned_url, key, name)
+            url = await asyncio.to_thread(s3.presigned_url, key, name,
+                                          bucket)
             return RedirectResponse(url, status_code=307)
-        chunks = await asyncio.to_thread(s3.open_stream, key)
+        chunks = await asyncio.to_thread(s3.open_stream, key, bucket)
     except s3.S3Unavailable as exc:
         raise HTTPException(status_code=503,
                             detail=f"the S3 bucket: {exc}") from None
-    from urllib.parse import quote
-
-    disposition = (f'attachment; filename="{name}"'
-                   if name.isascii() and '"' not in name
-                   else f"attachment; filename*=utf-8''{quote(name)}")
-    headers = {"Content-Disposition": disposition}
+    headers = {"Content-Disposition": s3.content_disposition(name)}
     if head.get("ContentLength") is not None:
         headers["Content-Length"] = str(head["ContentLength"])
     return StreamingResponse(chunks, media_type="application/octet-stream",
