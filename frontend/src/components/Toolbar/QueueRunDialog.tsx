@@ -6,6 +6,7 @@ import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
@@ -80,7 +81,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     };
   }, []);
 
-  const choice = useRunTargetChoice(graphDevice);
+  // The Settings device is this server's: a worker starts on its own
+  // accelerator unless the tab names a device (#840).
+  const choice = useRunTargetChoice(graphDevice, { workerDevice: tab.graphDevice ?? 'auto' });
   const isWorker = choice.isWorker;
 
   const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -180,7 +183,14 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
           </header>
 
           <div className={styles.body}>
-            <TargetSelector choice={choice} selectRef={firstRef} />
+            <TargetSelector
+              choice={choice}
+              selectRef={firstRef}
+              onOpenWorkers={() => {
+                onClose();
+                useWorkerStore.getState().openPanel();
+              }}
+            />
 
             <div className={styles.pair}>
               <label className={styles.field}>

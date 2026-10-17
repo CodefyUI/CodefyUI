@@ -16,7 +16,14 @@ import {
 import { useI18n } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
 import { settle } from '../../test/utils';
-import { AGENT_START_COMMAND, AGENT_STOP_COMMAND, AddWorkerDialog, isHttpsUrl, isLoopbackUrl } from './AddWorkerDialog';
+import {
+  AGENT_START_COMMAND,
+  AGENT_STOP_COMMAND,
+  AddWorkerDialog,
+  isHttpsUrl,
+  isLoopbackUrl,
+  workerNameProblem,
+} from './AddWorkerDialog';
 
 vi.mock('../../api/workers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/workers')>()),
@@ -228,13 +235,49 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     expect(within(dialog).queryByText(/only works on this machine/)).toBeNull();
   });
 
-  it('says so when the server cannot be reached from another machine at all', async () => {
+  it('opens on Over SSH when the server cannot be reached from another machine at all (#840)', async () => {
     vi.mocked(fetchEnrollments).mockResolvedValue(listOf({
       control_url: 'http://localhost:8000', other_machine_urls: [], listening_on_loopback: true,
     }));
     const dialog = await renderRemote();
-    expect(within(dialog).getByRole('note')).toHaveTextContent(/cdui start --host 0\.0\.0\.0/);
-    expect(within(dialog).getByText(/localhost:8000 only works/)).toBeInTheDocument();
+    expect(dialog).toHaveAttribute('data-mode', 'ssh');
+    expect(within(dialog).getByRole('button', { name: 'Over SSH' })).toHaveAttribute('aria-pressed', 'true');
+    // Another machine still says why, with no sentence left hanging, and
+    // points back to SSH.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Another machine' }));
+    await settle();
+    expect(within(dialog).getAllByRole('note')[0]).toHaveTextContent(/cdui start --host 0\.0\.0\.0/);
+    expect(within(dialog).getByText(/localhost:8000 only works on this machine: type an address/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Use an address the worker can reach:$/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect over SSH instead' }));
+    await settle();
+    expect(dialog).toHaveAttribute('data-mode', 'ssh');
+  });
+
+  it('says it is loading while it asks the server where it listens, and keeps a tab picked meanwhile', async () => {
+    let answer: (value: EnrollmentList) => void = () => {};
+    vi.mocked(fetchEnrollments).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    render(<AddWorkerDialog mode="remote" onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Loading workers...')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'This machine' }));
+    await act(async () => answer(listOf({ listening_on_loopback: true })));
+    expect(dialog).toHaveAttribute('data-mode', 'same-host');
+  });
+
+  it('ignores the answer when it closed before the server answered', async () => {
+    let answer: (value: EnrollmentList) => void = () => {};
+    let fail: (err: Error) => void = () => {};
+    vi.mocked(fetchEnrollments)
+      .mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }))
+      .mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    render(<AddWorkerDialog mode="remote" onClose={vi.fn()} />);
+    cleanup();
+    await act(async () => answer(listOf()));
+    render(<AddWorkerDialog mode="remote" onClose={vi.fn()} />);
+    cleanup();
+    await act(async () => fail(new Error('gone')));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('generates a token with the chosen lifetime and uses, and builds the command', async () => {
@@ -314,7 +357,10 @@ describe('AddWorkerDialog (another machine, #780)', () => {
   });
 
   it('shows what failed', async () => {
-    vi.mocked(fetchEnrollments).mockRejectedValueOnce(new Error('Missing or invalid X-CodefyUI-Token header'));
+    // The dialog's own read fails, so it opens on this tab, whose read fails too.
+    vi.mocked(fetchEnrollments)
+      .mockRejectedValueOnce(new Error('Missing or invalid X-CodefyUI-Token header'))
+      .mockRejectedValueOnce(new Error('Missing or invalid X-CodefyUI-Token header'));
     const dialog = await renderRemote();
     expect(within(dialog).getByRole('alert')).toHaveTextContent(/X-CodefyUI-Token/);
 
@@ -468,6 +514,19 @@ describe('isHttpsUrl', () => {
   });
 });
 
+describe('workerNameProblem', () => {
+  it('reads a name as the server does', () => {
+    expect(workerNameProblem('')).toBeNull();
+    expect(workerNameProblem('  gpu-1 ')).toBeNull();
+    expect(workerNameProblem('GPU-1')).toBeNull();
+    expect(workerNameProblem('-gpu')).toBe('workers.add.ssh.badName');
+    expect(workerNameProblem('a'.repeat(64))).toBe('workers.add.ssh.badName');
+    expect(workerNameProblem('gpu_1')).toBe('workers.add.ssh.badName');
+    expect(workerNameProblem('any')).toBe('workers.add.ssh.reservedName');
+    expect(workerNameProblem('Enrollments')).toBe('workers.add.ssh.reservedName');
+  });
+});
+
 describe('isLoopbackUrl', () => {
   it('knows the addresses that only work on this machine', () => {
     expect(isLoopbackUrl('http://127.0.0.1:8000')).toBe(true);
@@ -485,8 +544,10 @@ describe('AddWorkerDialog (re-key, #780)', () => {
     vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ enrollments: [enrollment('abcdef', { worker: 'gpu-box' })] }));
     render(<AddWorkerDialog mode="remote" rekey="gpu-box" onClose={vi.fn()} />);
     await settle();
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText(/Re-key gpu-box/)).toBeInTheDocument();
+    // Its own title, no mode switch (#840).
+    const dialog = screen.getByRole('dialog', { name: 'Re-key gpu-box' });
+    expect(within(dialog).queryByRole('button', { name: 'Over SSH' })).toBeNull();
+    expect(within(dialog).getByText(/Re-key gpu-box: generate/)).toBeInTheDocument();
     await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
     expect(createEnrollment).toHaveBeenCalledWith({
       ttl_s: 86400, uses: 1, worker: 'gpu-box', control_url: 'http://192.168.1.5:8000',
@@ -543,6 +604,32 @@ describe('AddWorkerDialog (over SSH, #784)', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Over SSH' }));
     await settle();
     expect(dialog).toHaveAttribute('data-mode', 'ssh');
+  });
+
+  it('checks the worker name before it sends anything, quoting it as typed (#840)', async () => {
+    const { dialog } = await renderSsh();
+    fireEvent.change(within(dialog).getByLabelText(/SSH target/), { target: { value: 'alice@gpu-box' } });
+    const name = within(dialog).getByLabelText(/Worker name/);
+    fireEvent.change(name, { target: { value: ' Bad Name! ' } });
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Add and connect' })));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Worker name "Bad Name!" may use only letters');
+    fireEvent.change(name, { target: { value: 'Local' } });
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Add and connect' })));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('"Local" is reserved');
+    expect(addSshWorker).not.toHaveBeenCalled();
+    // Upper case is not a fault: the server stores it lower-cased.
+    fireEvent.change(name, { target: { value: 'GPU-1' } });
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Add and connect' })));
+    expect(addSshWorker).toHaveBeenCalledWith({ target: 'alice@gpu-box', port: 22, name: 'GPU-1' });
+  });
+
+  it('says a bad name in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const { dialog } = await renderSsh();
+    fireEvent.change(within(dialog).getByLabelText(/SSH 目標/), { target: { value: 'alice@gpu-box' } });
+    fireEvent.change(within(dialog).getByLabelText(/Worker 名稱/), { target: { value: 'Bad Name!' } });
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: '新增並連線' })));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Worker 名稱「Bad Name!」只能使用');
   });
 
   it('asks for a target before it sends anything', async () => {

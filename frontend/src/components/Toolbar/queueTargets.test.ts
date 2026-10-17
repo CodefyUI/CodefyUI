@@ -9,6 +9,7 @@ import {
   defaultKind,
   deviceKind,
   localDeviceChoices,
+  refusesRuns,
   toggleDevice,
   workerDeviceChoices,
   type DeviceChoice,
@@ -55,9 +56,15 @@ describe('workerDeviceChoices / connectedWorkers', () => {
     expect(connectedWorkers(list).map((w) => w.name)).toEqual(['a', 'c']);
   });
 
-  it('lets a run name an offline (enrolled) worker, never a disconnected one', () => {
+  it('lets a run name every listed worker: it waits for an offline or disconnected one (#840)', () => {
     const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('d', 'offline', [])];
-    expect(targetableWorkers(list).map((w) => w.name)).toEqual(['a', 'd']);
+    expect(targetableWorkers(list).map((w) => w.name)).toEqual(['a', 'b', 'd']);
+  });
+
+  it('refuses runs on a drained worker, connected or not (a disabled SSH worker is drained)', () => {
+    expect(refusesRuns(worker('a', 'online', []))).toBe(false);
+    expect(refusesRuns(worker('b', 'draining', []))).toBe(true);
+    expect(refusesRuns({ ...worker('c', 'disconnected', []), draining: true })).toBe(true);
   });
 });
 

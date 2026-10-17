@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Workers panel, Add worker and Queue on... say what they will do, and offer only what applies** ([#840]). Disabling an SSH worker with runs on it, removing a connected worker and deleting an SSH worker each take a second press, and the card says first what that press does (Disable's tooltip also said a run still on the worker ends `interrupted`; one that stops within its 10 s grace ends `cancelled`). A disabled SSH worker reads **Disabled** instead of **Disconnected** and no longer offers Drain / Undrain. **Re-key** is offered only to a worker with an enrolled credential of its own (not a same-host agent on the session token, not an SSH worker) and opens under its own title without the mode switch. A **Degraded** worker says why (a late heartbeat, different node types), and a worker that is away marks its memory figures as last seen. Device memory reads in GiB, as in the toolbar. On a server that listens on `127.0.0.1` only, Add worker opens on **Over SSH**, and **Another machine** no longer ends on an empty "Use an address the worker can reach:". The SSH form checks the worker name before sending it, in the page's language, and the server quotes a refused name as typed rather than lower-cased. **Queue on...** lists a disconnected worker (the run waits for it, as the server already accepted), starts a GPU worker on its accelerator rather than the Settings device of this server, and with no worker says so with a link to add one. In zh-TW the Runs table's worker column reads 執行位置 and the dialog's token list 已發出的 token.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6260,3 +6264,4 @@ Release candidates before 1.0.0 are on the
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
+[#840]: https://github.com/CodefyUI/CodefyUI/issues/840

@@ -62,11 +62,18 @@ export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
   return workers.filter((w) => w.status !== 'disconnected' && w.status !== 'offline');
 }
 
-/** The workers a run can name in the dialog: the connected ones, and the
- * enrolled ones that are `offline` (#780), for which the run waits in the
- * queue until the worker connects. */
+/** The workers a run can name in the dialog: every worker the server
+ * lists. A run for one that is `offline` (enrolled, #780) or `disconnected`
+ * (#783) waits in the queue until it connects, as the server accepts it
+ * (#840). */
 export function targetableWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
-  return workers.filter((w) => w.status !== 'disconnected');
+  return [...workers];
+}
+
+/** Whether a run cannot be queued on *worker* now: it does not take new
+ * runs (drained, or a disabled SSH worker, which is drained too). */
+export function refusesRuns(worker: WorkerInfo): boolean {
+  return worker.draining || worker.status === 'draining';
 }
 
 const ACCELERATORS = ['cuda', 'mps'];
