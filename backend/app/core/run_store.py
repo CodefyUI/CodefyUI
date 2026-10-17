@@ -1062,6 +1062,34 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def list_worker_runs_in_flight(
+        self, *, closing_types: Iterable[str] = (),
+    ) -> list[RunRecord]:
+        """Rows a worker agent was executing when this process's
+        predecessor stopped (#793): ``running`` or ``disconnected``, placed
+        on a worker (neither ``local``, ``any`` nor a pre-MIGRATION_008
+        NULL), started. A row whose log already ends with one of
+        *closing_types* is left out: its run finished, and only the row
+        write was lost. Oldest start first.
+        """
+        closing = tuple(closing_types)
+        closed = ("" if not closing else
+                  " AND COALESCE((SELECT e.type FROM exec_run_events e "
+                  "WHERE e.run_id = exec_runs.id ORDER BY e.cursor DESC "
+                  f"LIMIT 1), '') NOT IN ({','.join('?' * len(closing))})")
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs "
+                "WHERE status IN (?, ?) AND started_at IS NOT NULL "
+                "AND worker_id IS NOT NULL AND worker_id NOT IN (?, ?)"
+                f"{closed} ORDER BY started_at, id",
+                (STATUS_RUNNING, STATUS_DISCONNECTED, WORKER_LOCAL,
+                 WORKER_ANY, *closing),
+            ).fetchall()
+
+        return [RunRecord.from_row(row) for row in await self.db.run(_select)]
+
     async def interrupt_active_runs(
         self,
         *,
@@ -1069,14 +1097,16 @@ class RunStore:
         closing_event: str | None = None,
         closing_payload: Any = None,
         closing_types: Iterable[str] = (),
+        keep: Iterable[str] = (),
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
         Call once at startup. Every active state is covered by default —
-        nothing resumes a ``running`` or ``disconnected`` row after a restart
-        (adopting a worker's runs is #793), and a ``queued``
-        row would otherwise wait forever on a scheduler that lost its queue.
-        Narrow it with *statuses* if a caller can genuinely re-adopt one.
+        nothing resumes a ``running`` row of this process after a restart,
+        and a ``queued`` row would otherwise wait forever on a scheduler
+        that lost its queue. Narrow it with *statuses* if a caller can
+        genuinely re-adopt one; *keep* names rows the caller adopts (a
+        worker's runs, #793), which are left as they are.
         Idempotent: a second call finds nothing.
 
         *statuses* is validated against ACTIVE_STATUSES, not the full
@@ -1106,17 +1136,20 @@ class RunStore:
         marks = ",".join("?" * len(wanted))
         encoded = None if closing_payload is None else _dumps(closing_payload)
         already_closed = frozenset(closing_types)
+        kept = tuple(keep)
+        spared = ("" if not kept else
+                  f" AND id NOT IN ({','.join('?' * len(kept))})")
 
         def _retire(conn: sqlite3.Connection) -> int:
             with transaction(conn):
                 run_ids = [row[0] for row in conn.execute(
-                    f"SELECT id FROM exec_runs WHERE status IN ({marks})",
-                    wanted,
+                    f"SELECT id FROM exec_runs WHERE status IN ({marks})"
+                    f"{spared}", (*wanted, *kept),
                 ).fetchall()]
                 retired = conn.execute(
                     "UPDATE exec_runs SET status = ?, finished_at = ? "
-                    f"WHERE status IN ({marks})",
-                    (STATUS_INTERRUPTED, stamp, *wanted),
+                    f"WHERE status IN ({marks}){spared}",
+                    (STATUS_INTERRUPTED, stamp, *wanted, *kept),
                 ).rowcount
                 if closing_event is None:
                     return retired

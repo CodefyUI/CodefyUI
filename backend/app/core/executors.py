@@ -124,6 +124,11 @@ class RunSinks:
     #: row's ``disconnected`` <-> ``running``. None: nothing records it.
     record_worker_connection: (
         Callable[[bool], Awaitable[Any]] | None) = None
+    #: ``record_worker_seq(seq)`` before a worker run's frames up to *seq*
+    #: are acknowledged (#793): make what they carried durable (the metric
+    #: buffer) and persist *seq*, so a restarted server resumes the stream
+    #: after it. None: nothing is persisted.
+    record_worker_seq: Callable[[int], Awaitable[Any]] | None = None
 
 
 @dataclass
@@ -153,6 +158,11 @@ class ExecutionRequest:
     #: ``run_needs.needs`` of a worker run (#782): which storage backend
     #: its assignment uses (#785). None for a run here.
     needs: dict[str, Any] | None = None
+    #: A worker run adopted after a restart of this server (#793): the
+    #: last frame its previous process recorded. ``WorkerExecutor`` sends
+    #: no ``assign`` and waits for the worker to report the run
+    #: (``WorkerRegistry.adopt``). None: a run that starts now.
+    resume_seq: int | None = None
 
 
 @dataclass(frozen=True)
@@ -627,6 +637,16 @@ class WorkerExecutor:
     ``interrupted``, or ``cancelled`` when a stop had been asked (a user's
     Stop stays the user's).
 
+    A run adopted after a restart of this server (``request.resume_seq``,
+    #793) is not assigned again: the registry already holds it, detached
+    (``WorkerRegistry.adopt``). The run gets a ``worker_disconnected``
+    warning saying the server restarted, its row reads ``disconnected``,
+    and from there it is a run whose worker dropped: the worker's
+    reconnect brings it back, the replay continues after ``resume_seq``,
+    or the grace ends it. Before each ``ack`` the frames it covers are
+    made durable (``sinks.record_worker_seq``), which is what lets a
+    restarted server resume the stream after the persisted seq.
+
     Before ``assign``, a degraded worker (its node catalog differs from
     this server's, #781) must have every node type the graph uses, else
     the run fails with ``worker_handshake.catalog_refusal``'s message and
@@ -655,13 +675,14 @@ class WorkerExecutor:
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         from . import worker_protocol as wp
-        from .workers import WORKER_DISCONNECTED, WORKER_GONE, WORKER_RECONNECTED
 
         placement = request.placement
         if placement is None:
             return ExecutionOutcome(STATUS_FAILED,
                                     "a worker run needs a placement")
         worker_id = placement.worker_id
+        if request.resume_seq is not None:
+            return await self._resume(request, worker_id)
         worker = self._registry.get(worker_id)
         if worker is None or not worker.online:
             detail = f"worker {worker_id} is not connected"
@@ -685,18 +706,52 @@ class WorkerExecutor:
                     f"cannot send this run's input files to worker "
                     f"{worker_id}: {exc}"))
         run = self._registry.open_run(worker, request.run_id)
+        assign = wp.Assign(
+            run_id=request.run_id, graph=request.graph,
+            options=request.options, device=devices[0],
+            devices=devices, storage=storage)
+        return await self._serve(request, worker_id, run, devices,
+                                 assign=(worker, assign))
+
+    async def _resume(self, request: ExecutionRequest,
+                      worker_id: str) -> ExecutionOutcome:
+        """A run adopted after a restart of this server (#793)."""
+        run = self._registry.claim_adopted(request.run_id)
+        if run is None:
+            detail = (f"this server restarted and worker {worker_id} no "
+                      "longer has the run")
+            await _worker_gone_warning(request, detail)
+            return self._gone(request, detail)
+        grace = getattr(self._registry, "resume_grace_s", 0)
+        await _warning(request, WARNING_WORKER_DISCONNECTED, (
+            f"this server restarted while the run was executing on worker "
+            f"{worker_id}; the run keeps running there and waits up to "
+            f"{grace:.0f} s for the worker to reconnect"))
+        await _record_connection(request, False)
+        return await self._serve(request, worker_id, run,
+                                 list(request.placement.devices),
+                                 resume_seq=request.resume_seq or 0)
+
+    async def _serve(self, request: ExecutionRequest, worker_id: str,
+                     run: Any, devices: list[str], *, assign: Any = None,
+                     resume_seq: int = 0) -> ExecutionOutcome:
+        """Send *assign* (``(worker, frame)``; none for an adopted run),
+        then turn the run's inbox into sink calls until it ends."""
+        from . import worker_protocol as wp
+        from .workers import WORKER_DISCONNECTED, WORKER_GONE, WORKER_RECONNECTED
+
         watcher: asyncio.Task | None = None
         acks: _Acks | None = None
         finished = False
         try:
-            await worker.send(wp.Assign(
-                run_id=request.run_id, graph=request.graph,
-                options=request.options, device=devices[0],
-                devices=devices, storage=storage))
+            if assign is not None:
+                target, frame = assign
+                await target.send(frame)
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
-            acks = _Acks(self, request, worker_id, run.inbox)
+            acks = _Acks(self, request, worker_id, run.inbox,
+                         recorded=resume_seq)
             while True:
                 try:
                     item = run.inbox.get_nowait()
@@ -990,19 +1045,23 @@ _ACK_DUE = object()
 class _Acks:
     """When to acknowledge a worker run's frames, and doing it (#783).
 
-    The seq stays in memory; a restarted control plane has no run to
-    resume yet (#793).
+    Before an ack goes out, ``sinks.record_worker_seq`` makes the frames it
+    covers durable and persists the seq (#793): the agent forgets what is
+    acknowledged, so a restarted server must have all of it, and knows
+    where to resume (*recorded*, for an adopted run). A frame recorded
+    after the last persisted seq is delivered again after a restart.
     """
 
     def __init__(self, executor: WorkerExecutor, request: ExecutionRequest,
-                 worker_id: str, inbox: asyncio.Queue) -> None:
+                 worker_id: str, inbox: asyncio.Queue, *,
+                 recorded: int = 0) -> None:
         self._executor = executor
         self._request = request
         self._worker_id = worker_id
         self._inbox = inbox
         #: Highest seq handed to the sinks, and highest acknowledged.
-        self.recorded = 0
-        self.acked = 0
+        self.recorded = recorded
+        self.acked = recorded
         self._timer: asyncio.TimerHandle | None = None
 
     def delivered(self, seq: int) -> None:
@@ -1022,7 +1081,23 @@ class _Acks:
         if self.recorded <= self.acked:
             return
         self.acked = self.recorded
+        await self._persist(self.acked)
         await self._send(self.acked)
+
+    async def _persist(self, seq: int) -> None:
+        """``sinks.record_worker_seq(seq)``; a failure is logged and the
+        ack still goes out (what was recorded stays recorded; a restart
+        would only see some frames twice)."""
+        record = self._request.sinks.record_worker_seq
+        if record is None:
+            return
+        try:
+            await record(seq)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- observability
+            logger.warning("run %s: could not persist seq %d",
+                           self._request.run_id, seq, exc_info=True)
 
     async def resend(self) -> None:
         """Repeat the last ack (its first may not have reached the agent)."""

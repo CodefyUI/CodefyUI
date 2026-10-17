@@ -81,6 +81,18 @@ old one, those runs move to the new connection and wait for its
 ``run_alive``: a run it lists carries on, one it does not (or every one,
 if no ``run_alive`` arrives within a heartbeat interval) ends
 ``interrupted``. Nothing is lost silently: each outcome is logged.
+
+After a restart of this server (#793), ``RunService.recover_interrupted``
+hands every worker run its previous process left in flight to
+:meth:`WorkerRegistry.adopt`: the run waits, detached, exactly as if its
+worker's connection had just dropped, with the ``seq`` the previous
+process last recorded, so the agent's replay is deduplicated against it.
+A run on a worker this registry does not know yet (one that authenticated
+with the session token, which is known in memory only) waits on a
+placeholder that is not listed; the worker's first connection under that
+name takes its runs like any reconnect. Within the resume grace a
+``run_alive`` that lists the run re-attaches it; otherwise it ends
+``interrupted``, saying that this server restarted.
 """
 
 from __future__ import annotations
@@ -166,6 +178,9 @@ class WorkerRun:
     #: the API), while it waits for the worker to come back (#783).
     detached_at: float | None = None
     detached_wall: float | None = None
+    #: Taken over from a previous process of this server (#793): it waits
+    #: for its worker since this server restarted, not since a drop.
+    adopted: bool = False
 
 
 @dataclass(eq=False)
@@ -362,6 +377,12 @@ class WorkerRegistry:
             = None
         self._clock = clock
         self._workers: dict[str, Worker] = {}
+        #: Name -> an unlisted, offline placeholder holding the runs adopted
+        #: after a restart for a worker not known here yet (#793).
+        self._adopted: dict[str, Worker] = {}
+        #: Run id -> its adopted run, until its executor claims it
+        #: (:meth:`claim_adopted`), which may be after it already ended.
+        self._unclaimed: dict[str, WorkerRun] = {}
         self._listeners: list[Callable[[], None]] = []
         self._watchdog: asyncio.Task | None = None
         #: Fire-and-forget closes, kept so they are not collected mid-flight
@@ -441,7 +462,7 @@ class WorkerRegistry:
 
     def run_state(self, worker_id: str, run_id: str) -> WorkerRun | None:
         """The run *worker_id* is executing as *run_id*, or None."""
-        worker = self._workers.get(worker_id)
+        worker = self._workers.get(worker_id) or self._adopted.get(worker_id)
         return None if worker is None else worker.running.get(run_id)
 
     # ── same-host devices (#773) ─────────────────────────────────────────
@@ -538,6 +559,14 @@ class WorkerRegistry:
         caller closes the old socket (``replaced.close``).
         """
         old = self._workers.get(hello.name)
+        placeholder = self._adopted.pop(hello.name, None)
+        if placeholder is not None:
+            # Runs adopted after a restart (#793) for a worker first seen
+            # now: they move to it like a reconnect's.
+            if old is None:
+                old = placeholder
+            else:  # pragma: no cover - adopt() uses a known worker first
+                old.running.update(placeholder.running)
         document, digest = verified_fingerprint(hello.fingerprint,
                                                 worker=hello.name)
         worker = Worker(
@@ -631,6 +660,7 @@ class WorkerRegistry:
         already waiting for it to reconnect: once it is gone from the
         registry nothing (the watchdog included) would end them. Returns the
         dropped worker."""
+        self._end_adopted(worker_id, reason)
         worker = self._workers.get(worker_id)
         if worker is None:
             return None
@@ -657,6 +687,7 @@ class WorkerRegistry:
         Remove or a shutdown, #784): its runs will not come back, so the
         ones still on it end ``interrupted`` now instead of after the
         resume grace. A live connection is closed the same way."""
+        self._end_adopted(worker_id, reason)
         worker = self._workers.get(worker_id)
         if worker is None:
             return
@@ -800,6 +831,51 @@ class WorkerRegistry:
         worker.running[run_id] = run
         return run
 
+    def adopt(self, worker_id: str, run_id: str, *,
+              last_seq: int = 0) -> WorkerRun:
+        """Take over *run_id*, left in flight on *worker_id* by a previous
+        process of this server (#793). STARTUP, before workers connect.
+
+        The run waits detached, as after a dropped connection: the worker's
+        reconnect and ``run_alive`` re-attach it within ``resume_grace_s``
+        (counted from now), else it ends ``interrupted``. *last_seq* is the
+        last frame the previous process recorded; the replay's frames up to
+        it are dropped as duplicates (:meth:`route`). A worker known here
+        (an enrolled one, offline) holds it in its ``running``; for one not
+        known yet an unlisted placeholder does, until it connects.
+        """
+        worker = self._workers.get(worker_id)
+        if worker is None:
+            worker = self._adopted.get(worker_id)
+        if worker is None:
+            worker = self._adopted[worker_id] = Worker(
+                id=worker_id, name=worker_id, version="", fingerprint=None,
+                platform={}, mounts={}, devices=[], send=_not_connected,
+                close=_nothing, heartbeat_s=self.heartbeat_s,
+                status=STATUS_OFFLINE, last_heartbeat_at=None)
+        run = WorkerRun(run_id=run_id, last_seq=max(0, int(last_seq)),
+                        detached_at=self._clock(), detached_wall=time.time(),
+                        adopted=True)
+        worker.running[run_id] = run
+        self._unclaimed[run_id] = run
+        logger.warning("run %s on worker %s was in flight when this server "
+                       "restarted; waiting up to %.0f s for the worker to "
+                       "report it", run_id, worker_id, self.resume_grace_s)
+        self._ensure_watchdog()
+        return run
+
+    def claim_adopted(self, run_id: str) -> WorkerRun | None:
+        """The run :meth:`adopt` took over as *run_id*, once: its inbox
+        holds what happened to it meanwhile (an end included)."""
+        return self._unclaimed.pop(run_id, None)
+
+    def _end_adopted(self, worker_id: str, reason: str) -> None:
+        """End the runs an unlisted placeholder holds for *worker_id*."""
+        placeholder = self._adopted.pop(worker_id, None)
+        if placeholder is not None:
+            for run in list(placeholder.running.values()):
+                self._end(placeholder, run, reason)
+
     def close_run(self, worker_id: str, run_id: str, *,
                   finished: bool = False) -> None:
         """*run_id* ended here. *finished*: its worker reported the end
@@ -904,6 +980,10 @@ class WorkerRegistry:
     def check(self) -> None:
         """Apply the heartbeat rules once (the watchdog calls this)."""
         now = self._clock()
+        for name, placeholder in list(self._adopted.items()):
+            self._expire_detached(placeholder, now)
+            if not placeholder.running:
+                del self._adopted[name]
         for worker in list(self._workers.values()):
             if not worker.online:
                 self._expire_detached(worker, now)
@@ -930,8 +1010,14 @@ class WorkerRegistry:
         for run in list(worker.running.values()):
             if run.detached_at is not None \
                     and now - run.detached_at >= self.resume_grace_s:
-                self._end(worker, run, f"worker {worker.name} did not "
-                          f"reconnect within {self.resume_grace_s:.0f} s")
+                if run.adopted:
+                    reason = (f"this server restarted and worker "
+                              f"{worker.name} did not reconnect with the run "
+                              f"within {self.resume_grace_s:.0f} s")
+                else:
+                    reason = (f"worker {worker.name} did not reconnect "
+                              f"within {self.resume_grace_s:.0f} s")
+                self._end(worker, run, reason)
                 self._changed()
 
     def _spawn(self, coroutine: Any) -> None:
