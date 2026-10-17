@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A worker without a shared folder no longer overwrites one checkpoint with another** ([#838]). The transfer backend cut every received file name at 48 characters, the cap meant for one run or node id. A periodic checkpoint is named `<run id>-<node id>-e<epoch>.pt`, so with a 32-character run id the name lost its extension and the end of its epoch stamp: epoch 100 came back as `-e10` and replaced the epoch-10 file, and both artifact rows downloaded epoch 100. Received file names now keep their full length; a name over 128 characters (or 240 bytes) is shortened in the middle with a hash of the whole name, keeping its last 40 characters. A received file also never replaces a different file of the run any more: the later one is suffixed `-1`, `-2` ..., as files placed in the data folders already were, and the same content again is still the same file. This covers TensorBoard event files and writer outputs (`ModelSaver`, `ImageWriter`) as well. Rows recorded by 3.1.0 keep downloading the file they name; a checkpoint 3.1.0 already overwrote cannot be recovered.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6260,3 +6264,4 @@ Release candidates before 1.0.0 are on the
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
+[#838]: https://github.com/CodefyUI/CodefyUI/issues/838

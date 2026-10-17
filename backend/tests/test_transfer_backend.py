@@ -301,6 +301,64 @@ def test_a_run_file_is_replaced_atomically(data_root):
     assert (run_dir / "checkpoint" / "a.pt").read_bytes() == b"1"
 
 
+def test_a_file_name_keeps_its_stamp_and_extension():
+    """#838: the 48-character id cap cut ``<run>-<node>-e100.pt`` to
+    ``...-e10``. A file name keeps its length; one over the cap is cut in
+    the middle, with a hash, never at the end."""
+    run_id = "819383fcde8d4067b2ca3a0890e7926b"
+    for epoch in (10, 100, 120):
+        name = f"{run_id}-train-plain-e{epoch}.pt"
+        assert transfer.file_part(name) == name
+    # What the 48-character cap still does to an id component.
+    assert transfer.run_key("r" * 60, "checkpoint", "a.pt") == \
+        f"runs/{'r' * 48}/checkpoint/a.pt"
+    # The longest name a checkpoint builder makes fits whole.
+    longest = f"{'r' * 48}-{'n' * 48}-e{2 ** 31}b{2 ** 31}.pt"
+    assert transfer.file_part(longest) == longest
+    # Over the cap: shortened in the middle, distinct, stamp kept.
+    long_a = "x" * 300 + "-e10.pt"
+    long_b = "x" * 300 + "-e100.pt"
+    cut_a, cut_b = transfer.file_part(long_a), transfer.file_part(long_b)
+    assert cut_a != cut_b
+    assert cut_a.endswith("-e10.pt") and cut_b.endswith("-e100.pt")
+    assert len(cut_a) <= transfer.MAX_FILE_NAME
+    # Same tail, different start: the hash keeps them apart.
+    assert transfer.file_part("a" * 200 + "z" * 60) != \
+        transfer.file_part("b" + "a" * 199 + "z" * 60)
+    # Multi-byte characters: capped in bytes too.
+    wide = transfer.file_part("模" * 200 + "-e7.pt")
+    assert len(wide.encode()) <= transfer.MAX_FILE_NAME_BYTES
+    assert wide.endswith("-e7.pt")
+    # Unsafe characters as before.
+    assert transfer.file_part("a b/c?.pt") == "a_b_c_.pt"
+    assert transfer.file_part("..") == "unnamed"
+
+
+def test_a_run_file_never_replaces_a_different_one(data_root):
+    """Two names that clean to one key (#838): the later upload is
+    suffixed, the earlier file kept."""
+    run_dir = data_root / "runs" / "r1"
+    first = transfer.place_file(_tmp(run_dir, b"epoch 10"), "run", "r1",
+                                "checkpoint", "a b.pt", _sha(b"epoch 10"))
+    second = transfer.place_file(_tmp(run_dir, b"epoch 100"), "run", "r1",
+                                 "checkpoint", "a_b.pt", _sha(b"epoch 100"))
+    assert first == "runs/r1/checkpoint/a_b.pt"
+    assert second == "runs/r1/checkpoint/a_b-1.pt"
+    assert transfer.key_path("r1", first).read_bytes() == b"epoch 10"
+    assert transfer.key_path("r1", second).read_bytes() == b"epoch 100"
+    # A retry of either is the same file.
+    assert transfer.place_file(_tmp(run_dir, b"epoch 100"), "run", "r1",
+                               "checkpoint", "a_b.pt",
+                               _sha(b"epoch 100")) == second
+    nested = transfer.place_file(_tmp(run_dir, b"ev2"), "run", "r1",
+                                 "tensorboard", "t/ev", _sha(b"ev2"))
+    clash = transfer.place_file(_tmp(run_dir, b"ev3"), "run", "r1",
+                                "tensorboard", "t/ev", _sha(b"ev3"))
+    assert (nested, clash) == ("runs/r1/tensorboard/t/ev",
+                               "runs/r1/tensorboard/t/ev-1")
+    assert not list(data_root.rglob(".incoming-*"))
+
+
 def _receiving(directory: Path, data: bytes) -> transfer.Receiver:
     """A Receiver part-way through a file: the server died here."""
     boundary = "b0undary"
@@ -617,6 +675,62 @@ async def test_an_uploaded_file_downloads_and_nothing_else_does(
     listed = (await http.get("/api/runs/r1/artifacts")).json()["artifacts"]
     assert listed[0]["backend"] == "transfer"
     assert listed[0]["relative_path"] == "runs/r1/checkpoint/a.pt"
+
+
+async def test_every_periodic_checkpoint_gets_its_own_file(http, data_root,
+                                                           monkeypatch):
+    """#838: TrainingLoop's periodic checkpoints of a run with a 32-char id
+    and a long node id, epochs past 100, through the upload route: one
+    file each, named as the worker named it, each downloading its own
+    bytes."""
+    from app.core.checkpoints import periodic_checkpoint_path
+
+    run_id = "819383fcde8d4067b2ca3a0890e7926b"
+    store = app.state.run_service.store
+    await store.create_run(graph_snapshot={"nodes": []}, status="running",
+                           run_id=run_id, worker_id="gpu-1")
+    http.running[run_id] = "gpu-1"
+    node_ids = ("train-plain", "preset1__a_rather_long_training_loop_node")
+    rows = []
+    for node_id in node_ids:
+        for epoch in (*range(10, 130, 10), 1000):
+            name = periodic_checkpoint_path(run_id, node_id,
+                                            epoch=epoch).name
+            data = f"{node_id} epoch {epoch}".encode()
+            response = await _upload(http, "token-gpu-1", run_id=run_id,
+                                     data=data, name=name, sha=_sha(data))
+            assert response.status_code == 200, response.text
+            key = response.json()["path"]
+            assert key == f"runs/{run_id}/checkpoint/{name}"
+            row = await store.add_artifact(run_id, "checkpoint", key,
+                                           backend="transfer",
+                                           worker_id="gpu-1")
+            rows.append((row.id, name, data))
+    assert len({name for _, name, _ in rows}) == len(rows) == 26
+    for artifact_id, name, data in rows:
+        got = await http.get(
+            f"/api/runs/{run_id}/artifacts/{artifact_id}/download")
+        assert got.status_code == 200 and got.content == data
+        assert name in got.headers["content-disposition"]
+
+
+async def test_a_key_cut_short_by_3_1_0_still_downloads(http, data_root):
+    """3.1.0 stored keys cut at 48 characters, without the extension; such
+    a row keeps downloading the file it names."""
+    old = "819383fcde8d4067b2ca3a0890e7926b-train-plain-e10"
+    path = data_root / "runs" / "r1" / "checkpoint" / old
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"epoch 100")
+    store = app.state.run_service.store
+    row = await store.add_artifact("r1", "checkpoint",
+                                   f"runs/r1/checkpoint/{old}",
+                                   backend="transfer", worker_id="gpu-1")
+    got = await http.get(f"/api/runs/r1/artifacts/{row.id}/download")
+    assert got.status_code == 200 and got.content == b"epoch 100"
+    # A new upload under the full name lands beside it.
+    response = await _upload(http, "token-gpu-1", name=f"{old}0.pt")
+    assert response.json()["path"] == f"runs/r1/checkpoint/{old}0.pt"
+    assert path.read_bytes() == b"epoch 100"
 
 
 # ── placement ─────────────────────────────────────────────────────────────

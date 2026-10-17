@@ -689,10 +689,10 @@ async def upload_run_artifact(run_id: str, request: Request):
     (``core.transfer.Receiver``: no second spool), capped by
     ``MAX_UPLOAD_SIZE`` (413) and hashed as it arrives, then moved into
     place (``core.transfer.place_file``): ``run`` at
-    ``<data root>/runs/<run_id>/<kind>/<name>``, replaced atomically;
-    ``data`` (a writer node's file) at the same relative path in this
-    server's own data folders, never over a different file (the newer one
-    is suffixed; the same content is the same file). The answer's ``path``
+    ``<data root>/runs/<run_id>/<kind>/<name>``; ``data`` (a writer node's
+    file) at the same relative path in this server's own data folders.
+    Either way never over a different file (the newer one is suffixed; the
+    same content is the same file). The answer's ``path``
     is the key, which the worker then reports in its ``artifact`` frame
     (that is what records the row, in the run's event order). Uploading the
     same content again answers 200 with the same key.

@@ -21,16 +21,16 @@ Without a shared filesystem the control plane is the artifact repository
 
   * ``run``: a file the run reported as an artifact (a checkpoint, a
     TensorBoard folder file by file), kept at
-    ``<data root>/runs/<run_id>/<kind>/<name>`` (:func:`run_key`); the run
-    owns it.
+    ``<data root>/runs/<run_id>/<kind>/<name>`` (:func:`run_key`, the
+    name kept whole: :func:`file_part`); the run owns it.
   * ``data``: a file a writer node wrote (``CheckpointSaver``,
     ``ModelSaver``, ``ImageWriter``, ``VideoWrite``), kept where the same
     node writes on a local run: this server's ``MODELS_DIR``, ``MEDIA_DIR``
     or ``<data root>/output``, at the same relative path (:data:`DATA_PLACES`).
-    A different file already there is kept, and the new one is suffixed
-    (``saved-1.pt``); the same content is the same file. Like a local
-    run's, these are the user's: retention leaves them.
+    Like a local run's, these are the user's: retention leaves them.
 
+  In both places a different file already there is kept, and the new one is
+  suffixed (``saved-1.pt``); the same content is the same file (#838).
   Either way the worker reports the key the upload answered with in its
   ``artifact`` frame (``backend: "transfer"``), which records the row in
   the run's event order; :func:`key_path` maps a key back to a file and
@@ -326,9 +326,54 @@ class ContentIndex:
 
 
 def _part(value: str) -> str:
+    """One id component (a run id, an artifact kind): capped at
+    ``checkpoints.MAX_NAME_PART`` like the checkpoint builders' own."""
     from .checkpoints import _safe_part
 
     return _safe_part(value)
+
+
+#: Caps on one file-name component of a received file (:func:`file_part`):
+#: characters, and UTF-8 bytes (most filesystems allow 255 bytes per name).
+#: Long enough for every name a checkpoint builder makes (two 48-character
+#: id components plus the ``-e<epoch>b<batch>.pt`` stamp).
+MAX_FILE_NAME = 128
+MAX_FILE_NAME_BYTES = 240
+#: Characters a shortened name keeps from its end (the position stamp and
+#: the extension).
+KEEP_TAIL = 40
+
+
+def _fits(name: str) -> bool:
+    return len(name) <= MAX_FILE_NAME \
+        and len(name.encode("utf-8", "surrogatepass")) <= MAX_FILE_NAME_BYTES
+
+
+def file_part(value: str) -> str:
+    """One file-name component of a received file: the characters
+    ``checkpoints._safe_part`` keeps, the length kept too (#838).
+
+    ``_safe_part`` caps an id component at 48 characters; a whole file name
+    (``<run id>-<node id>-e100.pt``) cut there lost its epoch stamp and
+    extension, and two checkpoints took one name. A name over
+    :data:`MAX_FILE_NAME` / :data:`MAX_FILE_NAME_BYTES` is shortened in the
+    middle: its start, a hash of the whole name, and its last
+    :data:`KEEP_TAIL` characters, so distinct names stay distinct and the
+    stamp and extension survive. A name within ``MAX_NAME_PART`` comes out
+    as ``_safe_part`` made it.
+    """
+    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_"
+                      for c in value)
+    cleaned = cleaned.strip("._") or "unnamed"
+    if _fits(cleaned):
+        return cleaned
+    digest = hashlib.sha256(
+        value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    tail = cleaned[-KEEP_TAIL:]
+    head = cleaned[:-KEEP_TAIL]
+    while head and not _fits(f"{head}-{digest}-{tail}"):
+        head = head[:-1]
+    return f"{head}-{digest}-{tail}"
 
 
 def checked_relative(name: str) -> PurePosixPath:
@@ -342,8 +387,9 @@ def checked_relative(name: str) -> PurePosixPath:
 
 
 def clean_name(name: str) -> PurePosixPath:
-    """:func:`checked_relative`, each part made a safe file name."""
-    return PurePosixPath(*(_part(p) for p in checked_relative(name).parts))
+    """:func:`checked_relative`, each part made a safe file name
+    (:func:`file_part`)."""
+    return PurePosixPath(*(file_part(p) for p in checked_relative(name).parts))
 
 
 def runs_root() -> Path:
@@ -496,12 +542,12 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
                sha256: str) -> str:
     """Move the received *tmp* to its place; the key. Blocking.
 
-    ``run``: :func:`run_key`, replaced atomically (an upload of the same
-    name again, a retry, is the same file). ``data``: the writer's path
-    under :data:`DATA_PLACES`; never over a different file: the same
-    content there is the same file (the upload is a no-op), a different one
-    is kept and this one is suffixed ``-1``, ``-2`` ... (``os.link``, which
-    refuses an existing name, so two uploads cannot take one name).
+    ``run``: :func:`run_key`. ``data``: the writer's path under
+    :data:`DATA_PLACES`. Either way never over a different file (#838: a
+    run's file used to be replaced, so two names that cleaned to one key
+    lost the earlier file): the same content there is the same file (the
+    upload is a no-op, so a retry answers the same key), a different one is
+    kept and this one is suffixed ``-1``, ``-2`` ... (:func:`_claim`).
     ``ValueError`` for a name that fits neither.
     """
     if place == PLACE_RUN:
@@ -511,8 +557,8 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
         destination.parent.mkdir(parents=True, exist_ok=True)
         if owned_run_dir(run_id) is None:
             raise ValueError("the run's directory is not a plain directory")
-        os.replace(tmp, destination)
-        return key
+        claimed = _claim(tmp, destination, sha256)
+        return PurePosixPath(key).with_name(claimed.name).as_posix()
     if place != PLACE_DATA:
         raise ValueError(f"unknown place {place!r}")
     relative = clean_name(name)
@@ -521,6 +567,18 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
     target = key_location(relative.as_posix())
     assert target is not None
     target.parent.mkdir(parents=True, exist_ok=True)
+    candidate = _claim(tmp, target, sha256)
+    key_parts = (relative.parts[0],
+                 *candidate.relative_to(_data_base(relative.parts[0])).parts)
+    return PurePosixPath(*key_parts).as_posix()
+
+
+def _claim(tmp: Path, target: Path, sha256: str) -> Path:
+    """Move *tmp* to *target*, or to ``target-1``, ``-2`` ... when a
+    different file holds the name; the path it landed at. A file with the
+    same content already there is taken as this one (*tmp* is dropped).
+    ``os.link`` refuses an existing name, so two uploads cannot take one
+    name."""
     n = 0
     while True:
         candidate = target if n == 0 else _suffixed(target, n)
@@ -547,9 +605,7 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
             break
         tmp.unlink(missing_ok=True)
         break
-    key_parts = (relative.parts[0],
-                 *candidate.relative_to(_data_base(relative.parts[0])).parts)
-    return PurePosixPath(*key_parts).as_posix()
+    return candidate
 
 
 class Receiver:
