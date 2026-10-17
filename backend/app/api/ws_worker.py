@@ -37,7 +37,11 @@ same protocol version and the same CodefyUI version as this server (a
 mismatch is refused naming both), a well-formed unreserved name, and a
 name this credential may use. A refusal is a ``reject`` and a close, and
 is remembered per name for the Workers panel
-(``WorkerRegistry.record_rejection``). Otherwise the worker is registered
+(``WorkerRegistry.record_rejection``). A one-shot agent (#790) is also
+refused when another agent holds its name while connected or with a run in
+flight (``worker_handshake.one_shot_refusal``), and, started with
+``--run-id``, when that run does not wait for it
+(``RunService.one_shot_run_refusal``). Otherwise the worker is registered
 (replacing an older connection under the same name, but only one that
 authenticated the same way: a session-token agent cannot take over an
 enrolled worker's name, nor an enrolled worker a connected same-host
@@ -250,6 +254,8 @@ async def websocket_worker(ws: WebSocket) -> None:
                or handshake.identity_refusal(
                    hello, credential=auth.credential, enrolled_as=enrolled_as,
                    registry=registry))
+    if refusal is None:
+        refusal = await _one_shot_run_refusal(ws, registry, hello)
     if refusal is not None:
         await refuse(hello.name if isinstance(hello, wp.Hello) else None,
                      refusal)
@@ -317,6 +323,26 @@ async def websocket_worker(ws: WebSocket) -> None:
         registry.disconnect(worker)
         if enrolled_as is not None and store is not None:
             await _touch(store, None, enrolled_as)
+
+
+async def _one_shot_run_refusal(ws: WebSocket, registry: Any,
+                                hello: wp.Hello) -> str | None:
+    """A one-shot agent started with ``--run-id`` (#790) is refused unless
+    that run waits for it (or already runs on it): it would otherwise wait
+    for a run that is never placed there. Checked on the agent's first
+    connection only; its reconnects (the same ``instance_id``) carry on
+    with the run it took."""
+    if not hello.one_shot or hello.one_shot_run_id is None:
+        return None
+    existing = registry.get(hello.name)
+    if existing is not None and hello.instance_id is not None \
+            and existing.instance_id == hello.instance_id:
+        return None
+    service = getattr(ws.app.state, "run_service", None)
+    if service is None:
+        return None
+    return await service.one_shot_run_refusal(hello.one_shot_run_id,
+                                              hello.name)
 
 
 async def _record_fingerprint(service: Any, worker: Any) -> None:

@@ -32,6 +32,12 @@ match a fingerprint the user pinned (``--ca-fingerprint``) ends the agent
 pin, a certificate the system CAs do not accept is logged as an error, with
 the cause, and retried with the usual backoff (a proxy being repaired, a
 CA bundle being updated).
+
+A ``--one-shot`` agent (#790, :class:`~app.agent.one_shot.OneShot`) says so
+in ``hello``, takes the first run it is assigned (refusing any other),
+and stops once the control plane has acknowledged that run's
+``run_finished``. A control plane whose ``welcome`` does not list the
+``one_shot`` capability is refused like a ``reject``.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ import asyncio
 import inspect
 import logging
 import platform
+import secrets
 import ssl
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -50,6 +57,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
 from .facts import AgentFacts
+from .one_shot import OneShot
 from .runner import Runner, mark_finished
 from .spool import SpoolStore
 from .trust import ControlPlaneTrust, TrustError, untrusted_message
@@ -170,8 +178,13 @@ class AgentConnection:
         on_trusted: Callable[[str], None] | None = None,
         facts: AgentFacts | None = None,
         uds: str | None = None,
+        one_shot: OneShot | None = None,
     ) -> None:
         self.runner = runner
+        #: ``--one-shot`` (#790): this agent's one run, or None.
+        self.one_shot = one_shot
+        #: Random per agent process (#790, ``hello.instance_id``).
+        self.instance_id = secrets.token_hex(8)
         runner.send = self.send_frame
         if runner.transfer is None:
             # The transfer backend's HTTP side (#785): the same control
@@ -245,6 +258,8 @@ class AgentConnection:
         run_id = getattr(frame, "run_id", None)
         seq = getattr(frame, "seq", None)
         line = _encode_or_warn(frame)
+        if self.one_shot is not None:
+            self.one_shot.sent(frame)
         async with self._send_lock:
             if run_id is None or seq is None:
                 return await self._send_raw(frame, line)
@@ -350,6 +365,22 @@ class AgentConnection:
         """
         backoff = self.backoff_min_s
         code = 0
+        done_watch = None
+        if self.one_shot is not None:
+            done_watch = asyncio.create_task(self.one_shot.wait_done(
+                stop, lambda: self.runner.upload_window_s),
+                name="agent-one-shot")
+        try:
+            code = await self._loop(stop, backoff)
+        finally:
+            if done_watch is not None:
+                done_watch.cancel()
+                await asyncio.gather(done_watch, return_exceptions=True)
+        await self.runner.shutdown()
+        return code
+
+    async def _loop(self, stop: asyncio.Event, backoff: float) -> int:
+        code = 0
         while not stop.is_set():
             welcomed = False
             try:
@@ -418,7 +449,6 @@ class AgentConnection:
             except asyncio.TimeoutError:
                 pass
             backoff = min(next_backoff(backoff), BACKOFF_MAX_S)
-        await self.runner.shutdown()
         return code
 
     async def _trusted(self) -> None:
@@ -463,7 +493,11 @@ class AgentConnection:
             capabilities=list(wp.CAPABILITIES),
             devices=await self._device_reports(), platform=platform_facts(),
             mounts=await asyncio.to_thread(self.runner.available_mounts),
-            machine_id=await asyncio.to_thread(machine_identity))
+            machine_id=await asyncio.to_thread(machine_identity),
+            one_shot=self.one_shot is not None,
+            one_shot_run_id=(None if self.one_shot is None
+                             else self.one_shot.run_id),
+            instance_id=self.instance_id)
         await ws.send(wp.encode_frame(hello))
         raw = await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S)
         frame = wp.decode_control_frame(raw)
@@ -475,6 +509,11 @@ class AgentConnection:
             raise AgentRejected(
                 f"protocol version {frame.protocol_version} on the control "
                 f"plane, {wp.PROTOCOL_VERSION} here; update so both match")
+        if self.one_shot is not None \
+                and wp.CAPABILITY_ONE_SHOT not in frame.capabilities:
+            raise AgentRejected(
+                "the control plane does not support one-shot workers "
+                "(--one-shot); update it to this version")
         return frame
 
     async def _serve(self, ws: Any, stop: asyncio.Event) -> bool:
@@ -551,6 +590,12 @@ class AgentConnection:
 
     async def _dispatch(self, frame: Any) -> None:
         if isinstance(frame, wp.Assign):
+            if self.one_shot is not None:
+                refusal = self.one_shot.refusal(frame.run_id)
+                if refusal is not None:
+                    await self.runner.refuse(frame.run_id, refusal)
+                    return
+                self.one_shot.take(frame.run_id)
             await self.runner.assign(frame)
         elif isinstance(frame, wp.Cancel):
             if not await self.runner.cancel(frame.run_id, frame.grace_s):
@@ -561,6 +606,8 @@ class AgentConnection:
         elif isinstance(frame, wp.Ack):
             done = await asyncio.to_thread(self.spools.ack, frame.run_id,
                                            frame.seq)
+            if done and self.one_shot is not None:
+                self.one_shot.acked(frame.run_id)
             if done and self.runner.take_refused(frame.run_id):
                 # A refused assignment has no handle to mark its directory
                 # for retention; a run that started is marked when it ends.

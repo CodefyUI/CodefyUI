@@ -300,6 +300,7 @@ from .scheduling import (
     SlotKey,
     WorkerScheduler,
     candidate_devices,
+    entry_pool,
     entry_target,
     no_mount,
     on_a_worker,
@@ -313,6 +314,7 @@ from .secret_params import (
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
 from .worker_handshake import catalog_refusal, graph_node_types
 from .worker_protocol import (
+    POOL_ONE_SHOT,
     TARGET_ANY,
     TARGET_LOCAL,
     WORKER_NAME_PATTERN,
@@ -724,6 +726,11 @@ TARGET_WORKER_ANY = TARGET_ANY
 #: match it too; they are the two reserved names a worker cannot enroll
 #: under.
 TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
+#: The queue-key family of ``target.pool: "one-shot"`` runs (#790):
+#: ``pool:one-shot/<device>``. The ``:`` cannot occur in a worker name, so
+#: it never collides with a ``<worker>/<device>`` key, and the pool's FIFO
+#: is its own: a run waiting for a one-shot worker holds up no ``any`` run.
+ONE_SHOT_QUEUE_PREFIX = f"pool:{POOL_ONE_SHOT}"
 #: Upper bound on ``target.devices``. A device set names cards on ONE
 #: host; the cap keeps a stored row bounded like every other option.
 MAX_TARGET_DEVICES = 64
@@ -736,6 +743,19 @@ def _content_index(store: Any) -> Any:
 
     db = getattr(store, "db", None)
     return None if db is None else ContentIndex(db)
+
+
+def one_shot_timed_out(timeout_s: float) -> str:
+    """The error of a run no one-shot worker took in time (#790)."""
+    if timeout_s >= 3600 and timeout_s % 3600 == 0:
+        span = f"{timeout_s / 3600:.0f} h"
+    elif timeout_s >= 60 and timeout_s % 60 == 0:
+        span = f"{timeout_s / 60:.0f} min"
+    else:
+        span = f"{timeout_s:g} s"
+    return (f"no one-shot worker took this run within {span} "
+            "(CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S); start one with "
+            "cdui agent start --one-shot, then submit the run again")
 
 
 def worker_not_connected(name: str) -> str:
@@ -806,9 +826,17 @@ def _concrete_device(device: str) -> str:
 def normalize_target(raw: Any) -> dict[str, Any] | None:
     """Validate ``options.target`` (#769). ``None`` means "not given".
 
-    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...]}``, both
-    keys optional and no others. ``worker`` is trimmed and lowercased;
-    absent, it is ``local``. Whether a named worker is connected is not
+    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...],
+    "pool": "one-shot"}``, every key optional and no others. ``worker`` is
+    trimmed and lowercased; absent, it is ``local`` (``any`` with a
+    ``pool``).
+
+    ``pool`` (#790): ``"one-shot"`` places the run on a one-shot worker
+    (``cdui agent start --one-shot``), any one that offers the device and
+    has not taken a run yet, and on nothing else; the run waits for one to
+    appear. It goes with ``worker`` absent or ``any`` only. Without
+    ``pool`` the normalised target has no ``pool`` key, so a stored target
+    reads exactly as before. Whether a named worker is connected is not
     known here: :meth:`RunService.submit` checks it against the worker
     registry (#772).
 
@@ -833,15 +861,23 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise RunSubmitError(
             f"target must be an object, got {type(raw).__name__}")
-    unknown = sorted(set(raw) - {"worker", "devices"})
+    unknown = sorted(set(raw) - {"worker", "devices", "pool"})
     if unknown:
         raise RunSubmitError(
             f"unknown target key(s) {unknown}; supported: "
-            "['devices', 'worker']")
+            "['devices', 'pool', 'worker']")
 
+    pool = raw.get("pool")
+    if pool is not None:
+        if isinstance(pool, str):
+            pool = pool.strip().lower()
+        if pool != POOL_ONE_SHOT:
+            raise RunSubmitError(
+                f"target.pool must be {POOL_ONE_SHOT!r} (the one-shot "
+                "workers, #790)")
     worker = raw.get("worker")
     if worker is None:
-        worker = TARGET_WORKER_LOCAL
+        worker = TARGET_WORKER_ANY if pool else TARGET_WORKER_LOCAL
     if isinstance(worker, str):
         worker = worker.strip().lower()
     if not isinstance(worker, str) \
@@ -849,6 +885,11 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
         raise RunSubmitError(
             "target.worker must be 'local', 'any' or a worker name "
             "(lowercase letters, digits and '-', at most 63 chars)")
+    if pool and worker != TARGET_WORKER_ANY:
+        raise RunSubmitError(
+            "target.pool picks the worker: leave target.worker out (or "
+            "'any'), or name a one-shot worker in target.worker without a "
+            "pool")
 
     devices = raw.get("devices")
     if devices is not None:
@@ -874,7 +915,10 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
                 f"target.devices mixes device kinds {kinds}; a device set is "
                 "one kind")
         devices = cleaned
-    return {"worker": worker, "devices": devices}
+    normalized: dict[str, Any] = {"worker": worker, "devices": devices}
+    if pool:
+        normalized["pool"] = pool
+    return normalized
 
 
 def target_devices(options: Any) -> Any:
@@ -1559,8 +1603,20 @@ class RunService:
         executor: Executor | None = None,
         scheduler: Scheduler | None = None,
         workers: "WorkerRegistry | None" = None,
+        one_shot_queue_timeout_s: float | None = None,
     ) -> None:
         self.store = store
+        # How long a run waiting for a one-shot worker waits before it
+        # fails (#790, ``CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S``); 0:
+        # forever. Only such runs have a timer; nothing else changes.
+        self._one_shot_timeout_s = max(0.0, float(
+            settings.WORKER_ONE_SHOT_QUEUE_TIMEOUT_S
+            if one_shot_queue_timeout_s is None
+            else one_shot_queue_timeout_s))
+        #: Run id -> the timer that fails it, for each run waiting for a
+        #: one-shot worker (#790).
+        self._one_shot_timers: dict[str, asyncio.TimerHandle] = {}
+        self._one_shot_expiries: set[asyncio.Task] = set()
         # The connected worker agents (#772). With a registry, a run that
         # targets a worker is placed by ``WorkerScheduler`` and executed by
         # ``WorkerExecutor``; a run without a target never meets either.
@@ -1968,11 +2024,19 @@ class RunService:
         # keep in step with this one, and the first bug it produced would be
         # a run overtaking a queue that filled between the check and the
         # start.
+        if queue_key.startswith(ONE_SHOT_QUEUE_PREFIX):
+            # Each one-shot pool run waits in a line of its own (#790): an
+            # agent started with ``--run-id`` takes exactly that run, which
+            # one FIFO would keep behind every older pool run. ``reschedule``
+            # still serves them oldest first (``seq``). The row keeps the
+            # pool's key.
+            queue_key = f"{queue_key}{WORKER_QUEUE_SEPARATOR}{record.id}"
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
                            options=normalized_options, signal=_Broadcast(),
                            seq=next(self._submit_seq),
                            needs=needs, node_types=node_types)
         self._enqueue(entry)
+        self._arm_one_shot_timeout(entry)
         self._pump(queue_key)
         return SubmitResult(
             run_id=record.id,
@@ -2125,6 +2189,15 @@ class RunService:
         if options.get("record_outputs"):
             raise RunSubmitError(WORKER_REFUSES_RECORD_OUTPUTS)
         requested = str(options.get("device") or "cpu")
+        if entry_pool(options) == POOL_ONE_SHOT:
+            # Never refused for want of a worker (#790): the run waits for
+            # a one-shot worker to appear, up to
+            # ``CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S``.
+            if self._workers is None:
+                raise RunSubmitError(
+                    "target.pool 'one-shot' needs worker agents, and this "
+                    "server has none")
+            return f"{ONE_SHOT_QUEUE_PREFIX}{WORKER_QUEUE_SEPARATOR}{requested}"
         if worker_id == TARGET_WORKER_ANY:
             can_serve = getattr(self._scheduler, "can_serve_any", None)
             if can_serve is not None and not can_serve(requested, devices):
@@ -2176,6 +2249,8 @@ class RunService:
         transfer = transferable(needs)
         worker_id, devices = entry_target(options)
         requested = str(options.get("device") or "cpu")
+        if entry_pool(options) == POOL_ONE_SHOT:
+            return  # whoever appears; placement checks the mount (#790)
         if worker_id == TARGET_WORKER_ANY:
             can_serve = getattr(self._scheduler, "can_serve_any", None)
             if can_serve is not None and not can_serve(
@@ -2301,6 +2376,85 @@ class RunService:
         self._pending.setdefault(entry.queue_key, deque()).append(entry)
         self._pending_by_id[entry.run_id] = entry
 
+    # ── waiting for a one-shot worker (#790) ──────────────────────────────
+
+    def _waits_for_one_shot(self, options: dict[str, Any]) -> bool:
+        """Whether a run with *options* waits for a one-shot worker: the
+        one-shot pool, or a worker that is known to be one-shot."""
+        if entry_pool(options) == POOL_ONE_SHOT:
+            return True
+        worker_id, _ = entry_target(options)
+        if worker_id in (TARGET_WORKER_LOCAL, TARGET_WORKER_ANY) \
+                or self._workers is None:
+            return False
+        worker = self._workers.get(worker_id)
+        return bool(getattr(worker, "one_shot", False))
+
+    def _arm_one_shot_timeout(self, entry: _QueuedRun) -> None:
+        """Fail *entry* if no one-shot worker takes it in time (#790, the
+        GitHub runner rule: queued until a matching runner comes online,
+        failed after 24 h). SYNCHRONOUS; a no-op for every other run."""
+        if self._one_shot_timeout_s <= 0 \
+                or not self._waits_for_one_shot(entry.options):
+            return
+        loop = asyncio.get_running_loop()
+        self._one_shot_timers[entry.run_id] = loop.call_later(
+            self._one_shot_timeout_s, self._one_shot_timed_out, entry.run_id)
+
+    def _disarm_one_shot_timeout(self, run_id: str) -> None:
+        timer = self._one_shot_timers.pop(run_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _one_shot_timed_out(self, run_id: str) -> None:
+        self._one_shot_timers.pop(run_id, None)
+        if run_id not in self._pending_by_id or self._shutting_down:
+            return
+        task = asyncio.ensure_future(self._expire_one_shot(run_id))
+        self._one_shot_expiries.add(task)
+        task.add_done_callback(self._one_shot_expiries.discard)
+
+    async def _expire_one_shot(self, run_id: str) -> None:
+        entry = self._dequeue(run_id)
+        if entry is None:
+            return
+        error = one_shot_timed_out(self._one_shot_timeout_s)
+        try:
+            await self._fail_waiting(entry, error)
+        except Exception:  # noqa: BLE001 -- logged; the row stays queued
+            logger.exception("run %s: could not fail it after its one-shot "
+                             "wait", run_id)
+            return
+        logger.warning("run %s failed: %s", run_id, error)
+
+    async def one_shot_run_refusal(self, run_id: str,
+                                   worker_name: str) -> str | None:
+        """Why a one-shot agent started with ``--run-id`` *run_id* may not
+        connect as *worker_name* (#790), or None: the run must be waiting
+        for it (naming it, or the one-shot pool) or already running there.
+        A refusal ends the agent at once instead of leaving it to wait for
+        a run that will never be placed on it."""
+        active = self._runs.get(run_id)
+        if active is not None:
+            placement = active.placement
+            if placement is not None and placement.worker_id == worker_name:
+                return None
+            return (f"run {run_id} is already running "
+                    f"({'on ' + placement.worker_id if placement else 'here'})")
+        entry = self._pending_by_id.get(run_id)
+        if entry is not None:
+            worker_id, _ = entry_target(entry.options)
+            if worker_id == worker_name \
+                    or entry_pool(entry.options) == POOL_ONE_SHOT:
+                return None
+            return (f"run {run_id} does not wait for a one-shot worker (its "
+                    f"target is {worker_id!r}); submit it with target.pool "
+                    f"{POOL_ONE_SHOT!r} or target.worker {worker_name!r}")
+        record = await self.store.get_run(run_id)
+        if record is None:
+            return f"run {run_id} does not exist on this server"
+        return f"run {run_id} is not waiting to start (it is {record.status})"
+
     def _dequeue(self, run_id: str) -> _QueuedRun | None:
         """Take a run out of the line wherever it is. ``None`` if not waiting.
 
@@ -2311,6 +2465,7 @@ class RunService:
         entry = self._pending_by_id.pop(run_id, None)
         if entry is None:
             return None
+        self._disarm_one_shot_timeout(run_id)
         queue = self._pending.get(entry.queue_key)
         was_front = bool(queue) and queue[0] is entry
         if queue is not None:
@@ -2502,6 +2657,7 @@ class RunService:
             self._pending.setdefault(queue_key, deque()).appendleft(entry)
             self._pending_by_id[entry.run_id] = entry
             return False
+        self._disarm_one_shot_timeout(entry.run_id)
         return True
 
     def _start(
@@ -2614,6 +2770,10 @@ class RunService:
             # slot was taken in ``_admit_interactive`` before its row existed.
             for slot in active.placement.slots if active.placement else ():
                 self._slots[slot] = self._slots.get(slot, 0) + 1
+            if on_worker and self._workers is not None:
+                # In the same step as the slots: a one-shot worker takes
+                # this run and no other (#790).
+                self._workers.claim_one_shot(placement.worker_id, run_id)
         elif self._session_key(session) is not None:
             self._interactive_sessions[self._session_key(session)] = run_id
         active.task = task
@@ -3475,18 +3635,25 @@ class RunService:
             entry = self._dequeue(run_id)
             if entry is None:  # pragma: no cover - same loop, same index
                 continue
-            self._run_secrets.pop(run_id, None)
-            landed = await self.store.mark_finished(
-                run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
-            if landed:
-                await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
-            entry.close()
-            if landed:
-                await self._notify_terminal(run_id, STATUS_FAILED)
+            if await self._fail_waiting(entry, error):
                 failed.append(run_id)
         if failed:
             logger.warning("%d queued run(s) failed: %s", len(failed), error)
         return failed
+
+    async def _fail_waiting(self, entry: _QueuedRun, error: str) -> bool:
+        """File an already-dequeued run ``failed`` with *error*. True when
+        the guarded write landed (the row was still ``queued``)."""
+        run_id = entry.run_id
+        self._run_secrets.pop(run_id, None)
+        landed = await self.store.mark_finished(
+            run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
+        if landed:
+            await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
+        entry.close()
+        if landed:
+            await self._notify_terminal(run_id, STATUS_FAILED)
+        return landed
 
     async def _retire_waiting(
         self, entry: _QueuedRun, status: str, reason: str,
@@ -3693,6 +3860,9 @@ class RunService:
            tasks are still awaited — cancelling is not draining.
         """
         self._shutting_down = True
+        for timer in self._one_shot_timers.values():
+            timer.cancel()
+        self._one_shot_timers.clear()
         await self._retire_queue()
         active = list(self._runs.values())
         for entry in active:

@@ -43,6 +43,13 @@ Background by default, like ``cdui start``: the agent is re-launched as a
 detached ``--foreground`` process, its pid in ``<user-data>/agent.pid`` and
 its log in ``<user-data>/agent.log``. ``--foreground`` keeps it attached
 (systemd, a terminal you watch). The agent itself never imports torch.
+
+``--one-shot [--run-id ID]`` (#790, ``app.agent.one_shot``): take exactly
+one run (that one, with ``--run-id``), report it and exit, for a SLURM job
+or an ``ssh`` command. Always in the foreground, with no pidfile, so it
+never collides with a background agent's; the exit code says how the run
+went (0 succeeded, 1 failed / cancelled / interrupted, 2 refused, 3 no run
+arrived before the agent was stopped).
 """
 
 from __future__ import annotations
@@ -230,6 +237,18 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--foreground", action="store_true", help=t(
         "在前景執行（systemd 或想看日誌時）",
         "stay in the foreground (systemd, or to watch the log)"))
+    start.add_argument("--one-shot", action="store_true", help=t(
+        "只接一個 run，回報後結束（SLURM job、ssh 指令）；永遠在前景。結束碼："
+        "0 成功、1 失敗／取消／中斷、2 被拒、3 停止前沒有 run",
+        "take exactly one run, report it and exit (a SLURM job, an ssh "
+        "command); always in the foreground. Exit code: 0 succeeded, 1 "
+        "failed / cancelled / interrupted, 2 refused, 3 stopped before a "
+        "run arrived"))
+    start.add_argument("--run-id", default=None, metavar="ID", help=t(
+        "搭配 --one-shot：只接這個 run（它須以 target.pool one-shot 或此 "
+        "worker 名稱送出）",
+        "with --one-shot: take only this run (submitted with target.pool "
+        "one-shot, or naming this worker)"))
     start.add_argument(DAEMON_FLAG, action="store_true",
                        help=argparse.SUPPRESS)
     sub.add_parser("stop", help=t("停止背景 agent", "stop the background agent"))
@@ -581,6 +600,7 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     from ..core.version import get_version
     from .connection import AgentConnection
     from .facts import gather as gather_facts
+    from .one_shot import OneShot
     from .runner import Runner
 
     name = args.name
@@ -593,6 +613,9 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     def probe() -> list[wp.DeviceReport]:
         return [_report(fact) for fact in offered_reports(
             _probe_facts(), wanted)]
+
+    one_shot = (OneShot(run_id=getattr(args, "run_id", None))
+                if getattr(args, "one_shot", False) else None)
 
     async def serve() -> int:
         stop = asyncio.Event()
@@ -612,7 +635,7 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
         if stop.is_set():
             cancel.set()
             await gathering
-            return 0
+            return 0 if one_shot is None else one_shot.exit_code(0)
         facts = gathering.result()
         connection = AgentConnection(
             runner=runner, name=name, version=get_version(),
@@ -624,13 +647,17 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             trust=trust,
             on_trusted=(fingerprint_recorder(control)
                         if isinstance(control, str) else None),
-            uds=getattr(args, "uds", None))
-        return await connection.run(stop)
+            uds=getattr(args, "uds", None), one_shot=one_shot)
+        code = await connection.run(stop)
+        return code if one_shot is None else one_shot.exit_code(code)
 
-    logger.info("agent %s starting (pid %s); offering %s; mounts %s", name,
+    logger.info("agent %s starting (pid %s); offering %s; mounts %s%s", name,
                 os.getpid(), ", ".join(sorted(offered)),
                 ", ".join(f"{k}={v}" for k, v in sorted(
-                    (mounts or {}).items())) or "none")
+                    (mounts or {}).items())) or "none",
+                "" if one_shot is None else (
+                    f"; one-shot, run {one_shot.run_id}" if one_shot.run_id
+                    else "; one-shot"))
     try:
         return asyncio.run(serve())
     finally:
@@ -815,10 +842,33 @@ def enroll_now(args: argparse.Namespace, control: str, token: str,
     return worker_token
 
 
+def check_one_shot(args: argparse.Namespace) -> None:
+    """``--run-id`` needs ``--one-shot`` and a run id; ``--one-shot``
+    implies ``--foreground`` (a batch job waits for the agent's exit code).
+    ``ValueError`` (bilingual) for a bad combination."""
+    run_id = getattr(args, "run_id", None)
+    one_shot = bool(getattr(args, "one_shot", False))
+    if run_id is not None:
+        if not one_shot:
+            raise ValueError(t("--run-id 需要搭配 --one-shot",
+                               "--run-id needs --one-shot"))
+        if _wp.RUN_ID_PATTERN.fullmatch(run_id.strip()) is None:
+            raise ValueError(t(f"--run-id {run_id!r} 不是 run id",
+                               f"--run-id {run_id!r} is not a run id"))
+        args.run_id = run_id.strip()
+    if one_shot:
+        args.foreground = True
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
     # process and in every run subprocess (``core.resources``).
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    try:
+        check_one_shot(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     # A running agent read its mounts when it started: changing them now
     # would save a configuration it does not use. Refused, nothing saved.
     if args.mount and not args.daemonized \
