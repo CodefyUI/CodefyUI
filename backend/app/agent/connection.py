@@ -7,7 +7,9 @@ doubling, capped at 30 s, back to 1 s after a ``welcome``).
 Per connection:
 
 1. send ``hello``; wait for ``welcome`` (``reject`` ends the agent: a refused
-   token or version does not get better by retrying);
+   token or version does not get better by retrying; so does an HTTP 401
+   to a fixed worker credential, #840, while the session token, read
+   again on each dial, is retried);
 2. if runs survived a previous connection, send ``run_alive``;
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
@@ -397,6 +399,22 @@ class AgentConnection:
                     logger.error(
                         "the control plane refused the token (HTTP 401); "
                         "token from %s", self.token_source)
+                    if not callable(self._token):
+                        # A worker credential the server no longer knows
+                        # (the worker was removed or re-keyed, or the
+                        # server's database is another one) never comes
+                        # back by retrying (#840). The session token is
+                        # read again on each dial, so a server restart
+                        # that wrote a new one is retried as before.
+                        logger.error(
+                            "stopping: this agent's credential was revoked "
+                            "(the worker was removed or re-keyed in the "
+                            "Workers panel) or belongs to another control "
+                            "plane; run cdui agent forget %s and enroll "
+                            "with a new token", self._resolve(
+                                self._control_url))
+                        code = 2
+                        break
                 elif status == 403:
                     # Refused for another reason (a Host or Origin check, no
                     # worker registry yet), or by a control plane that

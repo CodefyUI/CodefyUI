@@ -102,8 +102,15 @@ forward carries to this server. Facts that shape it:
   up). A server that refuses the forward (``AllowStreamLocalForwarding`` /
   ``DisableForwarding``: an explicit refusal, or :data:`FORWARD_GIVE_UP`
   failed forwards in a row) is a final failure with that reason, until
-  Enable. The last lines ssh and the agent wrote, and the remote agent's
-  pid, are kept and shown in the Workers panel.
+  Enable. So is a failure no retry can fix (#840, :func:`permanent_failure`):
+  ssh refused the login (``Permission denied``), the host name does not
+  resolve, the host key does not verify, or the remote shell cannot run
+  ``cdui`` (exit 127 / 126) -- at once when the worker has not been up
+  since it was (re)started, after :data:`PERMANENT_GIVE_UP` in a row when
+  it has (a laptop that lost its network also fails to resolve). The last
+  lines ssh and the agent wrote (those of the last attempt only), and the
+  remote agent's pid once that agent ran, are kept and shown in the
+  Workers panel.
 - **Stored credentials that do not fit.** The first launch on a slot this
   entry has not used before runs ``cdui agent forget`` first, so a
   credential another worker (or another control plane) left for that
@@ -191,6 +198,23 @@ FORWARD_FORBIDDEN = ("administratively prohibited", "forwarding disabled",
                      "allowstreamlocalforwarding")
 #: Forward failures this many times in a row: forwarding is not allowed.
 FORWARD_GIVE_UP = 3
+#: A permanent failure (:func:`permanent_failure`) this many times in a
+#: row gives up even on a worker that was up since its last start (#840).
+PERMANENT_GIVE_UP = 3
+#: The remote shell's exit status when it cannot find, or cannot run, the
+#: command (``cdui`` at the wrong path).
+COMMAND_NOT_FOUND_EXIT = 127
+COMMAND_NOT_EXECUTABLE_EXIT = 126
+#: ssh's words for failures no retry fixes, and what to do about each.
+PERMANENT_WORDS = (
+    ("permission denied (", "the host refused the login (check the user "
+     "name and that the key works without a prompt: ssh -o BatchMode=yes "
+     "{target} true)"),
+    ("could not resolve hostname", "the host name does not resolve (check "
+     "the target, or the Host alias in ~/.ssh/config)"),
+    ("host key verification failed", "the host key does not verify (the "
+     "host is not in known_hosts, or its key changed)"),
+)
 #: The agent's words when its stored credential names another worker
 #: (``app.agent.cli.use_stored_credential``; the remote runs in English).
 CREDENTIAL_MISMATCH = "is for worker"
@@ -698,6 +722,31 @@ def next_backoff(current: float) -> float:
     return min(BACKOFF_MAX_S, max(BACKOFF_MIN_S, current * 2))
 
 
+def permanent_failure(code: int | None, lines: list[str],
+                      entry: SshWorker) -> str | None:
+    """Why a failed ssh (exit *code*, output *lines*) will fail again the
+    same way, in words with what to do, or None for one worth retrying
+    (#840): a refused login, an unknown host, a host key that does not
+    verify, a remote ``cdui`` that is missing or cannot run."""
+    lowered = " ".join(lines).lower()
+    for words, reason in PERMANENT_WORDS:
+        if words in lowered:
+            return reason.format(target=entry.target)
+    if code in (COMMAND_NOT_FOUND_EXIT, COMMAND_NOT_EXECUTABLE_EXIT):
+        return (f"the remote host cannot run {entry.remote_cdui} (exit "
+                f"{code}: {'not found' if code == COMMAND_NOT_FOUND_EXIT else 'not executable'}); "
+                "fix the cdui path of this SSH worker, or install CodefyUI "
+                "there with install.sh")
+    return None
+
+
+def gives_up(ever_up: bool, streak: int) -> bool:
+    """Whether a permanent failure, the *streak*-th in a row, ends the
+    retries: at once for a worker not up since its last start, after
+    :data:`PERMANENT_GIVE_UP` for one that was (#840)."""
+    return not ever_up or streak >= PERMANENT_GIVE_UP
+
+
 # ── one entry ─────────────────────────────────────────────────────────────
 
 
@@ -728,6 +777,12 @@ class SshLaunch:
         self._refused = False
         self._mismatch = False
         self._forward_failures = 0
+        #: Permanent failures in a row, and whether the worker came up since
+        #: the last :meth:`start` (#840, :func:`gives_up`).
+        self._permanent_failures = 0
+        self._ever_up = False
+        #: The next tail line starts a new attempt's output (#840).
+        self._fresh_tail = False
         #: The slot a session last attached on (the remote script printed
         #: the agent pid): an agent may survive there.
         self._attached_port: int | None = None
@@ -753,6 +808,8 @@ class SshLaunch:
         self.state = STATE_CONNECTING
         self.gave_up = False
         self._forward_failures = 0
+        self._permanent_failures = 0
+        self._ever_up = False
         self._task = asyncio.get_running_loop().create_task(
             self._loop(), name=f"ssh-worker-{self.entry.id}")
 
@@ -850,6 +907,10 @@ class SshLaunch:
                        "(CODEFYUI_SSH_REMOTE_PORT_RANGE)")
             return False
         listener = await self._listen()
+        # Each attempt's output only: a host that keeps refusing would
+        # otherwise fill the tail with the same line (#840). The last
+        # attempt's stays shown until this one writes something.
+        self._fresh_tail = True
         remote_dir = await self._prepare(port)
         if remote_dir is None or self._stop.is_set():
             return False
@@ -906,6 +967,8 @@ class SshLaunch:
                         self.last_error = None
                         self.exit_code = None
                         self._forward_failures = 0
+                        self._permanent_failures = 0
+                        self._ever_up = True
                         logger.info("SSH worker %s is up", self.entry.id)
                         await self._drop_enrollment()
                     was_up = True
@@ -931,8 +994,17 @@ class SshLaunch:
             return was_up
         code = proc.returncode
         tail = [line for line in self.tail if line.strip()]
-        if self._mismatch:
+        if self._mismatch or self._refused:
+            # The agent's stored credential was refused, or names another
+            # worker: the next session forgets it first. (The agent now
+            # exits on a refused credential, #840, ending the session.)
             self._forget_first = True
+        if code in (COMMAND_NOT_FOUND_EXIT, COMMAND_NOT_EXECUTABLE_EXIT) \
+                and not self.reattached:
+            # The remote script printed a pid for an agent that never ran.
+            self.remote_pid = None
+            self._attached_port = None
+            tail = [line for line in tail if REMOTE_PID.search(line) is None]
         if code == NO_TOKEN_EXIT:
             message = "the remote shell got no token on stdin"
         else:
@@ -958,10 +1030,28 @@ class SshLaunch:
                 return was_up
         else:
             self._forward_failures = 0
+        if self._permanent(code, tail, message, was_up):
+            return was_up
         self._fail(message, code)
         logger.warning("SSH worker %s: ssh exited with status %s: %s",
                        self.entry.id, code, message.replace("\n", " | "))
         return was_up
+
+    def _permanent(self, code: int | None, lines: list[str], message: str,
+                   was_up: bool = False) -> bool:
+        """Give up when the failure is one no retry fixes (#840); True if
+        it did. Otherwise the streak of such failures ends."""
+        reason = None if was_up else permanent_failure(code, lines,
+                                                       self.entry)
+        if reason is None:
+            self._permanent_failures = 0
+            return False
+        self._permanent_failures += 1
+        if not gives_up(self._ever_up, self._permanent_failures):
+            return False
+        self._give_up(f"{reason}. Not retrying; press Retry once it is "
+                      f"fixed.\n{message}", code)
+        return True
 
     def _give_up(self, message: str, code: int | None) -> None:
         self.gave_up = True
@@ -981,7 +1071,7 @@ class SshLaunch:
             line = raw.decode("utf-8", errors="replace").rstrip()
             if not line:
                 continue
-            self.tail.append(line)
+            self._add_tail([line])
             pid = REMOTE_PID.search(line)
             if pid is not None:
                 self.remote_pid = int(pid.group(1))
@@ -992,6 +1082,14 @@ class SshLaunch:
             if TOKEN_REFUSED in line:
                 self._refused = True
             logger.debug("ssh %s: %s", self.entry.id, line)
+
+    def _add_tail(self, lines: list[str]) -> None:
+        """Keep *lines*; the first of a new attempt replaces the last
+        attempt's output."""
+        if lines and self._fresh_tail:
+            self._fresh_tail = False
+            self.tail.clear()
+        self.tail.extend(lines)
 
     def _worker_online(self) -> bool:
         worker = self.launcher.registry.get(self.entry.id)
@@ -1056,8 +1154,10 @@ class SshLaunch:
                 text = (f"could not create ~/{REMOTE_STATE_DIR}/"
                         f"{state_key(cp, port)} on "
                         f"{self.entry.target}\n{text}")
-            self._fail(text or f"preparing {self.entry.target} failed "
-                       f"(ssh exited with status {code})", code)
+            text = text or (f"preparing {self.entry.target} failed (ssh "
+                            f"exited with status {code})")
+            if not self._permanent(code, lines, text):
+                self._fail(text, code)
             return None
         remote_dir = found[-1].strip()
         if SAFE_REMOTE_DIR.fullmatch(remote_dir) is None:
@@ -1132,7 +1232,7 @@ class SshLaunch:
         tail."""
         code, lines = await run_oneshot(self.launcher, self.entry, command,
                                         what)
-        self.tail.extend(lines)
+        self._add_tail(lines)
         return code, lines
 
 

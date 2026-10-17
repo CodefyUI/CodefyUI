@@ -8,6 +8,12 @@ JSON line, to ``$FAKE_SSH_LOG`` and the first stdin line (the token) to
 - ``hold`` (default): print a line, then wait for stdin to end and exit 0
   -- an ssh session whose remote agent ends when its stdin does;
 - ``fail``: print an ssh authentication error and exit 255;
+- ``nohost``: print ssh's "Could not resolve hostname" and exit 255;
+- ``down``: print ssh's "Connection refused" and exit 255 (a failure
+  worth retrying);
+- ``nocdui``: answer the prepare command, then in the session print the
+  remote script's pid line and the shell's "cdui: not found", and exit
+  127, as a wrong cdui path does;
 - ``refused``: print the agent's "the control plane refused the token"
   error, then hold like ``hold``;
 - ``mismatch``: print the agent's "credential is for worker X" error and
@@ -128,6 +134,14 @@ def main() -> int:
         print("alice@gpu-box: Permission denied (publickey).",
               file=sys.stderr, flush=True)
         return 255
+    if mode == "nohost":
+        print("ssh: Could not resolve hostname gpu-box: Name or service not "
+              "known", file=sys.stderr, flush=True)
+        return 255
+    if mode == "down":
+        print("ssh: connect to host gpu-box port 22: Connection refused",
+              file=sys.stderr, flush=True)
+        return 255
     if "-R" not in argv:
         hang = float(os.environ.get("FAKE_SSH_HANG_S") or 0)
         if hang > 0:
@@ -185,6 +199,11 @@ def main() -> int:
     token = sys.stdin.readline().strip()
     with open(log + ".stdin", "a", encoding="utf-8") as handle:
         handle.write(token + "\n")
+    if mode == "nocdui":
+        print("codefyui-ssh: agent pid 4343", file=sys.stderr, flush=True)
+        print("sh: 1: /home/alice/nowhere/cdui: not found", file=sys.stderr,
+              flush=True)
+        return 127
     if mode == "mismatch":
         print("the credential in /home/a/agent/127.0.0.1-18000.token is for "
               "worker 'other-box', not 'gpu-box'; to change the name, run "

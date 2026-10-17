@@ -192,6 +192,15 @@ async def test_hello_registers_and_heartbeats_update(env):
     await _until(lambda: not registry.get("box").online)
 
 
+async def test_the_list_names_mps_as_this_server_does(env):
+    """#840: an agent reports MPS as ``mps``; the list says ``mps:0``, as
+    this server and a run's options do."""
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        await FakeAgent(ws).hello(devices=("cpu", "mps"))
+        listed = (await client.get("/api/workers")).json()["workers"]
+        assert [d["value"] for d in listed[0]["devices"]] == ["cpu", "mps:0"]
+
+
 # ── runs ─────────────────────────────────────────────────────────────────
 
 

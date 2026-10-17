@@ -330,6 +330,8 @@ async def test_a_refused_token_is_logged_as_an_error_and_retried(
     try:
         port = server.sockets[0].getsockname()[1]
         agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
+        # The session token, read again on each dial: always retried.
+        agent.connection._token = lambda: "tok"
         agent.connection.token_source = "the session token file /x/session.token"
         with caplog.at_level("ERROR", logger="app.agent.connection"):
             async with agent:
@@ -345,6 +347,39 @@ async def test_a_refused_token_is_logged_as_an_error_and_retried(
         assert "/x/session.token" in errors[0]
         refused = "the control plane refused the token" in errors[0]
         assert refused is (status == 401)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_refused_worker_credential_stops_the_agent(tmp_path, caplog):
+    """#840: a fixed worker credential refused with HTTP 401 (the worker was
+    removed or re-keyed, or the server is another one) never comes back:
+    the agent says so, once, and exits 2 instead of retrying forever. The
+    "refused the token" line the SSH launcher reads is still logged."""
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    dials = []
+
+    def refuse(connection, request):
+        dials.append(request.path)
+        return Response(401, "No", Headers(), b"no")
+
+    server = await websockets.serve(lambda ws: None, "127.0.0.1", 0,
+                                    process_request=refuse)
+    try:
+        port = server.sockets[0].getsockname()[1]
+        agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
+        with caplog.at_level("ERROR", logger="app.agent.connection"):
+            agent.task = asyncio.create_task(agent.connection.run(agent.stop))
+            assert await asyncio.wait_for(agent.task, 10) == 2
+        errors = [r.getMessage() for r in caplog.records
+                  if r.levelname == "ERROR"]
+        assert "the control plane refused the token" in errors[0]
+        assert "stopping: this agent's credential was revoked" in errors[1]
+        assert f"cdui agent forget http://127.0.0.1:{port}" in errors[1]
+        assert len(dials) == 1
     finally:
         server.close()
         await server.wait_closed()
