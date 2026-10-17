@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -124,6 +125,20 @@ def test_token_defaults_to_the_session_token_file(user_data, monkeypatch):
     reader = cli.resolve_token(None, interactive=True, ask=ask)
     assert reader() == "sess"
     assert len(prompts) == 1
+
+
+def test_what_the_agent_says_is_flushed_at_once(monkeypatch):
+    """A foreground agent's stdout piped to a supervisor is block-buffered;
+    a hard stop (Windows ``TerminateProcess``) would drop an unflushed
+    line such as "Enrolled; ...". Each message reaches the pipe as said."""
+    for stream_name, say in (("stdout", cli._say), ("stderr", cli._err)):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="utf-8",
+                                  line_buffering=False)
+        monkeypatch.setattr(sys, stream_name, stream)
+        say("已加入。", "Enrolled.")
+        assert raw.getvalue().decode("utf-8").strip() in (
+            "已加入。", "Enrolled."), stream_name
 
 
 def test_stop_without_an_agent(user_data, capsys):

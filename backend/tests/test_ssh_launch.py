@@ -14,8 +14,10 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -835,8 +837,44 @@ def _wait_file(path: Path, timeout: float = 10.0, text: str = "") -> str:
 
 def _alive(pid: int) -> bool:
     out = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
-                         capture_output=True, text=True).stdout.strip()
+                         capture_output=True, text=True,
+                         timeout=10).stdout.strip()
     return bool(out) and not out.startswith("Z")
+
+
+def _signal(pid: int | str, sig: int) -> None:
+    """Send *sig* to *pid*, if it still exists. ``os.kill``, not the
+    ``kill`` binary: procps-ng's (Ubuntu 22.04) reads ``kill -9 -PGID`` as
+    ``kill(0, SIGKILL)``, which took pytest's own process group with it."""
+    try:
+        os.kill(int(str(pid).strip()), sig)
+    except (ProcessLookupError, ValueError):
+        pass
+
+
+def _kill_group(pgid: int) -> None:
+    """SIGKILL every process left in process group *pgid*."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _read_all(proc: subprocess.Popen, timeout: float = 30.0) -> str:
+    """Everything *proc* writes until its stdout closes, or an
+    AssertionError after *timeout*: a remote script that never lets go of
+    its output (a ``tail`` left behind) fails the test instead of hanging
+    the run."""
+    out: list[bytes] = []
+    reader = threading.Thread(target=lambda: out.append(proc.stdout.read()),
+                              daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if reader.is_alive():
+        proc.kill()
+        raise AssertionError(f"the remote script's output never closed "
+                             f"within {timeout:.0f} s")
+    return out[0].decode()
 
 
 @pytest.fixture
@@ -848,8 +886,7 @@ def remote_home(tmp_path):
     # Whatever a test left running: stop it.
     pid_file = home / ".codefyui-ssh" / f"{CP}-18000" / "pid"
     if pid_file.exists():
-        subprocess.run(["kill", "-TERM", pid_file.read_text().strip()],
-                       capture_output=True)
+        _signal(pid_file.read_text(), signal.SIGTERM)
 
 
 def _state(home: Path, port: int = 18000, cp: str = CP) -> Path:
@@ -878,7 +915,7 @@ def test_the_remote_agent_gets_the_token_in_its_env_and_stop_ends_it(
     # Disable: a ``stop`` line, then the end of input.
     proc.stdin.write(b"stop\n")
     proc.stdin.close()
-    output = proc.stdout.read().decode()
+    output = _read_all(proc)
     proc.wait(timeout=10)
     assert proc.returncode == 0
     assert _wait_file(remote_home / "got_term").strip() == "term"
@@ -929,7 +966,7 @@ def test_a_new_session_within_the_grace_reattaches_to_the_same_agent(
     assert "agent forget" not in (remote_home / "args").read_text()
     second.stdin.write(b"stop\n")
     second.stdin.close()
-    output = second.stdout.read().decode()
+    output = _read_all(second)
     second.wait(timeout=10)
     assert f"codefyui-ssh: agent pid {pid} reattached" in output
     assert _wait_file(remote_home / "got_term").strip() == "term"
@@ -1029,7 +1066,7 @@ def test_a_reattached_session_reads_only_new_agent_output(remote_home):
     time.sleep(1.5)
     second.stdin.write(b"stop\n")
     second.stdin.close()
-    output = second.stdout.read().decode()
+    output = _read_all(second)
     second.wait(timeout=10)
     assert f"codefyui-ssh: agent pid {pid} reattached" in output
     assert ssh_launch.TOKEN_REFUSED not in output
@@ -1127,7 +1164,7 @@ def test_a_reused_pid_is_never_taken_for_the_agent(remote_home):
         assert stranger.poll() is None
         proc.stdin.write(b"stop\n")
         proc.stdin.close()
-        output = proc.stdout.read().decode()
+        output = _read_all(proc)
         assert proc.wait(timeout=10) == 0
         assert "reattached" not in output
     finally:
@@ -1176,7 +1213,7 @@ def test_two_control_planes_on_one_account_keep_their_own_agents(
         assert _alive(sessions[other][1])
     finally:
         for proc, pid in sessions.values():
-            subprocess.run(["kill", "-TERM", str(pid)], capture_output=True)
+            _signal(pid, signal.SIGTERM)
             proc.wait(timeout=10)
 
 
@@ -1245,7 +1282,7 @@ def test_the_remove_command_keeps_the_directory_of_an_attached_session(
     _wait_file(remote_home / "path")
     try:
         # An agent that will not stop, under a session still attached.
-        subprocess.run(["kill", "-STOP", str(pid)], check=True)
+        os.kill(pid, signal.SIGSTOP)
         result = _remove(remote_home)
         assert "still attached; kept" in result.stdout
         assert "still runs; kept" in result.stdout
@@ -1255,7 +1292,7 @@ def test_the_remove_command_keeps_the_directory_of_an_attached_session(
         # Its credential is kept with it: the agent still uses it.
         assert "agent forget" not in (remote_home / "args").read_text()
     finally:
-        subprocess.run(["kill", "-CONT", str(pid)], capture_output=True)
+        _signal(pid, signal.SIGCONT)
         proc.stdin.write(b"stop\n")
         proc.stdin.close()
         proc.wait(timeout=15)
@@ -1290,7 +1327,7 @@ def _run_with(shell: str, home: Path, command: str) -> subprocess.Popen:
 def _group(pgid: int) -> list[str]:
     """The live processes of process group *pgid*: ``pid command``."""
     out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat=,command="],
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True, timeout=10).stdout
     left = []
     for line in out.splitlines():
         fields = line.split(None, 3)
@@ -1323,8 +1360,7 @@ def shell_home(tmp_path):
     _fake_cdui(home)
     yield home
     for pid_file in (home / ".codefyui-ssh").glob("*/pid"):
-        subprocess.run(["kill", "-TERM", pid_file.read_text().strip()],
-                       capture_output=True)
+        _signal(pid_file.read_text(), signal.SIGTERM)
 
 
 @pytest.mark.parametrize("shell", _shells())
@@ -1366,8 +1402,7 @@ def test_a_superseded_session_leaves_no_tail_once_its_ssh_is_gone(
         for proc in (first, second):
             if proc is None:
                 continue
-            subprocess.run(["kill", "-9", f"-{proc.pid}"],
-                           capture_output=True)
+            _kill_group(proc.pid)
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
@@ -1387,13 +1422,12 @@ def test_a_signalled_session_shell_takes_its_tail_with_it(shell_home, shell,
         proc.stdin.flush()
         pid = int(_wait_file(_state(shell_home) / "pid"))
         _wait_file(_state(shell_home) / "log", text="hello")
-        subprocess.run(["kill", f"-{signal_name}", str(proc.pid)],
-                       check=True)
+        os.kill(proc.pid, getattr(signal, f"SIG{signal_name}"))
         proc.wait(timeout=15)
         assert _settles(lambda: not _tails(proc.pid)), _group(proc.pid)
         assert _alive(pid)
     finally:
-        subprocess.run(["kill", "-9", f"-{proc.pid}"], capture_output=True)
+        _kill_group(proc.pid)
         if proc.poll() is None:
             proc.kill()
             proc.wait()
