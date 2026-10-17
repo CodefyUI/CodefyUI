@@ -363,10 +363,15 @@ def _state_dir(cp: str, remote_port: int) -> str:
 #: ``/proc``. A pid file outlives its process, and the pid may be reused.
 _FUNCS = ('al() { ps -p "$1" -o stat= 2>/dev/null | grep -q "^[^Z]"; }; '
           # ``has PID TEXT``: the process's command line contains TEXT.
-          # ``/proc`` where there is one (Linux, BusyBox included); else
-          # ``ps -ww`` (no truncation), else plain ``ps`` as a best effort.
+          # ``/proc`` where there is one (Linux, BusyBox included), its
+          # NUL-separated arguments joined with spaces first, as ``ps``
+          # shows them (TEXT may span two: ``agent start``), by ``xargs
+          # -0`` (``tr`` would need a backslash for NUL, and BusyBox's has
+          # no ``[:cntrl:]``); else ``ps -ww`` (no truncation), else plain
+          # ``ps`` as a best effort.
           'has() { if [ -r "/proc/$1/cmdline" ]; then '
-          'grep -qF -- "$2" "/proc/$1/cmdline"; else '
+          'xargs -0 < "/proc/$1/cmdline" 2>/dev/null | grep -qF -- "$2"; '
+          "else "
           '{ ps -ww -p "$1" -o args= 2>/dev/null '
           '|| ps -p "$1" -o args= 2>/dev/null; } | grep -qF -- "$2"; fi; }; '
           'own() { [ -n "$1" ] && al "$1" && has "$1" '
