@@ -246,6 +246,7 @@ from .executors import (
     ExecutionRequest,
     Executor,
     InProcessExecutor,
+    WORKER_S3_KEY,
     RunSinks,
     WorkerExecutor,
 )
@@ -295,6 +296,7 @@ from .run_store import (
     MetricPoint,
     WORKER_LOCAL,
     RunProvenance,
+    RunRecord,
     RunStore,
     json_safe,
 )
@@ -369,6 +371,10 @@ _RESERVED = 1 << 30
 #: closing it, so no run is closed twice (#552).
 CLOSING_EVENTS = frozenset({EVENT_RUN_COMPLETED, EVENT_RUN_FAILED,
                             EVENT_RUN_STOPPED})
+
+#: The ``execution_facts`` key of a worker run that a restarted server
+#: adopts it by (#793): ``{"last_seq": int, "slots": [[worker, device]]}``.
+WORKER_RESUME_KEY = "worker_resume"
 
 # ── submit options ────────────────────────────────────────────────────────
 
@@ -1577,6 +1583,16 @@ class _ActiveRun:
     #: no number to report, not a null one.
     peak_measured: bool = False
     peak_memory: dict[str, Any] | None = None
+    #: A worker run adopted after a restart of this server (#793): the
+    #: last frame its previous process recorded. None for a run started
+    #: here.
+    resume_seq: int | None = None
+    #: The last seq stored in ``execution_facts.worker_resume`` (#793).
+    stored_seq: int = 0
+    #: When this process adopted the run (UTC ISO), or None (#793).
+    adopted_at: str | None = None
+    #: An adopted ``s3`` run's ``execution_facts.worker_s3`` (#793, #791).
+    resume_s3: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -2751,6 +2767,7 @@ class RunService:
         subscribers: set[RunSubscription] | None = None,
         node_types: frozenset[str] | None = None,
         needs: dict[str, Any] | None = None,
+        resume_seq: int | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -2835,6 +2852,8 @@ class RunService:
             subscribers=set() if subscribers is None else subscribers,
             node_types=node_types,
             needs=needs,
+            resume_seq=resume_seq,
+            stored_seq=resume_seq or 0,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -2974,7 +2993,9 @@ class RunService:
             # it before the first node rather than after it: the engine's
             # earliest checkpoint is inside the level loop, and "cancelled"
             # should never mean "ran one node first".
-            if active.context.should_stop():
+            # Not for an adopted worker run (#793): it is executing on its
+            # worker, which must be told to stop (``WorkerExecutor``).
+            if active.resume_seq is None and active.context.should_stop():
                 await self._finalize(active, self._stopped_status(active), None)
                 return
             # Taken BEFORE ``_begin`` so a seeded run waiting its turn is
@@ -2985,7 +3006,10 @@ class RunService:
             gate = (contextlib.nullcontext() if on_a_worker(active.placement)
                     else run_exclusion().for_seed(options.get("seed")))
             async with gate:
-                if not await self._begin(active, graph, options):
+                # An adopted worker run (#793) began under the previous
+                # process: its row and start event are already there.
+                if active.resume_seq is None \
+                        and not await self._begin(active, graph, options):
                     return
                 status, error = await self._execute(active, graph, options,
                                                     session)
@@ -3081,6 +3105,8 @@ class RunService:
                 options=options or {}, graph=graph,
                 worker_id=active.placement.worker_id,
                 devices=list(active.placement.devices))
+            # What a restarted server needs to adopt the run (#793).
+            facts[WORKER_RESUME_KEY] = self._worker_resume(active, 0)
         else:
             digest = None
             fingerprint, facts = await self._environment_record(
@@ -3153,6 +3179,8 @@ class RunService:
                 placement=active.placement,
                 node_types=active.node_types,
                 needs=active.needs,
+                resume_seq=active.resume_seq,
+                resume_s3=active.resume_s3,
             ))
         except asyncio.CancelledError:
             raise
@@ -3280,7 +3308,48 @@ class RunService:
                 self.store.update_execution_facts, active.run_id),
             record_worker_connection=functools.partial(
                 self._record_worker_connection, active),
+            # Only read by a restarted server's adoption (#793): with no
+            # resume grace nothing would ever read it.
+            record_worker_seq=(functools.partial(self._record_worker_seq,
+                                                 active)
+                               if on_a_worker(active.placement)
+                               and self._resume_grace() > 0 else None),
         )
+
+    @staticmethod
+    def _worker_resume(active: _ActiveRun, seq: int) -> dict[str, Any]:
+        """``execution_facts.worker_resume`` (#793): the last frame recorded
+        and the slots the run holds, which a restarted server cannot work
+        out before the worker is back (a same-host card's slot is this
+        process's)."""
+        slots = active.placement.slots if active.placement else ()
+        return {"last_seq": int(seq),
+                "slots": [list(slot) for slot in slots]}
+
+    async def _record_worker_seq(self, active: _ActiveRun, seq: int) -> None:
+        """Before a worker run's frames up to *seq* are acknowledged (#793):
+        flush the metric buffer, so nothing the agent then forgets lives
+        only in this process's memory, and persist *seq* for a restart."""
+        if seq <= active.stored_seq:
+            return  # nothing moved: no write
+        batch = list(active.pending_metrics)
+        # One transaction: the buffered points and the seq, both or
+        # neither. A failure raises (no ack goes out) and keeps the points
+        # buffered for the next try.
+        if not await self.store.checkpoint_worker_run(active.run_id, batch,
+                                                      seq):
+            raise RuntimeError(f"run {active.run_id} has no worker_resume "
+                               "record to store its seq in")
+        del active.pending_metrics[:len(batch)]
+        active.stored_seq = seq
+        if batch:
+            active.last_flush_monotonic = time.monotonic()
+            await self._announce_metrics(active, batch)
+
+    def _resume_grace(self) -> float:
+        """``CODEFYUI_WORKER_RESUME_GRACE_S`` as the registry has it; 0
+        without a registry."""
+        return float(getattr(self._workers, "resume_grace_s", 0) or 0)
 
     async def _record_worker_connection(self, active: _ActiveRun,
                                         connected: bool) -> None:
@@ -3396,6 +3465,17 @@ class RunService:
             backend = BACKEND_S3
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
+        adopted_at = getattr(active, "adopted_at", None)
+        if adopted_at is not None and await self.store.has_artifact(
+                active.run_id, signal.kind, signal.path,
+                meta=artifact_meta(signal), before=adopted_at):
+            # An adopted run (#793): the worker replays what the previous
+            # process recorded after its last stored seq. Only a row that
+            # process wrote, for the same file AND meta, is that replay; a
+            # file rewritten later (``latest.pt``) is recorded as usual.
+            logger.info("run %s: artifact %s already recorded; replay "
+                        "ignored", active.run_id, signal.path)
+            return
         record = await self.store.add_artifact(
             active.run_id, signal.kind, signal.path,
             meta=artifact_meta(signal),
@@ -3625,12 +3705,17 @@ class RunService:
                            active.run_id, len(batch), exc_info=True)
             return 0
         if written:
-            await self._emit(active.run_id, EVENT_METRIC, {"points": [
-                {"name": p.name, "value": p.value, "step": p.step,
-                 "node_id": p.node_id}
-                for p in batch
-            ]})
+            await self._announce_metrics(active, batch)
         return written
+
+    async def _announce_metrics(self, active: _ActiveRun,
+                                batch: list[MetricPoint]) -> None:
+        """The ``metric`` event for a batch that landed."""
+        await self._emit(active.run_id, EVENT_METRIC, {"points": [
+            {"name": p.name, "value": p.value, "step": p.step,
+             "node_id": p.node_id}
+            for p in batch
+        ]})
 
     # ── cancel ────────────────────────────────────────────────────────────
 
@@ -3708,6 +3793,18 @@ class RunService:
             if active.stop_reason is None:
                 active.stop_reason = STOP_REASON_CANCELLED
             active.context.cancel()
+            if on_a_worker(active.placement) and self._resume_grace() > 0:
+                # The stop may wait for an absent worker (#783); written
+                # down so a restarted server that adopts the run asks again
+                # instead of letting it finish against the user's Stop.
+                try:
+                    await self.store.mark_stop_requested(
+                        run_id, active.stop_reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 -- the stop still goes out
+                    logger.warning("run %s: could not record the stop",
+                                   run_id, exc_info=True)
             return CancelOutcome(run_id=run_id, status=STATUS_RUNNING,
                                  cancelled=True)
 
@@ -3820,22 +3917,137 @@ class RunService:
         reloaded. The frame goes straight to the store rather than through
         ``_emit`` because the guard above means no subscriber can be waiting
         for it.
+
+        Worker runs are the exception (#793). A run a worker agent was
+        executing did not die with this process: its subprocess keeps
+        running and the agent spools its frames until a control plane
+        acknowledges them. With a worker registry and a resume grace
+        (``CODEFYUI_WORKER_RESUME_GRACE_S`` > 0), every ``running`` or
+        ``disconnected`` row placed on a worker is ADOPTED instead of
+        retired (:meth:`_adopt`): it goes ``disconnected`` and waits for
+        its worker as if the connection had just dropped. Runs that
+        executed in this process, and every ``queued`` row, are retired
+        exactly as before. Returns how many rows were retired.
         """
         if self._runs or self._pending_by_id:
             raise RuntimeError(
                 "recover_interrupted is a startup call; "
                 f"{len(self._runs)} active run(s) and "
                 f"{len(self._pending_by_id)} queued run(s) are in flight")
+        adoptable = await self._adoptable_worker_runs()
         count = await self.store.interrupt_active_runs(
             closing_event=EVENT_RUN_STOPPED,
             closing_payload={"reason": STOP_REASON_INTERRUPTED},
             closing_types=CLOSING_EVENTS,
+            keep=[record.id for record, _placement, _seq in adoptable],
         )
         if count:
             logger.warning(
                 "marked %d run(s) interrupted (they did not survive a "
                 "restart)", count)
+        for record, placement, last_seq in adoptable:
+            try:
+                # Before anything can read it: the row says the worker is
+                # away from the first moment of this process.
+                await self.store.mark_worker_connection(record.id, False)
+                self._adopt(record, placement, last_seq)
+            except Exception:
+                logger.exception("run %s could not be adopted; it ends "
+                                 "interrupted", record.id)
+                if await self.store.mark_finished(
+                        record.id, STATUS_INTERRUPTED,
+                        error="this server restarted and could not take "
+                              "the run over"):
+                    await self.store.append_event(
+                        record.id, EVENT_RUN_STOPPED,
+                        {"reason": STOP_REASON_INTERRUPTED})
+                    count += 1
+        if adoptable:
+            logger.warning(
+                "%d run(s) on worker agents were in flight; they wait up "
+                "to %.0f s for their workers to reconnect", len(self._runs),
+                self._workers.resume_grace_s)
         return count
+
+    async def _adoptable_worker_runs(
+        self,
+    ) -> list[tuple[RunRecord, Placement, int]]:
+        """``(row, placement, last seq)`` for each worker run a restart
+        adopts (#793); none without a worker registry or a resume grace.
+
+        The placement is rebuilt from the row: its worker and devices, and
+        the slots ``execution_facts.worker_resume`` recorded. A row without
+        that record (started by a server before 3.2, or one that never
+        recorded it) is retired as before: its slots cannot be known (a
+        same-host card's slot is this process's, ``("local", "cuda:0")``),
+        and guessing them would let another run onto its card. So is a
+        row naming no device.
+        """
+        if self._workers is None or self._resume_grace() <= 0:
+            return []
+        adoptable = []
+        for record in await self.store.list_worker_runs_in_flight(
+                closing_types=CLOSING_EVENTS):
+            devices = [d for d in (record.devices or []) if isinstance(d, str)]
+            facts = (record.execution_facts
+                     if isinstance(record.execution_facts, dict) else {})
+            resume = facts.get(WORKER_RESUME_KEY)
+            resume = resume if isinstance(resume, dict) else {}
+            last_seq = resume.get("last_seq")
+            slots = tuple(
+                (slot[0], slot[1]) for slot in resume.get("slots") or ()
+                if isinstance(slot, list) and len(slot) == 2
+                and all(isinstance(part, str) and part for part in slot))
+            if not devices or not slots or not isinstance(last_seq, int) \
+                    or isinstance(last_seq, bool) or last_seq < 0:
+                logger.warning("run %s on worker %s did not record where it "
+                               "can be resumed; it cannot be adopted",
+                               record.id, record.worker_id)
+                continue
+            adoptable.append((record, Placement(
+                worker_id=record.worker_id, devices=tuple(devices),
+                slots=slots), last_seq))
+        return adoptable
+
+    def _adopt(self, record: RunRecord, placement: Placement,
+               last_seq: int) -> None:
+        """Drive *record*, a worker run a previous process left in flight
+        (#793). SYNCHRONOUS: the registry, the slots and the task are set
+        up with no await in between.
+
+        Started through :meth:`_start` like any run, with *last_seq* as its
+        resume point: it holds its slots again (its subprocess still holds
+        the cards) and its row stays active, so retention keeps its files
+        and the transfer backend still takes its uploads. ``_drive`` skips
+        ``_begin`` (the previous process did it) and ``WorkerExecutor``
+        sends no ``assign``: it waits for the worker's reconnect and
+        replay, after *last_seq*.
+        """
+        options = record.options if isinstance(record.options, dict) else {}
+        self._workers.adopt(placement.worker_id, record.id,
+                            last_seq=last_seq)
+        try:
+            self._start(record.id, {}, options,
+                        queue_key=record.queue_key or placement.devices[0],
+                        lane=DEFAULT_LANE, placement=placement,
+                        resume_seq=last_seq)
+        except BaseException:
+            self._workers.close_run(placement.worker_id, record.id)
+            raise
+        facts = (record.execution_facts
+                 if isinstance(record.execution_facts, dict) else {})
+        adopted = self._runs[record.id]
+        adopted.adopted_at = utc_now_iso()
+        worker_s3 = facts.get(WORKER_S3_KEY)
+        if isinstance(worker_s3, dict):
+            adopted.resume_s3 = worker_s3
+        stop = facts.get("stop_requested")
+        if stop in (STOP_REASON_CANCELLED, STOP_REASON_INTERRUPTED):
+            # A Stop the previous process could not deliver: the worker
+            # is asked again when it is back (``WorkerExecutor``).
+            active = self._runs[record.id]
+            active.stop_reason = stop
+            active.context.cancel()
 
     async def scrub_stored_secrets(self) -> int:
         """Remove values an older build persisted. Returns rows changed.
@@ -3983,6 +4195,17 @@ class RunService:
             if entry.stop_reason is None:
                 entry.stop_reason = STOP_REASON_INTERRUPTED
             entry.context.cancel()
+            # A worker run waiting for its worker (a drop, or adopted after
+            # a restart, #793) cannot be told to stop: end it now, with a
+            # terminal row, instead of after the grace with none (which the
+            # next start would adopt again). Its worker is told to stop it
+            # when it next connects (an untracked run).
+            if on_a_worker(entry.placement) and self._workers is not None:
+                worker_id = entry.placement.worker_id
+                self._workers.end_waiting(
+                    worker_id, entry.run_id,
+                    f"this server is shutting down and worker {worker_id} "
+                    "is not connected")
         try:
             tasks = [entry.task for entry in active if entry.task is not None]
             if not tasks:
@@ -3998,6 +4221,8 @@ class RunService:
                 for task in pending:
                     task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
+                await self._retire_unstopped_worker_runs(
+                    [entry for entry in active if entry.task in pending])
         finally:
             # Belt and braces (#251). ``_retire_queue`` above dropped every
             # waiting run's secrets and each drained task dropped its own, so
@@ -4006,6 +4231,30 @@ class RunService:
             # outlives its shutdown (tests, an embedded host) must not still
             # be holding keys.
             self._run_secrets.clear()
+
+    async def _retire_unstopped_worker_runs(
+            self, entries: list[_ActiveRun]) -> None:
+        """Worker runs a graceful shutdown could not stop within its grace
+        (#793): their rows end ``interrupted`` now, with a closing frame,
+        rather than staying active for the next start to adopt. A graceful
+        stop stops worker runs; the hard cancel already told each worker
+        to stop it, and a worker that still reports it later is told again
+        (an untracked run)."""
+        for entry in entries:
+            if not on_a_worker(entry.placement):
+                continue
+            worker_id = entry.placement.worker_id
+            try:
+                if await self.store.mark_finished(
+                        entry.run_id, STATUS_INTERRUPTED,
+                        error=(f"this server shut down before the run on "
+                               f"worker {worker_id} stopped")):
+                    await self.store.append_event(
+                        entry.run_id, EVENT_RUN_STOPPED,
+                        {"reason": STOP_REASON_INTERRUPTED})
+            except Exception:  # noqa: BLE001 -- the next start retires it
+                logger.warning("run %s: could not record its end at "
+                               "shutdown", entry.run_id, exc_info=True)
 
     async def _retire_queue(self) -> int:
         """File every waiting run ``interrupted``. Returns how many.

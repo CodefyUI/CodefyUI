@@ -312,7 +312,7 @@ study 的證據比它的 child 存在得更久。child 結束時，它的目標�
 
 ### 重新啟動前後的 study {/* #studies-across-a-restart */}
 
-執行佇列不會跨越重新啟動保留，因此伺服器再次啟動時，會把 study 排隊中與執行中的 child 標記為 `interrupted`（請見[伺服器停止時](#when-the-server-stops)）。接著，study coordinator 會整理每一個仍在進行的 study：每個 child 的證據會複製到它的 attempt 上，正在取消中的 study 會變成 `cancelled`，其他未完成的 study 則變成 `interrupted` 並等待。在你呼叫 `resume` 之前不會重送任何東西；若 study 送出時指定了 `"resume_policy": "auto"`，則會在重新啟動後自行繼續。
+執行佇列不會跨越重新啟動保留，因此伺服器再次啟動時，會把 study 排隊中與執行中的 child 標記為 `interrupted`（請見[伺服器停止時](#when-the-server-stops)）。接著，study coordinator 會整理每一個仍在進行的 study：每個 child 的證據會複製到它的 attempt 上，正在取消中的 study 會變成 `cancelled`，其他未完成的 study 則變成 `interrupted` 並等待。若 study 有某個 child 是重新啟動的伺服器從 worker 接手的，這個 study 不會被整理：那個 child 視為仍在執行，study 會照常繼續；若那個 child 以 `interrupted` 結束，study 就變成 `interrupted` 並等待 resume（指定 `"resume_policy": "auto"` 時則自行繼續）。正在取消中的 study 會再次要求被接手的 child 停止，等它停下後變成 `cancelled`。在你呼叫 `resume` 之前不會重送任何東西；若 study 送出時指定了 `"resume_policy": "auto"`，則會在重新啟動後自行繼續。
 
 每個 attempt 在 child 送出之前，就會先記錄它即將使用的 run id，而 child 也帶有該 attempt 的 id。如果伺服器在送出 child 與記錄「已送出」之間停止，或該次寫入失敗，study 會依這個標記找到 child 並重新連結（`attempt_relinked`），而不會再送出第二個。若沒有任何 child 帶有這個標記，代表該次送出從未建立 run；這個 attempt 會被標記為 `lost`，該次重複則會得到新的 attempt。
 
@@ -326,7 +326,7 @@ study 的證據比它的 child 存在得更久。child 結束時，它的目標�
 
 在 Linux 與 macOS 上，於 `cdui start --foreground` 按 Ctrl+C 不是正常關閉：`cdui` 行程會在按下 Ctrl+C 約 0.25 秒後強制終止伺服器，因此執行中的 run 拿不到這 5 秒，等待中的 run 也可能來不及標記為 `interrupted`。`cdui stop` 同樣不會等這些步驟完成：在 Windows 上它會強制終止伺服器的行程樹（`taskkill /F /T`），在 Linux 與 macOS 上則先送出 SIGTERM，約 2 秒後再送出 SIGKILL。這些停止方式、其他強制終止行程的方式，或執行超過這 5 秒的 run，都可能留下 `queued` 或 `running` 資料列。下次啟動時，復原程序會把這兩種狀態都改成 `interrupted`，並寫入與正常關閉相同的停止事件；若該 run 的事件紀錄已經以結束事件收尾，就不再寫入。因此重新連上的編輯器分頁，以及讀取 `GET /api/runs/{id}/events` 的程式，都會看到這次 run 已結束。兩者都不會繼續執行。
 
-在 [worker](#workers) 上執行的 run，正常關閉時也受到相同處理：停止要求會送到 worker，超過這 5 秒仍在執行的 run 會在那裡被終止，接著伺服器關閉與 worker 的連線。agent 會繼續執行，等伺服器回來後重新連線。強制停止伺服器時，worker 不會收到任何通知：它的 run 子程序會一路跑完，回報的內容會被丟棄，復原程序會像其他 run 一樣把它們的資料列標記為 `interrupted`。
+在 [worker](#workers) 上執行的 run，正常關閉時也受到相同處理：停止要求會送到 worker，超過這 5 秒仍在執行的 run 會在那裡被終止，接著伺服器關閉與 worker 的連線。agent 會繼續執行，等伺服器回來後重新連線。強制停止伺服器時，worker 不會收到任何通知：它的 run 子程序會繼續執行，下次啟動時會接手這些 run，而不是把它們標記為 `interrupted`；worker 重新連線後，它們會在同一份紀錄中接續，若 worker 未在 `CODEFYUI_WORKER_RESUME_GRACE_S` 內回來則以 `interrupted` 結束（[遠端 Worker：連線中斷時](./remote-workers#when-the-connection-drops)）。
 
 若仍要執行這些工作，請重新送出。
 
