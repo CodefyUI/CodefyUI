@@ -3423,7 +3423,8 @@ class RunService:
             backend = BACKEND_TRANSFER
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
-        if active.resume_seq is not None and await self.store.has_artifact(
+        if getattr(active, "resume_seq", None) is not None \
+                and await self.store.has_artifact(
                 active.run_id, signal.kind, signal.path):
             # An adopted run (#793): the worker replays what was recorded
             # after the last stored seq, and a file is one row, not two.
