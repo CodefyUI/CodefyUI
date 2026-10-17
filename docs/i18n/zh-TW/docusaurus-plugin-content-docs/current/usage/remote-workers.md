@@ -285,9 +285,11 @@ Worker 的連線關閉，或連續錯過三次心跳（30 秒）時，即視為�
 
 - **Worker 在寬限時間內重新連線**（`CODEFYUI_WORKER_RESUME_GRACE_S`，5 分鐘）：它依序補送控制面尚未記錄的事件，run 回到 `running`，並留下類型為 `worker_reconnected` 的 `run_warning`。事件紀錄沒有缺漏，也沒有重複。
 - **沒有重新連線**：run 以 `interrupted` 結束，名額釋放。如果 worker 之後回來且 run 仍在執行，會被要求立即停止，讓這張卡留給下一個 run；run 在 worker 上的結束方式會記錄為 run 的 `late_result`（`{status, error, worker_id, at}`，見 `GET /api/runs/{id}` 與 `execution_facts`），狀態與事件紀錄維持原樣。
-- **控制面在這段期間重新啟動**：run 會在啟動時以 `interrupted` 結束，與其他執行中的 run 相同。
+- **控制面在這段期間重新啟動**：重新啟動的控制面會接手這個 run，如下所述。
 
-`CODEFYUI_WORKER_RESUME_GRACE_S` 由控制面讀取；設為 `0` 則 worker 一斷線就結束它的 run。SSH worker 的 agent 也以同樣的寬限時間決定何時不再等待通道（[連線中斷](#connecting-over-ssh)）。
+**控制面重新啟動時。** 控制面若沒有先停止它的 run 就結束（被強制結束、當機、筆電斷電），worker 上的 run 會繼續執行：子程序照常進行，agent 也會保留它們的事件。控制面下次啟動時會接手每一個這樣的 run，而不是把它結束。這個 run 會顯示為 `disconnected`，並留下類型為 `worker_disconnected`、說明伺服器已重新啟動的 `run_warning`；它會重新占用原本的名額，事件紀錄也沿用同一份。它的 worker 重新連線（SSH worker 的通道由控制面自己重新啟動）且仍有這個 run 時，run 會回到 `running`，從控制面最後確認的位置接續：停止前最後約一秒內的事件可能出現兩次，但不會缺漏。若 worker 未在 `CODEFYUI_WORKER_RESUME_GRACE_S`（從重新啟動起算）內重新連線，run 會以 `interrupted` 結束，原因為 `it did not reconnect with the run within 300 s after this server restarted`；若 worker 重新連線時已沒有這個 run（它的 agent 也重新啟動過），run 會立即結束。Transfer run 的上傳會在重新啟動後繼續，之前已收到的檔案仍屬於這個 run。`s3` run 的 worker 手上的憑證由先前的程序核發，因此它一重新連線就會收到新的憑證，之後照常續期。在控制面自身執行的 run、仍在佇列中等待的 run，以及由 CodefyUI 3.1.0 啟動的 worker run（它沒有記錄接續的位置），則與以前一樣以 `interrupted` 結束。在 worker 離線期間按下的停止會跨越重新啟動保留，worker 回來時再送出。被接手的 run 仍在等 worker 時若正常關閉控制面，這個 run 會立即以 `interrupted` 結束；在關閉的寬限時間內沒有停下的 worker run 也會以 `interrupted` 結束；worker 下次連線時會被要求停止它。正常關閉（`systemctl stop`、Windows 上的 Ctrl+C）仍會停止 worker 上的 run（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)），所以不會留下需要接手的 run。
+
+`CODEFYUI_WORKER_RESUME_GRACE_S` 由控制面讀取；設為 `0` 則 worker 一斷線就結束它的 run，重新啟動的控制面也不會接手任何 run。SSH worker 的 agent 也以同樣的寬限時間決定何時不再等待通道（[連線中斷](#connecting-over-ssh)）。
 
 ## Agent 與控制面之間的信任 {/* #trust-between-agent-and-control-plane */}
 
@@ -438,7 +440,7 @@ CONTROL=https://codefyui.example.com
 - **依記憶體准入需逐卡開啟。** Run 與在控制面上一樣，以每個裝置名額的數量准入，除非該卡設為 **依記憶體共用**（[多 GPU：共用一張卡](/usage/multi-gpu#sharing-a-card)）。
 - **一個 run，一台機器。** Run 只使用一個 worker 的裝置；沒有跨卡或跨機器的 `DistributedDataParallel`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **以 Linux 為主。** Worker 在 Linux 上開發與測試；macOS 可用，Windows 盡力支援。
-- **控制面重新啟動會結束 worker 上的 run。** 它停止時正在執行的 run 會以 `interrupted` 結束，與本機 run 相同（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)）。
+- **正常停止控制面會結束 worker 上的 run。** 關閉時會停止 worker 上正在執行的 run，與停止本機 run 相同（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)）；只有在沒有停止它們就結束的控制面，才會在下次啟動時接手（[連線中斷時](#when-the-connection-drops)）。
 
 ## 設定 {/* #settings */}
 

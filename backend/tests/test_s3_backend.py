@@ -426,7 +426,7 @@ async def test_an_s3_assignment_names_its_inputs_by_object(
                                      status="succeeded")):
             registry.route(agent.worker, frame)
         assert (await task).status == "succeeded"
-        signal = recorder.calls[0][1]
+        signal = [c[1] for c in recorder.calls if c[0] == "artifact"][0]
         assert isinstance(signal, TransferredArtifactSignal)
         assert (signal.backend, signal.path) == ("s3",
                                                  "runs/r1/checkpoint/a.pt")

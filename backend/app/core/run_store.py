@@ -1019,6 +1019,57 @@ class RunStore:
 
         return await self.db.run(_lookup)
 
+    async def mark_stop_requested(self, run_id: str, reason: str) -> bool:
+        """Record that a stop was asked of an active worker run (#793) as
+        ``execution_facts.stop_requested``: a restarted server adopting
+        the run asks its worker again. False when the run has no facts
+        document or is no longer active."""
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET execution_facts = json_set("
+                "execution_facts, '$.stop_requested', ?) WHERE id = ? AND "
+                "execution_facts IS NOT NULL AND status IN (?, ?)",
+                (reason, run_id, STATUS_RUNNING, STATUS_DISCONNECTED),
+            ).rowcount
+
+        return await self.db.run(_update) > 0
+
+    async def checkpoint_worker_run(
+        self, run_id: str, points: Iterable[MetricPoint], seq: int,
+    ) -> bool:
+        """Write a worker run's buffered *points* and its acknowledged *seq*
+        (``execution_facts.worker_resume.last_seq``) in ONE transaction
+        (#793): either both are durable or neither is. True when the seq
+        landed (the run has a ``worker_resume`` record); False leaves
+        nothing written. Raises like :meth:`log_metrics` on a bad write.
+        """
+        rows = [
+            (run_id, p.node_id, p.name, p.step,
+             p.value if math.isfinite(p.value) else None,
+             p.ts or utc_now_iso())
+            for p in points
+        ]
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            with transaction(conn):
+                landed = conn.execute(
+                    "UPDATE exec_runs SET execution_facts = json_set("
+                    "execution_facts, '$.worker_resume.last_seq', ?) "
+                    "WHERE id = ? AND json_type(execution_facts, "
+                    "'$.worker_resume') = 'object'",
+                    (int(seq), run_id),
+                ).rowcount > 0
+                if not landed:
+                    return False
+                if rows:
+                    conn.executemany(
+                        "INSERT INTO exec_run_metrics (run_id, node_id, "
+                        "name, step, value, ts) VALUES (?, ?, ?, ?, ?, ?)",
+                        rows)
+                return True
+
+        return await self.db.run(_write)
+
     async def record_fingerprint(self, fingerprint: dict[str, Any],
                                  digest: str | None = None) -> str:
         """Store an environment document without a run; returns its digest.
@@ -1099,6 +1150,34 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def list_worker_runs_in_flight(
+        self, *, closing_types: Iterable[str] = (),
+    ) -> list[RunRecord]:
+        """Rows a worker agent was executing when this process's
+        predecessor stopped (#793): ``running`` or ``disconnected``, placed
+        on a worker (neither ``local``, ``any`` nor a pre-MIGRATION_008
+        NULL), started. A row whose log already ends with one of
+        *closing_types* is left out: its run finished, and only the row
+        write was lost. Oldest start first.
+        """
+        closing = tuple(closing_types)
+        closed = ("" if not closing else
+                  " AND COALESCE((SELECT e.type FROM exec_run_events e "
+                  "WHERE e.run_id = exec_runs.id ORDER BY e.cursor DESC "
+                  f"LIMIT 1), '') NOT IN ({','.join('?' * len(closing))})")
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs "
+                "WHERE status IN (?, ?) AND started_at IS NOT NULL "
+                "AND worker_id IS NOT NULL AND worker_id NOT IN (?, ?)"
+                f"{closed} ORDER BY started_at, id",
+                (STATUS_RUNNING, STATUS_DISCONNECTED, WORKER_LOCAL,
+                 WORKER_ANY, *closing),
+            ).fetchall()
+
+        return [RunRecord.from_row(row) for row in await self.db.run(_select)]
+
     async def interrupt_active_runs(
         self,
         *,
@@ -1106,14 +1185,16 @@ class RunStore:
         closing_event: str | None = None,
         closing_payload: Any = None,
         closing_types: Iterable[str] = (),
+        keep: Iterable[str] = (),
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
         Call once at startup. Every active state is covered by default —
-        nothing resumes a ``running`` or ``disconnected`` row after a restart
-        (adopting a worker's runs is #793), and a ``queued``
-        row would otherwise wait forever on a scheduler that lost its queue.
-        Narrow it with *statuses* if a caller can genuinely re-adopt one.
+        nothing resumes a ``running`` row of this process after a restart,
+        and a ``queued`` row would otherwise wait forever on a scheduler
+        that lost its queue. Narrow it with *statuses* if a caller can
+        genuinely re-adopt one; *keep* names rows the caller adopts (a
+        worker's runs, #793), which are left as they are.
         Idempotent: a second call finds nothing.
 
         *statuses* is validated against ACTIVE_STATUSES, not the full
@@ -1143,17 +1224,20 @@ class RunStore:
         marks = ",".join("?" * len(wanted))
         encoded = None if closing_payload is None else _dumps(closing_payload)
         already_closed = frozenset(closing_types)
+        kept = tuple(keep)
+        spared = ("" if not kept else
+                  f" AND id NOT IN ({','.join('?' * len(kept))})")
 
         def _retire(conn: sqlite3.Connection) -> int:
             with transaction(conn):
                 run_ids = [row[0] for row in conn.execute(
-                    f"SELECT id FROM exec_runs WHERE status IN ({marks})",
-                    wanted,
+                    f"SELECT id FROM exec_runs WHERE status IN ({marks})"
+                    f"{spared}", (*wanted, *kept),
                 ).fetchall()]
                 retired = conn.execute(
                     "UPDATE exec_runs SET status = ?, finished_at = ? "
-                    f"WHERE status IN ({marks})",
-                    (STATUS_INTERRUPTED, stamp, *wanted),
+                    f"WHERE status IN ({marks}){spared}",
+                    (STATUS_INTERRUPTED, stamp, *wanted, *kept),
                 ).rowcount
                 if closing_event is None:
                     return retired
@@ -1538,6 +1622,27 @@ class RunStore:
         return [r["name"] for r in await self.db.run(_select)]
 
     # ── artifacts ─────────────────────────────────────────────────────────
+
+    async def has_artifact(self, run_id: str, kind: str, path: str, *,
+                           meta: Any = None,
+                           before: str | None = None) -> bool:
+        """Whether *run_id* already has a *kind* row for *path* (as stored:
+        a mount or transfer row's relative path) with the same *meta*,
+        written before *before* (a UTC ISO stamp; None: any time). What a
+        restarted server's replay of an artifact frame the previous process
+        had already recorded looks like (#793)."""
+        encoded = None if meta is None else _dumps(_json_safe(meta))
+        sql = ("SELECT 1 FROM exec_run_artifacts WHERE run_id = ? AND "
+               "kind = ? AND path = ? AND meta IS ?")
+        params: list[Any] = [run_id, kind, path, encoded]
+        if before is not None:
+            sql += " AND created_at < ?"
+            params.append(before)
+
+        def _select(conn: sqlite3.Connection) -> Any:
+            return conn.execute(sql + " LIMIT 1", params).fetchone()
+
+        return await self.db.run(_select) is not None
 
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,

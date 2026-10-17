@@ -1214,3 +1214,49 @@ def test_a_card_reserved_for_a_waiting_set_says_so():
         "an earlier run that waits for its whole device set")
     assert scheduler.place(_entry("r1", 6),
                            {("box", "cuda:0"): RESERVED_SLOT}) is None
+
+
+async def test_an_adopted_run_takes_its_budget_back_in_the_ledger(env):
+    """#793 with #788: a worker run adopted after a restart still holds its
+    card under its cap, so the restarted server's ledger counts its budget
+    as running at once and does not admit onto the card what it uses."""
+    from app.core.run_service import WORKER_RESUME_KEY
+    from app.core.run_store import RunProvenance
+
+    service, _ = env
+    store = service.store
+    record = await store.create_run(
+        graph_snapshot=_graph(), provenance=RunProvenance(),
+        options={"device": "cuda:0", "target": {
+            "worker": "box", "devices": ["cuda:0"]}},
+        worker_id="box", devices=["cuda:0"], graph_hash="h")
+    await store.mark_running(record.id, execution_facts={
+        "graph_hash": "h",
+        "memory_budget": {"bytes": 6 * GIB, "source": "history",
+                          "from_run": "r0", "devices": ["cuda:0"]},
+        WORKER_RESUME_KEY: {"last_seq": 1, "slots": [["box", "cuda:0"]]}})
+    [(row, placement, last_seq)] = await service._adoptable_worker_runs()
+    assert placement.memory_budget == 6 * GIB
+    assert placement.budget_devices == ("cuda:0",)
+    assert placement.budget_slots == (("box", "cuda:0"),)
+    service._adopt(row, placement, last_seq)
+    account = service._ledger.account(("box", "cuda:0"))
+    assert (account.reserved, account.running, account.runs) == (
+        0, 6 * GIB, [record.id])
+    active = service._runs[record.id]
+    assert active.memory_budget == mem.Budget(6 * GIB, "history", "r0")
+    assert active.graph_hash == "h"
+
+
+def test_an_adopted_placement_without_a_budget_admits_by_count():
+    from app.core.run_service import _adopted_budget, _adopted_placement
+
+    slots = (("box", "cuda:0"),)
+    assert _adopted_placement("box", ("cuda:0",), slots, {}) == Placement(
+        "box", ("cuda:0",), slots)
+    for broken in ({"bytes": 0}, {"bytes": True}, "x",
+                   {"bytes": GIB, "devices": ["cuda:9"]}):
+        assert _adopted_placement("box", ("cuda:0",), slots, {
+            "memory_budget": broken}).memory_budget is None
+    assert _adopted_budget({"memory_budget": {"bytes": GIB, "source": 3}}) \
+        == mem.Budget(GIB)
