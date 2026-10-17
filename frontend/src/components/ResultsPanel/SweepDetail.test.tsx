@@ -485,7 +485,7 @@ describe('SweepDetail', () => {
     scoped.variants = scoped.variants.map((entry) => ({ ...entry, final_metrics_node_id: 'train' }));
     useSweepStore.setState({ detail: scoped, selectedSweepId: 's1' });
     const first = view();
-    expect(header()).toHaveAttribute('title', 'Last value of each series Trainer (train) logged');
+    expect(header()).toHaveAttribute('title', "Last value of each series this run logged; a name several nodes log shows Trainer (train)'s value");
     first.unmount();
 
     // A run-wide summary (several producers, or a server before #841).

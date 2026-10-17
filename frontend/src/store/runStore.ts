@@ -16,6 +16,7 @@ import {
 } from '../api/rest';
 import { useToastStore } from './toastStore';
 import { useI18n } from '../i18n';
+import { codedMessage, type CodedMessage } from '../utils/runReasons';
 
 /**
  * App-level state for the Runs panel (#124).
@@ -109,6 +110,8 @@ export interface RunLogLine {
   nodeId?: string;
   status?: string;
   detail?: string;
+  /** A worker message's code and parameters (#841), worded by `workerMessageText`. */
+  coded?: CodedMessage;
   tone: 'info' | 'success' | 'error' | 'warning';
 }
 
@@ -334,6 +337,7 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
       case 'execution_error':
         line(event.cursor, event.ts, 'failed', 'error', {
           detail: typeof payload.error === 'string' ? payload.error : undefined,
+          coded: codedMessage(payload),
         });
         break;
       case 'execution_stopped':
@@ -344,6 +348,7 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
       case 'run_warning':
         line(event.cursor, event.ts, 'warning', 'warning', {
           detail: typeof payload.detail === 'string' ? payload.detail : undefined,
+          coded: codedMessage(payload),
         });
         break;
       default:
@@ -496,9 +501,16 @@ async function follow(runId: string, startCursor: number, generation: number) {
         wait: EVENT_WAIT_S,
         signal: controller.signal,
       });
-    } catch {
+    } catch (err) {
       // Aborted by a new selection, or the server went away. Either way this
       // follower is done; the list poll is what notices a server coming back.
+      // A failed FIRST page would leave the log on "Loading events..." for
+      // good, so that one says what went wrong (#841). An abort moved the
+      // generation on first and is not reported.
+      if (generation !== followGeneration) return;
+      useRunStore.setState((state) => (state.detail?.runId === runId && state.detail.logLoading
+        ? { detail: { ...state.detail, logLoading: false, error: errorMessage(err) } }
+        : {}));
       return;
     }
     if (generation !== followGeneration) return;

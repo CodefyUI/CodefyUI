@@ -17,7 +17,7 @@ import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
 import { deviceAliasLines, runDevice, runDevices, runWorker, runWorkerLabel } from '../../utils/runPlacement';
-import { queueReasonText, workerMessageText } from '../../utils/runReasons';
+import { codedMessage, queueReasonText, workerMessageText } from '../../utils/runReasons';
 import { LossChart } from './LossChart';
 import { SweepDetail } from './SweepDetail';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -310,7 +310,7 @@ function LogLine({ line }: { line: RunLogLine }) {
       case 'completed':
         return t('runs.log.completed');
       case 'failed':
-        return t('runs.log.failed', { error: workerMessageText(line.detail ?? '', t) });
+        return t('runs.log.failed', { error: workerMessageText(line.detail ?? '', line.coded, t) });
       case 'stopped': {
         const reasonKey =
           STOP_REASON_KEY[line.detail as keyof typeof STOP_REASON_KEY];
@@ -319,7 +319,7 @@ function LogLine({ line }: { line: RunLogLine }) {
         });
       }
       case 'warning':
-        return t('runs.log.warning', { detail: workerMessageText(line.detail ?? '', t) });
+        return t('runs.log.warning', { detail: workerMessageText(line.detail ?? '', line.coded, t) });
       default: {
         // The backend's node statuses are a small closed vocabulary; an
         // unknown one from a newer backend falls through as its raw token
@@ -493,7 +493,8 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
       )}
       {run?.error && (
         <div className={styles.detailError}>
-          {t('runs.detail.error')}: {friendlyError(workerMessageText(run.error, t))}
+          {t('runs.detail.error')}: {friendlyError(workerMessageText(
+            run.error, codedMessage(run.execution_facts?.error_reason), t))}
         </div>
       )}
 

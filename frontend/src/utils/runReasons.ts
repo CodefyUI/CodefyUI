@@ -3,11 +3,12 @@
  *
  * The server words why a run waits (`queue_reason`) and why a worker run
  * ended (`error`, `run_warning` details) in English, which the API and the
- * CLI keep. A waiting run also carries `queue_reason_code` and
- * `queue_reason_params`, worded here from the code. The worker messages
- * have no code: their few fixed shapes (`backend/app/core/executors.py`,
- * `workers.py`) are recognised here, and any other text, or a code this
- * build does not know, is shown as the server wrote it.
+ * CLI keep. Beside the text each carries a code and parameters, worded
+ * here: a waiting run's `queue_reason_code` / `queue_reason_params`, a
+ * worker message's `code` / `params` (on the `run_warning` and
+ * `execution_error` payloads, and as a row's `execution_facts.error_reason`;
+ * built by `backend/app/core/workers.py`). A message without one, or with
+ * a code this build does not know, is shown as the server wrote it.
  */
 import type { useI18n } from '../i18n';
 import type { RunSummary } from '../api/rest';
@@ -82,54 +83,101 @@ export function queueReasonText(run: ReasonFields, t: Translate): string | null 
   return fromCode(code, params, t) ?? fallback;
 }
 
-/** Why a worker went away (the part after "went away: "). */
-function workerGoneReason(reason: string, t: Translate): string {
-  let match: RegExpMatchArray | null;
-  if (reason === 'after reconnecting it did not report this run as still running') {
-    return t('runs.workerMsg.reason.notReported');
+/** A worker message's code and parameters, as the server sends them beside its text. */
+export interface CodedMessage {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** `{code, params}` read off an event payload or `execution_facts.error_reason`; undefined when absent. */
+export function codedMessage(source: unknown): CodedMessage | undefined {
+  const value = record(source);
+  const code = value && text(value.code);
+  const params = value && record(value.params);
+  return code && params ? { code, params } : undefined;
+}
+
+function count(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Why a worker went away (a message's nested `reason`), or its text, or null. */
+function reasonText(source: unknown, t: Translate): string | null {
+  const value = record(source);
+  if (!value) return null;
+  const fallback = text(value.text);
+  const coded = codedMessage(value);
+  if (!coded) return fallback;
+  const { params } = coded;
+  const worker = text(params.worker);
+  const seconds = count(params.seconds);
+  const revoked = params.revoked === true;
+  switch (coded.code) {
+    case 'connection_closed':
+      return t('runs.workerMsg.reason.connectionClosed');
+    case 'no_heartbeat':
+      return seconds === null ? fallback : t('runs.workerMsg.reason.noHeartbeat', { seconds });
+    case 'agent_lost_run':
+      return t('runs.workerMsg.reason.notOnAgent');
+    case 'alive_missing':
+      return t('runs.workerMsg.reason.notReported');
+    case 'no_reconnect':
+      return worker && seconds !== null ? t('runs.workerMsg.reason.noReconnect', { worker, seconds }) : fallback;
+    case 'shutting_down':
+      return t('runs.workerMsg.reason.shuttingDown');
+    case 'removed':
+      return t(revoked ? 'runs.workerMsg.reason.revoked' : 'runs.workerMsg.reason.removed');
+    case 'ssh_deleted':
+      return t(revoked ? 'runs.workerMsg.reason.sshDeletedRevoked' : 'runs.workerMsg.reason.sshDeleted');
+    case 'ssh_stopped':
+      return worker ? t('runs.workerMsg.reason.sshStopped', { worker }) : fallback;
+    case 'rekeyed':
+      return t('runs.workerMsg.reason.rekeyed');
+    default:
+      return fallback;
   }
-  if (reason === 'the reconnected agent does not have it') return t('runs.workerMsg.reason.notOnAgent');
-  if (reason === 'the connection closed') return t('runs.workerMsg.reason.connectionClosed');
-  if (reason === 'the control plane is shutting down') return t('runs.workerMsg.reason.shuttingDown');
-  if (reason === 'the worker was removed') return t('runs.workerMsg.reason.removed');
-  if (reason === 'the worker was removed and its credential revoked') return t('runs.workerMsg.reason.revoked');
-  if ((match = reason.match(/^worker (\S+) did not reconnect within (\d+) s$/))) {
-    return t('runs.workerMsg.reason.noReconnect', { worker: match[1], seconds: match[2] });
+}
+
+function fromWorkerCode({ code, params }: CodedMessage, t: Translate): string | null {
+  const worker = text(params.worker);
+  if (!worker) return null;
+  const error = text(params.error);
+  switch (code) {
+    case 'worker_gone': {
+      const reason = reasonText(params.reason, t);
+      return reason && t('runs.workerMsg.wentAway', { worker, reason });
+    }
+    case 'worker_disconnected': {
+      const reason = reasonText(params.reason, t);
+      const seconds = count(params.seconds);
+      return reason && seconds !== null ? t('runs.workerMsg.disconnected', { worker, reason, seconds }) : null;
+    }
+    case 'worker_reconnected':
+      return t('runs.workerMsg.reconnected', { worker });
+    case 'worker_not_connected':
+      return t('runs.workerMsg.notConnected', { worker });
+    case 'worker_unreachable':
+      return error && t('runs.workerMsg.unreachable', { worker, detail: error });
+    case 'worker_transfer_failed':
+      return error && t('runs.workerMsg.transferFailed', { worker, detail: error });
+    case 'worker_removed':
+      return t('runs.workerMsg.removed', { worker });
+    default:
+      return null;
   }
-  if ((match = reason.match(/^no heartbeat for (\d+) s$/))) {
-    return t('runs.workerMsg.reason.noHeartbeat', { seconds: match[1] });
-  }
-  if ((match = reason.match(/^SSH worker (\S+) was stopped$/))) {
-    return t('runs.workerMsg.reason.sshStopped', { worker: match[1] });
-  }
-  return reason;
 }
 
 /**
- * A worker run's error or warning text in the active language: "worker X
- * went away: ...", "worker X disconnected (...); the run keeps running
- * there ...", "worker X reconnected; ...", "worker X is not connected",
- * "could not reach worker X: ...". Any other text comes back unchanged, so
- * a second pass is a no-op.
+ * A worker run's error or warning in the active language, from its code
+ * and parameters; *message* (the server's English) when there is no code,
+ * or one this build does not know.
  */
-export function workerMessageText(message: string, t: Translate): string {
-  let match: RegExpMatchArray | null;
-  if ((match = message.match(/^worker (\S+) went away: ([\s\S]+)$/))) {
-    return t('runs.workerMsg.wentAway', { worker: match[1], reason: workerGoneReason(match[2], t) });
-  }
-  if ((match = message.match(/^worker (\S+) disconnected \(([\s\S]+)\); the run keeps running there and waits up to (\d+) s for it to reconnect$/))) {
-    return t('runs.workerMsg.disconnected', {
-      worker: match[1], reason: workerGoneReason(match[2], t), seconds: match[3],
-    });
-  }
-  if ((match = message.match(/^worker (\S+) reconnected; the run continues$/))) {
-    return t('runs.workerMsg.reconnected', { worker: match[1] });
-  }
-  if ((match = message.match(/^worker (\S+) is not connected$/))) {
-    return t('runs.workerMsg.notConnected', { worker: match[1] });
-  }
-  if ((match = message.match(/^could not reach worker (\S+): ([\s\S]+)$/))) {
-    return t('runs.workerMsg.unreachable', { worker: match[1], detail: match[2] });
-  }
-  return message;
+export function workerMessageText(message: string, coded: CodedMessage | undefined, t: Translate): string {
+  return (coded && fromWorkerCode(coded, t)) || message;
 }

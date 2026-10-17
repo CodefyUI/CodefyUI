@@ -1,4 +1,4 @@
-"""A sweep variant's ``final_metrics`` come from the objective's node (#841).
+"""A sweep variant's ``final_metrics`` prefer the objective's node (#841).
 
 The 3.1.0 E2E audit (U23) swept ``lr`` of one branch of the Weight decay
 example, which trains two models side by side (``train-plain`` and
@@ -7,8 +7,11 @@ example, which trains two models side by side (``train-plain`` and
 "Final metrics" read ``lr 0.01``: the run-wide summary collapses a name two
 nodes log into whichever wrote last, which was the OTHER branch.
 
-These tests pin the scoped summary at the store, at the sweeps route (JSON,
-the level the Runs panel reads) and at the study harvest, which had the same
+The summary stays run-wide, so a series only another node logged (an
+Evaluate node's ``val_acc``) is kept, and the objective node's own last
+values replace the run-wide ones for every name it logged. These tests pin
+that overlay at the store, at the sweeps route (JSON, the level the Runs
+panel reads) and its warning, and at the study harvest, which had the same
 collapse.
 
 Fixtures and helpers are local, following the house rule that test modules
@@ -17,6 +20,7 @@ stay independent.
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,7 +34,8 @@ from app.core.run_store import (
     MetricPoint,
     RunProvenance,
     RunStore,
-    producer_metric_values,
+    last_metric_values,
+    objective_metric_values,
 )
 from app.core.sweep_store import SweepStore, SweepVariant
 
@@ -91,7 +96,8 @@ async def _sweep(sweeps: SweepStore, objective: dict[str, Any]):
 
 def _two_branches(lr: float, loss: float) -> list[MetricPoint]:
     """The audit's run: the swept branch first, the fixed branch (lr 0.01)
-    written LAST at the same steps, so the run-wide summary reads it."""
+    written LAST at the same steps, so the run-wide summary reads it. Two
+    more nodes each log a series no other node logs."""
     points: list[MetricPoint] = []
     for step in (0, 1):
         points += [
@@ -101,6 +107,7 @@ def _two_branches(lr: float, loss: float) -> list[MetricPoint]:
             MetricPoint("train_loss", 0.058 + 1 - step, step, "train-decay"),
         ]
     points.append(MetricPoint("mse", 0.04, 0, "mse-plain"))
+    points.append(MetricPoint("val_acc", 0.8, 1, "eval-plain"))
     return points
 
 
@@ -122,10 +129,10 @@ async def _get(http: AsyncClient, sweep_id: str) -> dict[str, Any]:
     return response.json()
 
 
-async def test_a_named_objective_node_scopes_final_metrics_to_that_branch(
+async def test_a_named_objective_node_wins_its_names_and_keeps_the_rest(
         runs, sweeps, http):
     """U23: each variant shows ITS swept lr and its own loss, never the
-    fixed branch's lr 0.01."""
+    fixed branch's lr 0.01, and still shows what other nodes logged."""
     sweep = await _sweep(sweeps, {"metric": "train_loss", "direction": MIN,
                                   "node_id": "train-plain"})
     run_ids = [await _child(runs, sweeps, sweep.id, i,
@@ -137,17 +144,18 @@ async def test_a_named_objective_node_scopes_final_metrics_to_that_branch(
     for index, lr in enumerate(SWEPT):
         variant = by_index[index]
         assert variant["final_metrics"] == {
-            "lr": lr, "train_loss": pytest.approx(0.05 + index / 100)}
+            "lr": lr, "train_loss": pytest.approx(0.05 + index / 100),
+            "mse": 0.04, "val_acc": 0.8}
         assert variant["final_metrics_node_id"] == "train-plain"
         assert variant["objective"] == pytest.approx(0.05 + index / 100)
     # The Runs list summary of the same run is unchanged: run-wide.
     assert (await runs.latest_metrics([run_ids[0]]))[run_ids[0]]["lr"] == 0.01
 
 
-async def test_a_name_only_single_producer_scopes_once_harvested(
+async def test_a_name_only_single_producer_is_preferred_once_harvested(
         runs, sweeps, http):
-    """A name-only objective one node logged scopes to that node: the
-    harvest is what names it."""
+    """A name-only objective one node logged: the harvest names the node,
+    and the rest of the summary is the run's."""
     sweep = await _sweep(sweeps, {"metric": "mse", "direction": MIN})
     await _child(runs, sweeps, sweep.id, 0, _two_branches(0.003, 0.05))
 
@@ -155,13 +163,15 @@ async def test_a_name_only_single_producer_scopes_once_harvested(
                    if v["index"] == 0)
     assert variant["objective_node_id"] == "mse-plain"
     assert variant["final_metrics_node_id"] == "mse-plain"
-    assert variant["final_metrics"] == {"mse": 0.04}
+    assert variant["final_metrics"] == {
+        "mse": 0.04, "val_acc": 0.8, "lr": 0.01,
+        "train_loss": pytest.approx(0.058)}
 
 
 async def test_an_ambiguous_objective_keeps_the_run_wide_summary(
         runs, sweeps, http):
     """Several producers and no node named: the variant is unranked and its
-    summary stays run-wide, labelled as such by a null node."""
+    summary is the plain run-wide one, labelled as such by a null node."""
     sweep = await _sweep(sweeps, {"metric": "train_loss", "direction": MIN})
     await _child(runs, sweeps, sweep.id, 0, _two_branches(0.003, 0.05))
 
@@ -173,7 +183,7 @@ async def test_an_ambiguous_objective_keeps_the_run_wide_summary(
     assert variant["final_metrics"]["mse"] == 0.04
 
 
-async def test_an_unstarted_variant_has_no_summary_and_no_scope(
+async def test_an_unstarted_variant_has_no_summary_and_no_node(
         runs, sweeps, http):
     sweep = await _sweep(sweeps, {"metric": "train_loss", "direction": MIN,
                                   "node_id": "train-plain"})
@@ -184,8 +194,34 @@ async def test_an_unstarted_variant_has_no_summary_and_no_scope(
     assert "final_metrics_node_id" not in variant
 
 
-async def test_producer_metric_values_skips_other_nodes_and_non_finite(
-        db, runs):
+async def test_a_named_node_that_ranked_nothing_is_warned_with_the_runs_series(
+        runs, sweeps, http):
+    """The warning lists every series the run recorded, run-wide, and names
+    the nodes that did log the objective's metric."""
+    sweep = await _sweep(sweeps, {"metric": "train_loss", "direction": MIN,
+                                  "node_id": "eval-plain"})
+    await _child(runs, sweeps, sweep.id, 0, _two_branches(0.003, 0.05))
+
+    body = await _get(http, sweep.id)
+    assert body["objective_warning"] == (
+        "no variant recorded a metric named 'train_loss' from node "
+        "'eval-plain'; 'train_loss' was recorded by train-decay, "
+        "train-plain; the series recorded across this sweep were: lr, mse, "
+        "train_loss, val_acc")
+
+
+async def test_a_named_node_whose_metric_nobody_logged_names_no_producer(
+        runs, sweeps, http):
+    sweep = await _sweep(sweeps, {"metric": "val_loss", "direction": MIN,
+                                  "node_id": "eval-plain"})
+    await _child(runs, sweeps, sweep.id, 0, _two_branches(0.003, 0.05))
+
+    warning = (await _get(http, sweep.id))["objective_warning"]
+    assert "was recorded by" not in warning
+    assert warning.endswith("lr, mse, train_loss, val_acc")
+
+
+async def test_objective_metric_values_overlays_the_node_on_the_run(db, runs):
     record = await runs.create_run(
         graph_snapshot={"nodes": [], "edges": []}, options={},
         provenance=RunProvenance())
@@ -194,17 +230,58 @@ async def test_producer_metric_values_skips_other_nodes_and_non_finite(
         MetricPoint("train_loss", 0.5, 0, "train-plain"),
         MetricPoint("train_loss", float("nan"), 1, "train-plain"),
         MetricPoint("lr", 0.01, 5, "train-decay"),
+        MetricPoint("train_loss", 0.4, 5, "train-decay"),
         MetricPoint("acc", 0.9, 0, None),
     ])
-    assert await db.run(lambda conn: producer_metric_values(
-        conn, record.id, "train-plain")) == {"lr": 0.003}
-    assert await db.run(lambda conn: producer_metric_values(
-        conn, record.id, "nobody")) == {}
-    # Scoped and unscoped runs in ONE call.
+    # lr: the node's own; train_loss: the node diverged, so no number even
+    # though train-decay has one; acc: only the run level logged it, kept.
+    assert await db.run(lambda conn: objective_metric_values(
+        conn, record.id, "train-plain")) == {"lr": 0.003, "acc": 0.9}
+    # A node that logged nothing leaves the run-wide summary as it is.
+    assert await db.run(lambda conn: objective_metric_values(
+        conn, record.id, "nobody")) == await db.run(
+        lambda conn: last_metric_values(conn, record.id))
+    # Overlaid and plain runs in ONE call.
     other = await runs.create_run(
         graph_snapshot={"nodes": [], "edges": []}, options={},
         provenance=RunProvenance())
     await runs.log_metrics(other.id, [MetricPoint("lr", 0.2, 0, "x")])
     assert await runs.latest_metrics(
-        [record.id, other.id], producers={record.id: "train-decay"}) == {
-        record.id: {"lr": 0.01}, other.id: {"lr": 0.2}}
+        [record.id, other.id], producers={record.id: "train-plain"}) == {
+        record.id: {"lr": 0.003, "acc": 0.9}, other.id: {"lr": 0.2}}
+
+
+async def test_objective_metric_values_seeks_and_never_scans(db, runs):
+    """Every statement the overlay runs is an index SEARCH -- the series
+    leapfrog, then one producer seek per name -- so its cost tracks the
+    series, never the points."""
+    record = await runs.create_run(
+        graph_snapshot={"nodes": [], "edges": []}, options={},
+        provenance=RunProvenance())
+    await runs.log_metrics(record.id, [
+        MetricPoint(name, 1.0, step, node)
+        for name in ("loss", "lr", "val_acc") for node in ("a", "b")
+        for step in range(20)])
+
+    executed: list[str] = []
+
+    def _run(conn: sqlite3.Connection) -> dict[str, float]:
+        conn.set_trace_callback(executed.append)
+        try:
+            return objective_metric_values(conn, record.id, "a")
+        finally:
+            conn.set_trace_callback(None)
+
+    assert await db.run(_run) == {"loss": 1.0, "lr": 1.0, "val_acc": 1.0}
+    reads = [sql for sql in executed if "exec_run_metrics" in sql]
+    # One leapfrog plus one seek per series name.
+    assert len(reads) == 4, executed
+
+    def _plans(conn: sqlite3.Connection) -> list[str]:
+        return [" ".join(row["detail"] for row in conn.execute(
+            "EXPLAIN QUERY PLAN " + sql).fetchall()) for sql in reads]
+
+    for plan in await db.run(_plans):
+        assert "SCAN exec_run_metrics" not in plan, plan
+        assert "TEMP B-TREE" not in plan, plan
+        assert "SEARCH" in plan, plan

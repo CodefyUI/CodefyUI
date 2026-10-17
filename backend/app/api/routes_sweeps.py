@@ -621,12 +621,13 @@ async def _harvested_sweep(
     and never chooses the objective, because it collapses a name several
     nodes log into one number (#641).
 
-    That summary is SCOPED to the objective's node whenever one is known
+    That summary prefers the objective's node whenever one is known
     (:func:`_final_metrics_node`, #841): on a graph with two training
-    branches the run-wide summary is whichever branch wrote last, so a
-    variant ranked by one branch would show the other's ``lr`` and loss.
-    It is read after the harvest, which is what names the producer of a
-    name-only objective.
+    branches the run-wide value of a shared name is whichever branch wrote
+    last, so a variant ranked by one branch would show the other's ``lr``
+    and loss. The node's own values replace those; series only other nodes
+    logged stay. It is read after the harvest, which is what names the
+    producer of a name-only objective.
 
     A variant is harvested when it has not been harvested before, its child
     row still exists, and that row is terminal. Writing rather than merely
@@ -691,14 +692,16 @@ async def _harvested_sweep(
 
 def _final_metrics_node(sweep: SweepRecord,
                         variant: SweepVariant) -> str | None:
-    """The node a variant's ``final_metrics`` are read from, or None for
-    the run-wide summary (#841).
+    """The node whose values a variant's ``final_metrics`` prefer, or None
+    for the plain run-wide summary (#841).
 
-    The objective's node: the one the sweep names, else the one the
-    harvest found as the only producer of a name-only objective. None
-    while a name-only variant is unharvested, when its objective is the
-    run-level series, and when several nodes logged it (that variant is
-    unranked and the summary says so by being run-wide).
+    ``final_metrics`` is always the run-wide summary; this node's own last
+    values replace the run-wide ones for the series it logged, so a name
+    two branches log shows the objective's branch. The node is the one the
+    sweep names, else the one the harvest found as the only producer of a
+    name-only objective. None while a name-only variant is unharvested,
+    when its objective is the run-level series, and when several nodes
+    logged it (that variant is unranked).
     """
     _metric, node_id = objective_selector(sweep.objective)
     return node_id if node_id is not None else variant.objective_node_id
@@ -740,9 +743,9 @@ def _variant_payload(sweep: SweepRecord, variant: SweepVariant,
         # as "this run recorded nothing" rather than "this run is no longer
         # here".
         payload["final_metrics"] = metrics.get(variant.run_id, {})
-        # The node those numbers come from (#841): the objective's, or
-        # None for the run-wide summary, which collapses a name several
-        # nodes log into whichever wrote last.
+        # The node whose values win where several nodes logged a name
+        # (#841): the objective's, or None when the summary is plain
+        # run-wide (such a name then shows whichever node wrote last).
         payload["final_metrics_node_id"] = _final_metrics_node(sweep, variant)
         # Where the variant was placed (#777), read off the child row like
         # the Runs list: `worker_id` is `any` and `queue_key` `any/<device>`
@@ -776,8 +779,10 @@ def _ambiguous_producers(payloads: list[dict[str, Any]]) -> list[str | None]:
     return sorted(found, key=lambda node: (node is not None, node or ""))
 
 
-def _objective_warning(sweep: SweepRecord,
-                       payloads: list[dict[str, Any]]) -> str | None:
+def _objective_warning(
+    sweep: SweepRecord, payloads: list[dict[str, Any]],
+    producers: dict[str, dict[str, list[str | None]]] | None = None,
+) -> str | None:
     """Why some or all of the table is unranked, or None.
 
     An AMBIGUOUS name-only objective comes first and is reported even when
@@ -788,8 +793,13 @@ def _objective_warning(sweep: SweepRecord,
     single most likely user error — asking for ``val_loss`` from a graph
     with no validation loader — into a message that names the fix, instead
     of a table of empty cells. The series list is the union of
-    ``final_metrics`` keys across the children that still exist, sorted so
+    ``final_metrics`` keys across the children that still exist (each one
+    the run-wide summary, so every series any node logged), sorted so
     the message is the same twice, and omitted when none of them do.
+
+    When the objective names a node that never logged the metric while
+    other nodes did, *producers* (``RunStore.metric_producers_by_run`` of
+    the children) names those nodes (#841), which is usually the fix.
     """
     metric = sweep.objective.get("metric")
     ambiguous = _ambiguous_producers(payloads)
@@ -807,6 +817,13 @@ def _objective_warning(sweep: SweepRecord,
     warning = f"no variant recorded a metric named '{metric}'"
     if node_id:
         warning += f" from node '{node_id}'"
+        others = sorted({node for series in (producers or {}).values()
+                         for node in series.get(metric, [])
+                         if node != node_id},
+                        key=lambda node: (node is not None, node or ""))
+        if others:
+            warning += (f"; '{metric}' was recorded by "
+                        + ", ".join(_producer_label(node) for node in others))
     if names:
         warning += ("; the series recorded across this sweep were: "
                     + ", ".join(names))
@@ -931,7 +948,14 @@ async def get_sweep(
             "index": best["index"], "run_id": best["run_id"],
             "objective": best["objective"]},
     }
-    warning = _objective_warning(sweep, payloads)
+    # Who logged what, only when a named node ranked nothing: the one
+    # case the warning names other producers in.
+    producers = None
+    if sweep.objective.get("node_id") \
+            and not any(payload["rank"] is not None for payload in payloads):
+        producers = await service.store.metric_producers_by_run(
+            list(children))
+    warning = _objective_warning(sweep, payloads, producers)
     if warning is not None:
         body["objective_warning"] = warning
     return body

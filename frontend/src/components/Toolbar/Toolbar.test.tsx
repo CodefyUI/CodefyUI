@@ -434,6 +434,8 @@ describe('Toolbar', () => {
     expect(screen.getByText(label)).toBeInTheDocument();
     expect(screen.queryByText('Running')).toBeNull();
     expect(screen.getByRole('button', { name: 'Queued...' })).toBeDisabled();
+    // The whole label shows; the device select narrows to make room (#848 review).
+    expect(screen.getByRole('combobox', { name: 'Device for this graph' }).className).toContain('deviceSelectQueued');
     fireEvent.click(screen.getByText('Stop'));
     expect(stop).toHaveBeenCalledTimes(1);
   });
@@ -448,6 +450,7 @@ describe('Toolbar', () => {
   it('a queue left on a tab that is no longer running is not shown', async () => {
     setActiveTab({ status: 'completed', runQueue: { reason: 'seed' } });
     await renderSettled(<Toolbar />);
+    expect(screen.getByRole('combobox', { name: 'Device for this graph' }).className).not.toContain('deviceSelectQueued');
     expect(screen.getByText('Completed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run' })).not.toBeDisabled();
   });

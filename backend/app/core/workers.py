@@ -133,15 +133,166 @@ ORPHAN_ACK_EVERY = 64
 #: Runs remembered for a late ``run_finished``; the oldest is forgotten.
 LATE_RUNS_MAX = 1000
 
-#: Put in a run's inbox when its worker is gone: ``(WORKER_GONE, reason)``.
+#: Put in a run's inbox when its worker is gone:
+#: ``(WORKER_GONE, WorkerReason)``.
 WORKER_GONE = object()
+
+# ── why a worker went away (#841) ─────────────────────────────────────────
+#
+# The run's error and its ``run_warning`` read "worker X went away: <text>"
+# in English, which the API and the CLI keep. The code and parameters ride
+# along (the warning's ``params.reason``, the row's
+# ``execution_facts.error_reason``) so the Runs panel words the reason in
+# the viewer's language; a code it does not know shows the text.
+
+REASON_CONNECTION_CLOSED = "connection_closed"
+REASON_NO_HEARTBEAT = "no_heartbeat"
+REASON_AGENT_LOST_RUN = "agent_lost_run"
+REASON_ALIVE_MISSING = "alive_missing"
+REASON_NO_RECONNECT = "no_reconnect"
+REASON_SHUTTING_DOWN = "shutting_down"
+REASON_REMOVED = "removed"
+REASON_SSH_DELETED = "ssh_deleted"
+REASON_SSH_STOPPED = "ssh_stopped"
+REASON_REKEYED = "rekeyed"
+#: A reason given as plain text (an older caller): no wording but its own.
+REASON_OTHER = "other"
+
+
+@dataclass(frozen=True)
+class WorkerReason:
+    """Why a worker's runs lost it: a code, its parameters, and the English
+    sentence the API keeps (``str()`` of it)."""
+
+    code: str
+    text: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return self.text
+
+    def payload(self) -> dict[str, Any]:
+        """``{code, params, text}``, as messages carry it."""
+        return {"code": self.code, "params": dict(self.params),
+                "text": self.text}
+
+    @classmethod
+    def of(cls, reason: "str | WorkerReason") -> "WorkerReason":
+        """*reason* itself, or a plain-text one as :data:`REASON_OTHER`."""
+        if isinstance(reason, WorkerReason):
+            return reason
+        return cls(REASON_OTHER, str(reason))
+
+
+CONNECTION_CLOSED = WorkerReason(REASON_CONNECTION_CLOSED,
+                                 "the connection closed")
+AGENT_LOST_RUN = WorkerReason(REASON_AGENT_LOST_RUN,
+                              "the reconnected agent does not have it")
 #: Why a run ends when its reconnected worker did not list it in
-#: ``run_alive`` in time. Worded for the user (#841): the run's error reads
-#: "worker X went away: <this>", and the protocol's frame name meant
-#: nothing there. The Runs panel words it in the viewer's language by this
-#: exact text (``frontend/src/utils/workerErrors.ts``).
-ALIVE_MISSING_REASON = ("after reconnecting it did not report this run as "
-                        "still running")
+#: ``run_alive`` in time. Worded for the user (#841): the protocol's frame
+#: name meant nothing in "worker X went away: <this>".
+ALIVE_MISSING = WorkerReason(
+    REASON_ALIVE_MISSING,
+    "after reconnecting it did not report this run as still running")
+#: Kept for callers that compare text.
+ALIVE_MISSING_REASON = ALIVE_MISSING.text
+SHUTTING_DOWN = WorkerReason(REASON_SHUTTING_DOWN,
+                             "the control plane is shutting down")
+REKEYED = WorkerReason(
+    REASON_REKEYED,
+    "the worker was re-keyed; its old credential no longer works")
+
+
+def no_heartbeat(seconds: float) -> WorkerReason:
+    return WorkerReason(REASON_NO_HEARTBEAT,
+                        f"no heartbeat for {seconds:.0f} s",
+                        {"seconds": round(seconds)})
+
+
+def no_reconnect(worker: str, seconds: float) -> WorkerReason:
+    return WorkerReason(
+        REASON_NO_RECONNECT,
+        f"worker {worker} did not reconnect within {seconds:.0f} s",
+        {"worker": worker, "seconds": round(seconds)})
+
+
+def removed(*, revoked: bool = False, ssh: bool = False) -> WorkerReason:
+    """The worker was removed (or its SSH entry deleted), its credential
+    revoked when *revoked*."""
+    text = "the SSH worker was deleted" if ssh else "the worker was removed"
+    if revoked:
+        text += " and its credential revoked"
+    return WorkerReason(REASON_SSH_DELETED if ssh else REASON_REMOVED, text,
+                        {"revoked": revoked})
+
+
+def ssh_stopped(worker: str) -> WorkerReason:
+    return WorkerReason(REASON_SSH_STOPPED, f"SSH worker {worker} was stopped",
+                        {"worker": worker})
+
+
+# The whole messages a worker run's error or ``run_warning`` carries, in
+# the same shape: a code, its parameters (a nested reason as its
+# ``payload()``), and the English text. The warning's payload gains
+# ``code``/``params``; a row's error keeps the text and its
+# ``execution_facts.error_reason`` holds ``{code, params}``.
+
+MSG_WORKER_GONE = "worker_gone"
+MSG_WORKER_DISCONNECTED = "worker_disconnected"
+MSG_WORKER_RECONNECTED = "worker_reconnected"
+MSG_WORKER_NOT_CONNECTED = "worker_not_connected"
+MSG_WORKER_UNREACHABLE = "worker_unreachable"
+MSG_WORKER_TRANSFER_FAILED = "worker_transfer_failed"
+MSG_WORKER_REMOVED = "worker_removed"
+
+
+def gone_message(worker: str, reason: str | WorkerReason) -> WorkerReason:
+    reason = WorkerReason.of(reason)
+    return WorkerReason(MSG_WORKER_GONE,
+                        f"worker {worker} went away: {reason}",
+                        {"worker": worker, "reason": reason.payload()})
+
+
+def disconnected_message(worker: str, reason: str | WorkerReason,
+                         grace: float) -> WorkerReason:
+    reason = WorkerReason.of(reason)
+    return WorkerReason(
+        MSG_WORKER_DISCONNECTED,
+        f"worker {worker} disconnected ({reason}); the run keeps running "
+        f"there and waits up to {grace:.0f} s for it to reconnect",
+        {"worker": worker, "reason": reason.payload(),
+         "seconds": round(grace)})
+
+
+def reconnected_message(worker: str) -> WorkerReason:
+    return WorkerReason(MSG_WORKER_RECONNECTED,
+                        f"worker {worker} reconnected; the run continues",
+                        {"worker": worker})
+
+
+def not_connected_message(worker: str) -> WorkerReason:
+    return WorkerReason(MSG_WORKER_NOT_CONNECTED,
+                        f"worker {worker} is not connected",
+                        {"worker": worker})
+
+
+def unreachable_message(worker: str, error: Any) -> WorkerReason:
+    return WorkerReason(MSG_WORKER_UNREACHABLE,
+                        f"could not reach worker {worker}: {error}",
+                        {"worker": worker, "error": str(error)})
+
+
+def transfer_failed_message(worker: str, error: Any) -> WorkerReason:
+    return WorkerReason(
+        MSG_WORKER_TRANSFER_FAILED,
+        f"cannot send this run's input files to worker {worker}: {error}",
+        {"worker": worker, "error": str(error)})
+
+
+def removed_message(worker: str) -> WorkerReason:
+    """A queued run's error when its worker was removed (#780)."""
+    return WorkerReason(MSG_WORKER_REMOVED, f"worker {worker} was removed",
+                        {"worker": worker})
 #: Put in a run's inbox when its worker's connection dropped and the run
 #: waits for it to come back: ``(WORKER_DISCONNECTED, reason)`` (#783).
 WORKER_DISCONNECTED = object()
@@ -632,15 +783,16 @@ class WorkerRegistry:
         return added
 
     def forget(self, worker_id: str,
-               reason: str = "the worker was removed") -> Worker | None:
+               reason: str | WorkerReason | None = None) -> Worker | None:
         """Drop *worker_id*: a connected one is disconnected and its socket
         closed. Every run on it ends ``interrupted`` at once, including runs
         already waiting for it to reconnect: once it is gone from the
         registry nothing (the watchdog included) would end them. Returns the
-        dropped worker."""
+        dropped worker. *reason* defaults to :func:`removed`."""
         worker = self._workers.get(worker_id)
         if worker is None:
             return None
+        reason = removed() if reason is None else WorkerReason.of(reason)
         if worker.online:
             # Removed: nothing will come back for its runs (#783).
             self.disconnect(worker, reason, resume=False)
@@ -652,14 +804,14 @@ class WorkerRegistry:
         self._changed()
         return worker
 
-    def kick(self, worker_id: str, reason: str) -> None:
+    def kick(self, worker_id: str, reason: str | WorkerReason) -> None:
         """Disconnect *worker_id*'s live connection, if any, keeping it known."""
         worker = self._workers.get(worker_id)
         if worker is not None and worker.online:
             self.disconnect(worker, reason)
             self._spawn(_close_quietly(worker))
 
-    def stopped(self, worker_id: str, reason: str) -> None:
+    def stopped(self, worker_id: str, reason: str | WorkerReason) -> None:
         """*worker_id* was stopped on purpose (an SSH worker's Disable,
         Remove or a shutdown, #784): its runs will not come back, so the
         ones still on it end ``interrupted`` now instead of after the
@@ -667,6 +819,7 @@ class WorkerRegistry:
         worker = self._workers.get(worker_id)
         if worker is None:
             return
+        reason = WorkerReason.of(reason)
         if worker.online:
             self.disconnect(worker, reason, resume=False)
             self._spawn(_close_quietly(worker))
@@ -676,7 +829,8 @@ class WorkerRegistry:
                 self._end(worker, run, reason)
             self._changed()
 
-    def disconnect(self, worker: Worker, reason: str = "the connection closed",
+    def disconnect(self, worker: Worker,
+                   reason: str | WorkerReason = CONNECTION_CLOSED,
                    *, resume: bool = True) -> None:
         """Mark *worker* disconnected. Idempotent.
 
@@ -690,6 +844,7 @@ class WorkerRegistry:
         if worker.status == STATUS_DISCONNECTED:
             return
         worker.status = STATUS_DISCONNECTED
+        reason = WorkerReason.of(reason)
         logger.warning("worker %s disconnected: %s", worker.name, reason)
         for run in list(worker.running.values()):
             if resume and self.resume_grace_s > 0:
@@ -698,7 +853,8 @@ class WorkerRegistry:
                 self._end(worker, run, reason)
         self._changed()
 
-    def _detach(self, worker: Worker, run: WorkerRun, reason: str) -> None:
+    def _detach(self, worker: Worker, run: WorkerRun,
+                reason: WorkerReason) -> None:
         """*run* waits for its worker to reconnect (#783)."""
         if run.gone or run.detached_at is not None:
             return
@@ -710,7 +866,8 @@ class WorkerRegistry:
                        self.resume_grace_s, reason)
         run.inbox.put_nowait((WORKER_DISCONNECTED, reason))
 
-    def _end(self, worker: Worker, run: WorkerRun, reason: str) -> None:
+    def _end(self, worker: Worker, run: WorkerRun,
+             reason: WorkerReason) -> None:
         if run.gone:
             return
         run.gone = True
@@ -785,7 +942,7 @@ class WorkerRegistry:
                     run.detached_at = run.detached_wall = None
                     run.inbox.put_nowait((WORKER_RECONNECTED,))
             else:
-                self._end(worker, run, "the reconnected agent does not have it")
+                self._end(worker, run, AGENT_LOST_RUN)
         worker.alive_deadline = None
         self._cancel_untracked(worker, alive)
 
@@ -917,7 +1074,7 @@ class WorkerRegistry:
                 continue
             silent = now - worker.last_heartbeat
             if silent > worker.heartbeat_s * self.missed_heartbeats:
-                self.disconnect(worker, f"no heartbeat for {silent:.0f} s")
+                self.disconnect(worker, no_heartbeat(silent))
                 self._spawn(_close_quietly(worker))
                 continue
             if silent > worker.heartbeat_s * 1.5 \
@@ -930,15 +1087,15 @@ class WorkerRegistry:
                 worker.alive_deadline = None
                 for run in list(worker.running.values()):
                     if run.awaiting_alive:
-                        self._end(worker, run, ALIVE_MISSING_REASON)
+                        self._end(worker, run, ALIVE_MISSING)
 
     def _expire_detached(self, worker: Worker, now: float) -> None:
         """End the runs of a disconnected *worker* whose grace ran out."""
         for run in list(worker.running.values()):
             if run.detached_at is not None \
                     and now - run.detached_at >= self.resume_grace_s:
-                self._end(worker, run, f"worker {worker.name} did not "
-                          f"reconnect within {self.resume_grace_s:.0f} s")
+                self._end(worker, run,
+                          no_reconnect(worker.name, self.resume_grace_s))
                 self._changed()
 
     def _spawn(self, coroutine: Any) -> None:
@@ -980,7 +1137,7 @@ class WorkerRegistry:
                     await worker.send(wp.Drain())
                 except Exception:  # noqa: BLE001 -- already gone
                     pass
-                self.disconnect(worker, "the control plane is shutting down",
+                self.disconnect(worker, SHUTTING_DOWN,
                                 resume=False)
                 await _close_quietly(worker)
 

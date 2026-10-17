@@ -890,7 +890,7 @@ export function Toolbar() {
           data-tour="device"
           aria-label={t('toolbar.device.aria')}
           title={t('toolbar.device.title')}
-          className={styles.deviceSelect}
+          className={runQueue === null ? styles.deviceSelect : `${styles.deviceSelect} ${styles.deviceSelectQueued}`}
           value={storedDevice ?? ''}
           disabled={activeTab.readOnly}
           onChange={(e) => setGraphDevice(e.target.value || null)}

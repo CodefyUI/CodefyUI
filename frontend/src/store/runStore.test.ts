@@ -372,6 +372,44 @@ describe('runStore — following events', () => {
     expect(api.getRunEvents).toHaveBeenCalledTimes(2);
   });
 
+  it('says why only when the FIRST event page fails (#848 review)', async () => {
+    api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1', status: 'running' }), last_cursor: 1 });
+    api.getRunEvents
+      .mockResolvedValueOnce(eventsPage({
+        cursor: 1, events: [{ cursor: 1, type: 'execution_start', ts: 't', payload: null }],
+      }))
+      .mockRejectedValueOnce(new Error('server went away'));
+    await useRunStore.getState().select('r1');
+    await settle();
+    // A later page failing leaves the log it already has, unannotated.
+    expect(api.getRunEvents).toHaveBeenCalledTimes(2);
+    expect(useRunStore.getState().detail!.error).toBeNull();
+    expect(useRunStore.getState().detail!.log).toHaveLength(1);
+
+    api.getRunEvents.mockReset();
+    api.getRunEvents.mockRejectedValueOnce(new Error('events down'));
+    await useRunStore.getState().select('r1');
+    await settle();
+    expect(useRunStore.getState().detail!.error).toBe('events down');
+    expect(useRunStore.getState().detail!.logLoading).toBe(false);
+  });
+
+  it('does not report the abort of a page a new selection replaced', async () => {
+    api.getRun.mockImplementation(async (id: string) => ({ ...makeRun({ id, status: 'running' }), last_cursor: 1 }));
+    api.getRunEvents.mockReset();
+    api.getRunEvents
+      .mockImplementationOnce((_id, opts) => new Promise((_resolve, reject) => {
+        opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      }))
+      .mockReturnValue(new Promise(() => {}));
+    await useRunStore.getState().select('r1');
+    await settle();
+    await useRunStore.getState().select('r2');
+    await settle();
+    expect(useRunStore.getState().detail!.runId).toBe('r2');
+    expect(useRunStore.getState().detail!.error).toBeNull();
+  });
+
   it('stops rather than busy-waits when a terminal page stops advancing', async () => {
     // The same page over and over: the first advances the cursor, the second
     // cannot, and a terminal run that made no progress is over.

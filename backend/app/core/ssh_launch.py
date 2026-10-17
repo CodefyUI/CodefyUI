@@ -1220,7 +1220,9 @@ class SshLauncher:
         shutdown): its runs still waiting for it end now."""
         stopped = getattr(self.registry, "stopped", None)
         if stopped is not None:
-            stopped(name, f"SSH worker {name} was stopped")
+            from .workers import ssh_stopped
+
+            stopped(name, ssh_stopped(name))
 
     def _lock(self, name: str) -> asyncio.Lock:
         lock = self._locks.get(name)

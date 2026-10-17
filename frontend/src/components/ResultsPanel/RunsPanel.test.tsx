@@ -768,19 +768,40 @@ describe('RunsPanel — detail view', () => {
     expect(await detail.findByText(t('runs.detail.noLog'))).toBeInTheDocument();
   });
 
+  it('says why the log is empty when its first page fails (#848 review)', async () => {
+    api.getRunEvents.mockReset();
+    api.getRunEvents.mockRejectedValue(new Error('events endpoint down'));
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    expect(await detail.findByText(/events endpoint down/)).toBeInTheDocument();
+    expect(detail.getByText(t('runs.detail.noLog'))).toBeInTheDocument();
+    expect(detail.queryByText(t('runs.detail.loadingLog'))).toBeNull();
+  });
+
   it('words a worker run ending in the active language (#841)', async () => {
     const gone = makeRun({
       id: 'r1', name: 'long-meow-5', status: 'interrupted', worker_id: 'meow-e2e',
       error: 'worker meow-e2e went away: after reconnecting it did not report this run as still running',
+      execution_facts: { error_reason: { code: 'worker_gone', params: { worker: 'meow-e2e', reason: {
+        code: 'alive_missing', params: {}, text: 'after reconnecting it did not report this run as still running',
+      } } } },
     });
     const ts = '2026-08-01T10:00:00.000000Z';
-    api.getRun.mockResolvedValue({ ...gone, last_cursor: 2 });
+    api.getRun.mockResolvedValue({ ...gone, last_cursor: 3 });
     api.getRunEvents.mockReset();
     api.getRunEvents.mockResolvedValue({
-      run_id: 'r1', status: 'interrupted', active: false, cursor: 2,
+      run_id: 'r1', status: 'interrupted', active: false, cursor: 3,
       events: [
-        { cursor: 1, type: 'run_warning', ts, payload: { detail: 'worker meow-e2e reconnected; the run continues' } },
-        { cursor: 2, type: 'execution_error', ts, payload: { error: 'worker meow-e2e is not connected' } },
+        { cursor: 1, type: 'run_warning', ts, payload: {
+          detail: 'worker meow-e2e reconnected; the run continues',
+          code: 'worker_reconnected', params: { worker: 'meow-e2e' },
+        } },
+        { cursor: 2, type: 'execution_error', ts, payload: {
+          error: 'worker meow-e2e is not connected', code: 'worker_not_connected', params: { worker: 'meow-e2e' },
+        } },
+        // English with no code stays as the server wrote it.
+        { cursor: 3, type: 'run_warning', ts, payload: { detail: 'worker meow-e2e reconnected; the run continues' } },
       ],
     });
     useI18n.setState({ locale: 'zh-TW' });
@@ -791,6 +812,8 @@ describe('RunsPanel — detail view', () => {
     expect(await detail.findByText(t('runs.log.warning', { detail: 'worker meow-e2e 已重新連線；run 繼續執行' })))
       .toBeInTheDocument();
     expect(detail.getByText(t('runs.log.failed', { error: 'worker meow-e2e 未連線' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: 'worker meow-e2e reconnected; the run continues' })))
+      .toBeInTheDocument();
   });
 
   it('renders every lifecycle line of the log tail', async () => {

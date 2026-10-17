@@ -573,7 +573,12 @@ async def test_a_restart_knows_enrolled_workers_and_runs_queue_for_them(
         assert (row["status"], row["error"]) == (
             "failed", "worker gpu-box was removed")
         assert events[-1]["type"] == "execution_error"
-        assert events[-1]["payload"] == {"error": "worker gpu-box was removed"}
+        # The text stays; a code and parameters word it (#841).
+        assert events[-1]["payload"] == {
+            "error": "worker gpu-box was removed", "code": "worker_removed",
+            "params": {"worker": "gpu-box"}}
+        assert row["execution_facts"] == {"error_reason": {
+            "code": "worker_removed", "params": {"worker": "gpu-box"}}}
     finally:
         await service.shutdown()
         await registry.shutdown()
