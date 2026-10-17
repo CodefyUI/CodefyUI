@@ -241,3 +241,83 @@ def test_children_ignore_ctrl_c():
     finally:
         signal.signal(signal.SIGINT, previous)
 
+
+# ── memory budgets (#788) ─────────────────────────────────────────────────
+
+
+class _CappedCuda:
+    """``torch.cuda`` with 16 GiB cards and a record of the caps set."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.caps: list[tuple[float, int]] = []
+        self.fail = fail
+
+    def get_device_properties(self, card):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(total_memory=16 * 1024 ** 3)
+
+    def set_per_process_memory_fraction(self, fraction, card):
+        if self.fail:
+            raise RuntimeError("no CUDA here")
+        self.caps.append((fraction, card))
+
+
+def test_memory_budgets_cap_the_card_before_anything_else(monkeypatch):
+    """The cap is set, and reported FIRST, before the graph runs: the agent
+    sends ``run_started`` on that message."""
+    import sys
+    from types import SimpleNamespace
+
+    from app.core import executors
+
+    cuda = _CappedCuda()
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=cuda, backends=SimpleNamespace()))
+
+    async def _succeeds(self, request):
+        assert cuda.caps == [(0.375, 0)]  # capped before the run
+        return executors.ExecutionOutcome("succeeded")
+
+    monkeypatch.setattr(executors.InProcessExecutor, "run", _succeeds)
+    sent = _run(_spec(h.tensor_graph(), device="cuda:0",
+                      memory_budgets={"cuda:0": 6 * 1024 ** 3}))
+    assert sent[0] == (child.MSG_MEMORY_LIMIT, {"cuda:0": {
+        "budget_bytes": 6 * 1024 ** 3, "total_bytes": 16 * 1024 ** 3,
+        "fraction": 0.375}})
+    assert sent[-1][1]["status"] == "succeeded"
+
+
+def test_a_budget_over_the_card_is_clamped_and_mps_is_capped(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    cuda = _CappedCuda()
+    mps_caps: list[float] = []
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=cuda, mps=SimpleNamespace(
+            recommended_max_memory=lambda: 8 * 1024 ** 3,
+            set_per_process_memory_fraction=mps_caps.append)))
+    applied = child.apply_memory_budgets({"cuda:1": 32 * 1024 ** 3,
+                                          "mps:0": 2 * 1024 ** 3})
+    assert cuda.caps == [(1.0, 1)]
+    assert mps_caps == [0.25]
+    assert applied["cuda:1"]["fraction"] == 1.0
+    assert applied["mps:0"]["total_bytes"] == 8 * 1024 ** 3
+
+
+def test_a_cap_that_cannot_be_set_fails_the_run_before_it_starts(
+        monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=_CappedCuda(fail=True), backends=SimpleNamespace()))
+    sent = _run(_spec(h.tensor_graph(), device="cuda:0",
+                      memory_budgets={"cuda:0": 1024}))
+    assert [message[0] for message in sent] == [child.MSG_FINISHED]
+    assert sent[0][1]["status"] == "failed"
+    assert "could not cap cuda:0's memory" in sent[0][1]["error"]
+    with pytest.raises(RuntimeError, match="cpu has no allocator"):
+        child.apply_memory_budgets({"cpu": 1024})
+

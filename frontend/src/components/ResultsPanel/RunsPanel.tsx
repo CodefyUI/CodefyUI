@@ -16,7 +16,7 @@ import {
 import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
-import { deviceAliasLines, runDevice, runDevices, runWorkerLabel } from '../../utils/runPlacement';
+import { deviceAliasLines, runBudget, runDevice, runDevices, runWorkerLabel } from '../../utils/runPlacement';
 import { LossChart } from './LossChart';
 import { SweepDetail } from './SweepDetail';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -783,6 +783,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             <span role="columnheader" className={styles.colDevice}>
               {t('runs.col.devices')}
             </span>
+            <span role="columnheader" className={styles.colBudget}>
+              {t('runs.col.budget')}
+            </span>
             <span role="columnheader" className={styles.colStarted}>
               {t('runs.col.started')}
             </span>
@@ -807,6 +810,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const expanded = selectedRunId === run.id;
               const toggle = () => void select(expanded ? null : run.id);
               const workerName = runWorkerLabel(run, t);
+              const budget = runBudget(run, t);
               // Why a queued run waits beyond its place in line (#772), or
               // how long a running one has waited for its worker (#783).
               const queueReason = run.status === 'queued'
@@ -861,6 +865,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                           : ` ${t('runs.queuePosition', { position: run.queue_position })}`}
                       </span>
                     )}
+                  </span>
+                  <span className={`${styles.mono} ${styles.colBudget}`} title={budget?.title}>
+                    {budget?.text ?? '-'}
                   </span>
                   <span className={`${styles.mono} ${styles.colStarted}`}>
                     {formatStarted(run.started_at, clock)}

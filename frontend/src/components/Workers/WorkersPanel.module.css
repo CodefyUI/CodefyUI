@@ -237,6 +237,52 @@
   color: var(--text-secondary);
 }
 
+/* ── memory admission (#788) ── */
+
+.policy {
+  padding: 0 var(--sp-1);
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+/* A row of its own under the device's facts. */
+.admission {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  min-width: 0;
+}
+
+.bar {
+  display: flex;
+  flex: 0 1 16em;
+  min-width: 6em;
+  height: 0.6em;
+  overflow: hidden;
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+}
+
+.barUsed {
+  background: var(--text-muted);
+}
+
+.barReserved {
+  background: var(--status-warning);
+}
+
+.barHeadroom {
+  background: var(--status-success);
+  opacity: 0.6;
+}
+
 .runLinks {
   display: inline-flex;
   flex-wrap: wrap;

@@ -84,14 +84,34 @@ A **slot** is one device on one machine. Each slot admits one run at a time on a
 CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 ```
 
-A worker on the same machine shares this server's slot for every card that is physically the same (matched by the card's UUID), so a run on the server and a run on that worker never both take one card under a limit of 1. For such a card the server's limit applies, and a `worker/device` override for it is ignored with a warning. Raising a limit lets runs share a card's memory; nothing checks that they fit. Details: [Run Queue, Configuration](./run-queue#configuration).
+A worker on the same machine shares this server's slot for every card that is physically the same (matched by the card's UUID), so a run on the server and a run on that worker never both take one card under a limit of 1. For such a card the server's limit applies, and a `worker/device` override for it is ignored with a warning. Raising a limit lets runs share a card's memory; nothing checks that they fit. To share a worker's card by memory instead, see [Sharing a card](#sharing-a-card). Details: [Run Queue, Configuration](./run-queue#configuration).
+
+## Sharing a card {/* #sharing-a-card */}
+
+A worker's card admits one run at a time by default (**Exclusive**). To let several runs share it, set the card to **Shared by memory** in the [Workers panel](#the-workers-panel). The choice is stored per worker and card, and survives a reconnect and a restart of the server. Only CUDA and MPS cards can be shared, and only on a worker: a run on this server shares one process with every other run here, so nothing could hold it to a budget.
+
+A run sent to a shared card declares a **memory budget**, in GiB per card of its device set: `target.memory_gib`, or the **Memory budget** field of [Queue on...](#queue-on). The field is filled in with the CUDA peak of the last succeeded run of the same graph on the same number of cards plus 20%, when there is one (a per-card peak of a run on two cards says nothing about the same graph on one; MPS reports no peak, only what the driver holds at the end, so an MPS run declares its budget). A suggestion left as it is is not sent: the server applies the same default and the run's Budget column names the run it came from. With neither, the server refuses the run and asks for a budget. A sweep or a study is checked whole before any of its runs is written, each run with its own `target.wait`: when one of its runs would be refused (no budget, one larger than every card it may use, or one that does not fit now with `wait: false`), the sweep or study is refused.
+
+```json
+{"options": {"target": {"worker": "gpu-box", "devices": ["cuda:0"], "memory_gib": 6}}}
+```
+
+The server keeps a ledger per card: its total and free memory from the worker's heartbeat (free counts every process on the card, other users' jobs included), the budgets of runs assigned but not started (**reserved**), and the budgets of runs that started (**running**). A run on a CUDA card also holds its CUDA context (cuBLAS handles, loaded kernels), which the cap below does not cover, so the server counts each one as its budget plus `CODEFYUI_EXECUTION_CUDA_CONTEXT_MIB` (768 MiB by default; about 650 MiB was measured on a CUDA 12 card). A run fits when that sum is at most `min(free - reserved, total - reserved - running)`, and a refusal names both: `needs 6.0 GiB (+0.8 GiB CUDA context), ...`. The worker caps each run's allocator to its budget (`torch.cuda.set_per_process_memory_fraction`) before the run starts, so a run that outgrows its budget runs out of memory alone and the other runs on the card go on.
+
+When a budget does not fit:
+
+- a run for a named worker is refused at once, with the reason: `needs 12.0 GiB, cuda:1 on gpu-box has 6.3 GiB free (runs a1b2c3d4, c3d4e5f6)`. With `target.wait: true` (**Wait in the queue when it does not fit now** in the dialog) it waits instead;
+- a run for `any` waits until a card has room, unless its budget is larger than every candidate card (refused), or `target.wait` is `false` (refused instead of waiting). A run for the one-shot pool (`target.pool`) is judged the same way, on the one-shot workers' cards;
+- a run waiting for memory says so under its worker in the Runs panel.
+
+A run without a budget never goes to a shared card, and a run on a shared card that holds no budget (a canvas run on a same-host worker's card, or one that started before the card was shared) keeps it to itself until it ends. The Runs panel's **Budget** column shows each run's budget, and the Workers panel draws each shared card's memory: in use, reserved, and what a new budget may take (its CUDA context already taken off). A run that waited for a card while it was Exclusive gets its graph's default budget when the card is set to Shared, or later, when a run of the same graph on the same number of cards succeeds; until then it waits, and the Runs panel says so (cancel it and queue it again with a budget to start it sooner). A run admitted by its budget is never started on an agent that cannot cap it: if the worker reconnected with an older agent in between, the run fails with the reason. A run the server adopts after a restart ([Remote Workers](/usage/remote-workers)) counts its budget on its card again from the start, as running.
 
 ## The Workers panel {/* #the-workers-panel */}
 
 Open it with **Workers** in the Runs panel header, or from **Settings → Execution → Workers → Manage**. It refreshes every 5 seconds while open and shows, for each worker:
 
 - its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Remote Workers, Storage](/usage/remote-workers#storage)) and the age of its last heartbeat;
-- each device with its free and total memory from the latest heartbeat and its slots taken / limit;
+- each device with its free and total memory from the latest heartbeat and its slots taken / limit, and for a CUDA or MPS card how it admits runs (**Exclusive** or **Shared by memory**, [Sharing a card](#sharing-a-card)) with a shared card's memory bar;
 - the runs it is executing, each a link to the run in the Runs panel.
 
 Agents the server refused (another version, for example) and that have no card are listed under **Refused connections** with the reason ([Remote Workers, Keeping workers in sync](/usage/remote-workers#keeping-workers-in-sync)).
@@ -109,7 +129,8 @@ When a run finishes, its detail header shows **Peak memory** for CUDA (the alloc
 ## Limits {/* #limits */}
 
 - **One run does not train across cards.** A device set makes several cards visible to one run, and nodes can be pinned to them by in-run name, but there is no `DistributedDataParallel` strategy yet ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
-- **No memory admission.** Runs are admitted by count per slot; a run is not refused because a card lacks memory, and an over-full card fails with an out-of-memory error ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)). See [Training Memory](/advanced/training-memory).
+- **Memory admission on workers only.** A card on this server is admitted by count per slot: a run is not refused because the card lacks memory, and an over-full card fails with an out-of-memory error. A worker's card can be [shared by memory](#sharing-a-card). See [Training Memory](/advanced/training-memory).
+- **The ledger counts budgets, not what runs use.** A running run is counted at its budget, and free memory comes from the worker's heartbeat (every 10 seconds) for the whole card: memory another user's job takes between two heartbeats is not seen until the next one, and per-run use is not measured.
 - **Plain HTTP between machines.** A remote worker enrolls and connects over whatever the control plane serves; without a TLS proxy or an SSH tunnel its token and run inputs cross the network unencrypted ([Remote Workers, Trust](/usage/remote-workers#trust-between-agent-and-control-plane)).
 - **No captured outputs on a worker** (`record_outputs`, [#789](https://github.com/CodefyUI/CodefyUI/issues/789)), and no persistent weights: every worker run starts fresh.
 - **A long disconnect ends the run.** A worker that loses its connection keeps its runs going for `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes); past that they end `interrupted` ([Remote Workers, When the connection drops](/usage/remote-workers#when-the-connection-drops)).

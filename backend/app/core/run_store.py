@@ -118,6 +118,9 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 WORKER_LOCAL = TARGET_LOCAL
 #: The worker id an ``any`` run carries until it is placed (#772).
 WORKER_ANY = TARGET_ANY
+#: How many of a graph's newest succeeded runs ``last_peak_memory`` reads
+#: for one that reported a peak (#788).
+PEAK_LOOKUP_ROWS = 20
 
 #: SQL: an artifact row that is neither a ``transfer`` row (#785), whose
 #: file retention removes with its run's directory instead, nor an ``s3``
@@ -634,6 +637,7 @@ class RunStore:
         study_attempt_id: str | None = None,
         worker_id: str = WORKER_LOCAL,
         devices: list[str] | None = None,
+        graph_hash: str | None = None,
     ) -> RunRecord:
         """Insert a run and return its row.
 
@@ -660,6 +664,9 @@ class RunStore:
         worker's name, or ``any``) and the REQUESTED ``target.devices``
         list, or None for a run that named a single ``device``.
         ``mark_running`` replaces both with the placement of a worker run.
+
+        *graph_hash* (``memory_admission.graph_hash``, #788) is what
+        :meth:`last_peak_memory` finds the run by.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
@@ -708,6 +715,7 @@ class RunStore:
             record.study_id, record.study_attempt_id,
             record.worker_id,
             None if record.devices is None else _dumps(record.devices),
+            graph_hash,
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
@@ -715,8 +723,8 @@ class RunStore:
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
                 "plugin_pins, sweep_id, sweep_variant, study_id, "
-                "study_attempt_id, worker_id, devices) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "study_attempt_id, worker_id, devices, graph_hash) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
@@ -985,6 +993,31 @@ class RunStore:
                 ).rowcount
 
         return await self.db.run(_update) > 0
+
+    async def last_peak_memory(
+        self, graph_hash: str,
+    ) -> tuple[str, Any] | None:
+        """``(run_id, peak_memory)`` of the newest succeeded run whose
+        ``graph_hash`` column is *graph_hash* and that reported a peak
+        (#788), or None. The default memory budget of a run that declares
+        none (``memory_admission.HistoryBudgetSource``).
+
+        A seek on ``idx_exec_runs_graph_hash``, newest first; only the
+        newest :data:`PEAK_LOOKUP_ROWS` runs of the graph are read, so a
+        graph that never reports a peak (a CPU run) costs a bounded scan."""
+        def _lookup(conn: sqlite3.Connection) -> tuple[str, Any] | None:
+            rows = conn.execute(
+                "SELECT id, json_extract(execution_facts, '$.peak_memory') "
+                "AS peak FROM exec_runs INDEXED BY idx_exec_runs_graph_hash "
+                "WHERE graph_hash = ? AND status = ? "
+                "ORDER BY finished_at DESC LIMIT ?",
+                (graph_hash, STATUS_SUCCEEDED, PEAK_LOOKUP_ROWS)).fetchall()
+            for row in rows:
+                if row["peak"] is not None:
+                    return row["id"], _loads(row["peak"])
+            return None
+
+        return await self.db.run(_lookup)
 
     async def mark_stop_requested(self, run_id: str, reason: str) -> bool:
         """Record that a stop was asked of an active worker run (#793) as

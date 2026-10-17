@@ -188,6 +188,9 @@ class StudyCoordinator:
         #: ``(study id, variant index)``; a child submitted without one (a
         #: study resumed after a restart) has them computed at submit.
         self._needs: dict[tuple[str, int], Any] = {}
+        #: Each child's default memory budget, as ``check_batch_budgets``
+        #: derived it at creation (#788), in memory like ``_needs``.
+        self._budgets: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
         #: Studies :meth:`recover` left active because a child was adopted
@@ -251,6 +254,7 @@ class StudyCoordinator:
                 await asyncio.gather(*still, return_exceptions=True)
         self._secrets.clear()
         self._needs.clear()
+        self._budgets.clear()
 
     # ── submission ───────────────────────────────────────────────────────
 
@@ -287,8 +291,12 @@ class StudyCoordinator:
         # Every child inherits options.target; refuse what the run service
         # would refuse for any of them (a worker it has never seen, a device
         # nobody offers, record_outputs on a worker) before any row exists.
+        variant_graphs = [graph for _label, _ops, graph in spec.variants]
         variant_needs = self.service.check_placeable_batch(
-            (graph for _label, _ops, graph in spec.variants), spec.options)
+            variant_graphs, spec.options)
+        # A child a shared card's memory admission would refuse (#788).
+        variant_budgets = await self.service.check_batch_budgets(
+            variant_graphs, spec.options)
         study, created = await self.store.create_study(
             name=spec.name, objective=spec.objective,
             repetitions=spec.repetitions, seed=spec.seed,
@@ -304,6 +312,9 @@ class StudyCoordinator:
                     self._secrets[(study.id, index)] = vault
             for index, needs in enumerate(variant_needs):
                 self._needs[(study.id, index)] = needs
+            for index, budget in enumerate(variant_budgets):
+                if budget is not None:
+                    self._budgets[(study.id, index)] = budget
             self._notify(study.id)
             study = await self.tick(study.id) or study
         return study, created
@@ -458,7 +469,9 @@ class StudyCoordinator:
                 run_id=run_id, study_id=study.id,
                 study_attempt_id=attempt.id,
                 needs=self._needs.get((study.id, attempt.variant_index),
-                                      NEEDS_UNKNOWN))
+                                      NEEDS_UNKNOWN),
+                memory_budget=self._budgets.get(
+                    (study.id, attempt.variant_index)))
         except RunSubmitError as exc:
             await self.store.mark_lost(
                 attempt.id, f"the run service refused the child: {exc}")

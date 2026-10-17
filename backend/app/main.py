@@ -417,6 +417,8 @@ async def _lifespan_body(app: FastAPI):
     worker_store = WorkerStore(db)
     app.state.worker_store = worker_store
     worker_registry.load_known(await worker_store.list_workers())
+    # How each worker card admits runs (#788); no row: exclusive.
+    worker_registry.load_policies(await worker_store.list_device_policies())
     run_service = RunService(
         RunStore(db),
         output_store=app.state.run_output_store,

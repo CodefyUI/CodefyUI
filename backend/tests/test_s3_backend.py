@@ -884,7 +884,7 @@ def test_migration_014_adds_a_nullable_bucket_column(tmp_path):
 
     from app.core.migrations import MIGRATION_014, MIGRATIONS, iter_statements
 
-    assert MIGRATIONS[-1] is MIGRATION_014
+    assert MIGRATIONS[13] is MIGRATION_014  # 015 (#788) follows it
     conn = sqlite3.connect(tmp_path / "bare.db")
     conn.execute("CREATE TABLE exec_run_artifacts (id INTEGER PRIMARY KEY, "
                  "path TEXT, mount_label TEXT)")

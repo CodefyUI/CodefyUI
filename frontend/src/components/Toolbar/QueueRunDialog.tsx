@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { submitRun } from '../../api/rest';
+import { estimateMemory, submitRun, type MemoryEstimate } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
@@ -8,7 +8,9 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
+import { formatGiB } from '../../utils/formatGiB';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
+import { TARGET_ANY, estimateOptions, parseMemoryGib, usesSharedDevice } from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
 import styles from './QueueRunDialog.module.css';
 
@@ -83,6 +85,45 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   const choice = useRunTargetChoice(graphDevice);
   const isWorker = choice.isWorker;
 
+  // Memory admission (#788): a budget matters only where the run may land
+  // on a device shared by memory. The suggestion is looked up when that is
+  // so, again whenever the device kind or count changes (the history is
+  // kept per both), and fills the field until the user types in it.
+  const shared = usesSharedDevice(choice.target, choice.worker, choice.selected, choice.online, choice.kind);
+  const [memoryText, setMemoryText] = useState<string | null>(null);
+  const [wait, setWait] = useState(false);
+  const [estimate, setEstimate] = useState<MemoryEstimate | 'loading' | null>(null);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const shape = estimateOptions(choice.target, choice.selected, choice.kind);
+  const shapeKey = `${shape.device.split(':')[0]} x${shape.target.devices?.length ?? 1}`;
+  const shapeJson = JSON.stringify(shape);
+  const [estimatedFor, setEstimatedFor] = useState<string | null>(null);
+  // The answer for the shape asked last wins; an earlier one landing late
+  // is dropped.
+  const askedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!shared || estimatedFor === shapeKey) return;
+    setEstimatedFor(shapeKey);
+    setEstimate('loading');
+    setEstimateError(null);
+    askedFor.current = shapeKey;
+    // Without secrets: the estimate needs what the graph computes, never a
+    // session key (the server scrubs them anyway).
+    const graph = useTabStore.getState().getSerializedGraph();
+    estimateMemory(graph, JSON.parse(shapeJson)).then(
+      (result) => {
+        if (askedFor.current === shapeKey) setEstimate(result);
+      },
+      (err: unknown) => {
+        if (askedFor.current !== shapeKey) return;
+        setEstimate({ suggested_gib: null, source: null, peak_bytes: null, from_run: null });
+        setEstimateError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  }, [shared, shapeKey, shapeJson, estimatedFor]);
+  const suggested = estimate !== null && estimate !== 'loading' ? estimate : null;
+  const memoryValue = memoryText ?? (suggested?.suggested_gib == null ? '' : String(suggested.suggested_gib));
+
   const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -111,16 +152,29 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       setError(t('queueRun.error.seed'));
       return;
     }
+    const memoryGib = shared ? parseMemoryGib(memoryValue) : null;
+    if (memoryGib === undefined) {
+      setError(t('queueRun.error.memory'));
+      return;
+    }
     // No device: the picker says so beside the devices.
     const resolved = choice.resolve();
     if (resolved === null) return;
+    // The suggestion left as it is goes unsaid: the server derives the same
+    // default and keeps where it came from (the run it was measured on).
+    const declared = memoryText !== null ? memoryGib : null;
+    const target = {
+      ...resolved.target,
+      ...(declared !== null ? { memory_gib: declared } : {}),
+      ...(shared && wait && choice.target !== TARGET_ANY ? { wait: true } : {}),
+    };
     const store = useTabStore.getState();
     // The run needs the session key in memory, as a sweep's children do:
     // RunService removes it before persisting the snapshot.
     const graph = store.getSerializedGraph({ keepSecrets: true });
     const active = store.getActiveTab();
     const options = {
-      target: resolved.target,
+      target,
       device: resolved.device,
       record_outputs: !isWorker && recordOutputs,
       verbose: active.verboseMode,
@@ -181,6 +235,35 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
 
           <div className={styles.body}>
             <TargetSelector choice={choice} selectRef={firstRef} />
+
+            {shared && (
+              <div className={styles.memory}>
+                <label className={styles.field}>
+                  {t('queueRun.memory')}
+                  <input
+                    inputMode="decimal"
+                    value={memoryValue}
+                    onChange={(event) => setMemoryText(event.target.value)}
+                  />
+                </label>
+                <p className={styles.hint} aria-live="polite">
+                  {estimate === 'loading'
+                    ? t('queueRun.memory.loading')
+                    : estimateError !== null
+                      ? t('queueRun.memory.estimateFailed', { error: estimateError })
+                      : suggested?.peak_bytes != null
+                        ? t('queueRun.memory.suggested', { peak: formatGiB(suggested.peak_bytes) })
+                        : t('queueRun.memory.none')}
+                </p>
+                <p className={styles.hint}>{t('queueRun.memory.hint')}</p>
+                {choice.target !== TARGET_ANY && (
+                  <label className={styles.check}>
+                    <input type="checkbox" checked={wait} onChange={(event) => setWait(event.target.checked)} />
+                    {t('queueRun.memory.wait')}
+                  </label>
+                )}
+              </div>
+            )}
 
             <div className={styles.pair}>
               <label className={styles.field}>

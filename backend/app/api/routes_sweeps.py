@@ -464,8 +464,12 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
         # sweep. The service checks each distinct `settings` once; the
         # variants of one sweep share the base graph's. Each variant's
         # storage needs (#782) come back in order and go to its submit.
-        variant_needs = service.check_placeable_batch(
-            (variant.graph for variant in compiled.variants), options)
+        variant_graphs = [variant.graph for variant in compiled.variants]
+        variant_needs = service.check_placeable_batch(variant_graphs, options)
+        # And a child the memory admission of a shared card would refuse
+        # (#788), with each child's budget as its submit derives it.
+        variant_budgets = await service.check_batch_budgets(variant_graphs,
+                                                            options)
     except (RunSubmitError, SweepCompileError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RunServiceUnavailable as exc:
@@ -527,7 +531,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                     name=_variant_run_name(name, variant.index),
                     provenance=provenance, sweep_id=sweep.id,
                     sweep_variant=variant.index,
-                    needs=variant_needs[position])
+                    needs=variant_needs[position],
+                    memory_budget=variant_budgets[position])
                 # Patched once per variant, not once at the end: a single
                 # patch at the end would lose every id if the loop broke
                 # half-way, which is precisely the case RULING 2 says must

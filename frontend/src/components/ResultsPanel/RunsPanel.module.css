@@ -111,6 +111,7 @@
     84px                  /* status chip */
     minmax(70px, 120px)   /* worker (+ why it waits) */
     minmax(70px, 150px)   /* devices + queue position */
+    64px                  /* memory budget (#788) */
     68px                  /* started */
     72px                  /* duration */
     80px                  /* final loss */
@@ -500,7 +501,9 @@
       minmax(80px, 200px) 84px minmax(60px, 100px) minmax(70px, 130px) 68px 76px minmax(120px, 1fr);
   }
 
-  .colStarted {
+  /* The memory budget (#788) goes first, with `started`. */
+  .colStarted,
+  .colBudget {
     display: none;
   }
 }

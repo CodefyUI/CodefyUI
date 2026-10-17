@@ -422,6 +422,16 @@ class WorkerRegistry:
             = None
         self._clock = clock
         self._workers: dict[str, Worker] = {}
+        #: ``(worker id, canonical device)`` -> ``shared`` (#788); a pair
+        #: with no entry is ``exclusive``. Kept by name, apart from the
+        #: ``Worker`` objects, so a reconnect (which builds a new one) and a
+        #: same-host worker known only in memory both keep theirs.
+        self._policies: dict[tuple[str, str], str] = {}
+        #: ``worker id -> bool``: whether a waiting run with a memory budget
+        #: may go to that worker (#788). Set by ``RunService``; a heartbeat
+        #: with new memory figures reschedules only when it says so. None
+        #: (no run service): every such heartbeat reschedules.
+        self.memory_waiting: Callable[[str], bool] | None = None
         #: Name -> an unlisted, offline placeholder holding the runs adopted
         #: after a restart for a worker not known here yet (#793).
         self._adopted: dict[str, Worker] = {}
@@ -579,6 +589,57 @@ class WorkerRegistry:
                     "matches no card of this server; it keeps a slot of "
                     "its own", worker.name, value, report.uuid or "unknown")
         return shared
+
+    # ── device admission policies (#788) ─────────────────────────────────
+
+    def load_policies(self, rows: Any) -> None:
+        """Load stored ``(worker, device, policy)`` rows
+        (``WorkerStore.list_device_policies``). An unknown policy or a
+        device this side cannot parse is skipped (logged)."""
+        from .memory_admission import POLICIES
+
+        for worker_id, device, policy in rows:
+            canonical = _canonical_or_none(device)
+            if canonical is None or policy not in POLICIES:
+                logger.warning("ignoring stored policy %r for %s on %s",
+                               policy, device, worker_id)
+                continue
+            self._policies[(worker_id, canonical)] = policy
+
+    def device_policy(self, worker_id: str, device: str) -> str:
+        """``exclusive`` (the default) or ``shared`` for *worker_id*'s
+        *device*, as that worker numbers it."""
+        from .memory_admission import POLICY_EXCLUSIVE
+
+        canonical = _canonical_or_none(device)
+        if canonical is None:
+            return POLICY_EXCLUSIVE
+        return self._policies.get((worker_id, canonical), POLICY_EXCLUSIVE)
+
+    def set_device_policy(self, worker_id: str, device: str,
+                          policy: str) -> None:
+        """Set a policy (the caller stored it) and reschedule: a card that
+        became shared may take waiting runs now."""
+        from .memory_admission import POLICY_EXCLUSIVE
+
+        canonical = wp.canonical_device(device)
+        if policy == POLICY_EXCLUSIVE:
+            self._policies.pop((worker_id, canonical), None)
+        else:
+            self._policies[(worker_id, canonical)] = policy
+        logger.info("worker %s: %s is now %s", worker_id, canonical, policy)
+        self._changed()
+
+    def _shares_by_memory(self, worker: Worker) -> bool:
+        """Whether one of *worker*'s cards is set to ``shared``."""
+        from .memory_admission import POLICY_SHARED
+
+        return any(key[0] == worker.id and policy == POLICY_SHARED
+                   for key, policy in self._policies.items())
+
+    def forget_policies(self, worker_id: str) -> None:
+        for key in [k for k in self._policies if k[0] == worker_id]:
+            del self._policies[key]
 
     # ── change notification ───────────────────────────────────────────────
 
@@ -839,7 +900,12 @@ class WorkerRegistry:
                 worker.shared = self._shared_devices(worker)
                 # A device appearing (or a card changing its slot) is
                 # capacity a waiting run may now take. Memory figures
-                # change on every heartbeat and are not.
+                # change on every heartbeat and are not, except on a card
+                # shared by memory (#788): there free memory IS capacity.
+                self._changed()
+            elif self._shares_by_memory(worker) and (
+                    self.memory_waiting is None
+                    or self.memory_waiting(worker.id)):
                 self._changed()
         if frame.mounts is not None and frame.mounts != worker.mounts:
             # A share that appeared (or went away) on the worker (#782):

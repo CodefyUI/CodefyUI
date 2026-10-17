@@ -631,6 +631,25 @@ class _S3Run:
     renewed: bool = False
 
 
+def _with_budget_note(outcome: ExecutionOutcome,
+                      placement: Any) -> ExecutionOutcome:
+    """A failed run that ran out of memory under a budget (#788) says so:
+    the cap is the run's own, set from ``target.memory_gib``, and raising
+    it is the fix the generic advice does not mention."""
+    budget = getattr(placement, "memory_budget", None)
+    error = outcome.error
+    if outcome.status != STATUS_FAILED or not budget or not error \
+            or "out of memory" not in error.lower():
+        return outcome
+    from .memory_admission import format_gib
+
+    devices = ", ".join(getattr(placement, "budget_devices", ()) or ())
+    return replace(outcome, error=(
+        f"{error}\n\nThis run was capped to its memory budget of "
+        f"{format_gib(budget)} on {devices} (target.memory_gib): raise the "
+        "budget, or make the run need less."))
+
+
 class WorkerExecutor:
     """Execute the graph on a worker agent (#771) over ``/ws/worker``.
 
@@ -692,8 +711,13 @@ class WorkerExecutor:
     """
 
     def __init__(self, registry: "WorkerRegistry",
-                 content_index: Any = None) -> None:
+                 content_index: Any = None,
+                 on_started: Callable[[str], Any] | None = None) -> None:
         self._registry = registry
+        #: Called with the run id on its ``run_started`` (#788): a run
+        #: admitted by memory has its cap in place, so the ledger moves its
+        #: budget from reserved to running.
+        self._on_started = on_started
         #: ``core.transfer.ContentIndex``: the inputs' hashes for a run
         #: that uses the transfer backend (#785). None: no such run is
         #: assigned (it fails with a message instead).
@@ -729,6 +753,17 @@ class WorkerExecutor:
         refusal = await self._catalog_refusal(request, worker)
         if refusal is not None:
             return ExecutionOutcome(STATUS_FAILED, refusal)
+        if placement.memory_budget and wp.CAPABILITY_MEMORY_BUDGET not in (
+                getattr(worker, "capabilities", None) or ()):
+            # Admitted to a shared card by its budget, but the worker that is
+            # connected now (an older agent that reconnected) cannot cap it:
+            # never run it uncapped beside the card's other runs (#788).
+            return ExecutionOutcome(STATUS_FAILED, (
+                f"worker {worker_id} no longer enforces memory budgets (its "
+                f"agent reconnected without the memory_budget capability), so "
+                f"this run, admitted to a shared card by its budget, was not "
+                f"started; update the agent, or set the card to Exclusive, "
+                f"and queue the run again"))
         devices = list(placement.devices)
         storage = assignment_storage(worker)
         backend = storage_backend(worker, request.needs)
@@ -770,7 +805,10 @@ class WorkerExecutor:
         assign = wp.Assign(
             run_id=request.run_id, graph=request.graph,
             options=request.options, device=devices[0],
-            devices=devices, storage=storage)
+            devices=devices, storage=storage,
+            memory_budgets=({device: placement.memory_budget
+                             for device in placement.budget_devices}
+                            if placement.memory_budget else {}))
         return await self._serve(request, worker_id, run, devices,
                                  assign=(worker, assign),
                                  s3_input_keys=input_keys)
@@ -870,7 +908,7 @@ class WorkerExecutor:
                 if outcome is not None:
                     finished = True
                     await acks.flush()
-                    return outcome
+                    return _with_budget_note(outcome, request.placement)
                 if acks.recorded - acks.acked >= ACK_EVERY:
                     await acks.flush()
         except asyncio.CancelledError:
@@ -1071,6 +1109,8 @@ class WorkerExecutor:
 
         sinks = request.sinks
         if isinstance(frame, wp.RunStarted):
+            if self._on_started is not None:
+                self._on_started(request.run_id)
             if frame.execution_facts and sinks.record_execution_facts:
                 try:
                     await sinks.record_execution_facts(frame.execution_facts)

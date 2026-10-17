@@ -8,8 +8,12 @@ import {
   targetableWorkers,
   defaultKind,
   deviceKind,
+  estimateOptions,
   localDeviceChoices,
+  parseMemoryGib,
   toggleDevice,
+  usesSharedDevice,
+  TARGET_ONE_SHOT,
   workerDeviceChoices,
   type DeviceChoice,
 } from './queueTargets';
@@ -119,5 +123,53 @@ describe('anyKinds / defaultKind', () => {
     expect(defaultKind(['cpu', 'cuda'], 'cuda:1')).toBe('cuda');
     expect(defaultKind(['cpu', 'cuda'], 'auto')).toBe('cuda');
     expect(defaultKind(['cpu'], 'mps')).toBe('cpu');
+  });
+
+  it('knows when a run may land on a device shared by memory (#788)', () => {
+    const box = worker('box', 'online', [['cuda:0', 'cuda'], ['cuda:1', 'cuda']]);
+    box.memory_budget = true;
+    box.devices[1].policy = 'shared';
+    const old = worker('old', 'online', [['cuda:0', 'cuda']]);
+    old.devices[0].policy = 'shared';
+    expect(usesSharedDevice('box', box, ['cuda:1'], [box], 'cuda')).toBe(true);
+    expect(usesSharedDevice('box', box, ['cuda:0'], [box], 'cuda')).toBe(false);
+    expect(usesSharedDevice('old', old, ['cuda:0'], [old], 'cuda')).toBe(false);
+    expect(usesSharedDevice('local', null, ['cuda:0'], [box], 'cuda')).toBe(false);
+    expect(usesSharedDevice('any', null, [], [old, box], 'cuda')).toBe(true);
+    expect(usesSharedDevice('any', null, [], [box], 'cpu')).toBe(false);
+  });
+
+  it('asks for a budget for the one-shot pool only where a one-shot worker shares the kind (#788, #790)', () => {
+    const shared = (name: string, oneShot: boolean) => {
+      const w = worker(name, 'online', [['cuda:0', 'cuda']]);
+      w.memory_budget = true;
+      w.devices[0].policy = 'shared';
+      return oneShot ? { ...w, one_shot: { run_id: null, took: null } } : w;
+    };
+    const job = shared('job', true);
+    const box = shared('box', false);
+    expect(usesSharedDevice(TARGET_ONE_SHOT, null, [], [job], 'cuda')).toBe(true);
+    expect(usesSharedDevice(TARGET_ONE_SHOT, null, [], [box], 'cuda')).toBe(false);
+    // `any` never lands on a one-shot worker.
+    expect(usesSharedDevice('any', null, [], [job], 'cuda')).toBe(false);
+  });
+
+  it('says what the memory history is kept by: device kind and count (#788)', () => {
+    expect(estimateOptions('box', ['cuda:1', 'cuda:0'], 'cuda')).toEqual({
+      device: 'cuda:1', target: { devices: ['cuda:1', 'cuda:0'] },
+    });
+    expect(estimateOptions('any', [], 'cuda')).toEqual({ device: 'cuda', target: { devices: null } });
+    expect(estimateOptions(TARGET_ONE_SHOT, ['cuda:0'], 'mps')).toEqual({ device: 'mps', target: { devices: null } });
+    expect(estimateOptions('box', [], 'cpu')).toEqual({ device: 'cpu', target: { devices: null } });
+  });
+
+  it('reads a memory budget field (#788)', () => {
+    expect(parseMemoryGib('  ')).toBeNull();
+    expect(parseMemoryGib('6')).toBe(6);
+    expect(parseMemoryGib('2.5')).toBe(2.5);
+    expect(parseMemoryGib('.5')).toBe(0.5);
+    for (const bad of ['0', '-1', '1e3', 'abc', '4097', '1.2.3']) {
+      expect(parseMemoryGib(bad)).toBeUndefined();
+    }
   });
 });
