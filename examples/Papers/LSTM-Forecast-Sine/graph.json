@@ -183,7 +183,7 @@
       },
       "data": {
         "params": {
-          "code": "import torch\n\ndef run(inputs, params):\n    # The first 150 held-out steps: the noisy truth and the LSTM's forecast.\n    pred, truth = inputs[\"in1\"].reshape(-1)[:150], inputs[\"in2\"].reshape(-1)[:150]\n    steps = torch.arange(150, dtype=torch.float32)\n    points = torch.cat([torch.stack([steps, truth], 1), torch.stack([steps, pred], 1)])\n    return {\"out1\": points, \"out2\": [\"truth\"] * 150 + [\"LSTM forecast\"] * 150}\n",
+          "code": "import torch\n\ndef run(inputs, params):\n    # The first 150 held-out steps: the noisy truth and the LSTM's forecast.\n    pred, truth = inputs[\"in1\"].reshape(-1)[:150], inputs[\"in2\"].reshape(-1)[:150]\n    # The inputs arrive on the run's device (a GPU, say); `device` names it,\n    # so the step numbers are made there too.\n    steps = torch.arange(150, dtype=torch.float32, device=device)\n    points = torch.cat([torch.stack([steps, truth], 1), torch.stack([steps, pred], 1)])\n    return {\"out1\": points, \"out2\": [\"truth\"] * 150 + [\"LSTM forecast\"] * 150}\n",
           "input_ports": 2,
           "output_ports": 2,
           "input_types": "TENSOR,TENSOR",

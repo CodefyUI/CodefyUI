@@ -237,7 +237,7 @@
       },
       "data": {
         "params": {
-          "code": "import torch\n\ndef run(inputs, params):\n    # One chart: the training points, the clean curve, and both fits.\n    x, y = inputs[\"in1\"].reshape(-1), inputs[\"in2\"].reshape(-1)\n    grid = torch.linspace(-1, 1, 200)\n    series = [(\"training data\", x, y), (\"clean sin(3x)\", grid, inputs[\"in3\"].reshape(-1)),\n              (\"weight_decay 0\", grid, inputs[\"in4\"].reshape(-1)),\n              (\"weight_decay 0.5\", grid, inputs[\"in5\"].reshape(-1))]\n    points, labels = [], []\n    for name, xs, ys in series:\n        points.append(torch.stack([xs, ys], 1))\n        labels += [name] * len(xs)\n    return {\"out1\": torch.cat(points), \"out2\": labels}\n",
+          "code": "import torch\n\ndef run(inputs, params):\n    # One chart: the training points, the clean curve, and both fits.\n    x, y = inputs[\"in1\"].reshape(-1), inputs[\"in2\"].reshape(-1)\n    # The inputs arrive on the run's device (a GPU, say); `device` names it,\n    # so the grid is made there too and every series stacks together.\n    grid = torch.linspace(-1, 1, 200, device=device)\n    series = [(\"training data\", x, y), (\"clean sin(3x)\", grid, inputs[\"in3\"].reshape(-1)),\n              (\"weight_decay 0\", grid, inputs[\"in4\"].reshape(-1)),\n              (\"weight_decay 0.5\", grid, inputs[\"in5\"].reshape(-1))]\n    points, labels = [], []\n    for name, xs, ys in series:\n        points.append(torch.stack([xs, ys], 1))\n        labels += [name] * len(xs)\n    return {\"out1\": torch.cat(points), \"out2\": labels}\n",
           "input_ports": 5,
           "output_ports": 2,
           "input_types": "TENSOR,TENSOR,TENSOR,TENSOR,TENSOR",
