@@ -24,6 +24,22 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **One-shot workers for SLURM jobs and ssh commands.** `cdui agent start
+  --one-shot` takes exactly one run, reports it and exits with a code a job
+  script can read (`0` succeeded, `1` failed, cancelled or interrupted, `2`
+  refused, `3` stopped before a run arrived, `4` could not start); `--run-id` takes one specific
+  run. **Any available** never sends a run to a one-shot worker: a run
+  reaches one by naming it or through the new one-shot pool
+  (`"target": {"pool": "one-shot"}`, **Queue on... → A one-shot worker**),
+  where it waits for one to appear and fails after
+  `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` (24 hours). The Workers panel
+  badges one-shot workers and links the run each took; a one-shot worker
+  that left after its run reads **Offline**. A run on any worker started
+  under a batch system's `CUDA_VISIBLE_DEVICES` now gets the card the
+  system allocated instead of the card with the same index. The guide's new
+  section has an `sbatch` script
+  (`docs/docs/usage/remote-workers.md#one-shot-workers`). [#790]
+
 - **A restarted control plane takes over the runs still executing on its
   workers ([#793]).** A control plane killed or crashed mid-run used to mark
   every worker run `interrupted` at its next start, although the run kept
@@ -6277,5 +6293,6 @@ Release candidates before 1.0.0 are on the
 [#784]: https://github.com/CodefyUI/CodefyUI/issues/784
 [#785]: https://github.com/CodefyUI/CodefyUI/issues/785
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
+[#790]: https://github.com/CodefyUI/CodefyUI/issues/790
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764

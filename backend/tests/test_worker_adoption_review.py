@@ -27,6 +27,13 @@ from .test_worker_adoption import _start_and_crash, db  # noqa: F401
 from .test_ws_worker_resume import SpoolingAgent, _drain_acks
 from .test_ws_worker import FakeAgent, _client, _graph, _path, _terminal, _until
 
+async def _nothing(agent: Any) -> None:
+    """No assign (or other control frame) arrives within half a second."""
+    with pytest.raises(asyncio.TimeoutError):
+        frame = await agent.recv(0.5)
+        raise AssertionError(f"unexpected {frame!r}")
+
+
 RESUME = {WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}}
 
 
@@ -225,3 +232,52 @@ async def test_an_artifact_replayed_after_a_restart_is_one_row(
     assert record.status == "succeeded"
     rows = await second.service.store.list_artifacts(run_id)
     assert sorted(r.meta["epoch"] for r in rows) == [1, 2]
+
+
+async def test_a_one_shot_agents_run_is_adopted_and_its_claim_kept(
+        db, tmp_path):  # noqa: F811
+    """#790 x #793: a one-shot worker's run survives a restart of this
+    server like any worker run, and the claim the agent restores with
+    ``hello.one_shot_taken`` keeps a second run off it."""
+    first = db()
+    one_shot = {"one_shot": True, "instance_id": "inst-1"}
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello(**one_shot)
+            run_id = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+            ).json()["run_id"]
+            assert isinstance(await agent.recv(), wp.Assign)
+            spooler = SpoolingAgent(tmp_path, run_id)
+            spooler.agent = agent
+            await spooler.produce(spooler.frame("started"))
+            await _drain_acks(spooler, 1)
+        spooler.agent = None
+        await _until(lambda: first.registry.get("box").status
+                     == "disconnected")
+        await first.crash()
+
+        second = db()
+        await second.service.recover_interrupted()
+        assert second.service.is_active(run_id)
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello(**one_shot, one_shot_taken=run_id)
+            await spooler.resume(agent)
+            await _until(lambda: second.service.worker_status(run_id)[
+                "state"] == "connected")
+            worker = second.registry.get("box")
+            assert (worker.one_shot, worker.one_shot_claim,
+                    worker.one_shot_assigned) == (True, run_id, True)
+            other = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+            ).json()["run_id"]
+            # No second run is handed to a one-shot agent that took one.
+            await _nothing(agent)
+            assert second.service.is_queued(other)
+            await spooler.produce(spooler.frame("finished"))
+            record = await _terminal(second.service, run_id)
+            assert record.status == "succeeded"
+            await _nothing(agent)
+            assert second.service.is_queued(other)

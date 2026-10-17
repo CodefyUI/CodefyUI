@@ -257,6 +257,7 @@ describe('QueueRunDialog: workers', () => {
       'busy-box (Draining): cpu, cuda:0, cuda:1, cuda:2',
       'cold-box (Offline): cpu, cuda:0, cuda:1, cuda:2',
       'Any available',
+      'A one-shot worker (cdui agent start --one-shot)',
     ]);
     expect(options[3]).toBeDisabled();
     expect(screen.queryByText(/is offline/)).toBeNull();
@@ -369,6 +370,33 @@ describe('QueueRunDialog: any available', () => {
     fireEvent.click(group.getByRole('radio', { name: 'CPU' }));
     await submit();
     expect(sentRequest().options).toMatchObject({ target: { worker: 'any' }, device: 'cpu', record_outputs: false });
+  });
+});
+
+describe('QueueRunDialog: a one-shot worker (#790)', () => {
+  it('sends the run to the one-shot pool with any device kind, and explains the wait', async () => {
+    // An offline enrolled worker is enough: the pool waits for one to appear.
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'cold-box', status: 'offline' })]);
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    expect(within(targetSelect()).queryByRole('option', { name: 'Any available' })).toBeNull();
+    fireEvent.change(targetSelect(), { target: { value: 'pool:one-shot' } });
+    const group = within(screen.getByRole('group', { name: 'Devices' }));
+    expect(group.getAllByRole('radio').map((r) => r.closest('label')!.textContent)).toEqual([
+      'CPU', 'CUDA GPU', 'Apple MPS',
+    ]);
+    expect(group.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
+    expect(screen.getByText(/waits for a one-shot worker with a device of this kind/)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Record node outputs' })).toBeDisabled();
+    await submit();
+    expect(sentRequest().options).toMatchObject({
+      target: { worker: 'any', pool: 'one-shot' }, device: 'cuda', record_outputs: false,
+    });
+  });
+
+  it('is not offered on a server without workers', async () => {
+    await open();
+    expect(within(targetSelect()).queryByRole('option', { name: /one-shot/ })).toBeNull();
   });
 });
 

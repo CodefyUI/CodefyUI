@@ -131,7 +131,31 @@ def identity_refusal(hello: wp.Hello, *, credential: str,
     if existing.online and existing.credential not in (None, credential):
         return (f"a worker named {hello.name!r} is connected with another "
                 "kind of credential; stop it first")
-    return None
+    return one_shot_refusal(hello, existing)
+
+
+def one_shot_refusal(hello: wp.Hello, existing: Any) -> str | None:
+    """Why *hello* may not take over *existing*'s name because one of the
+    two is a one-shot agent (#790), or None.
+
+    A regular worker's reconnect replaces the old connection, and its runs
+    move over. Between two DIFFERENT agent processes (``instance_id``) that
+    would hand one agent's run to another that does not have it, which then
+    ends ``interrupted``: two batch jobs started with the same credential.
+    So while the name is connected, or still has runs in flight, only the
+    same agent may take it back.
+    """
+    if not (hello.one_shot or getattr(existing, "one_shot", False)):
+        return None
+    if not (existing.online or existing.running):
+        return None
+    if hello.instance_id is not None \
+            and hello.instance_id == getattr(existing, "instance_id", None):
+        return None
+    state = "connected" if existing.online else "its run is in flight"
+    return (f"worker {hello.name!r} is busy: another agent holds the name "
+            f"({state}). One one-shot agent per worker name at a time; give "
+            "each concurrent job its own name (--name) and user data dir")
 
 
 # ── the node catalog ──────────────────────────────────────────────────────

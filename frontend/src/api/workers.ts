@@ -102,6 +102,18 @@ export interface WorkerInfo {
   node_catalog?: WorkerNodeCatalog;
   /** Why `status` reads `degraded`: `node_catalog`, `heartbeat` (#781). */
   degraded_reasons?: string[];
+  /**
+   * A `cdui agent start --one-shot` worker (#790): `run_id` is the one run
+   * it takes (`--run-id`), `took` the run it took. `null` (or absent) for a
+   * regular worker.
+   */
+  one_shot?: WorkerOneShot | null;
+}
+
+/** {@link WorkerInfo.one_shot}. */
+export interface WorkerOneShot {
+  run_id: string | null;
+  took: string | null;
 }
 
 /** `GET /api/workers`: the workers and each name's last refused handshake. */

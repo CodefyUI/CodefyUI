@@ -30,11 +30,14 @@ export function runWorker(run: RunPlacement): string {
 }
 
 /** {@link runWorker} as the Worker cell shows it: `local` and `any` in the
- * active language, a worker by its name. */
+ * active language (`any` in the one-shot pool, #790, as the pool), a worker
+ * by its name. */
 export function runWorkerLabel(run: RunPlacement, t: Translate): string {
   const worker = runWorker(run);
   if (worker === 'local') return t('runs.worker.local');
-  return worker === 'any' ? t('runs.worker.any') : worker;
+  if (worker !== 'any') return worker;
+  const target = run.options?.target as { pool?: unknown } | null | undefined;
+  return target?.pool === 'one-shot' ? t('runs.worker.oneShot') : t('runs.worker.any');
 }
 
 /**
