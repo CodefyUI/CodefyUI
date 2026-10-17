@@ -590,11 +590,39 @@ CREATE TABLE file_hashes (
 );
 """
 
+# ── Migration 014: per-device admission policy (#788) ─────────────────────
+#
+# How a worker's card admits runs: ``exclusive`` (the count limit, one run
+# per card, as before) or ``shared`` (memory admission: runs declare a
+# budget and share the card while their budgets fit). Keyed by worker NAME
+# and device as that worker numbers it (``cuda:1``), so it applies to a
+# same-host worker known only in memory as well as to an enrolled one, and
+# survives both a reconnect and a restart of this server. No row:
+# ``exclusive``. Revoking a worker deletes its rows.
+MIGRATION_014 = """
+CREATE TABLE worker_device_policies (
+  worker      TEXT NOT NULL,                -- the worker name
+  device      TEXT NOT NULL,                -- canonical, the worker's numbering
+  policy      TEXT NOT NULL,                -- 'exclusive' | 'shared'
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (worker, device)
+);
+
+-- The graph a run executed, as memory_admission.graph_hash gives it, for a
+-- run that targets a worker (#788). The default memory budget of a run that
+-- declares none is the last peak of a succeeded run of the same graph; the
+-- index makes that lookup a seek, newest first.
+ALTER TABLE exec_runs ADD COLUMN graph_hash TEXT;
+CREATE INDEX idx_exec_runs_graph_hash
+  ON exec_runs(graph_hash, status, finished_at)
+  WHERE graph_hash IS NOT NULL;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
-                         MIGRATION_012, MIGRATION_013]
+                         MIGRATION_012, MIGRATION_013, MIGRATION_014]
 
 
 def _is_comment_only(statement: str) -> bool:

@@ -17,7 +17,7 @@ import { renderSettled, settle } from '../../test/utils';
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof rest>();
-  return { ...actual, submitRun: vi.fn(), fetchDevices: vi.fn() };
+  return { ...actual, submitRun: vi.fn(), fetchDevices: vi.fn(), estimateMemory: vi.fn() };
 });
 
 vi.mock('../../api/workers', async (importOriginal) => {
@@ -53,6 +53,14 @@ function worker(partial: Partial<WorkerInfo> & { name: string }): WorkerInfo {
     last_heartbeat_at: 0,
     ...partial,
   };
+}
+
+const NO_ESTIMATE = { suggested_gib: null, source: null, peak_bytes: null, from_run: null };
+
+/** A worker whose cuda:1 is shared by memory (#788). */
+function sharedWorker(name = 'gpu-box'): WorkerInfo {
+  const base = worker({ name, memory_budget: true });
+  return { ...base, devices: base.devices.map((d) => (d.value === 'cuda:1' ? { ...d, policy: 'shared' } : d)) };
 }
 
 const onClose = vi.fn();
@@ -104,6 +112,7 @@ beforeEach(() => {
   api.fetchDevices.mockResolvedValue({ default: 'cpu', devices: [CPU] });
   workersMock.fetchWorkers.mockResolvedValue([]);
   api.submitRun.mockResolvedValue({ run_id: 'run-1', status: 'queued' });
+  api.estimateMemory.mockResolvedValue(NO_ESTIMATE);
   onClose.mockReset();
   serialize.mockClear();
   refresh.mockClear();
@@ -507,5 +516,110 @@ describe('QueueRunDialog: keyboard and closing', () => {
     await open();
     expect(screen.getByRole('dialog', { name: '排入佇列執行' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('option', { name: '本伺服器' })).toBeInTheDocument());
+  });
+});
+
+describe('QueueRunDialog: memory budget (#788)', () => {
+  const memoryField = () => screen.getByRole('textbox', { name: 'Memory budget (GiB per device)' });
+
+  it('asks for a budget only on a shared device, filled with the suggestion', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    api.estimateMemory.mockResolvedValue({
+      suggested_gib: 2.4, source: 'history', peak_bytes: 2 * 1024 ** 3, from_run: 'r1',
+    });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    // The CPU is picked first (the graph's device) and cuda:0 is exclusive:
+    // no budget asked for.
+    expect(screen.queryByRole('textbox', { name: /Memory budget/ })).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    expect(screen.queryByRole('textbox', { name: /Memory budget/ })).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:1 / }));
+    await settle();
+    expect(api.estimateMemory).toHaveBeenCalledWith(GRAPH);
+    expect(serialize).toHaveBeenCalledWith({ keepSecrets: true });
+    expect(memoryField()).toHaveValue('2.4');
+    expect(screen.getByText('Suggested from the last run of this graph: its peak was 2.0 GiB, plus 20%.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Wait in the queue when it does not fit now' }));
+    await submit();
+    expect(sentRequest().options.target).toEqual({
+      worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 2.4, wait: true,
+    });
+  });
+
+  it('sends a typed budget, none for a blank field, and refuses one that is not a number', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(memoryField()).toHaveValue('');
+    expect(screen.getByText(/No earlier run of this graph reported its peak memory/)).toBeInTheDocument();
+    fireEvent.change(memoryField(), { target: { value: 'lots' } });
+    await submit();
+    expect(screen.getByRole('alert')).toHaveTextContent('The memory budget must be a number above 0 and at most 4096.');
+    expect(api.submitRun).not.toHaveBeenCalled();
+    fireEvent.change(memoryField(), { target: { value: '6' } });
+    await submit();
+    expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 6 });
+  });
+
+  it('leaves the budget to the server for a blank field', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    await submit();
+    expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'] });
+  });
+
+  it('says it is looking, then why there is no suggestion when the lookup fails', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    let fail: (reason: unknown) => void = () => {};
+    api.estimateMemory.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(screen.getByText('Looking up the last run of this graph...')).toBeInTheDocument();
+    await act(async () => fail('offline'));
+    expect(screen.getByText('Could not look up a suggestion: offline')).toBeInTheDocument();
+    expect(memoryField()).toHaveValue('');
+  });
+
+  it('reads a failed lookup that is an Error', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    api.estimateMemory.mockRejectedValueOnce(new Error('graph.nodes is empty'));
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(screen.getByText('Could not look up a suggestion: graph.nodes is empty')).toBeInTheDocument();
+  });
+
+  it('asks for a budget for any when a connected worker shares the kind, and never sends wait', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    patchTab({ graphDevice: 'cuda' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    await settle();
+    expect(screen.queryByRole('checkbox', { name: /Wait in the queue/ })).toBeNull();
+    fireEvent.change(memoryField(), { target: { value: '3' } });
+    await submit();
+    expect(sentRequest().options).toMatchObject({ target: { worker: 'any', memory_gib: 3 }, device: 'cuda' });
+    expect(sentRequest().options.target).not.toHaveProperty('wait');
+  });
+
+  it('renders the budget field in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: '目標' }), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(screen.getByRole('textbox', { name: '記憶體預算（每個裝置，GiB）' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: '目前放不下時在佇列中等待' })).toBeInTheDocument();
   });
 });

@@ -11,6 +11,7 @@ import {
   fetchSshWorkers,
   fetchWorkers,
   removeWorker,
+  setDevicePolicy,
   setSshWorkerEnabled,
   undrainWorker,
 } from './workers';
@@ -124,6 +125,25 @@ describe('removeWorker', () => {
     await expect(removeWorker('x')).rejects.toThrow("no worker named 'x'");
     mockFetch(500, null, true);
     await expect(removeWorker('x')).rejects.toThrow('Remove failed: mock');
+  });
+});
+
+describe('setDevicePolicy (#788)', () => {
+  it('PUTs the policy with the session token and returns the worker', async () => {
+    const fetchMock = mockFetch(200, { id: 'gpu box' });
+    expect(await setDevicePolicy('gpu box', 'cuda:1', 'shared')).toEqual({ id: 'gpu box' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/workers/gpu%20box/devices/cuda%3A1/policy');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ policy: 'shared' });
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('surfaces the failure', async () => {
+    mockFetch(422, { detail: 'cpu cannot be shared by memory' });
+    await expect(setDevicePolicy('w', 'cpu', 'shared')).rejects.toThrow('cpu cannot be shared');
+    mockFetch(500, null, true);
+    await expect(setDevicePolicy('w', 'cuda:0', 'exclusive')).rejects.toThrow('Policy change failed: mock');
   });
 });
 

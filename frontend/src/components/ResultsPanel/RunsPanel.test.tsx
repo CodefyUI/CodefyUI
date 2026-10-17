@@ -258,6 +258,21 @@ describe('RunsPanel — the table', () => {
     expect(reason.parentElement).toHaveAttribute('title', 'waiting for a worker that offers cuda');
   });
 
+  it('shows each run\'s memory budget, and a dash without one (#788)', async () => {
+    await renderPanel([
+      makeRun({
+        id: 'b', name: 'shared', worker_id: 'gpu-box',
+        execution_facts: { memory_budget: { bytes: 6 * 1024 ** 3, source: 'declared', devices: ['cuda:0'] } },
+      }),
+      makeRun({ id: 'n', name: 'plain' }),
+    ]);
+    expect(screen.getByRole('columnheader', { name: 'Budget' })).toBeInTheDocument();
+    expect(within(rowOf('b')).getByText('6.0 GiB'))
+      .toHaveAttribute('title', 'Memory budget per device, declared at submit');
+    const dash = within(rowOf('n')).getAllByText('-').find((cell) => cell.className.includes('colBudget'));
+    expect(dash).not.toHaveAttribute('title');
+  });
+
   it('shows no reason for a queued run the server gave none, nor for a running one', async () => {
     await renderPanel([
       makeRun({ id: 'q', name: 'q', status: 'queued', queue_reason: null, started_at: null, finished_at: null }),

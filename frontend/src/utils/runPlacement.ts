@@ -5,6 +5,7 @@
  */
 import type { useI18n } from '../i18n';
 import { aliasForDevice } from './deviceAliases';
+import { formatGiB } from './formatGiB';
 
 /** The placement fields of a run row or a sweep variant. */
 export interface RunPlacement {
@@ -12,6 +13,36 @@ export interface RunPlacement {
   devices?: string[] | null;
   queue_key?: string | null;
   options?: Record<string, unknown> | null;
+  execution_facts?: Record<string, unknown> | null;
+}
+
+const GIB = 1024 ** 3;
+
+/**
+ * The Budget column (#788): the memory budget a run was admitted with on a
+ * device shared by memory (`execution_facts.memory_budget`), else the one
+ * it asked for (`options.target.memory_gib`, which applies only if it
+ * lands on such a device), else null.
+ */
+export function runBudget(run: RunPlacement, t: Translate): { text: string; title: string } | null {
+  const admitted = run.execution_facts?.memory_budget as
+    { bytes?: unknown; source?: unknown; from_run?: unknown } | undefined;
+  if (admitted && typeof admitted.bytes === 'number') {
+    const fromRun = admitted.source === 'history' && typeof admitted.from_run === 'string'
+      ? admitted.from_run
+      : null;
+    return {
+      text: formatGiB(admitted.bytes),
+      title: fromRun === null
+        ? t('runs.budget.declared')
+        : t('runs.budget.history', { run: fromRun.slice(0, 8) }),
+    };
+  }
+  const target = run.options?.target as { memory_gib?: unknown } | undefined;
+  if (target && typeof target.memory_gib === 'number') {
+    return { text: formatGiB(target.memory_gib * GIB), title: t('runs.budget.requested') };
+  }
+  return null;
 }
 
 type Translate = ReturnType<typeof useI18n.getState>['t'];

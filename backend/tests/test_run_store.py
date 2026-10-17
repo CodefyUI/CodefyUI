@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 13
+    assert _user_version(db) == len(MIGRATIONS) == 14
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -164,6 +164,8 @@ def test_exec_runs_has_the_full_column_list(db):
         "study_id", "study_attempt_id",
         # MIGRATION_008 (#769): where the run executes.
         "worker_id", "devices",
+        # MIGRATION_014 (#788): the graph a worker run executed.
+        "graph_hash",
     ]
 
 
@@ -502,8 +504,9 @@ def test_the_sweep_columns_arrived_without_a_table_rebuild(db):
     from app.core.migrations import MIGRATION_003, iter_statements
 
     # MIGRATION_006's two ALTERs (#344), MIGRATION_007's two (#343) and
-    # MIGRATION_008's two (#769) come after the sweep pair.
-    assert _columns(db, "exec_runs")[-8:-6] == ["sweep_id", "sweep_variant"]
+    # MIGRATION_008's two (#769) and MIGRATION_014's one (#788) come after
+    # the sweep pair.
+    assert _columns(db, "exec_runs")[-9:-7] == ["sweep_id", "sweep_variant"]
     ddl = db._conn.execute(
         "SELECT sql FROM sqlite_master WHERE name = 'exec_runs'").fetchone()[0]
     # THE rebuild detector, and it has to be structural rather than a
