@@ -271,6 +271,27 @@ def entry_target(options: Mapping[str, Any]) -> tuple[str, list[str] | None]:
     return (target.get("worker") or TARGET_LOCAL), target.get("devices")
 
 
+#: Codes of :class:`QueueReason` (#841). The Runs list words each one in
+#: the viewer's language from its ``params``; an unknown code falls back to
+#: the English ``text``.
+REASON_WORKER_RECONNECT = "worker_reconnect"
+REASON_WORKER_DRAINING = "worker_draining"
+REASON_WORKER_NO_MOUNT = "worker_no_mount"
+REASON_ANY_NO_WORKER = "any_no_worker"
+REASON_ANY_NO_WORKER_MOUNT = "any_no_worker_mount"
+REASON_ANY_UNAVAILABLE = "any_unavailable"
+
+
+@dataclass(frozen=True)
+class QueueReason:
+    """Why a waiting run cannot start, beyond a busy slot (#772, #841)."""
+
+    code: str
+    params: dict[str, Any]
+    #: The English sentence: ``queue_reason`` in the API and the CLI.
+    text: str
+
+
 class WorkerScheduler:
     """Placement across this process and the connected workers (#772).
 
@@ -374,7 +395,15 @@ class WorkerScheduler:
         return tuple(slot_for(worker, d) for d in devices)
 
     def explain(self, entry: QueuedEntry) -> str | None:
-        """Why *entry* is waiting, when it is not just a busy slot."""
+        """Why *entry* is waiting, when it is not just a busy slot: the
+        English sentence of :meth:`explain_reason`."""
+        reason = self.explain_reason(entry)
+        return None if reason is None else reason.text
+
+    def explain_reason(self, entry: QueuedEntry) -> QueueReason | None:
+        """Why *entry* is waiting, as a code, its parameters and the
+        English sentence (#841): the Runs list words the code in the
+        viewer's language, the API and CLI keep the sentence."""
         worker_id, devices = entry_target(entry.options)
         if worker_id == TARGET_LOCAL:
             return None
@@ -383,42 +412,71 @@ class WorkerScheduler:
         if worker_id != TARGET_ANY:
             worker = self._registry.get(worker_id)
             if worker is None or not worker.online:
-                return f"waiting for worker {worker_id} to reconnect"
+                return QueueReason(
+                    REASON_WORKER_RECONNECT, {"worker": worker_id},
+                    f"waiting for worker {worker_id} to reconnect")
             if worker.draining:
-                return f"worker {worker_id} is draining"
+                return QueueReason(
+                    REASON_WORKER_DRAINING, {"worker": worker_id},
+                    f"worker {worker_id} is draining")
             if not reaches(worker, entry):
-                return no_mount(worker_id, mount or "",
-                                transfer_refusal(getattr(entry, "needs",
-                                                         None)))
+                why_not = transfer_refusal(getattr(entry, "needs", None))
+                return QueueReason(
+                    REASON_WORKER_NO_MOUNT,
+                    {"worker": worker_id, "mount": mount or "",
+                     "transfer": why_not or None},
+                    no_mount(worker_id, mount or "", why_not))
             return None
         wanted = ", ".join(devices) if devices else requested
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount,
                                   transfer=entry_transfers(entry)):
             if mount is not None and not entry_transfers(entry):
-                return (f"waiting for a worker that offers {wanted} and "
-                        f"has the `{mount}` mount")
-            return f"waiting for a worker that offers {wanted}"
+                return QueueReason(
+                    REASON_ANY_NO_WORKER_MOUNT,
+                    {"devices": wanted, "mount": mount},
+                    f"waiting for a worker that offers {wanted} and "
+                    f"has the `{mount}` mount")
+            return QueueReason(
+                REASON_ANY_NO_WORKER, {"devices": wanted},
+                f"waiting for a worker that offers {wanted}")
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount, usable_only=True,
+                                  accepting_only=True,
                                   transfer=entry_transfers(entry)):
             # The workers the first check counted and this one did not:
             # the same predicate as ``can_serve_any`` (``reaches`` is its
-            # mount/transfer rule), so the list is never empty.
-            skipped = sorted(
-                w.name for w in self._registry.workers()
-                if w.online and _skipped_by_any(w) and reaches(w, entry)
-                and _serves(w.device_values(), requested, devices))
-            return (f"waiting for a worker that offers {wanted}: "
-                    f"{', '.join(skipped)} "
-                    f"{'is' if len(skipped) == 1 else 'are'} skipped by "
-                    "`any` (node types missing, or not reported)")
+            # mount/transfer rule), so the two lists are never both empty.
+            # Draining (#841): an `any` run behind a draining worker said
+            # nothing at all, while a run naming it said "is draining".
+            able = [w for w in self._registry.workers()
+                    if w.online and reaches(w, entry)
+                    and _serves(w.device_values(), requested, devices)]
+            draining = sorted(w.name for w in able
+                              if _draining(w) and not _skipped_by_any(w))
+            skipped = sorted(w.name for w in able if _skipped_by_any(w))
+            parts = []
+            if draining:
+                parts.append(f"{', '.join(draining)} "
+                             f"{'is' if len(draining) == 1 else 'are'} "
+                             "draining")
+            if skipped:
+                parts.append(f"{', '.join(skipped)} "
+                             f"{'is' if len(skipped) == 1 else 'are'} "
+                             "skipped by `any` (node types missing, or not "
+                             "reported)")
+            return QueueReason(
+                REASON_ANY_UNAVAILABLE,
+                {"devices": wanted, "draining": draining, "skipped": skipped},
+                f"waiting for a worker that offers {wanted}: "
+                + "; ".join(parts))
         return None
 
     def can_serve_any(self, requested: str, devices: list[str] | None,
                       *, connected_only: bool = False,
                       mount: str | None = None,
                       usable_only: bool = False,
+                      accepting_only: bool = False,
                       transfer: bool = False) -> bool:
         """Whether this process or a worker could ever run it.
 
@@ -431,7 +489,8 @@ class WorkerScheduler:
         worker counts only when it holds that mount, or, with *transfer*
         (#785), when it speaks the transfer backend; this process always
         does. *usable_only* leaves out the workers ``any`` skips (#781:
-        one that lacks node types, or reported no catalog).
+        one that lacks node types, or reported no catalog);
+        *accepting_only* the draining ones (#841), which take no new run.
         """
         if not renumbered_on_a_worker(devices) \
                 and _serves(self._local_devices(), requested, devices):
@@ -440,6 +499,7 @@ class WorkerScheduler:
                    and (mount is None or holds_mount(w, mount)
                         or (transfer and speaks_transfer(w)))
                    and not (usable_only and _skipped_by_any(w))
+                   and not (accepting_only and _draining(w))
                    and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
 
@@ -490,6 +550,10 @@ def no_mount(worker_id: str, mount: str, why_not_transfer: str | None = None
         message += (f", or make the run fit the transfer backend: "
                     f"{why_not_transfer}")
     return message
+
+
+def _draining(worker: Any) -> bool:
+    return bool(getattr(worker, "draining", False))
 
 
 def _skipped_by_any(worker: Any) -> bool:
