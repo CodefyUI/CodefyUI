@@ -122,6 +122,7 @@ function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: strin
   const hasMemory = memory != null && memory.free_bytes !== null && memory.total_bytes !== null;
   const shareable = device.policy !== undefined && SHAREABLE_KINDS.has(device.kind);
   const admission = device.admission ?? null;
+  const peers = device.same_card ?? [];
   return (
     <li className={styles.device}>
       <span className={styles.deviceName}>
@@ -159,6 +160,19 @@ function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: strin
           <option value="exclusive">{t('workers.policy.exclusive')}</option>
           <option value="shared">{t('workers.policy.shared')}</option>
         </select>
+      )}
+      {peers.length > 0 && (
+        <span className={styles.sameCard} title={t('workers.device.sameCard.title')}>
+          {t('workers.device.sameCard', {
+            peers: peers
+              .map((peer) =>
+                peer.worker === 'local'
+                  ? t('workers.device.sameCard.local', { device: peer.device })
+                  : `${peer.worker} ${peer.device}`,
+              )
+              .join(t('workers.device.sameCard.separator')),
+          })}
+        </span>
       )}
       {device.running && <RunLinks runIds={device.running} />}
       {admission !== null && (

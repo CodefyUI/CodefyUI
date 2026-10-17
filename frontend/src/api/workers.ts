@@ -67,6 +67,18 @@ export interface WorkerDevice {
   policy?: DevicePolicy;
   /** A shared card's ledger; `null` for an exclusive one (#788). */
   admission?: WorkerDeviceAdmission | null;
+  /**
+   * The other offerers of this physical card, matched by UUID (#842):
+   * `worker` is a worker id, or `local` for this server. Empty, or absent
+   * from an older server, for a card nobody else offers.
+   */
+  same_card?: WorkerCardPeer[];
+}
+
+/** One other offerer of a physical card (#842). */
+export interface WorkerCardPeer {
+  worker: string;
+  device: string;
 }
 
 /**

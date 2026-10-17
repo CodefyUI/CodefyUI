@@ -43,7 +43,16 @@ worker that is physically one of this server's (``cpu``, ``mps:0``, a CUDA
 card with a matching UUID) carries ``shared_with: "local"``, otherwise
 ``null``: its ``slots`` ARE this server's slot for that card (the same
 counter, under this server's limit), so a panel adding up usage must count
-it once. The list's ``local`` field describes this server the same way
+it once.
+
+Physical cards (#842): every device entry (the ``local`` ones too) carries
+``same_card``, the other offerers of that physical card, matched by the
+UUID each reports (``[{"worker", "device"}]``, ``worker`` ``local`` for
+this server; ``[]`` for a card nobody else offers, or reported without a
+UUID). Two workers on one host that offer one card share its slots: their
+``slots`` are the card's (the runs on every offerer, under the smallest
+cap), so a panel adding up usage must count the card once. The list's
+``local`` field describes this server the same way
 (``{"id": "local", "devices": [{"value", "kind", "slots"}]}``; ``null``
 without a run service; its ``mounts`` is this server's own label and path,
 #782), so a Workers panel can draw this server beside its
@@ -197,6 +206,7 @@ def _describe(worker: Any, service: Any,
             value = None
         device["shared_with"] = (LOCAL_WORKER_ID if value in shared
                                  else None)
+        device["same_card"] = _same_card(registry, worker.id, value)
         device["slots"] = (None if service is None or value is None
                            else service.slot_usage(slot_for(worker, value)))
         device["policy"] = (registry.device_policy(worker.id, value)
@@ -213,13 +223,25 @@ def _describe(worker: Any, service: Any,
     return entry
 
 
-def _describe_local(service: Any) -> dict[str, Any] | None:
+def _same_card(registry: Any, worker_id: str,
+               value: str | None) -> list[dict[str, str]]:
+    """The other offerers of the physical card (#842), as
+    ``[{"worker", "device"}]``; ``worker`` ``local`` is this server."""
+    peers = getattr(registry, "card_peers", None)
+    if peers is None or value is None:
+        return []
+    return [{"worker": w, "device": d} for w, d in peers(worker_id, value)]
+
+
+def _describe_local(service: Any,
+                    registry: Any = None) -> dict[str, Any] | None:
     if service is None:
         return None
     return {"id": LOCAL_WORKER_ID, "mounts": control_plane_mounts(),
             "devices": [{
         "value": value, "kind": value.split(":")[0],
         "slots": service.slot_usage((LOCAL_WORKER_ID, value)),
+        "same_card": _same_card(registry, LOCAL_WORKER_ID, value),
     } for value in service.local_devices()]}
 
 
@@ -229,7 +251,7 @@ async def list_workers(request: Request) -> dict[str, Any]:
     service = _service(request)
     return {"workers": [_describe(w, service, registry)
                         for w in registry.workers()],
-            "local": _describe_local(service),
+            "local": _describe_local(service, registry),
             "rejections": registry.rejections()}
 
 

@@ -16,7 +16,8 @@ The ledger
 ----------
 :class:`MemoryLedger` is the control plane's account of what it promised on
 each slot (``(worker_id, device)``, ``scheduling.slot_for``, so a same-host
-worker's card shares one account with this process's): the budgets of runs
+worker's card shares one account with this process's; the slots of one
+physical card that two workers offer are read as one account, #842): the budgets of runs
 assigned but not yet started (**reserved**) and of runs whose subprocess
 reported the cap in place (**running**). The card's **total** and **free**
 bytes come from the worker's heartbeat (NVML, device-wide: other users'
@@ -187,10 +188,13 @@ class MemoryLedger:
         held = self._runs.get(run_id)
         return None if held is None else held.bytes
 
-    def account(self, slot: SlotKey) -> SlotAccount:
+    def account(self, slot: SlotKey, *more: SlotKey) -> SlotAccount:
+        """What the ledger holds on *slot*, or on any of *slot* and *more*
+        (the slots of one physical card, #842): each run counted once."""
+        wanted = {slot, *more}
         account = SlotAccount()
         for run_id, held in self._runs.items():
-            if slot not in held.slots:
+            if wanted.isdisjoint(held.slots):
                 continue
             if held.started:
                 account.running += held.bytes
@@ -199,9 +203,11 @@ class MemoryLedger:
             account.runs.append(run_id)
         return account
 
-    def holders(self, slot: SlotKey) -> int:
-        """How many budgeted runs hold *slot*."""
-        return sum(1 for held in self._runs.values() if slot in held.slots)
+    def holders(self, slot: SlotKey, *more: SlotKey) -> int:
+        """How many budgeted runs hold *slot* (or any of *more*, #842)."""
+        wanted = {slot, *more}
+        return sum(1 for held in self._runs.values()
+                   if not wanted.isdisjoint(held.slots))
 
 
 def headroom(total: int | None, free: int | None,

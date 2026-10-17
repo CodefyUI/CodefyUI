@@ -127,6 +127,11 @@ from .worker_handshake import (
 
 logger = logging.getLogger(__name__)
 
+#: ``(worker_id, device)``, as ``scheduling.SlotKey``.
+SlotKey = tuple[str, str]
+#: This process's worker id (``scheduling.LOCAL_WORKER_ID``).
+LOCAL_ID = wp.TARGET_LOCAL
+
 STATUS_ONLINE = "online"
 STATUS_DEGRADED = "degraded"
 STATUS_DISCONNECTED = "disconnected"
@@ -373,6 +378,17 @@ def _canonical_or_none(device: str) -> str | None:
         return None
 
 
+@dataclass
+class _CardIndex:
+    """The physical cards more than one offerer names (#842)."""
+
+    #: Slot -> every slot on its card, for a card with several slots.
+    slots: dict[SlotKey, tuple[SlotKey, ...]] = field(default_factory=dict)
+    #: ``(worker id, device)`` -> the other offerers of its card.
+    offerers: dict[tuple[str, str], tuple[tuple[str, str], ...]] = field(
+        default_factory=dict)
+
+
 def _device_identities(devices: list[wp.DeviceReport]) -> list[tuple]:
     """What placement reads off a device list: which devices, not their
     memory figures."""
@@ -405,6 +421,11 @@ class WorkerRegistry:
         self._local_devices_cache: list[Any] | None = None
         #: ``(worker, device, uuid)`` already logged as not shared.
         self._unshared_logged: set[tuple[str, str, str | None]] = set()
+        #: The physical cards several offerers name (#842), built on first
+        #: use and dropped by :meth:`_changed`; see :meth:`card_slots`.
+        self._cards: _CardIndex | None = None
+        #: ``(uuid, offerers)`` already logged as one card.
+        self._cards_logged: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
         self.heartbeat_s = heartbeat_s
         self.grace_s = grace_s
         self.missed_heartbeats = missed_heartbeats
@@ -590,6 +611,93 @@ class WorkerRegistry:
                     "its own", worker.name, value, report.uuid or "unknown")
         return shared
 
+    # ── physical cards (#842) ────────────────────────────────────────────
+
+    def _card_index(self) -> "_CardIndex":
+        if self._cards is None:
+            self._cards = self._build_card_index()
+        return self._cards
+
+    def _build_card_index(self) -> "_CardIndex":
+        """Group every known CUDA card by its UUID: this process's, and
+        each worker's (connected or not: a disconnected worker's runs keep
+        their slots while they wait for it, #783). A card a same-host
+        worker shares with this process is already this process's slot
+        (``Worker.shared``), so it adds an offerer but no slot."""
+        offerers: dict[str, list[tuple[str, str]]] = {}
+        slots: dict[str, list[SlotKey]] = {}
+
+        def add(uuid: Any, worker_id: str, value: str,
+                slot: SlotKey) -> None:
+            if not uuid:
+                return
+            uuid = str(uuid).lower()
+            if (worker_id, value) not in offerers.setdefault(uuid, []):
+                offerers[uuid].append((worker_id, value))
+            if slot not in slots.setdefault(uuid, []):
+                slots[uuid].append(slot)
+
+        for fact in self._local_devices():
+            value = _canonical_or_none(getattr(fact, "value", ""))
+            if value is not None and value.startswith("cuda"):
+                add(getattr(fact, "uuid", None), LOCAL_ID, value,
+                    (LOCAL_ID, value))
+        for worker in sorted(self._workers.values(), key=lambda w: w.name):
+            for report in worker.devices:
+                value = _canonical_or_none(report.value)
+                if value is None or not value.startswith("cuda"):
+                    continue
+                local = worker.shared.get(value)
+                add(report.uuid, worker.id, value,
+                    (LOCAL_ID, local) if local is not None
+                    else (worker.id, value))
+        index = _CardIndex()
+        for uuid, names in offerers.items():
+            if len(names) < 2:
+                continue
+            group = tuple(slots[uuid])
+            for worker_id, value in names:
+                index.offerers[(worker_id, value)] = tuple(
+                    n for n in names if n != (worker_id, value))
+            if len(group) > 1:
+                for slot in group:
+                    index.slots[slot] = group
+            key = (uuid, tuple(names))
+            if key not in self._cards_logged:
+                self._cards_logged.add(key)
+                logger.info(
+                    "one physical card (uuid %s) is offered as %s; runs on "
+                    "it share one slot", uuid,
+                    ", ".join(f"{w}/{d}" for w, d in names))
+        return index
+
+    def card_slots(self, slot: SlotKey) -> tuple[SlotKey, ...]:
+        """Every slot on the physical card *slot* is on (#842), *slot*
+        included; just ``(slot,)`` for a card no other slot names.
+
+        Two workers on one host (an SSH worker and an enrolled agent, say)
+        that both offer one card report the same UUID: their slots
+        ``(a, cuda:0)`` and ``(b, cuda:0)`` are then one card, and the
+        scheduler counts the runs of both against it (and this process's
+        slot too, for a card this process has and a worker shares without
+        being recognised as same-host). Matched by UUID only, so two
+        processes that number the card differently (another
+        ``CUDA_VISIBLE_DEVICES``, a SLURM allocation) still agree; a card
+        reported without a UUID (an agent whose inventory could not read
+        one) keeps a slot of its own, as before.
+        """
+        return self._card_index().slots.get(slot, (slot,))
+
+    def card_peers(self, worker_id: str,
+                   device: str) -> tuple[tuple[str, str], ...]:
+        """The other ``(worker id, device)`` pairs that offer the physical
+        card *worker_id*'s *device* is (#842); ``local`` is this process.
+        Empty for a card nobody else offers or that has no UUID."""
+        value = _canonical_or_none(device)
+        if value is None:
+            return ()
+        return self._card_index().offerers.get((worker_id, value), ())
+
     # ── device admission policies (#788) ─────────────────────────────────
 
     def load_policies(self, rows: Any) -> None:
@@ -648,6 +756,9 @@ class WorkerRegistry:
         self._listeners.append(listener)
 
     def _changed(self) -> None:
+        # Whatever changed may be a worker's devices: the card index is
+        # rebuilt on its next use.
+        self._cards = None
         for listener in list(self._listeners):
             try:
                 listener()

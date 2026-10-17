@@ -84,7 +84,7 @@ cdui run train.json --target any --device cuda
 CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 ```
 
-同一台機器上的 worker，對實體上相同的每張卡（以卡的 UUID 比對）共用這台伺服器的 slot，因此在上限為 1 時，伺服器上的 run 與該 worker 上的 run 不會同時拿到同一張卡。這種卡套用伺服器的上限，針對它的 `worker/device` 覆寫會被忽略並發出警告。提高上限會讓多個 run 共用一張卡的記憶體，但沒有任何機制檢查它們是否放得下。若要依記憶體共用 worker 的卡，請見[共用一張卡](#sharing-a-card)。細節見[執行佇列：設定](./run-queue#configuration)。
+同一台機器上的 worker，對實體上相同的每張卡（以卡的 UUID 比對）共用這台伺服器的 slot，因此在上限為 1 時，伺服器上的 run 與該 worker 上的 run 不會同時拿到同一張卡。提供同一張卡的兩個 worker（同一台 GPU 伺服器上的兩個 agent，例如一個 SSH worker 與一個 enroll 的 agent）也算作一張卡：以卡的 UUID 比對，經由任一 worker 的 run 都計入這張卡，套用兩者中較小的上限，依記憶體共用的卡也只有一份帳本。Workers 面板會在這種卡上標示「與 ... 是同一張實體卡」。這種卡套用伺服器的上限，針對它的 `worker/device` 覆寫會被忽略並發出警告。提高上限會讓多個 run 共用一張卡的記憶體，但沒有任何機制檢查它們是否放得下。若要依記憶體共用 worker 的卡，請見[共用一張卡](#sharing-a-card)。細節見[執行佇列：設定](./run-queue#configuration)。
 
 ## 共用一張卡 {/* #sharing-a-card */}
 

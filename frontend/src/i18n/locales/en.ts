@@ -1171,6 +1171,11 @@ const en = {
   'workers.heartbeat': 'Last heartbeat',
   'workers.device.slots': 'Slots {taken} / {limit}',
   'workers.device.memory': '{free} free of {total}',
+  // One physical card offered by several workers (#842).
+  'workers.device.sameCard': 'Same physical card as {peers}',
+  'workers.device.sameCard.title': 'Matched by the card UUID. Runs through any of them count against one set of slots (the smallest limit) and one memory budget.',
+  'workers.device.sameCard.separator': ', ',
+  'workers.device.sameCard.local': 'this server ({device})',
   // How a card admits runs (#788).
   'workers.policy.aria': 'How {device} admits runs',
   'workers.policy.title': 'Exclusive: one run at a time. Shared by memory: runs that declare a memory budget share the card while their budgets fit.',

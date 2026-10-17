@@ -1036,6 +1036,11 @@ const zhTW: Record<TranslationKey, string> = {
   'workers.heartbeat': '最後心跳',
   'workers.device.slots': '名額 {taken} / {limit}',
   'workers.device.memory': '可用 {free}，共 {total}',
+  // 多個 worker 提供同一張實體卡（#842）。
+  'workers.device.sameCard': '與 {peers} 是同一張實體卡',
+  'workers.device.sameCard.title': '依卡片 UUID 比對。經由其中任何一個執行的 run 都計入同一組名額（取最小的上限）與同一份記憶體預算。',
+  'workers.device.sameCard.separator': '、',
+  'workers.device.sameCard.local': '這台伺服器（{device}）',
   'workers.policy.aria': '{device} 接收 run 的方式',
   'workers.policy.title': '獨佔：一次一個 run。依記憶體共用：宣告記憶體預算的 run 在預算放得下時共用此卡。',
   'workers.policy.exclusive': '獨佔',

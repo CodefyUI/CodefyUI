@@ -699,6 +699,45 @@ describe('WorkersPanel', () => {
     expect(within(dialog).getAllByRole('option', { name: '依記憶體共用' })).toHaveLength(2);
   });
 
+  // ── one physical card, several offerers (#842) ──
+
+  function cardWorker(id: string, peers: { worker: string; device: string }[] | undefined) {
+    return worker(id, {
+      devices: [
+        { value: 'cuda:0', kind: 'cuda', index: 0, name: 'RTX PRO 6000', memory: null,
+          slots: { taken: 1, limit: 1 }, same_card: peers },
+        { value: 'cpu', kind: 'cpu', index: null, name: '', memory: null, slots: { taken: 0, limit: 2 }, same_card: [] },
+      ],
+    });
+  }
+
+  it('says when two workers offer one physical card, and names this server', async () => {
+    const dialog = await openPanel([
+      cardWorker('meow-e2e', [{ worker: 'meow-join', device: 'cuda:0' }]),
+      cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0' }, { worker: 'local', device: 'cuda:1' }]),
+      cardWorker('lone', undefined),
+    ]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    const note = within(first).getByText('Same physical card as meow-join cuda:0');
+    expect(note).toHaveAttribute('title', expect.stringContaining('card UUID'));
+    // Both read the card's own slots.
+    expect(within(first).getByText('Slots 1 / 1')).toBeInTheDocument();
+    const second = within(dialog).getByRole('article', { name: 'meow-join' });
+    expect(within(second).getByText('Same physical card as meow-e2e cuda:0, this server (cuda:1)'))
+      .toBeInTheDocument();
+    // No note for a card nobody else offers, or from an older server.
+    const lone = within(dialog).getByRole('article', { name: 'lone' });
+    expect(within(lone).queryByText(/Same physical card/)).toBeNull();
+  });
+
+  it('words the shared physical card in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const dialog = await openPanel([
+      cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0' }, { worker: 'local', device: 'cuda:0' }]),
+    ]);
+    expect(within(dialog).getByText('與 meow-e2e cuda:0、這台伺服器（cuda:0） 是同一張實體卡')).toBeInTheDocument();
+  });
+
   // ── SSH workers (#784) ──
 
   it('shows an SSH worker\'s tunnel on its card, with Disable', async () => {

@@ -84,7 +84,7 @@ A **slot** is one device on one machine. Each slot admits one run at a time on a
 CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 ```
 
-A worker on the same machine shares this server's slot for every card that is physically the same (matched by the card's UUID), so a run on the server and a run on that worker never both take one card under a limit of 1. For such a card the server's limit applies, and a `worker/device` override for it is ignored with a warning. Raising a limit lets runs share a card's memory; nothing checks that they fit. To share a worker's card by memory instead, see [Sharing a card](#sharing-a-card). Details: [Run Queue, Configuration](./run-queue#configuration).
+A worker on the same machine shares this server's slot for every card that is physically the same (matched by the card's UUID), so a run on the server and a run on that worker never both take one card under a limit of 1. Two workers that offer the same card (two agents on one GPU server, such as an SSH worker and an enrolled agent) count as one card too: the card is matched by its UUID, the runs through either worker count against it, under the smaller of the two limits, and a card shared by memory keeps one ledger. The Workers panel says "Same physical card as ..." on such a card. For such a card the server's limit applies, and a `worker/device` override for it is ignored with a warning. Raising a limit lets runs share a card's memory; nothing checks that they fit. To share a worker's card by memory instead, see [Sharing a card](#sharing-a-card). Details: [Run Queue, Configuration](./run-queue#configuration).
 
 ## Sharing a card {/* #sharing-a-card */}
 

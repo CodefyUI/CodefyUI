@@ -43,6 +43,17 @@ process's slot (:func:`slot_for`), one budget under the local cap, so an
 in-process run and a worker run cannot both take one physical card under
 ``gpu=1``. A card with no UUID or no match keeps a slot of its own.
 
+Physical cards (#842): two workers on one host (an SSH worker and an
+enrolled agent, say) may offer the same card, each as its own
+``(worker, device)`` slot. Every CUDA card is matched by the UUID its
+offerers report (``WorkerRegistry.card_slots``), whatever number each
+gives it, and the slots of one card are ONE budget: the runs holding any
+of them count against each (:class:`CardView`), under the smallest cap
+among them (:class:`CardLimits`), and a shared card's memory ledger is read
+across all of them. This process's slot joins when it has the card too. A
+card without a UUID keeps its own slot; with no such card anywhere,
+admission reads ``taken`` and the caps unchanged.
+
 Memory admission (#788): a worker's card whose policy is ``shared``
 (``WorkerRegistry.device_policy``) is admitted by memory instead of by
 count: a run with a budget (``entry.memory_budget``) takes it while the
@@ -236,6 +247,47 @@ def local_set_slots(queue_key: str,
     return tuple(slots)
 
 
+#: ``slot -> every slot on its physical card`` (#842).
+CardSlots = Callable[[SlotKey], tuple[SlotKey, ...]]
+
+
+class CardView(Mapping[SlotKey, int]):
+    """*taken* as one physical card sees it (#842): a slot's count is the
+    sum over every slot on its card, so a run on one worker's ``cuda:0``
+    fills the same card offered by another worker. A reserved slot
+    (:data:`RESERVED_SLOT`) stays at least that."""
+
+    def __init__(self, taken: Mapping[SlotKey, int],
+                 cards: CardSlots) -> None:
+        self._taken = taken
+        self._cards = cards
+
+    def __getitem__(self, slot: SlotKey) -> int:
+        group = self._cards(slot)
+        if not any(s in self._taken for s in group):
+            raise KeyError(slot)
+        return sum(self._taken.get(s, 0) for s in group)
+
+    def __iter__(self):
+        return iter(self._taken)
+
+    def __len__(self) -> int:
+        return len(self._taken)
+
+
+class CardLimits:
+    """*limits* per physical card (#842): the smallest cap among the slots
+    of a slot's card, so no offerer's override lets the card take more runs
+    than another's allows."""
+
+    def __init__(self, limits: SlotLimits, cards: CardSlots) -> None:
+        self._limits = limits
+        self._cards = cards
+
+    def for_slot(self, slot: SlotKey) -> int:
+        return min(self._limits.for_slot(s) for s in self._cards(slot))
+
+
 def _free(limits: SlotLimits, slot: SlotKey,
           taken: Mapping[SlotKey, int]) -> bool:
     return taken.get(slot, 0) < limits.for_slot(slot)
@@ -398,16 +450,37 @@ class WorkerScheduler:
     def __init__(self, limits: SlotLimits, registry: Any,
                  local_devices: Callable[[], list[str]],
                  ledger: "mem.MemoryLedger | None" = None) -> None:
-        self._limits = limits
         self._registry = registry
+        # Caps and counts per physical card (#842).
+        self._limits = CardLimits(limits, self.card_slots)
         self._local_devices = local_devices
-        self._local = LocalScheduler(limits)
+        self._local = LocalScheduler(self._limits)
         #: The budgets promised per slot (#788); ``RunService`` reserves,
         #: starts and releases them, this class reads them.
         self.ledger = mem.MemoryLedger() if ledger is None else ledger
 
+    def card_slots(self, slot: SlotKey) -> tuple[SlotKey, ...]:
+        """Every slot on *slot*'s physical card (#842,
+        ``WorkerRegistry.card_slots``); ``(slot,)`` for a registry that
+        does not group cards, or when grouping fails."""
+        cards = getattr(self._registry, "card_slots", None)
+        if cards is None:
+            return (slot,)
+        try:
+            return tuple(cards(slot)) or (slot,)
+        except Exception:  # noqa: BLE001 -- grouping degrades, never fails
+            return (slot,)
+
+    def _on_cards(self, taken: Mapping[SlotKey, int]
+                  ) -> Mapping[SlotKey, int]:
+        """*taken* counted per physical card (:class:`CardView`)."""
+        if isinstance(taken, CardView):
+            return taken
+        return CardView(taken, self.card_slots)
+
     def place(self, entry: QueuedEntry,
               taken: Mapping[SlotKey, int]) -> Placement | None:
+        taken = self._on_cards(taken)
         worker_id, devices = entry_target(entry.options)
         if worker_id == TARGET_LOCAL:
             return self._local.place(entry, taken)
@@ -486,6 +559,7 @@ class WorkerScheduler:
                 taken: Mapping[SlotKey, int] | None = None) -> str | None:
         """Why *entry* is waiting, when it is not just a busy slot.
         *taken* is the slot counts it is judged against (memory, #788)."""
+        taken = self._on_cards(taken or {})
         worker_id, devices = entry_target(entry.options)
         if worker_id == TARGET_LOCAL:
             return None
@@ -508,7 +582,7 @@ class WorkerScheduler:
                                 transfer_refusal(getattr(entry, "needs",
                                                          None)))
             return self._memory_wait(entry.options, entry_budget(entry),
-                                     taken or {})
+                                     taken)
         wanted = ", ".join(devices) if devices else requested
         if entry_pool(entry.options) == POOL_ONE_SHOT:
             return (f"waiting for a one-shot worker that offers {wanted} "
@@ -640,7 +714,9 @@ class WorkerScheduler:
         report = _report(worker, device)
         total = None if report is None else report.total_bytes
         free = None if report is None else report.free_bytes
-        account = self.ledger.account(slot_for(worker, device))
+        # One account per physical card (#842).
+        account = self.ledger.account(*self.card_slots(
+            slot_for(worker, device)))
         return total, mem.headroom(total, free, account), account
 
     def admission(self, worker: Any, device: str) -> dict[str, Any]:
@@ -665,6 +741,7 @@ class WorkerScheduler:
         card: the one judgement placement, the submit refusal and the
         waiting reason share. *why_not* names the real blocker: no total,
         a total too small, a holder without a budget, or too little room."""
+        taken = self._on_cards(taken)
         need = mem.footprint(budget, device)
         total, room, account = self.room(worker, device)
         if total is None:
@@ -678,7 +755,7 @@ class WorkerScheduler:
         # A holder without a budget (a same-host card's in-process run, a
         # run from before the card became shared, a reserved set) has the
         # card to itself until it ends.
-        if taken.get(slot, 0) > self.ledger.holders(slot):
+        if taken.get(slot, 0) > self.ledger.holders(*self.card_slots(slot)):
             return True, False, mem.held_without_budget(device, worker.id)
         if room is None or room < need:
             return True, False, mem.does_not_fit(device, worker.id, room,
@@ -751,6 +828,7 @@ class WorkerScheduler:
         fits now. A worker that is away is judged on its last report for
         the total only: whether it fits NOW is not known, so the run waits.
         """
+        taken = self._on_cards(taken)
         places, here = self.places(options)
         if here or not places or any(
                 not any(self.shared(w, d) for w, d in place)

@@ -1960,9 +1960,15 @@ class RunService:
         What ``GET /api/workers`` shows per device (#773): the cap
         :class:`QueueLimits` gives the slot and how many running runs hold
         it now. Waiting runs are not counted; they hold no slot.
+
+        Per physical card (#842): for a card another worker (or this
+        process) offers too, the runs on every slot of it, under the
+        smallest cap among them, which is what admission decides on.
         """
-        return {"limit": self._limits.for_slot(slot),
-                "taken": self._slots.get(slot, 0)}
+        cards = getattr(self._scheduler, "card_slots", None)
+        group = (slot,) if cards is None else cards(slot)
+        return {"limit": min(self._limits.for_slot(s) for s in group),
+                "taken": sum(self._slots.get(s, 0) for s in group)}
 
     def check_worker_overrides(self, worker: Any) -> None:
         """Warn once per card when a ``<worker>/<device>`` override cannot

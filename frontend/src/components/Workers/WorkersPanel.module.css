@@ -237,6 +237,13 @@
   color: var(--text-secondary);
 }
 
+/* One physical card offered by several workers (#842). */
+.sameCard {
+  color: var(--text-secondary);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
 /* ── memory admission (#788) ── */
 
 .policy {
