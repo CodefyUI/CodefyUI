@@ -1551,6 +1551,17 @@ class RunStore:
 
     # ── artifacts ─────────────────────────────────────────────────────────
 
+    async def has_artifact(self, run_id: str, kind: str, path: str) -> bool:
+        """Whether *run_id* already has a *kind* row for *path* (as stored:
+        a mount or transfer row's relative path)."""
+        def _select(conn: sqlite3.Connection) -> Any:
+            return conn.execute(
+                "SELECT 1 FROM exec_run_artifacts WHERE run_id = ? AND "
+                "kind = ? AND path = ? LIMIT 1", (run_id, kind, path),
+            ).fetchone()
+
+        return await self.db.run(_select) is not None
+
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
         backend: str = BACKEND_LOCAL, mount_label: str | None = None,

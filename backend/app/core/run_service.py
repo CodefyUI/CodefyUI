@@ -3181,6 +3181,13 @@ class RunService:
             backend = BACKEND_TRANSFER
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
+        if active.resume_seq is not None and await self.store.has_artifact(
+                active.run_id, signal.kind, signal.path):
+            # An adopted run (#793): the worker replays what was recorded
+            # after the last stored seq, and a file is one row, not two.
+            logger.info("run %s: artifact %s already recorded; replay "
+                        "ignored", active.run_id, signal.path)
+            return
         record = await self.store.add_artifact(
             active.run_id, signal.kind, signal.path,
             meta=artifact_meta(signal),

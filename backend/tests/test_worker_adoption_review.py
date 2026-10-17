@@ -17,12 +17,14 @@ from typing import Any
 import pytest
 from httpx_ws import aconnect_ws
 
+from app.core import worker_protocol as wp
 from app.core.execution_context import ExecutionContext
 from app.core.executors import _Acks
 from app.core.run_service import WORKER_RESUME_KEY, _ActiveRun, _Broadcast
 from app.core.scheduling import Placement
 
 from .test_worker_adoption import _start_and_crash, db  # noqa: F401
+from .test_ws_worker_resume import SpoolingAgent, _drain_acks
 from .test_ws_worker import FakeAgent, _client, _graph, _path, _terminal, _until
 
 RESUME = {WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}}
@@ -179,3 +181,47 @@ async def test_a_graceful_shutdown_ends_a_waiting_adopted_run_at_once(
     third = db()
     assert await third.service.recover_interrupted() == 0
     assert third.service.active_run_ids() == []
+
+
+async def test_an_artifact_replayed_after_a_restart_is_one_row(
+        db, tmp_path):  # noqa: F811
+    """Seen on Meow: a checkpoint reported after the last ack was recorded
+    twice once the agent replayed it to the restarted server."""
+    first = db()
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            run_id = (await client.post("/api/runs", json={
+                "graph": _graph(), "options": {"target": {"worker": "box"}}})
+            ).json()["run_id"]
+            assert isinstance(await agent.recv(), wp.Assign)
+            spooler = SpoolingAgent(tmp_path, run_id)
+            spooler.agent = agent
+            await spooler.produce(spooler.frame("started"))
+            await _drain_acks(spooler, 1)
+            await spooler.produce(wp.Artifact(
+                run_id=run_id, seq=spooler._next(), kind="checkpoint",
+                path="/w/ckpt-e1.pt", meta={"epoch": 1}))
+            for _ in range(250):
+                if await first.service.store.list_artifacts(run_id):
+                    break
+                await asyncio.sleep(0.02)
+        spooler.agent = None
+        await _until(lambda: first.registry.get("box").status
+                     == "disconnected")
+        await first.crash()
+        second = db()
+        await second.service.recover_interrupted()
+        await spooler.produce(wp.Artifact(
+            run_id=run_id, seq=spooler._next(), kind="checkpoint",
+            path="/w/ckpt-e2.pt", meta={"epoch": 2}))
+        await spooler.produce(spooler.frame("finished"))
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            await spooler.resume(agent)
+            record = await _terminal(second.service, run_id)
+    assert record.status == "succeeded"
+    rows = await second.service.store.list_artifacts(run_id)
+    assert sorted(r.meta["epoch"] for r in rows) == [1, 2]
