@@ -586,6 +586,21 @@ describe('reduceRunEvents', () => {
     expect(next.artifacts[1]).not.toHaveProperty('backend');
   });
 
+  it('keeps the s3 backend of a worker upload to the bucket (#791)', () => {
+    const next = reduceRunEvents(emptyDetail(), eventsPage({
+      events: [{
+        cursor: 3,
+        type: 'artifact',
+        ts: 't',
+        payload: {
+          artifact_id: 6, kind: 'checkpoint', path: 's3://b/runs/r1/checkpoint/a.pt',
+          meta: null, backend: 's3', relative_path: 'runs/r1/checkpoint/a.pt',
+        },
+      }],
+    }));
+    expect(next.artifacts[0]).toMatchObject({ id: 6, backend: 's3' });
+  });
+
   it('falls back to the cursor when an artifact event carries no id', () => {
     const next = reduceRunEvents(emptyDetail(), eventsPage({
       events: [{ cursor: 42, type: 'artifact', ts: 't', payload: { path: 'a.pt' } }],

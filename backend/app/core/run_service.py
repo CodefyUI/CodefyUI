@@ -246,10 +246,17 @@ from .executors import (
     ExecutionRequest,
     Executor,
     InProcessExecutor,
+    WORKER_S3_KEY,
     RunSinks,
     WorkerExecutor,
 )
-from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_TRANSFER, holds_mount
+from .mounts import (
+    BACKEND_LOCAL,
+    BACKEND_MOUNT,
+    BACKEND_S3,
+    BACKEND_TRANSFER,
+    holds_mount,
+)
 from .node_state_store import NodeStateStore
 from .run_events import (
     DEFAULT_ERROR_MODE,
@@ -1584,6 +1591,8 @@ class _ActiveRun:
     stored_seq: int = 0
     #: When this process adopted the run (UTC ISO), or None (#793).
     adopted_at: str | None = None
+    #: An adopted ``s3`` run's ``execution_facts.worker_s3`` (#793, #791).
+    resume_s3: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -3171,6 +3180,7 @@ class RunService:
                 node_types=active.node_types,
                 needs=active.needs,
                 resume_seq=active.resume_seq,
+                resume_s3=active.resume_s3,
             ))
         except asyncio.CancelledError:
             raise
@@ -3439,6 +3449,20 @@ class RunService:
                                active.run_id, signal.path)
                 return
             backend = BACKEND_TRANSFER
+        elif getattr(signal, "backend", None) == BACKEND_S3:
+            # Uploaded to the run's bucket by the worker (#791): the path is
+            # the object key, recorded only under the run's own prefix.
+            # The row records its bucket (#791), so it keeps naming its
+            # object after a settings change.
+            from .s3 import owns_key
+
+            if not owns_key(active.run_id, signal.path,
+                            getattr(signal, "prefix", None)):
+                logger.warning("run %s: ignoring an S3 artifact outside the "
+                               "run's prefix: %r", active.run_id,
+                               signal.path)
+                return
+            backend = BACKEND_S3
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
         adopted_at = getattr(active, "adopted_at", None)
@@ -3458,7 +3482,8 @@ class RunService:
             backend=backend,
             mount_label=mount_label or None,
             worker_id=(placement.worker_id if placement is not None
-                       else LOCAL_WORKER_ID))
+                       else LOCAL_WORKER_ID),
+            bucket=getattr(signal, "bucket", None))
         await self._emit(active.run_id, EVENT_ARTIFACT,
                          artifact_payload(record, signal.node_id))
 
@@ -4009,9 +4034,13 @@ class RunService:
         except BaseException:
             self._workers.close_run(placement.worker_id, record.id)
             raise
-        self._runs[record.id].adopted_at = utc_now_iso()
         facts = (record.execution_facts
                  if isinstance(record.execution_facts, dict) else {})
+        adopted = self._runs[record.id]
+        adopted.adopted_at = utc_now_iso()
+        worker_s3 = facts.get(WORKER_S3_KEY)
+        if isinstance(worker_s3, dict):
+            adopted.resume_s3 = worker_s3
         stop = facts.get("stop_requested")
         if stop in (STOP_REASON_CANCELLED, STOP_REASON_INTERRUPTED):
             # A Stop the previous process could not deliver: the worker

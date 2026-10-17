@@ -159,7 +159,7 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
 
 ## 儲存 {/* #storage */}
 
-不使用資料夾中檔案的 run（純 tensor 的圖，或 Dataset、HuggingFaceDataset 節點下載到自己快取的圖）可以在任何 worker 上執行。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端。有共用資料夾的 worker 優先。
+不使用資料夾中檔案的 run（純 tensor 的圖，或 Dataset、HuggingFaceDataset 節點下載到自己快取的圖）可以在任何 worker 上執行。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端（有設定時，改經由 [S3 或 MinIO bucket](#storage-s3)）。有共用資料夾的 worker 優先。
 
 | Run | 有 `data` 掛載的 worker | 沒有掛載的 worker |
 | --- | --- | --- |
@@ -210,6 +210,60 @@ cdui agent start --mount data=/nas/codefyui/data
 
 輸入與輸出送往 agent 連線的同一個位址，帶著它的 worker token，並做相同的憑證檢查（釘選的憑證對它們同樣生效）：沒有 TLS 時，它們會以明文經過網路。在 proxy 後方時，它的請求大小上限必須容得下最大的輸出（[部署](./deployment#workers-behind-this-proxy)）。
 
+### S3 或 MinIO bucket {/* #storage-s3 */}
+
+實驗室若已有 MinIO，或使用 S3，可以讓 bucket 取代控制面作為檔案存放處：worker 從 bucket 下載 run 的輸入，並把 run 寫出的檔案上傳到 bucket，控制面只保存物件的 key。如此 run 的檔案不會經過控制面的網路連線，唯一的例外是每個輸入檔，由控制面放進 bucket 一次。
+
+它處理的 run 與 transfer 後端相同（在檔案欄位中選取的上傳檔，總大小在 `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` 以內），對象是沒有共用資料夾的 worker；啟用時由它取代 transfer 後端。有共用資料夾的 worker 仍然優先。
+
+**設定方式。**
+
+1. 在控制面與每台要使用 bucket 的 worker 上，把 boto3 安裝進 CodefyUI 的環境：在安裝資料夾執行 `uv pip install --python backend/.venv/bin/python boto3`，開發用的 checkout 則用 `uv pip install -e "backend[s3]"`。沒有 boto3 的 agent 不會提供 S3（agent 的 log 會列出連線時使用的 capabilities），仍會收到 transfer 後端的 run，每個這樣的 run 會記下一則 `storage_fallback` 警告。
+2. 建立 bucket，以及一個可讀寫它的 CodefyUI 使用者。使用 MinIO 的 client：`mc mb lab/codefyui`，接著 `mc admin user add lab codefyui <secret>` 與 `mc admin policy attach lab readwrite --user codefyui`。
+3. 以 bucket 的設定啟動控制面：
+
+```bash
+export CODEFYUI_S3_ENABLED=1
+export CODEFYUI_S3_ENDPOINT_URL=http://minio.lab:9000   # AWS S3 則留空
+export CODEFYUI_S3_BUCKET=codefyui
+export CODEFYUI_S3_ADDRESSING_STYLE=path                # 多數 MinIO 環境
+export CODEFYUI_S3_ACCESS_KEY_ID=codefyui
+export CODEFYUI_S3_SECRET_ACCESS_KEY=<secret>
+cdui start
+```
+
+伺服器 log 會顯示 `S3 artifact backend on: bucket codefyui at http://minio.lab:9000 (credentials: auto)`，或說明後端為何關閉（沒有 bucket，或缺少 boto3）。Worker 不需要自己的設定：bucket、它的位址與憑證會隨每個 run 送達。控制面與每台 worker 都必須能以同一個位址連到 bucket。
+
+**檔案放在哪裡。** 放在 `CODEFYUI_S3_PREFIX` 之下（預設為空；設為 `codefyui/` 會把所有東西放在該資料夾下）：
+
+- `inputs/<sha256>`：run 讀取的上傳檔。第一次有 run 需要它時由控制面放入，以內容命名，同一個檔案不會上傳兩次。Worker 從這裡把它下載到 transfer 後端使用的同一個 `agent-cache`。
+- `runs/<run id>/<kind>/<name>`：run 記錄為 artifact 的每個檔案（週期 checkpoint 是 `runs/<run id>/checkpoint/<name>.pt`，TensorBoard 資料夾逐檔上傳），以及放在 `runs/<run id>/output/` 下、run 寫在 `models/`、`media/` 或 `output/` 中的其他檔案，保留它在那裡的路徑（ModelSaver 的 `iris/model.pt` 會是 `runs/<run id>/output/models/iris/model.pt`）。Agent 的上傳方式與 transfer 後端相同：與 run 並行、中斷 checkpoint 最後上傳、在回報 run 結束之前完成，並以相同的重試度過斷線。暫時憑證過期時也以同樣方式重試，直到新憑證送達（MinIO 對過期憑證回應 `InvalidAccessKeyId`；只有已到或超過期限的暫時憑證遇到這個回應才會重試）。被 bucket 拒絕的檔案（`AccessDenied`、bucket 不存在）會留在 worker 上，並附上 `transfer_failed` 警告。
+
+`GET /api/runs/{id}/artifacts` 以 `backend: "s3"` 列出它們，`path` 為 `s3://<bucket>/<key>`，`relative_path` 為 key。在執行任務面板中，**複製路徑** 會複製 `s3://` 位址（給 `mc` 或 `aws s3` 使用），**下載** 則取得檔案：預設經由控制面轉送（`CODEFYUI_S3_DOWNLOAD=proxy`），設為 `presign` 時會把瀏覽器導向有效 `CODEFYUI_S3_PRESIGN_TTL_S` 秒的預先簽署 URL，資料直接從 bucket 傳到瀏覽器（此時瀏覽器必須自己連得到 bucket 的位址）。與 transfer 後端不同，寫檔節點的檔案不會放進控制面的 `models/` 資料夾：本機 run 要讀它之前，請先下載。
+
+**憑證。** `CODEFYUI_S3_CREDENTIALS` 決定 worker 拿到什麼：
+
+- `sts`：向 endpoint 的 STS 取得暫時憑證（`AssumeRole`），附帶 session policy，只允許寫入 `runs/<run id>/` 之下，以及讀取該 run 的輸入，有效期為 `CODEFYUI_S3_STS_DURATION_S`（預設一小時）。只要 run 還在執行，控制面會在過期前送出新的憑證。MinIO 用一般使用者的 key 就能發出這種憑證；AWS 則需要可 assume 的 role（`CODEFYUI_S3_STS_ROLE_ARN`）。無法取得憑證的 run 會在送出之前失敗。
+- `static`：控制面自己的 key。請給 CodefyUI 一個只能存取這個 bucket 的使用者。
+- `auto`（預設）：先用 `sts`，STS 拒絕時改用控制面自己的 key，並在伺服器 log 留下警告；之後 10 分鐘內，或在 S3 設定變更之前，不再向 STS 要求。
+
+憑證隨 run 的指派送出，與它的機密參數相同（[Agent 與控制面之間的信任](#trust-between-agent-and-control-plane)）：控制面位址是一般的 `http://` 時不會加密。Agent 只把它們放在記憶體中，不寫入檔案或 log，run 的子程序也拿不到。控制面從環境變數讀取自己的 key，不寫入任何資料庫或 log。
+
+**清理。** Run 保留機制與 **刪除** 會移除 run 在 `runs/<run id>/` 下的物件，並中止它未完成的上傳，但保留 `output/`（寫檔節點的檔案會保留，與 transfer 後端把它們留在資料夾中相同），以及保留機制移除以 `interrupted` 結束的 run 時，它的 `checkpoint/`。當時連不上的 bucket 會記錄在 log 中，物件保留不動；**刪除** 時回應的 `warning` 也會說明。沒有任何 run 資料列指向的東西（保留下來的 `output/` 資料夾、`inputs/`、已終止的 worker 留下的上傳）交給 bucket 的 lifecycle 規則處理。在 AWS S3 上：
+
+```json
+{"Rules": [
+  {"ID": "codefyui-abandoned-uploads", "Status": "Enabled", "Filter": {"Prefix": "runs/"},
+   "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}},
+  {"ID": "codefyui-inputs", "Status": "Enabled", "Filter": {"Prefix": "inputs/"},
+   "Expiration": {"Days": 30}}
+]}
+```
+
+（`aws s3api put-bucket-lifecycle-configuration --bucket codefyui --lifecycle-configuration file://rules.json`；若設定了 `CODEFYUI_S3_PREFIX`，prefix 要加在它之下）。MinIO 不接受 `AbortIncompleteMultipartUpload`：它會在 24 小時後自行移除未完成的上傳（`mc admin config get lab api` 會顯示 `stale_uploads_expiry`），因此只需要過期規則：`mc ilm rule add lab/codefyui --prefix "inputs/" --expire-days 30`。過期的輸入檔會由下一個需要它的 run 重新上傳。
+
+每筆資料列會記下它的 bucket，key 也帶著當時的 prefix，因此之後變更 `CODEFYUI_S3_BUCKET` 或 `CODEFYUI_S3_PREFIX` 只影響新的 run：先前 run 的檔案仍在原處列出、下載與移除（控制面的 key 必須仍能存取舊的 bucket）。
+
 ## 讓 worker 保持同步 {/* #keeping-workers-in-sync */}
 
 Worker 必須執行與控制面相同的 CodefyUI 版本，也應該認得相同的節點。Agent 每次連線時，控制面都會檢查這兩項。
@@ -233,7 +287,7 @@ Worker 的連線關閉，或連續錯過三次心跳（30 秒）時，即視為�
 - **沒有重新連線**：run 以 `interrupted` 結束，名額釋放。如果 worker 之後回來且 run 仍在執行，會被要求立即停止，讓這張卡留給下一個 run；run 在 worker 上的結束方式會記錄為 run 的 `late_result`（`{status, error, worker_id, at}`，見 `GET /api/runs/{id}` 與 `execution_facts`），狀態與事件紀錄維持原樣。
 - **控制面在這段期間重新啟動**：重新啟動的控制面會接手這個 run，如下所述。
 
-**控制面重新啟動時。** 控制面若沒有先停止它的 run 就結束（被強制結束、當機、筆電斷電），worker 上的 run 會繼續執行：子程序照常進行，agent 也會保留它們的事件。控制面下次啟動時會接手每一個這樣的 run，而不是把它結束。這個 run 會顯示為 `disconnected`，並留下類型為 `worker_disconnected`、說明伺服器已重新啟動的 `run_warning`；它會重新占用原本的名額，事件紀錄也沿用同一份。它的 worker 重新連線（SSH worker 的通道由控制面自己重新啟動）且仍有這個 run 時，run 會回到 `running`，從控制面最後確認的位置接續：停止前最後約一秒內的事件可能出現兩次，但不會缺漏。若 worker 未在 `CODEFYUI_WORKER_RESUME_GRACE_S`（從重新啟動起算）內重新連線，run 會以 `interrupted` 結束，原因為 `it did not reconnect with the run within 300 s after this server restarted`；若 worker 重新連線時已沒有這個 run（它的 agent 也重新啟動過），run 會立即結束。Transfer run 的上傳會在重新啟動後繼續，之前已收到的檔案仍屬於這個 run。在控制面自身執行的 run、仍在佇列中等待的 run，以及由 CodefyUI 3.1.0 啟動的 worker run（它沒有記錄接續的位置），則與以前一樣以 `interrupted` 結束。在 worker 離線期間按下的停止會跨越重新啟動保留，worker 回來時再送出。被接手的 run 仍在等 worker 時若正常關閉控制面，這個 run 會立即以 `interrupted` 結束；在關閉的寬限時間內沒有停下的 worker run 也會以 `interrupted` 結束；worker 下次連線時會被要求停止它。正常關閉（`systemctl stop`、Windows 上的 Ctrl+C）仍會停止 worker 上的 run（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)），所以不會留下需要接手的 run。
+**控制面重新啟動時。** 控制面若沒有先停止它的 run 就結束（被強制結束、當機、筆電斷電），worker 上的 run 會繼續執行：子程序照常進行，agent 也會保留它們的事件。控制面下次啟動時會接手每一個這樣的 run，而不是把它結束。這個 run 會顯示為 `disconnected`，並留下類型為 `worker_disconnected`、說明伺服器已重新啟動的 `run_warning`；它會重新占用原本的名額，事件紀錄也沿用同一份。它的 worker 重新連線（SSH worker 的通道由控制面自己重新啟動）且仍有這個 run 時，run 會回到 `running`，從控制面最後確認的位置接續：停止前最後約一秒內的事件可能出現兩次，但不會缺漏。若 worker 未在 `CODEFYUI_WORKER_RESUME_GRACE_S`（從重新啟動起算）內重新連線，run 會以 `interrupted` 結束，原因為 `it did not reconnect with the run within 300 s after this server restarted`；若 worker 重新連線時已沒有這個 run（它的 agent 也重新啟動過），run 會立即結束。Transfer run 的上傳會在重新啟動後繼續，之前已收到的檔案仍屬於這個 run。`s3` run 的 worker 手上的憑證由先前的程序核發，因此它一重新連線就會收到新的憑證，之後照常續期。在控制面自身執行的 run、仍在佇列中等待的 run，以及由 CodefyUI 3.1.0 啟動的 worker run（它沒有記錄接續的位置），則與以前一樣以 `interrupted` 結束。在 worker 離線期間按下的停止會跨越重新啟動保留，worker 回來時再送出。被接手的 run 仍在等 worker 時若正常關閉控制面，這個 run 會立即以 `interrupted` 結束；在關閉的寬限時間內沒有停下的 worker run 也會以 `interrupted` 結束；worker 下次連線時會被要求停止它。正常關閉（`systemctl stop`、Windows 上的 Ctrl+C）仍會停止 worker 上的 run（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)），所以不會留下需要接手的 run。
 
 `CODEFYUI_WORKER_RESUME_GRACE_S` 由控制面讀取；設為 `0` 則 worker 一斷線就結束它的 run，重新啟動的控制面也不會接手任何 run。SSH worker 的 agent 也以同樣的寬限時間決定何時不再等待通道（[連線中斷](#connecting-over-ssh)）。
 
@@ -402,6 +456,18 @@ CONTROL=https://codefyui.example.com
 | `CODEFYUI_TRANSFER_ENABLED` | `1` | `0` 關閉 transfer 後端 |
 | `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` | 2 GiB | 一個 run 經由傳送的輸入檔總大小上限 |
 | `CODEFYUI_MAX_UPLOAD_SIZE` | 500 MB | Worker 可上傳的單一輸出檔上限；所有檔案上傳都適用同一上限 |
+| `CODEFYUI_S3_ENABLED` | `0` | `1` 讓沒有共用資料夾的 worker 上的 run 經由 S3 或 MinIO bucket 傳送檔案（[S3 或 MinIO bucket](#storage-s3)） |
+| `CODEFYUI_S3_ENDPOINT_URL` | *（空）* | Bucket 的 API 位址，例如 `http://minio.lab:9000`；AWS S3 則留空 |
+| `CODEFYUI_S3_REGION` | `us-east-1` | Bucket 的 region |
+| `CODEFYUI_S3_BUCKET` | *（空）* | Bucket |
+| `CODEFYUI_S3_PREFIX` | *（空）* | 加在每個 key 前面，例如 `codefyui/` |
+| `CODEFYUI_S3_ADDRESSING_STYLE` | `auto` | 多數 MinIO 環境用 `path`，或 `virtual` |
+| `CODEFYUI_S3_ACCESS_KEY_ID`、`CODEFYUI_S3_SECRET_ACCESS_KEY` | *（空）* | 控制面存取 bucket 的 key，只保存在記憶體中 |
+| `CODEFYUI_S3_CREDENTIALS` | `auto` | Worker 拿到的憑證：`sts`（暫時、只限它的 run）、`static`（上面的 key）或 `auto`（先 STS，否則用上面的 key） |
+| `CODEFYUI_S3_STS_ROLE_ARN` | *（空）* | AWS 上要 assume 的 role；MinIO 會忽略 |
+| `CODEFYUI_S3_STS_DURATION_S` | `3600` | 暫時憑證的有效秒數（900 到 43200）；到期前會送出新的 |
+| `CODEFYUI_S3_DOWNLOAD` | `proxy` | Bucket 中檔案的 **下載**：`proxy` 經由控制面轉送，`presign` 導向預先簽署的 URL |
+| `CODEFYUI_S3_PRESIGN_TTL_S` | `900` | 預先簽署下載 URL 的有效秒數 |
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | SSH worker 的槽位編號：決定 worker 在遠端主機上的狀態資料夾（`~/.codefyui-ssh/<id>-<槽位>/`，通道的 socket 就在裡面），也是它存放憑證所用的位址 |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | 設為 `yes` 時要求主機已在 `known_hosts` 中 |
 

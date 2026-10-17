@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
+from typing import Literal
 from platformdirs import user_data_dir
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 # Let the handful of ops not yet implemented for Apple MPS fall back to CPU
@@ -347,6 +348,41 @@ class Settings(BaseSettings):
     # The most a run's inputs may add up to (bytes). A run over it can use
     # only a worker with the mount; with none, it is refused at submit.
     TRANSFER_MAX_INPUT_BYTES: int = 2 * 1024 * 1024 * 1024
+
+    # ── S3 / MinIO artifact backend (#791) ─────────────────────────────
+    # The alternative to the transfer backend above for a worker without
+    # the mount: the worker reads the run's inputs from, and writes what the
+    # run produces to, this bucket directly; this server stores only the
+    # object keys. Off by default; needs boto3 (the `s3` extra) here and on
+    # the worker, and a worker whose agent lacks it gets the transfer
+    # backend. TRANSFER_MAX_INPUT_BYTES caps the inputs here too. See
+    # core/s3.py.
+    S3_ENABLED: bool = False
+    # Empty: AWS S3 in S3_REGION. MinIO: its API address, http://host:9000.
+    S3_ENDPOINT_URL: str = ""
+    S3_REGION: str = "us-east-1"
+    S3_BUCKET: str = ""
+    # Prepended to every key (`codefyui/` -> `codefyui/runs/<run_id>/...`).
+    S3_PREFIX: str = ""
+    # `path` for most MinIO setups; `auto` lets boto3 choose.
+    S3_ADDRESSING_STYLE: Literal["auto", "path", "virtual"] = "auto"
+    # This server's own credentials. In memory only (#251): never written
+    # to SQLite or a log. With STS (below) a worker gets temporary ones
+    # limited to its run's keys; with `static` it gets these.
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: SecretStr = SecretStr("")
+    # What a worker is given: `sts` (AssumeRole with a session policy for
+    # the run's keys, refreshed while the run lasts), `static` (the keys
+    # above), `auto` (STS, else static, with a warning in the log).
+    S3_CREDENTIALS: Literal["auto", "sts", "static"] = "auto"
+    # AWS needs a role to assume; MinIO ignores it.
+    S3_STS_ROLE_ARN: str = ""
+    S3_STS_DURATION_S: int = Field(default=3600, ge=900, le=43200)
+    # How GET /api/runs/{id}/artifacts/{aid}/download serves an S3 file:
+    # `proxy` streams it through this server; `presign` redirects to a
+    # pre-signed URL the browser fetches from the bucket itself.
+    S3_DOWNLOAD: Literal["proxy", "presign"] = "proxy"
+    S3_PRESIGN_TTL_S: int = Field(default=900, ge=1, le=604800)
 
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"

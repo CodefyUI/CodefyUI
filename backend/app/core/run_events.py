@@ -332,6 +332,11 @@ def artifact_payload(
         # this server's data root, which the download route serves.
         payload.update(backend="transfer", relative_path=record.stored_path,
                        worker_id=record.worker_id)
+    elif getattr(record, "backend", None) == "s3":
+        # In the run's S3 bucket (#791): its object key, which the download
+        # route serves; ``path`` is its ``s3://`` URI.
+        payload.update(backend="s3", relative_path=record.stored_path,
+                       worker_id=record.worker_id)
     return payload
 
 

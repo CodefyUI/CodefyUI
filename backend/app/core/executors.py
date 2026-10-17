@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
@@ -90,9 +91,15 @@ class TransferredArtifactSignal(ArtifactSignal):
     """An ``ArtifactSignal`` for a file a worker uploaded to this server
     (#785): ``path`` is the key the upload answered with
     (``core.transfer.key_location``). ``RunService`` stores a ``transfer``
-    row. A subclass, like :class:`MountedArtifactSignal`."""
+    row. A subclass, like :class:`MountedArtifactSignal`. ``backend`` is
+    ``s3`` (#791) for a file a worker uploaded to the run's bucket instead:
+    ``path`` is then its object key, ``bucket`` the bucket and ``prefix``
+    the run's key prefix it was assigned (both recorded with the row, so a
+    later settings change does not lose the object)."""
 
     backend: str = "transfer"
+    bucket: str | None = None
+    prefix: str | None = None
 
 
 @dataclass
@@ -163,6 +170,9 @@ class ExecutionRequest:
     #: no ``assign`` and waits for the worker to report the run
     #: (``WorkerRegistry.adopt``). None: a run that starts now.
     resume_seq: int | None = None
+    #: An adopted ``s3`` run's ``execution_facts.worker_s3`` (bucket,
+    #: prefix, input keys, #791): its worker is issued new credentials.
+    resume_s3: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -590,11 +600,35 @@ CANCEL_POLL_S = 0.2
 WARNING_WORKER_DISCONNECTED = "worker_disconnected"
 WARNING_WORKER_RECONNECTED = "worker_reconnected"
 
+#: ``execution_facts`` key of an ``s3`` worker run's bucket, prefix and
+#: input keys (#793): a restarted server re-issues its credentials.
+WORKER_S3_KEY = "worker_s3"
+
 #: A worker run's frames are acknowledged (``ack``, #783) once this many
 #: are recorded, or :data:`ACK_INTERVAL_S` after the first unacknowledged
 #: one, whichever comes first; and always on ``run_finished``.
 ACK_EVERY = 64
 ACK_INTERVAL_S = 1.0
+
+#: An ``s3`` run's temporary credentials are renewed once this share of
+#: their remaining lifetime has passed (#791), never sooner than
+#: :data:`REFRESH_MIN_S`; a failed renewal is retried every
+#: :data:`REFRESH_RETRY_S` until it succeeds.
+REFRESH_AT = 2 / 3
+REFRESH_MIN_S = 5.0
+REFRESH_RETRY_S = 60.0
+
+
+@dataclass
+class _S3Run:
+    """An ``s3`` run's storage on this side (#791): the bucket and prefix
+    its rows record, and the latest credentials sent (re-sent after a
+    reconnect)."""
+
+    bucket: str
+    prefix: str
+    access: Any
+    renewed: bool = False
 
 
 class WorkerExecutor:
@@ -664,6 +698,8 @@ class WorkerExecutor:
         #: that uses the transfer backend (#785). None: no such run is
         #: assigned (it fails with a message instead).
         self._content_index = content_index
+        #: The ``s3`` runs in flight (#791), by run id.
+        self._s3_runs: dict[str, _S3Run] = {}
 
     async def _send(self, worker_id: str, frame: Any) -> bool:
         """Send *frame* to *worker_id*'s current connection. False if none."""
@@ -695,23 +731,49 @@ class WorkerExecutor:
             return ExecutionOutcome(STATUS_FAILED, refusal)
         devices = list(placement.devices)
         storage = assignment_storage(worker)
-        if uses_transfer(worker, request.needs):
+        backend = storage_backend(worker, request.needs)
+        if backend is not None:
             try:
-                storage = await transfer_storage(
-                    storage.mount, request.needs, self._content_index)
+                if backend == "s3":
+                    storage = await s3_storage(
+                        storage.mount, request.run_id, request.needs,
+                        self._content_index)
+                else:
+                    storage = await transfer_storage(
+                        storage.mount, request.needs, self._content_index)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
-                    return ExecutionOutcome(STATUS_FAILED, (
-                    f"cannot send this run's input files to worker "
-                    f"{worker_id}: {exc}"))
+                where = "the S3 bucket" if backend == "s3" \
+                    else f"worker {worker_id}"
+                return ExecutionOutcome(STATUS_FAILED, (
+                    f"cannot send this run's input files to {where}: {exc}"))
+            if backend == "transfer" and _s3_skipped(worker):
+                from . import s3
+                await _warning(request, s3.WARNING_STORAGE_FALLBACK, (
+                    f"worker {worker_id} cannot use the S3 bucket (its agent "
+                    "has no boto3); this run's files go through this "
+                    "server instead"))
+        input_keys: list[str] = []
+        if storage.s3 is not None:
+            self._s3_runs[request.run_id] = _S3Run(
+                bucket=storage.s3.bucket, prefix=storage.s3.prefix,
+                access=storage.s3)
+            input_keys = [i.key for i in storage.inputs or [] if i.key]
+            # What a restarted server needs to issue the run's worker new
+            # credentials after adopting it (#793): before the assign, so a
+            # crash right after it still finds them.
+            await _record_facts(request, {WORKER_S3_KEY: {
+                "bucket": storage.s3.bucket, "prefix": storage.s3.prefix,
+                "input_keys": input_keys}})
         run = self._registry.open_run(worker, request.run_id)
         assign = wp.Assign(
             run_id=request.run_id, graph=request.graph,
             options=request.options, device=devices[0],
             devices=devices, storage=storage)
         return await self._serve(request, worker_id, run, devices,
-                                 assign=(worker, assign))
+                                 assign=(worker, assign),
+                                 s3_input_keys=input_keys)
 
     async def _resume(self, request: ExecutionRequest,
                       worker_id: str) -> ExecutionOutcome:
@@ -728,19 +790,31 @@ class WorkerExecutor:
             f"{worker_id}; the run keeps running there and waits up to "
             f"{grace:.0f} s for the worker to reconnect"))
         await _record_connection(request, False)
+        s3_reissue = None
+        resume_s3 = request.resume_s3
+        if isinstance(resume_s3, Mapping) and resume_s3.get("bucket"):
+            s3_reissue = [k for k in resume_s3.get("input_keys") or []
+                          if isinstance(k, str)]
+            self._s3_runs[request.run_id] = _S3Run(
+                bucket=str(resume_s3["bucket"]),
+                prefix=str(resume_s3.get("prefix") or ""), access=None)
         return await self._serve(request, worker_id, run,
                                  list(request.placement.devices),
-                                 resume_seq=request.resume_seq or 0)
+                                 resume_seq=request.resume_seq or 0,
+                                 s3_reissue=s3_reissue)
 
     async def _serve(self, request: ExecutionRequest, worker_id: str,
                      run: Any, devices: list[str], *, assign: Any = None,
-                     resume_seq: int = 0) -> ExecutionOutcome:
+                     resume_seq: int = 0,
+                     s3_input_keys: list[str] | None = None,
+                     s3_reissue: list[str] | None = None) -> ExecutionOutcome:
         """Send *assign* (``(worker, frame)``; none for an adopted run),
         then turn the run's inbox into sink calls until it ends."""
         from . import worker_protocol as wp
         from .workers import WORKER_DISCONNECTED, WORKER_GONE, WORKER_RECONNECTED
 
         watcher: asyncio.Task | None = None
+        refresher: asyncio.Task | None = None
         acks: _Acks | None = None
         finished = False
         try:
@@ -754,6 +828,21 @@ class WorkerExecutor:
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
+            state = self._s3_runs.get(request.run_id)
+            if s3_reissue is not None and state is not None:
+                # An adopted s3 run (#793): its credentials were issued by
+                # the previous process; fresh ones go out once the worker
+                # is back, then are renewed as for any run.
+                refresher = asyncio.create_task(
+                    self._reissue_credentials(request, worker_id,
+                                              s3_reissue),
+                    name=f"s3-credentials:{request.run_id}")
+            elif state is not None and state.access is not None \
+                    and state.access.expires_at is not None:
+                refresher = asyncio.create_task(
+                    self._refresh_credentials(request, worker_id,
+                                              s3_input_keys or []),
+                    name=f"s3-credentials:{request.run_id}")
             acks = _Acks(self, request, worker_id, run.inbox,
                          recorded=resume_seq)
             while True:
@@ -803,6 +892,9 @@ class WorkerExecutor:
         finally:
             if watcher is not None:
                 watcher.cancel()
+            if refresher is not None:
+                refresher.cancel()
+            self._s3_runs.pop(request.run_id, None)
             if acks is not None:
                 acks.cancel_timer()
             self._registry.close_run(worker_id, request.run_id,
@@ -829,6 +921,11 @@ class WorkerExecutor:
         # Its replay starts after the last ack it got; tell it what this
         # side already has, and repeat a stop it may never have received.
         await acks.resend()
+        state = self._s3_runs.get(request.run_id)
+        if state is not None and state.renewed and state.access is not None:
+            # New credentials may have gone to the dropped connection (#791).
+            await self._send_quietly(worker_id, wp.Credentials(
+                run_id=request.run_id, s3=state.access))
         if request.context.should_stop():
             await self._send(worker_id, wp.Cancel(run_id=request.run_id))
 
@@ -895,6 +992,78 @@ class WorkerExecutor:
             logger.warning("run %s: could not forward the stop to worker %s",
                            request.run_id, worker_id, exc_info=True)
 
+    async def _send_quietly(self, worker_id: str, frame: Any) -> bool:
+        """:meth:`_send`, a failed send (the socket closed after the online
+        check) being False rather than an exception."""
+        try:
+            return await self._send(worker_id, frame)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- a reconnect re-sends
+            logger.debug("worker %s: %s not sent", worker_id,
+                         getattr(frame, "type", frame), exc_info=True)
+            return False
+
+    async def _renewed_access(self, request: ExecutionRequest,
+                              input_keys: list[str]) -> Any:
+        """New credentials for the run, asked for every
+        :data:`REFRESH_RETRY_S` until they come (#791)."""
+        from . import s3
+
+        while True:
+            try:
+                return await asyncio.to_thread(s3.issue_access,
+                                               request.run_id, input_keys)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- STS refused, network
+                logger.warning("run %s: could not renew its S3 credentials "
+                               "(%s); trying again in %.0f s",
+                               request.run_id, exc, REFRESH_RETRY_S)
+                await asyncio.sleep(REFRESH_RETRY_S)
+
+    async def _reissue_credentials(self, request: ExecutionRequest,
+                                   worker_id: str,
+                                   input_keys: list[str]) -> None:
+        """Watcher task of an adopted ``s3`` run (#793): the credentials
+        the worker holds came from the previous process and may expire
+        before the run ends. New ones are issued now and sent once the
+        worker is back (a reconnect re-sends them too), then renewed as
+        :meth:`_refresh_credentials` does. Never raises but a cancel."""
+        from . import worker_protocol as wp
+
+        state = self._s3_runs[request.run_id]
+        fresh = await self._renewed_access(request, input_keys)
+        state.access, state.renewed = fresh, True
+        while not await self._send_quietly(worker_id, wp.Credentials(
+                run_id=request.run_id, s3=fresh)):
+            await asyncio.sleep(CANCEL_POLL_S)
+        if fresh.expires_at is not None:
+            await self._refresh_credentials(request, worker_id, input_keys)
+
+    async def _refresh_credentials(self, request: ExecutionRequest,
+                                   worker_id: str,
+                                   input_keys: list[str]) -> None:
+        """Watcher task of an ``s3`` run with temporary credentials (#791):
+        new ones are asked for once :data:`REFRESH_AT` of the current ones'
+        remaining lifetime has passed (a refusal retried every
+        :data:`REFRESH_RETRY_S`) and go out as ``credentials``, for as long
+        as the run lasts. A send that fails (the worker is away, or its
+        socket closed under the send) is tried again until it goes; a
+        reconnect re-sends the latest too (:meth:`_reconnected`). Never
+        raises but a cancel."""
+        from . import worker_protocol as wp
+
+        state = self._s3_runs[request.run_id]
+        while state.access.expires_at is not None:
+            left = state.access.expires_at - time.time()
+            await asyncio.sleep(max(REFRESH_MIN_S, left * REFRESH_AT))
+            fresh = await self._renewed_access(request, input_keys)
+            state.access, state.renewed = fresh, True
+            while not await self._send_quietly(worker_id, wp.Credentials(
+                    run_id=request.run_id, s3=fresh)):
+                await asyncio.sleep(CANCEL_POLL_S)
+
     async def _deliver(self, request: ExecutionRequest, frame: Any,
                        devices: list[str]) -> ExecutionOutcome | None:
         """Hand one frame to the sinks; the outcome on ``run_finished``."""
@@ -919,10 +1088,14 @@ class WorkerExecutor:
                 MetricPoint(name=p.name, value=p.value, step=p.step,
                             node_id=p.node_id) for p in frame.points])
         elif isinstance(frame, wp.Artifact):
-            if frame.backend == "transfer":
+            if frame.backend in ("transfer", "s3"):
+                state = self._s3_runs.get(request.run_id) \
+                    if frame.backend == "s3" else None
                 signal: ArtifactSignal = TransferredArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
-                    node_id=frame.node_id)
+                    node_id=frame.node_id, backend=frame.backend,
+                    bucket=state.bucket if state else None,
+                    prefix=state.prefix if state else None)
             elif frame.mount_label:
                 signal = MountedArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
@@ -979,20 +1152,52 @@ def assignment_storage(worker: Any) -> Any:
         relative_artifacts=not getattr(worker, "same_host", False))
 
 
-def uses_transfer(worker: Any, needs: Any) -> bool:
-    """Whether a run with *needs* goes to *worker* through the transfer
-    backend (#785): it needs the mount, *worker* does not hold it, and the
-    backend can serve it, and the worker speaks it (its ``transfer``
-    capability, #781). The scheduler placed it there for that reason
-    (``scheduling.reaches``); a run that fits neither is assigned the
-    mount as before."""
+def storage_backend(worker: Any, needs: Any) -> str | None:
+    """The backend that ships a run's files to *worker* (#785, #791):
+    ``s3`` or ``transfer`` when the run needs the mount, *worker* does not
+    hold it, the run fits (``needs["transfer"]``) and the worker speaks one
+    (``scheduling.no_mount_backend``, S3 first). The scheduler placed it
+    there for that reason (``scheduling.reaches``). None: the run is
+    assigned the mount as before."""
     from .mounts import holds_mount
-    from .scheduling import speaks_transfer
+    from .scheduling import no_mount_backend
     from .transfer import transferable
 
     mount = needs.get("mount") if isinstance(needs, Mapping) else None
-    return bool(mount) and not holds_mount(worker, mount) \
-        and transferable(needs) and speaks_transfer(worker)
+    if not mount or holds_mount(worker, mount) or not transferable(needs):
+        return None
+    return no_mount_backend(worker)
+
+
+def _s3_skipped(worker: Any) -> bool:
+    """S3 is on here, but *worker*'s agent did not list it (#791)."""
+    from . import s3
+    from .worker_protocol import CAPABILITY_S3
+
+    return s3.enabled() and CAPABILITY_S3 not in (
+        getattr(worker, "capabilities", None) or ())
+
+
+async def s3_storage(label: str, run_id: str, needs: Mapping[str, Any],
+                     content_index: Any) -> Any:
+    """``assign.storage`` for an ``s3`` run (#791): the inputs named by
+    content hash (as for ``transfer``) and by the object each was put in
+    (``s3.ensure_inputs``, which uploads one the bucket lacks), and the
+    bucket with the credentials the worker uses (``s3.issue_access``)."""
+    from . import s3
+    from . import worker_protocol as wp
+    from .transfer import TransferRefused
+
+    inputs = list(needs.get("inputs") or [])
+    if inputs and content_index is None:
+        raise TransferRefused("this server has no content index")
+    manifest = await content_index.manifest(inputs) if inputs else []
+    entries = await asyncio.to_thread(s3.ensure_inputs, manifest)
+    access = await asyncio.to_thread(
+        s3.issue_access, run_id, [e["key"] for e in entries])
+    return wp.Storage(
+        backend="s3", mount=label, relative_artifacts=False,
+        inputs=[wp.TransferInput(**entry) for entry in entries], s3=access)
 
 
 async def transfer_storage(label: str, needs: Mapping[str, Any],
@@ -1026,6 +1231,20 @@ async def _warning(request: ExecutionRequest, kind: str, detail: str) -> None:
         raise
     except Exception:  # noqa: BLE001 -- observability
         logger.warning("run %s: could not record %s", request.run_id, detail)
+
+
+async def _record_facts(request: ExecutionRequest,
+                        patch: dict[str, Any]) -> None:
+    record = request.sinks.record_execution_facts
+    if record is None:
+        return
+    try:
+        await record(patch)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- the run goes on; adoption degrades
+        logger.warning("run %s: could not record %s", request.run_id,
+                       ", ".join(patch), exc_info=True)
 
 
 async def _record_connection(request: ExecutionRequest,
