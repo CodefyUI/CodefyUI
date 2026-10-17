@@ -71,9 +71,23 @@ def _hello(name: str, *devices: wp.DeviceReport) -> wp.Hello:
                     devices=[_card("cpu", None, None, None), *devices])
 
 
+#: The registries a test made, shut down after it (``_shut_down``).
+_MADE: list[WorkerRegistry] = []
+
+
+@pytest.fixture(autouse=True)
+async def _shut_down():
+    """Every test here is async: a registry's watchdog needs a running
+    loop, which a sync test does not have once another module closed it."""
+    yield
+    while _MADE:
+        await _MADE.pop().shutdown()
+
+
 def _registry(*hellos: wp.Hello, local: list | None = None,
               same_host: tuple[str, ...] = ()) -> WorkerRegistry:
     registry = WorkerRegistry(local_devices=lambda: list(local or []))
+    _MADE.append(registry)
     for hello in hellos:
         registry.connect(hello, send=_noop, close=_noop,
                          same_host=hello.name in same_host)
@@ -109,7 +123,7 @@ def _hold(taken: dict, placement: Placement) -> None:
 # ── the registry's card index ────────────────────────────────────────────
 
 
-def test_two_workers_offering_one_uuid_are_one_card_whatever_the_numbers():
+async def test_two_workers_offering_one_uuid_are_one_card_whatever_the_numbers():
     """Matched by UUID, so another ``CUDA_VISIBLE_DEVICES`` (or a SLURM
     allocation) on one agent, which numbers the card ``cuda:1`` there,
     still names the same card. A card without a UUID, or with a UUID
@@ -133,7 +147,7 @@ def test_two_workers_offering_one_uuid_are_one_card_whatever_the_numbers():
     assert registry.card_peers("meow-e2e", "not a device") == ()
 
 
-def test_this_processs_card_joins_and_a_shared_alias_adds_no_slot():
+async def test_this_processs_card_joins_and_a_shared_alias_adds_no_slot():
     """This process's card is an offerer too. A same-host worker whose card
     is ALREADY this process's slot (``Worker.shared``, #773) adds a peer but
     no second slot; a worker on the same card that was not recognised as
@@ -192,7 +206,7 @@ async def test_the_index_follows_connects_heartbeats_and_removals(caplog):
         await registry.shutdown()
 
 
-def test_this_processs_devices_are_not_probed_until_a_worker_names_a_card():
+async def test_this_processs_devices_are_not_probed_until_a_worker_names_a_card():
     """A server without workers (or whose workers report no UUID) never
     lists its own devices for this (#773 probed them lazily, on the first
     same-host worker; the card index keeps that)."""
@@ -203,6 +217,7 @@ def test_this_processs_devices_are_not_probed_until_a_worker_names_a_card():
         return [_Fact("cuda:0", UUID)]
 
     registry = WorkerRegistry(local_devices=local_devices)
+    _MADE.append(registry)
     assert registry.card_slots(("local", "cuda:0")) == (("local", "cuda:0"),)
     registry.connect(_hello("old", _card("cuda:0", None)), send=_noop,
                      close=_noop)
@@ -225,7 +240,7 @@ def _two_on_one_card(limits: QueueLimits = QueueLimits(),
     return WorkerScheduler(limits, registry, lambda: list(local))
 
 
-def test_two_any_runs_at_limit_1_never_share_the_card():
+async def test_two_any_runs_at_limit_1_never_share_the_card():
     """The bug: the second ``any`` run went to the other agent's slot of
     the same card. Now it waits, and starts once the first is done."""
     scheduler = _two_on_one_card()
@@ -244,7 +259,7 @@ def test_two_any_runs_at_limit_1_never_share_the_card():
                              {("meow-e2e", "cuda:0"): 1}) is None
 
 
-def test_a_card_takes_the_smallest_cap_among_its_offerers():
+async def test_a_card_takes_the_smallest_cap_among_its_offerers():
     raised = QueueLimits(overrides=parse_queue_overrides("meow-e2e/cuda:0=2"))
     scheduler = _two_on_one_card(raised)
     taken = {("meow-join", "cuda:0"): 1}
@@ -254,7 +269,7 @@ def test_a_card_takes_the_smallest_cap_among_its_offerers():
     assert _two_on_one_card(both).place(_on("meow-e2e"), taken) is not None
 
 
-def test_a_local_run_counts_a_worker_run_on_the_same_card():
+async def test_a_local_run_counts_a_worker_run_on_the_same_card():
     """This process's card and a worker's card with its UUID that was not
     aliased (not recognised as same-host): one card for the in-process lane
     too."""
@@ -269,7 +284,7 @@ def test_a_local_run_counts_a_worker_run_on_the_same_card():
         "local", ("cuda:0",), (("local", "cuda:0"),))
 
 
-def test_without_grouping_taken_and_caps_read_as_before():
+async def test_without_grouping_taken_and_caps_read_as_before():
     """A registry without ``card_slots`` (or one whose grouping raises)
     leaves every slot its own card."""
 
@@ -291,7 +306,7 @@ def test_without_grouping_taken_and_caps_read_as_before():
     assert failing.card_slots(("x", "cuda:0")) == (("x", "cuda:0"),)
 
 
-def test_the_card_view_sums_a_cards_slots_and_is_not_wrapped_twice():
+async def test_the_card_view_sums_a_cards_slots_and_is_not_wrapped_twice():
     cards = {("a", "cuda:0"): (("a", "cuda:0"), ("b", "cuda:0")),
              ("b", "cuda:0"): (("a", "cuda:0"), ("b", "cuda:0"))}
     view = CardView({("a", "cuda:0"): 1, ("b", "cuda:0"): 2, ("c", "x"): 5},
@@ -332,7 +347,7 @@ def _shared_card(*shared: str) -> WorkerScheduler:
                            lambda: [])
 
 
-def test_one_ledger_per_card_across_its_offerers():
+async def test_one_ledger_per_card_across_its_offerers():
     """Shared by memory on both agents: a budget promised through one
     agent's slot leaves less room through the other's."""
     scheduler = _shared_card("meow-e2e", "meow-join")
@@ -353,7 +368,7 @@ def test_one_ledger_per_card_across_its_offerers():
     assert admission["runs"] == ["r1"]
 
 
-def test_a_count_run_on_one_offerer_holds_the_card_from_budgeted_runs():
+async def test_a_count_run_on_one_offerer_holds_the_card_from_budgeted_runs():
     """Shared through one agent, exclusive through the other: a run without
     a budget there has the card to itself, and the other way round."""
     scheduler = _shared_card("meow-e2e")
