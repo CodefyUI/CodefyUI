@@ -12,7 +12,7 @@ coordinator (#343); 008 records where each run executes (#769); 009 is
 worker enrollment (#780); 010 says where each artifact's file lives
 (#782); 011 records a worker's environment (#781); 012 the SSH workers
 the control plane launches (#784); 013 is the transfer backend's content
-index (#785).
+index (#785); 014 records the S3 bucket of an artifact (#791).
 """
 
 from __future__ import annotations
@@ -518,7 +518,7 @@ CREATE TABLE worker_enrollments (
 #   ``mount`` (``path`` is relative to the mount ``mount_label`` names),
 #   ``transfer`` (#785: ``path`` is the key the worker's upload was stored
 #   under, relative to this server's data root, ``core.transfer.key_path``);
-#   ``s3`` (#791) is reserved.
+#   ``s3`` (#791: ``path`` is the object key in the S3 bucket, ``core.s3``).
 # - ``mount_label``: the mount's label, for ``mount`` rows; else NULL.
 # - ``worker_id``: the worker whose run produced the file (``local`` for
 #   this process), so a path from another machine is never read as one of
@@ -590,7 +590,18 @@ CREATE TABLE file_hashes (
 );
 """
 
-# ── Migration 014: per-device admission policy (#788) ─────────────────────
+# ── Migration 014: the S3 bucket of an artifact (#791) ────────────────────
+#
+# An ``s3`` row (``backend = 's3'``) names its object by key (``path``); the
+# bucket goes here, so a row keeps naming its object after
+# ``CODEFYUI_S3_BUCKET`` changes (its key carries the prefix of its time).
+# NULL for every other row, and for every row from before: no row written
+# by 3.1.0 is an ``s3`` row, so nothing is backfilled.
+MIGRATION_014 = """
+ALTER TABLE exec_run_artifacts ADD COLUMN bucket TEXT;
+"""
+
+# ── Migration 015: per-device admission policy (#788) ─────────────────────
 #
 # How a worker's card admits runs: ``exclusive`` (the count limit, one run
 # per card, as before) or ``shared`` (memory admission: runs declare a
@@ -599,7 +610,7 @@ CREATE TABLE file_hashes (
 # same-host worker known only in memory as well as to an enrolled one, and
 # survives both a reconnect and a restart of this server. No row:
 # ``exclusive``. Revoking a worker deletes its rows.
-MIGRATION_014 = """
+MIGRATION_015 = """
 CREATE TABLE worker_device_policies (
   worker      TEXT NOT NULL,                -- the worker name
   device      TEXT NOT NULL,                -- canonical, the worker's numbering
@@ -622,7 +633,8 @@ MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
-                         MIGRATION_012, MIGRATION_013, MIGRATION_014]
+                         MIGRATION_012, MIGRATION_013,
+                         MIGRATION_014, MIGRATION_015]
 
 
 def _is_comment_only(statement: str) -> bool:

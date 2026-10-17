@@ -367,7 +367,7 @@ class WorkerStore:
 
         return await self.db.run(_exists)
 
-    # ── device admission policies (#788, migration 014) ──────────────────
+    # ── device admission policies (#788, migration 015) ──────────────────
 
     async def list_device_policies(self) -> list[tuple[str, str, str]]:
         """Every stored ``(worker, device, policy)``, by worker then device."""

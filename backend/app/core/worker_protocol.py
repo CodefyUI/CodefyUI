@@ -87,6 +87,13 @@ What the frames carry
   cache lacks over HTTP before it starts the run subprocess, reporting
   ``warning`` frames of kind ``transfer_progress`` (these may come before
   ``run_started``), and uploads what the run writes before ``run_finished``.
+- ``assign.storage.backend == "s3"`` (#791): as ``transfer``, but the
+  bytes go between the worker and an S3 / MinIO bucket. ``storage.s3``
+  carries the bucket, the run's key prefix and the credentials the agent
+  uses (short-lived when the control plane got them from STS); each
+  ``storage.inputs`` entry names its object ``key``. The artifact frames
+  carry ``backend: "s3"`` and the object key. ``credentials`` replaces a
+  running run's short-lived credentials before they expire.
 - ``run_finished.status``: ``succeeded``, ``failed`` or ``cancelled`` as an
   ``ExecutionOutcome`` reports them, or ``interrupted``: after a ``cancel``
   the subprocess ended without reporting, because the agent terminated it
@@ -104,7 +111,7 @@ import json
 import re
 from typing import Annotated, Any, Iterable, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 #: Bumped on any change a peer of the previous version would misread. Sent
 #: in ``hello`` and ``welcome``; a mismatch is refused (#781). 2: ``ack`` and
@@ -131,8 +138,12 @@ PROTOCOL_VERSION = 3
 #: ``one_shot_run_id`` and ``instance_id``) is understood: the control plane
 #: keeps such a worker out of ``any`` and gives it exactly one run; a
 #: one-shot agent refuses a control plane whose ``welcome`` lacks it.
+#: ``s3`` (#791): ``assign.storage.backend == "s3"`` with ``storage.s3`` and
+#: ``inputs[].key``, ``artifact.backend == "s3"``, and the ``credentials``
+#: frame. An agent lists it only when it can load an S3 client (boto3):
+#: :func:`agent_capabilities`.
 CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
-                                 "memory_budget", "one_shot")
+                                 "memory_budget", "one_shot", "s3")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
@@ -143,6 +154,14 @@ CAPABILITY_ONE_SHOT = "one_shot"
 #: ``target.pool`` value (#790): any connected one-shot worker. The only
 #: pool there is.
 POOL_ONE_SHOT = "one-shot"
+#: The capability name of the S3 artifact backend (#791).
+CAPABILITY_S3 = "s3"
+
+
+def agent_capabilities(s3_client: bool) -> list[str]:
+    """What an agent lists in ``hello``: :data:`CAPABILITIES`, without
+    ``s3`` when it has no S3 client to speak it with (*s3_client*)."""
+    return [c for c in CAPABILITIES if s3_client or c != CAPABILITY_S3]
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -165,10 +184,12 @@ CANCEL = "cancel"
 DRAIN = "drain"
 REJECT = "reject"
 ACK = "ack"
+CREDENTIALS = "credentials"
 
 AGENT_FRAME_TYPES = (HELLO, HEARTBEAT, RUN_STARTED, EVENT, METRICS, ARTIFACT,
                      WARNING, RUN_FINISHED, RUN_ALIVE)
-CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK)
+CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK,
+                       CREDENTIALS)
 
 #: Seconds between heartbeats unless ``welcome`` says otherwise.
 DEFAULT_HEARTBEAT_S = 10.0
@@ -232,7 +253,9 @@ class _Frame(BaseModel):
     # Additive growth (#781): a field this build does not know is dropped,
     # not refused, so a newer optional field never breaks an older reader.
     # A field whose meaning changes bumps PROTOCOL_VERSION instead.
-    model_config = ConfigDict(extra="ignore")
+    # No frame's input in a validation error (#791): an ``assign`` carries
+    # S3 credentials and secret params, and ``ProtocolError`` is logged.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
 
 class _RunFrame(_Frame):
@@ -379,9 +402,10 @@ class Artifact(_RunFrame):
     node_id: str | None = None
     mount_label: str | None = None
     #: ``transfer`` (#785): the file was uploaded to the control plane and
-    #: ``path`` is the key it is stored under there. None: a path on the
-    #: worker (absolute, or relative to ``mount_label``).
-    backend: Literal["transfer"] | None = None
+    #: ``path`` is the key it is stored under there. ``s3`` (#791): the file
+    #: was uploaded to the run's S3 bucket and ``path`` is its object key.
+    #: None: a path on the worker (absolute, or relative to ``mount_label``).
+    backend: Literal["transfer", "s3"] | None = None
 
 
 class RunWarning(_RunFrame):
@@ -442,6 +466,31 @@ class TransferInput(_Frame):
     name: str = Field(min_length=1, max_length=1024)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     bytes: int = Field(ge=0)
+    #: ``s3`` only (#791): the object the agent downloads it from
+    #: (``<prefix>inputs/<sha256>``, uploaded by the control plane).
+    key: str | None = Field(default=None, max_length=1024)
+
+
+class S3Access(_Frame):
+    """Where an ``s3`` run's objects go, and the credentials to reach them
+    (#791). Secret fields stay out of ``repr`` and validation errors: the
+    agent holds them in memory only (#251) and never logs them."""
+
+    #: ``CODEFYUI_S3_ENDPOINT_URL``; None: AWS S3 for ``region``.
+    endpoint_url: str | None = None
+    region: str | None = None
+    bucket: str = Field(min_length=1)
+    #: The run's key prefix, ``[<CODEFYUI_S3_PREFIX>]runs/<run_id>/``: every
+    #: object the run writes goes under it.
+    prefix: str = Field(min_length=1)
+    addressing_style: Literal["auto", "path", "virtual"] = "auto"
+    access_key_id: str = Field(repr=False)
+    secret_access_key: str = Field(repr=False)
+    #: Set for temporary (STS) credentials, with :attr:`expires_at`.
+    session_token: str | None = Field(default=None, repr=False)
+    #: When temporary credentials expire (Unix time); None: static ones.
+    #: The control plane sends ``credentials`` before then.
+    expires_at: float | None = None
 
 
 class Storage(_Frame):
@@ -471,7 +520,7 @@ class Storage(_Frame):
     ``core.transfer`` (the control plane's half) and ``agent.transfer``.
     """
 
-    backend: Literal["mount", "transfer"] = "mount"
+    backend: Literal["mount", "transfer", "s3"] = "mount"
     mount: str
     dirs: dict[str, str] | None = None
     relative_artifacts: bool = True
@@ -483,6 +532,8 @@ class Storage(_Frame):
     #: ``POST /api/runs/{id}/artifacts/upload`` (its ``MAX_UPLOAD_SIZE``),
     #: so the agent does not send a file that would be refused.
     max_upload_bytes: int | None = Field(default=None, ge=0)
+    #: ``s3`` only (#791): the bucket, the run's prefix and credentials.
+    s3: S3Access | None = None
 
 
 class Assign(_Frame):
@@ -525,6 +576,15 @@ class Drain(_Frame):
     type: Literal["drain"] = DRAIN
 
 
+class Credentials(_Frame):
+    """New credentials for a running ``s3`` run (#791), sent before the
+    previous temporary ones expire; only to an agent that lists ``s3``."""
+
+    type: Literal["credentials"] = CREDENTIALS
+    run_id: RunId
+    s3: S3Access
+
+
 class Reject(_Frame):
     type: Literal["reject"] = REJECT
     reason: str
@@ -549,12 +609,14 @@ AgentFrame = Annotated[
     Field(discriminator="type"),
 ]
 ControlFrame = Annotated[
-    Union[Welcome, Assign, Cancel, Drain, Reject, Ack],
+    Union[Welcome, Assign, Cancel, Drain, Reject, Ack, Credentials],
     Field(discriminator="type"),
 ]
 
-_AGENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(AgentFrame)
-_CONTROL_ADAPTER: TypeAdapter[Any] = TypeAdapter(ControlFrame)
+_AGENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(
+    AgentFrame, config=ConfigDict(hide_input_in_errors=True))
+_CONTROL_ADAPTER: TypeAdapter[Any] = TypeAdapter(
+    ControlFrame, config=ConfigDict(hide_input_in_errors=True))
 
 
 class ProtocolError(ValueError):
@@ -582,6 +644,15 @@ def _decode(adapter: TypeAdapter[Any], raw: str | bytes) -> Any:
         raise ProtocolError("frame is not a JSON object")
     try:
         return adapter.validate_python(data)
+    except ValidationError as exc:
+        # Locations and messages only, never the input (#791: an assign
+        # carries credentials), whatever the models' config says.
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors(include_url=False, include_input=False,
+                                    include_context=False))
+        raise ProtocolError(
+            f"invalid {data.get('type')!r} frame: {detail}") from None
     except ValueError as exc:
         raise ProtocolError(f"invalid {data.get('type')!r} frame: {exc}") from exc
 

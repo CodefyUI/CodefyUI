@@ -2,7 +2,7 @@
 
 A worker's card admits runs one of two ways, its **policy**, set per
 ``(worker, device)`` in the Workers panel and stored in
-``worker_device_policies`` (migration 014):
+``worker_device_policies`` (migration 015):
 
 - ``exclusive`` (the default, and what every card had before #788): the
   per-slot count limit (``QueueLimits``), one run per card;

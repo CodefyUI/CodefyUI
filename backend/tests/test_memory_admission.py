@@ -1120,7 +1120,7 @@ async def test_a_batch_child_that_may_not_wait_is_refused_up_front(env):
 
 
 async def test_the_last_peak_is_found_by_an_indexed_column(tmp_path):
-    """Review item 7: ``exec_runs.graph_hash`` (MIGRATION_014) and its index
+    """Review item 7: ``exec_runs.graph_hash`` (MIGRATION_015) and its index
     answer last_peak_memory, newest first, without a json scan."""
     database = Database(tmp_path / "codefyui.db")
     database.connect()
