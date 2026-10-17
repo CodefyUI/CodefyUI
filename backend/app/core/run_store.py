@@ -119,9 +119,10 @@ WORKER_LOCAL = TARGET_LOCAL
 #: The worker id an ``any`` run carries until it is placed (#772).
 WORKER_ANY = TARGET_ANY
 
-#: SQL: an artifact row that is not a ``transfer`` row (#785), whose file
-#: retention removes with its run's directory instead.
-_NOT_TRANSFER = "(backend IS NULL OR backend != 'transfer')"
+#: SQL: an artifact row that is neither a ``transfer`` row (#785), whose
+#: file retention removes with its run's directory instead, nor an ``s3``
+#: row (#791), whose object goes with the run's prefix in the bucket.
+_NOT_TRANSFER = "(backend IS NULL OR backend NOT IN ('transfer', 's3'))"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
@@ -1798,13 +1799,39 @@ class RunStore:
                         f"{where_clause} AND worker_id IS NOT NULL "
                         "AND worker_id NOT IN (?, ?)",
                         (*params, WORKER_LOCAL, WORKER_ANY)).fetchall()]
+                # A worker run that wrote to the S3 bucket (#791): its
+                # objects go with it, the same way.
+                s3_runs = [
+                    (row["id"], row["status"] == STATUS_INTERRUPTED)
+                    for row in conn.execute(
+                        "SELECT id, status FROM exec_runs WHERE "
+                        f"{where_clause} AND id IN (SELECT run_id FROM "
+                        "exec_run_artifacts WHERE backend = 's3')",
+                        params).fetchall()]
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
-                return deleted, doomed_paths, doomed_logdirs, worker_runs
+                return (deleted, doomed_paths, doomed_logdirs, worker_runs,
+                        s3_runs)
 
-        deleted, doomed_paths, doomed_logdirs, worker_runs = \
+        deleted, doomed_paths, doomed_logdirs, worker_runs, s3_runs = \
             await self.db.run(_prune)
+        if s3_runs:
+            from . import s3
+
+            if s3.configured():
+                removed = await asyncio.to_thread(s3.remove_runs_objects,
+                                                  s3_runs)
+                if removed:
+                    logger.info("run retention: removed the S3 objects of "
+                                "%d worker run(s): %s", len(removed),
+                                ", ".join(removed))
+            else:
+                logger.warning(
+                    "run retention: %d run(s) had files in an S3 bucket, "
+                    "which this server can no longer reach (%s); their "
+                    "objects stay", len(s3_runs),
+                    s3.unconfigured())
         if worker_runs:
             from .transfer import remove_run_files
 

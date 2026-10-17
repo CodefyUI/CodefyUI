@@ -460,7 +460,7 @@ class AgentConnection:
                              digest=facts.fingerprint_digest)),
             node_catalog_hash=facts.node_catalog_hash,
             node_types=list(facts.node_types),
-            capabilities=list(wp.CAPABILITIES),
+            capabilities=wp.agent_capabilities(self.runner.speaks_s3()),
             devices=await self._device_reports(), platform=platform_facts(),
             mounts=await asyncio.to_thread(self.runner.available_mounts),
             machine_id=await asyncio.to_thread(machine_identity))
@@ -487,7 +487,9 @@ class AgentConnection:
             # A transfer upload rides out an outage this long (#785).
             self.runner.upload_window_s = welcome.resume_grace_s
         self.runner.draining = False
-        shared = wp.shared_capabilities(wp.CAPABILITIES, welcome.capabilities)
+        shared = wp.shared_capabilities(
+            wp.agent_capabilities(self.runner.speaks_s3()),
+            welcome.capabilities)
         logger.info("connected as %s (worker id %s; capabilities %s)",
                     self.name, welcome.worker_id, ", ".join(shared) or "none")
         tasks = [
@@ -566,6 +568,9 @@ class AgentConnection:
                 # for retention; a run that started is marked when it ends.
                 await asyncio.to_thread(
                     mark_finished, self.runner.runs_dir / frame.run_id)
+        elif isinstance(frame, wp.Credentials):
+            if not self.runner.renew(frame.run_id, frame.s3):
+                logger.info("credentials for unknown run %s", frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

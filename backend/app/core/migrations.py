@@ -518,7 +518,7 @@ CREATE TABLE worker_enrollments (
 #   ``mount`` (``path`` is relative to the mount ``mount_label`` names),
 #   ``transfer`` (#785: ``path`` is the key the worker's upload was stored
 #   under, relative to this server's data root, ``core.transfer.key_path``);
-#   ``s3`` (#791) is reserved.
+#   ``s3`` (#791: ``path`` is the object key in the S3 bucket, ``core.s3``).
 # - ``mount_label``: the mount's label, for ``mount`` rows; else NULL.
 # - ``worker_id``: the worker whose run produced the file (``local`` for
 #   this process), so a path from another machine is never read as one of

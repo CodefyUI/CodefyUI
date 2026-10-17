@@ -42,6 +42,9 @@ def test_every_frame_type_round_trips():
         wp.Drain(),
         wp.Reject(reason="no"),
         wp.Ack(run_id="r1", seq=4),
+        wp.Credentials(run_id="r1", s3=wp.S3Access(
+            bucket="b", prefix="runs/r1/", access_key_id="AK",
+            secret_access_key="SK", session_token="T", expires_at=1.0)),
     ]
     assert {f.type for f in control_frames} == set(wp.CONTROL_FRAME_TYPES)
     for frame in control_frames:

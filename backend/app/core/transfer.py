@@ -178,8 +178,11 @@ def check(needs: Mapping[str, Any]) -> dict[str, Any]:
     """``{"ok", "reason", "bytes"}``: whether a run with *needs* may use
     the transfer backend. Reads the stores (a ``stat`` per input)."""
     from ..config import settings
+    from . import s3
 
-    if not settings.TRANSFER_ENABLED:
+    # The S3 backend (#791) serves the same runs: either one being on is
+    # enough here, and the scheduler picks the one the worker speaks.
+    if not settings.TRANSFER_ENABLED and not s3.enabled():
         return {"ok": False, "bytes": 0,
                 "reason": "the transfer backend is off on this server "
                           "(CODEFYUI_TRANSFER_ENABLED=0)"}

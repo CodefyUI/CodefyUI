@@ -517,10 +517,12 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
                   >
                     {t('runs.detail.copyPath')}
                   </button>
-                  {artifact.backend === 'transfer' && typeof artifact.id === 'number' && (
-                    // Uploaded here by a worker without the shared mount
-                    // (#785): the server serves the file itself, by row id
-                    // (an event-log key like `cursor:7` names no row).
+                  {(artifact.backend === 'transfer' || artifact.backend === 's3')
+                    && typeof artifact.id === 'number' && (
+                    // Uploaded by a worker without the shared mount, here
+                    // (#785) or to the S3 bucket (#791): the server serves
+                    // the file, by row id (an event-log key like `cursor:7`
+                    // names no row).
                     <a
                       className={styles.rowBtn}
                       href={`/api/runs/${encodeURIComponent(detail.runId)}/artifacts/${artifact.id}/download`}

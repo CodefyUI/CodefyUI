@@ -873,6 +873,22 @@ describe('RunsPanel — detail view', () => {
     expect(screen.getByTitle(t('runs.detail.copyPath'))).toBeInTheDocument();
   });
 
+  it('offers a download for a file a worker put in the S3 bucket (#791)', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 13, kind: 'output', path: 's3://lab/runs/r1/output/models/best.pt',
+        meta: null, created_at: '2026-10-15T00:00:00Z', backend: 's3',
+        relative_path: 'runs/r1/output/models/best.pt', worker_id: 'gpu-box-1',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const link = await screen.findByTitle(t('runs.detail.download'));
+    expect(link).toHaveAttribute('href', '/api/runs/r1/artifacts/13/download');
+    expect(screen.getByText('s3://lab/runs/r1/output/models/best.pt')).toBeInTheDocument();
+  });
+
   it('offers no download for a transfer row known only by an event-log key', async () => {
     api.getRunArtifacts.mockResolvedValue({
       run_id: 'r1',

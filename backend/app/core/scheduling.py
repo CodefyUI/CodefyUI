@@ -60,6 +60,7 @@ from .transfer import refusal as transfer_refusal
 from .transfer import transferable
 from .run_store import WORKER_LOCAL
 from .worker_protocol import (
+    CAPABILITY_S3,
     CAPABILITY_TRANSFER,
     TARGET_ANY,
     TARGET_LOCAL,
@@ -119,11 +120,27 @@ def entry_transfers(entry: Any) -> bool:
     return transferable(getattr(entry, "needs", None))
 
 
+def no_mount_backend(worker: Any) -> str | None:
+    """The storage backend a run that needs the mount would use on
+    *worker*, which does not hold it: ``s3`` (#791) when this server has it
+    on and the agent listed it, else ``transfer`` (#785) when the agent
+    listed that (#781's rule: an additive feature is used only when both
+    ends name it) and it is on here, else None."""
+    from ..config import settings
+    from . import s3
+
+    capabilities = getattr(worker, "capabilities", None) or ()
+    if CAPABILITY_S3 in capabilities and s3.enabled():
+        return CAPABILITY_S3
+    if CAPABILITY_TRANSFER in capabilities and settings.TRANSFER_ENABLED:
+        return CAPABILITY_TRANSFER
+    return None
+
+
 def speaks_transfer(worker: Any) -> bool:
-    """Whether *worker*'s agent listed the ``transfer`` capability in its
-    ``hello`` (#781's rule: an additive feature is used only when both ends
-    name it)."""
-    return CAPABILITY_TRANSFER in (getattr(worker, "capabilities", None) or ())
+    """Whether *worker* can take a run without the mount: its agent speaks
+    a backend that ships the files (:func:`no_mount_backend`)."""
+    return no_mount_backend(worker) is not None
 
 
 def reaches(worker: Any, entry: Any) -> bool:
