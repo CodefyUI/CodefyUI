@@ -274,6 +274,15 @@ async def websocket_worker(ws: WebSocket) -> None:
                           grace_s=registry.grace_s,
                           resume_grace_s=registry.resume_grace_s,
                           capabilities=list(wp.CAPABILITIES)))
+    # Checked again with no await before ``connect`` (#790): the check above
+    # awaited (a run lookup, ``welcome``), and two agents taking one
+    # one-shot name at once would both have passed it, the second then
+    # replacing the first and moving its run.
+    late = handshake.one_shot_refusal(hello, registry.get(hello.name)) \
+        if registry.get(hello.name) is not None else None
+    if late is not None:
+        await refuse(hello.name, late)
+        return
     # Same machine needs both (#773, #780): the machine id alone is
     # self-reported, so a remote agent could copy ours; the loopback peer
     # alone is not enough either, since an ``ssh -R`` tunnel or a local
@@ -332,7 +341,10 @@ async def _one_shot_run_refusal(ws: WebSocket, registry: Any,
     for a run that is never placed there. Checked on the agent's first
     connection only; its reconnects (the same ``instance_id``) carry on
     with the run it took."""
-    if not hello.one_shot or hello.one_shot_run_id is None:
+    if not hello.one_shot or hello.one_shot_run_id is None \
+            or hello.one_shot_taken is not None:
+        # An agent that already took its run is carrying on with it (a
+        # reconnect, perhaps after this server restarted), not asking.
         return None
     existing = registry.get(hello.name)
     if existing is not None and hello.instance_id is not None \

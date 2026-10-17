@@ -257,6 +257,9 @@ describe('WorkersPanel', () => {
     expect(card('took').getByText('Offline')).toBeInTheDocument();
     expect(card('idle').getByText('left without a run')).toBeInTheDocument();
     expect(card('regular').queryByText('One-shot')).toBeNull();
+    // Nothing to drain on a worker that takes one run and leaves.
+    expect(card('waiting').queryByRole('button', { name: 'Drain' })).toBeNull();
+    expect(card('regular').getByRole('button', { name: 'Drain' })).toBeInTheDocument();
     expect(card('regular').queryByText('One-shot run')).toBeNull();
     act(() => useI18n.setState({ locale: 'zh-TW' }));
     expect(card('took').getByText('單次')).toBeInTheDocument();

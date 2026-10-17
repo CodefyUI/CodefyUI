@@ -82,8 +82,12 @@ marks the worker; ``target: any`` never places a run there (only a run
 naming it or ``target.pool: "one-shot"`` does, see ``core.scheduling``),
 and it takes ONE run: :meth:`WorkerRegistry.claim_one_shot` records it
 the moment the run is placed (``Worker.one_shot_claim``), which keeps every
-other run off it, across reconnects of the same agent (``instance_id``).
-A refused assignment hands the claim back (:meth:`release_one_shot`).
+other run off it, across reconnects of the same agent (``instance_id``),
+and across a restart of this server (the agent says which run it took in
+``hello.one_shot_taken``). Once its ``assign`` went out
+(:meth:`WorkerRegistry.one_shot_assigned`) the claim is for good; a run
+that ends before that, however it ends, hands it back
+(:meth:`release_one_shot`, called when the run gives back its slots).
 
 When a replacing connection arrives while runs are still in flight on the
 old one, those runs move to the new connection and wait for its
@@ -247,6 +251,9 @@ class Worker:
     #: The run it took (set when the run is placed here), or None. Carried
     #: across a reconnect of the same agent; a new agent starts without.
     one_shot_claim: str | None = None
+    #: The claimed run's ``assign`` went out: the agent has it, so the claim
+    #: is not handed back when the run ends.
+    one_shot_assigned: bool = False
     #: ``hello.instance_id``: which agent process holds the name (#790).
     instance_id: str | None = None
 
@@ -598,6 +605,12 @@ class WorkerRegistry:
             # The same one-shot agent reconnecting (#790): the run it took
             # is still the one it took.
             worker.one_shot_claim = old.one_shot_claim
+            worker.one_shot_assigned = old.one_shot_assigned
+        if hello.one_shot and hello.one_shot_taken is not None:
+            # The agent says it already took a run (#790): after a restart
+            # of this server nothing else remembers that.
+            worker.one_shot_claim = hello.one_shot_taken
+            worker.one_shot_assigned = True
         worker.shared = self._shared_devices(worker)
         self._rejections.pop(hello.name, None)
         self._check_catalog(worker)
@@ -861,11 +874,20 @@ class WorkerRegistry:
             logger.info("one-shot worker %s takes run %s", worker.name,
                         run_id)
 
-    def release_one_shot(self, worker_id: str, run_id: str) -> None:
-        """*run_id* ended before it was assigned to *worker_id* (refused
-        here): the one-shot worker may take another run."""
+    def one_shot_assigned(self, worker_id: str, run_id: str) -> None:
+        """*run_id*'s ``assign`` went out to *worker_id*: its claim stays."""
         worker = self._workers.get(worker_id)
         if worker is not None and worker.one_shot_claim == run_id:
+            worker.one_shot_assigned = True
+
+    def release_one_shot(self, worker_id: str, run_id: str) -> None:
+        """*run_id* gave back its slots: if its ``assign`` never went out
+        to *worker_id* (cancelled while starting, refused here, the socket
+        failed under the send), the one-shot worker may take another run.
+        Idempotent; an assigned claim stays."""
+        worker = self._workers.get(worker_id)
+        if worker is not None and worker.one_shot_claim == run_id \
+                and not worker.one_shot_assigned:
             worker.one_shot_claim = None
             self._changed()
 

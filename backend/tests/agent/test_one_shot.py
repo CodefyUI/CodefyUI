@@ -115,6 +115,9 @@ def test_its_end_and_its_delivery_set_the_exit_code():
         assert other.exit_code(0) == EXIT_RUN_FAILED
     started = OneShot(taken="c")  # stopped while it ran, no end reported
     assert started.exit_code(0) == EXIT_RUN_FAILED
+    # Refused on a reconnect after it took its run: the run is what failed.
+    assert started.exit_code(2) == EXIT_RUN_FAILED
+    assert OneShot().exit_code(2) == 2
 
 
 async def test_an_outcome_that_is_never_recorded_stops_after_the_window(
@@ -230,8 +233,11 @@ async def test_a_dropped_connection_mid_run_is_ridden_out(tmp_path):
             lambda n, f: n == 1 and isinstance(f, wp.RunAlive), timeout=15)
         assert [e.run_id for e in alive.runs] == ["run1"]
         hellos = cp.of_type(wp.Hello)
-        # The same agent: the control plane lets it back in.
+        # The same agent: the control plane lets it back in, and hears
+        # which run it took (a restarted control plane knows nothing else).
         assert hellos[0].instance_id == hellos[1].instance_id
+        assert (hellos[0].one_shot_taken, hellos[1].one_shot_taken) == (
+            None, "run1")
         assert await asyncio.wait_for(task, 60) == EXIT_SUCCEEDED
     assert [f.status for f in cp.of_type(wp.RunFinished)] == ["succeeded"]
 
@@ -294,3 +300,54 @@ def test_a_run_gets_the_card_the_batch_system_gave_the_agent(monkeypatch):
         "CUDA_VISIBLE_DEVICES"] == "5,GPU-abc"
     # A CPU run still sees no card.
     assert child_environment("cpu", [])["set"]["CUDA_VISIBLE_DEVICES"] == ""
+
+
+# ── setup failures and ROCm (review of #835) ─────────────────────────────
+
+
+def test_a_one_shot_agent_that_cannot_start_exits_4(monkeypatch, capsys):
+    """Exit 1 means "the run failed" for a one-shot agent, so a refused
+    --mount (and a failed enrollment, through the same helper) is 4; a
+    regular agent keeps 1."""
+    from app.agent.one_shot import EXIT_SETUP
+
+    monkeypatch.setattr(cli, "running_agent_pid", lambda: 4242)
+    assert cli.main(["start", "--one-shot", "--mount", "data=/x"]) \
+        == EXIT_SETUP == 4
+    assert "--mount cannot change" in capsys.readouterr().err
+    assert cli.main(["start", "--foreground", "--mount", "data=/x"]) == 1
+    assert cli.setup_failed(_args(one_shot=True)) == 4
+    assert cli.setup_failed(_args()) == 1
+
+
+def test_a_failed_enrollment_exits_4_under_one_shot(monkeypatch, tmp_path):
+    from app.agent import enroll
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    from app.core.resources import DeviceFact
+
+    monkeypatch.setattr(cli, "_probe_facts", lambda: [DeviceFact(
+        "cpu", "cpu", None, "", None, None, "none")])
+
+    def refuse(*_: Any, **__: Any) -> Any:
+        raise enroll.EnrollError("this enrollment token was already used")
+
+    monkeypatch.setattr(enroll, "enroll", refuse)
+    argv = ["start", "--control", "http://127.0.0.1:9", "--token",
+            "abcdef.0123456789abcdef", "--name", "slurm", "--devices", "cpu"]
+    assert cli.main([*argv, "--one-shot"]) == 4
+    assert cli.main([*argv, "--foreground"]) == 1
+
+
+def test_an_agent_offers_no_card_it_cannot_see_through_nvml(monkeypatch):
+    """Why ROCm visibility needs no translation in ``child_environment``:
+    the agent lists GPUs through NVML only (it never imports torch), so on
+    an AMD machine it offers no GPU and no ROCm run is ever assigned to it,
+    whatever ``ROCR_VISIBLE_DEVICES`` / ``HIP_VISIBLE_DEVICES`` say."""
+    from app.core import resources
+
+    monkeypatch.setattr(resources, "_nvml_cards", lambda: [])
+    monkeypatch.setattr(cli, "apple_silicon", lambda: False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "3")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert [fact.kind for fact in cli._probe_facts()] == ["cpu"]

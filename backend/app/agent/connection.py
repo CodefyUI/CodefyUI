@@ -497,6 +497,8 @@ class AgentConnection:
             one_shot=self.one_shot is not None,
             one_shot_run_id=(None if self.one_shot is None
                              else self.one_shot.run_id),
+            one_shot_taken=(None if self.one_shot is None
+                            else self.one_shot.taken),
             instance_id=self.instance_id)
         await ws.send(wp.encode_frame(hello))
         raw = await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S)

@@ -29,7 +29,10 @@ failed, was cancelled or interrupted, or its outcome could not be
 delivered; 2 the control plane refused the agent (``reject``, a pinned
 certificate that does not match, or a bad flag), as for every agent;
 :data:`EXIT_NO_RUN` (3) the agent was stopped (SIGTERM, Ctrl-C, a batch
-system's time limit) before a run arrived.
+system's time limit) before a run arrived; :data:`EXIT_SETUP` (4) it could
+not start (enrollment failed, ``--mount`` refused; ``cli.setup_failed``).
+A refusal after the agent took its run (a reconnect refused) is ``1``:
+the run's outcome was not recorded.
 """
 
 from __future__ import annotations
@@ -46,6 +49,8 @@ logger = logging.getLogger(__name__)
 EXIT_SUCCEEDED = 0
 EXIT_RUN_FAILED = 1
 EXIT_NO_RUN = 3
+#: The agent could not start: enrollment failed, ``--mount`` refused.
+EXIT_SETUP = 4
 
 #: The shortest wait for the control plane to record the outcome.
 MIN_DELIVER_WINDOW_S = 60.0
@@ -106,8 +111,12 @@ class OneShot:
         stop.set()
 
     def exit_code(self, code: int) -> int:
-        """The agent's exit code, given the connection loop's *code*."""
-        if code != 0:
+        """The agent's exit code, given the connection loop's *code*.
+
+        A refusal (*code* 2) after the agent took its run (a reconnect the
+        control plane refused) is about the run: it did not get recorded,
+        so ``1``."""
+        if code != 0 and (code != 2 or self.taken is None):
             return code
         if self.taken is None:
             logger.warning("one-shot: stopped before a run arrived (exit %d)",

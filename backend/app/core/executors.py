@@ -664,7 +664,6 @@ class WorkerExecutor:
         worker_id = placement.worker_id
         worker = self._registry.get(worker_id)
         if worker is None or not worker.online:
-            self._unclaim(worker_id, request.run_id)
             detail = f"worker {worker_id} is not connected"
             await _worker_gone_warning(request, detail)
             return self._gone(request, detail)
@@ -672,7 +671,6 @@ class WorkerExecutor:
         # may have reconnected with fewer node types since (#781).
         refusal = await self._catalog_refusal(request, worker)
         if refusal is not None:
-            self._unclaim(worker_id, request.run_id)
             return ExecutionOutcome(STATUS_FAILED, refusal)
         devices = list(placement.devices)
         storage = assignment_storage(worker)
@@ -683,8 +681,7 @@ class WorkerExecutor:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
-                self._unclaim(worker_id, request.run_id)
-                return ExecutionOutcome(STATUS_FAILED, (
+                    return ExecutionOutcome(STATUS_FAILED, (
                     f"cannot send this run's input files to worker "
                     f"{worker_id}: {exc}"))
         run = self._registry.open_run(worker, request.run_id)
@@ -696,6 +693,10 @@ class WorkerExecutor:
                 run_id=request.run_id, graph=request.graph,
                 options=request.options, device=devices[0],
                 devices=devices, storage=storage))
+            # The agent has it: a one-shot worker's claim stays (#790).
+            assigned = getattr(self._registry, "one_shot_assigned", None)
+            if assigned is not None:
+                assigned(worker_id, request.run_id)
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
@@ -751,13 +752,6 @@ class WorkerExecutor:
                 acks.cancel_timer()
             self._registry.close_run(worker_id, request.run_id,
                                      finished=finished)
-
-    def _unclaim(self, worker_id: str, run_id: str) -> None:
-        """The run ends before its ``assign`` went out: a one-shot worker
-        that was to take it may take another (#790)."""
-        release = getattr(self._registry, "release_one_shot", None)
-        if release is not None:
-            release(worker_id, run_id)
 
     async def _disconnected(self, request: ExecutionRequest, worker_id: str,
                             reason: str) -> None:

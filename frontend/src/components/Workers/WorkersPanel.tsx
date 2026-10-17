@@ -336,16 +336,19 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           </span>
         )}
         <span className={styles.spacer} />
-        <button
-          ref={actionRef}
-          type="button"
-          className={styles.btn}
-          aria-disabled={busy}
-          title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
-          onClick={() => void toggleDrain()}
-        >
-          {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
-        </button>
+        {/* A one-shot worker takes one run and leaves: nothing to drain (#790). */}
+        {!worker.one_shot && (
+          <button
+            ref={actionRef}
+            type="button"
+            className={styles.btn}
+            aria-disabled={busy}
+            title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
+            onClick={() => void toggleDrain()}
+          >
+            {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
+          </button>
+        )}
         <button
           type="button"
           className={styles.btn}

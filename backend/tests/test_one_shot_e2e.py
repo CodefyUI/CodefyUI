@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from app.core.auth import TOKEN_HEADER, session_token
+from app.main import app
 
 from . import test_worker_e2e
 from .test_worker_e2e import (
@@ -75,6 +76,10 @@ def test_a_one_shot_agent_takes_the_waiting_run_and_exits_0(live_server,
     row = client.get(f"/api/runs/{first}").json()
     assert row["status"] == "queued" and "one-shot" in row["queue_reason"]
 
+    # The agent's empty data dir lacks plugin packs this machine may have
+    # installed; a worker that lacks node types gets no pool run (as for
+    # ``any``), which test_one_shot_workers covers. Not compared here.
+    app.state.worker_registry._node_catalog = None
     agent = _one_shot_agent(base, tmp_path, "e2e-shot", "--run-id", second)
     code, output = _exit(agent, CONNECT_TIMEOUT_S + 90)
     assert code == 0, output

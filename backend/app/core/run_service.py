@@ -730,6 +730,8 @@ TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
 #: ``pool:one-shot/<device>``. The ``:`` cannot occur in a worker name, so
 #: it never collides with a ``<worker>/<device>`` key, and the pool's FIFO
 #: is its own: a run waiting for a one-shot worker holds up no ``any`` run.
+#: An agent started with ``--run-id`` takes its run out of that line
+#: (:meth:`RunService._start_pinned`).
 ONE_SHOT_QUEUE_PREFIX = f"pool:{POOL_ONE_SHOT}"
 #: Upper bound on ``target.devices``. A device set names cards on ONE
 #: host; the cap keeps a stored row bounded like every other option.
@@ -743,6 +745,11 @@ def _content_index(store: Any) -> Any:
 
     db = getattr(store, "db", None)
     return None if db is None else ContentIndex(db)
+
+
+#: Seconds before a one-shot expiry whose database write failed is tried
+#: again (#790).
+ONE_SHOT_EXPIRY_RETRY_S = 30.0
 
 
 def one_shot_timed_out(timeout_s: float) -> str:
@@ -2024,13 +2031,6 @@ class RunService:
         # keep in step with this one, and the first bug it produced would be
         # a run overtaking a queue that filled between the check and the
         # start.
-        if queue_key.startswith(ONE_SHOT_QUEUE_PREFIX):
-            # Each one-shot pool run waits in a line of its own (#790): an
-            # agent started with ``--run-id`` takes exactly that run, which
-            # one FIFO would keep behind every older pool run. ``reschedule``
-            # still serves them oldest first (``seq``). The row keeps the
-            # pool's key.
-            queue_key = f"{queue_key}{WORKER_QUEUE_SEPARATOR}{record.id}"
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
                            options=normalized_options, signal=_Broadcast(),
                            seq=next(self._submit_seq),
@@ -2421,11 +2421,30 @@ class RunService:
         error = one_shot_timed_out(self._one_shot_timeout_s)
         try:
             await self._fail_waiting(entry, error)
-        except Exception:  # noqa: BLE001 -- logged; the row stays queued
+        except asyncio.CancelledError:
+            # Shutdown: its queue is being retired; this run with it.
+            self._requeue_unexpired(entry)
+            raise
+        except Exception:  # noqa: BLE001 -- retried below
             logger.exception("run %s: could not fail it after its one-shot "
-                             "wait", run_id)
+                             "wait; trying again in %.0f s", run_id,
+                             ONE_SHOT_EXPIRY_RETRY_S)
+            self._requeue_unexpired(entry, retry=True)
             return
         logger.warning("run %s failed: %s", run_id, error)
+
+    def _requeue_unexpired(self, entry: _QueuedRun, *,
+                           retry: bool = False) -> None:
+        """Put back a run whose expiry did not land, so it is neither lost
+        from the queue nor left without a timer (#790). A run whose row is
+        no longer ``queued`` is caught by the guarded write on the retry,
+        which then closes it."""
+        self._enqueue(entry)  # during shutdown ``_retire_queue`` files it
+        if retry and not self._shutting_down:
+            loop = asyncio.get_running_loop()
+            self._one_shot_timers[entry.run_id] = loop.call_later(
+                ONE_SHOT_EXPIRY_RETRY_S, self._one_shot_timed_out,
+                entry.run_id)
 
     async def one_shot_run_refusal(self, run_id: str,
                                    worker_name: str) -> str | None:
@@ -2588,6 +2607,62 @@ class RunService:
         """
         while self._pump_one(queue_key):
             pass
+        self._start_pinned()
+
+    def _start_pinned(self) -> None:
+        """Start the run each ``--run-id`` one-shot agent waits for, out of
+        its line (#790). SYNCHRONOUS.
+
+        Such an agent takes that run and no other, so the strict FIFO would
+        leave it idle (holding a batch allocation) while older runs wait in
+        front of its run in the one-shot pool, or in its own name's line.
+        The scheduler still decides: the run starts only where and when
+        :meth:`place` puts it. One registry pass, a dict lookup per agent.
+        """
+        if self._shutting_down or self._workers is None:
+            return
+        for worker in self._workers.workers():
+            run_id = getattr(worker, "one_shot_run_id", None)
+            if not run_id or not getattr(worker, "one_shot_available", False) \
+                    or not worker.accepts_runs:
+                continue
+            entry = self._pending_by_id.get(run_id)
+            if entry is None:
+                continue
+            try:
+                placement = self._scheduler.place(
+                    entry, self._admission_view(entry.run_id))
+            except Exception:
+                logger.exception("the scheduler failed to place run %s for "
+                                 "one-shot worker %s", run_id, worker.name)
+                continue
+            if placement is None or not placement.slots:
+                continue
+            queue = self._pending.get(entry.queue_key)
+            if queue is None:  # pragma: no cover - the indexes move together
+                continue
+            position = queue.index(entry)
+            del queue[position]
+            if not queue:
+                self._pending.pop(entry.queue_key, None)
+            self._pending_by_id.pop(entry.run_id, None)
+            self._reservations.pop(entry.run_id, None)
+            try:
+                self._start(entry.run_id, None, entry.options,
+                            queue_key=entry.queue_key,
+                            lane=entry.options.get("lane", DEFAULT_LANE),
+                            placement=placement, signal=entry.signal,
+                            subscribers=entry.subscribers,
+                            node_types=entry.node_types, needs=entry.needs)
+            except Exception:
+                logger.exception("run %s could not be started for one-shot "
+                                 "worker %s; it stays queued", run_id,
+                                 worker.name)
+                self._pending.setdefault(entry.queue_key,
+                                         deque()).insert(position, entry)
+                self._pending_by_id[entry.run_id] = entry
+                continue
+            self._disarm_one_shot_timeout(entry.run_id)
 
     def _pump_one(self, queue_key: str) -> bool:
         """Start the front of *queue_key* if the scheduler places it.
@@ -2814,6 +2889,12 @@ class RunService:
                 self._slots[slot] = remaining
             else:
                 self._slots.pop(slot, None)
+        if on_a_worker(active.placement) and self._workers is not None:
+            # A one-shot worker whose ``assign`` never went out (cancelled
+            # while starting, refused before it, a failed send) may take
+            # another run (#790). One place every ending path passes.
+            self._workers.release_one_shot(active.placement.worker_id,
+                                           active.run_id)
         if self._reschedule_holds:
             self._request_reschedule()  # a bulk cancel is in progress
         else:
@@ -2850,6 +2931,7 @@ class RunService:
             queue = self._pending.get(key)
             if queue:
                 heapq.heappush(fronts, (queue[0].seq, key))
+        self._start_pinned()
 
     # ── the run task ──────────────────────────────────────────────────────
 
@@ -3645,9 +3727,11 @@ class RunService:
         """File an already-dequeued run ``failed`` with *error*. True when
         the guarded write landed (the row was still ``queued``)."""
         run_id = entry.run_id
-        self._run_secrets.pop(run_id, None)
         landed = await self.store.mark_finished(
             run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
+        # After the write: one that raised leaves the run queued with its
+        # secrets, for a retry (#790).
+        self._run_secrets.pop(run_id, None)
         if landed:
             await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
         entry.close()
@@ -3863,6 +3947,12 @@ class RunService:
         for timer in self._one_shot_timers.values():
             timer.cancel()
         self._one_shot_timers.clear()
+        # An expiry in flight writes to the database: finish it, or cancel
+        # it, before the database closes (#790).
+        expiries = list(self._one_shot_expiries)
+        for task in expiries:
+            task.cancel()
+        await asyncio.gather(*expiries, return_exceptions=True)
         await self._retire_queue()
         active = list(self._runs.values())
         for entry in active:

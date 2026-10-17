@@ -494,3 +494,224 @@ def test_the_hello_carries_the_one_shot_fields():
         wp.decode_agent_frame(wp.encode_frame(wp.Hello(
             name="b", version="v")).replace(
                 '"one_shot_run_id":null', '"one_shot_run_id":"../x"'))
+
+
+# ── review fixes (#835) ──────────────────────────────────────────────────
+
+
+async def test_a_run_cancelled_before_its_assign_hands_the_claim_back(env):
+    """Every path that ends a run before ``assign`` went out frees the
+    one-shot worker; here a cancel that lands before the run task starts."""
+    service, registry = env
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello(name="slurm", one_shot=True, instance_id="a")
+        result = await service.submit(_graph(), options={
+            "device": "cpu", "target": POOL})
+        assert registry.get("slurm").one_shot_claim == result.run_id
+        await service.cancel(result.run_id)  # before its task ever ran
+        record = await _terminal(service, result.run_id)
+        assert record.status == "cancelled"
+        worker = registry.get("slurm")
+        assert (worker.one_shot_claim, worker.one_shot_assigned) == (
+            None, False)
+        # It takes the next run.
+        second = await _submit(client, POOL)
+        assign = await agent.recv()
+        assert assign.run_id == second
+        assert registry.get("slurm").one_shot_assigned
+        await agent.finish_run(assign)
+        await _terminal(service, second)
+        # An assigned claim stays after the run ends.
+        assert registry.get("slurm").one_shot_claim == second
+
+
+async def test_a_failed_assign_send_hands_the_claim_back(env):
+    service, registry = env
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        await FakeAgent(ws).hello(name="slurm", one_shot=True,
+                                  instance_id="a")
+        worker = registry.get("slurm")
+        real_send = worker.send
+
+        async def broken(frame: Any) -> None:
+            if isinstance(frame, wp.Assign):
+                raise ConnectionError("the socket went away")
+            await real_send(frame)
+
+        worker.send = broken
+        run_id = await _submit(client, POOL)
+        record = await _terminal(service, run_id)
+        assert record.status == "interrupted"
+        assert registry.get("slurm").one_shot_claim is None
+
+
+async def test_a_restarted_server_learns_the_taken_run_from_hello(env):
+    """After a control-plane restart the agent's ``one_shot_taken`` is the
+    only record that it took a run: no second run goes there, and its
+    ``--run-id`` is not checked again."""
+    service, registry = env
+    async with _client() as client:
+        waiting = await _submit(client, POOL)
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            reply = await agent.hello(
+                name="slurm", one_shot=True, instance_id="a",
+                one_shot_run_id="0" * 32, one_shot_taken="0" * 32)
+            assert isinstance(reply, wp.Welcome), reply
+            worker = registry.get("slurm")
+            assert (worker.one_shot_claim, worker.one_shot_assigned) == (
+                "0" * 32, True)
+            with pytest.raises(asyncio.TimeoutError):
+                await agent.recv(timeout=0.5)
+        row = (await client.get(f"/api/runs/{waiting}")).json()
+        assert row["status"] == "queued"
+    # A regular hello's one_shot_taken means nothing.
+    regular, _ = registry.connect(
+        wp.Hello(name="box", version="t", one_shot_taken="r1"),
+        send=_nothing, close=_nothing)
+    assert regular.one_shot_claim is None
+
+
+def test_the_pool_skips_a_one_shot_worker_any_would_skip():
+    """A one-shot worker that lacks node types (or reported none) gets no
+    pool run, as ``any`` gives it none; naming it still works."""
+    from app.core.worker_handshake import CATALOG_UNKNOWN, CatalogCheck
+
+    lacking = _one_shot("slurm", "cpu")
+    lacking.catalog_checked = True
+    lacking.catalog = CatalogCheck(status=CATALOG_UNKNOWN)
+    entry = _Entry("r1", "pool:one-shot/cpu", _pool())
+    assert _scheduler(lacking).place(entry, {}) is None
+    assert _scheduler(lacking).place(
+        _Entry("r1", "slurm/cpu", _target("slurm")), {}) is not None
+    lacking.catalog = CatalogCheck(status="match")
+    assert _scheduler(lacking).place(entry, {}) is not None
+
+
+async def test_two_agents_racing_for_one_name_cannot_both_register(
+        env, monkeypatch):
+    """The busy-name check is repeated with no await before ``connect``,
+    so an agent that passed the first check while another was registering
+    is refused instead of replacing it."""
+    from app.api import ws_worker
+
+    service, registry = env
+    gate = asyncio.Event()
+    real = ws_worker._one_shot_run_refusal
+    calls = []
+
+    async def held(ws: Any, reg: Any, hello: Any) -> Any:
+        calls.append(hello.instance_id)
+        if hello.instance_id == "slow":
+            await gate.wait()
+        return await real(ws, reg, hello)
+
+    monkeypatch.setattr(ws_worker, "_one_shot_run_refusal", held)
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as slow_ws:
+            slow = FakeAgent(slow_ws)
+            await slow.send(wp.Hello(
+                name="slurm", version=get_version(), one_shot=True,
+                instance_id="slow",
+                devices=[wp.DeviceReport(value="cpu", kind="cpu")]))
+            await _until(lambda: calls == ["slow"])
+            async with aconnect_ws(_path(), client) as fast_ws:
+                welcome = await FakeAgent(fast_ws).hello(
+                    name="slurm", one_shot=True, instance_id="fast")
+                assert isinstance(welcome, wp.Welcome)
+                gate.set()
+                assert isinstance(await slow.recv(), wp.Welcome)
+                refused = await slow.recv()
+                assert isinstance(refused, wp.Reject)
+                assert "is busy" in refused.reason
+                assert registry.get("slurm").instance_id == "fast"
+                assert registry.get("slurm").online
+
+
+async def test_an_expiry_that_cannot_write_is_retried_not_lost(
+        env, monkeypatch):
+    """A failed expiry puts the run back in its line with a retry timer;
+    the retry fails it."""
+    from app.core import run_service as rs
+
+    service, registry = env
+    service._one_shot_timeout_s = 0.2
+    monkeypatch.setattr(rs, "ONE_SHOT_EXPIRY_RETRY_S", 0.2)
+    real = service.store.mark_finished
+    calls = []
+
+    async def flaky(*args: Any, **kw: Any) -> Any:
+        calls.append(args)
+        if len(calls) == 1:
+            raise OSError("database is locked")
+        return await real(*args, **kw)
+
+    monkeypatch.setattr(service.store, "mark_finished", flaky)
+    async with _client() as client:
+        run_id = await _submit(client, POOL)
+        await _until(lambda: len(calls) == 1)
+        await _until(lambda: run_id in service._one_shot_timers)
+        assert service.queue_snapshot()["pool:one-shot/cpu"] == [run_id]
+        record = await _terminal(service, run_id)
+    assert record.status == "failed" and "one-shot" in record.error
+    assert len(calls) == 2
+
+
+async def test_shutdown_waits_for_an_expiry_in_flight(env, monkeypatch):
+    """An expiry writing when the server stops is cancelled and awaited;
+    the run is retired with the rest of the queue."""
+    service, registry = env
+    service._one_shot_timeout_s = 0.1
+    entered = asyncio.Event()
+    real = service.store.mark_finished
+
+    async def stuck(run_id: str, status: str, *args: Any, **kw: Any) -> Any:
+        if status == "failed":
+            entered.set()
+            await asyncio.sleep(3600)
+        return await real(run_id, status, *args, **kw)
+
+    monkeypatch.setattr(service.store, "mark_finished", stuck)
+    async with _client() as client:
+        run_id = await _submit(client, POOL)
+    await asyncio.wait_for(entered.wait(), 5)
+    tasks = list(service._one_shot_expiries)
+    assert tasks
+    await asyncio.wait_for(service.shutdown(), 10)
+    assert all(task.done() for task in tasks)
+    record = await service.store.get_run(run_id)
+    assert record.status == "interrupted"
+
+
+async def test_pool_runs_share_one_line_and_run_id_takes_its_run_out_of_it(
+        env):
+    """One FIFO per pool device; a ``--run-id`` agent takes its run out of
+    turn, from the pool and from a line naming the worker."""
+    service, registry = env
+    async with _client() as client:
+        first = await _submit(client, POOL)
+        second = await _submit(client, POOL)
+        assert service.queue_snapshot()["pool:one-shot/cpu"] == [first,
+                                                                 second]
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello(name="slurm", one_shot=True, instance_id="a",
+                              one_shot_run_id=second)
+            assign = await agent.recv()
+            assert assign.run_id == second
+            await agent.finish_run(assign)
+            await _terminal(service, second)
+        named_a = await _submit(client, {"worker": "slurm"})
+        named_b = await _submit(client, {"worker": "slurm"})
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello(name="slurm", one_shot=True, instance_id="b",
+                              one_shot_run_id=named_b)
+            assign = await agent.recv()
+            assert assign.run_id == named_b
+            await agent.finish_run(assign)
+            await _terminal(service, named_b)
+        for run_id in (first, named_a):
+            assert (await client.get(f"/api/runs/{run_id}")).json()[
+                "status"] == "queued"

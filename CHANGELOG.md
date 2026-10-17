@@ -27,7 +27,7 @@ received — each links to the release it was published as.
 - **One-shot workers for SLURM jobs and ssh commands.** `cdui agent start
   --one-shot` takes exactly one run, reports it and exits with a code a job
   script can read (`0` succeeded, `1` failed, cancelled or interrupted, `2`
-  refused, `3` stopped before a run arrived); `--run-id` takes one specific
+  refused, `3` stopped before a run arrived, `4` could not start); `--run-id` takes one specific
   run. **Any available** never sends a run to a one-shot worker: a run
   reaches one by naming it or through the new one-shot pool
   (`"target": {"pool": "one-shot"}`, **Queue on... → A one-shot worker**),

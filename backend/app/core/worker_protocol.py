@@ -321,6 +321,10 @@ class Hello(_Frame):
     #: reconnecting from another agent taking the same name (#790). None
     #: from an agent that does not say.
     instance_id: str | None = Field(default=None, max_length=64)
+    #: The run this one-shot agent already took, on a reconnect (#790):
+    #: a control plane that restarted since has no other record of it, and
+    #: keeps it from placing a second run there.
+    one_shot_taken: RunId | None = None
 
 
 class Heartbeat(_Frame):

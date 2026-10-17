@@ -360,9 +360,12 @@ class WorkerScheduler:
             return self._place_on(worker, requested, devices, taken)
         if entry_pool(entry.options) == POOL_ONE_SHOT:
             # The one-shot pool (#790): a one-shot worker that has not
-            # taken its run, never this process, never a regular worker.
+            # taken its run, never this process, never a regular worker;
+            # like ``any``, not one that lacks node types this server has
+            # (or reported none, #781): the run names no worker either.
             for worker in self._registry.workers():
                 if _one_shot(worker) and worker.accepts_runs \
+                        and not _skipped_by_any(worker) \
                         and _takes(worker, entry) and reaches(worker, entry):
                     placement = self._place_on(worker, requested, devices,
                                                taken)

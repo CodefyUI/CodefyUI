@@ -49,7 +49,8 @@ one run (that one, with ``--run-id``), report it and exit, for a SLURM job
 or an ``ssh`` command. Always in the foreground, with no pidfile, so it
 never collides with a background agent's; the exit code says how the run
 went (0 succeeded, 1 failed / cancelled / interrupted, 2 refused, 3 no run
-arrived before the agent was stopped).
+arrived before the agent was stopped, 4 it could not start: enrollment
+failed or ``--mount`` was refused).
 """
 
 from __future__ import annotations
@@ -239,11 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
         "stay in the foreground (systemd, or to watch the log)"))
     start.add_argument("--one-shot", action="store_true", help=t(
         "只接一個 run，回報後結束（SLURM job、ssh 指令）；永遠在前景。結束碼："
-        "0 成功、1 失敗／取消／中斷、2 被拒、3 停止前沒有 run",
+        "0 成功、1 失敗／取消／中斷、2 被拒、3 停止前沒有 run、4 無法啟動（加入失敗等）",
         "take exactly one run, report it and exit (a SLURM job, an ssh "
         "command); always in the foreground. Exit code: 0 succeeded, 1 "
         "failed / cancelled / interrupted, 2 refused, 3 stopped before a "
-        "run arrived"))
+        "run arrived, 4 could not start (enrollment failed, ...)"))
     start.add_argument("--run-id", default=None, metavar="ID", help=t(
         "搭配 --one-shot：只接這個 run（它須以 target.pool one-shot 或此 "
         "worker 名稱送出）",
@@ -860,6 +861,16 @@ def check_one_shot(args: argparse.Namespace) -> None:
         args.foreground = True
 
 
+def setup_failed(args: argparse.Namespace) -> int:
+    """The exit code of an agent that could not start (a failed
+    enrollment, a refused ``--mount``): ``1`` as always, except under
+    ``--one-shot``, where ``1`` means "the run failed" and a job script
+    must tell the two apart (#790, ``one_shot.EXIT_SETUP``)."""
+    from .one_shot import EXIT_SETUP
+
+    return EXIT_SETUP if getattr(args, "one_shot", False) else 1
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
     # process and in every run subprocess (``core.resources``).
@@ -876,7 +887,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(t("錯誤：agent 執行中時不能變更 --mount；請先執行 cdui agent stop。",
                 "Error: --mount cannot change while the agent is running; "
                 "stop the agent first (cdui agent stop)."), file=sys.stderr)
-        return 1
+        return setup_failed(args)
     explicit_name = args.name
     from ..core import tls_fingerprint
     from .trust import is_https
@@ -946,7 +957,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             token = enroll_now(args, url, token, facts, trust)
         except (EnrollError, ValueError) as exc:
             _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
-            return 1
+            return setup_failed(args)
         control = url
         token_source = (f"the stored credential (cdui agent forget {url} to "
                         "enroll again)")

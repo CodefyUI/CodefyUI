@@ -344,8 +344,8 @@ journalctl -u codefyui-agent -f
 cdui agent start --one-shot --control https://codefyui.example.com
 ```
 
-- **哪些 run 會送到它。** **任一可用** 不會把 run 送到單次 worker。只有指名該 worker（`"target": {"worker": "<名稱>"}`）或單次 worker 池的 run 會送到它：**Queue on...** 中的 **單次 worker**，或在 `POST /api/runs` 中使用 `"target": {"pool": "one-shot"}`（並以 `device` 指定需要的裝置類型，例如 `cuda`）。池中的 run 不會因為沒有 worker 而被拒絕：它會等待提供該裝置的單次 worker，`queue_reason` 會說明，並在 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`（預設 24 小時，`0` 表示一直等）後失敗。池中的每個 run 各自等待，先送出的先處理。`--run-id <id>` 讓 agent 只接該 run；該 run 必須在池中等待或指名此 worker，否則 agent 連線時就會被拒絕。
-- **結束碼。** `0`：run 成功且控制面已記錄。`1`：run 失敗、被取消或以 `interrupted` 結束，或結果無法送達。`2`：控制面拒絕這個 agent（版本不同、名稱被另一個 agent 占用、`--run-id` 指的 run 不是在等它），或參數錯誤。`3`：agent 在 run 送達前被停止（SIGTERM、Ctrl-C、job 的時間上限）。
+- **哪些 run 會送到它。** **任一可用** 不會把 run 送到單次 worker。只有指名該 worker（`"target": {"worker": "<名稱>"}`）或單次 worker 池的 run 會送到它：**Queue on...** 中的 **單次 worker**，或在 `POST /api/runs` 中使用 `"target": {"pool": "one-shot"}`（並以 `device` 指定需要的裝置類型，例如 `cuda`）。池中的 run 不會因為沒有 worker 而被拒絕：它會等待提供該裝置的單次 worker，`queue_reason` 會說明，並在 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`（預設 24 小時，`0` 表示一直等）後失敗。池中的 run 依裝置類型各排一列，先送出的先處理。`--run-id <id>` 讓 agent 只接該 run，不論它在佇列中的哪個位置；該 run 必須在池中等待或指名此 worker，否則 agent 連線時就會被拒絕。
+- **結束碼。** `0`：run 成功且控制面已記錄。`1`：run 失敗、被取消或以 `interrupted` 結束，或結果無法送達。`2`：控制面拒絕這個 agent（版本不同、名稱被另一個 agent 占用、`--run-id` 指的 run 不是在等它），或參數錯誤。`3`：agent 在 run 送達前被停止（SIGTERM、Ctrl-C、job 的時間上限）。`4`：無法啟動（加入失敗，或 `--mount` 被拒）。agent 接了 run 之後才被拒絕（控制面拒絕它重新連線）為 `1`：run 的結果沒有被記錄。
 - **連線中斷。** run 會繼續執行，agent 會像一般 agent 一樣重新連線（[連線中斷時](#when-the-connection-drops)）。它要等控制面確認收到 run 的結束才會退出；若 run 結束後 `CODEFYUI_WORKER_RESUME_GRACE_S` 內仍未確認，它仍會以 `1` 退出，並把結果留在暫存檔，交給之後使用同一個 user-data 資料夾的 agent 補送。
 - **結束之後。** Workers 面板以 **單次** 標記並顯示 **離線**，**單次 run** 連到它接的 run（或說明它未接 run 就結束）。下一個 job 以同一名稱啟動的 agent 會接下一個 run。
 - **同一名稱一次一個 agent。** 憑證綁定 worker 名稱，所以用同一份憑證啟動的兩個 job 會共用名稱。單次 worker 連線中或它的 run 仍在進行時，以同一名稱連線的另一個 agent 會被拒絕，結束碼 `2`。要同時執行多個 job，請為每個並行的 job 各加入一個名稱，並各用自己的 user-data 資料夾（`CODEFYUI_USER_DATA_DIR`），如下方腳本。
