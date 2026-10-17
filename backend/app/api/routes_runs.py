@@ -684,7 +684,8 @@ async def get_run_artifacts(
     translated: ``backend`` is ``mount``, ``mount_label`` names the mount
     and ``relative_path`` is the stored path. A file a worker uploaded is
     ``transfer`` (#785: ``path`` on this server) or ``s3`` (#791: ``path``
-    is its ``s3://<bucket>/<key>`` URI, ``relative_path`` the key). Every
+    is its ``s3://<bucket>/<key>`` URI, ``relative_path`` the key and
+    ``bucket`` the bucket; ``bucket`` is null on every other row). Every
     other row is ``local`` with its absolute path and no ``relative_path``. ``worker_id`` names
     the worker whose run wrote the file (``local``: this server).
     """
@@ -697,7 +698,7 @@ async def get_run_artifacts(
             {"id": record.id, "kind": record.kind, "path": record.path,
              "meta": record.meta, "created_at": record.created_at,
              "backend": record.backend, "mount_label": record.mount_label,
-             "worker_id": record.worker_id,
+             "worker_id": record.worker_id, "bucket": record.bucket,
              "relative_path": (record.stored_path
                                if record.backend in ("mount", "transfer",
                                                      "s3")
@@ -840,7 +841,7 @@ async def download_run_artifact(run_id: str, artifact_id: int,
                             detail=f"artifact {artifact_id} not found")
     if record.backend == "s3":
         return await _download_s3(run_id, record.stored_path or "",
-                                  record.mount_label)
+                                  record.bucket)
     if record.backend != "transfer":
         raise HTTPException(status_code=400, detail=(
             "only files a worker uploaded can be downloaded here; this one "

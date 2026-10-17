@@ -3383,8 +3383,8 @@ class RunService:
         elif getattr(signal, "backend", None) == BACKEND_S3:
             # Uploaded to the run's bucket by the worker (#791): the path is
             # the object key, recorded only under the run's own prefix.
-            # The bucket goes in ``mount_label``, unused for these rows,
-            # so the row keeps naming its object after a settings change.
+            # The row records its bucket (#791), so it keeps naming its
+            # object after a settings change.
             from .s3 import owns_key
 
             if not owns_key(active.run_id, signal.path,
@@ -3394,7 +3394,6 @@ class RunService:
                                signal.path)
                 return
             backend = BACKEND_S3
-            mount_label = getattr(signal, "bucket", None)
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
         record = await self.store.add_artifact(
@@ -3403,7 +3402,8 @@ class RunService:
             backend=backend,
             mount_label=mount_label or None,
             worker_id=(placement.worker_id if placement is not None
-                       else LOCAL_WORKER_ID))
+                       else LOCAL_WORKER_ID),
+            bucket=getattr(signal, "bucket", None))
         await self._emit(active.run_id, EVENT_ARTIFACT,
                          artifact_payload(record, signal.node_id))
 

@@ -133,7 +133,7 @@ _RUN_COLUMNS = (
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
 _ARTIFACT_COLUMNS = ("id, run_id, kind, path, meta, created_at, backend, "
-                     "mount_label, worker_id")
+                     "mount_label, worker_id, bucket")
 
 #: Last value of every series in ONE run, by index seeks only — see
 #: ``RunStore.latest_metrics`` for why this is not a ``GROUP BY``.
@@ -485,18 +485,21 @@ class ArtifactRecord:
     mount_label: str | None = None
     stored_path: str | None = None
     worker_id: str = WORKER_LOCAL
+    #: The S3 bucket of an ``s3`` row (#791); None for every other row.
+    bucket: str | None = None
 
     @classmethod
     def build(cls, *, id: int, run_id: str, kind: str, stored_path: str,
               meta: Any, created_at: str, backend: str | None,
               mount_label: str | None,
-              worker_id: str | None = None) -> "ArtifactRecord":
+              worker_id: str | None = None,
+              bucket: str | None = None) -> "ArtifactRecord":
         backend = backend or BACKEND_LOCAL
         return cls(id=id, run_id=run_id, kind=kind,
-                   path=translate(backend, mount_label, stored_path),
+                   path=translate(backend, mount_label, stored_path, bucket),
                    meta=meta, created_at=created_at, backend=backend,
                    mount_label=mount_label, stored_path=stored_path,
-                   worker_id=worker_id or WORKER_LOCAL)
+                   worker_id=worker_id or WORKER_LOCAL, bucket=bucket)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ArtifactRecord":
@@ -504,7 +507,7 @@ class ArtifactRecord:
                          stored_path=row["path"], meta=_loads(row["meta"]),
                          created_at=row["created_at"], backend=row["backend"],
                          mount_label=row["mount_label"],
-                         worker_id=row["worker_id"])
+                         worker_id=row["worker_id"], bucket=row["bucket"])
 
 
 @dataclass(frozen=True)
@@ -1506,7 +1509,7 @@ class RunStore:
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
         backend: str = BACKEND_LOCAL, mount_label: str | None = None,
-        worker_id: str = WORKER_LOCAL,
+        worker_id: str = WORKER_LOCAL, bucket: str | None = None,
     ) -> ArtifactRecord:
         """Register a file a run produced. *kind* is an open vocabulary.
 
@@ -1514,8 +1517,9 @@ class RunStore:
         copy, so the returned record always equals what a re-read gives.
         A ``mount`` row (#782) stores *path* relative to the mount
         *mount_label* names; the record returned carries this server's path
-        for it, as :meth:`list_artifacts` does. An ``s3`` row (#791) keeps
-        its bucket in *mount_label*. *worker_id* is the worker
+        for it, as :meth:`list_artifacts` does. An ``s3`` row (#791) records
+        its *bucket* (ignored for every other backend). *worker_id* is the
+        worker
         whose run wrote the file (``local``: this process).
         """
         if backend not in BACKENDS:
@@ -1529,11 +1533,11 @@ class RunStore:
         def _insert(conn: sqlite3.Connection) -> int:
             cur = conn.execute(
                 "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
-                "created_at, backend, mount_label, worker_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_at, backend, mount_label, worker_id, bucket) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, kind, path, encoded, created_at, backend,
-                 mount_label if backend in (BACKEND_MOUNT, BACKEND_S3) else None,
-                 worker_id),
+                 mount_label if backend == BACKEND_MOUNT else None,
+                 worker_id, bucket if backend == BACKEND_S3 else None),
             )
             # lastrowid is Optional in the driver's typing; after a
             # successful single-row INSERT it is always the new rowid.
@@ -1543,8 +1547,9 @@ class RunStore:
         return ArtifactRecord.build(
             id=artifact_id, run_id=run_id, kind=kind, stored_path=path,
             meta=meta, created_at=created_at, backend=backend,
-            mount_label=mount_label if backend in (BACKEND_MOUNT, BACKEND_S3) else None,
-            worker_id=worker_id)
+            mount_label=mount_label if backend == BACKEND_MOUNT else None,
+            worker_id=worker_id,
+            bucket=bucket if backend == BACKEND_S3 else None)
 
     async def list_artifacts(
         self, run_id: str, *, kind: str | None = None,
@@ -1569,10 +1574,10 @@ class RunStore:
         that wrote nothing to a bucket."""
         def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             return conn.execute(
-                "SELECT DISTINCT mount_label, path FROM exec_run_artifacts "
+                "SELECT DISTINCT bucket, path FROM exec_run_artifacts "
                 "WHERE run_id = ? AND backend = 's3'", (run_id,)).fetchall()
 
-        return [(run_id, row["mount_label"], row["path"])
+        return [(run_id, row["bucket"], row["path"])
                 for row in await self.db.run(_select)]
 
     # ── retention ─────────────────────────────────────────────────────────
@@ -1825,10 +1830,10 @@ class RunStore:
                         "AND a.backend = 's3')",
                         params).fetchall()}
                 s3_rows = [
-                    (row["run_id"], row["mount_label"], row["path"])
+                    (row["run_id"], row["bucket"], row["path"])
                     for run_id in interrupted
                     for row in conn.execute(
-                        "SELECT DISTINCT run_id, mount_label, path FROM "
+                        "SELECT DISTINCT run_id, bucket, path FROM "
                         "exec_run_artifacts WHERE run_id = ? "
                         "AND backend = 's3'", (run_id,)).fetchall()]
                 s3_runs = (interrupted, s3_rows)

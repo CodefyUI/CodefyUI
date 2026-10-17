@@ -771,7 +771,7 @@ async def test_rows_keep_their_bucket_and_prefix_after_a_settings_change(
     for kind, key in (("output", "old/runs/r1/output/a.pt"),
                       ("checkpoint", "old/runs/r1/checkpoint/c.pt")):
         await store.add_artifact("r1", kind, key, backend="s3",
-                                 mount_label="lab", worker_id="gpu-1")
+                                 bucket="lab", worker_id="gpu-1")
     monkeypatch.setattr(settings, "S3_BUCKET", "lab2")
     monkeypatch.setattr(settings, "S3_PREFIX", "new/")
     listed = (await http.get("/api/runs/r1/artifacts")).json()["artifacts"]
@@ -793,7 +793,7 @@ async def test_retention_uses_the_rows_bucket_and_prefix(bucket, data_root,
     key = f"old/runs/{record.id}/checkpoint/a.pt"
     _put(bucket, key)
     await store.add_artifact(record.id, "checkpoint", key, backend="s3",
-                             mount_label="lab", worker_id="gpu-1")
+                             bucket="lab", worker_id="gpu-1")
     await store.mark_finished(record.id, "succeeded")
     monkeypatch.setattr(settings, "S3_BUCKET", "elsewhere")
     monkeypatch.setattr(settings, "S3_PREFIX", "new/")
@@ -819,8 +819,8 @@ async def test_a_row_is_recorded_with_its_bucket_and_assigned_prefix(
             kind="checkpoint", path=path, backend="s3", bucket="lab9",
             prefix=prefix))
     [row] = await store.list_artifacts(record.id)
-    assert (row.mount_label, row.stored_path) == ("lab9",
-                                                  f"{prefix}checkpoint/a.pt")
+    assert (row.bucket, row.mount_label, row.stored_path) == (
+        "lab9", None, f"{prefix}checkpoint/a.pt")
     assert row.path == f"s3://lab9/{prefix}checkpoint/a.pt"
 
 
@@ -828,7 +828,7 @@ async def test_delete_says_when_the_objects_stay(s3_on, http, monkeypatch,
                                                  caplog):
     await http.store.add_artifact("r1", "checkpoint",
                                   "runs/r1/checkpoint/a.pt", backend="s3",
-                                  mount_label="lab", worker_id="gpu-1")
+                                  bucket="lab", worker_id="gpu-1")
     monkeypatch.setattr(s3, "client_available", lambda: False)
     response = await http.delete("/api/runs/r1",
                                  headers={TOKEN_HEADER: session_token()})
@@ -842,7 +842,7 @@ async def test_a_delete_reports_a_bucket_that_refuses(s3_on, http,
                                                       monkeypatch):
     await http.store.add_artifact("r1", "checkpoint",
                                   "runs/r1/checkpoint/a.pt", backend="s3",
-                                  mount_label="lab", worker_id="gpu-1")
+                                  bucket="lab", worker_id="gpu-1")
 
     def broken(service: str = "s3") -> Any:
         raise s3.S3Unavailable("down")
@@ -875,3 +875,58 @@ def test_locations_read_each_rows_bucket_and_prefix(s3_on):
             ("r1", "lab", "not-a-run-key")]
     assert s3.locations(rows) == [("r1", "lab", "old/runs/r1/"),
                                   ("r1", "lab", "runs/r1/")]
+
+
+def test_migration_015_adds_a_nullable_bucket_column(tmp_path):
+    """015 stands alone: applied to a bare artifacts table (whatever came
+    before it), it adds ``bucket`` and backfills nothing."""
+    import sqlite3
+
+    from app.core.migrations import MIGRATION_015, MIGRATIONS, iter_statements
+
+    assert MIGRATIONS[-1] is MIGRATION_015
+    conn = sqlite3.connect(tmp_path / "bare.db")
+    conn.execute("CREATE TABLE exec_run_artifacts (id INTEGER PRIMARY KEY, "
+                 "path TEXT, mount_label TEXT)")
+    conn.execute("INSERT INTO exec_run_artifacts (path, mount_label) "
+                 "VALUES ('a', 'lab')")
+    for statement in iter_statements(MIGRATION_015):
+        conn.execute(statement)
+    assert conn.execute("SELECT path, mount_label, bucket FROM "
+                        "exec_run_artifacts").fetchall() == [("a", "lab",
+                                                              None)]
+    conn.close()
+
+
+async def test_the_bucket_is_its_own_column(db):
+    """An ``s3`` row keeps its bucket in ``bucket``, never ``mount_label``;
+    every other row has no bucket."""
+    store = RunStore(db)
+    run_id = (await store.create_run(graph_snapshot={"nodes": []},
+                                     status="running",
+                                     worker_id="gpu-1")).id
+    s3_row = await store.add_artifact(
+        run_id, "checkpoint", f"runs/{run_id}/checkpoint/a.pt", backend="s3",
+        bucket="lab", mount_label="lab", worker_id="gpu-1")
+    mount_row = await store.add_artifact(
+        run_id, "checkpoint", "c/a.pt", backend="mount", mount_label="shared",
+        bucket="lab", worker_id="gpu-1")
+    assert (s3_row.bucket, s3_row.mount_label) == ("lab", None)
+    assert (mount_row.bucket, mount_row.mount_label) == (None, "shared")
+    listed = {row.backend: row
+              for row in await store.list_artifacts(run_id)}
+    assert (listed["s3"].bucket, listed["s3"].mount_label) == ("lab", None)
+    key = f"runs/{run_id}/checkpoint/a.pt"
+    assert listed["s3"].path == f"s3://lab/{key}"
+    assert listed["mount"].bucket is None
+    assert await store.s3_objects(run_id) == [(run_id, "lab", key)]
+
+
+async def test_the_listing_reports_the_bucket(bucket, http):
+    await http.store.add_artifact("r1", "output", "runs/r1/output/a.pt",
+                                  backend="s3", bucket="lab",
+                                  worker_id="gpu-1")
+    [row] = (await http.get("/api/runs/r1/artifacts")).json()["artifacts"]
+    assert (row["backend"], row["bucket"], row["mount_label"],
+            row["relative_path"]) == ("s3", "lab", None,
+                                      "runs/r1/output/a.pt")

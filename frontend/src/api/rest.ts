@@ -734,6 +734,8 @@ export interface RunArtifact {
   relative_path?: string | null;
   /** The worker whose run wrote the file; `local` is this server. */
   worker_id?: string;
+  /** The bucket of an `s3` row (#791); `null` on every other row. */
+  bucket?: string | null;
 }
 
 /**

@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 13
+    assert _user_version(db) == len(MIGRATIONS) == 14
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.
@@ -175,7 +175,9 @@ def test_child_tables_have_the_specified_columns(db):
     assert _columns(db, "exec_run_artifacts") == [
         "id", "run_id", "kind", "path", "meta", "created_at",
         # MIGRATION_010 (#782): where the file lives, and who wrote it.
-        "backend", "mount_label", "worker_id"]
+        "backend", "mount_label", "worker_id",
+        # MIGRATION_015 (#791): the bucket of an ``s3`` row.
+        "bucket"]
 
 
 def test_required_indexes_exist(db):

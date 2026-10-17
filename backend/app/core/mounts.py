@@ -56,8 +56,8 @@ from typing import Any
 #: machine (every row before #782). ``mount``: ``path`` is relative to the
 #: mount ``mount_label`` names. ``transfer`` (#785): a worker uploaded the
 #: file to this server; ``path`` is its key under the data root
-#: (``core.transfer``). ``s3`` (#791): ``path`` is the object key and
-#: ``mount_label`` the bucket it is in (``core.s3``).
+#: (``core.transfer``). ``s3`` (#791): ``path`` is the object key and the
+#: ``bucket`` column the bucket it is in (``core.s3``).
 BACKEND_LOCAL = "local"
 BACKEND_MOUNT = "mount"
 BACKEND_TRANSFER = "transfer"
@@ -196,7 +196,7 @@ def holds_mount(worker: Any, label: str) -> bool:
 
 
 def translate(backend: str | None, mount_label: str | None,
-              path: str) -> str | None:
+              path: str, bucket: str | None = None) -> str | None:
     """The path a stored artifact row names on this control plane, or
     None when this server cannot name one.
 
@@ -211,15 +211,15 @@ def translate(backend: str | None, mount_label: str | None,
     key (``runs/<run_id>/<kind>/<name>``, or ``models/...`` for a writer's
     file placed in this server's data folders): ``core.transfer.key_location``
     maps it; None for a key of neither shape. An ``s3`` row (#791) is
-    named by its ``s3://<bucket>/<key>`` URI, the bucket being the one the
-    row recorded (``mount_label``).
+    named by its ``s3://<bucket>/<key>`` URI, *bucket* being the one the
+    row recorded (``CODEFYUI_S3_BUCKET`` when it recorded none).
     """
     if backend == BACKEND_S3:
         # An object in the run's bucket (#791): named by its URI, never a
         # path on this machine.
         from .s3 import uri
 
-        return uri(path, mount_label)
+        return uri(path, bucket)
     if backend == BACKEND_TRANSFER:
         from .transfer import key_location
 

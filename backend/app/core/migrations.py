@@ -12,7 +12,8 @@ coordinator (#343); 008 records where each run executes (#769); 009 is
 worker enrollment (#780); 010 says where each artifact's file lives
 (#782); 011 records a worker's environment (#781); 012 the SSH workers
 the control plane launches (#784); 013 is the transfer backend's content
-index (#785).
+index (#785); 015 records the S3 bucket of an artifact (#791; numbered
+after #788's 014, and appended here in list order until that lands).
 """
 
 from __future__ import annotations
@@ -590,11 +591,25 @@ CREATE TABLE file_hashes (
 );
 """
 
+# ── Migration 015: the S3 bucket of an artifact (#791) ────────────────────
+#
+# An ``s3`` row (``backend = 's3'``) names its object by key (``path``); the
+# bucket goes here, so a row keeps naming its object after
+# ``CODEFYUI_S3_BUCKET`` changes (its key carries the prefix of its time).
+# NULL for every other row, and for every row from before: no row written
+# by 3.1.0 is an ``s3`` row, so nothing is backfilled. Self-contained: it
+# touches only this column, whatever 014 does.
+MIGRATION_015 = """
+ALTER TABLE exec_run_artifacts ADD COLUMN bucket TEXT;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
-                         MIGRATION_012, MIGRATION_013]
+                         MIGRATION_012, MIGRATION_013,
+                         # 014 (#788) goes here when it lands.
+                         MIGRATION_015]
 
 
 def _is_comment_only(statement: str) -> bool:
