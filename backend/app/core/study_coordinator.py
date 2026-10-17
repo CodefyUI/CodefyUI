@@ -596,7 +596,15 @@ class StudyCoordinator:
 
     async def recover(self) -> int:
         """STARTUP ONLY, after ``RunService.recover_interrupted``: settle
-        every study the previous process left active. Returns how many."""
+        every study the previous process left active. Returns how many.
+
+        A study with a child the run service adopted (#793: a worker run
+        that waits for its worker to come back) is not settled: that child
+        is still active, so the study carries on as any study with an
+        active child does, and its ticks decide what follows when the
+        child ends (a success counts; an ``interrupted`` child interrupts
+        the study, which then waits for a resume).
+        """
         settled = 0
         for study_id in await self.store.list_study_ids(STUDY_ACTIVE):
             async with self._lock(study_id):
@@ -604,46 +612,65 @@ class StudyCoordinator:
                 if study is None or study.status not in STUDY_ACTIVE:
                     continue
                 await self._reconcile(study_id)
-                current = current_attempts(
-                    await self.store.list_attempts(study_id))
-                if study.status == STUDY_CANCEL_REQUESTED:
-                    await self.store.transition(
-                        study_id, to=STUDY_CANCELLED,
-                        expected=(STUDY_CANCEL_REQUESTED,),
-                        event_type="study_cancelled",
-                        payload={"reason": "the server restarted while the "
-                                           "cancel was in progress"})
-                elif current and all(a.status in ATTEMPT_FINAL
-                                     for a in current.values()):
-                    if study.status == STUDY_QUEUED:
-                        study = await self.store.transition(
-                            study_id, to=STUDY_RUNNING,
-                            expected=(STUDY_QUEUED,),
-                            event_type="study_started") or study
-                    await self._settle_if_done(study)
-                else:
-                    await self.store.transition(
-                        study_id, to=STUDY_INTERRUPTED,
-                        expected=STUDY_ACTIVE,
-                        event_type="study_interrupted", payload={
-                            "reason": "the server restarted; resume the "
-                                      "study to continue it",
-                            "attempts": [
-                                {"attempt_id": a.id, "run_id": a.run_id,
-                                 "status": a.status}
-                                for a in current.values()
-                                if a.status == ATTEMPT_INTERRUPTED]})
+                if await self._has_adopted_child(study_id):
+                    logger.info("study %s carries on: a child of it was "
+                                "taken over from its worker", study_id)
+                    continue
+                await self._settle_recovered(study_id, study)
                 settled += 1
-            study = await self.store.get_study(study_id)
-            if study is not None and study.status == STUDY_INTERRUPTED \
-                    and study.resume_policy == RESUME_AUTO:
-                await self.resume(
-                    study_id, reason="resume_policy is auto; resumed after "
-                                     "a server restart")
+            await self._auto_resume(study_id)
         if settled:
             logger.warning("settled %d study(ies) left active by the previous "
                            "process", settled)
         return settled
+
+    async def _has_adopted_child(self, study_id: str) -> bool:
+        """Whether an active attempt of *study_id* has a child the run
+        service is driving (at startup, only adopted runs are)."""
+        current = current_attempts(await self.store.list_attempts(study_id))
+        return any(a.status in ATTEMPT_ACTIVE and a.run_id is not None
+                   and self.service.is_active(a.run_id)
+                   for a in current.values())
+
+    async def _settle_recovered(self, study_id: str,
+                                study: StudyRecord) -> None:
+        """The restart policy for one study left active (lock held)."""
+        current = current_attempts(await self.store.list_attempts(study_id))
+        if study.status == STUDY_CANCEL_REQUESTED:
+            await self.store.transition(
+                study_id, to=STUDY_CANCELLED,
+                expected=(STUDY_CANCEL_REQUESTED,),
+                event_type="study_cancelled",
+                payload={"reason": "the server restarted while the "
+                                   "cancel was in progress"})
+        elif current and all(a.status in ATTEMPT_FINAL
+                             for a in current.values()):
+            if study.status == STUDY_QUEUED:
+                study = await self.store.transition(
+                    study_id, to=STUDY_RUNNING,
+                    expected=(STUDY_QUEUED,),
+                    event_type="study_started") or study
+            await self._settle_if_done(study)
+        else:
+            await self.store.transition(
+                study_id, to=STUDY_INTERRUPTED,
+                expected=STUDY_ACTIVE,
+                event_type="study_interrupted", payload={
+                    "reason": "the server restarted; resume the "
+                              "study to continue it",
+                    "attempts": [
+                        {"attempt_id": a.id, "run_id": a.run_id,
+                         "status": a.status}
+                        for a in current.values()
+                        if a.status == ATTEMPT_INTERRUPTED]})
+
+    async def _auto_resume(self, study_id: str) -> None:
+        study = await self.store.get_study(study_id)
+        if study is not None and study.status == STUDY_INTERRUPTED \
+                and study.resume_policy == RESUME_AUTO:
+            await self.resume(
+                study_id, reason="resume_policy is auto; resumed after "
+                                 "a server restart")
 
     # ── events ───────────────────────────────────────────────────────────
 

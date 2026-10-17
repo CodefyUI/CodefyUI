@@ -40,6 +40,22 @@ received — each links to the release it was published as.
   section has an `sbatch` script
   (`docs/docs/usage/remote-workers.md#one-shot-workers`). [#790]
 
+- **A restarted control plane takes over the runs still executing on its
+  workers ([#793]).** A control plane killed or crashed mid-run used to mark
+  every worker run `interrupted` at its next start, although the run kept
+  going on the worker. Now each such run reads `disconnected` with a
+  `worker_disconnected` warning saying the server restarted, holds its slots
+  again and continues in the same event log once its worker reconnects (an
+  SSH worker's tunnel is started again by the server); the agent's replay is
+  deduplicated against the seq the control plane stores in
+  `execution_facts.worker_resume` before every `ack`, after flushing the
+  run's metrics. A worker that does not come back within
+  `CODEFYUI_WORKER_RESUME_GRACE_S` ends the run `interrupted`, saying the
+  server restarted. Local runs and queued rows are retired as before, a
+  transfer run's uploads continue, and a study keeps an adopted child as an
+  active one. Rows started by 3.1.0, which recorded no resume point, are
+  retired as before.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6266,6 +6282,7 @@ Release candidates before 1.0.0 are on the
 [#774]: https://github.com/CodefyUI/CodefyUI/issues/774
 [#775]: https://github.com/CodefyUI/CodefyUI/issues/775
 [#783]: https://github.com/CodefyUI/CodefyUI/issues/783
+[#793]: https://github.com/CodefyUI/CodefyUI/issues/793
 [#776]: https://github.com/CodefyUI/CodefyUI/issues/776
 [#773]: https://github.com/CodefyUI/CodefyUI/issues/773
 [#777]: https://github.com/CodefyUI/CodefyUI/issues/777

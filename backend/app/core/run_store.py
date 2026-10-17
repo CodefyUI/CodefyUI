@@ -982,6 +982,22 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def set_worker_seq(self, run_id: str, seq: int) -> bool:
+        """Store a worker run's acknowledged seq (#793) as
+        ``execution_facts.worker_resume.last_seq``, that key alone (one
+        ``json_set``, no read-modify-write of the document). False when the
+        run has no ``worker_resume`` to update."""
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET execution_facts = json_set("
+                "execution_facts, '$.worker_resume.last_seq', ?) "
+                "WHERE id = ? AND json_type(execution_facts, "
+                "'$.worker_resume') = 'object'",
+                (int(seq), run_id),
+            ).rowcount
+
+        return await self.db.run(_update) > 0
+
     async def record_fingerprint(self, fingerprint: dict[str, Any],
                                  digest: str | None = None) -> str:
         """Store an environment document without a run; returns its digest.
@@ -1062,6 +1078,34 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def list_worker_runs_in_flight(
+        self, *, closing_types: Iterable[str] = (),
+    ) -> list[RunRecord]:
+        """Rows a worker agent was executing when this process's
+        predecessor stopped (#793): ``running`` or ``disconnected``, placed
+        on a worker (neither ``local``, ``any`` nor a pre-MIGRATION_008
+        NULL), started. A row whose log already ends with one of
+        *closing_types* is left out: its run finished, and only the row
+        write was lost. Oldest start first.
+        """
+        closing = tuple(closing_types)
+        closed = ("" if not closing else
+                  " AND COALESCE((SELECT e.type FROM exec_run_events e "
+                  "WHERE e.run_id = exec_runs.id ORDER BY e.cursor DESC "
+                  f"LIMIT 1), '') NOT IN ({','.join('?' * len(closing))})")
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs "
+                "WHERE status IN (?, ?) AND started_at IS NOT NULL "
+                "AND worker_id IS NOT NULL AND worker_id NOT IN (?, ?)"
+                f"{closed} ORDER BY started_at, id",
+                (STATUS_RUNNING, STATUS_DISCONNECTED, WORKER_LOCAL,
+                 WORKER_ANY, *closing),
+            ).fetchall()
+
+        return [RunRecord.from_row(row) for row in await self.db.run(_select)]
+
     async def interrupt_active_runs(
         self,
         *,
@@ -1069,14 +1113,16 @@ class RunStore:
         closing_event: str | None = None,
         closing_payload: Any = None,
         closing_types: Iterable[str] = (),
+        keep: Iterable[str] = (),
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
         Call once at startup. Every active state is covered by default —
-        nothing resumes a ``running`` or ``disconnected`` row after a restart
-        (adopting a worker's runs is #793), and a ``queued``
-        row would otherwise wait forever on a scheduler that lost its queue.
-        Narrow it with *statuses* if a caller can genuinely re-adopt one.
+        nothing resumes a ``running`` row of this process after a restart,
+        and a ``queued`` row would otherwise wait forever on a scheduler
+        that lost its queue. Narrow it with *statuses* if a caller can
+        genuinely re-adopt one; *keep* names rows the caller adopts (a
+        worker's runs, #793), which are left as they are.
         Idempotent: a second call finds nothing.
 
         *statuses* is validated against ACTIVE_STATUSES, not the full
@@ -1106,17 +1152,20 @@ class RunStore:
         marks = ",".join("?" * len(wanted))
         encoded = None if closing_payload is None else _dumps(closing_payload)
         already_closed = frozenset(closing_types)
+        kept = tuple(keep)
+        spared = ("" if not kept else
+                  f" AND id NOT IN ({','.join('?' * len(kept))})")
 
         def _retire(conn: sqlite3.Connection) -> int:
             with transaction(conn):
                 run_ids = [row[0] for row in conn.execute(
-                    f"SELECT id FROM exec_runs WHERE status IN ({marks})",
-                    wanted,
+                    f"SELECT id FROM exec_runs WHERE status IN ({marks})"
+                    f"{spared}", (*wanted, *kept),
                 ).fetchall()]
                 retired = conn.execute(
                     "UPDATE exec_runs SET status = ?, finished_at = ? "
-                    f"WHERE status IN ({marks})",
-                    (STATUS_INTERRUPTED, stamp, *wanted),
+                    f"WHERE status IN ({marks}){spared}",
+                    (STATUS_INTERRUPTED, stamp, *wanted, *kept),
                 ).rowcount
                 if closing_event is None:
                     return retired
@@ -1501,6 +1550,17 @@ class RunStore:
         return [r["name"] for r in await self.db.run(_select)]
 
     # ── artifacts ─────────────────────────────────────────────────────────
+
+    async def has_artifact(self, run_id: str, kind: str, path: str) -> bool:
+        """Whether *run_id* already has a *kind* row for *path* (as stored:
+        a mount or transfer row's relative path)."""
+        def _select(conn: sqlite3.Connection) -> Any:
+            return conn.execute(
+                "SELECT 1 FROM exec_run_artifacts WHERE run_id = ? AND "
+                "kind = ? AND path = ? LIMIT 1", (run_id, kind, path),
+            ).fetchone()
+
+        return await self.db.run(_select) is not None
 
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
