@@ -88,6 +88,7 @@ from ..core.sweep_store import (
     SweepRecord,
     SweepStore,
     SweepVariant,
+    objective_selector,
     rank_variants,
     variant_is_terminal,
 )
@@ -620,6 +621,13 @@ async def _harvested_sweep(
     and never chooses the objective, because it collapses a name several
     nodes log into one number (#641).
 
+    That summary is SCOPED to the objective's node whenever one is known
+    (:func:`_final_metrics_node`, #841): on a graph with two training
+    branches the run-wide summary is whichever branch wrote last, so a
+    variant ranked by one branch would show the other's ``lr`` and loss.
+    It is read after the harvest, which is what names the producer of a
+    name-only objective.
+
     A variant is harvested when it has not been harvested before, its child
     row still exists, and that row is terminal. Writing rather than merely
     computing is RULING 4: retention deletes finished runs, and a value
@@ -631,7 +639,6 @@ async def _harvested_sweep(
                             detail=f"sweep '{sweep_id}' not found")
     children = {record.id: record
                 for record in await service.store.list_runs_by_sweep(sweep_id)}
-    metrics = await service.store.latest_metrics(list(children))
 
     terminal: dict[int, tuple[str, str]] = {}
     for variant in sweep.variants:
@@ -673,14 +680,36 @@ async def _harvested_sweep(
                                       finished=finished)
         if updated is not None:
             sweep = updated
+    scopes = {variant.run_id: node
+              for variant in sweep.variants
+              if variant.run_id in children
+              and (node := _final_metrics_node(sweep, variant)) is not None}
+    metrics = await service.store.latest_metrics(list(children),
+                                                 producers=scopes)
     return sweep, children, metrics
+
+
+def _final_metrics_node(sweep: SweepRecord,
+                        variant: SweepVariant) -> str | None:
+    """The node a variant's ``final_metrics`` are read from, or None for
+    the run-wide summary (#841).
+
+    The objective's node: the one the sweep names, else the one the
+    harvest found as the only producer of a name-only objective. None
+    while a name-only variant is unharvested, when its objective is the
+    run-level series, and when several nodes logged it (that variant is
+    unranked and the summary says so by being run-wide).
+    """
+    _metric, node_id = objective_selector(sweep.objective)
+    return node_id if node_id is not None else variant.objective_node_id
 
 
 _COUNT_KEYS = ("queued", "running", "disconnected", "succeeded", "failed",
                "cancelled", "interrupted", _STATUS_MISSING)
 
 
-def _variant_payload(variant: SweepVariant, rank: int | None,
+def _variant_payload(sweep: SweepRecord, variant: SweepVariant,
+                     rank: int | None,
                      children: dict[str, RunRecord],
                      metrics: dict[str, dict[str, float]]) -> dict[str, Any]:
     child = children.get(variant.run_id) if variant.run_id else None
@@ -711,6 +740,10 @@ def _variant_payload(variant: SweepVariant, rank: int | None,
         # as "this run recorded nothing" rather than "this run is no longer
         # here".
         payload["final_metrics"] = metrics.get(variant.run_id, {})
+        # The node those numbers come from (#841): the objective's, or
+        # None for the run-wide summary, which collapses a name several
+        # nodes log into whichever wrote last.
+        payload["final_metrics_node_id"] = _final_metrics_node(sweep, variant)
         # Where the variant was placed (#777), read off the child row like
         # the Runs list: `worker_id` is `any` and `queue_key` `any/<device>`
         # until a `target: any` variant starts, then the worker it got and
@@ -874,7 +907,7 @@ async def get_sweep(
     ranked = rank_variants(
         sweep.variants,
         direction=sweep.objective.get("direction", "minimize"))
-    payloads = [_variant_payload(variant, rank, children, metrics)
+    payloads = [_variant_payload(sweep, variant, rank, children, metrics)
                 for variant, rank in ranked]
 
     if format == "csv":
