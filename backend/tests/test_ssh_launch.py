@@ -337,6 +337,24 @@ async def test_a_break_in_the_failure_restarts_its_window(
     assert launch._lasting_since is None
 
 
+async def test_a_host_that_fails_before_the_session_is_backed_off(
+        launcher, fake_ssh, monkeypatch):
+    """A new slot's pending forget used to retry every 2 s forever while
+    the prepare step kept failing; the backoff now doubles (#840)."""
+    waits = []
+    real = ssh_launch._first_of
+
+    async def spy(stop, wake, timeout):
+        waits.append(timeout)
+        return await real(stop, wake, timeout)
+
+    monkeypatch.setattr(ssh_launch, "_first_of", spy)
+    monkeypatch.setenv("FAKE_SSH_MODE", "nohost")
+    await launcher.add(_entry())
+    await _until(lambda: len(waits) >= 4, "it was not retried")
+    assert waits[:4] == [0.05, 0.1, 0.2, 0.4]
+
+
 async def test_retry_cuts_the_backoff_short(launcher, fake_ssh, monkeypatch):
     """Retry on an entry still retrying (a long backoff ahead) tries again
     at once."""

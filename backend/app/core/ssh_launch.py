@@ -796,6 +796,8 @@ class SshLaunch:
         #: starts it again.
         self.gave_up = False
         self._forget_first = False
+        #: This attempt found a credential to clear: retry without backoff.
+        self._retry_soon = False
         self._refused = False
         self._mismatch = False
         self._forward_failures = 0
@@ -889,6 +891,7 @@ class SshLaunch:
         while not self._stop.is_set():
             self.attempts += 1
             self.retry_at = None
+            self._retry_soon = False
             started = time.monotonic()
             was_up = False
             try:
@@ -900,8 +903,11 @@ class SshLaunch:
                 break
             if was_up and time.monotonic() - started >= STABLE_S:
                 backoff = BACKOFF_MIN_S
-            if self._forget_first:
+            if self._retry_soon:
                 # A credential to clear: no reason to wait long for that.
+                # (Not every pending forget: a new slot's forget waits for
+                # a session, and a host that fails before one is backed
+                # off as usual, #840.)
                 backoff = BACKOFF_MIN_S
             self.retry_at = time.time() + backoff
             logger.info("SSH worker %s: retrying in %.0f s", self.entry.id,
@@ -1025,6 +1031,7 @@ class SshLaunch:
             # worker: the next session forgets it first. (The agent now
             # exits on a refused credential, #840, ending the session.)
             self._forget_first = True
+            self._retry_soon = True
         if code in (COMMAND_NOT_FOUND_EXIT, COMMAND_NOT_EXECUTABLE_EXIT) \
                 and not self.reattached:
             # The remote script printed a pid for an agent that never ran.
