@@ -1011,9 +1011,9 @@ class WorkerRegistry:
             if run.detached_at is not None \
                     and now - run.detached_at >= self.resume_grace_s:
                 if run.adopted:
-                    reason = (f"this server restarted and worker "
-                              f"{worker.name} did not reconnect with the run "
-                              f"within {self.resume_grace_s:.0f} s")
+                    reason = (f"it did not reconnect with the run within "
+                              f"{self.resume_grace_s:.0f} s after this "
+                              f"server restarted")
                 else:
                     reason = (f"worker {worker.name} did not reconnect "
                               f"within {self.resume_grace_s:.0f} s")

@@ -236,9 +236,9 @@ async def test_no_worker_within_the_grace_ends_the_run_saying_why(
         second.registry.check()
         record = await _terminal(second.service, run_id)
         assert record.status == "interrupted"
-        assert "this server restarted" in record.error
-        assert "did not reconnect" in record.error
-        assert "300 s" in record.error
+        assert record.error == (
+            "worker box went away: it did not reconnect with the run within "
+            "300 s after this server restarted")
         assert second.service._slots == {}
         assert second.registry._adopted == {}
         events = await second.service.store.get_events(run_id)

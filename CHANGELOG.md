@@ -22,6 +22,23 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **A restarted control plane takes over the runs still executing on its
+  workers ([#793]).** A control plane killed or crashed mid-run used to mark
+  every worker run `interrupted` at its next start, although the run kept
+  going on the worker. Now each such run reads `disconnected` with a
+  `worker_disconnected` warning saying the server restarted, holds its slots
+  again and continues in the same event log once its worker reconnects (an
+  SSH worker's tunnel is started again by the server); the agent's replay is
+  deduplicated against the seq the control plane stores in
+  `execution_facts.worker_resume` before every `ack`, after flushing the
+  run's metrics. A worker that does not come back within
+  `CODEFYUI_WORKER_RESUME_GRACE_S` ends the run `interrupted`, saying the
+  server restarted. Local runs and queued rows are retired as before, a
+  transfer run's uploads continue, and a study waits for its adopted child
+  before it is settled.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6248,6 +6265,7 @@ Release candidates before 1.0.0 are on the
 [#774]: https://github.com/CodefyUI/CodefyUI/issues/774
 [#775]: https://github.com/CodefyUI/CodefyUI/issues/775
 [#783]: https://github.com/CodefyUI/CodefyUI/issues/783
+[#793]: https://github.com/CodefyUI/CodefyUI/issues/793
 [#776]: https://github.com/CodefyUI/CodefyUI/issues/776
 [#773]: https://github.com/CodefyUI/CodefyUI/issues/773
 [#777]: https://github.com/CodefyUI/CodefyUI/issues/777
