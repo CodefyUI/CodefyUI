@@ -22,7 +22,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from httpx_ws import aconnect_ws
 
 from app.core import worker_protocol as wp
