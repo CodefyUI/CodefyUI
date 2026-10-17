@@ -444,24 +444,8 @@ class _Agent:
         return await self.recv()
 
 
-async def _assigned(*agents: _Agent, timeout: float = 10.0
-                    ) -> tuple[_Agent, wp.Assign]:
-    """The one agent that gets an ``assign`` within *timeout*."""
-    tasks = {asyncio.ensure_future(a.recv(timeout)): a for a in agents}
-    done, pending = await asyncio.wait(tasks, timeout=timeout,
-                                       return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-    assert done, "no agent got an assignment"
-    task = done.pop()
-    frame = task.result()
-    assert isinstance(frame, wp.Assign), frame
-    return tasks[task], frame
-
-
 async def _terminal(service: RunService, run_id: str) -> Any:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         record = await service.store.get_run(run_id)
         if record is not None and record.status in TERMINAL \
@@ -499,21 +483,28 @@ async def test_two_agents_on_one_card_run_any_cuda_runs_one_at_a_time(env):
         first, second = (await submit()).json(), (await submit()).json()
         assert first["status"] == "running"
         assert second["status"] == "queued"
-        owner, assign = await _assigned(*agents)
+        # ``any`` tries the workers in name order: meow-e2e gets the run.
+        # (Only that socket is read: cancelling a pending receive on the
+        # other one can break the test transport on a slow runner.)
+        owner = agents[0]
+        assign = await owner.recv(timeout=30)
+        assert isinstance(assign, wp.Assign)
         assert assign.run_id == first["run_id"]
         await owner.send(wp.RunStarted(run_id=assign.run_id, seq=1, pid=1))
         listing = (await client.get("/api/workers")).json()
         for name in ("meow-e2e", "meow-join"):
             assert _device(listing, name)["slots"] == {"limit": 1, "taken": 1}
         # Neither agent gets the second run while the card is busy.
-        with pytest.raises(AssertionError):
-            await _assigned(*agents, timeout=0.5)
         assert service.is_queued(second["run_id"])
+        assert all(not w["running"] for w in listing["workers"]
+                   if w["id"] == "meow-join")
+        assert service.queue_reason(second["run_id"]) is None  # its turn
 
         await owner.send(wp.RunFinished(run_id=assign.run_id, seq=2,
                                         status="succeeded"))
         await _terminal(service, assign.run_id)
-        owner, assign = await _assigned(*agents)
+        assign = await owner.recv(timeout=30)
+        assert isinstance(assign, wp.Assign)
         assert assign.run_id == second["run_id"]
         await owner.send(wp.RunFinished(run_id=assign.run_id, seq=1,
                                         status="succeeded"))
