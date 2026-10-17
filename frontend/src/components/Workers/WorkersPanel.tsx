@@ -438,10 +438,11 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const shared = instances.length > 0 && AWAY_STATUSES.has(worker.status);
   const anyConnected = !AWAY_STATUSES.has(worker.status)
     || instances.some((w) => !AWAY_STATUSES.has(w.status));
+  // A credential with instances says what revoking it does, asked or not.
   let removeTitle: TranslationKey = 'workers.remove.title';
-  if (confirming) removeTitle = 'workers.remove.confirmTitle';
+  if (instances.length > 0) removeTitle = 'workers.instances.remove.title';
+  else if (confirming) removeTitle = 'workers.remove.confirmTitle';
   else if (instance !== null) removeTitle = 'workers.instance.remove.title';
-  else if (instances.length > 0) removeTitle = 'workers.instances.remove.title';
 
   // One button that changes its word, never disabled: a disabled or swapped
   // button drops the focus to the page, where the dialog's Escape and Tab

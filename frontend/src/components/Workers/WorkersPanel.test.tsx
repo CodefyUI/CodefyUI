@@ -314,6 +314,7 @@ describe('WorkersPanel', () => {
     await act(async () => fireEvent.click(revoke));
     expect(removeWorker).not.toHaveBeenCalled();
     expect(revoke).toHaveTextContent('Confirm remove');
+    expect(revoke).toHaveAttribute('title', expect.stringMatching(/every instance disconnects/));
     await act(async () => fireEvent.click(revoke));
     expect(removeWorker).toHaveBeenCalledWith('gpu');
     // A worker no instance shares is a card of its own, as before.

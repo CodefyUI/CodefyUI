@@ -253,6 +253,15 @@ describe('workerStore', () => {
     expect(useWorkerStore.getState().busy).toEqual({});
   });
 
+  it('removes a revoked credential together with its instances (#845)', async () => {
+    useWorkerStore.setState({ workers: [
+      worker('gpu'), worker('gpu.1', { instance_of: 'gpu', instance: '1' }),
+      worker('box.1', { instance_of: 'box', instance: '1' }),
+    ] });
+    await useWorkerStore.getState().remove('gpu');
+    expect(useWorkerStore.getState().workers.map((w) => w.id)).toEqual(['box.1']);
+  });
+
   it('ignores a remove while another action on the worker is in flight', async () => {
     useWorkerStore.setState({ busy: { w1: true } });
     await useWorkerStore.getState().remove('w1');
