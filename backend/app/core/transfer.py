@@ -29,9 +29,11 @@ Without a shared filesystem the control plane is the artifact repository
     or ``<data root>/output``, at the same relative path (:data:`DATA_PLACES`).
     Like a local run's, these are the user's: retention leaves them.
 
-  In both places a different file already there is kept, and the new one is
-  suffixed (``saved-1.pt``); the same content is the same file (#838).
-  Either way the worker reports the key the upload answered with in its
+  ``run``: the same name sent again replaces its file (a retry); another
+  name that cleans to a name already taken is suffixed (``a-1.pt``), the
+  names recorded in the run's :data:`RUN_NAMES_FILE` (#838). ``data``: a
+  different file already there is kept and the new one suffixed
+  (``saved-1.pt``); the same content is the same file. Either way the worker reports the key the upload answered with in its
   ``artifact`` frame (``backend: "transfer"``), which records the row in
   the run's event order; :func:`key_path` maps a key back to a file and
   refuses one that is neither of those shapes.
@@ -50,12 +52,15 @@ constants and helpers (nothing here imports anything heavy at module level).
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
+import json
 import logging
 import os
 import re
 import shutil
 import sqlite3
+import threading
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
@@ -342,37 +347,60 @@ MAX_FILE_NAME_BYTES = 240
 #: Characters a shortened name keeps from its end (the position stamp and
 #: the extension).
 KEEP_TAIL = 40
+#: The shortest a shortened name may be (:func:`file_part`): below it the
+#: name is refused (:class:`NameTooLong`) rather than cut to nothing.
+MIN_FILE_NAME = 24
+#: The longest absolute path a received file may have, or None for no
+#: limit beyond the per-name caps. Windows without long paths enabled
+#: refuses a path over 259 characters (MAX_PATH less its NUL), so there the
+#: last name is shortened to fit the folder it lands in (#838).
+PATH_BUDGET: int | None = 259 if os.name == "nt" else None
 
 
-def _fits(name: str) -> bool:
-    return len(name) <= MAX_FILE_NAME \
-        and len(name.encode("utf-8", "surrogatepass")) <= MAX_FILE_NAME_BYTES
+class NameTooLong(ValueError):
+    """A received file's path cannot fit this server's path limit."""
 
 
-def file_part(value: str) -> str:
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8", "surrogatepass"))
+
+
+def file_part(value: str, limit: int = MAX_FILE_NAME) -> str:
     """One file-name component of a received file: the characters
-    ``checkpoints._safe_part`` keeps, the length kept too (#838).
+    ``checkpoints._safe_part`` keeps (``checkpoints._clean_part``), the
+    length kept too (#838).
 
     ``_safe_part`` caps an id component at 48 characters; a whole file name
     (``<run id>-<node id>-e100.pt``) cut there lost its epoch stamp and
-    extension, and two checkpoints took one name. A name over
-    :data:`MAX_FILE_NAME` / :data:`MAX_FILE_NAME_BYTES` is shortened in the
-    middle: its start, a hash of the whole name, and its last
-    :data:`KEEP_TAIL` characters, so distinct names stay distinct and the
-    stamp and extension survive. A name within ``MAX_NAME_PART`` comes out
-    as ``_safe_part`` made it.
+    extension, and two checkpoints took one name. A name over *limit*
+    characters (at most :data:`MAX_FILE_NAME`) or :data:`MAX_FILE_NAME_BYTES`
+    bytes is shortened in the middle: its start, a hash of the whole name,
+    and its end (up to :data:`KEEP_TAIL` characters), so distinct names stay
+    distinct and the stamp and extension survive. A name within
+    ``MAX_NAME_PART`` comes out exactly as ``_safe_part`` made it.
+    ``NameTooLong`` when *limit* is under :data:`MIN_FILE_NAME`.
     """
-    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_"
-                      for c in value)
-    cleaned = cleaned.strip("._") or "unnamed"
-    if _fits(cleaned):
+    from .checkpoints import _clean_part
+
+    limit = min(limit, MAX_FILE_NAME)
+    cleaned = _clean_part(value)
+    if len(cleaned) <= limit and _utf8_len(cleaned) <= MAX_FILE_NAME_BYTES:
         return cleaned
+    if limit < MIN_FILE_NAME:
+        raise NameTooLong(f"{value!r} does not fit this server's path limit")
     digest = hashlib.sha256(
         value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
-    tail = cleaned[-KEEP_TAIL:]
-    head = cleaned[:-KEEP_TAIL]
-    while head and not _fits(f"{head}-{digest}-{tail}"):
-        head = head[:-1]
+    room = limit - len(digest) - 2  # head + tail, around "-<digest>-"
+    tail = cleaned[-min(KEEP_TAIL, room // 2):]
+    head = cleaned[:room - len(tail)]
+    spare = MAX_FILE_NAME_BYTES - _utf8_len(tail) - len(digest) - 2
+    if _utf8_len(head) > spare:  # multi-byte characters: trim to the bytes
+        used, keep = 0, 0
+        for keep, char in enumerate(head):  # noqa: B007
+            used += _utf8_len(char)
+            if used > spare:
+                break
+        head = head[:keep]
     return f"{head}-{digest}-{tail}"
 
 
@@ -491,6 +519,8 @@ def remove_run_files(run_id: str, *, keep_checkpoints: bool = False) -> bool:
         if child.name == "checkpoint" and child.is_dir() \
                 and not child.is_symlink():
             continue
+        if child.name == RUN_NAMES_FILE:  # who took the kept names
+            continue
         if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child, ignore_errors=True)
         else:
@@ -534,59 +564,149 @@ def sweep_incoming() -> int:
     return removed
 
 
-def _suffixed(path: Path, n: int) -> Path:
-    return path.with_name(f"{path.stem}-{n}{path.suffix}")
+#: In a run's directory: which source name took each received name
+#: (:func:`place_file`), ``{"<kind>/<name>": "<name as sent>"}``.
+RUN_NAMES_FILE = ".names.json"
+_run_names_lock = threading.Lock()
+
+
+def _fit_name(raw: str, folder: Path, n: int = 0, *,
+              budget: bool = True) -> str:
+    """:func:`file_part` of *raw* for a file in *folder*, suffixed ``-n``
+    when *n*, shortened to fit :data:`PATH_BUDGET` when *budget*."""
+    tag = f"-{n}" if n else ""
+    limit = MAX_FILE_NAME - len(tag)
+    if budget and PATH_BUDGET is not None:
+        limit = min(limit, PATH_BUDGET - len(str(folder)) - 1 - len(tag))
+    name = file_part(raw, limit)
+    if not tag:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}{tag}.{ext}" if dot and stem else f"{name}{tag}"
+
+
+def _check_budget(path: Path) -> None:
+    if PATH_BUDGET is not None and len(str(path)) > PATH_BUDGET:
+        raise NameTooLong(f"{path} is over this server's path limit of "
+                          f"{PATH_BUDGET} characters")
+
+
+def _too_long(exc: OSError) -> bool:
+    return exc.errno == errno.ENAMETOOLONG \
+        or getattr(exc, "winerror", None) == 206  # ERROR_FILENAME_EXCED_RANGE
 
 
 def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
                sha256: str) -> str:
     """Move the received *tmp* to its place; the key. Blocking.
 
-    ``run``: :func:`run_key`. ``data``: the writer's path under
-    :data:`DATA_PLACES`. Either way never over a different file (#838: a
-    run's file used to be replaced, so two names that cleaned to one key
-    lost the earlier file): the same content there is the same file (the
-    upload is a no-op, so a retry answers the same key), a different one is
-    kept and this one is suffixed ``-1``, ``-2`` ... (:func:`_claim`).
-    ``ValueError`` for a name that fits neither.
+    ``run``: under the run's directory (:func:`_place_run`): the same name
+    sent again replaces its file atomically (a retry, a file that grew); a
+    different name that cleans to a name another one took is suffixed
+    ``-1``, ``-2`` ... (#838). ``data``: the writer's path under
+    :data:`DATA_PLACES`, never over a different file (:func:`_claim`).
+    Either way the last name is shortened to fit :data:`PATH_BUDGET`.
+    ``ValueError`` for a name that fits neither, ``NameTooLong`` (a
+    ``ValueError`` too) for a path this server cannot hold.
     """
-    if place == PLACE_RUN:
-        key = run_key(run_id, kind, name)
-        destination = key_location(key)
-        assert destination is not None
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if owned_run_dir(run_id) is None:
-            raise ValueError("the run's directory is not a plain directory")
-        claimed = _claim(tmp, destination, sha256)
-        return PurePosixPath(key).with_name(claimed.name).as_posix()
-    if place != PLACE_DATA:
-        raise ValueError(f"unknown place {place!r}")
-    relative = clean_name(name)
-    if relative.parts[0] not in DATA_PLACES or len(relative.parts) < 2:
-        raise ValueError(f"{name!r} is not under {', '.join(DATA_PLACES)}")
-    target = key_location(relative.as_posix())
-    assert target is not None
-    target.parent.mkdir(parents=True, exist_ok=True)
-    candidate = _claim(tmp, target, sha256)
-    key_parts = (relative.parts[0],
-                 *candidate.relative_to(_data_base(relative.parts[0])).parts)
-    return PurePosixPath(*key_parts).as_posix()
+    try:
+        if place == PLACE_RUN:
+            return _place_run(tmp, run_id, kind, name)
+        if place != PLACE_DATA:
+            raise ValueError(f"unknown place {place!r}")
+        raw = checked_relative(name).parts
+        relative = clean_name(name)
+        if relative.parts[0] not in DATA_PLACES or len(relative.parts) < 2:
+            raise ValueError(f"{name!r} is not under "
+                             f"{', '.join(DATA_PLACES)}")
+        base = _data_base(relative.parts[0])
+        assert base is not None
+        folder = base.joinpath(*relative.parts[1:-1])
+        folder.mkdir(parents=True, exist_ok=True)
+        candidate = _claim(
+            tmp, lambda n: folder / _fit_name(raw[-1], folder, n), sha256)
+        key_parts = (relative.parts[0], *candidate.relative_to(base).parts)
+        return PurePosixPath(*key_parts).as_posix()
+    except OSError as exc:
+        if _too_long(exc):
+            raise NameTooLong(f"{name!r}: {exc.strerror or exc}") from None
+        raise
 
 
-def _claim(tmp: Path, target: Path, sha256: str) -> Path:
-    """Move *tmp* to *target*, or to ``target-1``, ``-2`` ... when a
-    different file holds the name; the path it landed at. A file with the
-    same content already there is taken as this one (*tmp* is dropped).
-    ``os.link`` refuses an existing name, so two uploads cannot take one
-    name."""
+def _read_names(path: Path) -> dict[str, str]:
+    try:
+        names = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return names if isinstance(names, dict) else {}
+
+
+def _place_run(tmp: Path, run_id: str, kind: str, name: str) -> str:
+    """``place=run``: each part of *name* takes the cleaned name it maps to,
+    unless a different source name (recorded in :data:`RUN_NAMES_FILE`) or
+    a file nobody recorded (one 3.1.0 received) holds it; then ``-1``,
+    ``-2`` ... So a directory artifact (``tb run/...``) claims its folder
+    once, and another folder that cleans alike (``tb_run/...``) gets its
+    own."""
+    raw = checked_relative(name).parts
+    run_dir = run_files_dir(run_id)
+    if owned_run_dir(run_id) is None:
+        raise ValueError("the run's directory is not a plain directory")
+    kind_part = _part(kind)
+    with _run_names_lock:
+        ledger = run_dir / RUN_NAMES_FILE
+        names = _read_names(ledger)
+        changed = False
+        folder = run_dir / kind_part
+        taken: list[str] = [kind_part]
+        for depth, part in enumerate(raw):
+            source = "/".join(raw[:depth + 1])
+            last = depth == len(raw) - 1
+            n = 0
+            while True:
+                candidate = _fit_name(part, folder, n, budget=last)
+                key = "/".join((*taken, candidate))
+                path = folder / candidate
+                owner = names.get(key)
+                wrong_type = path.is_dir() if last else path.is_file()
+                if owner == source and not wrong_type:
+                    break
+                if owner is None and not os.path.lexists(path):
+                    names[key] = source
+                    changed = True
+                    break
+                n += 1
+            taken.append(candidate)
+            folder = path
+        _check_budget(folder)
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        if changed:
+            scratch = ledger.with_name(f"{INCOMING_PREFIX}{uuid.uuid4().hex}")
+            scratch.write_text(json.dumps(names), encoding="utf-8")
+            os.replace(scratch, ledger)
+        os.replace(tmp, folder)
+    return PurePosixPath(RUNS_DIRNAME, _part(run_id), *taken).as_posix()
+
+
+def _claim(tmp: Path, candidate_at: Callable[[int], Path],
+           sha256: str) -> Path:
+    """Move *tmp* to ``candidate_at(0)``, or ``candidate_at(1)``, ``(2)``
+    ... when a different file holds the name; the path it landed at. A file
+    with the same content already there (same size, then same sha256) is
+    taken as this one (*tmp* is dropped). ``os.link`` refuses an existing
+    name, so two uploads cannot take one name."""
+    size = tmp.stat().st_size
     n = 0
     while True:
-        candidate = target if n == 0 else _suffixed(target, n)
+        candidate = candidate_at(n)
+        _check_budget(candidate)
         try:
             os.link(tmp, candidate)
         except FileExistsError:
             try:
-                same = candidate.is_file() and sha256_file(candidate) == sha256
+                same = candidate.is_file() \
+                    and candidate.stat().st_size == size \
+                    and sha256_file(candidate) == sha256
             except OSError:
                 same = False
             if same:
@@ -594,7 +714,9 @@ def _claim(tmp: Path, target: Path, sha256: str) -> Path:
                 break
             n += 1
             continue
-        except OSError:  # no hard links here: claim the name exclusively
+        except OSError as exc:  # no hard links here: claim the name alone
+            if _too_long(exc):
+                raise
             try:
                 fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
             except FileExistsError:
