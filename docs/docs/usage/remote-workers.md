@@ -403,13 +403,14 @@ cdui agent start --one-shot --control https://codefyui.example.com
 - **Which runs reach it.** **Any available** never sends a run to a one-shot worker. A run reaches it when it names the worker (`"target": {"worker": "<name>"}`) or the one-shot pool: **A one-shot worker** in **Queue on...**, or `"target": {"pool": "one-shot"}` in `POST /api/runs` (with `device` set to the kind it needs, such as `cuda`). A pool run is never refused for want of a worker: it waits for a one-shot worker that offers its device, with `queue_reason` saying so, and fails after `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` (24 hours by default, `0` waits forever). Pool runs wait in one line per device kind, oldest first. `--run-id <id>` makes the agent take only that run, wherever it is in its line; the run must be waiting in the pool or name the worker, otherwise the agent is refused when it connects.
 - **Exit code.** `0`: the run succeeded and the control plane recorded it. `1`: it failed, was cancelled or ended `interrupted`, or its outcome could not be delivered. `2`: the control plane refused the agent (another version, a name another agent holds, a `--run-id` that does not wait for it) or a flag is wrong. `3`: the agent was stopped (SIGTERM, Ctrl-C, the job's time limit) before a run arrived. `4`: it could not start (enrollment failed, or `--mount` was refused). A refusal after the agent took its run (a reconnect the control plane refused) is `1`: the run's outcome was not recorded.
 - **A dropped connection.** The run keeps going and the agent reconnects, as any agent does ([When the connection drops](#when-the-connection-drops)). It exits only once the control plane has acknowledged the run's end; if that has not happened within `CODEFYUI_WORKER_RESUME_GRACE_S` after the run ended, it exits anyway with `1` and leaves the result spooled for a later agent with the same user-data folder.
-- **Afterwards.** The Workers panel lists it with a **One-shot** badge and **Offline** status, and **One-shot run** links to the run it took (or says it left without one). The next job's agent under the same name takes the next run.
-- **One agent per name at a time.** The credential names the worker, so two jobs started with the same credential would share a name. While a one-shot worker is connected, or its run is in flight, another agent under its name is refused with exit code `2`. For jobs that run at the same time, enroll one name per concurrent job, each with its own user-data folder (`CODEFYUI_USER_DATA_DIR`), as in the script below.
+- **Afterwards.** The Workers panel lists it with a **One-shot** badge and **Offline** status, and **One-shot run** links to the run it took (or says it left without one). The next job's agent under the same name takes the next run. The control plane records that the worker's last agent was one-shot, so after a restart of the control plane a run naming it is timed by `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` at once, before its next agent connects.
+- **One agent per name at a time.** The credential names the worker, so two jobs started with the same credential would share a name. While a one-shot worker is connected, or its run is in flight, another agent under its name is refused with exit code `2`. For jobs that run at the same time, use instances (below).
+- **Instances: several jobs on one credential.** `--instance [ID]` (one-shot agents only) makes the agent one of several sharing the credential and the user-data folder, such as the tasks of a SLURM array. It registers as `<name>.<ID>`; without a value, `ID` is `<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>` in an array task, `SLURM_JOB_ID` in another job, and six random characters elsewhere. Each instance is a one-shot worker of its own: it takes one run (a pool run, or one naming `<name>.<ID>`), and no other instance can take its name or its run while it holds them, also after a restart of the control plane. The Workers panel lists the instances inside the credential's card (**Shared credential**, with how many are connected and running). **Remove** on the credential revokes it, so every instance disconnects and the runs they execute end `interrupted`; **Remove** on an instance only takes it off the list. Tasks that start together with an enrollment token and no stored credential take a lock in the user-data folder: the first enrolls (one use is enough) and the others use the credential it stored. An instance keeps its run's files in `<user data>/agent-instances/<ID>/` and deletes them when it exits, so a result it could not deliver is not sent later by another agent. The panel keeps the 50 most recent instances that left per credential, until the control plane restarts.
 - It is always in the foreground and writes no pidfile, so it never conflicts with a background agent on the same machine. Without the batch system's time limit, nothing ends an agent that no run reaches: wrap an `ssh` command in `timeout` if it must not wait forever.
 
 ### SLURM {/* #slurm */}
 
-Enroll once from a login node (or any machine sharing the home directory) with a token from **Add worker**, then submit jobs. The script below keeps one credential per array task, so up to four tasks run at the same time:
+Generate an enrollment token with **Add worker** (one use is enough), then submit jobs. Every task of the array below runs at the same time on one credential, each as an instance (`slurm.<array job>-<task>`). The user-data folder must be on a filesystem every node shares, as the home directory usually is:
 
 ```bash
 #!/bin/bash
@@ -421,17 +422,17 @@ Enroll once from a login node (or any machine sharing the home directory) with a
 #SBATCH --output=codefyui-%A_%a.log
 
 module load cuda/12.4          # what your cluster calls it
-export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent/$SLURM_ARRAY_TASK_ID"
+export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent"   # one for every task
 CDUI="$HOME/CodefyUI/cdui"
 CONTROL=https://codefyui.example.com
 
-# The first job of each task enrolls (an enrollment token valid for several
-# uses, from Add worker); every later job reuses the stored credential.
-"$CDUI" agent start --one-shot --control "$CONTROL" \
-    --name "slurm-$SLURM_ARRAY_TASK_ID" --token "$CODEFYUI_ENROLL_TOKEN"
+# The first task to start enrolls with the token; the other tasks, and every
+# later job, use the stored credential.
+"$CDUI" agent start --one-shot --instance --control "$CONTROL" \
+    --name slurm --token "$CODEFYUI_ENROLL_TOKEN"
 ```
 
-Submit it with `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch`, after queueing runs with **Queue on... → A one-shot worker**. SLURM sets `CUDA_VISIBLE_DEVICES` to the GPU it allocated; the agent offers that card as `cuda:0`. At the job's time limit SLURM sends SIGTERM: the agent stops its run (`interrupted`, a training loop writes its interrupt checkpoint) and exits `1`. To run one specific run from a script, pass its id: `cdui agent start --one-shot --run-id <run id> ...`, which is also the form for a plain `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'`.
+Submit it with `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch`, after queueing runs with **Queue on... → A one-shot worker** (or **New sweep** with the same target: each task takes one variant). SLURM sets `CUDA_VISIBLE_DEVICES` to the GPU it allocated; the agent offers that card as `cuda:0`. At the job's time limit SLURM sends SIGTERM: the agent stops its run (`interrupted`, a training loop writes its interrupt checkpoint) and exits `1`. To run one specific run from a script, pass its id: `cdui agent start --one-shot --run-id <run id> ...`, which is also the form for a plain `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'`.
 
 ## Limits {/* #limits */}
 

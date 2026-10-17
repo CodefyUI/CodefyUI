@@ -403,13 +403,14 @@ cdui agent start --one-shot --control https://codefyui.example.com
 - **哪些 run 會送到它。** **任一可用** 不會把 run 送到單次 worker。只有指名該 worker（`"target": {"worker": "<名稱>"}`）或單次 worker 池的 run 會送到它：**Queue on...** 中的 **單次 worker**，或在 `POST /api/runs` 中使用 `"target": {"pool": "one-shot"}`（並以 `device` 指定需要的裝置類型，例如 `cuda`）。池中的 run 不會因為沒有 worker 而被拒絕：它會等待提供該裝置的單次 worker，`queue_reason` 會說明，並在 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`（預設 24 小時，`0` 表示一直等）後失敗。池中的 run 依裝置類型各排一列，先送出的先處理。`--run-id <id>` 讓 agent 只接該 run，不論它在佇列中的哪個位置；該 run 必須在池中等待或指名此 worker，否則 agent 連線時就會被拒絕。
 - **結束碼。** `0`：run 成功且控制面已記錄。`1`：run 失敗、被取消或以 `interrupted` 結束，或結果無法送達。`2`：控制面拒絕這個 agent（版本不同、名稱被另一個 agent 占用、`--run-id` 指的 run 不是在等它），或參數錯誤。`3`：agent 在 run 送達前被停止（SIGTERM、Ctrl-C、job 的時間上限）。`4`：無法啟動（加入失敗，或 `--mount` 被拒）。agent 接了 run 之後才被拒絕（控制面拒絕它重新連線）為 `1`：run 的結果沒有被記錄。
 - **連線中斷。** run 會繼續執行，agent 會像一般 agent 一樣重新連線（[連線中斷時](#when-the-connection-drops)）。它要等控制面確認收到 run 的結束才會退出；若 run 結束後 `CODEFYUI_WORKER_RESUME_GRACE_S` 內仍未確認，它仍會以 `1` 退出，並把結果留在暫存檔，交給之後使用同一個 user-data 資料夾的 agent 補送。
-- **結束之後。** Workers 面板以 **單次** 標記並顯示 **離線**，**單次 run** 連到它接的 run（或說明它未接 run 就結束）。下一個 job 以同一名稱啟動的 agent 會接下一個 run。
-- **同一名稱一次一個 agent。** 憑證綁定 worker 名稱，所以用同一份憑證啟動的兩個 job 會共用名稱。單次 worker 連線中或它的 run 仍在進行時，以同一名稱連線的另一個 agent 會被拒絕，結束碼 `2`。要同時執行多個 job，請為每個並行的 job 各加入一個名稱，並各用自己的 user-data 資料夾（`CODEFYUI_USER_DATA_DIR`），如下方腳本。
+- **結束之後。** Workers 面板以 **單次** 標記並顯示 **離線**，**單次 run** 連到它接的 run（或說明它未接 run 就結束）。下一個 job 以同一名稱啟動的 agent 會接下一個 run。控制面會記下該 worker 上一個 agent 是單次 agent，所以控制面重新啟動後，指名它的 run 立即依 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` 計時，不必等它的下一個 agent 連線。
+- **同一名稱一次一個 agent。** 憑證綁定 worker 名稱，所以用同一份憑證啟動的兩個 job 會共用名稱。單次 worker 連線中或它的 run 仍在進行時，以同一名稱連線的另一個 agent 會被拒絕，結束碼 `2`。要同時執行多個 job，請使用執行個體（見下一點）。
+- **執行個體：一張憑證給多個 job。** `--instance [ID]`（僅限單次 agent）讓 agent 成為共用同一張憑證與同一個 user-data 資料夾的多個 agent 之一，例如 SLURM array 的各個 task。它以 `<名稱>.<ID>` 登記；不給值時，`ID` 在 array task 中為 `<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>`，在其他 job 中為 `SLURM_JOB_ID`，否則為六個隨機字元。每個執行個體都是獨立的單次 worker：只接一個 run（池中的 run，或指名 `<名稱>.<ID>` 的 run）；它占用名稱與 run 的期間，其他執行個體都拿不走，控制面重新啟動後也一樣。Workers 面板把執行個體列在憑證的卡片內（**共用憑證**，並顯示幾個已連線、幾個執行中）。在憑證上按 **移除** 會撤銷憑證，所有執行個體都會中斷連線，正在執行的 run 以 `interrupted` 結束；在執行個體上按 **移除** 只會把它從清單移除。同時啟動、帶著 enrollment token 且尚未存有憑證的 task 會在 user-data 資料夾中取得一個鎖：第一個 task 加入（token 只需一次使用次數），其他 task 使用它存下的憑證。執行個體把 run 的檔案放在 `<user data>/agent-instances/<ID>/`，結束時刪除，所以它沒能送達的結果之後不會由其他 agent 補送。面板為每張憑證保留最近 50 個已結束的執行個體，直到控制面重新啟動。
 - 它永遠在前景執行，不寫 pidfile，所以不會與同一台機器上的背景 agent 衝突。沒有批次系統的時間上限時，沒有 run 送達的 agent 不會自行結束：若 `ssh` 指令不能一直等待，請用 `timeout` 包住。
 
 ### SLURM {/* #slurm */}
 
-先在登入節點（或任何共用家目錄的機器）以 **Add worker** 產生的 token 加入一次，之後再送出 job。下方腳本為每個 array task 保留一份憑證，所以最多四個 task 可以同時執行：
+先以 **Add worker** 產生 enrollment token（一次使用次數即可），再送出 job。下方 array 的所有 task 同時以同一張憑證執行，各自是一個執行個體（`slurm.<array job>-<task>`）。user-data 資料夾必須位於每個節點都共用的檔案系統上，家目錄通常就是：
 
 ```bash
 #!/bin/bash
@@ -421,17 +422,16 @@ cdui agent start --one-shot --control https://codefyui.example.com
 #SBATCH --output=codefyui-%A_%a.log
 
 module load cuda/12.4          # 依叢集的模組名稱
-export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent/$SLURM_ARRAY_TASK_ID"
+export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent"   # 所有 task 共用
 CDUI="$HOME/CodefyUI/cdui"
 CONTROL=https://codefyui.example.com
 
-# 每個 task 的第一個 job 會加入（用 Add worker 產生、可使用多次的
-# enrollment token）；之後的 job 沿用已存的憑證。
-"$CDUI" agent start --one-shot --control "$CONTROL" \
-    --name "slurm-$SLURM_ARRAY_TASK_ID" --token "$CODEFYUI_ENROLL_TOKEN"
+# 最先啟動的 task 用 token 加入；其他 task 與之後的 job 都沿用已存的憑證。
+"$CDUI" agent start --one-shot --instance --control "$CONTROL" \
+    --name slurm --token "$CODEFYUI_ENROLL_TOKEN"
 ```
 
-先以 **Queue on... → 單次 worker** 排入 run，再用 `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch` 送出。SLURM 會把分配到的 GPU 設在 `CUDA_VISIBLE_DEVICES`，agent 以 `cuda:0` 提供那張卡。到達 job 的時間上限時 SLURM 會送出 SIGTERM：agent 會停止它的 run（`interrupted`，訓練迴圈會寫出中斷檢查點）並以 `1` 退出。要從腳本執行某個特定的 run，傳入它的 id：`cdui agent start --one-shot --run-id <run id> ...`；直接用 `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'` 也是這個寫法。
+先以 **Queue on... → 單次 worker** 排入 run（或以同一目標建立 **New sweep**：每個 task 接一個 variant），再用 `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch` 送出。SLURM 會把分配到的 GPU 設在 `CUDA_VISIBLE_DEVICES`，agent 以 `cuda:0` 提供那張卡。到達 job 的時間上限時 SLURM 會送出 SIGTERM：agent 會停止它的 run（`interrupted`，訓練迴圈會寫出中斷檢查點）並以 `1` 退出。要從腳本執行某個特定的 run，傳入它的 id：`cdui agent start --one-shot --run-id <run id> ...`；直接用 `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'` 也是這個寫法。
 
 ## 限制 {/* #limits */}
 

@@ -40,6 +40,22 @@ received — each links to the release it was published as.
   system allocated instead of the card with the same index. The guide's new
   section has an `sbatch` script
   (`docs/docs/usage/remote-workers.md#one-shot-workers`). [#790]
+- **A SLURM array needs one enrollment: one-shot agents started with
+  `--instance` share a credential** ([#845]). `cdui agent start --one-shot
+  --instance [ID]` registers the agent as `<name>.<ID>` under the
+  credential of `<name>` (`ID` defaults to the SLURM array job and task id,
+  else the job id, else a random one), so every task of an array uses one
+  stored credential and one user-data folder; tasks that start together
+  with an enrollment token enroll once. Each instance is a one-shot worker
+  of its own, and no instance can take another's name or run (its socket,
+  its uploads, and its run after a control-plane restart are bound to the
+  agent process). The Workers panel lists the instances inside the
+  credential's card, **Shared credential**; removing the credential
+  revokes every instance. Regular agents cannot use `--instance`. Also, an
+  enrolled worker whose last agent was one-shot is remembered as one
+  (migration 016), so after a restart of the control plane a run naming it
+  is timed by `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` before its next
+  agent connects.
 - **A worker without the shared folder can keep its files in an S3 or MinIO bucket instead of on the control plane** ([#791]). With `CODEFYUI_S3_ENABLED=1`, a bucket (`CODEFYUI_S3_BUCKET`, `CODEFYUI_S3_ENDPOINT_URL`, `CODEFYUI_S3_PREFIX`, `CODEFYUI_S3_ADDRESSING_STYLE`) and the control plane's keys (`CODEFYUI_S3_ACCESS_KEY_ID`, `CODEFYUI_S3_SECRET_ACCESS_KEY`, held in memory only), the runs the transfer backend would serve go through the bucket when the worker's agent has boto3: the control plane puts each input there once as `inputs/<sha256>`, the worker downloads it and uploads what the run writes to `runs/<run id>/<kind>/<name>` (writer nodes' files under `runs/<run id>/output/`), and the control plane stores only the object keys (artifact rows with `backend: "s3"` and their bucket in a new `bucket` column, database migration 014, listed as `s3://<bucket>/<key>`, so a later change of bucket or prefix leaves earlier runs' files reachable). Workers get temporary STS credentials limited to their run's keys and renewed before they expire (`CODEFYUI_S3_CREDENTIALS=sts`, `CODEFYUI_S3_STS_DURATION_S`, `CODEFYUI_S3_STS_ROLE_ARN` for AWS), the control plane's own keys (`static`), or STS falling back to the own keys for 10 minutes after a refusal (`auto`, the default); they travel in the assignment and are kept in the agent's memory. **Download** in the Runs panel streams the object through the control plane, or redirects to a pre-signed URL with `CODEFYUI_S3_DOWNLOAD=presign`. Run retention and Delete remove the run's objects but `output/` and an interrupted run's `checkpoint/`, and abort its unfinished uploads; the docs give lifecycle rules for the rest. boto3 is optional (the `s3` extra); an agent without it gets the transfer backend, with a `storage_fallback` warning. Off by default: nothing changes for a run without a worker.
 
 - **A restarted control plane takes over the runs still executing on its
@@ -6313,6 +6329,7 @@ Release candidates before 1.0.0 are on the
 [#791]: https://github.com/CodefyUI/CodefyUI/issues/791
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
 [#790]: https://github.com/CodefyUI/CodefyUI/issues/790
+[#845]: https://github.com/CodefyUI/CodefyUI/issues/845
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
 [#788]: https://github.com/CodefyUI/CodefyUI/issues/788
