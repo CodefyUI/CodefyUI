@@ -648,8 +648,14 @@ async def test_a_named_run_may_wait_and_a_never_fitting_batch_is_refused(
             "target": {"worker": "box", "memory_gib": 2}}) == [
             service._needs_of(_graph())]
         await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1, pid=1))
-        await agent.finish(assign)
-        await _terminal(service, assign.run_id)
+        await agent.send(wp.RunFinished(
+            run_id=assign.run_id, seq=2, status="failed",
+            error="Node py ran out of memory on cuda:0."))
+        record = await _terminal(service, assign.run_id)
+        assert record.error.endswith(
+            "This run was capped to its memory budget of 12.0 GiB on cuda:0 "
+            "(target.memory_gib): raise the budget, or make the run need "
+            "less.")
         second = await agent.assignment()
         assert second.run_id == waits.json()["run_id"]
         await agent.send(wp.RunStarted(run_id=second.run_id, seq=1, pid=1))
@@ -671,3 +677,19 @@ async def test_the_policy_route_refuses_what_it_cannot_share(env):
                           json={"policy": "shared"})).status_code == 404
         assert (await put("/api/workers/box/devices/cpu/policy",
                           json={"policy": "shared"})).status_code == 422
+
+
+def test_the_budget_note_is_added_to_an_out_of_memory_failure_only():
+    from app.core.executors import ExecutionOutcome, _with_budget_note
+
+    budgeted = Placement("box", ("cuda:0",), (("box", "cuda:0"),),
+                         memory_budget=GIB, budget_devices=("cuda:0",))
+    plain = Placement("box", ("cuda:0",), (("box", "cuda:0"),))
+    oom = ExecutionOutcome("failed", "CUDA out of memory")
+    assert "capped to its memory budget of 1.0 GiB" in _with_budget_note(
+        oom, budgeted).error
+    for outcome, placement in (
+            (oom, plain), (ExecutionOutcome("failed", "boom"), budgeted),
+            (ExecutionOutcome("succeeded"), budgeted),
+            (ExecutionOutcome("failed", None), budgeted)):
+        assert _with_budget_note(outcome, placement) is outcome

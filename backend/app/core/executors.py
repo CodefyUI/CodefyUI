@@ -587,6 +587,25 @@ ACK_EVERY = 64
 ACK_INTERVAL_S = 1.0
 
 
+def _with_budget_note(outcome: ExecutionOutcome,
+                      placement: Any) -> ExecutionOutcome:
+    """A failed run that ran out of memory under a budget (#788) says so:
+    the cap is the run's own, set from ``target.memory_gib``, and raising
+    it is the fix the generic advice does not mention."""
+    budget = getattr(placement, "memory_budget", None)
+    error = outcome.error
+    if outcome.status != STATUS_FAILED or not budget or not error \
+            or "out of memory" not in error.lower():
+        return outcome
+    from .memory_admission import format_gib
+
+    devices = ", ".join(getattr(placement, "budget_devices", ()) or ())
+    return replace(outcome, error=(
+        f"{error}\n\nThis run was capped to its memory budget of "
+        f"{format_gib(budget)} on {devices} (target.memory_gib): raise the "
+        "budget, or make the run need less."))
+
+
 class WorkerExecutor:
     """Execute the graph on a worker agent (#771) over ``/ws/worker``.
 
@@ -730,7 +749,7 @@ class WorkerExecutor:
                 if outcome is not None:
                     finished = True
                     await acks.flush()
-                    return outcome
+                    return _with_budget_note(outcome, placement)
                 if acks.recorded - acks.acked >= ACK_EVERY:
                     await acks.flush()
         except asyncio.CancelledError:
