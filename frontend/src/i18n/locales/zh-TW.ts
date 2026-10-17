@@ -125,7 +125,7 @@ const zhTW: Record<TranslationKey, string> = {
   'status.running': '執行中',
   'status.queuedDevice': '排隊中（{device} 第 {position} 位）',
   'status.queuedDeviceNoPosition': '排隊中（{device}）',
-  'status.queuedSeed': '排隊中（等待設定亂數種子的執行）',
+  'status.queuedSeed': '排隊中（等待其他執行）',
   'status.completed': '已完成',
   'status.error': '錯誤',
   'status.skipped': '已跳過',

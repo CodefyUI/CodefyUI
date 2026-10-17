@@ -424,7 +424,7 @@ describe('Toolbar', () => {
   it.each([
     [{ reason: 'device', device: 'cpu', position: 2 }, 'Queued (#2 on cpu)'],
     [{ reason: 'device', device: 'cuda:0', position: null }, 'Queued (on cuda:0)'],
-    [{ reason: 'seed' }, 'Queued (waiting for a seeded run)'],
+    [{ reason: 'seed' }, 'Queued (waiting for a run)'],
     // A queue entry that does not say which device still reads as a sentence.
     [{ reason: 'device', position: 3 }, 'Queued (#3 on ?)'],
     [{ reason: 'device', position: null }, 'Queued (on ?)'],

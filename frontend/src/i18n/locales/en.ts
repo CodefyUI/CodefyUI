@@ -159,7 +159,7 @@ const en = {
   // The toolbar status while a submitted run waits to start (#680).
   'status.queuedDevice': 'Queued (#{position} on {device})',
   'status.queuedDeviceNoPosition': 'Queued (on {device})',
-  'status.queuedSeed': 'Queued (waiting for a seeded run)',
+  'status.queuedSeed': 'Queued (waiting for a run)',
   'status.completed': 'Completed',
   'status.error': 'Error',
   'status.skipped': 'Skipped',
