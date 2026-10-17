@@ -457,6 +457,19 @@ async def _lifespan_body(app: FastAPI):
         await asyncio.to_thread(sweep_incoming)
     except Exception:  # noqa: BLE001 -- housekeeping must not block startup
         logger.warning("could not sweep unfinished uploads", exc_info=True)
+    # The S3 artifact backend (#791) asked for but unusable: say why once,
+    # here, rather than only as worker runs quietly use the transfer backend.
+    from .core import s3 as s3_backend
+    s3_problem = s3_backend.problem()
+    if s3_problem is not None:
+        logger.warning("CODEFYUI_S3_ENABLED is set, but the S3 artifact "
+                       "backend is off: %s", s3_problem)
+    elif s3_backend.enabled():
+        logger.info("S3 artifact backend on: bucket %s%s (credentials: %s)",
+                    settings.S3_BUCKET,
+                    f" at {settings.S3_ENDPOINT_URL}"
+                    if settings.S3_ENDPOINT_URL else "",
+                    settings.S3_CREDENTIALS)
 
     # ── Package Center: one optional-pack install at a time ────────────
     # Same lifetime rules as the run service above: it owns an asyncio.Task

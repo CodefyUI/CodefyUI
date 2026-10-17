@@ -249,7 +249,13 @@ from .executors import (
     RunSinks,
     WorkerExecutor,
 )
-from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_TRANSFER, holds_mount
+from .mounts import (
+    BACKEND_LOCAL,
+    BACKEND_MOUNT,
+    BACKEND_S3,
+    BACKEND_TRANSFER,
+    holds_mount,
+)
 from .node_state_store import NodeStateStore
 from .run_events import (
     DEFAULT_ERROR_MODE,
@@ -3374,6 +3380,20 @@ class RunService:
                                active.run_id, signal.path)
                 return
             backend = BACKEND_TRANSFER
+        elif getattr(signal, "backend", None) == BACKEND_S3:
+            # Uploaded to the run's bucket by the worker (#791): the path is
+            # the object key, recorded only under the run's own prefix.
+            # The row records its bucket (#791), so it keeps naming its
+            # object after a settings change.
+            from .s3 import owns_key
+
+            if not owns_key(active.run_id, signal.path,
+                            getattr(signal, "prefix", None)):
+                logger.warning("run %s: ignoring an S3 artifact outside the "
+                               "run's prefix: %r", active.run_id,
+                               signal.path)
+                return
+            backend = BACKEND_S3
         else:
             backend = BACKEND_MOUNT if mount_label else BACKEND_LOCAL
         record = await self.store.add_artifact(
@@ -3382,7 +3402,8 @@ class RunService:
             backend=backend,
             mount_label=mount_label or None,
             worker_id=(placement.worker_id if placement is not None
-                       else LOCAL_WORKER_ID))
+                       else LOCAL_WORKER_ID),
+            bucket=getattr(signal, "bucket", None))
         await self._emit(active.run_id, EVENT_ARTIFACT,
                          artifact_payload(record, signal.node_id))
 

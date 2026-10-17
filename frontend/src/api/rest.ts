@@ -718,19 +718,24 @@ export interface RunArtifact {
   meta: Record<string, unknown> | null;
   created_at: string;
   /**
-   * `local` (an absolute path), `mount` (a file on a shared mount) or
-   * `transfer` (a worker uploaded it to this server, #785: downloadable
-   * from `/api/runs/{id}/artifacts/{artifact_id}/download`).
+   * `local` (an absolute path), `mount` (a file on a shared mount),
+   * `transfer` (a worker uploaded it to this server, #785) or `s3` (a
+   * worker uploaded it to the S3 bucket, #791: `path` is its `s3://` URI).
+   * The last two download from
+   * `/api/runs/{id}/artifacts/{artifact_id}/download`.
    */
   backend?: string;
   mount_label?: string | null;
   /**
    * The stored path under `mount_label`, for a `mount` row; the key under
-   * this server's data root, for a `transfer` row.
+   * this server's data root, for a `transfer` row; the object key, for an
+   * `s3` row.
    */
   relative_path?: string | null;
   /** The worker whose run wrote the file; `local` is this server. */
   worker_id?: string;
+  /** The bucket of an `s3` row (#791); `null` on every other row. */
+  bucket?: string | null;
 }
 
 /**

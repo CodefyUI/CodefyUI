@@ -14,7 +14,7 @@ and metrics from another.
     GET    /api/runs/{id}/metrics        series as JSON or CSV
     GET    /api/runs/{id}/artifacts      checkpoints and other recorded files
     POST   /api/runs/{id}/artifacts/upload          a worker's output (#785)
-    GET    /api/runs/{id}/artifacts/{aid}/download  an uploaded output
+    GET    /api/runs/{id}/artifacts/{aid}/download  an uploaded output (#785, #791)
 
 The upload route is the one POST here that does not take the session token
 alone: a worker agent (#785, the ``transfer`` storage backend) sends its
@@ -45,13 +45,19 @@ import asyncio
 import csv
 import io
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, ValidationError
 
 from ..config import settings
@@ -69,6 +75,8 @@ from ..core.run_store import (
     MetricRecord,
     RunRecord,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -419,6 +427,8 @@ async def delete_run(run_id: str, request: Request):
     ``<data root>/runs/<run_id>``): what the worker uploaded for the run
     has no index but these rows, so it goes with them. A writer node's file
     a worker placed in this server's data folders stays, as a local run's.
+    The same holds for a run's objects in the S3 bucket (#791,
+    ``runs/<run_id>/``): they go, but the writer nodes' ``output/``.
 
     Captured OUTPUTS are a different matter and DO go: ``RunOutputStore``
     keys its in-memory tensors by the same run id, so leaving them behind
@@ -432,6 +442,9 @@ async def delete_run(run_id: str, request: Request):
         raise HTTPException(
             status_code=409,
             detail=f"run '{run_id}' is queued or running; cancel it first")
+    # Read before the rows cascade away: where the run wrote in an S3
+    # bucket (#791), whose objects then go with it.
+    s3_rows = await service.store.s3_objects(run_id)
     deleted = await service.store.delete_run(run_id)
     if not deleted:
         # The row existed at _require_run and is gone now: another client
@@ -447,7 +460,38 @@ async def delete_run(run_id: str, request: Request):
     if record.worker_id not in (WORKER_LOCAL, WORKER_ANY):
         # What a worker uploaded for the run (#785) has no other index.
         await asyncio.to_thread(remove_run_files, run_id)
-    return {"run_id": run_id, "deleted": True}
+    answer: dict[str, Any] = {"run_id": run_id, "deleted": True}
+    if s3_rows:
+        # As retention does (#791): the run's objects but a writer node's
+        # files (``output/``), from the bucket and prefix the rows
+        # recorded. Never fails the delete (the rows are gone); what stays
+        # is logged and said in ``warning``.
+        warning = await _remove_s3_objects(run_id, s3_rows)
+        if warning is not None:
+            answer["warning"] = warning
+    return answer
+
+
+async def _remove_s3_objects(run_id: str, rows: list[Any]) -> str | None:
+    """Remove a deleted run's S3 objects (#791); why some stay, or None."""
+    from ..core import s3
+
+    reason = None
+    places = [(r, False, bucket, prefix)
+              for r, bucket, prefix in s3.locations(rows)]
+    if not s3.client_available():
+        reason = s3.unconfigured() or "boto3 is not installed"
+    elif not places:
+        reason = "CODEFYUI_S3_BUCKET is not set"
+    else:
+        _, failed = await asyncio.to_thread(s3.remove_runs_objects, places)
+        if failed:
+            return "the run's files in the S3 bucket stay: " + "; ".join(failed)
+    if reason is None:
+        return None
+    logger.warning("run %s deleted, but its S3 objects stay: %s", run_id,
+                   reason)
+    return f"the run's files in the S3 bucket stay: {reason}"
 
 
 @router.post("/{run_id}/cancel")
@@ -638,8 +682,11 @@ async def get_run_artifacts(
     ``path`` is where the file is on this server. A file a worker wrote
     under a shared mount (#782) is stored relative to it and reported here
     translated: ``backend`` is ``mount``, ``mount_label`` names the mount
-    and ``relative_path`` is the stored path. Every other row is ``local``
-    with its absolute path and no ``relative_path``. ``worker_id`` names
+    and ``relative_path`` is the stored path. A file a worker uploaded is
+    ``transfer`` (#785: ``path`` on this server) or ``s3`` (#791: ``path``
+    is its ``s3://<bucket>/<key>`` URI, ``relative_path`` the key and
+    ``bucket`` the bucket; ``bucket`` is null on every other row). Every
+    other row is ``local`` with its absolute path and no ``relative_path``. ``worker_id`` names
     the worker whose run wrote the file (``local``: this server).
     """
     service = _get_service(request)
@@ -651,9 +698,10 @@ async def get_run_artifacts(
             {"id": record.id, "kind": record.kind, "path": record.path,
              "meta": record.meta, "created_at": record.created_at,
              "backend": record.backend, "mount_label": record.mount_label,
-             "worker_id": record.worker_id,
+             "worker_id": record.worker_id, "bucket": record.bucket,
              "relative_path": (record.stored_path
-                               if record.backend in ("mount", "transfer")
+                               if record.backend in ("mount", "transfer",
+                                                     "s3")
                                else None)}
             for record in artifacts
         ],
@@ -769,13 +817,18 @@ async def upload_run_artifact(run_id: str, request: Request):
 @router.get("/{run_id}/artifacts/{artifact_id}/download")
 async def download_run_artifact(run_id: str, artifact_id: int,
                                 request: Request):
-    """Download a file a worker uploaded for the run (#785).
+    """Download a file a worker uploaded for the run (#785, #791).
 
     Only ``transfer`` rows: their file is under this run's own directory,
     which a worker cannot point anywhere else. Any other row names a path
     a node or a plugin wrote, which this open read must not serve (400).
     A TensorBoard directory is not a file (400): point TensorBoard at the
     row's ``path`` instead.
+
+    And ``s3`` rows (#791), whose key is under the run's own prefix:
+    streamed from the bucket through this server, or, with
+    ``CODEFYUI_S3_DOWNLOAD=presign``, a 307 to a pre-signed URL the browser
+    fetches from the bucket itself. 503 when the bucket cannot be reached.
     """
     from ..core import transfer
 
@@ -786,6 +839,9 @@ async def download_run_artifact(run_id: str, artifact_id: int,
     if record is None:
         raise HTTPException(status_code=404,
                             detail=f"artifact {artifact_id} not found")
+    if record.backend == "s3":
+        return await _download_s3(run_id, record.stored_path or "",
+                                  record.bucket)
     if record.backend != "transfer":
         raise HTTPException(status_code=400, detail=(
             "only files a worker uploaded can be downloaded here; this one "
@@ -797,3 +853,43 @@ async def download_run_artifact(run_id: str, artifact_id: int,
         raise HTTPException(status_code=400, detail="not a file (a directory)")
     return FileResponse(path=path, filename=path.name,
                         media_type="application/octet-stream")
+
+
+async def _download_s3(run_id: str, key: str, bucket: str | None) -> Response:
+    """Serve one of *run_id*'s objects in the S3 bucket (#791): *bucket*
+    and the key's prefix are the ones the row recorded."""
+    from ..core import s3
+
+    if not s3.owns_key(run_id, key):
+        raise HTTPException(status_code=404, detail="the file is gone")
+    bucket = bucket or settings.S3_BUCKET
+    reason = None
+    if not s3.client_available():
+        reason = s3.unconfigured() or "boto3 is not installed"
+    elif not bucket:
+        reason = "CODEFYUI_S3_BUCKET is not set"
+    if reason is not None:
+        raise HTTPException(status_code=503, detail=(
+            f"the run's file is in an S3 bucket this server cannot reach: "
+            f"{reason}"))
+    name = s3.filename(key)
+    try:
+        head = await asyncio.to_thread(s3.head, key, bucket)
+        if head is None:
+            if await asyncio.to_thread(s3.is_folder, key, bucket):
+                raise HTTPException(status_code=400,
+                                    detail="not a file (a directory)")
+            raise HTTPException(status_code=404, detail="the file is gone")
+        if settings.S3_DOWNLOAD == "presign":
+            url = await asyncio.to_thread(s3.presigned_url, key, name,
+                                          bucket)
+            return RedirectResponse(url, status_code=307)
+        chunks = await asyncio.to_thread(s3.open_stream, key, bucket)
+    except s3.S3Unavailable as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"the S3 bucket: {exc}") from None
+    headers = {"Content-Disposition": s3.content_disposition(name)}
+    if head.get("ContentLength") is not None:
+        headers["Content-Length"] = str(head["ContentLength"])
+    return StreamingResponse(chunks, media_type="application/octet-stream",
+                             headers=headers)

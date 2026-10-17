@@ -245,7 +245,7 @@ async def test_welcome_lists_this_servers_capabilities(env):
         welcome = await FakeAgent(ws).hello(capabilities=["ack", "future"],
                                             **_catalog())
         assert welcome.capabilities == list(wp.CAPABILITIES) == [
-            "ack", "mounts", "transfer", "one_shot"]
+            "ack", "mounts", "transfer", "one_shot", "s3"]
         assert registry.get("box").online
         # The registry keeps what the agent listed (#785 reads it).
         assert registry.get("box").capabilities == ("ack", "future")

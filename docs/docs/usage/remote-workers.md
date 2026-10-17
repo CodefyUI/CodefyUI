@@ -159,7 +159,7 @@ The control plane holds the queue and records every event, so a run on a worker 
 
 ## Storage {/* #storage */}
 
-A run that uses no files in the data folder (a pure-tensor graph, or one whose Dataset or HuggingFaceDataset nodes download into a cache of their own) runs on any worker. A run that reads uploads or writes files needs one of two things: a folder both machines share, or the transfer backend, which moves the files over the agent's connection. A worker with the shared folder is preferred.
+A run that uses no files in the data folder (a pure-tensor graph, or one whose Dataset or HuggingFaceDataset nodes download into a cache of their own) runs on any worker. A run that reads uploads or writes files needs one of two things: a folder both machines share, or the transfer backend, which moves the files over the agent's connection (or, when one is configured, through an [S3 or MinIO bucket](#storage-s3) instead). A worker with the shared folder is preferred.
 
 | Run | Worker with the `data` mount | Worker without it |
 | --- | --- | --- |
@@ -209,6 +209,60 @@ The uploads run beside the run, so a slow network never holds the run up; its en
 A run this cannot serve is refused at submit when it names a worker without the shared folder, and the message says why: a reader given a plain path (FileReader, ImageFolderDataset, ImageBatchReader, VideoLoad, DocumentLoader reading a folder) rather than an upload, an upload the control plane does not have, or inputs over the limit. For example: ``worker gpu-box-1 has no `data` mount; add `--mount data=...` to its agent, or make the run fit the transfer backend: its inputs add up to 3.10 GiB, over the transfer limit of 2.00 GiB (CODEFYUI_TRANSFER_MAX_INPUT_BYTES)``.
 
 Inputs and outputs go to the same address as the agent's connection, with its worker token and the same certificate check (a pinned certificate is pinned for them too): without TLS they cross the network unencrypted. Behind a proxy, its request size limit must allow the largest output ([Deployment](./deployment#workers-behind-this-proxy)).
+
+### An S3 or MinIO bucket {/* #storage-s3 */}
+
+If the lab already runs MinIO, or uses S3, the bucket can take the control plane's place as the file store: the worker downloads the run's inputs from the bucket and uploads what the run writes to it, and the control plane keeps only the object keys. The run's files then never cross the control plane's network link, apart from each input, which the control plane puts in the bucket once.
+
+It serves the same runs as the transfer backend (uploads picked in a file field, within `CODEFYUI_TRANSFER_MAX_INPUT_BYTES`) on a worker without the shared folder, and while it is on it takes their place. A worker with the shared folder is still preferred.
+
+**Setting it up.**
+
+1. Install boto3 into CodefyUI's environment on the control plane and on every worker that should use the bucket: `uv pip install --python backend/.venv/bin/python boto3` from the install folder, or in a development checkout `uv pip install -e "backend[s3]"`. An agent without it does not offer S3 (the agent's log lists the capabilities it connected with) and keeps getting the transfer backend; each such run logs a `storage_fallback` warning.
+2. Create the bucket and a user for CodefyUI that can read and write it. With MinIO's client: `mc mb lab/codefyui`, then `mc admin user add lab codefyui <secret>` and `mc admin policy attach lab readwrite --user codefyui`.
+3. Start the control plane with the bucket's settings:
+
+```bash
+export CODEFYUI_S3_ENABLED=1
+export CODEFYUI_S3_ENDPOINT_URL=http://minio.lab:9000   # leave empty for AWS S3
+export CODEFYUI_S3_BUCKET=codefyui
+export CODEFYUI_S3_ADDRESSING_STYLE=path                # most MinIO setups
+export CODEFYUI_S3_ACCESS_KEY_ID=codefyui
+export CODEFYUI_S3_SECRET_ACCESS_KEY=<secret>
+cdui start
+```
+
+The server log then says `S3 artifact backend on: bucket codefyui at http://minio.lab:9000 (credentials: auto)`, or why the backend is off (no bucket, or boto3 missing). Workers need no setting of their own: the bucket, its address and the credentials come with each run. The control plane and every worker must reach the bucket at that same address.
+
+**Where the files go.** Under `CODEFYUI_S3_PREFIX` (empty by default; `codefyui/` puts everything under that folder):
+
+- `inputs/<sha256>`: an upload a run reads, put there by the control plane the first time a run needs it and named by its content, so the same file is never uploaded twice. The worker downloads it from there into the same `agent-cache` the transfer backend uses.
+- `runs/<run id>/<kind>/<name>`: every file the run records as an artifact (a periodic checkpoint is `runs/<run id>/checkpoint/<name>.pt`, a TensorBoard folder goes file by file) and, under `runs/<run id>/output/`, every other file the run wrote under `models/`, `media/` or `output/`, at its path there (ModelSaver's `iris/model.pt` is `runs/<run id>/output/models/iris/model.pt`). The agent uploads them as it does for the transfer backend: beside the run, the interrupt checkpoint last, before the run's end is reported, with the same retries through an outage. Expired temporary credentials are retried the same way until new ones arrive (MinIO answers `InvalidAccessKeyId` for them; that answer is retried only for temporary credentials at or past their expiry). A file the bucket refuses (`AccessDenied`, no such bucket) stays on the worker with a `transfer_failed` warning.
+
+`GET /api/runs/{id}/artifacts` lists them with `backend: "s3"`, `path` set to `s3://<bucket>/<key>` and `relative_path` to the key. In the Runs panel, **Copy path** copies the `s3://` address (for `mc` or `aws s3`) and **Download** gets the file: through the control plane by default (`CODEFYUI_S3_DOWNLOAD=proxy`), or, with `presign`, by redirecting the browser to a pre-signed URL valid for `CODEFYUI_S3_PRESIGN_TTL_S` seconds, so the bytes go from the bucket to the browser (which must then reach the bucket's address itself). Unlike the transfer backend, a writer node's file is not placed in the control plane's `models/` folder: download it before a local run reads it.
+
+**Credentials.** `CODEFYUI_S3_CREDENTIALS` decides what a worker gets:
+
+- `sts`: temporary credentials from the endpoint's STS (`AssumeRole`), with a session policy that allows writing only under `runs/<run id>/` and reading only the run's inputs, valid for `CODEFYUI_S3_STS_DURATION_S` (an hour by default). The control plane sends new ones before they expire for as long as the run lasts. MinIO issues them for an ordinary user's keys; AWS needs a role to assume (`CODEFYUI_S3_STS_ROLE_ARN`). A run whose credentials cannot be issued fails before it is sent.
+- `static`: the control plane's own keys. Give CodefyUI a user that can reach this bucket only.
+- `auto` (the default): `sts`, and the control plane's own keys when STS refuses, with a warning in the server log; STS is then not asked again for 10 minutes, or until the S3 settings change.
+
+The credentials travel in the run's assignment, like its secret parameters ([Trust between agent and control plane](#trust-between-agent-and-control-plane)): over a plain `http://` control plane address they are not encrypted. The agent keeps them in memory, never in a file or its log, and the run's subprocess does not get them. The control plane reads its keys from its environment and writes them to no database or log.
+
+**Clean-up.** Run retention and **Delete** remove a run's objects under `runs/<run id>/` and abort its unfinished uploads, keeping `output/` (writer nodes' files stay, as the transfer backend leaves them in the data folders) and, when retention removes a run that ended `interrupted`, its `checkpoint/`. A bucket the control plane cannot reach then is logged and its objects stay; for **Delete** the answer also says so in `warning`. What no run row names (kept `output/` folders, `inputs/`, uploads left by a worker that died) is for the bucket's lifecycle rules. On AWS S3:
+
+```json
+{"Rules": [
+  {"ID": "codefyui-abandoned-uploads", "Status": "Enabled", "Filter": {"Prefix": "runs/"},
+   "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}},
+  {"ID": "codefyui-inputs", "Status": "Enabled", "Filter": {"Prefix": "inputs/"},
+   "Expiration": {"Days": 30}}
+]}
+```
+
+(`aws s3api put-bucket-lifecycle-configuration --bucket codefyui --lifecycle-configuration file://rules.json`, with the prefixes under `CODEFYUI_S3_PREFIX` if it is set). MinIO refuses `AbortIncompleteMultipartUpload`: it removes unfinished uploads by itself after 24 hours (`mc admin config get lab api` shows `stale_uploads_expiry`), so only the expiry rule is needed, `mc ilm rule add lab/codefyui --prefix "inputs/" --expire-days 30`. An expired input is uploaded again by the next run that needs it.
+
+Each row records its bucket, and its key carries the prefix of its time, so a `CODEFYUI_S3_BUCKET` or `CODEFYUI_S3_PREFIX` changed later applies to new runs only: earlier runs' files still list, download and get removed where they are (the control plane's keys must still reach the old bucket).
 
 ## Keeping workers in sync {/* #keeping-workers-in-sync */}
 
@@ -400,6 +454,18 @@ On the control plane:
 | `CODEFYUI_TRANSFER_ENABLED` | `1` | `0` turns the transfer backend off |
 | `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` | 2 GiB | The most a run's transferred inputs may add up to |
 | `CODEFYUI_MAX_UPLOAD_SIZE` | 500 MB | The largest single output a worker may upload; the same limit applies to every file upload |
+| `CODEFYUI_S3_ENABLED` | `0` | `1` sends the files of a run on a worker without the shared folder through an S3 or MinIO bucket ([An S3 or MinIO bucket](#storage-s3)) |
+| `CODEFYUI_S3_ENDPOINT_URL` | *(empty)* | The bucket's API address, such as `http://minio.lab:9000`; empty for AWS S3 |
+| `CODEFYUI_S3_REGION` | `us-east-1` | The bucket's region |
+| `CODEFYUI_S3_BUCKET` | *(empty)* | The bucket |
+| `CODEFYUI_S3_PREFIX` | *(empty)* | Put in front of every key, such as `codefyui/` |
+| `CODEFYUI_S3_ADDRESSING_STYLE` | `auto` | `path` for most MinIO setups, or `virtual` |
+| `CODEFYUI_S3_ACCESS_KEY_ID`, `CODEFYUI_S3_SECRET_ACCESS_KEY` | *(empty)* | The control plane's keys for the bucket, kept in memory only |
+| `CODEFYUI_S3_CREDENTIALS` | `auto` | What a worker gets: `sts` (temporary, limited to its run), `static` (the keys above) or `auto` (STS, else the keys above) |
+| `CODEFYUI_S3_STS_ROLE_ARN` | *(empty)* | The role to assume, for AWS; MinIO ignores it |
+| `CODEFYUI_S3_STS_DURATION_S` | `3600` | How long temporary credentials last (900 to 43200); new ones are sent before then |
+| `CODEFYUI_S3_DOWNLOAD` | `proxy` | **Download** of a file in the bucket: `proxy` streams it through the control plane, `presign` redirects to a pre-signed URL |
+| `CODEFYUI_S3_PRESIGN_TTL_S` | `900` | How long a pre-signed download URL is valid |
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | Slot numbers for SSH workers: each names a worker's state directory on its remote host (`~/.codefyui-ssh/<id>-<slot>/`, where the tunnel's socket is) and the address its credential is stored under |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | `yes` requires a host already in `known_hosts` |
 
