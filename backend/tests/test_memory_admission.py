@@ -635,9 +635,15 @@ async def test_two_6_gib_runs_share_a_16_gib_card_and_a_third_is_refused(
                        "target": {"worker": "box", "devices": ["cuda:0"]}}
         estimate = (await client.post("/api/runs/estimate", json={
             "graph": _graph(), "options": on_one_card})).json()
+        history = estimate.pop("history")
         assert estimate == {"suggested_gib": 2.4, "source": "history",
                             "peak_bytes": 2 * GIB,
-                            "from_run": assigns[0].run_id}
+                            "from_run": assigns[0].run_id,
+                            # #794: a measured peak, and no model to count.
+                            "confidence": "measured",
+                            "static_estimate_bytes": None, "static": None}
+        assert [row["run_id"] for row in history] == [assigns[0].run_id]
+        assert history[0]["peak_bytes"] == 2 * GIB
         # Round 2, item 2: the peak is per card of a one-card run; the same
         # graph on two cards, or with no device at all, has no history.
         for options in ({"device": "cuda:0", "target": {
@@ -742,6 +748,97 @@ def test_the_budget_note_is_added_to_an_out_of_memory_failure_only():
             (ExecutionOutcome("succeeded"), budgeted),
             (ExecutionOutcome("failed", None), budgeted)):
         assert _with_budget_note(outcome, placement) is outcome
+    # #794: a run given its budget by default is told that one is what to
+    # declare; a declared one keeps the #788 wording.
+    defaulted = _with_budget_note(oom, budgeted, {
+        "target": {"worker": "box"}}).error
+    assert "capped to the memory budget it was given by default, 1.0 GiB " \
+        "on cuda:0 (from its graph's last peak or a static estimate): " \
+        "declare a larger target.memory_gib" in defaulted
+    assert "(target.memory_gib): raise" in _with_budget_note(oom, budgeted, {
+        "target": {"worker": "box", "memory_gib": 1}}).error
+
+
+# ── #794: the static estimate as the default ─────────────────────────────
+
+
+async def test_a_run_without_history_gets_the_static_estimate(env):
+    """A run of a model graph that no run has measured, on a shared card
+    and with no ``memory_gib``: its budget is the static estimate, recorded
+    as ``source: "estimate"`` (never as a peak), and ``/api/runs/estimate``
+    offers the same figure the run was given. Once a run of the graph
+    reports its peak, the history wins."""
+    from app.core import memory_estimate as me
+    from tests.test_memory_estimate import _training_graph
+
+    service, registry = env
+    graph = _training_graph()
+    static = me.estimate_static(graph)
+    assert static is not None and static.confidence == "medium"
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        options = {"device": "cuda:0", "target": {"worker": "box"}}
+        estimate = (await client.post("/api/runs/estimate", json={
+            "graph": graph, "options": {"device": "cuda:0"}})).json()
+        assert estimate["source"] == "estimate"
+        assert estimate["confidence"] == "medium"
+        assert estimate["peak_bytes"] is None and estimate["from_run"] is None
+        assert estimate["history"] == []
+        assert estimate["static_estimate_bytes"] == static.bytes
+        assert estimate["static"]["parameters"] == 212
+        assert estimate["suggested_gib"] == round(static.bytes / GIB, 2)
+
+        first = await client.post("/api/runs", json={
+            "graph": graph, "options": options})
+        assert first.json()["status"] == "running", first.text
+        assign = await agent.assignment()
+        assert assign.memory_budgets == {"cuda:0": static.bytes}
+        await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1, pid=1))
+        await agent.finish(assign, peak=GIB // 4)
+        record = await _terminal(service, assign.run_id)
+        assert record.execution_facts["memory_budget"] == {
+            "bytes": static.bytes, "source": "estimate",
+            "devices": ["cuda:0"]}
+
+        # The same graph, a new seed and more epochs: the same structural
+        # hash, so its measured peak is the default now.
+        again = _training_graph(seed=5, epochs=40)
+        estimate = (await client.post("/api/runs/estimate", json={
+            "graph": again, "options": {"device": "cuda:0"}})).json()
+        assert (estimate["source"], estimate["confidence"],
+                estimate["from_run"]) == ("history", "measured",
+                                          assign.run_id)
+        assert [row["peak_bytes"] for row in estimate["history"]] == [
+            GIB // 4]
+        # The static estimate is still reported beside it.
+        assert estimate["static_estimate_bytes"] == static.bytes
+
+
+async def test_a_low_estimate_is_never_a_default_budget(env):
+    """A graph whose model cannot be counted: the run still needs a
+    declared budget, as before #794."""
+    from tests.test_memory_estimate import _node, _training_graph
+
+    service, registry = env
+    graph = _training_graph(extra=[_node("bt", "BradleyTerryTrain")])
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        estimate = (await client.post("/api/runs/estimate", json={
+            "graph": graph, "options": {"device": "cuda:0"}})).json()
+        assert estimate["suggested_gib"] is None
+        assert estimate["confidence"] == "low"
+        assert estimate["static"]["uncounted"] == ["BradleyTerryTrain"]
+        refused = await client.post("/api/runs", json={
+            "graph": graph, "options": {"device": "cuda:0", "target": {
+                "worker": "box"}}})
+        assert refused.status_code == 400
+        assert "has no memory budget" in refused.json()["detail"]
 
 
 # ── code review of #837 ──────────────────────────────────────────────────

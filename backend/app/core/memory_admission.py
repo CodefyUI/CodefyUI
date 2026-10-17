@@ -44,8 +44,9 @@ Budgets
 declares none gets one from a :class:`BudgetSource` (the default,
 :class:`HistoryBudgetSource`: the last peak of a succeeded run of the same
 graph, times :data:`HISTORY_MARGIN`; a CUDA peak only: MPS reports what
-the driver holds at the end, which is not a peak); #794 plugs a better
-estimate in at the same seam. A run with neither cannot go to a shared card.
+the driver holds at the end, which is not a peak); #794 wraps it in
+``memory_estimate.EstimateBudgetSource``, which falls back to a static
+estimate from the graph's parameter counts. A run with neither cannot go to a shared card.
 
 ``free`` is read every heartbeat (10 s) for the whole card; a run's own
 growth after it started is not visible in it, which the ``total`` term
@@ -57,8 +58,6 @@ Nothing here runs unless a card is ``shared``: with every card exclusive
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import math
 from dataclasses import dataclass, field
@@ -84,6 +83,9 @@ HISTORY_MARGIN = 1.2
 #: ``Budget.source`` values.
 SOURCE_DECLARED = "declared"
 SOURCE_HISTORY = "history"
+#: A static estimate from the graph's parameter counts (#794), never a
+#: measured peak.
+SOURCE_ESTIMATE = "estimate"
 
 SlotKey = tuple[str, str]
 
@@ -238,33 +240,14 @@ def graph_hash(graph: Mapping[str, Any],
                options: Mapping[str, Any] | None = None) -> str:
     """A digest of what a graph computes, and on what, for "the same run"
     (#788): the key a run's peak is stored under and its default budget is
-    looked up by.
-
-    Node ids, types and params, the edges (by their ends and handles), the
-    presets and subgraphs, and the run's :func:`run_shape` (device kind and
-    count; without *options*, one CPU); not node positions, labels or
-    ``settings`` (the seed does not change how much memory a run needs).
-    #794 replaces the graph part with a structural hash; until then, any
-    params change is a different graph, which errs toward "no history"
-    rather than a wrong one.
+    looked up by. Since #794 the structural hash of the executable graph
+    (``memory_estimate.structural_hash``: node types and the params that
+    shape it, the wiring, no ids, positions, labels or seeds) and the run's
+    :func:`run_shape` (device kind and count; without *options*, one CPU).
     """
-    def canonical(value: Any) -> str:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                          default=str)
+    from .memory_estimate import structural_hash
 
-    nodes = sorted(
-        canonical([node.get("id"), node.get("type"),
-                   (node.get("data") or {}).get("params") or {}])
-        for node in graph.get("nodes") or () if isinstance(node, Mapping))
-    edges = sorted(
-        canonical([edge.get("source"), edge.get("sourceHandle"),
-                   edge.get("target"), edge.get("targetHandle")])
-        for edge in graph.get("edges") or () if isinstance(edge, Mapping))
-    document = {"nodes": nodes, "edges": edges,
-                "presets": graph.get("presets") or [],
-                "subgraphs": graph.get("subgraphs") or [],
-                "shape": run_shape(options)}
-    return hashlib.sha256(canonical(document).encode("utf-8")).hexdigest()
+    return structural_hash(graph, options)
 
 
 def peak_bytes(peak_memory: Any) -> int | None:

@@ -8,10 +8,10 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
-import { formatGiB } from '../../utils/formatGiB';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import { TARGET_ANY, estimateOptions, parseMemoryGib, usesSharedDevice } from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
+import { MemoryEstimateHint } from './MemoryEstimateHint';
 import styles from './QueueRunDialog.module.css';
 
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -246,15 +246,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
                     onChange={(event) => setMemoryText(event.target.value)}
                   />
                 </label>
-                <p className={styles.hint} aria-live="polite">
-                  {estimate === 'loading'
-                    ? t('queueRun.memory.loading')
-                    : estimateError !== null
-                      ? t('queueRun.memory.estimateFailed', { error: estimateError })
-                      : suggested?.peak_bytes != null
-                        ? t('queueRun.memory.suggested', { peak: formatGiB(suggested.peak_bytes) })
-                        : t('queueRun.memory.none')}
-                </p>
+                <MemoryEstimateHint estimate={estimate} error={estimateError} />
                 <p className={styles.hint}>{t('queueRun.memory.hint')}</p>
                 {choice.target !== TARGET_ANY && (
                   <label className={styles.check}>

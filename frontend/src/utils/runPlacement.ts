@@ -28,6 +28,13 @@ export function runBudget(run: RunPlacement, t: Translate): { text: string; titl
   const admitted = run.execution_facts?.memory_budget as
     { bytes?: unknown; source?: unknown; from_run?: unknown } | undefined;
   if (admitted && typeof admitted.bytes === 'number') {
+    if (admitted.source === 'estimate') {
+      // A static estimate (#794), marked as one in the cell itself.
+      return {
+        text: t('runs.budget.estimateShort', { size: formatGiB(admitted.bytes) }),
+        title: t('runs.budget.estimate'),
+      };
+    }
     const fromRun = admitted.source === 'history' && typeof admitted.from_run === 'string'
       ? admitted.from_run
       : null;

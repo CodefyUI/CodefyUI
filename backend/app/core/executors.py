@@ -631,11 +631,13 @@ class _S3Run:
     renewed: bool = False
 
 
-def _with_budget_note(outcome: ExecutionOutcome,
-                      placement: Any) -> ExecutionOutcome:
+def _with_budget_note(outcome: ExecutionOutcome, placement: Any,
+                      options: Any = None) -> ExecutionOutcome:
     """A failed run that ran out of memory under a budget (#788) says so:
-    the cap is the run's own, set from ``target.memory_gib``, and raising
-    it is the fix the generic advice does not mention."""
+    the cap is the run's own, and raising it is the fix the generic advice
+    does not mention. A run that declared no ``target.memory_gib`` (its
+    *options*) was given a default, from its graph's last peak or a static
+    estimate (#794), and the note says that one is what to declare."""
     budget = getattr(placement, "memory_budget", None)
     error = outcome.error
     if outcome.status != STATUS_FAILED or not budget or not error \
@@ -644,6 +646,13 @@ def _with_budget_note(outcome: ExecutionOutcome,
     from .memory_admission import format_gib
 
     devices = ", ".join(getattr(placement, "budget_devices", ()) or ())
+    target = options.get("target") if isinstance(options, dict) else None
+    if isinstance(target, dict) and target.get("memory_gib") is None:
+        return replace(outcome, error=(
+            f"{error}\n\nThis run was capped to the memory budget it was "
+            f"given by default, {format_gib(budget)} on {devices} (from its "
+            "graph's last peak or a static estimate): declare a larger "
+            "target.memory_gib, or make the run need less."))
     return replace(outcome, error=(
         f"{error}\n\nThis run was capped to its memory budget of "
         f"{format_gib(budget)} on {devices} (target.memory_gib): raise the "
@@ -908,7 +917,8 @@ class WorkerExecutor:
                 if outcome is not None:
                     finished = True
                     await acks.flush()
-                    return _with_budget_note(outcome, request.placement)
+                    return _with_budget_note(outcome, request.placement,
+                                             request.options)
                 if acks.recorded - acks.acked >= ACK_EVERY:
                     await acks.flush()
         except asyncio.CancelledError:

@@ -375,16 +375,49 @@ export interface RunTarget {
 }
 
 /**
- * `POST /api/runs/estimate` (#788): the budget a run of the graph gets by
- * default, from the last peak of the same graph on the same kind and number
- * of devices (`options.device`, `options.target.devices`) times 1.2; all
- * null when no earlier run reported one.
+ * `POST /api/runs/estimate` (#788, #794): the budget a run of the graph gets
+ * by default. `source: 'history'`: the last peak of the same graph on the
+ * same kind and number of devices (`options.device`,
+ * `options.target.devices`) times 1.2. `source: 'estimate'`: no such run;
+ * a static estimate from the graph's parameter counts and batch size
+ * (`static`), never a measured peak. All null when there is neither; a
+ * `low` confidence static estimate is reported in `static` and never used
+ * as the default.
  */
 export interface MemoryEstimate {
   suggested_gib: number | null;
   source: string | null;
   peak_bytes: number | null;
   from_run: string | null;
+  /** `measured` (history), `medium` / `low` (the static estimate's), or null. */
+  confidence?: string | null;
+  /** Earlier peaks of the graph on these devices, newest first. */
+  history?: { run_id: string; peak_bytes: number; finished_at: string | null }[];
+  static_estimate_bytes?: number | null;
+  static?: StaticMemoryEstimate | null;
+}
+
+/** How a static memory estimate was reached (#794). */
+export interface StaticMemoryEstimate {
+  bytes: number;
+  confidence: string;
+  parameters: number;
+  trainable_parameters: number;
+  training: boolean;
+  optimizer: string | null;
+  /** Bytes held per parameter, in float32 units: weights + gradients + optimizer state. */
+  multiplier: number;
+  batch_size: number;
+  eval_batch_size: number;
+  precision: string;
+  weights_bytes: number;
+  activation_bytes: number;
+  workspace_bytes: number;
+  models: { type: string; parameters: number; activations_known: boolean; probe_input: number[][] | null }[];
+  /** Model node types the estimate could not count. */
+  uncounted: string[];
+  notes: string[];
+  batch_assumed: boolean;
 }
 
 export async function estimateMemory(

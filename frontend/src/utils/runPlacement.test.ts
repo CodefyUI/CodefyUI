@@ -53,4 +53,11 @@ describe('runPlacement', () => {
     expect(runBudget({ options: { target: { worker: 'box' } } }, t)).toBeNull();
     expect(runBudget({ execution_facts: null }, t)).toBeNull();
   });
+
+  it('marks a budget that came from a static estimate in the cell itself (#794)', () => {
+    expect(runBudget({ execution_facts: { memory_budget: { bytes: 1024 ** 3, source: 'estimate' } } }, t)).toEqual({
+      text: '1.0 GiB est.',
+      title: 'Memory budget per device, a static estimate from the graph (no earlier run of it reported a peak)',
+    });
+  });
 });

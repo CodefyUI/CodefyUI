@@ -322,26 +322,47 @@ class EstimateRequest(BaseModel):
 @router.post("/estimate")
 async def estimate_memory(body: EstimateRequest, request: Request
                           ) -> dict[str, Any]:
-    """The memory budget a run of *graph* would get by default (#788).
+    """The memory budget a run of *graph* would get by default (#788, #794).
 
-    ``{"suggested_gib", "source", "peak_bytes", "from_run"}``: the last
-    peak of a succeeded run of the same graph times 1.2 (``source:
-    "history"``), or all null when there is none. What the Queue on...
-    dialog offers as ``target.memory_gib`` for a shared card; #794 adds a
-    static estimate. 400 for a malformed graph.
+    - ``suggested_gib``, ``source``, ``peak_bytes``, ``from_run``: the
+      default. ``source: "history"``: the last peak of a succeeded run of
+      the same graph (structural hash) on the same kind and number of
+      devices, times 1.2 (``peak_bytes``, ``from_run``). ``source:
+      "estimate"``: no such run; the static estimate below, when its
+      confidence is ``medium``. All null when there is neither.
+    - ``confidence``: ``measured`` (history), ``medium`` or ``low`` (the
+      static estimate's), or null.
+    - ``history``: up to five earlier peaks of the graph, newest first,
+      ``{run_id, peak_bytes, finished_at}``.
+    - ``static_estimate_bytes`` and ``static``: the estimate from the
+      graph's parameter counts and batch size, with its breakdown; null
+      when the graph has no model to count. A ``low`` one is reported and
+      never used as the default.
+
+    What the Queue on... dialog offers as ``target.memory_gib`` for a
+    shared card. 400 for a malformed graph.
     """
     service = _get_service(request)
     try:
-        suggestion = await service.suggest_memory(body.graph, body.options)
+        estimate = await service.explain_memory(body.graph, body.options)
     except RunSubmitError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if suggestion is None:
-        return {"suggested_gib": None, "source": None, "peak_bytes": None,
-                "from_run": None}
-    budget = suggestion.budget
-    return {"suggested_gib": round(budget.bytes / mem.GIB, 2),
+    suggestion = estimate.suggestion
+    static = estimate.static
+    response: dict[str, Any] = {
+        "suggested_gib": None, "source": None, "peak_bytes": None,
+        "from_run": None, "confidence": estimate.confidence,
+        "history": estimate.history,
+        "static_estimate_bytes": None if static is None else static.bytes,
+        "static": None if static is None else static.describe(),
+    }
+    if suggestion is not None:
+        budget = suggestion.budget
+        response.update({
+            "suggested_gib": round(budget.bytes / mem.GIB, 2),
             "source": budget.source, "peak_bytes": suggestion.peak_bytes,
-            "from_run": budget.from_run}
+            "from_run": budget.from_run})
+    return response
 
 
 @router.get("")

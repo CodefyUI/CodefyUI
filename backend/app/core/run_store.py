@@ -1019,6 +1019,27 @@ class RunStore:
 
         return await self.db.run(_lookup)
 
+    async def peak_history(
+        self, graph_hash: str, limit: int = 5,
+    ) -> list[tuple[str, Any, Any]]:
+        """``(run_id, finished_at, peak_memory)`` of up to *limit* newest
+        succeeded runs whose ``graph_hash`` is *graph_hash* and that
+        reported a peak (#794): the history ``POST /api/runs/estimate``
+        lists. The same indexed seek as :meth:`last_peak_memory`, bounded
+        by :data:`PEAK_LOOKUP_ROWS`."""
+        def _lookup(conn: sqlite3.Connection) -> list[tuple[str, Any, Any]]:
+            rows = conn.execute(
+                "SELECT id, finished_at, json_extract(execution_facts, "
+                "'$.peak_memory') AS peak FROM exec_runs INDEXED BY "
+                "idx_exec_runs_graph_hash WHERE graph_hash = ? AND status = ? "
+                "ORDER BY finished_at DESC LIMIT ?",
+                (graph_hash, STATUS_SUCCEEDED, PEAK_LOOKUP_ROWS)).fetchall()
+            found = [(row["id"], row["finished_at"], _loads(row["peak"]))
+                     for row in rows if row["peak"] is not None]
+            return found[:max(0, int(limit))]
+
+        return await self.db.run(_lookup)
+
     async def mark_stop_requested(self, run_id: str, reason: str) -> bool:
         """Record that a stop was asked of an active worker run (#793) as
         ``execution_facts.stop_requested``: a restarted server adopting

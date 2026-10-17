@@ -302,6 +302,7 @@ from .run_store import (
     json_safe,
 )
 from . import memory_admission as mem
+from . import memory_estimate
 from .scheduling import (
     LOCAL_WORKER_ID,
     RESERVED_SLOT,
@@ -1743,8 +1744,12 @@ class RunService:
         self._ledger: mem.MemoryLedger = (
             ledger if isinstance(ledger, mem.MemoryLedger)
             else mem.MemoryLedger())
+        # The default (#794): the graph's history, else a static estimate
+        # from its parameter counts (``memory_estimate``).
         self._budget_source: mem.BudgetSource = (
-            mem.HistoryBudgetSource(self._last_peak_memory)
+            memory_estimate.EstimateBudgetSource(
+                mem.HistoryBudgetSource(self._last_peak_memory),
+                self._peak_history)
             if budget_source is None else budget_source)
         self._worker_executor: Executor | None = (
             None if workers is None else WorkerExecutor(
@@ -2274,6 +2279,10 @@ class RunService:
         lookup = getattr(self.store, "last_peak_memory", None)
         return None if lookup is None else await lookup(digest)
 
+    async def _peak_history(self, digest: str, limit: int) -> Any:
+        lookup = getattr(self.store, "peak_history", None)
+        return [] if lookup is None else await lookup(digest, limit)
+
     async def check_batch_budgets(self, graphs: Iterable[Any],
                                   options: Any) -> list["mem.Budget | None"]:
         """Refuse, before anything is written, a sweep or study one of whose
@@ -2382,15 +2391,33 @@ class RunService:
         *options* (its ``device`` and ``target.devices``: the history is per
         device kind and count) (#788), for the Queue on... dialog. Raises
         ``RunSubmitError`` on a malformed graph or options."""
+        stored, run_options = self._estimate_inputs(graph, options)
+        return await self._budget_source.suggest(stored, run_options)
+
+    async def explain_memory(self, graph: Any, options: Any = None
+                             ) -> "memory_estimate.Estimate":
+        """:meth:`suggest_memory` with what it was derived from (#794): the
+        graph's earlier peaks on these devices and its static estimate,
+        for ``POST /api/runs/estimate``. A budget source without
+        ``explain`` gives the suggestion alone."""
+        stored, run_options = self._estimate_inputs(graph, options)
+        explain = getattr(self._budget_source, "explain", None)
+        if explain is not None:
+            return await explain(stored, run_options)
+        return memory_estimate.Estimate(
+            suggestion=await self._budget_source.suggest(stored, run_options))
+
+    @staticmethod
+    def _estimate_inputs(graph: Any, options: Any
+                         ) -> tuple[dict[str, Any], dict[str, Any]]:
         normalized = normalize_graph(graph)
         stored, _secrets = split_graph_secrets(
             normalized, unknown_types_as_secret=True)
         shape = options if isinstance(options, dict) else {}
         target = shape.get("target") if isinstance(shape.get("target"),
                                                    dict) else {}
-        return await self._budget_source.suggest(stored, {
-            "device": shape.get("device"),
-            "target": {"devices": target.get("devices")}})
+        return stored, {"device": shape.get("device"),
+                        "target": {"devices": target.get("devices")}}
 
     def _check_worker_catalog(self, options: dict[str, Any],
                               node_types: frozenset[str]) -> None:

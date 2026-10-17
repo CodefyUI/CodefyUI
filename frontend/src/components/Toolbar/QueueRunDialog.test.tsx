@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import * as rest from '../../api/rest';
-import type { DeviceInfo, MemoryEstimate } from '../../api/rest';
+import type { DeviceInfo, MemoryEstimate, StaticMemoryEstimate } from '../../api/rest';
 import * as workersApi from '../../api/workers';
 import type { WorkerInfo } from '../../api/workers';
 import { QueueRunDialog } from './QueueRunDialog';
@@ -519,6 +519,14 @@ describe('QueueRunDialog: keyboard and closing', () => {
   });
 });
 
+const STATIC: StaticMemoryEstimate = {
+  bytes: 1.75 * 1024 ** 3, confidence: 'medium', parameters: 11173962, trainable_parameters: 11173962,
+  training: true, optimizer: 'SGD', multiplier: 3, batch_size: 128, eval_batch_size: 512, precision: 'bf16',
+  weights_bytes: 0.125 * 1024 ** 3, activation_bytes: 1.3 * 1024 ** 3, workspace_bytes: 256 * 1024 ** 2,
+  models: [{ type: 'SequentialModel', parameters: 11173962, activations_known: true, probe_input: [[3, 32, 32]] }],
+  uncounted: [], notes: [], batch_assumed: false,
+};
+
 describe('QueueRunDialog: memory budget (#788)', () => {
   const memoryField = () => screen.getByRole('textbox', { name: 'Memory budget (GiB per device)' });
 
@@ -543,6 +551,8 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(serialize).not.toHaveBeenCalledWith({ keepSecrets: true });
     expect(memoryField()).toHaveValue('2.4');
     expect(screen.getByText('Suggested from the last run of this graph: its peak was 2.0 GiB, plus 20%.')).toBeInTheDocument();
+    // #794: a measured peak is tagged as one.
+    expect(screen.getByText('Measured')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Wait in the queue when it does not fit now' }));
     await submit();
     // Left as suggested: the server derives the same default and keeps
@@ -608,6 +618,54 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 6 });
   });
 
+  it('tags a static estimate as one and leaves it to the server unchanged (#794)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    api.estimateMemory.mockResolvedValue({
+      suggested_gib: 1.75, source: 'estimate', peak_bytes: null, from_run: null, confidence: 'medium',
+      history: [], static_estimate_bytes: 1.75 * 1024 ** 3, static: STATIC,
+    });
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(memoryField()).toHaveValue('1.75');
+    expect(screen.getByText('Estimate')).toBeInTheDocument();
+    expect(screen.queryByText('Measured')).toBeNull();
+    expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
+      'Not a measured peak: no earlier run of this graph on these devices reported one. Estimated from the model: '
+      + '11,173,962 parameters x 12 bytes (weights, gradients, optimizer state) = 128.0 MB, activations for batch 128 '
+      + 'about 1.3 GB, and 256.0 MB for the CUDA libraries. Lower it if you know better; the next run of this graph is measured.', { normalizeWhitespace: true },
+    );
+    await submit();
+    expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'] });
+  });
+
+  it('shows a rough estimate with why it is not used, and leaves the field empty (#794)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    api.estimateMemory.mockResolvedValue({
+      suggested_gib: null, source: null, peak_bytes: null, from_run: null, confidence: 'low',
+      history: [], static_estimate_bytes: 3 * 1024 ** 3,
+      static: {
+        ...STATIC, bytes: 3 * 1024 ** 3, confidence: 'low', uncounted: ['BradleyTerryTrain'], batch_assumed: true,
+        batch_size: 32,
+        models: [
+          { type: 'VLAModel', parameters: 10, activations_known: false, probe_input: null },
+          { type: 'Empty', parameters: 0, activations_known: false, probe_input: null },
+        ],
+      },
+    });
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(memoryField()).toHaveValue('');
+    expect(screen.getByText('Rough estimate')).toBeInTheDocument();
+    expect(screen.getByText(/^About 3.0 GiB/)).toHaveTextContent(
+      'About 3.0 GiB, too rough to use: could not count BradleyTerryTrain; no input shape for the activations of '
+      + 'VLAModel; no batch size in the graph (assumed 32). Declare a budget.',
+    );
+  });
+
   it('leaves the budget to the server for a blank field', async () => {
     workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
     patchTab({ graphDevice: 'cuda:1' });
@@ -626,7 +684,7 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
     await settle();
-    expect(screen.getByText('Looking up the last run of this graph...')).toBeInTheDocument();
+    expect(screen.getByText('Looking up earlier runs of this graph and estimating its memory...')).toBeInTheDocument();
     await act(async () => fail('offline'));
     expect(screen.getByText('Could not look up a suggestion: offline')).toBeInTheDocument();
     expect(memoryField()).toHaveValue('');
