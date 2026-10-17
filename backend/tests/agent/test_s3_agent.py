@@ -314,7 +314,8 @@ async def test_an_agent_without_boto3_refuses_an_s3_run(tmp_path,
 
 def test_hello_lists_s3_only_with_a_client():
     assert "s3" in wp.agent_capabilities(True)
-    assert wp.agent_capabilities(False) == ["ack", "mounts", "transfer"]
+    assert wp.agent_capabilities(False) == ["ack", "mounts", "transfer",
+                                           "one_shot"]
 
 
 async def test_the_connection_hands_credentials_to_the_runner(tmp_path):
