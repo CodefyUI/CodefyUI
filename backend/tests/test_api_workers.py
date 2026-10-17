@@ -256,3 +256,54 @@ async def test_deleting_an_ssh_worker_ends_its_waiting_runs(registry):
     assert registry.get("box") is None
     items = [run.inbox.get_nowait() for _ in range(run.inbox.qsize())]
     assert any(item[0] is WORKER_GONE for item in items)
+
+
+def test_the_add_worker_dialog_checks_names_as_the_server_does():
+    """#840 review: the dialog's copy of the name rule and the reserved
+    names (``AddWorkerDialog.tsx``) is pinned to ``worker_protocol``."""
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "frontend" / "src" /
+              "components" / "Workers" / "AddWorkerDialog.tsx").read_text(
+        encoding="utf-8")
+    pattern = re.search(r"const WORKER_NAME = /\^(.+)\$/;", source)
+    reserved = re.search(
+        r"const RESERVED_NAMES: ReadonlySet<string> = new Set\(\[(.*?)\]\);",
+        source)
+    assert pattern is not None and reserved is not None
+    assert pattern.group(1) == wp.WORKER_NAME_PATTERN.pattern
+    assert set(re.findall(r"'([^']*)'", reserved.group(1))) == set(
+        wp.RESERVED_WORKER_NAMES)
+
+
+async def test_each_worker_says_whether_it_is_an_enabled_ssh_worker(registry):
+    """#840 review: ``ssh_enabled`` (None, True, False) comes with the
+    workers themselves, so a disabled SSH worker reads Disabled and offers
+    no Re-key also when the SSH list cannot be read."""
+    from types import SimpleNamespace
+
+    class _Launcher:
+        entries = {"on": SimpleNamespace(enabled=True),
+                   "off": SimpleNamespace(enabled=False)}
+
+    for name in ("on", "off", "plain"):
+        registry.connect(wp.Hello(name=name, version="t"), send=_noop,
+                         close=_noop)
+    before = getattr(app.state, "ssh_launcher", None)
+    app.state.ssh_launcher = _Launcher()
+    try:
+        async with _client() as client:
+            body = (await client.get("/api/workers")).json()
+            drained = (await client.post("/api/workers/off/drain")).json()
+    finally:
+        if before is None:
+            del app.state.ssh_launcher
+        else:
+            app.state.ssh_launcher = before
+    assert {w["id"]: w["ssh_enabled"] for w in body["workers"]} == {
+        "on": True, "off": False, "plain": None}
+    assert drained["ssh_enabled"] is False
+    async with _client() as client:
+        body = (await client.get("/api/workers")).json()
+    assert {w["ssh_enabled"] for w in body["workers"]} == {None}

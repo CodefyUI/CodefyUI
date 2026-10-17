@@ -13,6 +13,8 @@ import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
 import { friendlyError } from '../../utils/errorMessages';
+import { gibFigure } from '../../utils/formatBytes';
+import { shownStatus, sshDisabled, sshManaged } from '../Toolbar/queueTargets';
 import { relativeTime } from '../SourceControl/scm';
 import { trapTab } from '../shared/focusTrap';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -22,12 +24,6 @@ import styles from './WorkersPanel.module.css';
 export const FINGERPRINT_SHORT_LENGTH = 12;
 /** Characters of a run id shown in a link; the tooltip has it all. */
 const RUN_ID_SHORT_LENGTH = 8;
-const GIB = 1024 ** 3;
-
-/** Bytes as GiB with one decimal, the unit the toolbar's device list uses. */
-function gib(bytes: number): string {
-  return (bytes / GIB).toFixed(1);
-}
 
 /**
  * The statuses this build has a word and a colour for. A newer server may
@@ -88,8 +84,8 @@ function DeviceRow({ device, stale }: { device: WorkerDevice; stale: boolean }) 
       {hasMemory && (
         <span className={stale ? styles.muted : styles.fact} title={memory.source}>
           {t(stale ? 'workers.device.memoryStale' : 'workers.device.memory', {
-            free: gib(memory.free_bytes as number),
-            total: gib(memory.total_bytes as number),
+            free: gibFigure(memory.free_bytes as number),
+            total: gibFigure(memory.total_bytes as number),
           })}
         </span>
       )}
@@ -176,6 +172,14 @@ function TunnelLine({ entry, running = 0 }: { entry: SshWorker; running?: number
   const busy = useWorkerStore((s) => Boolean(s.busy[entry.id]));
   const setSshEnabled = useWorkerStore((s) => s.setSshEnabled);
   const [confirming, setConfirming] = useState(false);
+  // A confirm armed for one state never applies to another (#840): when the
+  // entry is disabled elsewhere, or its last run ends, the press starts over.
+  const armedFor = `${entry.enabled}:${running > 0}`;
+  const [armed, setArmed] = useState(armedFor);
+  if (armed !== armedFor) {
+    setArmed(armedFor);
+    setConfirming(false);
+  }
   const where = entry.port === 22 ? entry.target : `${entry.target}:${entry.port}`;
   const showError = entry.state !== 'up' && entry.last_error;
   const known = TUNNEL_STATES.has(entry.state);
@@ -300,7 +304,7 @@ function SshOnlyCard({ entry }: { entry: SshWorker }) {
   );
 }
 
-/** Statuses whose worker has no live connection: removing one ends nothing. */
+/** Statuses whose worker has no live connection: its memory figures are stale. */
 const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
 
 /**
@@ -309,7 +313,15 @@ const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected'
  * SSH worker mints a token for each session itself.
  */
 function canRekey(worker: WorkerInfo, ssh: SshWorker | undefined): boolean {
-  return ssh === undefined && worker.enrolled === true && worker.credential !== 'session_token';
+  return !sshManaged(worker, ssh) && worker.enrolled === true && worker.credential !== 'session_token';
+}
+
+/** What Remove does to *worker*, as the note beside its confirm (#840). */
+function removeNote(worker: WorkerInfo, ssh: SshWorker | undefined) {
+  if (sshManaged(worker, ssh)) return 'workers.remove.confirmNoteSsh' as const;
+  return worker.credential === 'session_token'
+    ? 'workers.remove.confirmNoteSession' as const
+    : 'workers.remove.confirmNote' as const;
 }
 
 /** Why the worker reads `degraded`, each reason in words (#840). */
@@ -350,11 +362,14 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const digest = worker.fingerprint_digest;
   // A disabled SSH worker says so whatever its connection reads (#840):
   // Enable brings it back, so Drain / Undrain are not offered meanwhile.
-  const disabled = ssh !== undefined && !ssh.enabled;
-  const status = disabled ? 'disabled' : worker.status;
+  // From the worker itself too (`ssh_enabled`), so it holds while the SSH
+  // list cannot be read.
+  const disabled = sshDisabled(worker, ssh);
+  const status = shownStatus(worker, ssh);
   const known = disabled || KNOWN_STATUSES.has(worker.status);
   const away = AWAY_STATUSES.has(worker.status);
-  const reasons = worker.status === 'degraded' ? worker.degraded_reasons ?? [] : [];
+  // Whatever the status reads (draining, disabled), a reason is shown (#840).
+  const reasons = worker.degraded_reasons ?? [];
 
   // One button that changes its word, never disabled: a disabled or swapped
   // button drops the focus to the page, where the dialog's Escape and Tab
@@ -366,15 +381,16 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
     if (button !== null && document.activeElement === document.body) button.focus();
   };
 
-  // Removing a connected worker disconnects it and interrupts its runs, so
-  // that takes a second press, with the consequence said beside it; one
-  // that is away goes at once.
+  // Remove revokes the credential (and for an SSH worker deletes the entry
+  // and cleans up on its host), so it always takes a second press, with
+  // what it does said beside it (#840).
   const removeWorker = async () => {
     if (busy) return;
-    if (!away && !confirming) {
+    if (!confirming) {
       setConfirming(true);
       return;
     }
+    setConfirming(false);
     await remove(worker.id);
     if (document.activeElement === document.body) onRemoved();
   };
@@ -418,7 +434,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           type="button"
           className={`${styles.btn} ${styles.danger}`}
           aria-disabled={busy}
-          title={t(confirming ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
+          title={t(confirming && !away ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
           onClick={() => void removeWorker()}
           onBlur={() => setConfirming(false)}
         >
@@ -427,9 +443,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
       </header>
       {confirming && (
         <p className={styles.confirmNote} role="alert">
-          {t(worker.credential === 'session_token' ? 'workers.remove.confirmNoteSession' : 'workers.remove.confirmNote', {
-            name: worker.name,
-          })}
+          {t(removeNote(worker, ssh), { name: worker.name })}
           {worker.running.length > 0 && ` ${t('workers.remove.confirmRuns', { count: worker.running.length })}`}
         </p>
       )}

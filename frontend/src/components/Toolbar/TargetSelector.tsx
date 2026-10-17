@@ -10,11 +10,12 @@ import {
   anyKinds,
   connectedWorkers,
   defaultDevices,
-  targetableWorkers,
   defaultKind,
   deviceKind,
   localDeviceChoices,
   refusesRuns,
+  shownStatus,
+  sshDisabled,
   toggleDevice,
   workerDeviceChoices,
   type DeviceChoice,
@@ -36,8 +37,10 @@ export interface RunTargetChoice {
   workersLoaded: boolean;
   workersError: string | null;
   online: WorkerInfo[];
-  /** The workers a run can name: the connected ones and the enrolled
-   * offline ones, for which it waits (#780). */
+  /** The workers the target list shows: every worker the server lists. A
+   * run for one that is `offline` (enrolled, #780) or `disconnected` (#783)
+   * waits in the queue until it connects; a drained or disabled one is
+   * listed but cannot be picked (#840). */
   listed: WorkerInfo[];
   /** The chosen worker, when the target is one. */
   worker: WorkerInfo | null;
@@ -118,7 +121,7 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
   }, []);
 
   const online = useMemo(() => connectedWorkers(workers), [workers]);
-  const listed = useMemo(() => targetableWorkers(workers), [workers]);
+  const listed = workers;
   const worker = listed.find((candidate) => candidate.id === target) ?? null;
   const isWorker = target !== TARGET_LOCAL;
   const localChoices = useMemo(() => localDeviceChoices(localDevices), [localDevices]);
@@ -137,7 +140,9 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
   // A set is kept in the worker's own (physical) order, so the in-run names
   // depend on which cards are ticked, never on the order they were ticked.
   const choiceOrder = useMemo(() => choices.map((c) => c.value), [choices]);
-  const kind = chosenKind ?? defaultKind(kinds, graphDevice);
+  // `any` runs on a worker as often as here, so it starts from the device a
+  // worker would (#840): with `auto`, the first accelerator offered.
+  const kind = chosenKind ?? defaultKind(kinds, workerDevice);
 
   return {
     workers,
@@ -204,7 +209,7 @@ export function TargetSelector({
     const devices = candidate.devices.map((d) => d.value).join(', ') || t('queueRun.noDevices');
     return t('queueRun.target.worker', {
       name: candidate.name,
-      status: t(`workers.status.${candidate.status}`),
+      status: t(`workers.status.${shownStatus(candidate)}` as 'workers.status.online'),
       devices,
     });
   };
@@ -225,6 +230,9 @@ export function TargetSelector({
       </label>
       {worker?.status === 'offline' && (
         <p className={styles.hint}>{t('queueRun.offlineHint', { name: worker.name })}</p>
+      )}
+      {listed.some((candidate) => sshDisabled(candidate)) && (
+        <p className={styles.hint}>{t('queueRun.disabledHint')}</p>
       )}
       {worker?.status === 'disconnected' && (
         <p className={styles.hint}>{t('queueRun.disconnectedHint', { name: worker.name })}</p>

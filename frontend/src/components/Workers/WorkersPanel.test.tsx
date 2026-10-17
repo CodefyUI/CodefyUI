@@ -415,13 +415,20 @@ describe('WorkersPanel', () => {
     expect(screen.getByRole('dialog', { name: 'Workers' })).toBeInTheDocument();
   });
 
-  it('removes a worker that is away at once', async () => {
+  it('asks again before removing a worker that is away too (#840 review)', async () => {
     const dialog = await openPanel([worker('gone', { status: 'offline', connected_at: null }), worker('b')]);
     vi.mocked(fetchWorkers).mockResolvedValue([worker('b')]);
     const card = within(dialog).getByRole('article', { name: 'gone' });
     expect(within(card).getByText('Offline')).toBeInTheDocument();
     const remove = within(card).getByRole('button', { name: 'Remove' });
     remove.focus();
+    await act(async () => fireEvent.click(remove));
+    // Its credential is revoked: that takes a second press as well. The
+    // tooltip does not say it is connected.
+    expect(removeWorker).not.toHaveBeenCalled();
+    expect(remove).toHaveTextContent('Confirm remove');
+    expect(remove).toHaveAttribute('title', 'Revoke this worker\'s credential and remove it from the list');
+    expect(within(card).getByRole('alert')).toHaveTextContent(/revoke gone's credential/);
     await act(async () => fireEvent.click(remove));
     expect(removeWorker).toHaveBeenCalledWith('gone');
     expect(within(dialog).queryByRole('article', { name: 'gone' })).toBeNull();
@@ -465,6 +472,8 @@ describe('WorkersPanel', () => {
     const remove = within(dialog).getByRole('button', { name: 'Remove' });
     remove.focus();
     await act(async () => fireEvent.click(remove));
+    await act(async () => fireEvent.click(remove));
+    expect(removeWorker).toHaveBeenCalledWith('gone');
     expect(remove).toHaveFocus();
     expect(within(dialog).getByRole('article', { name: 'gone' })).toBeInTheDocument();
   });
@@ -474,6 +483,7 @@ describe('WorkersPanel', () => {
     vi.mocked(removeWorker).mockImplementation(() => new Promise<void>((resolve) => { answer = resolve; }));
     const dialog = await openPanel([worker('gone', { status: 'offline' })]);
     const remove = within(dialog).getByRole('button', { name: 'Remove' });
+    fireEvent.click(remove);
     fireEvent.click(remove);
     expect(remove).toHaveAttribute('aria-disabled', 'true');
     await act(async () => fireEvent.click(remove));
@@ -510,14 +520,37 @@ describe('WorkersPanel', () => {
     expect(rekey('tunnelled')).toBeNull();
   });
 
+  it('knows an SSH worker from the worker itself when the SSH list cannot be read (#840 review)', async () => {
+    vi.mocked(fetchSshWorkers).mockRejectedValue(new Error('boom'));
+    const dialog = await openPanel([
+      worker('off', { status: 'disconnected', draining: true, enrolled: true, credential: null, ssh_enabled: false }),
+      worker('on', { enrolled: true, credential: 'worker_token', ssh_enabled: true }),
+    ]);
+    const off = within(dialog).getByRole('article', { name: 'off' });
+    const on = within(dialog).getByRole('article', { name: 'on' });
+    expect(within(off).getByText('Disabled')).toBeInTheDocument();
+    expect(within(off).queryByRole('button', { name: /drain/i })).toBeNull();
+    for (const card of [off, on]) {
+      expect(within(card).queryByRole('button', { name: 'Re-key' })).toBeNull();
+    }
+    // Remove says what it does to an SSH worker, also without its entry.
+    await act(async () => fireEvent.click(within(on).getByRole('button', { name: 'Remove' })));
+    expect(within(on).getByRole('alert')).toHaveTextContent(/end the ssh session to on, .* state directory it keeps on that host are removed too\.$/);
+  });
+
   it('says why a worker is degraded, a reason it does not know as sent (#840)', async () => {
     const dialog = await openPanel([
       worker('late', { status: 'degraded', degraded_reasons: ['heartbeat', 'odd_reason'] }),
       worker('fine', { status: 'online', degraded_reasons: [] }),
       worker('older', { status: 'degraded' }),
+      // Draining reads draining, but the reason still shows (#840 review).
+      worker('drained-late', { status: 'draining', draining: true, degraded_reasons: ['node_catalog'] }),
     ]);
     const late = within(dialog).getByRole('article', { name: 'late' });
     expect(within(late).getByText(/^heartbeat late: .*; odd_reason$/)).toBeInTheDocument();
+    const drained = within(dialog).getByRole('article', { name: 'drained-late' });
+    expect(within(drained).getByText('Draining')).toBeInTheDocument();
+    expect(within(drained).getByText('Degraded')).toBeInTheDocument();
     for (const name of ['fine', 'older']) {
       const card = within(dialog).getByRole('article', { name });
       expect(within(card).queryByText(/heartbeat late/)).toBeNull();
@@ -666,6 +699,30 @@ describe('WorkersPanel', () => {
     await act(async () => fireEvent.click(disable));
     await act(async () => fireEvent.click(disable));
     expect(setSshWorkerEnabled).toHaveBeenCalledWith('gpu-box', false);
+  });
+
+  it('drops an armed Disable when the entry changes under it (#840 review)', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box')]));
+    const running = ['r1-000000', 'r2-000000'];
+    const dialog = await openPanel([worker('gpu-box', { running })]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Disable' })));
+    expect(within(card).getByRole('alert')).toHaveTextContent(/now \(2\)/);
+    // One run ends: the count follows.
+    act(() => useWorkerStore.setState({ workers: [worker('gpu-box', { running: ['r1-000000'] })] }));
+    expect(within(card).getByRole('alert')).toHaveTextContent(/now \(1\)/);
+    // Disabled elsewhere: the button reads Enable, and nothing is armed.
+    act(() => useWorkerStore.setState({ ssh: [ssh('gpu-box', { enabled: false, state: 'stopped' })] }));
+    expect(within(card).queryByRole('alert')).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Enable' })).toBeInTheDocument();
+    // Enabled again with the run still on it: the first press asks again.
+    act(() => useWorkerStore.setState({ ssh: [ssh('gpu-box')] }));
+    await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Disable' })));
+    expect(setSshWorkerEnabled).not.toHaveBeenCalled();
+    // The last run ends while armed: back to one press.
+    act(() => useWorkerStore.setState({ workers: [worker('gpu-box', { running: [] })] }));
+    expect(within(card).queryByRole('alert')).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Disable' })).toBeInTheDocument();
   });
 
   it('shows why a tunnel failed, and the recent output', async () => {

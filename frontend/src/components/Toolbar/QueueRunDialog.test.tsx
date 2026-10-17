@@ -249,7 +249,7 @@ describe('QueueRunDialog: workers', () => {
       worker({ name: 'slow-box', status: 'degraded', devices: [] }),
       worker({ name: 'busy-box', status: 'draining', draining: true }),
       worker({ name: 'gone-box', status: 'disconnected' }),
-      worker({ name: 'off-box', status: 'disconnected', draining: true }),
+      worker({ name: 'off-box', status: 'disconnected', draining: true, ssh_enabled: false }),
       worker({ name: 'cold-box', status: 'offline' }),
     ]);
     await open();
@@ -260,13 +260,15 @@ describe('QueueRunDialog: workers', () => {
       'slow-box (Degraded): no devices',
       'busy-box (Draining): cpu, cuda:0, cuda:1, cuda:2',
       'gone-box (Disconnected): cpu, cuda:0, cuda:1, cuda:2',
-      'off-box (Disconnected): cpu, cuda:0, cuda:1, cuda:2',
+      'off-box (Disabled): cpu, cuda:0, cuda:1, cuda:2',
       'cold-box (Offline): cpu, cuda:0, cuda:1, cuda:2',
       'Any available',
     ]);
     expect(options[3]).toBeDisabled();
-    // A disabled SSH worker reads disconnected and is drained: no run goes there.
+    // A disabled SSH worker reads Disabled, as in the Workers panel, and is
+    // drained: no run goes there, and a hint says why (#840 review).
     expect(options[5]).toBeDisabled();
+    expect(screen.getByText('A disabled SSH worker takes no runs: enable it in the Workers panel first.')).toBeInTheDocument();
     expect(options[4]).toBeEnabled();
     expect(screen.queryByText(/is offline/)).toBeNull();
     expect(screen.queryByText(/No worker is connected/)).toBeNull();
@@ -397,6 +399,24 @@ describe('QueueRunDialog: workers', () => {
 });
 
 describe('QueueRunDialog: any available', () => {
+  it('starts on the accelerator a worker offers when the device only follows Settings (#840 review)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    const group = within(screen.getByRole('group', { name: 'Devices' }));
+    expect(group.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
+    await submit();
+    expect(sentRequest().options).toMatchObject({ target: { worker: 'any' }, device: 'cuda' });
+  });
+
+  it('keeps the kind of a device the tab names', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    patchTab({ graphDevice: 'cpu' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    expect(within(screen.getByRole('group', { name: 'Devices' })).getByRole('radio', { name: 'CPU' })).toBeChecked();
+  });
+
   it('asks for a kind, defaulting to the graph device kind, and sends no device set', async () => {
     workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     patchTab({ graphDevice: 'cuda' });

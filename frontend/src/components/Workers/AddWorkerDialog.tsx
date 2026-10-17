@@ -43,7 +43,11 @@ export const TTL_CHOICES = [
 const DEFAULT_TTL_S = 86400;
 const MAX_USES = 100;
 
-/** A worker name, as the server checks it (`WORKER_NAME_PATTERN`). */
+/**
+ * A worker name, as the server checks it (`WORKER_NAME_PATTERN`). This and
+ * the reserved names are pinned to the server's by
+ * `backend/tests/test_api_workers.py`.
+ */
 const WORKER_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 /** Names the server keeps for itself (`RESERVED_WORKER_NAMES`). */
 const RESERVED_NAMES: ReadonlySet<string> = new Set(['local', 'any', 'enroll', 'enrollments']);
@@ -166,10 +170,12 @@ function SameHostInstructions() {
  * dial. The tokens already issued are listed (never their secrets) with a
  * revoke button each.
  */
-function RemoteInstructions({ rekey, initialList = null, onUseSsh }: {
+function RemoteInstructions({ rekey, initialList = null, onList, onUseSsh }: {
   rekey: string | null;
-  /** The list the dialog already read, so the form starts filled. */
+  /** The last list the dialog saw, so the form starts filled; read again on mount. */
   initialList?: EnrollmentList | null;
+  /** Every list this form reads (after a generate or a revoke too), for the dialog to keep. */
+  onList?: (list: EnrollmentList) => void;
   /** Switch the dialog to Over SSH; offered when the server is on loopback. */
   onUseSsh?: () => void;
 }) {
@@ -190,6 +196,7 @@ function RemoteInstructions({ rekey, initialList = null, onUseSsh }: {
     try {
       const next = await fetchEnrollments();
       setList(next);
+      onList?.(next);
       setUrl((current) => current ?? next.control_url);
       setError(null);
     } catch (err) {
@@ -198,8 +205,9 @@ function RemoteInstructions({ rekey, initialList = null, onUseSsh }: {
   };
 
   useEffect(() => {
-    if (initialList === null) void load();
-    // Once, on open: the dialog's own read seeds it otherwise.
+    // On every mount, also after a switch back from Over SSH: the seed may
+    // predate a token generated or revoked since (#840).
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -607,7 +615,12 @@ export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWor
               </div>
               {current === null && <p className={styles.muted}>{t('workers.loading')}</p>}
               {current === 'remote' && (
-                <RemoteInstructions rekey={null} initialList={initialList} onUseSsh={() => setCurrent('ssh')} />
+                <RemoteInstructions
+                  rekey={null}
+                  initialList={initialList}
+                  onList={setInitialList}
+                  onUseSsh={() => setCurrent('ssh')}
+                />
               )}
               {current === 'ssh' && <SshInstructions onAdded={onAdded} onClose={onClose} />}
               {current === 'same-host' && <SameHostInstructions />}

@@ -161,8 +161,27 @@ def _store(request: Request) -> Any:
     return store
 
 
-def _describe(worker: Any, service: Any) -> dict[str, Any]:
+def worker_name_problem(typed: str, name: str) -> str | None:
+    """Why *name* (*typed*, lower-cased) cannot name a worker, or None. The
+    name is quoted as typed (#840): the lower-cased form is not what the
+    user entered. One wording for ``/enroll`` and the SSH form."""
+    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
+        return (f"worker name {typed!r} may use only letters, digits and "
+                "'-' (stored in lower case), starting with a letter or "
+                "digit, at most 63 characters")
+    if name in wp.RESERVED_WORKER_NAMES:
+        return f"worker name {typed!r} is reserved"
+    return None
+
+
+def _describe(worker: Any, service: Any,
+              launcher: Any = None) -> dict[str, Any]:
     """``worker.describe()`` with each device's slot usage filled in.
+
+    ``ssh_enabled`` is whether this server's SSH worker of that name is
+    enabled, or None when the worker is not one (#840): the panel and the
+    run target list tell a disabled SSH worker from this, also when the SSH
+    list cannot be read.
 
     ``mounts`` are the labels the worker declared (``--mount``, #782); a
     same-host worker that declared no directory for this server's label
@@ -182,6 +201,8 @@ def _describe(worker: Any, service: Any) -> dict[str, Any]:
                                  else None)
         device["slots"] = (None if service is None or value is None
                            else service.slot_usage(slot_for(worker, value)))
+    ssh = getattr(launcher, "entries", {}).get(entry["id"])
+    entry["ssh_enabled"] = None if ssh is None else bool(ssh.enabled)
     return entry
 
 
@@ -199,7 +220,9 @@ def _describe_local(service: Any) -> dict[str, Any] | None:
 async def list_workers(request: Request) -> dict[str, Any]:
     registry = _registry(request)
     service = _service(request)
-    return {"workers": [_describe(w, service) for w in registry.workers()],
+    launcher = getattr(request.app.state, "ssh_launcher", None)
+    return {"workers": [_describe(w, service, launcher)
+                        for w in registry.workers()],
             "local": _describe_local(service),
             "rejections": registry.rejections()}
 
@@ -209,7 +232,8 @@ def _set_draining(request: Request, worker_id: str,
     worker = _registry(request).drain(worker_id, draining)
     if worker is None:
         raise HTTPException(404, f"no worker named {worker_id!r}")
-    return _describe(worker, _service(request))
+    return _describe(worker, _service(request),
+                     getattr(request.app.state, "ssh_launcher", None))
 
 
 @router.post("/{worker_id}/drain")
@@ -436,12 +460,9 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
                                f"in {wait:.0f} s"},
             headers={"Retry-After": str(max(1, round(wait)))})
     name = body.name.strip().lower()
-    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
-        raise HTTPException(400, f"worker name {body.name!r} must be "
-                                 "lowercase letters, digits and '-', at most "
-                                 "63 characters")
-    if name in wp.RESERVED_WORKER_NAMES:
-        raise HTTPException(400, f"worker name {name!r} is reserved")
+    problem = worker_name_problem(body.name.strip(), name)
+    if problem is not None:
+        raise HTTPException(400, problem)
     if not ws_store.is_enrollment_token(body.token):
         logger.warning("enrollment from %s refused: not an enrollment token",
                        client)
@@ -531,16 +552,9 @@ async def add_ssh_worker(request: Request,
         raise HTTPException(400, str(exc)) from exc
     name = (body.name or "").strip().lower() or (
         ssh_launch.default_worker_name(target))
-    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
-        # Quoted as typed (#840): the lower-cased form is not what the
-        # user entered.
-        typed = (body.name or "").strip() or name
-        raise HTTPException(400, f"worker name {typed!r} may use only "
-                                 "letters, digits and '-' (stored in lower "
-                                 "case), starting with a letter or digit, "
-                                 "at most 63 characters")
-    if name in wp.RESERVED_WORKER_NAMES:
-        raise HTTPException(400, f"worker name {name!r} is reserved")
+    problem = worker_name_problem((body.name or "").strip() or name, name)
+    if problem is not None:
+        raise HTTPException(400, problem)
     if launcher.ssh_path() is None:
         raise HTTPException(400, "ssh was not found on this machine's PATH; "
                                  "install an OpenSSH client first")

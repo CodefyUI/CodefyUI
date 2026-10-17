@@ -5,11 +5,13 @@ import {
   anyKinds,
   connectedWorkers,
   defaultDevices,
-  targetableWorkers,
   defaultKind,
   deviceKind,
   localDeviceChoices,
   refusesRuns,
+  shownStatus,
+  sshDisabled,
+  sshManaged,
   toggleDevice,
   workerDeviceChoices,
   type DeviceChoice,
@@ -56,15 +58,27 @@ describe('workerDeviceChoices / connectedWorkers', () => {
     expect(connectedWorkers(list).map((w) => w.name)).toEqual(['a', 'c']);
   });
 
-  it('lets a run name every listed worker: it waits for an offline or disconnected one (#840)', () => {
-    const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('d', 'offline', [])];
-    expect(targetableWorkers(list).map((w) => w.name)).toEqual(['a', 'b', 'd']);
-  });
-
   it('refuses runs on a drained worker, connected or not (a disabled SSH worker is drained)', () => {
     expect(refusesRuns(worker('a', 'online', []))).toBe(false);
     expect(refusesRuns(worker('b', 'draining', []))).toBe(true);
     expect(refusesRuns({ ...worker('c', 'disconnected', []), draining: true })).toBe(true);
+    // A disabled SSH worker, also before its drain shows (#840 review).
+    expect(refusesRuns({ ...worker('d', 'online', []), ssh_enabled: false })).toBe(true);
+    expect(refusesRuns({ ...worker('e', 'online', []), ssh_enabled: true })).toBe(false);
+  });
+
+  it('tells a disabled SSH worker from the worker itself, or from the SSH list when it has one', () => {
+    const plain = worker('a', 'online', []);
+    const off = { ...worker('b', 'disconnected', []), ssh_enabled: false };
+    const on = { ...worker('c', 'online', []), ssh_enabled: true };
+    expect([sshDisabled(plain), sshDisabled(off), sshDisabled(on)]).toEqual([false, true, false]);
+    expect([sshManaged(plain), sshManaged(off), sshManaged(on)]).toEqual([false, true, true]);
+    // An older server sends no ssh_enabled: the SSH list decides.
+    expect(sshManaged(plain, { enabled: true })).toBe(true);
+    expect(sshDisabled(plain, { enabled: false })).toBe(true);
+    // The list is newer than the worker when the caller has both.
+    expect(sshDisabled(off, { enabled: true })).toBe(false);
+    expect([shownStatus(plain), shownStatus(off), shownStatus(on)]).toEqual(['online', 'disabled', 'online']);
   });
 });
 

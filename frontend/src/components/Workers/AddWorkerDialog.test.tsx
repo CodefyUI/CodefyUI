@@ -353,7 +353,28 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     expect(deleteEnrollment).toHaveBeenLastCalledWith('abcdef');
     // Revoking the token just shown takes its command away too.
     expect(within(dialog).queryByText(shown)).toBeNull();
-    expect(fetchEnrollments).toHaveBeenCalledTimes(4);
+    // The dialog's probe, the form's own read on mount, then one per change.
+    expect(fetchEnrollments).toHaveBeenCalledTimes(5);
+  });
+
+  it('keeps the token list current across a switch to another tab and back (#840 review)', async () => {
+    const dialog = await renderRemote();
+    expect(within(dialog).getByText('No enrollment tokens.')).toBeInTheDocument();
+    vi.mocked(fetchEnrollments).mockResolvedValue(listOf({ enrollments: [enrollment('abcdef', { label: 'new one' })] }));
+    await act(async () => fireEvent.click(within(dialog).getByRole('button', { name: 'Generate token' })));
+    expect(within(dialog).getByText('new one')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Over SSH' }));
+    await settle();
+    // Back again: the list the form last read, at once, while it reads again.
+    let answer: (value: EnrollmentList) => void = () => {};
+    vi.mocked(fetchEnrollments).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Another machine' }));
+    expect(within(dialog).getByText('new one')).toBeInTheDocument();
+    expect(within(dialog).queryByText('No enrollment tokens.')).toBeNull();
+    // A token revoked elsewhere meanwhile goes once the read answers.
+    await act(async () => answer(listOf()));
+    expect(within(dialog).queryByText('new one')).toBeNull();
+    expect(within(dialog).getByText('No enrollment tokens.')).toBeInTheDocument();
   });
 
   it('shows what failed', async () => {

@@ -1588,6 +1588,7 @@ async def test_listing_needs_the_session_token_and_adding_too(api):
     # Quoted as typed, not lower-cased (#840).
     ({"target": "a@b", "name": "Bad Name!"}, "worker name 'Bad Name!'"),
     ({"target": "a@b", "name": "local"}, "reserved"),
+    ({"target": "a@b", "name": "Local"}, "worker name 'Local' is reserved"),
 ])
 async def test_bad_ssh_workers_are_refused(api, body, message):
     async with _client() as client:

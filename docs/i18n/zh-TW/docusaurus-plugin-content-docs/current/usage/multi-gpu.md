@@ -25,7 +25,7 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 工具列 **Run** 旁的下拉鍵會開啟選單，其中的**排入佇列...**會把目前分頁的圖送出為 queued run（與 `cdui run` 相同的 `POST /api/runs`）：
 
 - **目標**：**本伺服器**、每個已連線的 worker 及其狀態與裝置（排空中的 worker 會列出但不能選），以及有 worker 連線後出現的**任一可用**。
-- **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。
+- **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。除非分頁指定了裝置，worker 與任一可用都從第一個可用的加速器開始，不受設定中為本伺服器選的裝置影響。
 - **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。目標為 worker 或任一可用時，錄製節點輸出會停用。
 
 **排入佇列**會送出 run、關閉對話框，並在 Runs 分頁開啟它。伺服器拒絕時，訊息會顯示在對話框內。
@@ -96,7 +96,7 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 伺服器拒絕過（例如版本不同）且沒有卡片的 agent，會列在 **被拒的連線** 下並附上原因（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。
 
-**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 會產生另一台機器用的加入指令，或顯示上面那段同機指令與其參數；伺服器只監聽 `127.0.0.1`（其他機器連不到）時，它會直接開在 **透過 SSH**。**重新核發** 讓已加入的 worker 換新憑證（以 session token 連線的同機 agent 與 SSH worker 沒有可換的憑證，所以不提供），**移除** 會撤銷憑證、中斷連線，並讓佇列中等它的 run 失敗（[遠端 Worker](/usage/remote-workers)）。移除已連線的 worker、刪除 SSH worker，以及停用有 run 在執行的 SSH worker，都要按第二次，卡片會先說明那一下會做什麼。
+**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 會產生另一台機器用的加入指令，或顯示上面那段同機指令與其參數；伺服器只監聽 `127.0.0.1`（其他機器連不到）時，它會直接開在 **透過 SSH**。**重新核發** 讓已加入的 worker 換新憑證（以 session token 連線的同機 agent 與 SSH worker 沒有可換的憑證，所以不提供），**移除** 會撤銷憑證、中斷連線，並讓佇列中等它的 run 失敗；對 SSH worker 還會結束 ssh 連線，並刪除該項目與它在遠端主機上保存的內容（[遠端 Worker](/usage/remote-workers)）。移除 worker、刪除 SSH worker，以及停用有 run 在執行的 SSH worker，都要按第二次，卡片會先說明那一下會做什麼。停用的 SSH worker 在這裡與 **排入佇列...** 中都顯示為 **已停用**，在後者無法選取。
 
 ## 畫布的行為 {/* #the-canvas */}
 
