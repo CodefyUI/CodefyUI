@@ -57,7 +57,7 @@ import math
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from uuid import uuid4
 
 from ..config import settings
@@ -254,6 +254,29 @@ def producer_last_value(
         row = conn.execute(_PRODUCER_LAST_SQL,
                            (run_id, name, node_id)).fetchone()
     return None if row is None else row["value"]
+
+
+def producer_metric_values(
+    conn: sqlite3.Connection, run_id: str, node_id: str,
+) -> dict[str, float]:
+    """``{series name: last value}`` of every series *node_id* logged, in
+    ONE run (#841).
+
+    The summary a sweep variant or a study attempt shows beside its
+    objective: :func:`last_metric_values` collapses a name several nodes
+    log (two training branches each logging ``lr`` and ``train_loss``) into
+    whichever was written last, so a variant ranked by one branch would show
+    the OTHER branch's numbers. Each value is :func:`producer_last_value`'s,
+    so a series this node never logged, or whose last point is non-finite,
+    is left out exactly as the run-wide summary leaves one out. One seek
+    per series name of the run.
+    """
+    values: dict[str, float] = {}
+    for row in conn.execute(_LATEST_METRICS_SQL, (run_id,)):
+        value = producer_last_value(conn, run_id, row["name"], node_id)
+        if value is not None:
+            values[row["name"]] = value
+    return values
 
 
 def _json_safe(value: Any) -> Any:
@@ -1402,7 +1425,8 @@ class RunStore:
         return [MetricRecord.from_row(r) for r in await self.db.run(_select)]
 
     async def latest_metrics(
-        self, run_ids: Sequence[str],
+        self, run_ids: Sequence[str], *,
+        producers: Mapping[str, str] | None = None,
     ) -> dict[str, dict[str, float]]:
         """``{run_id: {series name: last value}}`` for a PAGE of runs (#124).
 
@@ -1447,13 +1471,22 @@ class RunStore:
         more. A sweep objective does NOT read this summary: it reads one
         producer's series, so the collapse above cannot choose its value
         (#641, ``sweep_store.read_objective``).
+
+        *producers* (``{run_id: node_id}``) scopes a run's summary to the
+        series that one node logged (:func:`producer_metric_values`, #841):
+        what a sweep variant shows beside an objective read from that node.
+        A run not in it gets the run-wide summary.
         """
         ids = list(run_ids)
         if not ids:
             return {}
+        scoped = dict(producers or {})
 
         def _select(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
-            return {run_id: last_metric_values(conn, run_id)
+            return {run_id: (producer_metric_values(conn, run_id,
+                                                    scoped[run_id])
+                             if run_id in scoped
+                             else last_metric_values(conn, run_id))
                     for run_id in ids}
 
         return {run_id: values
