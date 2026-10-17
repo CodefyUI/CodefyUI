@@ -1,0 +1,578 @@
+"""``record_outputs`` on a worker, the agent's half (#789).
+
+The run subprocess's live store and its dump (``agent.child``), the reads
+the runner hands to the subprocess (``Runner.ask_child``), the outputs
+helper that reads the dumps, the agent's budget, and the frames on the
+connection. The control plane's half is ``tests/test_worker_record_outputs.py``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+import torch
+
+from app.agent import child
+from app.agent import outputs as outputs_module
+from app.agent.outputs import (
+    AgentOutputs,
+    OutputsHelper,
+    outputs_dir,
+    prune_outputs,
+)
+from app.agent.runner import Runner
+from app.core import output_queries as q
+from app.core import worker_protocol as wp
+from app.core.run_output_store import RunOutputStore
+
+from . import _helpers as h
+from .test_connection import Agent, FakeControlPlane
+
+
+def _dump(runs: Path, run_id: str, nbytes: int, age: float) -> Path:
+    directory = outputs_dir(runs, run_id)
+    directory.mkdir(parents=True)
+    index = directory / q.INDEX_FILE
+    index.write_text(json.dumps({"run_id": run_id, "bytes": nbytes,
+                                 "slots": []}))
+    stamp = time.time() - age
+    os.utime(index, (stamp, stamp))
+    return directory
+
+
+# ── the budget ───────────────────────────────────────────────────────────
+
+
+def test_prune_drops_the_oldest_dumps_first(tmp_path):
+    for run_id, age in (("old", 30), ("mid", 20), ("new", 10)):
+        _dump(tmp_path, run_id, 40, age)
+    (tmp_path / "running" / "outputs").mkdir(parents=True)  # no index yet
+    (tmp_path / "broken" / "outputs").mkdir(parents=True)
+    (tmp_path / "broken" / "outputs" / q.INDEX_FILE).write_text("{")
+    assert prune_outputs(tmp_path, max_bytes=100) == ["old"]
+    assert not outputs_dir(tmp_path, "old").exists()
+    assert prune_outputs(tmp_path, max_bytes=0, max_runs=1) == ["mid"]
+    assert outputs_dir(tmp_path, "new").exists()
+    assert (tmp_path / "running" / "outputs").exists()
+
+
+def test_the_run_just_written_is_kept_even_over_budget(tmp_path):
+    _dump(tmp_path, "older", 10, 20)
+    _dump(tmp_path, "huge", 500, 30)  # oldest by time, yet the one kept
+    assert prune_outputs(tmp_path, max_bytes=100, keep="huge") == ["older"]
+    assert outputs_dir(tmp_path, "huge").exists()
+
+
+def test_prune_without_a_runs_directory(tmp_path):
+    assert prune_outputs(tmp_path / "missing", max_bytes=1) == []
+
+
+# ── the child: live store, then its dump ─────────────────────────────────
+
+
+class _Loop:
+    """An event loop on a thread of its own, as the run's is."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def run(self, coroutine: Any) -> Any:
+        return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(30)
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(10)
+        self.loop.close()
+
+
+def _collect(sent: list[tuple], count: int) -> list[tuple]:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        answers = [m for m in sent if m[0] == child.MSG_OUTPUT_ANSWER]
+        if len(answers) >= count:
+            return answers
+        time.sleep(0.01)
+    raise AssertionError(f"{count} answers expected, got {sent}")
+
+
+def test_live_outputs_answer_from_the_store_then_from_the_files(tmp_path):
+    sent: list[tuple] = []
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "outputs"),
+                             sent.append)
+    # No loop yet (the run has not started): nothing is held.
+    live.answer("a0", "list", "r1", {})
+    assert _collect(sent, 1)[0][1:] == (
+        "a0", 404, json.dumps({"detail": "run 'r1' not found"},
+                              separators=(",", ":")), False)
+    looper = _Loop()
+    try:
+        live.loop = looper.loop
+        looper.run(store.put("r1", "x", "t", torch.arange(6.0)))
+        live.answer("a1", "value", "r1", {"node_id": "x", "port": "t",
+                                          "slice": "0:2"})
+        answer = _collect(sent, 2)[1]
+        assert answer[1:3] == ("a1", 200)
+        assert json.loads(answer[3])["values"] == [0.0, 1.0]
+        assert answer[4] is False
+        looper.run(live.dump())
+        assert live.disk is not None
+        live.answer("a2", "stats", "r1", {"node_id": "x", "port": "t"})
+        answer = _collect(sent, 3)[2]
+        assert (answer[2], answer[4]) == (200, True)
+        assert json.loads(answer[3])["count"] == 6
+        live.drop("r1")
+        deadline = time.monotonic() + 10
+        while looper.run(store.has_run("r1")) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not looper.run(store.has_run("r1"))
+    finally:
+        looper.close()
+    live.drop("r1")  # a closed loop: nothing to do
+    # A closed loop reads as holding nothing, too.
+    live.disk = None
+    live.answer("a3", "list", "r1", {})
+    assert _collect(sent, 4)[3][2] == 404
+
+
+def test_a_dump_that_cannot_be_written_is_a_warning(tmp_path):
+    sent: list[tuple] = []
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(blocker / "outputs"),
+                             sent.append)
+
+    async def go() -> None:
+        await store.put("r1", "x", "t", 1)
+        await live.dump()
+
+    asyncio.run(go())
+    assert live.disk is None
+    [warning] = [m for m in sent if m[0] == child.MSG_WARNING]
+    assert warning[1]["kind"] == "outputs_not_kept"
+
+
+def test_nothing_recorded_writes_nothing(tmp_path):
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "out"), print)
+    asyncio.run(live.dump())
+    assert not (tmp_path / "out").exists()
+    no_dir = child.LiveOutputs(store, "r1", None, print)
+    asyncio.run(no_dir.dump())
+
+
+def test_a_crashing_read_is_answered_500(tmp_path, monkeypatch):
+    sent: list[tuple] = []
+    live = child.LiveOutputs(RunOutputStore(max_bytes=0), "r1", None,
+                             sent.append)
+
+    async def boom(*_: Any, **__: Any) -> Any:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(q, "dispatch", boom)
+    live.answer("a", "list", "r1", {})
+    answer = _collect(sent, 1)[0]
+    assert answer[2] == 500 and "failed" in json.loads(answer[3])["detail"]
+
+
+def test_the_listener_routes_reads_and_drops():
+    class Pipe:
+        def __init__(self, messages: list[Any]) -> None:
+            self.messages = list(messages)
+
+        def recv(self) -> Any:
+            if not self.messages:
+                raise EOFError
+            return self.messages.pop(0)
+
+    class Outputs:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def answer(self, *args: Any) -> None:
+            self.calls.append(("answer", *args))
+
+        def drop(self, run_id: str) -> None:
+            self.calls.append(("drop", run_id))
+
+    class Context:
+        cancelled = 0
+
+        def cancel(self) -> None:
+            self.cancelled += 1
+
+    outputs, context = Outputs(), Context()
+    child._listen_for_cancel(Pipe([
+        (), "junk", (child.MSG_FETCH, "a", "list", "r1", {}),
+        (child.MSG_FETCH, "short"), (child.MSG_DROP_OUTPUTS, "r1"),
+        (child.MSG_CANCEL,)]), context, outputs)
+    assert outputs.calls == [("answer", "a", "list", "r1", {}),
+                             ("drop", "r1")]
+    assert context.cancelled == 2  # the cancel, then EOF
+
+
+def test_a_recorded_run_dumps_before_it_reports(tmp_path):
+    """``run_assignment`` with ``record_outputs``: the captures are in the
+    files before ``finished`` (the agent serves them after the exit)."""
+    directory = tmp_path / "outputs"
+    sent: list[tuple] = []
+    spec = {"run_id": "rec1", "graph": h.tensor_graph(), "device": "cpu",
+            "options": {**h.TENSOR_OPTIONS, "record_outputs": True},
+            "outputs_dir": str(directory)}
+
+    def send(message: tuple) -> None:
+        if message[0] == child.MSG_FINISHED:
+            sent.append(("index at finish",
+                         q.read_index(directory) is not None))
+        sent.append(message)
+
+    thread = threading.Thread(target=child.run_assignment, args=(spec, send),
+                              kwargs={"discover": False})
+    thread.start()
+    thread.join(60)
+    assert ("index at finish", True) in sent
+    assert sent[-1][1]["status"] == "succeeded"
+    reader = q.DiskRunReader(directory)
+    status, body = asyncio.run(q.dispatch(
+        reader, "value", "rec1", {"node_id": "scale", "port": "tensor"},
+        compute=None))
+    assert status == 200 and body["values"] == [[2.5] * 3] * 2
+
+
+# ── the runner asks its subprocess ───────────────────────────────────────
+
+
+def _assign(run_id: str, record: bool = True) -> wp.Assign:
+    return wp.Assign(run_id=run_id, graph={"nodes": []},
+                     options={"record_outputs": record})
+
+
+async def test_ask_child_gets_the_subprocess_answer(tmp_path):
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"}, send=sink,
+                    child_entry=h.answering_child, outputs_max_bytes=0)
+    await runner.assign(_assign("r1"))
+    assert runner.runs["r1"].record_outputs
+    answer = await runner.ask_child("r1", "value", {"node_id": "n"})
+    assert answer == (200, json.dumps({"op": "value", "run_id": "r1",
+                                       "params": {"node_id": "n"}}), False)
+    assert runner.child_drop("r1") is True
+    await sink.wait_for(lambda f: isinstance(f, wp.Event)
+                        and f.event_type == "dropped")
+    # The spec names where the subprocess writes its captures.
+    assert await runner.ask_child("nope", "list", {}) is None
+    assert runner.child_drop("nope") is False
+    handle = runner.runs["r1"]
+    await runner.cancel("r1")
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    await asyncio.wait_for(handle.done.wait(), 30)
+    assert await runner.ask_child("r1", "list", {}) is None
+
+
+async def test_a_read_the_subprocess_leaves_unanswered_goes_to_the_files(
+        tmp_path):
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"}, send=sink,
+                    child_entry=h.silent_child, outputs_max_bytes=0)
+    await runner.assign(_assign("r1"))
+    assert await runner.ask_child("r1", "list", {}) is None
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+
+
+async def test_a_run_without_record_outputs_is_never_asked(tmp_path):
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"}, send=sink,
+                    child_entry=h.answering_child, outputs_max_bytes=0)
+    await runner.assign(_assign("r1", record=False))
+    assert await runner.ask_child("r1", "list", {}) is None
+    assert runner.child_drop("r1") is False
+    await runner.cancel("r1", grace_s=0)
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+
+
+async def test_a_subprocess_that_does_not_answer_in_time(tmp_path):
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"}, send=sink,
+                    child_entry=h.deaf_child, outputs_max_bytes=0)
+    await runner.assign(_assign("r1"))
+    status, text, final = await runner.ask_child("r1", "list", {},
+                                                 timeout_s=0.1)
+    assert status == 504 and "did not answer" in json.loads(text)["detail"]
+    await runner.cancel("r1", grace_s=0)
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+
+
+def test_the_runner_budget_comes_from_the_setting(tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "RUN_OUTPUT_STORE_MAX_MB", 3)
+    assert Runner(runs_dir=tmp_path, offered_devices={"cpu"}
+                  ).outputs_max_bytes == 3 * 1024 * 1024
+
+
+def test_retiring_a_recorded_run_applies_the_budget(tmp_path):
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"},
+                    outputs_max_bytes=50)
+    _dump(tmp_path, "old", 40, 20)
+    _dump(tmp_path, "new", 40, 10)
+    runner._retire_files(tmp_path / "new", recorded=True)
+    assert not outputs_dir(tmp_path, "old").exists()
+    assert outputs_dir(tmp_path, "new").exists()
+
+
+# ── the helper that reads the files ──────────────────────────────────────
+
+
+async def test_the_real_helper_reads_a_dump(tmp_path):
+    store = RunOutputStore(max_bytes=0)
+    await store.put("r1", "x", "t", torch.arange(4.0))
+    await q.dump_run(store, "r1", tmp_path / "outputs")
+    helper = OutputsHelper(idle_s=60)
+    try:
+        status, text, final = await helper.ask(
+            tmp_path / "outputs", "r1", "value",
+            {"node_id": "x", "port": "t"})
+        assert (status, final) == (200, True)
+        assert json.loads(text)["values"] == [0.0, 1.0, 2.0, 3.0]
+        status, _, _ = await helper.ask(tmp_path / "outputs", "r1", "value",
+                                        {"node_id": "x", "port": "gone"})
+        assert status == 404
+        assert helper.running
+    finally:
+        helper.close()
+
+
+async def test_a_helper_that_dies_fails_its_reads_and_restarts(tmp_path):
+    helper = OutputsHelper(entry=h.dying_helper, idle_s=60)
+    status, text, _ = await helper.ask(tmp_path, "r1", "list", {})
+    assert status == 500 and "exited (code 5)" in json.loads(text)["detail"]
+    helper.entry = h.echo_helper
+    status, text, _ = await helper.ask(tmp_path, "r1", "list", {})
+    assert status == 200 and json.loads(text)["op"] == "list"
+    helper.close()
+
+
+async def test_a_slow_helper_times_out_and_an_idle_one_stops(tmp_path):
+    helper = OutputsHelper(entry=h.echo_helper, idle_s=0.2, timeout_s=0.1)
+    status, text, _ = await helper.ask(tmp_path, "r1", "slow", {})
+    assert status == 504
+    deadline = time.monotonic() + 15
+    while helper.running and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert not helper.running
+    helper.close()  # already stopped: harmless
+
+
+async def test_a_helper_whose_pipe_is_closed_says_so(tmp_path):
+    helper = OutputsHelper(entry=h.echo_helper, idle_s=60)
+    helper.start()
+    helper._requests.close()
+    status, text, _ = await helper.ask(tmp_path, "r1", "list", {})
+    assert status == 500 and "not reachable" in json.loads(text)["detail"]
+    helper.close()
+
+
+# ── the agent answers fetch_output ───────────────────────────────────────
+
+
+class _Runner:
+    def __init__(self, runs_dir: Path, answer: Any = None,
+                 live: bool = False) -> None:
+        self.runs_dir = runs_dir
+        self.answer = answer
+        self.live = live
+        self.dropped: list[str] = []
+
+    async def ask_child(self, run_id: str, op: str, params: Any) -> Any:
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+    def child_drop(self, run_id: str) -> bool:
+        self.dropped.append(run_id)
+        return self.live
+
+
+class _Helper:
+    def __init__(self) -> None:
+        self.asked: list[tuple] = []
+        self.closed = False
+
+    async def ask(self, directory: Path, run_id: str, op: str,
+                  params: Any) -> Any:
+        self.asked.append((directory, run_id, op))
+        return 200, "[]", True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _agent_outputs(runner: _Runner) -> tuple[AgentOutputs, list[tuple]]:
+    sent: list[tuple] = []
+
+    async def send(*args: Any) -> None:
+        sent.append(args)
+
+    return AgentOutputs(runner, send, helper=_Helper()), sent
+
+
+def _fetch(op: str, run_id: str = "r1") -> wp.FetchOutput:
+    return wp.FetchOutput(request_id="q1", run_id=run_id, op=op)
+
+
+async def test_a_live_run_is_answered_by_its_subprocess(tmp_path):
+    outputs, sent = _agent_outputs(_Runner(tmp_path, (200, "{}", False)))
+    await outputs.serve(_fetch("list"))
+    assert sent == [("q1", 200, "{}", False)]
+    assert outputs.helper.asked == []
+
+
+async def test_an_ended_run_is_answered_from_its_files(tmp_path):
+    _dump(tmp_path, "r1", 1, 0)
+    outputs, sent = _agent_outputs(_Runner(tmp_path))
+    await outputs.serve(_fetch("value"))
+    assert sent == [("q1", 200, "[]", True)]
+    assert outputs.helper.asked == [(outputs_dir(tmp_path, "r1"), "r1",
+                                     "value")]
+
+
+@pytest.mark.parametrize("op, detail", [
+    ("list", "run 'r1' not found"), ("value", "run 'r1' not found"),
+    ("steps", "run 'r1' not found"), ("grads", "run 'r1' not found"),
+    ("stats", q.not_captured("run 'r1' has no captured outputs"))])
+async def test_no_files_answer_as_the_reads_do(tmp_path, op, detail):
+    outputs, sent = _agent_outputs(_Runner(tmp_path))
+    await outputs.serve(_fetch(op))
+    assert sent == [("q1", 404, json.dumps({"detail": detail}), True)]
+    assert outputs.helper.asked == []
+    store = RunOutputStore(max_bytes=0)
+    assert (await q.dispatch(store, op, "r1", {}, compute=None))[1] == {
+        "detail": detail}
+
+
+async def test_delete_and_drop(tmp_path):
+    outputs, sent = _agent_outputs(_Runner(tmp_path))
+    await outputs.serve(_fetch("delete"))
+    assert sent[-1][:2] == ("q1", 404)
+    _dump(tmp_path, "r1", 1, 0)
+    await outputs.serve(_fetch("delete"))
+    assert sent[-1] == ("q1", 200, json.dumps({"run_id": "r1",
+                                               "deleted": True}), True)
+    assert not outputs_dir(tmp_path, "r1").exists()
+    live, sent = _agent_outputs(_Runner(tmp_path, live=True))
+    await live.serve(_fetch("delete"))
+    assert sent[-1][1] == 200
+    _dump(tmp_path, "r2", 1, 0)
+    await outputs.drop("r2")
+    assert not outputs_dir(tmp_path, "r2").exists()
+    await outputs.drop("r3")  # nothing there: nothing to do
+    outputs.close()
+    assert outputs.helper.closed
+
+
+async def test_a_failing_read_is_answered_500_and_a_lost_send_is_quiet(
+        tmp_path):
+    outputs, sent = _agent_outputs(_Runner(tmp_path, RuntimeError("bad")))
+    await outputs.serve(_fetch("list"))
+    assert sent[-1][1] == 500 and "bad" in json.loads(sent[-1][2])["detail"]
+
+    async def gone(*_: Any) -> None:
+        raise ConnectionError
+
+    outputs.send_answer = gone
+    await outputs.serve(_fetch("list"))  # does not raise
+
+
+# ── over the connection ──────────────────────────────────────────────────
+
+
+async def test_the_connection_answers_fetch_output_in_parts(tmp_path,
+                                                            monkeypatch):
+    monkeypatch.setattr(wp, "OUTPUT_ANSWER_PART_CHARS", 16)
+    monkeypatch.setattr(outputs_module.OutputsHelper, "start",
+                        lambda self: None)
+    async with FakeControlPlane() as cp, Agent(
+            tmp_path, cp.url, child_entry=h.answering_child) as agent:
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        hello = cp.of_type(wp.Hello)[0]
+        assert wp.CAPABILITY_RECORD_OUTPUTS in hello.capabilities
+        await cp.send(_assign("r1"))
+        await cp.wait_for(lambda n, f: isinstance(f, wp.RunStarted))
+        await cp.send(wp.FetchOutput(request_id="q9", run_id="r1",
+                                     op="value", params={"node_id": "n"}))
+        last = await cp.wait_for(
+            lambda n, f: isinstance(f, wp.OutputAnswer)
+            and f.part == f.parts - 1)
+        parts = [f for f in cp.of_type(wp.OutputAnswer)
+                 if f.request_id == "q9"]
+        assert len(parts) == last.parts > 1
+        assert all(len(p.body) <= 16 for p in parts)
+        body = json.loads("".join(p.body for p in parts))
+        assert body == {"op": "value", "run_id": "r1",
+                        "params": {"node_id": "n"}}
+        await cp.send(wp.DropOutputs(run_id="r1"))
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Event)
+                          and f.event_type == "dropped")
+        await cp.send(wp.Cancel(run_id="r1"))
+        await cp.wait_for(lambda n, f: isinstance(f, wp.RunFinished))
+        # The run ended: the helper is warmed for the reads that follow.
+        assert agent.runner.on_recorded_run_retired is not None
+
+
+async def test_an_empty_answer_is_one_part_and_a_closed_socket_stops(
+        tmp_path, monkeypatch):
+    from app.agent.connection import AgentConnection
+
+    started: list[bool] = []
+    monkeypatch.setattr(outputs_module.OutputsHelper, "start",
+                        lambda self: started.append(True))
+
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"},
+                    outputs_max_bytes=0)
+    connection = AgentConnection(
+        runner=runner, name="box", version="t", control_url="http://x",
+        token="t", probe_devices=list)
+    await connection.send_answer("q1", 204, "", True)  # not connected
+
+    class Ws:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, line: str) -> None:
+            self.sent.append(line)
+
+    connection._ws = Ws()
+    await connection.send_answer("q1", 204, "", True)
+    [line] = connection._ws.sent
+    assert json.loads(line)["parts"] == 1 and json.loads(line)["body"] == ""
+    connection._recorded_run_retired("r1")
+    assert started == [True]
+    connection.outputs.close()
+
+
+async def test_a_helper_that_cannot_start_is_logged(tmp_path, monkeypatch,
+                                                    caplog):
+    from app.agent.connection import AgentConnection
+
+    def broken(self: Any) -> None:
+        raise OSError("no spawn")
+
+    monkeypatch.setattr(outputs_module.OutputsHelper, "start", broken)
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"},
+                    outputs_max_bytes=0)
+    connection = AgentConnection(
+        runner=runner, name="box", version="t", control_url="http://x",
+        token="t", probe_devices=list)
+    connection._recorded_run_retired("r1")
+    assert "could not start the outputs helper" in caplog.text

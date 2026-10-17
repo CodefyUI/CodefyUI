@@ -355,3 +355,64 @@ def uncapped_child(spec: dict[str, Any], events_out: Any,
     events_out.send((child.MSG_FINISHED, {
         "status": "failed", "error": "could not cap cuda:0",
         "peak_memory": None}))
+
+
+def answering_child(spec: dict[str, Any], events_out: Any,
+                    control_in: Any) -> None:
+    """A recorded run (#789) that answers every ``fetch`` with its own
+    arguments until ``cancel``, then reports. A ``drop_outputs`` is echoed
+    as an event."""
+    _running(events_out, "rec")
+    while True:
+        try:
+            message = control_in.recv()
+        except (EOFError, OSError):
+            return
+        if message[0] == child.MSG_FETCH:
+            _, request_id, op, run_id, params = message
+            events_out.send((child.MSG_OUTPUT_ANSWER, request_id, 200,
+                             json.dumps({"op": op, "run_id": run_id,
+                                         "params": params}), False))
+        elif message[0] == child.MSG_DROP_OUTPUTS:
+            events_out.send((child.MSG_EVENT, "dropped",
+                             {"run_id": message[1]}))
+        elif message[0] == child.MSG_CANCEL:
+            break
+    quick_child(spec, events_out, control_in)
+
+
+def silent_child(spec: dict[str, Any], events_out: Any,
+                 control_in: Any) -> None:
+    """A recorded run that never answers a ``fetch``: on its first one it
+    reports and exits, so the read must fall back to the files."""
+    _running(events_out, "rec")
+    while True:
+        try:
+            message = control_in.recv()
+        except (EOFError, OSError):
+            return
+        if message[0] in (child.MSG_FETCH, child.MSG_CANCEL):
+            break
+    quick_child(spec, events_out, control_in)
+
+
+def dying_helper(requests: Any, answers: Any) -> None:
+    """An outputs helper (#789) that exits on its first request."""
+    requests.recv()
+    os._exit(5)
+
+
+def echo_helper(requests: Any, answers: Any) -> None:
+    """An outputs helper that answers each request with its arguments, and
+    takes ``op == "slow"`` as a cue to say nothing."""
+    while True:
+        try:
+            message = requests.recv()
+        except (EOFError, OSError):
+            return
+        _, request_id, directory, op, run_id, params = message
+        if op == "slow":
+            continue
+        answers.send(("output_answer", request_id, 200,
+                      json.dumps({"dir": directory, "op": op,
+                                  "run_id": run_id}), True))

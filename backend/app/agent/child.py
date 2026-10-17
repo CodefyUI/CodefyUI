@@ -16,9 +16,16 @@ the same order, which is what makes a worker run's event log byte-identical
 to a local one's.
 
 What the child never does: open SQLite (it has no ``RunStore``; the agent
-does not even pass ``CODEFYUI_DB_PATH``), record outputs (refused at
-assignment time until #789), touch a ``NodeStateStore`` (a worker run is
-isolated, ``weights_persistent=False``).
+does not even pass ``CODEFYUI_DB_PATH``), touch a ``NodeStateStore`` (a
+worker run is isolated, ``weights_persistent=False``).
+
+Recorded outputs (#789): a run with ``options.record_outputs`` captures
+into a ``RunOutputStore`` of this process's own, exactly as a run on the
+control plane does (:class:`LiveOutputs`). When the run ends, before
+``finished``, the store is written to ``spec["outputs_dir"]``
+(``output_queries.dump_run``), so the agent can serve it after this process
+exits. Until this process exits it answers the agent's reads itself: from
+the store while the run goes, from the files once they are written.
 
 Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
 
@@ -29,7 +36,11 @@ Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
   file is under it, with ``mount_label`` naming it; else absolute, with
   ``mount_label`` None.
 - ``("warning", {"kind", "detail", "node_id"})``
-- ``("finished", {"status", "error", "peak_memory"})``, last.
+- ``("output_answer", request_id, status, body_text, final)``: the answer
+  to a ``fetch`` (#789), the read's HTTP status and JSON body text;
+  ``final`` once it came from the files.
+- ``("finished", {"status", "error", "peak_memory"})``, last (an
+  ``output_answer`` may still follow it).
 - ``("memory_limit", {device: {"budget_bytes", "total_bytes",
   "fraction"}})``, FIRST, for a run with memory budgets (#788,
   ``spec["memory_budgets"]``, as this process numbers its cards): each
@@ -48,8 +59,11 @@ paths (an upload's bare name, ``models/x.pt``) resolve unchanged and the
 graph is never rewritten; out, every artifact path goes through
 :func:`artifact_location`, the one place a path becomes relative.
 
-Agent -> child: ``("cancel",)``. The pipe closing means the agent is gone,
-which is treated as a cancel: nobody is left to report to.
+Agent -> child: ``("cancel",)``; for a recorded run (#789) also
+``("fetch", request_id, op, run_id, params)`` (a read of its outputs, see
+``core.output_queries.dispatch``) and ``("drop_outputs", run_id)``. The
+pipe closing means the agent is gone, which is treated as a cancel: nobody
+is left to report to.
 """
 
 from __future__ import annotations
@@ -66,6 +80,9 @@ MSG_WARNING = "warning"
 MSG_FINISHED = "finished"
 MSG_MEMORY_LIMIT = "memory_limit"
 MSG_CANCEL = "cancel"
+MSG_FETCH = "fetch"
+MSG_DROP_OUTPUTS = "drop_outputs"
+MSG_OUTPUT_ANSWER = "output_answer"
 
 Send = Callable[[tuple], None]
 
@@ -131,11 +148,16 @@ def _safe_sender(conn: Any) -> Send:
 
     A sink must not raise into the engine: a run whose reader vanished
     is stopped by the control listener (EOF is a cancel), not by a
-    ``BrokenPipeError`` surfacing as a node failure.
+    ``BrokenPipeError`` surfacing as a node failure. Locked: the answers to
+    reads of the run's outputs (#789) are sent from other threads, and two
+    writers must not interleave one message's bytes.
     """
+    lock = threading.Lock()
+
     def send(message: tuple) -> None:
         try:
-            conn.send(message)
+            with lock:
+                conn.send(message)
         except (BrokenPipeError, EOFError, OSError):
             pass
 
@@ -259,16 +281,152 @@ def _pipe_sinks(send: Send, cap_bytes: int | None = None,
                     record_artifact=record_artifact, warn=warn)
 
 
-def _listen_for_cancel(control_in: Any, context: Any) -> None:
-    """Thread body: cancel the run on a ``cancel`` message or a closed pipe."""
+def _listen_for_cancel(control_in: Any, context: Any,
+                       outputs: "LiveOutputs | None" = None) -> None:
+    """Thread body: cancel the run on a ``cancel`` message or a closed pipe;
+    hand reads of a recorded run's outputs to *outputs* (#789)."""
     while True:
         try:
             message = control_in.recv()
         except (EOFError, OSError):
             context.cancel()
             return
-        if isinstance(message, tuple) and message and message[0] == MSG_CANCEL:
+        if not isinstance(message, tuple) or not message:
+            continue
+        if message[0] == MSG_CANCEL:
             context.cancel()
+        elif outputs is not None and message[0] == MSG_FETCH \
+                and len(message) == 5:
+            outputs.answer(*message[1:])
+        elif outputs is not None and message[0] == MSG_DROP_OUTPUTS \
+                and len(message) == 2:
+            outputs.drop(message[1])
+
+
+class _LoopReader:
+    """The live store, read from another thread: each call runs on the
+    run's event loop (the store's lock lives there). With no loop (before
+    the run starts, or after it ends) it holds nothing."""
+
+    def __init__(self, store: Any, loop: Any) -> None:
+        self._store = store
+        self._loop = loop
+
+    async def _call(self, name: str, *args: Any) -> Any:
+        import asyncio
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                getattr(self._store, name)(*args), loop)
+        except RuntimeError:  # the loop closed in between
+            return None
+        return await asyncio.wrap_future(future)
+
+    async def has_run(self, run_id: str) -> bool:
+        return bool(await self._call("has_run", run_id))
+
+    async def list_ports(self, run_id: str) -> Any:
+        return await self._call("list_ports", run_id)
+
+    async def get_with_version(self, run_id: str, node_id: str,
+                               port: str) -> Any:
+        return await self._call("get_with_version", run_id, node_id, port)
+
+    async def get(self, run_id: str, node_id: str, port: str) -> Any:
+        return await self._call("get", run_id, node_id, port)
+
+
+class LiveOutputs:
+    """A recorded run's captures in this process, and the reads of them
+    (#789). Reads run on a small pool of their own, each on its own event
+    loop, so serialising a large tensor never holds up the run's loop:
+    only the store lookups hop to it."""
+
+    def __init__(self, store: Any, run_id: str, directory: str | None,
+                 send: Send) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.store = store
+        self.run_id = run_id
+        self.directory = directory
+        self.send = send
+        #: The run's event loop, once it runs.
+        self.loop: Any = None
+        #: The dump's reader, once written: reads then come from the files
+        #: (and are ``final``).
+        self.disk: Any = None
+        self._pool = ThreadPoolExecutor(2, thread_name_prefix="outputs")
+
+    def answer(self, request_id: str, op: str, run_id: str,
+               params: dict[str, Any]) -> None:
+        self._pool.submit(self._answer, request_id, op, run_id,
+                          dict(params or {}))
+
+    def _answer(self, request_id: str, op: str, run_id: str,
+                params: dict[str, Any]) -> None:
+        import asyncio
+
+        from ..core import output_queries as q
+        from ..core.port_stats import compute_port_stats
+
+        async def compute(value: Any) -> dict[str, Any]:
+            return compute_port_stats(value)
+
+        disk = self.disk
+        reader = disk if disk is not None else _LoopReader(self.store,
+                                                           self.loop)
+        try:
+            status, body = asyncio.run(q.dispatch(reader, op, run_id, params,
+                                                  compute=compute))
+            text = "" if body is None else q.encode_body(body)
+        except BaseException as exc:  # noqa: BLE001 -- answered, not raised
+            status, text = 500, q.encode_body(
+                {"detail": f"reading the recorded outputs failed: {exc}"})
+        self.send((MSG_OUTPUT_ANSWER, request_id, status, text,
+                   disk is not None))
+
+    def drop(self, run_id: str) -> None:
+        import asyncio
+
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self.store.delete_run(run_id),
+                                             loop)
+        except RuntimeError:
+            pass
+
+    async def dump(self) -> None:
+        """Write the run's captures to :attr:`directory`, then read from
+        there. A failure is a ``warning`` for the run, never its end."""
+        if not self.directory:
+            return
+        from pathlib import Path
+
+        from ..core import output_queries as q
+
+        try:
+            if not await self.store.has_run(self.run_id):
+                return  # recorded nothing: there is nothing to keep
+            await q.dump_run(self.store, self.run_id, Path(self.directory))
+            self.disk = q.DiskRunReader(Path(self.directory))
+        except Exception as exc:  # noqa: BLE001 -- reported, the run stands
+            import logging
+            import traceback
+
+            logging.getLogger(__name__).warning(
+                "the recorded outputs could not be written: %s", exc)
+            traceback.print_exc()
+            self.send((MSG_WARNING, {
+                "kind": "outputs_not_kept",
+                "detail": (f"the outputs this run recorded could not be "
+                           f"written on the worker, so they cannot be read "
+                           f"after it ends: {type(exc).__name__}: {exc}"),
+                "node_id": None}))
 
 
 def apply_memory_budgets(budgets: dict[str, int]) -> dict[str, Any]:
@@ -344,9 +502,18 @@ def run_assignment(spec: dict[str, Any], send: Send,
         run_id = spec["run_id"]
         options = dict(spec.get("options") or {})
         context = build_context(run_id, options, spec.get("device") or "cpu")
+        outputs = None
+        if options.get("record_outputs"):
+            from ..core.run_output_store import RunOutputStore
+
+            # This run's alone, so no budget evicts within it (a run
+            # exceeding the budget exceeds it in the control plane's store
+            # too); the agent holds the dumps to the budget (#789).
+            outputs = LiveOutputs(RunOutputStore(max_bytes=0), run_id,
+                                  spec.get("outputs_dir"), send)
         if control_in is not None:
             threading.Thread(target=_listen_for_cancel,
-                             args=(control_in, context),
+                             args=(control_in, context, outputs),
                              name="cancel-listener", daemon=True).start()
         request = ExecutionRequest(
             run_id=run_id,
@@ -354,15 +521,24 @@ def run_assignment(spec: dict[str, Any], send: Send,
             options=options,
             context=context,
             session=None,
-            output_store=None,
-            record_outputs=False,
+            output_store=None if outputs is None else outputs.store,
+            record_outputs=outputs is not None,
             sinks=_pipe_sinks(send, mount=spec.get("mount")),
             explicit_metric_nodes=set(),
         )
-        # This process runs this one run and nothing else, so its peak
-        # memory figures are exact (#770).
-        outcome = asyncio.run(
-            InProcessExecutor(exclusive_process=True).run(request))
+
+        async def execute() -> Any:
+            if outputs is not None:
+                outputs.loop = asyncio.get_running_loop()
+            # This process runs this one run and nothing else, so its peak
+            # memory figures are exact (#770).
+            result = await InProcessExecutor(exclusive_process=True).run(
+                request)
+            if outputs is not None:
+                await outputs.dump()
+            return result
+
+        outcome = asyncio.run(execute())
         status, error = outcome.status, outcome.error
         peak_memory = getattr(outcome, "peak_memory", None)
     except BaseException as exc:  # noqa: BLE001 -- reported, then we exit

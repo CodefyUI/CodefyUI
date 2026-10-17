@@ -22,11 +22,40 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from .memory_budget import format_bytes, value_bytes
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CaptureAlias:
+    """What a recorded run keeps under a port no node of its own produced.
+
+    A preset card, a block instance and a bypassed node never run --
+    expansion and bypass resolution replace them -- but the canvas draws
+    their ports, and every reader of ``/api/execution/outputs`` asks for
+    those (#553). This names the port whose capture holds the value, and the
+    route follows it. The value is not stored a second time: the store
+    measures every slot against its byte budget, so a copy would count a
+    tensor twice and evict other runs early. An alias itself measures 0
+    bytes.
+
+    It always names a port that RAN, never another alias, so one step
+    reaches the value, and it is written only after that port's value. The
+    two writes take the store's lock one at a time, so a run dropped between
+    them -- evicted, or deleted mid-run -- comes back holding the alias
+    alone, and reading it answers 404. That is the truth: the value is gone.
+
+    Defined here rather than in ``graph_engine`` (which still names it) so
+    that the readers of a worker's recorded outputs (#789) need not import
+    the engine.
+    """
+
+    node_id: str
+    port: str
 
 
 class RunOutputStore:
@@ -51,6 +80,15 @@ class RunOutputStore:
         self._slot_bytes: dict[tuple[str, str, str], int] = {}
         self._total_bytes = 0
         self._writes = 0
+        #: Worker runs whose captures the WORKER holds (#789): run id ->
+        #: worker name. Each is in ``_order`` like a run held here, holding
+        #: no bytes here, so this store's run-count retention applies to
+        #: them by run id; evicting one calls :attr:`on_remote_drop`.
+        self._remote: dict[str, str] = {}
+        #: ``(run_id, worker)`` when a worker run is evicted (not deleted):
+        #: its worker is to be told to drop the captures. Synchronous; it
+        #: schedules the message. None: nobody to tell.
+        self.on_remote_drop: Callable[[str, str], None] | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -72,6 +110,8 @@ class RunOutputStore:
         nbytes = value_bytes(value)
         async with self._lock:
             if run_id not in self._store:
+                if self._remote.pop(run_id, None) is not None:
+                    self._order.remove(run_id)
                 self._store[run_id] = {}
                 self._run_bytes[run_id] = 0
                 self._order.append(run_id)
@@ -101,13 +141,14 @@ class RunOutputStore:
         from the oldest and skips it, rather than stopping at it.
         """
         while len(self._order) > self._max_runs:
-            self._drop(self._order[0])
+            self._drop(self._order[0], evicted=True)
         if not self._max_bytes:
             return
         index = 0
         while self._total_bytes > self._max_bytes and index < len(self._order):
             oldest = self._order[index]
-            if oldest == keep:
+            if oldest == keep or oldest in self._remote:
+                # A worker's run holds no bytes here: dropping it frees none.
                 index += 1
                 continue
             # Read BEFORE the drop, so the message reports the overrun it
@@ -121,8 +162,20 @@ class RunOutputStore:
                 format_bytes(self._total_bytes),
             )
 
-    def _drop(self, run_id: str) -> None:
-        """Forget one run and everything it captured. Caller holds the lock."""
+    def _drop(self, run_id: str, *, evicted: bool = False) -> None:
+        """Forget one run and everything it captured. Caller holds the lock.
+
+        *evicted*: a retention limit dropped it; a worker's run (#789) then
+        has its worker told (:attr:`on_remote_drop`).
+        """
+        worker = self._remote.pop(run_id, None)
+        if worker is not None and evicted and self.on_remote_drop is not None:
+            try:
+                self.on_remote_drop(run_id, worker)
+            except Exception:  # noqa: BLE001 -- eviction must not fail a put
+                logger.warning("could not tell worker %s to drop the "
+                               "outputs of run %s", worker, run_id,
+                               exc_info=True)
         nodes = self._store.pop(run_id, {})
         for node_id, ports in nodes.items():
             for port in ports:
@@ -165,6 +218,54 @@ class RunOutputStore:
             self._drop(run_id)
             return True
 
+    # -- worker runs (#789) -------------------------------------------------
+
+    async def add_remote(self, run_id: str, worker: str) -> None:
+        """Retain *run_id*, whose captures *worker* holds, by run id.
+
+        Newest in the retention order, as a run that starts writing here
+        would be, evicting older runs past ``max_runs`` (and telling their
+        workers) as :meth:`put` does. A run held here is left as it is.
+        """
+        async with self._lock:
+            if run_id in self._store:
+                return
+            if run_id in self._remote:
+                self._order.remove(run_id)
+            self._remote[run_id] = worker
+            self._order.append(run_id)
+            self._evict_locked(keep=run_id)
+
+    async def remote_holder(self, run_id: str) -> str | None:
+        """The worker holding *run_id*'s captures, or None (#789)."""
+        async with self._lock:
+            return self._remote.get(run_id)
+
+    async def forget_remote(self, run_id: str) -> bool:
+        """Stop retaining a worker's run without telling the worker (its
+        captures are deleted there already). False when not retained."""
+        async with self._lock:
+            if run_id not in self._remote:
+                return False
+            self._drop(run_id)
+            return True
+
+    async def snapshot(self, run_id: str) -> list[tuple[str, str, Any, int, int]]:
+        """``(node_id, port, value, write serial, bytes)`` for every slot of
+        *run_id*, in :meth:`list_ports` order; ``[]`` for a run not held.
+
+        What a worker's run subprocess writes to disk when the run ends
+        (#789, ``agent.outputs``), so that its agent serves it afterwards.
+        """
+        async with self._lock:
+            run = self._store.get(run_id) or {}
+            return [
+                (node_id, port, slot[0], slot[1],
+                 self._slot_bytes.get((run_id, node_id, port), 0))
+                for node_id, ports in run.items()
+                for port, slot in ports.items()
+            ]
+
     async def list_ports(self, run_id: str) -> list[tuple[str, str]] | None:
         """Return (node_id, port) pairs for a run, or None if run not found."""
         async with self._lock:
@@ -195,6 +296,7 @@ class RunOutputStore:
     async def clear(self) -> None:
         async with self._lock:
             self._store.clear()
+            self._remote.clear()
             self._order.clear()
             self._run_bytes.clear()
             self._slot_bytes.clear()

@@ -2,9 +2,9 @@
 
 :class:`Runner` is the agent's half of a run. For each ``assign`` it
 
-1. refuses what this wave cannot do (``record_outputs``, a device this
-   worker does not offer, a second copy of a running run, any run while
-   draining) with an immediate ``run_finished`` ``failed``;
+1. refuses what it cannot do (a device this worker does not offer, a
+   second copy of a running run, any run while draining) with an
+   immediate ``run_finished`` ``failed``;
 2. starts ``child.main`` in a ``multiprocessing`` *spawn* context with an
    explicit environment (:func:`child_environment`): the assigned CUDA
    cards as ``CUDA_VISIBLE_DEVICES`` / ``HIP_VISIBLE_DEVICES``,
@@ -51,6 +51,15 @@ Cancel is cooperative first: ``("cancel",)`` down the pipe, which the child
 turns into ``ExecutionContext.cancel()``. ``grace_s`` later the process is
 terminated, and :data:`KILL_AFTER_S` after that killed.
 
+A run with ``record_outputs`` (#789) gets ``spec["outputs_dir"]``, where its
+subprocess writes its captures when it ends. While the subprocess lives,
+reads of them go down the same pipe (:meth:`Runner.ask_child`) and come
+back as ``output_answer`` messages, which the reader thread hands to the
+waiting read instead of forwarding them; a read still waiting when the
+subprocess exits is answered from the files (``agent.outputs``). The dumps
+are held to this worker's output budget when each such run retires
+(``agent.outputs.prune_outputs``).
+
 This module imports neither torch nor the engine: it runs in the agent.
 """
 
@@ -90,8 +99,6 @@ STDERR_TAIL_BYTES = 4096
 #: Per-run output file, under ``<runs_dir>/<run_id>/``.
 OUTPUT_LOG = "output.log"
 
-REFUSE_RECORD_OUTPUTS = ("record_outputs is not supported on workers yet "
-                         "(#789); submit without it")
 REFUSE_DRAINING = "this worker is draining and takes no new runs"
 REFUSE_DUPLICATE = "this worker is already running {run_id}"
 REFUSE_NO_TRANSFER = ("this agent cannot fetch input files from the control "
@@ -378,6 +385,12 @@ class RunHandle:
     #: numbering, as every other device the control plane sees.
     budget_names: dict[str, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    #: The run records its outputs (#789): its subprocess answers reads of
+    #: them, and writes them under the run's directory when it ends.
+    record_outputs: bool = False
+    #: Reads of the run's outputs waiting for the subprocess's answer, by
+    #: request id (#789); answered None when it exits first.
+    answers: dict[str, asyncio.Future] = field(default_factory=dict)
     #: Set once the reader has joined the process (it is gone).
     exited: asyncio.Event = field(default_factory=asyncio.Event)
     #: Set once the run is retired (its ``run_finished`` has been sent).
@@ -406,8 +419,21 @@ class Runner:
         child_entry: Callable[..., None] = child_module.main,
         transfer: transfer_module.TransferClient | None = None,
         s3_client: Callable[[Any], Any] | None = None,
+        outputs_max_bytes: int | None = None,
     ) -> None:
         self.runs_dir = runs_dir
+        #: This worker's budget for recorded outputs (#789): the in-process
+        #: store's, ``CODEFYUI_RUN_OUTPUT_STORE_MAX_MB``, unless given.
+        if outputs_max_bytes is None:
+            from ..config import settings
+
+            outputs_max_bytes = int(settings.RUN_OUTPUT_STORE_MAX_MB) \
+                * 1024 * 1024
+        self.outputs_max_bytes = max(0, int(outputs_max_bytes))
+        #: Called on the loop when a recorded run has retired (#789); the
+        #: connection's ``AgentOutputs`` starts its helper on it.
+        self.on_recorded_run_retired: Callable[[str], None] | None = None
+        self._asked = 0
         #: Fetches inputs and uploads outputs for ``transfer`` runs (#785);
         #: ``AgentConnection`` provides one when none is given.
         self.transfer = transfer
@@ -468,8 +494,6 @@ class Runner:
             raise AssignmentRefused(REFUSE_DRAINING)
         if frame.run_id in self.runs:
             raise AssignmentRefused(REFUSE_DUPLICATE.format(run_id=frame.run_id))
-        if frame.options.get("record_outputs"):
-            raise AssignmentRefused(REFUSE_RECORD_OUTPUTS)
         if _transfers(frame) and frame.storage.backend == "transfer" \
                 and self.transfer is None:
             raise AssignmentRefused(REFUSE_NO_TRANSFER)
@@ -739,6 +763,13 @@ class Runner:
             "options": frame.options, "device": device,
             "env": env, "log_path": str(log_path), "mount": mount,
         }
+        record = bool(frame.options.get("record_outputs"))
+        if record:
+            # Where the subprocess writes its captures when it ends (#789).
+            from .outputs import outputs_dir
+
+            spec["outputs_dir"] = str(outputs_dir(self.runs_dir,
+                                                  frame.run_id))
         budget_names: dict[str, str] = {}
         if frame.memory_budgets:
             # As the child numbers its cards (#788): it sees only the set.
@@ -772,6 +803,7 @@ class Runner:
             handle.process, handle.events_in = process, events_in
             handle.control_out = control_out
         handle.budget_names = budget_names
+        handle.record_outputs = record
         self.runs[frame.run_id] = handle
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
@@ -787,6 +819,86 @@ class Runner:
             target=self._read, args=(handle, self._loop),
             name=f"run-reader-{frame.run_id}", daemon=True)
         handle.reader.start()
+
+    # ── recorded outputs (#789) ───────────────────────────────────────────
+
+    async def ask_child(self, run_id: str, op: str, params: dict[str, Any],
+                        timeout_s: float = 120.0
+                        ) -> tuple[int, str, bool] | None:
+        """``(status, body text, final)`` for one read of *run_id*'s
+        outputs, answered by its run subprocess; None when there is no
+        subprocess to ask (never started, or gone, or it exited before
+        answering): the files answer then."""
+        handle = self.runs.get(run_id)
+        if handle is None or not handle.record_outputs \
+                or handle.process is None or handle.reaped \
+                or handle.control_out is None:
+            return None
+        self._asked += 1
+        request_id = f"c{self._asked}"
+        future = asyncio.get_running_loop().create_future()
+        handle.answers[request_id] = future
+        try:
+            try:
+                handle.control_out.send((child_module.MSG_FETCH, request_id,
+                                         op, run_id, params))
+            except (OSError, ValueError):
+                return None  # the subprocess is going: the files answer
+            try:
+                return await asyncio.wait_for(asyncio.shield(future),
+                                              timeout_s)
+            except asyncio.TimeoutError:
+                import json
+
+                return 504, json.dumps({"detail": (
+                    f"the run subprocess did not answer within "
+                    f"{timeout_s:g} s")}), False
+        finally:
+            handle.answers.pop(request_id, None)
+
+    def child_drop(self, run_id: str) -> bool:
+        """Empty a running recorded run's store (``delete`` /
+        ``drop_outputs``, #789); later captures start it again, as in the
+        control plane's store. False when no such subprocess runs."""
+        handle = self.runs.get(run_id)
+        if handle is None or not handle.record_outputs \
+                or handle.process is None or handle.reaped \
+                or handle.control_out is None:
+            return False
+        try:
+            handle.control_out.send((child_module.MSG_DROP_OUTPUTS, run_id))
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def _take_answer(self, handle: RunHandle, message: Any,
+                     loop: asyncio.AbstractEventLoop) -> bool:
+        """Reader thread: True when *message* answers a read (#789), which
+        is then handed to it instead of becoming a frame."""
+        if not (isinstance(message, tuple) and len(message) == 5
+                and message[0] == child_module.MSG_OUTPUT_ANSWER):
+            return False
+        _, request_id, status, text, final = message
+        try:
+            loop.call_soon_threadsafe(self._resolve_answer, handle,
+                                      request_id, (status, text, final))
+        except RuntimeError:  # the loop is gone: nobody waits
+            pass
+        return True
+
+    @staticmethod
+    def _resolve_answer(handle: RunHandle, request_id: str,
+                        answer: Any) -> None:
+        future = handle.answers.get(request_id)
+        if future is not None and not future.done():
+            future.set_result(answer)
+
+    @staticmethod
+    def _release_answers(handle: RunHandle) -> None:
+        """The subprocess is gone: reads still waiting go to the files."""
+        for future in list(handle.answers.values()):
+            if not future.done():
+                future.set_result(None)
 
     # ── cancel ────────────────────────────────────────────────────────────
 
@@ -973,6 +1085,8 @@ class Runner:
                 logger.warning("run %s: unreadable pipe message",
                                handle.run_id, exc_info=True)
                 continue
+            if self._take_answer(handle, message, loop):
+                continue
             if outbox is not None:
                 if isinstance(message, tuple) and message \
                         and message[0] == child_module.MSG_FINISHED:
@@ -1002,9 +1116,13 @@ class Runner:
                 loop.call_soon_threadsafe(self._watch_exit, handle)
             except RuntimeError:  # the loop is gone: nobody to escalate
                 pass
-            self._drain(handle)
+            self._drain(handle, loop)
         handle.process.join()
         handle.reaped = True
+        try:
+            loop.call_soon_threadsafe(self._release_answers, handle)
+        except RuntimeError:
+            pass
         if outbox is not None and uploader is not None:
             # How the run ended is decided now, from the flags as they are;
             # it is numbered after the last upload.
@@ -1147,17 +1265,22 @@ class Runner:
             for frame in self._artifact_frames(handle, body, warning):
                 forward(frame)
 
-    def _drain(self, handle: RunHandle) -> None:
+    def _drain(self, handle: RunHandle,
+               loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Read and drop the pipe until EOF or the process exits. Blocking.
 
         After ``finished`` nothing the child sends is forwarded, but it is
         still read, so a child still writing cannot block on a full pipe
-        while the escalation waits for it to exit.
+        while the escalation waits for it to exit. An answer to a read of
+        the run's outputs (#789) still reaches its read.
         """
         while True:
             try:
                 if handle.events_in.poll(DRAIN_POLL_S):
-                    handle.events_in.recv()
+                    message = handle.events_in.recv()
+                    if loop is not None \
+                            and self._take_answer(handle, message, loop):
+                        continue
                     handle.discarded += 1
                     logger.debug("run %s: dropped a pipe message sent after "
                                  "reporting", handle.run_id)
@@ -1222,16 +1345,29 @@ class Runner:
         self.runs.pop(handle.run_id, None)
         if handle.escalation is not None and not handle.escalation.done():
             handle.escalation.cancel()
+        self._release_answers(handle)
         handle.done.set()
         task = asyncio.ensure_future(asyncio.to_thread(
-            self._retire_files, handle.log_path.parent))
+            self._retire_files, handle.log_path.parent,
+            handle.record_outputs))
         self._housekeeping.add(task)
         task.add_done_callback(self._housekeeping.discard)
+        if handle.record_outputs and self.on_recorded_run_retired is not None:
+            try:
+                self.on_recorded_run_retired(handle.run_id)
+            except Exception:  # noqa: BLE001 -- a convenience, not a duty
+                logger.debug("on_recorded_run_retired failed", exc_info=True)
 
-    def _retire_files(self, run_dir: Path) -> None:
-        """Mark *run_dir* finished and apply retention. Blocking."""
+    def _retire_files(self, run_dir: Path, recorded: bool = False) -> None:
+        """Mark *run_dir* finished and apply retention, and for a recorded
+        run this worker's output budget (#789). Blocking."""
         mark_finished(run_dir)
         prune_run_dirs(self.runs_dir, self.keep_last)
+        if recorded:
+            from .outputs import prune_outputs
+
+            prune_outputs(self.runs_dir, self.outputs_max_bytes,
+                          keep=run_dir.name)
 
 
 def _numbered(handle: RunHandle, frame: Any) -> Any:

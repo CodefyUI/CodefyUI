@@ -103,6 +103,29 @@ What the frames carry
   rides on every unreported end.
 - A frame the agent cannot encode is replaced by a ``warning`` with the
   same ``seq`` (kind ``unserialisable_frame``), never dropped silently.
+
+Recorded outputs (#789, capability ``record_outputs``)
+------------------------------------------------------
+A run assigned with ``options.record_outputs`` keeps its captures on the
+worker: in the run subprocess's ``RunOutputStore`` while it runs, then in
+files under the run's directory there. The control plane reads them on
+demand, one read of ``/api/execution/outputs/*`` at a time:
+
+- control plane -> ``fetch_output{request_id, run_id, op, params}``: ``op``
+  is the read (``list``, ``value``, ``stats``, ``steps``, ``grads``,
+  ``delete``) and ``params`` its query (``node_id``, ``port``, ``slice``,
+  ``max_elements``, ``preview``, ``inner``);
+- agent -> ``output_answer{request_id, status, part, parts, body, final}``:
+  the HTTP status and JSON body text the read answers with, the body cut
+  into ``parts`` frames (``part`` 0 first) so no frame outgrows a socket's
+  message limit; ``final`` says the run has ended there (its captures
+  cannot change, so the control plane may cache what it derived);
+- control plane -> ``drop_outputs{run_id}`` when its own retention evicts
+  the run: the agent deletes the captures.
+
+These frames carry no ``seq`` and are never spooled: a read whose
+connection drops is answered by the control plane itself ("worker
+unreachable"), and the browser asks again.
 """
 
 from __future__ import annotations
@@ -142,8 +165,12 @@ PROTOCOL_VERSION = 3
 #: ``inputs[].key``, ``artifact.backend == "s3"``, and the ``credentials``
 #: frame. An agent lists it only when it can load an S3 client (boto3):
 #: :func:`agent_capabilities`.
+#: ``record_outputs`` (#789): ``options.record_outputs`` is honoured, and
+#: ``fetch_output`` / ``drop_outputs`` / ``output_answer`` are understood.
+#: The control plane assigns a recorded run only to a worker listing it.
 CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
-                                 "memory_budget", "one_shot", "s3")
+                                 "memory_budget", "one_shot", "s3",
+                                 "record_outputs")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
@@ -156,6 +183,8 @@ CAPABILITY_ONE_SHOT = "one_shot"
 POOL_ONE_SHOT = "one-shot"
 #: The capability name of the S3 artifact backend (#791).
 CAPABILITY_S3 = "s3"
+#: The capability name of recorded outputs on workers (#789).
+CAPABILITY_RECORD_OUTPUTS = "record_outputs"
 
 
 def agent_capabilities(s3_client: bool) -> list[str]:
@@ -176,6 +205,7 @@ ARTIFACT = "artifact"
 WARNING = "warning"
 RUN_FINISHED = "run_finished"
 RUN_ALIVE = "run_alive"
+OUTPUT_ANSWER = "output_answer"
 
 # ── frame types: control plane -> agent ──────────────────────────────────
 WELCOME = "welcome"
@@ -185,11 +215,13 @@ DRAIN = "drain"
 REJECT = "reject"
 ACK = "ack"
 CREDENTIALS = "credentials"
+FETCH_OUTPUT = "fetch_output"
+DROP_OUTPUTS = "drop_outputs"
 
 AGENT_FRAME_TYPES = (HELLO, HEARTBEAT, RUN_STARTED, EVENT, METRICS, ARTIFACT,
-                     WARNING, RUN_FINISHED, RUN_ALIVE)
+                     WARNING, RUN_FINISHED, RUN_ALIVE, OUTPUT_ANSWER)
 CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK,
-                       CREDENTIALS)
+                       CREDENTIALS, FETCH_OUTPUT, DROP_OUTPUTS)
 
 #: Seconds between heartbeats unless ``welcome`` says otherwise.
 DEFAULT_HEARTBEAT_S = 10.0
@@ -434,6 +466,30 @@ class RunAlive(_Frame):
     runs: list[RunAliveEntry] = Field(default_factory=list)
 
 
+#: A ``fetch_output`` request id: the control plane's, echoed back.
+RequestId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
+#: The reads ``fetch_output`` names (#789).
+OutputOp = Literal["list", "value", "stats", "steps", "grads", "delete"]
+#: Characters of body text per ``output_answer`` frame (#789): well under
+#: any socket's message limit (uvicorn's default is 16 MiB).
+OUTPUT_ANSWER_PART_CHARS = 1024 * 1024
+
+
+class OutputAnswer(_Frame):
+    """One part of the answer to a ``fetch_output`` (#789)."""
+
+    type: Literal["output_answer"] = OUTPUT_ANSWER
+    request_id: RequestId
+    #: The HTTP status the read answers with (200, 204, 404, 413, ...).
+    status: int = Field(ge=100, le=599)
+    part: int = Field(default=0, ge=0)
+    parts: int = Field(default=1, ge=1)
+    #: This part of the JSON body text ("" for a 204).
+    body: str = ""
+    #: The run has ended on the worker: its captures cannot change.
+    final: bool = False
+
+
 # ── control plane -> agent ────────────────────────────────────────────────
 
 
@@ -590,6 +646,28 @@ class Reject(_Frame):
     reason: str
 
 
+class FetchOutput(_Frame):
+    """A read of a worker run's recorded outputs (#789); answered with
+    ``output_answer`` frames carrying the same ``request_id``. Sent only
+    to an agent listing ``record_outputs``."""
+
+    type: Literal["fetch_output"] = FETCH_OUTPUT
+    request_id: RequestId
+    run_id: RunId
+    op: OutputOp
+    #: The read's query: ``node_id``, ``port``, ``slice``,
+    #: ``max_elements``, ``preview``, ``inner``, as the route got them.
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class DropOutputs(_Frame):
+    """The control plane no longer retains *run_id*'s captures (#789): the
+    agent deletes them."""
+
+    type: Literal["drop_outputs"] = DROP_OUTPUTS
+    run_id: RunId
+
+
 class Ack(_Frame):
     """Every frame of *run_id* up to and including *seq* is recorded (#783).
 
@@ -605,11 +683,12 @@ class Ack(_Frame):
 
 AgentFrame = Annotated[
     Union[Hello, Heartbeat, RunStarted, Event, Metrics, Artifact, RunWarning,
-          RunFinished, RunAlive],
+          RunFinished, RunAlive, OutputAnswer],
     Field(discriminator="type"),
 ]
 ControlFrame = Annotated[
-    Union[Welcome, Assign, Cancel, Drain, Reject, Ack, Credentials],
+    Union[Welcome, Assign, Cancel, Drain, Reject, Ack, Credentials,
+          FetchOutput, DropOutputs],
     Field(discriminator="type"),
 ]
 

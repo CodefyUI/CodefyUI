@@ -37,7 +37,7 @@ const en = {
   'queueRun.seedNone': 'none',
   'queueRun.deterministic': 'Deterministic algorithms',
   'queueRun.recordOutputs': 'Record node outputs',
-  'queueRun.recordOutputsWorker': 'A run on a worker cannot record outputs yet. Choose This server to capture them.',
+  'queueRun.recordOutputsWorker': 'Recorded outputs stay on the worker. The Inspector reads them from it while it is connected.',
   'queueRun.error.seed': 'The seed must be a whole number, 0 or more.',
   // Memory admission on a shared card (#788).
   'queueRun.memory': 'Memory budget (GiB per device)',
@@ -843,6 +843,8 @@ const en = {
   'inspector.dataExpiredBackward':
     'Run data expired — turn on Capture gradients in Settings and re-run',
   'inspector.tensorExpired': 'Expired',
+  'inspector.workerUnreachable':
+    'The worker that holds this run\'s recorded outputs cannot be reached now. They can be read again once it is connected.',
   'inspector.noTensors': 'No tensors',
   'inspector.tensor.module': 'Module',
   'inspector.tensor.params': 'params',

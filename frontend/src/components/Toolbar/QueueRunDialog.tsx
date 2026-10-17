@@ -176,7 +176,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     const options = {
       target,
       device: resolved.device,
-      record_outputs: !isWorker && recordOutputs,
+      record_outputs: recordOutputs,
       verbose: active.verboseMode,
       graph_id: active.graphId,
       weights_persistent: active.weightsPersistent,
@@ -292,13 +292,12 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
             <label className={styles.check}>
               <input
                 type="checkbox"
-                checked={!isWorker && recordOutputs}
-                disabled={isWorker}
+                checked={recordOutputs}
                 onChange={(event) => setRecordOutputs(event.target.checked)}
               />
               {t('queueRun.recordOutputs')}
             </label>
-            {isWorker && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
+            {isWorker && recordOutputs && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
             {error !== null && <div className={styles.error} role="alert">{error}</div>}
           </div>
 

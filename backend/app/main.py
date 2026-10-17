@@ -410,8 +410,12 @@ async def _lifespan_body(app: FastAPI):
     worker_registry = WorkerRegistry(
         local_devices=_local_device_facts,
         resume_grace_s=settings.WORKER_RESUME_GRACE_S,
-        node_catalog=node_catalog)
+        node_catalog=node_catalog,
+        output_fetch_timeout_s=settings.WORKER_OUTPUT_FETCH_TIMEOUT_S)
     app.state.worker_registry = worker_registry
+    # A worker run's recorded outputs stay on its worker (#789); this
+    # store retains them by run id, and evicting one tells the worker.
+    app.state.run_output_store.on_remote_drop = worker_registry.outputs.drop
     # Enrolled workers (#780) are known before they dial in, as offline, so
     # a run can target one and wait. None enrolled: nothing changes.
     worker_store = WorkerStore(db)

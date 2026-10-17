@@ -11,7 +11,10 @@ Per connection:
 2. if runs survived a previous connection, send ``run_alive``;
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
-4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`.
+4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`, and
+   ``fetch_output`` / ``drop_outputs`` (#789) to :class:`~app.agent.outputs.
+   AgentOutputs`, which answers each read in a task of its own with
+   ``output_answer`` frames (the body cut into parts).
 
 Runs do not depend on the connection. While it is down, their subprocesses
 keep running and every frame they produce is written to the run's spool
@@ -58,6 +61,7 @@ from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
 from .facts import AgentFacts
 from .one_shot import OneShot
+from .outputs import AgentOutputs
 from .runner import Runner, mark_finished
 from .spool import SpoolStore
 from .trust import ControlPlaneTrust, TrustError, untrusted_message
@@ -227,6 +231,34 @@ class AgentConnection:
         self.worker_id: str | None = None
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
+        #: Recorded outputs (#789): reads of them, answered here.
+        self.outputs = AgentOutputs(runner, self.send_answer)
+        runner.on_recorded_run_retired = self._recorded_run_retired
+        #: Reads being answered, kept so they are not collected mid-flight.
+        self._reads: set[asyncio.Task] = set()
+
+    async def send_answer(self, request_id: str, status: int, text: str,
+                          final: bool) -> None:
+        """One read's answer as ``output_answer`` frames (#789): the body
+        in parts of at most ``OUTPUT_ANSWER_PART_CHARS``, so no frame
+        outgrows a socket's message limit, each part its own frame so
+        heartbeats and run frames go out in between."""
+        size = wp.OUTPUT_ANSWER_PART_CHARS
+        parts = [text[i:i + size] for i in range(0, len(text), size)] or [""]
+        for number, part in enumerate(parts):
+            if not await self.send_frame(wp.OutputAnswer(
+                    request_id=request_id, status=status, part=number,
+                    parts=len(parts), body=part, final=final)):
+                return  # the connection is gone; the control plane says so
+
+    def _recorded_run_retired(self, run_id: str) -> None:
+        """A recorded run ended (#789): reads of it come from its files
+        now, so the helper that reads them is started before the first."""
+        try:
+            self.outputs.helper.start()
+        except Exception:  # noqa: BLE001 -- the first read starts it again
+            logger.warning("could not start the outputs helper",
+                           exc_info=True)
 
     def _http_tls(self) -> ssl.SSLContext | None:
         """The TLS context the transfer backend's HTTP requests use (#785):
@@ -377,6 +409,7 @@ class AgentConnection:
                 done_watch.cancel()
                 await asyncio.gather(done_watch, return_exceptions=True)
         await self.runner.shutdown()
+        self.outputs.close()
         return code
 
     async def _loop(self, stop: asyncio.Event, backoff: float) -> int:
@@ -620,6 +653,15 @@ class AgentConnection:
         elif isinstance(frame, wp.Credentials):
             if not self.runner.renew(frame.run_id, frame.s3):
                 logger.info("credentials for unknown run %s", frame.run_id)
+        elif isinstance(frame, wp.FetchOutput):
+            # A task of its own: reading a large capture must not hold up
+            # the cancels and acks behind it.
+            task = asyncio.create_task(self.outputs.serve(frame),
+                                       name=f"outputs:{frame.run_id}")
+            self._reads.add(task)
+            task.add_done_callback(self._reads.discard)
+        elif isinstance(frame, wp.DropOutputs):
+            await self.outputs.drop(frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

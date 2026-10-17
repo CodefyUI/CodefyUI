@@ -31,6 +31,8 @@ def test_every_frame_type_round_trips():
         wp.RunWarning(run_id="r1", seq=5, kind="k", detail="d"),
         wp.RunFinished(run_id="r1", seq=6, status="succeeded"),
         wp.RunAlive(runs=[wp.RunAliveEntry(run_id="r1", last_seq=6)]),
+        wp.OutputAnswer(request_id="q1", status=200, part=0, parts=2,
+                        body='{"a":', final=True),
     ]
     assert {f.type for f in agent_frames} == set(wp.AGENT_FRAME_TYPES)
     for frame in agent_frames:
@@ -45,6 +47,9 @@ def test_every_frame_type_round_trips():
         wp.Credentials(run_id="r1", s3=wp.S3Access(
             bucket="b", prefix="runs/r1/", access_key_id="AK",
             secret_access_key="SK", session_token="T", expires_at=1.0)),
+        wp.FetchOutput(request_id="q1", run_id="r1", op="value",
+                       params={"node_id": "a", "port": "out"}),
+        wp.DropOutputs(run_id="r1"),
     ]
     assert {f.type for f in control_frames} == set(wp.CONTROL_FRAME_TYPES)
     for frame in control_frames:

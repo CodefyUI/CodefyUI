@@ -175,6 +175,11 @@ class Settings(BaseSettings):
     # runner comes online, and fails after 24 h. 0 waits forever. Runs that
     # wait for anything else are not timed.
     WORKER_ONE_SHOT_QUEUE_TIMEOUT_S: float = 86400.0
+    # Seconds a read of a worker run's recorded outputs (#789: the
+    # Inspector, ``/api/execution/outputs/*``) waits for the worker's
+    # answer before it is answered 504. The worker reads its own disk and
+    # computes stats there; a minute covers a 2 GiB tensor's on a slow one.
+    WORKER_OUTPUT_FETCH_TIMEOUT_S: float = 60.0
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real

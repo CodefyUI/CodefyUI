@@ -290,7 +290,8 @@ class StudyCoordinator:
                 return existing, False
         # Every child inherits options.target; refuse what the run service
         # would refuse for any of them (a worker it has never seen, a device
-        # nobody offers, record_outputs on a worker) before any row exists.
+        # nobody offers, record_outputs on an agent too old for it) before
+        # any row exists.
         variant_graphs = [graph for _label, _ops, graph in spec.variants]
         variant_needs = self.service.check_placeable_batch(
             variant_graphs, spec.options)
