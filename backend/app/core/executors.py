@@ -740,6 +740,10 @@ class WorkerExecutor:
                 run_id=request.run_id, graph=request.graph,
                 options=request.options, device=devices[0],
                 devices=devices, storage=storage))
+            # The agent has it: a one-shot worker's claim stays (#790).
+            assigned = getattr(self._registry, "one_shot_assigned", None)
+            if assigned is not None:
+                assigned(worker_id, request.run_id)
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")

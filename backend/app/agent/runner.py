@@ -60,6 +60,7 @@ import asyncio
 import dataclasses
 import logging
 import multiprocessing
+import os
 import queue
 import re
 import shutil
@@ -180,6 +181,28 @@ CHILD_UNSET_ENV = ("CODEFYUI_DB_PATH", "CODEFYUI_AGENT_TOKEN",
                    "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
 
 
+def inherited_card(index: int) -> str:
+    """The ``CUDA_VISIBLE_DEVICES`` entry for this agent's ``cuda:<index>``.
+
+    The agent numbers the cards it sees by its own ``CUDA_VISIBLE_DEVICES``
+    (``core.resources``): under a batch system that sets it (SLURM gives a
+    job ``CUDA_VISIBLE_DEVICES=3`` for the card it allocated, #790), the
+    agent's ``cuda:0`` is that card. The run subprocess's own
+    ``CUDA_VISIBLE_DEVICES`` must name it the same way, so the agent's entry
+    at *index* is passed on as written (an index, a ``GPU-`` UUID, a
+    ``MIG-`` instance). Without one inherited, *index* is the card's index.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return str(index)
+    entries = []
+    for part in raw.split(","):
+        if not part.strip():
+            break  # CUDA stops at the first empty entry
+        entries.append(part.strip())
+    return entries[index] if index < len(entries) else str(index)
+
+
 def child_environment(device: str, devices: list[str],
                       data_env: tuple[dict[str, str], list[str]] | None = None
                       ) -> dict[str, Any]:
@@ -201,7 +224,8 @@ def child_environment(device: str, devices: list[str],
     aliases = device_aliases(effective)
     if aliases:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(
-            physical.split(":", 1)[1] for physical in aliases)
+            inherited_card(int(physical.split(":", 1)[1]))
+            for physical in aliases)
     elif "cuda" not in {split_device(d)[0] for d in effective}:
         env["CUDA_VISIBLE_DEVICES"] = ""
     unset = list(CHILD_UNSET_ENV)
@@ -484,12 +508,7 @@ class Runner:
         try:
             device, devices = self._check(frame)
         except AssignmentRefused as exc:
-            logger.warning("run %s refused: %s", frame.run_id, exc)
-            if frame.run_id not in self.runs:  # never talk over a live run
-                self._refused.add(frame.run_id)
-                await self.send(wp.RunFinished(
-                    run_id=frame.run_id, seq=1, status=wp.FINISHED_FAILED,
-                    error=str(exc)))
+            await self.refuse(frame.run_id, str(exc))
             return
         if _transfers(frame):
             # The fetch can take minutes: a task of its own, so this
@@ -512,6 +531,18 @@ class Runner:
             logger.exception("run %s: could not start", frame.run_id)
             await self._abandon(frame.run_id, f"could not start the run "
                                               f"subprocess: {exc}")
+
+    async def refuse(self, run_id: str, reason: str) -> None:
+        """Refuse an assignment: its ``run_finished`` ``failed`` with
+        *reason*, and no ``run_started``. A run already running here is
+        never talked over."""
+        logger.warning("run %s refused: %s", run_id, reason)
+        if run_id in self.runs:
+            return
+        self._refused.add(run_id)
+        await self.send(wp.RunFinished(run_id=run_id, seq=1,
+                                       status=wp.FINISHED_FAILED,
+                                       error=reason))
 
     async def _abandon(self, run_id: str, error: str) -> None:
         """Fail a run whose start went wrong part-way, and clean it up."""

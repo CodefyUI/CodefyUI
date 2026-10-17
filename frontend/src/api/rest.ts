@@ -366,6 +366,8 @@ export async function deleteRun(
 export interface RunTarget {
   worker: string;
   devices?: string[];
+  /** `one-shot`: any one-shot worker, and nothing else (#790). */
+  pool?: 'one-shot';
 }
 
 export interface SubmitRunRequest {

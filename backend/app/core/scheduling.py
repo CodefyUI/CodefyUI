@@ -62,6 +62,7 @@ from .run_store import WORKER_LOCAL
 from .worker_protocol import (
     CAPABILITY_S3,
     CAPABILITY_TRANSFER,
+    POOL_ONE_SHOT,
     TARGET_ANY,
     TARGET_LOCAL,
     canonical_device,
@@ -279,6 +280,24 @@ def renumbered_on_a_worker(devices: list[str] | None) -> bool:
     return len(cuda) > 1 or (len(cuda) == 1 and cuda[0] != "cuda:0")
 
 
+def entry_pool(options: Mapping[str, Any]) -> str | None:
+    """``target.pool`` of a run's normalised options (#790), or None."""
+    target = options.get("target") if isinstance(options, Mapping) else None
+    pool = target.get("pool") if isinstance(target, Mapping) else None
+    return pool if isinstance(pool, str) and pool else None
+
+
+def _one_shot(worker: Any) -> bool:
+    return bool(getattr(worker, "one_shot", False))
+
+
+def _takes(worker: Any, entry: Any) -> bool:
+    """The one-shot rules (#790): a regular worker takes any run; a
+    one-shot one only its first, and only its ``--run-id`` if it named one."""
+    takes = getattr(worker, "one_shot_takes", None)
+    return True if takes is None else bool(takes(entry.run_id))
+
+
 def entry_target(options: Mapping[str, Any]) -> tuple[str, list[str] | None]:
     """``(worker, devices)`` of a run's normalised options; ``local`` without
     a target."""
@@ -324,6 +343,13 @@ class WorkerScheduler:
     process (which always holds its own). A run the transfer backend cannot
     serve goes only where the mount is (:func:`reaches`).
 
+    One-shot workers (#790, ``Worker.one_shot``): ``any`` never places a
+    run on one, nor counts one in :meth:`can_serve_any`. A run naming one,
+    or ``target.pool == "one-shot"`` (any one-shot worker, never this
+    process), goes there only while it has not taken a run, and, for an
+    agent started with ``--run-id``, only when it is that run
+    (``Worker.one_shot_takes``).
+
     :meth:`explain` says why a run that :meth:`place` refused cannot start
     for a reason other than a busy slot (the Runs list shows it).
     """
@@ -346,13 +372,30 @@ class WorkerScheduler:
             worker = self._registry.get(worker_id)
             if worker is None or not worker.accepts_runs:
                 return None
-            if not reaches(worker, entry):
+            if not reaches(worker, entry) or not _takes(worker, entry):
                 return None
             return self._place_on(worker, requested, devices, taken)
+        if entry_pool(entry.options) == POOL_ONE_SHOT:
+            # The one-shot pool (#790): a one-shot worker that has not
+            # taken its run, never this process, never a regular worker;
+            # like ``any``, not one that lacks node types this server has
+            # (or reported none, #781): the run names no worker either.
+            for worker in self._registry.workers():
+                if _one_shot(worker) and worker.accepts_runs \
+                        and not _skipped_by_any(worker) \
+                        and _takes(worker, entry) and reaches(worker, entry):
+                    placement = self._place_on(worker, requested, devices,
+                                               taken)
+                    if placement is not None:
+                        return placement
+            return None
         workers = [w for w in self._registry.workers() if w.accepts_runs
                    # A worker that lacks node types this server has, or
                    # reported no catalog, takes only runs that name it (#781).
-                   and not _skipped_by_any(w)]
+                   and not _skipped_by_any(w)
+                   # A one-shot worker takes only runs that name it or its
+                   # pool (#790).
+                   and not _one_shot(w)]
         # The mount first (#785): a worker that holds it, then one that
         # gets the files through the transfer backend.
         ordered = [w for w in workers
@@ -384,7 +427,8 @@ class WorkerScheduler:
             return None
         worker = self._registry.get(worker_id)
         if worker is None or not worker.accepts_runs \
-                or not all(worker.offers(d) for d in devices):
+                or not all(worker.offers(d) for d in devices) \
+                or not _takes(worker, entry):
             return None
         if not reaches(worker, entry):
             return None
@@ -399,7 +443,13 @@ class WorkerScheduler:
         mount = entry_mount(entry)
         if worker_id != TARGET_ANY:
             worker = self._registry.get(worker_id)
+            if worker is not None and _one_shot(worker) \
+                    and not _takes(worker, entry):
+                return one_shot_busy(worker)
             if worker is None or not worker.online:
+                if worker is not None and _one_shot(worker):
+                    return (f"waiting for one-shot worker {worker_id} to "
+                            "start (cdui agent start --one-shot)")
                 return f"waiting for worker {worker_id} to reconnect"
             if worker.draining:
                 return f"worker {worker_id} is draining"
@@ -409,6 +459,9 @@ class WorkerScheduler:
                                                          None)))
             return None
         wanted = ", ".join(devices) if devices else requested
+        if entry_pool(entry.options) == POOL_ONE_SHOT:
+            return (f"waiting for a one-shot worker that offers {wanted} "
+                    "(cdui agent start --one-shot)")
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount,
                                   transfer=entry_transfers(entry)):
@@ -454,6 +507,8 @@ class WorkerScheduler:
                 and _serves(self._local_devices(), requested, devices):
             return True
         return any((w.online or not connected_only)
+                   # ``any`` never places a run on a one-shot worker (#790).
+                   and not _one_shot(w)
                    and (mount is None or holds_mount(w, mount)
                         or (transfer and ships_files(w)))
                    and not (usable_only and _skipped_by_any(w))
@@ -494,6 +549,15 @@ class WorkerScheduler:
             if _free(self._limits, slot, taken):
                 return Placement(worker.id, (device,), (slot,))
         return None
+
+
+def one_shot_busy(worker: Any) -> str:
+    """Why a run naming one-shot *worker* waits although it is there (#790)."""
+    if worker.one_shot_claim is not None:
+        return (f"one-shot worker {worker.name} already took run "
+                f"{worker.one_shot_claim}; start another one-shot agent")
+    return (f"one-shot worker {worker.name} takes only run "
+            f"{worker.one_shot_run_id} (--run-id)")
 
 
 def no_mount(worker_id: str, mount: str, why_not_transfer: str | None = None

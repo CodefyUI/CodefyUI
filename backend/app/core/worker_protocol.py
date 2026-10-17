@@ -130,15 +130,24 @@ PROTOCOL_VERSION = 3
 #: ``transfer`` (#785): ``assign.storage.backend == "transfer"`` with
 #: ``inputs`` and ``max_upload_bytes``, and ``artifact.backend``; the control
 #: plane sends a run through the transfer backend only to a worker that
-#: lists it.
+#: lists it. ``one_shot`` (#790): ``hello.one_shot`` (with
+#: ``one_shot_run_id`` and ``instance_id``) is understood: the control plane
+#: keeps such a worker out of ``any`` and gives it exactly one run; a
+#: one-shot agent refuses a control plane whose ``welcome`` lacks it.
 #: ``s3`` (#791): ``assign.storage.backend == "s3"`` with ``storage.s3`` and
 #: ``inputs[].key``, ``artifact.backend == "s3"``, and the ``credentials``
 #: frame. An agent lists it only when it can load an S3 client (boto3):
 #: :func:`agent_capabilities`.
-CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer", "s3")
+CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer", "one_shot",
+                                 "s3")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
+#: The capability name of one-shot workers (#790).
+CAPABILITY_ONE_SHOT = "one_shot"
+#: ``target.pool`` value (#790): any connected one-shot worker. The only
+#: pool there is.
+POOL_ONE_SHOT = "one-shot"
 #: The capability name of the S3 artifact backend (#791).
 CAPABILITY_S3 = "s3"
 
@@ -324,6 +333,22 @@ class Hello(_Frame):
     #: OS id), or None. Equal to the control plane's own: the worker runs on
     #: the same machine and shares its devices (#773).
     machine_id: str | None = None
+    #: ``cdui agent start --one-shot`` (#790): this agent takes exactly one
+    #: run, reports it and exits. The control plane keeps it out of ``any``
+    #: placement; only a run naming it (``target.worker``) or the one-shot
+    #: pool (``target.pool``) goes there.
+    one_shot: bool = False
+    #: ``--run-id``: the one run this one-shot agent takes, or None (the
+    #: first one placed on it).
+    one_shot_run_id: RunId | None = None
+    #: Random per agent process, so the control plane can tell this agent
+    #: reconnecting from another agent taking the same name (#790). None
+    #: from an agent that does not say.
+    instance_id: str | None = Field(default=None, max_length=64)
+    #: The run this one-shot agent already took, on a reconnect (#790):
+    #: a control plane that restarted since has no other record of it, and
+    #: keeps it from placing a second run there.
+    one_shot_taken: RunId | None = None
 
 
 class Heartbeat(_Frame):

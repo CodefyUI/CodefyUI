@@ -5,8 +5,10 @@ import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { aliasForDevice } from '../../utils/deviceAliases';
 import {
+  ONE_SHOT_KINDS,
   TARGET_ANY,
   TARGET_LOCAL,
+  TARGET_ONE_SHOT,
   anyKinds,
   connectedWorkers,
   defaultDevices,
@@ -113,7 +115,10 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
     () => (worker ? workerDeviceChoices(worker) : herePicks),
     [worker, herePicks],
   );
-  const kinds = useMemo(() => anyKinds(localChoices, online), [localChoices, online]);
+  const kinds = useMemo(
+    () => (target === TARGET_ONE_SHOT ? ONE_SHOT_KINDS : anyKinds(localChoices, online)),
+    [target, localChoices, online],
+  );
   const selected = chosenDevices ?? defaultDevices(choices, graphDevice);
   // A set is kept in the worker's own (physical) order, so the in-run names
   // depend on which cards are ticked, never on the order they were ticked.
@@ -148,6 +153,9 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
     chooseKind: setChosenKind,
     resolve: () => {
       if (target === TARGET_ANY) return { target: { worker: TARGET_ANY }, device: kind };
+      if (target === TARGET_ONE_SHOT) {
+        return { target: { worker: TARGET_ANY, pool: 'one-shot' }, device: kind };
+      }
       if (selected.length === 0) {
         setDeviceError(true);
         return null;
@@ -176,6 +184,7 @@ export function TargetSelector({
   const { t } = useI18n();
   const baseId = useId();
   const { online, listed, worker, target, isWorker, choices, kinds, selected, kind } = choice;
+  const isPool = target === TARGET_ANY || target === TARGET_ONE_SHOT;
 
   const workerLabel = (candidate: WorkerInfo): string => {
     const devices = candidate.devices.map((d) => d.value).join(', ') || t('queueRun.noDevices');
@@ -198,6 +207,11 @@ export function TargetSelector({
             </option>
           ))}
           {online.length > 0 && <option value={TARGET_ANY}>{t('queueRun.target.any')}</option>}
+          {/* Once the server knows any worker: a one-shot run waits for one
+              that may not exist yet (#790). */}
+          {choice.workers.length > 0 && (
+            <option value={TARGET_ONE_SHOT}>{t('queueRun.target.oneShot')}</option>
+          )}
         </select>
       </label>
       {worker?.status === 'offline' && (
@@ -209,7 +223,7 @@ export function TargetSelector({
 
       <fieldset className={styles.devices}>
         <legend>{t('queueRun.devices')}</legend>
-        {target === TARGET_ANY ? (
+        {isPool ? (
           <>
             {kinds.map((option) => (
               <label key={option} className={styles.check}>
@@ -223,7 +237,7 @@ export function TargetSelector({
                 {t(`queueRun.kind.${option}` as 'queueRun.kind.cpu')}
               </label>
             ))}
-            <p className={styles.hint}>{t(anyHint)}</p>
+            <p className={styles.hint}>{t(target === TARGET_ONE_SHOT ? 'queueRun.oneShotHint' : anyHint)}</p>
           </>
         ) : choices.length === 0 ? (
           <p className={styles.muted}>{t('queueRun.noDevices')}</p>

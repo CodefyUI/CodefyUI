@@ -192,7 +192,9 @@ def test_apply_environment(monkeypatch):
                              "unset": ["CODEFYUI_DB_PATH"]})
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
     assert "CODEFYUI_DB_PATH" not in os.environ
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    # Not monkeypatch.delenv: that would record "1" and restore it after
+    # the test, for every later test (the agent reads it, #790).
+    os.environ.pop("CUDA_VISIBLE_DEVICES")
 
 
 def test_safe_sender_swallows_a_closed_pipe():

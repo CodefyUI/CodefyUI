@@ -241,6 +241,31 @@ describe('WorkersPanel', () => {
     expect(within(near).queryByText('Plain HTTP')).toBeNull();
   });
 
+  it('badges a one-shot worker and says what became of its run (#790)', async () => {
+    const dialog = await openPanel([
+      worker('waiting', { one_shot: { run_id: null, took: null } }),
+      worker('pinned', { one_shot: { run_id: 'abcdef0123456789', took: null } }),
+      worker('took', { status: 'offline', one_shot: { run_id: null, took: 'run-12345678-abcd' } }),
+      worker('idle', { status: 'offline', one_shot: { run_id: null, took: null } }),
+      worker('regular', { one_shot: null }),
+    ]);
+    const card = (name: string) => within(within(dialog).getByRole('article', { name }));
+    expect(card('waiting').getByText('One-shot')).toHaveAttribute('title', expect.stringMatching(/exactly one run/));
+    expect(card('waiting').getByText('One-shot run').nextElementSibling).toHaveTextContent('waiting for a run');
+    expect(card('pinned').getByText('waiting for run abcdef01')).toHaveAttribute('title', 'abcdef0123456789');
+    expect(card('took').getByRole('button', { name: 'run-1234' })).toBeInTheDocument();
+    expect(card('took').getByText('Offline')).toBeInTheDocument();
+    expect(card('idle').getByText('left without a run')).toBeInTheDocument();
+    expect(card('regular').queryByText('One-shot')).toBeNull();
+    // Nothing to drain on a worker that takes one run and leaves.
+    expect(card('waiting').queryByRole('button', { name: 'Drain' })).toBeNull();
+    expect(card('regular').getByRole('button', { name: 'Drain' })).toBeInTheDocument();
+    expect(card('regular').queryByText('One-shot run')).toBeNull();
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(card('took').getByText('單次')).toBeInTheDocument();
+    expect(card('idle').getByText('未接 run 就結束')).toBeInTheDocument();
+  });
+
   it('shows a status this build does not know as sent, in a neutral chip', async () => {
     const dialog = await openPanel([worker('w', { status: 'quarantined' as never })]);
     expect(within(dialog).getByText('quarantined')).toBeInTheDocument();
