@@ -89,7 +89,7 @@ async function openPanel(workers: WorkerInfo[] = [worker('gpu-box')]) {
   render(<WorkersPanel />);
   act(() => useWorkerStore.getState().openPanel());
   await settle();
-  return screen.getByRole('dialog', { name: 'Workers' });
+  return screen.getByRole('dialog', { name: useI18n.getState().t('workers.title') });
 }
 
 const t = useI18n.getState().t;
@@ -177,7 +177,8 @@ describe('WorkersPanel', () => {
     expect(within(card).getByRole('button', { name: 'run-aaaa' })).toBeInTheDocument();
     expect(within(card).getByText('RTX 4090')).toBeInTheDocument();
     expect(within(card).getByText('Slots 1 / 1')).toBeInTheDocument();
-    expect(within(card).getByText('20.0 GB free of 24.0 GB')).toHaveAttribute('title', 'nvml');
+    // GiB, the toolbar's unit (#840).
+    expect(within(card).getByText('20.0 free of 24.0 GiB')).toHaveAttribute('title', 'nvml');
     // A device whose name is its value, one with half its memory unknown
     // and one with none print neither a second name nor a memory line.
     expect(within(card).getAllByText(/free of/)).toHaveLength(1);
@@ -436,12 +437,26 @@ describe('WorkersPanel', () => {
     expect(removeWorker).not.toHaveBeenCalled();
     expect(remove).toHaveTextContent('Confirm remove');
     expect(remove).toHaveAttribute('title', expect.stringMatching(/end interrupted/));
+    // The consequence is said in the card, not only in the tooltip (#840).
+    expect(within(card).getByRole('alert')).toHaveTextContent(/^Press Confirm remove to revoke live's credential .* refused from then on\.$/);
     // Leaving the button drops the question.
     fireEvent.blur(remove);
     expect(remove).toHaveTextContent('Remove');
+    expect(within(card).queryByRole('alert')).toBeNull();
     await act(async () => fireEvent.click(remove));
     await act(async () => fireEvent.click(remove));
     expect(removeWorker).toHaveBeenCalledWith('live');
+  });
+
+  it('says what Remove does to a same-host agent, and to the runs on it (#840)', async () => {
+    const dialog = await openPanel([
+      worker('beside', { credential: 'session_token', running: ['r1-000000'] }),
+    ]);
+    const card = within(dialog).getByRole('article', { name: 'beside' });
+    await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Remove' })));
+    expect(within(card).getByRole('alert')).toHaveTextContent(
+      /session token, so it connects again unless you stop it .* The runs on it now \(1\) end interrupted\.$/,
+    );
   });
 
   it('keeps the focus where it is when the remove failed', async () => {
@@ -467,15 +482,61 @@ describe('WorkersPanel', () => {
   });
 
   it('says never for a worker never seen, and opens a re-key dialog for it', async () => {
-    const dialog = await openPanel([worker('new-box', { status: 'offline', connected_at: null, last_heartbeat_at: null })]);
+    const dialog = await openPanel([
+      worker('new-box', { status: 'offline', connected_at: null, last_heartbeat_at: null, enrolled: true, credential: null }),
+    ]);
     const card = within(dialog).getByRole('article', { name: 'new-box' });
     expect(within(card).getByText('never')).toBeInTheDocument();
     fireEvent.click(within(card).getByRole('button', { name: 'Re-key' }));
-    const add = await screen.findByRole('dialog', { name: 'Add a worker' });
+    // Its own title, and no mode switch (#840).
+    const add = await screen.findByRole('dialog', { name: 'Re-key new-box' });
     await settle();
-    expect(within(add).getByText(/Re-key new-box/)).toBeInTheDocument();
+    expect(within(add).getByText(/Re-key new-box: generate/)).toBeInTheDocument();
+    expect(within(add).queryByRole('group')).toBeNull();
     fireEvent.keyDown(add, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Add a worker' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Re-key new-box' })).toBeNull();
+  });
+
+  it('offers Re-key only to a worker with an enrolled credential of its own (#840)', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('tunnelled')]));
+    const dialog = await openPanel([
+      worker('joined', { enrolled: true, credential: 'worker_token' }),
+      worker('beside', { enrolled: false, credential: 'session_token' }),
+      worker('tunnelled', { enrolled: true, credential: 'worker_token' }),
+    ]);
+    const rekey = (name: string) => within(within(dialog).getByRole('article', { name })).queryByRole('button', { name: 'Re-key' });
+    expect(rekey('joined')).toBeInTheDocument();
+    expect(rekey('beside')).toBeNull();
+    expect(rekey('tunnelled')).toBeNull();
+  });
+
+  it('says why a worker is degraded, a reason it does not know as sent (#840)', async () => {
+    const dialog = await openPanel([
+      worker('late', { status: 'degraded', degraded_reasons: ['heartbeat', 'odd_reason'] }),
+      worker('fine', { status: 'online', degraded_reasons: [] }),
+      worker('older', { status: 'degraded' }),
+    ]);
+    const late = within(dialog).getByRole('article', { name: 'late' });
+    expect(within(late).getByText(/^heartbeat late: .*; odd_reason$/)).toBeInTheDocument();
+    for (const name of ['fine', 'older']) {
+      const card = within(dialog).getByRole('article', { name });
+      expect(within(card).queryByText(/heartbeat late/)).toBeNull();
+    }
+  });
+
+  it('marks the memory of a worker that is away as last seen (#840)', async () => {
+    const device = {
+      value: 'cuda:0', kind: 'cuda', index: 0, name: 'RTX',
+      memory: { total_bytes: 8 * 1024 ** 3, free_bytes: 4 * 1024 ** 3, source: 'nvml' },
+    };
+    const dialog = await openPanel([
+      worker('away', { status: 'disconnected', devices: [device] }),
+      worker('here', { devices: [device] }),
+    ]);
+    const away = within(dialog).getByRole('article', { name: 'away' });
+    expect(within(away).getByText('4.0 free of 8.0 GiB when last seen')).toBeInTheDocument();
+    const here = within(dialog).getByRole('article', { name: 'here' });
+    expect(within(here).getByText('4.0 free of 8.0 GiB')).toBeInTheDocument();
   });
 
   it('shows how the node catalog compares: matches, not reported, or the types that differ', async () => {
@@ -498,8 +559,10 @@ describe('WorkersPanel', () => {
     const old = within(dialog).getByRole('article', { name: 'old' });
     expect(within(old).getByText(/not reported: runs naming this worker are not checked/)).toBeInTheDocument();
     const bare = within(dialog).getByRole('article', { name: 'bare' });
-    expect(within(bare).getByText('Degraded')).toBeInTheDocument();
-    expect(within(bare).getByText(/differ from this server/)).toBeInTheDocument();
+    // The chip and the reason's label.
+    expect(within(bare).getAllByText('Degraded')).toHaveLength(2);
+    expect(within(bare).getByText(/node types differ from this server's/)).toBeInTheDocument();
+    expect(within(bare).getByText(/^differ from this server: only/)).toBeInTheDocument();
     expect(within(bare).getByText('foundations:Edu-KNN, foundations:Edu-FFN').parentElement)
       .toHaveTextContent('Missing here (2): foundations:Edu-KNN, foundations:Edu-FFN');
     expect(within(bare).getByText('mine:Only').parentElement).toHaveTextContent('Only on the worker (1): mine:Only');
@@ -554,6 +617,7 @@ describe('WorkersPanel', () => {
   it('renders in zh-TW', async () => {
     useI18n.setState({ locale: 'zh-TW' });
     const dialog = await openPanel([worker('a')]);
+    expect(dialog).toHaveAccessibleName('Workers');
     expect(within(dialog).getByText('線上')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '排空' })).toBeInTheDocument();
   });
@@ -573,12 +637,35 @@ describe('WorkersPanel', () => {
     expect(within(card).queryByText('Recent ssh output')).toBeNull();
     vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box', { enabled: false, state: 'stopped' })]));
     vi.mocked(fetchWorkers).mockResolvedValue([worker('gpu-box', { status: 'disconnected', draining: true })]);
+    // No run on it: one press.
     await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Disable' })));
     expect(setSshWorkerEnabled).toHaveBeenCalledWith('gpu-box', false);
-    // The card flips at once, not at the next poll.
-    expect(within(card).getByText('Disconnected')).toBeInTheDocument();
+    // The card flips at once, not at the next poll: Disabled, with no
+    // Drain / Undrain (Enable is what brings it back, #840).
+    expect(within(card).getByText('Disabled')).toBeInTheDocument();
+    expect(within(card).queryByText('Disconnected')).toBeNull();
+    expect(within(card).queryByRole('button', { name: /drain/i })).toBeNull();
     expect(within(card).getByText('Stopped')).toBeInTheDocument();
     expect(within(card).getByRole('button', { name: 'Enable' })).toBeInTheDocument();
+  });
+
+  it('asks again before disabling an SSH worker with runs on it (#840)', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('gpu-box')]));
+    vi.mocked(setSshWorkerEnabled).mockResolvedValue(ssh('gpu-box', { enabled: false, state: 'stopped' }));
+    const dialog = await openPanel([worker('gpu-box', { running: ['r1-000000', 'r2-000000'] })]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    const disable = within(card).getByRole('button', { name: 'Disable' });
+    expect(disable).toHaveAttribute('title', expect.stringMatching(/cancelled when it stops within 10 s/));
+    await act(async () => fireEvent.click(disable));
+    expect(setSshWorkerEnabled).not.toHaveBeenCalled();
+    expect(disable).toHaveTextContent('Confirm disable');
+    expect(within(card).getByRole('alert')).toHaveTextContent(/runs on this worker now \(2\)/);
+    fireEvent.blur(disable);
+    expect(disable).toHaveTextContent('Disable');
+    expect(within(card).queryByRole('alert')).toBeNull();
+    await act(async () => fireEvent.click(disable));
+    await act(async () => fireEvent.click(disable));
+    expect(setSshWorkerEnabled).toHaveBeenCalledWith('gpu-box', false);
   });
 
   it('shows why a tunnel failed, and the recent output', async () => {
@@ -608,9 +695,26 @@ describe('WorkersPanel', () => {
     const card = within(dialog).getByRole('article', { name: 'new-box' });
     expect(within(card).getByText('Not connected yet')).toBeInTheDocument();
     expect(within(card).getByText('Connecting')).toBeInTheDocument();
-    await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Delete' })));
+    // Delete asks again, saying what it does (#840).
+    const remove = within(card).getByRole('button', { name: 'Delete' });
+    await act(async () => fireEvent.click(remove));
+    expect(deleteSshWorker).not.toHaveBeenCalled();
+    expect(remove).toHaveTextContent('Confirm delete');
+    expect(within(card).getByRole('alert')).toHaveTextContent(/ssh session to alice@new-box and delete new-box/);
+    fireEvent.blur(remove);
+    expect(within(card).queryByRole('alert')).toBeNull();
+    await act(async () => fireEvent.click(remove));
+    await act(async () => fireEvent.click(remove));
     expect(deleteSshWorker).toHaveBeenCalledWith('new-box');
     expect(within(dialog).queryByRole('article', { name: 'new-box' })).toBeNull();
+  });
+
+  it('says Disabled on a disabled SSH worker that never connected (#840)', async () => {
+    vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([ssh('off-box', { enabled: false, state: 'stopped' })]));
+    const dialog = await openPanel([]);
+    const card = within(dialog).getByRole('article', { name: 'off-box' });
+    expect(within(card).getByText('Disabled')).toBeInTheDocument();
+    expect(within(card).queryByText('Not connected yet')).toBeNull();
   });
 
   it('does nothing on Enable or Delete while an action on it is in flight', async () => {

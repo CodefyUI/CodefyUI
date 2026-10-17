@@ -14,6 +14,7 @@ import {
   defaultKind,
   deviceKind,
   localDeviceChoices,
+  refusesRuns,
   toggleDevice,
   workerDeviceChoices,
   type DeviceChoice,
@@ -31,6 +32,8 @@ export interface ResolvedTarget {
  * Queue on..., #777 New sweep) offers the same choices by the same rules. */
 export interface RunTargetChoice {
   workers: WorkerInfo[];
+  /** False until the worker list answered (or failed). */
+  workersLoaded: boolean;
   workersError: string | null;
   online: WorkerInfo[];
   /** The workers a run can name: the connected ones and the enrolled
@@ -70,6 +73,13 @@ export interface RunTargetOptions {
    * caller sends without a target (#777).
    */
   keepGraphDevice?: boolean;
+  /**
+   * What a worker's default device is resolved against, when it differs
+   * from *graphDevice* (#840): the Settings device describes this server,
+   * not a worker, so a caller following it passes `auto` here and a GPU
+   * worker starts on its accelerator.
+   */
+  workerDevice?: string;
 }
 
 /**
@@ -78,10 +88,11 @@ export interface RunTargetOptions {
  * is what the defaults are resolved against.
  */
 export function useRunTargetChoice(graphDevice: string, options: RunTargetOptions = {}): RunTargetChoice {
-  const { onTargetChange, keepGraphDevice = false } = options;
+  const { onTargetChange, keepGraphDevice = false, workerDevice = graphDevice } = options;
   const { t } = useI18n();
   const { devices: localDevices } = useDeviceOptions();
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
+  const [workersLoaded, setWorkersLoaded] = useState(false);
   const [workersError, setWorkersError] = useState<string | null>(null);
   const [target, setTarget] = useState(TARGET_LOCAL);
   // null: not chosen yet, so the target's default applies.
@@ -92,8 +103,16 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
   useEffect(() => {
     let live = true;
     fetchWorkers().then(
-      (listed) => { if (live) setWorkers(listed); },
-      (err: unknown) => { if (live) setWorkersError(err instanceof Error ? err.message : String(err)); },
+      (listed) => {
+        if (!live) return;
+        setWorkers(listed);
+        setWorkersLoaded(true);
+      },
+      (err: unknown) => {
+        if (!live) return;
+        setWorkersError(err instanceof Error ? err.message : String(err));
+        setWorkersLoaded(true);
+      },
     );
     return () => { live = false; };
   }, []);
@@ -114,7 +133,7 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
     [worker, herePicks],
   );
   const kinds = useMemo(() => anyKinds(localChoices, online), [localChoices, online]);
-  const selected = chosenDevices ?? defaultDevices(choices, graphDevice);
+  const selected = chosenDevices ?? defaultDevices(choices, worker ? workerDevice : graphDevice);
   // A set is kept in the worker's own (physical) order, so the in-run names
   // depend on which cards are ticked, never on the order they were ticked.
   const choiceOrder = useMemo(() => choices.map((c) => c.value), [choices]);
@@ -122,6 +141,7 @@ export function useRunTargetChoice(graphDevice: string, options: RunTargetOption
 
   return {
     workers,
+    workersLoaded,
     workersError,
     online,
     listed,
@@ -164,6 +184,8 @@ interface TargetSelectorProps {
   /** The hints under the device list; the run dialog's by default. */
   anyHint?: TranslationKey;
   localHint?: TranslationKey;
+  /** Open the Workers panel; offered beside the no-worker hint (#840). */
+  onOpenWorkers?: () => void;
 }
 
 /** The target `<select>` and the device list under it. */
@@ -172,6 +194,7 @@ export function TargetSelector({
   selectRef,
   anyHint = 'queueRun.anyHint',
   localHint = 'queueRun.localHint',
+  onOpenWorkers,
 }: TargetSelectorProps) {
   const { t } = useI18n();
   const baseId = useId();
@@ -193,7 +216,7 @@ export function TargetSelector({
         <select ref={selectRef} value={target} onChange={(event) => choice.changeTarget(event.target.value)}>
           <option value={TARGET_LOCAL}>{t('queueRun.target.local')}</option>
           {listed.map((candidate) => (
-            <option key={candidate.id} value={candidate.id} disabled={candidate.status === 'draining'}>
+            <option key={candidate.id} value={candidate.id} disabled={refusesRuns(candidate)}>
               {workerLabel(candidate)}
             </option>
           ))}
@@ -202,6 +225,19 @@ export function TargetSelector({
       </label>
       {worker?.status === 'offline' && (
         <p className={styles.hint}>{t('queueRun.offlineHint', { name: worker.name })}</p>
+      )}
+      {worker?.status === 'disconnected' && (
+        <p className={styles.hint}>{t('queueRun.disconnectedHint', { name: worker.name })}</p>
+      )}
+      {choice.workersLoaded && choice.workersError === null && listed.length === 0 && (
+        <p className={styles.hint}>
+          {t('queueRun.noWorkers')}
+          {onOpenWorkers && (
+            <button type="button" className={styles.linkBtn} onClick={onOpenWorkers}>
+              {t('queueRun.openWorkers')}
+            </button>
+          )}
+        </p>
       )}
       {choice.workersError !== null && (
         <p className={styles.hint}>{t('queueRun.workersError', { error: choice.workersError })}</p>

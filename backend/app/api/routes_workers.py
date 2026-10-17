@@ -532,9 +532,13 @@ async def add_ssh_worker(request: Request,
     name = (body.name or "").strip().lower() or (
         ssh_launch.default_worker_name(target))
     if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
-        raise HTTPException(400, f"worker name {name!r} must be lowercase "
-                                 "letters, digits and '-', at most 63 "
-                                 "characters")
+        # Quoted as typed (#840): the lower-cased form is not what the
+        # user entered.
+        typed = (body.name or "").strip() or name
+        raise HTTPException(400, f"worker name {typed!r} may use only "
+                                 "letters, digits and '-' (stored in lower "
+                                 "case), starting with a letter or digit, "
+                                 "at most 63 characters")
     if name in wp.RESERVED_WORKER_NAMES:
         raise HTTPException(400, f"worker name {name!r} is reserved")
     if launcher.ssh_path() is None:

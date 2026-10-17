@@ -90,13 +90,13 @@ A worker on the same machine shares this server's slot for every card that is ph
 
 Open it with **Workers** in the Runs panel header, or from **Settings → Execution → Workers → Manage**. It refreshes every 5 seconds while open and shows, for each worker:
 
-- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Remote Workers, Storage](/usage/remote-workers#storage)) and the age of its last heartbeat;
-- each device with its free and total memory from the latest heartbeat and its slots taken / limit;
+- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, with the reason beside it, **Draining**, **Disconnected**, and **Disabled** for an SSH worker you disabled), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Remote Workers, Storage](/usage/remote-workers#storage)) and the age of its last heartbeat;
+- each device with its free and total memory (GiB) from the latest heartbeat, marked "when last seen" while the worker is away, and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
 
 Agents the server refused (another version, for example) and that have no card are listed under **Refused connections** with the reason ([Remote Workers, Keeping workers in sync](/usage/remote-workers#keeping-workers-in-sync)).
 
-**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options. **Re-key** gives a worker a new credential, and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)).
+**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options; on a server that listens on `127.0.0.1` only, which no other machine can reach, it opens on **Over SSH**. **Re-key** gives an enrolled worker a new credential (a same-host agent on the session token and an SSH worker have none to replace, so they do not offer it), and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)). Removing a connected worker, deleting an SSH worker and disabling an SSH worker that has runs on it each take a second press, and the card says what that press does first.
 
 ## What the canvas does {/* #the-canvas */}
 

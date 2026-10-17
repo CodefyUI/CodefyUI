@@ -1585,7 +1585,8 @@ async def test_listing_needs_the_session_token_and_adding_too(api):
     ({"target": "-oProxyCommand=x"}, "SSH target"),
     ({"target": "a@b", "identity": "/nope/key"}, "does not exist"),
     ({"target": "a@b", "remote_cdui": "~/x; rm"}, "remote cdui"),
-    ({"target": "a@b", "name": "Bad Name"}, "worker name"),
+    # Quoted as typed, not lower-cased (#840).
+    ({"target": "a@b", "name": "Bad Name!"}, "worker name 'Bad Name!'"),
     ({"target": "a@b", "name": "local"}, "reserved"),
 ])
 async def test_bad_ssh_workers_are_refused(api, body, message):
