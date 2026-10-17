@@ -339,11 +339,12 @@ def slow_upload_child(spec: dict[str, Any], events_out: Any,
 
 def budget_child(spec: dict[str, Any], events_out: Any,
                  control_in: Any) -> None:
-    """Report the memory cap (#788) as the real child would, then succeed."""
+    """Report the memory cap (#788) as the real child would, then succeed.
+    ``seen_as`` (not in the real report) is the name the child got."""
     total = 16 * 1024 ** 3
     events_out.send((child.MSG_MEMORY_LIMIT, {
         device: {"budget_bytes": nbytes, "total_bytes": total,
-                 "fraction": nbytes / total}
+                 "fraction": nbytes / total, "seen_as": device}
         for device, nbytes in (spec.get("memory_budgets") or {}).items()}))
     quick_child(spec, events_out, control_in)
 

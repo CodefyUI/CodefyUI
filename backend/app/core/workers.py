@@ -367,6 +367,11 @@ class WorkerRegistry:
         #: ``Worker`` objects, so a reconnect (which builds a new one) and a
         #: same-host worker known only in memory both keep theirs.
         self._policies: dict[tuple[str, str], str] = {}
+        #: ``worker id -> bool``: whether a waiting run with a memory budget
+        #: may go to that worker (#788). Set by ``RunService``; a heartbeat
+        #: with new memory figures reschedules only when it says so. None
+        #: (no run service): every such heartbeat reschedules.
+        self.memory_waiting: Callable[[str], bool] | None = None
         self._listeners: list[Callable[[], None]] = []
         self._watchdog: asyncio.Task | None = None
         #: Fire-and-forget closes, kept so they are not collected mid-flight
@@ -787,7 +792,9 @@ class WorkerRegistry:
                 # change on every heartbeat and are not, except on a card
                 # shared by memory (#788): there free memory IS capacity.
                 self._changed()
-            elif self._shares_by_memory(worker):
+            elif self._shares_by_memory(worker) and (
+                    self.memory_waiting is None
+                    or self.memory_waiting(worker.id)):
                 self._changed()
         if frame.mounts is not None and frame.mounts != worker.mounts:
             # A share that appeared (or went away) on the worker (#782):

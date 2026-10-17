@@ -443,7 +443,8 @@ async def test_agent_never_imports_torch_and_child_events_match_in_process(
 async def test_run_started_waits_for_the_memory_cap(tmp_path):
     """A budgeted run's ``run_started`` goes out once the subprocess says
     its cap is set, carrying what was applied; the budget reaches the child
-    in the child's own numbering (its set starts at cuda:0)."""
+    in the child's own numbering (its set starts at cuda:0), and the report
+    comes back in the worker's (cuda:1, as placed)."""
     sink = h.FrameSink()
     runner = _runner(tmp_path, sink, child_entry=h.budget_child,
                      offered_devices={"cpu", "cuda:0", "cuda:1"})
@@ -453,9 +454,9 @@ async def test_run_started_waits_for_the_memory_cap(tmp_path):
     finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
     started, end = sink.of("b1")
     assert isinstance(started, wp.RunStarted) and started.seq == 1
-    assert started.execution_facts["memory_limit"] == {"cuda:0": {
+    assert started.execution_facts["memory_limit"] == {"cuda:1": {
         "budget_bytes": gib6, "total_bytes": 16 * 1024 ** 3,
-        "fraction": 0.375}}
+        "fraction": 0.375, "seen_as": "cuda:0"}}
     assert started.execution_facts["visible_devices"] == "1"
     assert end is finished and finished.seq == 2
     assert finished.status == "succeeded"

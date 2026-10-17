@@ -8,7 +8,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
-import { formatBytes } from '../../utils/formatBytes';
+import { formatGiB } from '../../utils/formatGiB';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import { TARGET_ANY, parseMemoryGib, usesSharedDevice } from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
@@ -230,7 +230,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
                     : estimateError !== null
                       ? t('queueRun.memory.estimateFailed', { error: estimateError })
                       : suggested?.peak_bytes != null
-                        ? t('queueRun.memory.suggested', { peak: formatBytes(suggested.peak_bytes) })
+                        ? t('queueRun.memory.suggested', { peak: formatGiB(suggested.peak_bytes) })
                         : t('queueRun.memory.none')}
                 </p>
                 <p className={styles.hint}>{t('queueRun.memory.hint')}</p>

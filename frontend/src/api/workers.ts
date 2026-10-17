@@ -48,6 +48,8 @@ export interface WorkerDeviceAdmission {
   reserved_bytes: number;
   running_bytes: number;
   headroom_bytes: number | null;
+  /** The CUDA context each run holds beyond its budget; 0 off CUDA. */
+  context_bytes?: number;
   runs: string[];
 }
 

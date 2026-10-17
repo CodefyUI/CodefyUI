@@ -600,15 +600,28 @@ describe('WorkersPanel', () => {
     // A shared card shows its budgets instead of a slot count.
     expect(within(card).queryByText('Slots 2 / 1')).toBeNull();
     expect(within(card).getByText('Slots 0 / 1')).toBeInTheDocument();
-    const line = '8.0 GB fits a new budget; budgets: 6.0 GB running, 2.0 GB reserved';
+    const line = '8.0 GiB fits a new budget; budgets: 6.0 GiB running, 2.0 GiB reserved';
     expect(within(card).getByText(line)).toBeInTheDocument();
     const bar = within(card).getByRole('img', { name: line });
     const [used, reserved, headroom] = Array.from(bar.children) as HTMLElement[];
     expect(used.style.width).toBe('25%');
-    expect(used).toHaveAttribute('title', '4.0 GB in use on the card (every process)');
+    expect(used).toHaveAttribute('title', '4.0 GiB in use on the card (every process)');
     expect(reserved.style.width).toBe('12.5%');
     expect(headroom.style.width).toBe('50%');
     expect(within(card).getByRole('button', { name: 'run-bbbb' })).toBeInTheDocument();
+  });
+
+  it('takes the CUDA context off what a new budget may be, and says so', async () => {
+    const box = sharedBox();
+    box.devices[0].admission = { ...box.devices[0].admission!, context_bytes: GIB / 2 };
+    const dialog = await openPanel([box]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    expect(within(card).getByText('7.5 GiB fits a new budget; budgets: 6.0 GiB running, 2.0 GiB reserved'))
+      .toBeInTheDocument();
+    expect(within(card).getByText('each run also holds 0.5 GiB of CUDA context beyond its budget'))
+      .toBeInTheDocument();
+    const [, , headroom] = Array.from(within(card).getByRole('img').children) as HTMLElement[];
+    expect(headroom).toHaveAttribute('title', '7.5 GiB fits a new budget');
   });
 
   it('draws what it knows of a card that reports part of its memory', async () => {
@@ -629,7 +642,7 @@ describe('WorkersPanel', () => {
     expect(used.style.width).toBe('0%');
     expect(used).not.toHaveAttribute('title');
     expect(headroom.style.width).toBe('0%');
-    expect(within(dialog).getAllByText('- fits a new budget; budgets: 0 B running, 0 B reserved')).toHaveLength(2);
+    expect(within(dialog).getAllByText('- fits a new budget; budgets: 0.0 GiB running, 0.0 GiB reserved')).toHaveLength(2);
   });
 
   it('says when the agent cannot enforce budgets', async () => {

@@ -267,7 +267,7 @@ describe('RunsPanel — the table', () => {
       makeRun({ id: 'n', name: 'plain' }),
     ]);
     expect(screen.getByRole('columnheader', { name: 'Budget' })).toBeInTheDocument();
-    expect(within(rowOf('b')).getByText('6.0 GB'))
+    expect(within(rowOf('b')).getByText('6.0 GiB'))
       .toHaveAttribute('title', 'Memory budget per device, declared at submit');
     const dash = within(rowOf('n')).getAllByText('-').find((cell) => cell.className.includes('colBudget'));
     expect(dash).not.toHaveAttribute('title');

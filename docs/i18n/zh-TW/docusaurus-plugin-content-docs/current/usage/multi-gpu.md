@@ -90,13 +90,13 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 共用，在 [Workers 面板](#the-workers-panel)把該卡設為 **依記憶體共用**。這個設定依 worker 與卡儲存，重新連線與伺服器重啟後都會保留。只有 CUDA 與 MPS 卡可以共用，而且只能在 worker 上：這台伺服器上的 run 與這裡所有其他 run 共用一個程序，沒有辦法把它限制在預算內。
 
-送到共用卡的 run 要宣告**記憶體預算**，單位是 GiB、針對其裝置集合中的每張卡：`target.memory_gib`，或[排入佇列...](#queue-on)中的 **記憶體預算** 欄位。若同一張圖先前有已結束的 run，欄位會預先填入它的峰值再加 20%；兩者都沒有時，伺服器會拒絕該 run 並要求填寫預算。
+送到共用卡的 run 要宣告**記憶體預算**，單位是 GiB、針對其裝置集合中的每張卡：`target.memory_gib`，或[排入佇列...](#queue-on)中的 **記憶體預算** 欄位。若同一張圖先前有成功結束的 run，欄位會預先填入它的 CUDA 峰值再加 20%（MPS 沒有峰值，只有結束時驅動程式持有的量，所以 MPS 的 run 要自行宣告預算）；兩者都沒有時，伺服器會拒絕該 run 並要求填寫預算。sweep 或 study 會在寫入任何 run 之前整批檢查：只要其中一個 run 會被拒（沒有預算，或預算比它能用的每張卡都大），整個 sweep 或 study 就會被拒。
 
 ```json
 {"options": {"target": {"worker": "gpu-box", "devices": ["cuda:0"], "memory_gib": 6}}}
 ```
 
-伺服器為每張卡維護一份帳本：worker 心跳回報的總記憶體與可用記憶體（可用量計入卡上所有程序，包括其他使用者的工作）、已指派但尚未開始的 run 的預算（**已保留**），以及已開始的 run 的預算（**執行中**）。預算不超過 `min(free - reserved, total - reserved - running)` 時就放得下。worker 會在 run 開始前把它的配置器限制在預算內（`torch.cuda.set_per_process_memory_fraction`），所以超出預算的 run 只會讓自己記憶體不足，同一張卡上的其他 run 繼續執行。
+伺服器為每張卡維護一份帳本：worker 心跳回報的總記憶體與可用記憶體（可用量計入卡上所有程序，包括其他使用者的工作）、已指派但尚未開始的 run 的預算（**已保留**），以及已開始的 run 的預算（**執行中**）。CUDA 卡上的 run 還會占用自己的 CUDA context（cuBLAS handle、已載入的 kernel），下面的上限管不到這部分，所以伺服器把每個 run 算成預算加上 `CODEFYUI_EXECUTION_CUDA_CONTEXT_MIB`（預設 768 MiB；在一張 CUDA 12 的卡上實測約 650 MiB）。這個總和不超過 `min(free - reserved, total - reserved - running)` 時就放得下，拒絕訊息也會兩者都列出：`needs 6.0 GiB (+0.8 GiB CUDA context), ...`。worker 會在 run 開始前把它的配置器限制在預算內（`torch.cuda.set_per_process_memory_fraction`），所以超出預算的 run 只會讓自己記憶體不足，同一張卡上的其他 run 繼續執行。
 
 預算放不下時：
 
@@ -104,7 +104,7 @@ worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 
 - `any` 的 run 會等到有卡放得下，除非它的預算比每張候選卡都大（拒絕），或 `target.wait` 為 `false`（拒絕而不等待）；
 - 等待記憶體的 run，Runs 面板會在它的 worker 下方說明。
 
-沒有預算的 run 不會被送到共用卡；共用卡上沒有預算的 run（同機 worker 卡上的畫布 run，或在該卡改為共用之前就開始的 run）會獨佔該卡直到結束。Runs 面板的 **預算** 欄顯示每個 run 的預算，Workers 面板則畫出每張共用卡的記憶體：使用中、已保留，以及新預算可用的量。預算限制的是 PyTorch 快取配置器持有的記憶體；CUDA context 本身（數百 MiB）不在其中，請保留一些餘裕。
+沒有預算的 run 不會被送到共用卡；共用卡上沒有預算的 run（同機 worker 卡上的畫布 run，或在該卡改為共用之前就開始的 run）會獨佔該卡直到結束。Runs 面板的 **預算** 欄顯示每個 run 的預算，Workers 面板則畫出每張共用卡的記憶體：使用中、已保留，以及新預算可用的量（已扣除 CUDA context）。在卡為獨佔時排入等待的 run，會在該卡改為共用時取得其圖的預設預算；仍然沒有預算的 run 會繼續等待，Runs 面板會說明原因。
 
 ## Workers 面板 {/* #the-workers-panel */}
 
@@ -130,6 +130,7 @@ run 結束後，詳細資訊標題會顯示 CUDA 的**峰值記憶體**（配置
 
 - **單一 run 不會跨卡訓練。** 裝置集合讓一個 run 看得到多張卡，節點也可以用 run 內名稱固定到這些卡上，但目前還沒有 `DistributedDataParallel` 策略（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **只有 worker 有依記憶體的准入。** 這台伺服器上的卡以每個 slot 的數量准入：不會因為卡上記憶體不足而拒絕 run，塞太滿的卡會以記憶體不足錯誤失敗。worker 的卡可以[依記憶體共用](#sharing-a-card)。請參閱[訓練記憶體](/advanced/training-memory)。
+- **帳本計算的是預算，不是 run 實際用量。** 執行中的 run 以它的預算計算，可用記憶體則來自 worker 的心跳（每 10 秒一次），針對整張卡：其他使用者的工作在兩次心跳之間占用的記憶體，要到下一次心跳才看得到，也不會量測每個 run 的用量。
 - **機器之間是明文 HTTP。** 遠端 worker 以控制面提供的協定加入與連線；沒有 TLS proxy 或 SSH 通道時，它的 token 與 run 的輸入會以明文經過網路（[遠端 Worker：信任](/usage/remote-workers#trust-between-agent-and-control-plane)）。
 - **worker 上不擷取輸出**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)），也不保留權重：每個 worker run 都從頭開始。
 - **長時間斷線會結束 run。** 失去連線的 worker 會在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內繼續它的 run；超過後它們以 `interrupted` 結束（[遠端 Worker：連線中斷時](/usage/remote-workers#when-the-connection-drops)）。

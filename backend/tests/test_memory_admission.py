@@ -32,6 +32,7 @@ from app.core.run_service import (
 )
 from app.core.run_store import RunStore
 from app.core.scheduling import Placement, WorkerScheduler
+from app.core.sweep_store import SweepStore
 from app.core.version import get_version
 from app.core.worker_store import WorkerStore
 from app.core.workers import Worker, WorkerRegistry
@@ -41,6 +42,15 @@ GIB = mem.GIB
 BASE = "http://127.0.0.1:8000"
 WS_PATH = f"{wp.WORKER_WS_PATH}?{TOKEN_QUERY_PARAM}={session_token()}"
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
+
+
+@pytest.fixture(autouse=True)
+def _no_cuda_context(monkeypatch):
+    """Budgets alone, so the arithmetic below is round. The CUDA context a
+    real card adds is tested on its own (``context`` in the name)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "EXECUTION_CUDA_CONTEXT_MIB", 0)
 
 
 # ── memory_admission ─────────────────────────────────────────────────────
@@ -98,7 +108,11 @@ def test_peak_bytes_reads_the_largest_device_figure():
         "cuda:0": {"allocated_bytes": 1, "reserved_bytes": 3 * GIB},
         "cuda:1": {"allocated_bytes": 4 * GIB},
         "cuda:2": "junk"}) == 4 * GIB
-    assert mem.peak_bytes({"mps": {"held_bytes": 5}}) == 5
+    # MPS's held_bytes is what the driver held at the END, not a peak: a
+    # budget from it could sit below what the run needs (review item 4).
+    assert mem.peak_bytes({"mps": {"held_bytes": 5}}) is None
+    assert mem.peak_bytes({"mps": {"held_bytes": 9 * GIB},
+                           "cuda:0": {"reserved_bytes": GIB}}) == GIB
     assert mem.peak_bytes({"cuda:0": {"reserved_bytes": True}}) is None
     assert mem.peak_bytes(None) is None
 
@@ -456,6 +470,7 @@ async def env(tmp_path):
     app.state.run_service = service
     app.state.worker_registry = registry
     app.state.worker_store = WorkerStore(database)
+    app.state.sweep_store = SweepStore(database)
     try:
         yield service, registry
     finally:
@@ -463,7 +478,7 @@ async def env(tmp_path):
         await registry.shutdown()
         database.close()
         for attribute in ("db", "run_service", "worker_registry",
-                          "worker_store"):
+                          "worker_store", "sweep_store"):
             if hasattr(app.state, attribute):
                 delattr(app.state, attribute)
 
@@ -714,3 +729,324 @@ def test_the_budget_note_is_added_to_an_out_of_memory_failure_only():
             (ExecutionOutcome("succeeded"), budgeted),
             (ExecutionOutcome("failed", None), budgeted)):
         assert _with_budget_note(outcome, placement) is outcome
+
+
+# ── code review of #837 ──────────────────────────────────────────────────
+
+
+def test_a_card_held_by_a_run_without_a_budget_says_so():
+    """Review item 3: the reason names the holder, not a fit that is not
+    the problem (the card has room)."""
+    scheduler = _sched(_worker("box", _card("cuda:0")))
+    taken = {("box", "cuda:0"): 1}
+    reason = scheduler.explain(_entry("r1", 6), taken)
+    assert reason == (
+        "waiting for memory: needs 6.0 GiB, cuda:0 on box is held by a run "
+        "without a memory budget (a run on this server, or one started "
+        "before the card was shared) until it ends")
+    assert "free" not in reason
+    assert scheduler.memory_refusal(_options(), 6 * GIB, taken,
+                                    wait=False) == reason.removeprefix(
+        "waiting for memory: ")
+    # The holder has a budget: the room decides again.
+    scheduler.ledger.reserve("r0", [("box", "cuda:0")], 12 * GIB)
+    scheduler.ledger.started("r0")
+    assert "4.0 GiB free" in scheduler.explain(_entry("r1", 6), taken)
+
+
+def test_a_worker_that_is_away_is_never_refused_on_its_stale_figures():
+    """Review item 6: an offline worker's last free figure is not now; a
+    budget that fits its total waits, one larger than its total is still
+    refused (it would wait forever)."""
+    from app.core.workers import STATUS_OFFLINE
+
+    worker = _worker("box", _card("cuda:0", free=GIB))
+    scheduler = _sched(worker)
+    refuse = scheduler.memory_refusal
+    assert refuse(_options(), 6 * GIB, {}, wait=False).startswith(
+        "needs 6.0 GiB, cuda:0 on box has 1.0 GiB free")
+    worker.status = STATUS_OFFLINE
+    assert refuse(_options(), 6 * GIB, {}, wait=False) is None
+    assert refuse(_options(), 20 * GIB, {}, wait=False) == (
+        "needs 20.0 GiB, cuda:0 on box has 16.0 GiB in total")
+
+
+def test_places_is_the_one_enumeration_of_where_a_run_may_go():
+    """Review item 10: one candidate list for wants_budget, the refusal and
+    the waiting reason."""
+    scheduler = _sched(_worker("box", _card("cuda:0"), _card("cuda:1")),
+                       _worker("other", _card("cuda:0")),
+                       shared=(("box", "cuda:0"), ("box", "cuda:1")))
+    places, here = scheduler.places(_options(worker="any", device="cuda"))
+    assert here is False
+    assert [[(w.id, d) for w, d in place] for place in places] == [
+        [("box", "cuda:0")], [("box", "cuda:1")], [("other", "cuda:0")]]
+    places, _ = scheduler.places(_options(devices=["cuda:1", "cuda:0"]))
+    assert [[(w.id, d) for w, d in place] for place in places] == [
+        [("box", "cuda:1"), ("box", "cuda:0")]]
+    assert scheduler.places({"device": "cpu"}) == ([], True)
+    assert scheduler.places(_options(worker="nobody")) == ([], False)
+
+
+def test_admission_adds_the_cuda_context_to_every_budget(monkeypatch):
+    """The CUDA context sits outside the allocator cap: admission, the
+    ledger and the messages count it (review, question 3)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "EXECUTION_CUDA_CONTEXT_MIB", 1024)
+    assert mem.context_bytes("cuda:0") == GIB
+    assert mem.context_bytes("mps") == 0 and mem.context_bytes("cpu") == 0
+    assert mem.footprint(6 * GIB, "cuda:0") == 7 * GIB
+    assert mem.footprint(6 * GIB, "mps") == 6 * GIB
+    scheduler = _sched(_worker("box", _card("cuda:0")))
+    taken: dict = {}
+    for run_id in ("r1", "r2"):
+        placement = scheduler.place(_entry(run_id, 6), taken)
+        assert placement is not None
+        taken[("box", "cuda:0")] = taken.get(("box", "cuda:0"), 0) + 1
+        scheduler.ledger.reserve(run_id, placement.budget_slots,
+                                 mem.footprint(6 * GIB, "cuda:0"))
+        scheduler.ledger.started(run_id)
+    # 16 - 2 x 7 = 2 GiB of room: a 1.5 GiB budget is 2.5 with its context.
+    assert scheduler.place(_entry("r3", 1.5), taken) is None
+    assert scheduler.place(_entry("r3", 1), taken) is not None
+    assert scheduler.explain(_entry("r3", 1.5), taken) == (
+        "waiting for memory: needs 1.5 GiB (+1.0 GiB CUDA context), cuda:0 "
+        "on box has 2.0 GiB free (runs r1, r2)")
+    assert scheduler.memory_refusal(_options(), 15.5 * GIB, {}, wait=True) \
+        == ("needs 15.5 GiB (+1.0 GiB CUDA context), cuda:0 on box has "
+            "16.0 GiB in total")
+    admission = scheduler.admission(_worker("box", _card("cuda:0")),
+                                    "cuda:0")
+    assert admission["context_bytes"] == GIB
+
+
+async def test_a_heartbeat_reschedules_only_when_a_budgeted_run_waits():
+    """Review item 8: new memory figures on a shared card reschedule only
+    when the run service says a run with a budget waits for that worker."""
+    registry = WorkerRegistry()
+    calls: list[int] = []
+    waiting = {"box": False}
+    registry.memory_waiting = lambda worker_id: waiting.get(worker_id, False)
+    worker, _ = registry.connect(
+        wp.Hello(name="box", version="t", devices=[_card("cuda:0")]),
+        send=_noop, close=_noop)
+    registry.set_device_policy("box", "cuda:0", "shared")
+    registry.add_listener(lambda: calls.append(1))
+    registry.heartbeat(worker, wp.Heartbeat(devices=[
+        _card("cuda:0", free=14 * GIB)]))
+    assert calls == []
+    waiting["box"] = True
+    registry.heartbeat(worker, wp.Heartbeat(devices=[
+        _card("cuda:0", free=13 * GIB)]))
+    assert calls == [1]
+    await registry.shutdown()
+
+
+async def test_the_run_service_answers_whether_a_budgeted_run_waits(env):
+    service, registry = env
+    assert registry.memory_waiting == service._memory_waiting
+    assert service._memory_waiting("box") is False
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        first = await client.post("/api/runs", json={
+            "graph": _graph(), "options": {"device": "cuda:0", "target": {
+                "worker": "box", "memory_gib": 12}}})
+        assign = await agent.assignment()
+        assert service._memory_waiting("box") is False
+        waits = await client.post("/api/runs", json={
+            "graph": _graph(), "options": {"device": "cuda:0", "target": {
+                "worker": "box", "memory_gib": 12, "wait": True}}})
+        assert waits.json()["status"] == "queued"
+        assert service._memory_waiting("box") is True
+        assert service._memory_waiting("other") is False
+        await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1, pid=1))
+        await agent.finish(assign)
+        await _terminal(service, first.json()["run_id"])
+        second = await agent.assignment()
+        await agent.send(wp.RunStarted(run_id=second.run_id, seq=1, pid=1))
+        await agent.finish(second)
+        await _terminal(service, second.run_id)
+
+
+async def test_the_workers_listing_shows_the_schedulers_own_figures(env):
+    """Review item 9: GET /api/workers reads WorkerScheduler.admission, so
+    what the panel shows is what admission decides on."""
+    service, registry = env
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        await FakeAgent(ws).hello()
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        listing = (await client.get("/api/workers")).json()
+        assert _card_entry(listing)["admission"] == \
+            service._scheduler.admission(registry.get("box"), "cuda:0")
+        assert service.card_admission(registry.get("box"), "cuda:0")[
+            "context_bytes"] == 0
+    assert RunService(None).card_admission(None, "cuda:0") is None
+
+
+class _LaterSource:
+    """A budget source with nothing to say until *budget* is set."""
+
+    def __init__(self) -> None:
+        self.budget: int | None = None
+
+    async def suggest(self, _graph: Any) -> mem.Suggestion | None:
+        if self.budget is None:
+            return None
+        return mem.Suggestion(mem.Budget(self.budget, "history", "x" * 32),
+                              self.budget)
+
+
+async def test_a_run_queued_while_its_card_was_exclusive_is_not_stranded(
+        env):
+    """Review item 2: a run that waited for an exclusive card gets its
+    graph's default (at submit, or again when the card is set to shared),
+    so it is placed once the card admits by memory."""
+    service, registry = env
+    source = service._budget_source = _LaterSource()
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+
+        def submit(value: float) -> Any:
+            return client.post("/api/runs", json={
+                "graph": _graph(value), "options": {
+                    "device": "cuda:0", "target": {"worker": "box"}}})
+
+        await submit(0.0)  # exclusive: by count, no budget
+        holder_assign = await agent.assignment()
+        assert holder_assign.memory_budgets == {}
+        source.budget = 2 * GIB
+        early = await submit(1.0)  # its default, though the card counts
+        source.budget = None
+        late = await submit(2.0)  # nothing to say yet
+        assert early.json()["status"] == late.json()["status"] == "queued"
+        assert service._pending_by_id[early.json()["run_id"]] \
+            .memory_budget.bytes == 2 * GIB
+        assert service._pending_by_id[late.json()["run_id"]] \
+            .memory_budget is None
+
+        source.budget = 3 * GIB
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        assert service._pending_by_id[late.json()["run_id"]] \
+            .memory_budget.bytes == 3 * GIB
+        # The holder has no budget: the two wait for it, and say so.
+        assert "held by a run without a memory budget" in \
+            service.queue_reason(early.json()["run_id"])
+        await agent.send(wp.RunStarted(run_id=holder_assign.run_id, seq=1,
+                                       pid=1))
+        await agent.finish(holder_assign)
+        placed = [await agent.assignment(), await agent.assignment()]
+        assert [a.memory_budgets for a in placed] == [
+            {"cuda:0": 2 * GIB}, {"cuda:0": 3 * GIB}]
+        for assign in placed:
+            await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1,
+                                           pid=1))
+            await agent.finish(assign)
+            await _terminal(service, assign.run_id)
+
+
+async def test_refresh_budgets_keeps_a_declared_budget_and_skips_a_gone_run(
+        env):
+    service, _ = env
+    source = service._budget_source = _LaterSource()
+    source.budget = GIB
+
+    @dataclass
+    class _Pending:
+        run_id: str
+        options: dict
+        needs: Any = field(default_factory=dict)
+        memory_budget: Any = None
+
+    declared = _Pending("d", {"target": {"worker": "box", "memory_gib": 2}})
+    gone = _Pending("g", {"target": {"worker": "box"}})
+    local = _Pending("l", {}, needs=None)
+    service._pending_by_id.update(d=declared, g=gone, l=local)
+    try:
+        await service.refresh_budgets()
+    finally:
+        for run_id in ("d", "g", "l"):
+            service._pending_by_id.pop(run_id, None)
+    assert declared.memory_budget == mem.Budget(2 * GIB)
+    assert gone.memory_budget is None  # no row: nothing to read
+    assert local.memory_budget is None
+
+
+async def test_a_batch_without_a_budget_is_refused_before_any_child(env):
+    """Review item 1: a sweep whose children declare no memory_gib and can
+    only go to shared cards is refused whole, with no row, rather than part
+    way through its children; each child's default is derived first."""
+    service, _ = env
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        options = {"device": "cuda:0", "target": {"worker": "box"}}
+        response = await client.post("/api/sweeps", json={
+            "base_graph": _graph(),
+            "sweep_spec": {"method": "grid", "params": [
+                {"node_id": "x", "param": "value", "values": [1.0, 2.0]}]},
+            "objective": {"metric": "val_loss", "direction": "minimize"},
+            "options": options})
+        assert response.status_code == 400, response.text
+        assert "has no memory budget" in response.json()["detail"]
+        assert await service.store.list_runs() == []
+        with pytest.raises(RunSubmitError, match="has no memory budget"):
+            await service.check_batch_budgets([_graph()], options)
+        # A derived default too large for the card is refused as well.
+        source = service._budget_source = _LaterSource()
+        source.budget = 20 * GIB
+        with pytest.raises(RunSubmitError, match="16.0 GiB in total"):
+            await service.check_batch_budgets([_graph(), _graph()], options)
+        source.budget = 2 * GIB
+        await service.check_batch_budgets([_graph(), _graph(1.0)], options)
+        # Declared, or a card that counts: nothing to judge here.
+        await service.check_batch_budgets([_graph()], {
+            "device": "cuda:0",
+            "target": {"worker": "box", "memory_gib": 2}})
+        await service.check_batch_budgets([_graph()], {"device": "cpu"})
+        await agent.nothing()
+    await RunService(None).check_batch_budgets([_graph()], {})
+
+
+async def test_the_last_peak_is_found_by_an_indexed_column(tmp_path):
+    """Review item 7: ``exec_runs.graph_hash`` (MIGRATION_014) and its index
+    answer last_peak_memory, newest first, without a json scan."""
+    database = Database(tmp_path / "codefyui.db")
+    database.connect()
+    try:
+        store = RunStore(database)
+        plan = database._conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM exec_runs "
+            "INDEXED BY idx_exec_runs_graph_hash WHERE graph_hash = ? "
+            "AND status = ? ORDER BY finished_at DESC LIMIT 20",
+            ("h", "succeeded")).fetchall()
+        assert any("idx_exec_runs_graph_hash" in str(tuple(row))
+                   for row in plan)
+        assert await store.last_peak_memory("h") is None
+
+        async def finished(peak: Any, graph_hash: str = "h") -> str:
+            from app.core.run_store import RunProvenance
+
+            record = await store.create_run(
+                graph_snapshot=_graph(), provenance=RunProvenance(),
+                worker_id="box", graph_hash=graph_hash)
+            facts = {} if peak is None else {"peak_memory": peak}
+            await store.mark_running(record.id, execution_facts=facts)
+            await store.mark_finished(record.id, "succeeded")
+            return record.id
+
+        older = await finished({"cuda:0": {"reserved_bytes": GIB}})
+        await finished({"cuda:0": {"reserved_bytes": 9 * GIB}}, "other")
+        await finished(None)  # newest, but no peak: the older one answers
+        assert await store.last_peak_memory("h") == (
+            older, {"cuda:0": {"reserved_bytes": GIB}})
+    finally:
+        database.close()

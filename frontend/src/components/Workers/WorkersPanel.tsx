@@ -16,6 +16,7 @@ import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
 import { friendlyError } from '../../utils/errorMessages';
 import { formatBytes } from '../../utils/formatBytes';
+import { formatGiB } from '../../utils/formatGiB';
 import { relativeTime } from '../SourceControl/scm';
 import { trapTab } from '../shared/focusTrap';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -74,10 +75,13 @@ function share(part: number, total: number): number {
 function AdmissionBar({ admission }: { admission: WorkerDeviceAdmission }) {
   const { t } = useI18n();
   const { total_bytes: total, free_bytes: free, headroom_bytes: headroom } = admission;
+  const context = admission.context_bytes ?? 0;
+  // The largest budget that fits: a run also holds its CUDA context.
+  const fits = headroom === null ? null : Math.max(headroom - context, 0);
   const line = t('workers.admission.line', {
-    headroom: headroom === null ? '-' : formatBytes(headroom),
-    running: formatBytes(admission.running_bytes),
-    reserved: formatBytes(admission.reserved_bytes),
+    headroom: fits === null ? '-' : formatGiB(fits),
+    running: formatGiB(admission.running_bytes),
+    reserved: formatGiB(admission.reserved_bytes),
   });
   return (
     <div className={styles.admission}>
@@ -86,21 +90,24 @@ function AdmissionBar({ admission }: { admission: WorkerDeviceAdmission }) {
           <span
             className={styles.barUsed}
             style={{ width: `${share(free === null ? 0 : total - free, total)}%` }}
-            title={free === null ? undefined : t('workers.admission.used', { amount: formatBytes(total - free) })}
+            title={free === null ? undefined : t('workers.admission.used', { amount: formatGiB(total - free) })}
           />
           <span
             className={styles.barReserved}
             style={{ width: `${share(admission.reserved_bytes, total)}%` }}
-            title={t('workers.admission.reserved', { amount: formatBytes(admission.reserved_bytes) })}
+            title={t('workers.admission.reserved', { amount: formatGiB(admission.reserved_bytes) })}
           />
           <span
             className={styles.barHeadroom}
             style={{ width: `${share(headroom ?? 0, total)}%` }}
-            title={t('workers.admission.headroom', { amount: formatBytes(headroom ?? 0) })}
+            title={t('workers.admission.headroom', { amount: formatGiB(fits ?? 0) })}
           />
         </div>
       )}
       <span className={styles.fact}>{line}</span>
+      {context > 0 && (
+        <span className={styles.fact}>{t('workers.admission.context', { amount: formatGiB(context) })}</span>
+      )}
       {admission.runs.length > 0 && <RunLinks runIds={admission.runs} />}
     </div>
   );

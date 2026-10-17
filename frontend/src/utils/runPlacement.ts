@@ -5,7 +5,7 @@
  */
 import type { useI18n } from '../i18n';
 import { aliasForDevice } from './deviceAliases';
-import { formatBytes } from './formatBytes';
+import { formatGiB } from './formatGiB';
 
 /** The placement fields of a run row or a sweep variant. */
 export interface RunPlacement {
@@ -32,7 +32,7 @@ export function runBudget(run: RunPlacement, t: Translate): { text: string; titl
       ? admitted.from_run
       : null;
     return {
-      text: formatBytes(admitted.bytes),
+      text: formatGiB(admitted.bytes),
       title: fromRun === null
         ? t('runs.budget.declared')
         : t('runs.budget.history', { run: fromRun.slice(0, 8) }),
@@ -40,7 +40,7 @@ export function runBudget(run: RunPlacement, t: Translate): { text: string; titl
   }
   const target = run.options?.target as { memory_gib?: unknown } | undefined;
   if (target && typeof target.memory_gib === 'number') {
-    return { text: formatBytes(target.memory_gib * GIB), title: t('runs.budget.requested') };
+    return { text: formatGiB(target.memory_gib * GIB), title: t('runs.budget.requested') };
   }
   return null;
 }

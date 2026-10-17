@@ -39,12 +39,12 @@ describe('runPlacement', () => {
   it('shows the memory budget it was admitted with, else the one it asked for (#788)', () => {
     const gib = 1024 ** 3;
     expect(runBudget({ execution_facts: { memory_budget: { bytes: 6 * gib, source: 'declared' } } }, t))
-      .toEqual({ text: '6.0 GB', title: 'Memory budget per device, declared at submit' });
+      .toEqual({ text: '6.0 GiB', title: 'Memory budget per device, declared at submit' });
     expect(runBudget({
       execution_facts: { memory_budget: { bytes: 3 * gib, source: 'history', from_run: 'abcdef0123' } },
-    }, t)).toEqual({ text: '3.0 GB', title: 'Memory budget per device, from the peak of run abcdef01' });
+    }, t)).toEqual({ text: '3.0 GiB', title: 'Memory budget per device, from the peak of run abcdef01' });
     expect(runBudget({ execution_facts: { memory_budget: { bytes: 'x' } }, options: { target: { memory_gib: 2 } } }, t))
-      .toEqual({ text: '2.0 GB', title: 'Memory budget asked for; used only on a device shared by memory' });
+      .toEqual({ text: '2.0 GiB', title: 'Memory budget asked for; used only on a device shared by memory' });
     expect(runBudget({ options: { target: { worker: 'box' } } }, t)).toBeNull();
     expect(runBudget({ execution_facts: null }, t)).toBeNull();
   });

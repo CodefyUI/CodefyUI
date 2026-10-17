@@ -283,8 +283,11 @@ class StudyCoordinator:
         # Every child inherits options.target; refuse what the run service
         # would refuse for any of them (a worker it has never seen, a device
         # nobody offers, record_outputs on a worker) before any row exists.
+        variant_graphs = [graph for _label, _ops, graph in spec.variants]
         variant_needs = self.service.check_placeable_batch(
-            (graph for _label, _ops, graph in spec.variants), spec.options)
+            variant_graphs, spec.options)
+        # A child a shared card's memory admission would refuse (#788).
+        await self.service.check_batch_budgets(variant_graphs, spec.options)
         study, created = await self.store.create_study(
             name=spec.name, objective=spec.objective,
             repetitions=spec.repetitions, seed=spec.seed,

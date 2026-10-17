@@ -22,7 +22,11 @@ reported the cap in place (**running**). The card's **total** and **free**
 bytes come from the worker's heartbeat (NVML, device-wide: other users'
 jobs on a shared machine are counted, which is what a ledger needs).
 
-A budget fits on a card when it is at most the card's headroom::
+A run on a CUDA card also holds its CUDA context (cuBLAS, kernels), which
+the allocator cap does not cover: :func:`footprint` is its budget plus
+``CODEFYUI_EXECUTION_CUDA_CONTEXT_MIB`` (768 MiB; ~650 MiB measured), and
+the ledger holds footprints. A run fits on a card when its footprint is at
+most the card's headroom::
 
     headroom = min(free - reserved, total - reserved - running)
 
@@ -39,8 +43,13 @@ Budgets
 ``target.memory_gib`` declares one (GiB per device of the run). A run that
 declares none gets one from a :class:`BudgetSource` (the default,
 :class:`HistoryBudgetSource`: the last peak of a succeeded run of the same
-graph, times :data:`HISTORY_MARGIN`); #794 plugs a better estimate in at the
-same seam. A run with neither cannot go to a shared card.
+graph, times :data:`HISTORY_MARGIN`; a CUDA peak only: MPS reports what
+the driver holds at the end, which is not a peak); #794 plugs a better
+estimate in at the same seam. A run with neither cannot go to a shared card.
+
+``free`` is read every heartbeat (10 s) for the whole card; a run's own
+growth after it started is not visible in it, which the ``total`` term
+covers for our runs but not for other users' jobs.
 
 Nothing here runs unless a card is ``shared``: with every card exclusive
 (no row in the table), admission is the count limit, unchanged.
@@ -81,6 +90,22 @@ SlotKey = tuple[str, str]
 
 def gib_to_bytes(gib: float) -> int:
     return int(math.ceil(gib * GIB))
+
+
+def context_bytes(device: str) -> int:
+    """What a run's CUDA context takes on *device* beyond its allocator cap
+    (``CODEFYUI_EXECUTION_CUDA_CONTEXT_MIB``); 0 for anything but CUDA."""
+    if not str(device).startswith("cuda"):
+        return 0
+    from ..config import settings
+
+    return max(0, int(settings.EXECUTION_CUDA_CONTEXT_MIB)) * 1024 ** 2
+
+
+def footprint(budget: int, device: str) -> int:
+    """What a run with *budget* holds on *device*: the budget plus its
+    CUDA context. What the ledger reserves and admission compares."""
+    return int(budget) + context_bytes(device)
 
 
 def format_gib(nbytes: int | float | None) -> str:
@@ -223,17 +248,20 @@ def graph_hash(graph: Mapping[str, Any]) -> str:
 
 
 def peak_bytes(peak_memory: Any) -> int | None:
-    """The largest per-device figure of an ``execution_facts.peak_memory``
-    (#770): a CUDA card's ``reserved_bytes`` (what the allocator held, which
-    is what the cap limits), else its ``allocated_bytes``; MPS's
-    ``held_bytes``. None when there is none."""
+    """The largest CUDA figure of an ``execution_facts.peak_memory`` (#770):
+    a card's ``reserved_bytes`` (what the allocator held, which is what the
+    cap limits), else its ``allocated_bytes``. None when there is none.
+
+    MPS's ``held_bytes`` is NOT used: it is what the driver held at the END
+    of the run, not a peak, so a budget derived from it could sit below what
+    the run needs and make it run out of memory under its own cap."""
     if not isinstance(peak_memory, Mapping):
         return None
     best: int | None = None
-    for entry in peak_memory.values():
-        if not isinstance(entry, Mapping):
+    for device, entry in peak_memory.items():
+        if not isinstance(entry, Mapping) or not str(device).startswith("cuda"):
             continue
-        for key in ("reserved_bytes", "allocated_bytes", "held_bytes"):
+        for key in ("reserved_bytes", "allocated_bytes"):
             value = entry.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool) \
                     and value > 0:
@@ -288,6 +316,14 @@ class HistoryBudgetSource:
 # ── messages ──────────────────────────────────────────────────────────────
 
 
+def held_without_budget(device: str, worker: str) -> str:
+    """Why a shared card cannot take a budgeted run although memory is
+    free: a run without a budget holds it (#788 review 3)."""
+    return (f"{device} on {worker} is held by a run without a memory budget "
+            "(a run on this server, or one started before the card was "
+            "shared) until it ends")
+
+
 def no_budget_message(where: str) -> str:
     return (f"{where} is shared by memory and this run has no memory budget: "
             "declare target.memory_gib (no earlier run of this graph "
@@ -306,5 +342,10 @@ def does_not_fit(device: str, worker: str, room: int | None,
     return text
 
 
-def needs_message(budget: int, reasons: list[str]) -> str:
-    return f"needs {format_gib(budget)}, " + "; ".join(reasons)
+def needs_message(budget: int, reasons: list[str], device: str = "") -> str:
+    """``needs 6.0 GiB (+0.8 GiB CUDA context), <reasons>``."""
+    context = context_bytes(device)
+    need = format_gib(budget)
+    if context:
+        need += f" (+{format_gib(context)} CUDA context)"
+    return f"needs {need}, " + "; ".join(reasons)

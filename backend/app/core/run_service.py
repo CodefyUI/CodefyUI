@@ -302,6 +302,7 @@ from .scheduling import (
     SlotKey,
     WorkerScheduler,
     candidate_devices,
+    entry_budget,
     entry_target,
     no_mount,
     on_a_worker,
@@ -1657,6 +1658,9 @@ class RunService:
             # A worker connecting, draining, undraining or going away is
             # capacity appearing or vanishing somewhere no queue key names.
             workers.add_listener(self.reschedule)
+            # New memory figures reschedule only when a run with a budget
+            # waits for that worker (#788).
+            workers.memory_waiting = self._memory_waiting
             # A run that ended here while its worker was away, and that the
             # worker later reports finished (#783).
             workers.on_late_result = self._record_late_result
@@ -1808,7 +1812,7 @@ class RunService:
         if entry is None or explain is None:
             return None
         try:
-            return explain(entry)
+            return explain(entry, self._admission_view(run_id))
         except Exception:  # noqa: BLE001 -- a description, never an error
             logger.debug("could not explain run %s's wait", run_id,
                          exc_info=True)
@@ -2011,6 +2015,7 @@ class RunService:
             study_attempt_id=study_attempt_id,
             worker_id=target_worker(normalized_options),
             devices=target_devices(normalized_options),
+            graph_hash=graph_digest,
         )
         if self._shutting_down:
             # The same re-check ``_start`` makes, for the same reason and at
@@ -2092,9 +2097,11 @@ class RunService:
                              batch_child: bool = False) -> "mem.Budget | None":
         """A worker run's memory budget (#788), or ``RunSubmitError``.
 
-        ``target.memory_gib`` when declared; otherwise, only when a shared
-        card could take the run, the budget source's suggestion (the last
-        peak of this graph, times 1.2). Then the scheduler's refusal, if
+        ``target.memory_gib`` when declared; otherwise the budget source's
+        suggestion (the last peak of this graph, times 1.2), for every
+        worker run: a card set to ``shared`` while the run waits can then
+        still take it (:meth:`refresh_budgets` derives it again then). Then,
+        when a shared card could take the run, the scheduler's refusal, if
         any (``WorkerScheduler.memory_refusal``): no budget for a run that
         can only go to shared cards, a budget larger than every card, or
         (unless the run may wait) one that fits no card now. A named
@@ -2107,11 +2114,13 @@ class RunService:
         budget = (None if declared is None
                   else mem.Budget(mem.gib_to_bytes(declared)))
         wants = getattr(self._scheduler, "wants_budget", None)
-        if wants is None or not wants(options):
+        if wants is None:
             return budget
         if budget is None:
             suggestion = await self._budget_source.suggest(graph)
             budget = None if suggestion is None else suggestion.budget
+        if not wants(options):
+            return budget
         refusal = getattr(self._scheduler, "memory_refusal", None)
         if refusal is not None:
             worker_id, _ = entry_target(options)
@@ -2131,8 +2140,8 @@ class RunService:
     def _check_declared_budget(self, options: dict[str, Any]) -> None:
         """Refuse a batch whose declared ``target.memory_gib`` fits no
         shared card it may go to, ever (#788), before any child is
-        written. A child without a declared budget is judged at its own
-        submit (its default comes from history, which is awaited)."""
+        written. One without a declared budget is checked by
+        :meth:`check_batch_budgets`, which derives each child's."""
         declared = (options.get("target") or {}).get("memory_gib")
         refusal = getattr(self._scheduler, "memory_refusal", None)
         if declared is None or refusal is None:
@@ -2142,6 +2151,86 @@ class RunService:
         if message is not None:
             raise RunSubmitError(message)
 
+    async def check_batch_budgets(self, graphs: Iterable[Any],
+                                  options: Any) -> None:
+        """Refuse, before anything is written, a sweep or study one of whose
+        children would be refused for memory at its submit (#788): every
+        child's budget as :meth:`_memory_budget` derives it (declared, or
+        its graph's last peak), judged as a waiting child is (it may wait
+        for room, never for a card too small or for no budget at all). Call
+        after :meth:`check_placeable_batch`, whose checks this assumes."""
+        wants = getattr(self._scheduler, "wants_budget", None)
+        refusal = getattr(self._scheduler, "memory_refusal", None)
+        if wants is None or refusal is None:
+            return
+        checked: dict[str, dict[str, Any]] = {}
+        seen: set[tuple[str, int | None]] = set()
+        for graph in graphs:
+            settings_ = graph.get("settings") if isinstance(graph, dict) \
+                else None
+            key = json.dumps(settings_, sort_keys=True, default=str)
+            if key not in checked:
+                _, checked[key], _, _ = self._prepare(
+                    graph, options, batch_child=True, needs=None)
+            child_options = checked[key]
+            if not wants(child_options):
+                continue
+            declared = (child_options.get("target") or {}).get("memory_gib")
+            if declared is not None:
+                budget: int | None = mem.gib_to_bytes(declared)
+            else:
+                stored, _ = split_graph_secrets(
+                    normalize_graph(graph), unknown_types_as_secret=True)
+                suggestion = await self._budget_source.suggest(stored)
+                budget = None if suggestion is None else suggestion.budget.bytes
+            if (key, budget) in seen:
+                continue
+            seen.add((key, budget))
+            message = refusal(child_options, budget, self._slots, wait=True)
+            if message is not None:
+                raise RunSubmitError(message)
+
+    async def refresh_budgets(self) -> None:
+        """Give a waiting worker run with no budget its graph's default
+        again (#788), then reschedule: after a card is set to ``shared``, a
+        run submitted while it was exclusive (or before its graph had a
+        peak) is otherwise never placed on it. One that still has none
+        keeps waiting, and its reason says so."""
+        for entry in list(self._pending_by_id.values()):
+            if entry.needs is None or entry.memory_budget is not None:
+                continue
+            declared = (entry.options.get("target") or {}).get("memory_gib")
+            if declared is not None:
+                entry.memory_budget = mem.Budget(mem.gib_to_bytes(declared))
+                continue
+            graph = await self.store.get_graph_snapshot(entry.run_id)
+            if graph is None or entry.run_id not in self._pending_by_id:
+                continue
+            suggestion = await self._budget_source.suggest(graph)
+            if suggestion is not None:
+                entry.memory_budget = suggestion.budget
+        self.reschedule()
+
+    def _memory_waiting(self, worker_id: str) -> bool:
+        """Whether a waiting run with a memory budget may go to *worker_id*
+        (it names it, or ``any``): the registry's question before it
+        reschedules on a heartbeat's new memory figures (#788)."""
+        for entry in self._pending_by_id.values():
+            if entry_budget(entry) is None:
+                continue
+            target, _ = entry_target(entry.options)
+            if target in (worker_id, TARGET_WORKER_ANY):
+                return True
+        return False
+
+    def card_admission(self, worker: Any, device: str
+                       ) -> dict[str, Any] | None:
+        """A card's admission figures for ``GET /api/workers`` (#788), the
+        scheduler's own (``WorkerScheduler.admission``); None without a
+        worker scheduler."""
+        admission = getattr(self._scheduler, "admission", None)
+        return None if admission is None else admission(worker, device)
+
     async def suggest_memory(self, graph: Any) -> "mem.Suggestion | None":
         """The default budget the budget source gives *graph* (#788), for
         the Queue on... dialog. Raises ``RunSubmitError`` on a malformed
@@ -2150,10 +2239,6 @@ class RunService:
         stored, _secrets = split_graph_secrets(
             normalized, unknown_types_as_secret=True)
         return await self._budget_source.suggest(stored)
-
-    def memory_account(self, slot: SlotKey) -> "mem.SlotAccount":
-        """What the ledger holds on *slot* (#788), for ``GET /api/workers``."""
-        return self._ledger.account(slot)
 
     def _check_worker_catalog(self, options: dict[str, Any],
                               node_types: frozenset[str]) -> None:
@@ -2759,8 +2844,12 @@ class RunService:
                     and active.placement.memory_budget is not None:
                 # Reserved until the worker's ``run_started`` says its cap
                 # is in place (#788), released with the slots.
+                # The footprint: its budget plus the CUDA context the cap
+                # does not cover.
                 self._ledger.reserve(run_id, active.placement.budget_slots,
-                                     active.placement.memory_budget)
+                                     mem.footprint(
+                                         active.placement.memory_budget,
+                                         active.placement.budget_devices[0]))
         elif self._session_key(session) is not None:
             self._interactive_sessions[self._session_key(session)] = run_id
         active.task = task

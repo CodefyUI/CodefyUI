@@ -202,31 +202,15 @@ def _describe(worker: Any, service: Any,
         device["policy"] = (registry.device_policy(worker.id, value)
                             if registry is not None and value is not None
                             else mem.POLICY_EXCLUSIVE)
+        # The scheduler's own figures (``WorkerScheduler.admission``): what
+        # this panel shows is what admission decides on.
         device["admission"] = (
-            _admission(worker, value, device, service)
+            service.card_admission(worker, value)
             if device["policy"] == mem.POLICY_SHARED and service is not None
             else None)
     entry["memory_budget"] = wp.CAPABILITY_MEMORY_BUDGET in (
         getattr(worker, "capabilities", None) or ())
     return entry
-
-
-def _admission(worker: Any, value: str, device: dict[str, Any],
-               service: Any) -> dict[str, Any]:
-    """A shared device's ledger, as ``GET /api/workers`` shows it (#788)."""
-    memory = device.get("memory") or {}
-    total = memory.get("total_bytes")
-    free = memory.get("free_bytes")
-    account = service.memory_account(slot_for(worker, value))
-    return {
-        "by_memory": wp.CAPABILITY_MEMORY_BUDGET in (
-            getattr(worker, "capabilities", None) or ()),
-        "total_bytes": total, "free_bytes": free,
-        "reserved_bytes": account.reserved,
-        "running_bytes": account.running,
-        "headroom_bytes": mem.headroom(total, free, account),
-        "runs": list(account.runs),
-    }
 
 
 def _describe_local(service: Any) -> dict[str, Any] | None:
@@ -300,7 +284,12 @@ async def set_device_policy(request: Request, worker_id: str, device: str,
     if store is not None:
         await store.set_device_policy(worker_id, value, body.policy)
     registry.set_device_policy(worker_id, value, body.policy)
-    return _describe(worker, _service(request), registry)
+    service = _service(request)
+    if service is not None and body.policy == mem.POLICY_SHARED:
+        # A run that waits for this card and has no budget yet (submitted
+        # while it was exclusive) gets its graph's default now.
+        await service.refresh_budgets()
+    return _describe(worker, service, registry)
 
 
 # ── enrollment (#780) ─────────────────────────────────────────────────────

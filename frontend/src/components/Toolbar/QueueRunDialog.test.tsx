@@ -512,7 +512,7 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(api.estimateMemory).toHaveBeenCalledWith(GRAPH);
     expect(serialize).toHaveBeenCalledWith({ keepSecrets: true });
     expect(memoryField()).toHaveValue('2.4');
-    expect(screen.getByText('Suggested from the last run of this graph: its peak was 2.0 GB, plus 20%.')).toBeInTheDocument();
+    expect(screen.getByText('Suggested from the last run of this graph: its peak was 2.0 GiB, plus 20%.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Wait in the queue when it does not fit now' }));
     await submit();
     expect(sentRequest().options.target).toEqual({

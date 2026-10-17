@@ -341,6 +341,10 @@ class RunHandle:
     #: subprocess reports its cap in place (``memory_limit``); None once
     #: sent, or for a run without budgets (sent at start).
     held_started: Any = None
+    #: The child's name of each budgeted card -> this worker's (#788), so
+    #: ``execution_facts.memory_limit`` is reported in the worker's
+    #: numbering, as every other device the control plane sees.
+    budget_names: dict[str, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
     #: Set once the reader has joined the process (it is gone).
     exited: asyncio.Event = field(default_factory=asyncio.Event)
@@ -654,11 +658,15 @@ class Runner:
             "options": frame.options, "device": device,
             "env": env, "log_path": str(log_path), "mount": mount,
         }
+        budget_names: dict[str, str] = {}
         if frame.memory_budgets:
             # As the child numbers its cards (#788): it sees only the set.
+            for name in frame.memory_budgets:
+                budget_names[child_device(
+                    canonical_device(name), devices or [frame.device])] = name
             spec["memory_budgets"] = {
-                child_device(canonical_device(d), devices or [frame.device]):
-                    nbytes for d, nbytes in frame.memory_budgets.items()}
+                child: frame.memory_budgets[name]
+                for child, name in budget_names.items()}
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)
         process = self._ctx.Process(
@@ -682,6 +690,7 @@ class Runner:
         else:
             handle.process, handle.events_in = process, events_in
             handle.control_out = control_out
+        handle.budget_names = budget_names
         self.runs[frame.run_id] = handle
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
@@ -840,9 +849,11 @@ class Runner:
             started, handle.held_started = handle.held_started, None
             if started is None:
                 return None
+            limits = message[1] if isinstance(message[1], dict) else {}
             frame = started.model_copy(update={"execution_facts": {
                 **(started.execution_facts or {}),
-                "memory_limit": message[1]}})
+                "memory_limit": {handle.budget_names.get(name, name): limit
+                                 for name, limit in limits.items()}}})
         elif kind == child_module.MSG_FINISHED:
             frame = self._reported_end(handle, message[1], 1)
         else:

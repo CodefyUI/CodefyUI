@@ -607,6 +607,15 @@ CREATE TABLE worker_device_policies (
   updated_at  TEXT NOT NULL,
   PRIMARY KEY (worker, device)
 );
+
+-- The graph a run executed, as memory_admission.graph_hash gives it, for a
+-- run that targets a worker (#788). The default memory budget of a run that
+-- declares none is the last peak of a succeeded run of the same graph; the
+-- index makes that lookup a seek, newest first.
+ALTER TABLE exec_runs ADD COLUMN graph_hash TEXT;
+CREATE INDEX idx_exec_runs_graph_hash
+  ON exec_runs(graph_hash, status, finished_at)
+  WHERE graph_hash IS NOT NULL;
 """
 
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,

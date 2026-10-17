@@ -39,7 +39,7 @@ const en = {
   'queueRun.error.seed': 'The seed must be a whole number, 0 or more.',
   // Memory admission on a shared card (#788).
   'queueRun.memory': 'Memory budget (GiB per device)',
-  'queueRun.memory.hint': 'A device shared by memory takes the run while its budget fits; the worker caps the run to it, so a run that outgrows it runs out of memory alone.',
+  'queueRun.memory.hint': 'A device shared by memory takes the run while its budget, plus its CUDA context, fits; the worker caps the run to its budget, so a run that outgrows it runs out of memory alone.',
   'queueRun.memory.loading': 'Looking up the last run of this graph...',
   'queueRun.memory.suggested': 'Suggested from the last run of this graph: its peak was {peak}, plus 20%.',
   'queueRun.memory.none': 'No earlier run of this graph reported its peak memory: declare a budget.',
@@ -1179,6 +1179,7 @@ const en = {
   'workers.admission.used': '{amount} in use on the card (every process)',
   'workers.admission.reserved': '{amount} reserved for runs that have not started',
   'workers.admission.headroom': '{amount} fits a new budget',
+  'workers.admission.context': 'each run also holds {amount} of CUDA context beyond its budget',
   'workers.admission.notEnforced': "This worker's agent cannot enforce memory budgets, so the card still admits one run at a time. Update the agent to share it.",
   'workers.running': 'Running',
   'workers.running.none': 'no runs',

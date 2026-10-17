@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     # carries on. Five minutes is Kubernetes' pod eviction timeout. 0 ends
     # the runs at once, as before #783.
     WORKER_RESUME_GRACE_S: float = 300.0
+    # MiB a run's CUDA context takes on a card shared by memory (#788),
+    # outside its allocator cap: admission reserves a run's budget plus
+    # this. Measured on an RTX PRO 6000 (torch 2.11, cuBLAS loaded):
+    # ~650 MiB; rounded up.
+    EXECUTION_CUDA_CONTEXT_MIB: int = 768
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real

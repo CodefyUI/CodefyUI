@@ -414,8 +414,10 @@ class WorkerScheduler:
             return None
         return tuple(slot_for(worker, d) for d in devices)
 
-    def explain(self, entry: QueuedEntry) -> str | None:
-        """Why *entry* is waiting, when it is not just a busy slot."""
+    def explain(self, entry: QueuedEntry,
+                taken: Mapping[SlotKey, int] | None = None) -> str | None:
+        """Why *entry* is waiting, when it is not just a busy slot.
+        *taken* is the slot counts it is judged against (memory, #788)."""
         worker_id, devices = entry_target(entry.options)
         if worker_id == TARGET_LOCAL:
             return None
@@ -431,8 +433,8 @@ class WorkerScheduler:
                 return no_mount(worker_id, mount or "",
                                 transfer_refusal(getattr(entry, "needs",
                                                          None)))
-            return self._memory_wait(worker, requested, devices,
-                                     entry_budget(entry))
+            return self._memory_wait(entry.options, entry_budget(entry),
+                                     taken or {})
         wanted = ", ".join(devices) if devices else requested
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount,
@@ -553,7 +555,7 @@ class WorkerScheduler:
     def room(self, worker: Any, device: str
              ) -> tuple[int | None, int | None, "mem.SlotAccount"]:
         """``(total, headroom, account)`` of *worker*'s *device*: its total
-        bytes as last reported, what a new budget may take
+        bytes as last reported, what a new footprint may take
         (``memory_admission.headroom``), and what the ledger holds on its
         slot."""
         report = _report(worker, device)
@@ -562,43 +564,92 @@ class WorkerScheduler:
         account = self.ledger.account(slot_for(worker, device))
         return total, mem.headroom(total, free, account), account
 
-    def _admits(self, worker: Any, device: str,
-                taken: Mapping[SlotKey, int], budget: int | None) -> bool:
+    def admission(self, worker: Any, device: str) -> dict[str, Any]:
+        """A shared card's ledger as ``GET /api/workers`` shows it."""
+        report = _report(worker, device)
+        total, room, account = self.room(worker, device)
+        return {
+            "by_memory": self.shared(worker, device),
+            "total_bytes": total,
+            "free_bytes": None if report is None else report.free_bytes,
+            "reserved_bytes": account.reserved,
+            "running_bytes": account.running,
+            "headroom_bytes": room,
+            "context_bytes": mem.context_bytes(device),
+            "runs": list(account.runs),
+        }
+
+    def card_state(self, worker: Any, device: str,
+                   taken: Mapping[SlotKey, int], budget: int
+                   ) -> tuple[bool, bool, str | None]:
+        """``(fits_ever, fits_now, why_not)`` of a budgeted run on a shared
+        card: the one judgement placement, the submit refusal and the
+        waiting reason share. *why_not* names the real blocker: no total,
+        a total too small, a holder without a budget, or too little room."""
+        need = mem.footprint(budget, device)
+        total, room, account = self.room(worker, device)
+        if total is None:
+            return False, False, f"{device} on {worker.id} has no memory total reported"
+        if total < need:
+            return False, False, (f"{device} on {worker.id} has "
+                                  f"{mem.format_gib(total)} in total")
         slot = slot_for(worker, device)
-        if not self.shared(worker, device):
-            return _free(self._limits, slot, taken)
-        if budget is None:
-            return False
         # A holder without a budget (a same-host card's in-process run, a
         # run from before the card became shared, a reserved set) has the
         # card to itself until it ends.
         if taken.get(slot, 0) > self.ledger.holders(slot):
-            return False
-        _, room, _ = self.room(worker, device)
-        return room is not None and room >= budget
+            return True, False, mem.held_without_budget(device, worker.id)
+        if room is None or room < need:
+            return True, False, mem.does_not_fit(device, worker.id, room,
+                                                 account.runs)
+        return True, True, None
 
-    def _candidates(self, worker: Any, requested: str,
-                    devices: list[str] | None) -> list[str]:
-        if devices:
-            return [canonical_device(d) for d in devices]
-        return candidate_devices(worker.device_values(), requested)
+    def _admits(self, worker: Any, device: str,
+                taken: Mapping[SlotKey, int], budget: int | None) -> bool:
+        if not self.shared(worker, device):
+            return _free(self._limits, slot_for(worker, device), taken)
+        return budget is not None \
+            and self.card_state(worker, device, taken, budget)[1]
 
-    def wants_budget(self, options: Mapping[str, Any]) -> bool:
-        """Whether a run with *options* could be placed on a shared card,
-        so a budget matters (``RunService.submit`` asks its budget source
-        only then)."""
+    def places(self, options: Mapping[str, Any]
+               ) -> tuple[list[list[tuple[Any, str]]], bool]:
+        """``(places, here)`` for a run with *options*: every place on a
+        worker it may go (a device set is one place per worker, all of its
+        devices; otherwise one card each), and whether this process may take
+        it (``any``, by count). The one enumeration ``wants_budget``,
+        ``memory_refusal`` and the waiting reason use."""
         worker_id, devices = entry_target(options)
         if worker_id == TARGET_LOCAL:
-            return False
+            return [], True
         requested = str(options.get("device") or "cpu")
+        here = False
         if worker_id != TARGET_ANY:
             worker = self._registry.get(worker_id)
             workers = [] if worker is None else [worker]
         else:
-            workers = list(self._registry.workers())
-        return any(self.shared(w, d) for w in workers
-                   for d in self._candidates(w, requested, devices)
-                   if w.offers(d))
+            here = (not renumbered_on_a_worker(devices)
+                    and _serves(self._local_devices(), requested, devices))
+            workers = [w for w in self._registry.workers()
+                       if not _skipped_by_any(w)
+                       and _serves(w.device_values(), requested, devices)]
+        places: list[list[tuple[Any, str]]] = []
+        for worker in workers:
+            if devices:
+                cards = [canonical_device(d) for d in devices]
+            else:
+                cards = candidate_devices(worker.device_values(), requested)
+            cards = [d for d in cards if worker.offers(d)]
+            if devices:
+                places.append([(worker, d) for d in cards])
+            else:
+                places.extend([(worker, d)] for d in cards)
+        return places, here
+
+    def wants_budget(self, options: Mapping[str, Any]) -> bool:
+        """Whether a run with *options* could be placed on a shared card,
+        so a budget matters."""
+        places, _ = self.places(options)
+        return any(self.shared(w, d) for place in places for w, d in place)
 
     def memory_refusal(self, options: Mapping[str, Any],
                        budget: int | None, taken: Mapping[SlotKey, int],
@@ -609,36 +660,15 @@ class WorkerScheduler:
         Only shared cards are judged: a run that may also go to a card
         admitted by count (this process, for ``any``) is never refused
         here, it queues as before. Refused: no budget, for a run that can
-        only go to shared cards; a budget larger than every candidate's
-        total (it would wait forever); and, unless *wait*, a budget no
-        candidate fits now. A device set is one candidate per worker, all
-        of its devices together.
+        only go to shared cards; a footprint larger than every candidate's
+        total (it would wait forever); and, unless *wait*, one no candidate
+        fits now. A worker that is away is judged on its last report for
+        the total only: whether it fits NOW is not known, so the run waits.
         """
-        worker_id, devices = entry_target(options)
-        if worker_id == TARGET_LOCAL:
-            return None
-        requested = str(options.get("device") or "cpu")
-        if worker_id != TARGET_ANY:
-            worker = self._registry.get(worker_id)
-            workers = [] if worker is None else [worker]
-        else:
-            if not renumbered_on_a_worker(devices) \
-                    and _serves(self._local_devices(), requested, devices):
-                return None  # this process takes it, by count
-            workers = [w for w in self._registry.workers()
-                       if not _skipped_by_any(w)
-                       and _serves(w.device_values(), requested, devices)]
-        places: list[list[tuple[Any, str]]] = []
-        for worker in workers:
-            cards = [(worker, d)
-                     for d in self._candidates(worker, requested, devices)
-                     if worker.offers(d)]
-            if devices:
-                places.append(cards)
-            else:
-                places.extend([card] for card in cards)
-        if not places or any(not any(self.shared(w, d) for w, d in place)
-                             for place in places):
+        places, here = self.places(options)
+        if here or not places or any(
+                not any(self.shared(w, d) for w, d in place)
+                for place in places):
             return None  # nowhere to judge, or somewhere admits by count
         if budget is None:
             worker, device = places[0][0]
@@ -647,49 +677,50 @@ class WorkerScheduler:
                 else "every device this run may use")
         reasons: list[str] = []
         fits_ever = fits_now = False
+        kind = places[0][0][1]
         for place in places:
             place_ever = place_now = True
             for worker, device in place:
                 if not self.shared(worker, device):
                     continue
-                total, room, account = self.room(worker, device)
-                if total is None or total < budget:
-                    place_ever = place_now = False
-                    reasons.append(
-                        f"{device} on {worker.id} has "
-                        + ("no memory total reported" if total is None
-                           else f"{mem.format_gib(total)} in total"))
-                elif not self._admits(worker, device, taken, budget):
-                    place_now = False
-                    reasons.append(mem.does_not_fit(
-                        device, worker.id, room, account.runs))
+                ever, now, why = self.card_state(worker, device, taken,
+                                                 budget)
+                if not getattr(worker, "online", True) and ever:
+                    now, why = True, None  # stale figures: wait for it
+                place_ever = place_ever and ever
+                place_now = place_now and now
+                if why is not None:
+                    reasons.append(why)
             fits_ever = fits_ever or place_ever
             fits_now = fits_now or place_now
         if not fits_ever or (not fits_now and not wait):
-            return mem.needs_message(budget, reasons)
+            return mem.needs_message(budget, reasons, kind)
         return None
 
-    def _memory_wait(self, worker: Any, requested: str,
-                     devices: list[str] | None,
-                     budget: int | None) -> str | None:
+    def _memory_wait(self, options: Mapping[str, Any],
+                     budget: int | None,
+                     taken: Mapping[SlotKey, int]) -> str | None:
         """Why a run for a named worker waits for memory, or None (it waits
         for its turn, or for a card admitted by count)."""
-        cards = [d for d in self._candidates(worker, requested, devices)
-                 if worker.offers(d)]
-        shared = [d for d in cards if self.shared(worker, d)]
-        if not shared or (not devices and len(shared) < len(cards)):
+        places, _ = self.places(options)
+        if not places or any(not any(self.shared(w, d) for w, d in place)
+                             for place in places):
             return None
         if budget is None:
-            return mem.no_budget_message(f"{shared[0]} on {worker.id}")
+            worker, device = places[0][0]
+            return mem.no_budget_message(f"{device} on {worker.id}")
         reasons = []
-        for device in shared:
-            _, room, account = self.room(worker, device)
-            if room is None or room < budget:
-                reasons.append(mem.does_not_fit(device, worker.id, room,
-                                                account.runs))
+        for place in places:
+            for worker, device in place:
+                if self.shared(worker, device):
+                    _, now, why = self.card_state(worker, device, taken,
+                                                  budget)
+                    if not now and why is not None:
+                        reasons.append(why)
         if not reasons:
             return None
-        return "waiting for memory: " + mem.needs_message(budget, reasons)
+        return "waiting for memory: " + mem.needs_message(
+            budget, reasons, places[0][0][1])
 
 
 def no_mount(worker_id: str, mount: str, why_not_transfer: str | None = None
