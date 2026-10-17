@@ -192,6 +192,29 @@ async def test_the_index_follows_connects_heartbeats_and_removals(caplog):
         await registry.shutdown()
 
 
+def test_this_processs_devices_are_not_probed_until_a_worker_names_a_card():
+    """A server without workers (or whose workers report no UUID) never
+    lists its own devices for this (#773 probed them lazily, on the first
+    same-host worker; the card index keeps that)."""
+    calls = []
+
+    def local_devices():
+        calls.append(1)
+        return [_Fact("cuda:0", UUID)]
+
+    registry = WorkerRegistry(local_devices=local_devices)
+    assert registry.card_slots(("local", "cuda:0")) == (("local", "cuda:0"),)
+    registry.connect(_hello("old", _card("cuda:0", None)), send=_noop,
+                     close=_noop)
+    assert registry.card_slots(("old", "cuda:0")) == (("old", "cuda:0"),)
+    assert calls == []
+    registry.connect(_hello("new", _card("cuda:0", UUID)), send=_noop,
+                     close=_noop)
+    assert registry.card_slots(("new", "cuda:0")) == (
+        ("local", "cuda:0"), ("new", "cuda:0"))
+    assert calls == [1]
+
+
 # ── placement per card ───────────────────────────────────────────────────
 
 

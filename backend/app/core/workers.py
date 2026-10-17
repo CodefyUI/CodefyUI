@@ -637,12 +637,18 @@ class WorkerRegistry:
             if slot not in slots.setdefault(uuid, []):
                 slots[uuid].append(slot)
 
+        workers = sorted(self._workers.values(), key=lambda w: w.name)
+        if not any(report.uuid for worker in workers
+                   for report in worker.devices):
+            # No worker names a card: nothing to group, and this process's
+            # devices are not probed (a server without workers never is).
+            return _CardIndex()
         for fact in self._local_devices():
             value = _canonical_or_none(getattr(fact, "value", ""))
             if value is not None and value.startswith("cuda"):
                 add(getattr(fact, "uuid", None), LOCAL_ID, value,
                     (LOCAL_ID, value))
-        for worker in sorted(self._workers.values(), key=lambda w: w.name):
+        for worker in workers:
             for report in worker.devices:
                 value = _canonical_or_none(report.value)
                 if value is None or not value.startswith("cuda"):
