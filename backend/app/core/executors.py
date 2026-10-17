@@ -638,8 +638,13 @@ class WorkerExecutor:
     """
 
     def __init__(self, registry: "WorkerRegistry",
-                 content_index: Any = None) -> None:
+                 content_index: Any = None,
+                 on_started: Callable[[str], Any] | None = None) -> None:
         self._registry = registry
+        #: Called with the run id on its ``run_started`` (#788): a run
+        #: admitted by memory has its cap in place, so the ledger moves its
+        #: budget from reserved to running.
+        self._on_started = on_started
         #: ``core.transfer.ContentIndex``: the inputs' hashes for a run
         #: that uses the transfer backend (#785). None: no such run is
         #: assigned (it fails with a message instead).
@@ -692,7 +697,10 @@ class WorkerExecutor:
             await worker.send(wp.Assign(
                 run_id=request.run_id, graph=request.graph,
                 options=request.options, device=devices[0],
-                devices=devices, storage=storage))
+                devices=devices, storage=storage,
+                memory_budgets=({device: placement.memory_budget
+                                 for device in placement.budget_devices}
+                                if placement.memory_budget else {})))
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
@@ -843,6 +851,8 @@ class WorkerExecutor:
 
         sinks = request.sinks
         if isinstance(frame, wp.RunStarted):
+            if self._on_started is not None:
+                self._on_started(request.run_id)
             if frame.execution_facts and sinks.record_execution_facts:
                 try:
                     await sinks.record_execution_facts(frame.execution_facts)

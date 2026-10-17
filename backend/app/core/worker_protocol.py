@@ -123,11 +123,17 @@ PROTOCOL_VERSION = 3
 #: ``transfer`` (#785): ``assign.storage.backend == "transfer"`` with
 #: ``inputs`` and ``max_upload_bytes``, and ``artifact.backend``; the control
 #: plane sends a run through the transfer backend only to a worker that
-#: lists it.
-CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer")
+#: lists it. ``memory_budget`` (#788): ``assign.memory_budgets``; the agent
+#: caps each listed card with ``set_per_process_memory_fraction`` in the run
+#: subprocess and sends ``run_started`` only once the cap is in place. A
+#: worker that does not list it is never given a ``shared`` card's runs.
+CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
+                                 "memory_budget")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
+#: The capability name of enforced memory budgets (#788).
+CAPABILITY_MEMORY_BUDGET = "memory_budget"
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -473,6 +479,13 @@ class Assign(_Frame):
     #: The control plane's mount label (and, for a same-host worker without
     #: one, its path); None from a peer before #782.
     storage: Storage | None = None
+    #: Device (as this worker numbers it, one of ``devices``) -> the run's
+    #: memory budget on it in bytes (#788): the run was admitted to a
+    #: ``shared`` card by memory. The agent caps the run subprocess's
+    #: allocator to it before the run starts, and ``run_started`` comes
+    #: after the cap is set. Empty: no budget, the card is the run's alone.
+    memory_budgets: dict[str, Annotated[int, Field(gt=0)]] = Field(
+        default_factory=dict)
 
 
 class Cancel(_Frame):

@@ -340,7 +340,7 @@ journalctl -u codefyui-agent -f
 
 - **畫布在控制面執行。** **Run** 一律在那裡執行，連同它的快取與持久化權重；要把分頁的圖送到 worker，請使用**排入佇列...**。
 - **Worker 上不擷取輸出。** 目標為 worker 的 run 不接受 `record_outputs`（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）；要為 Inspector 擷取輸出，請以控制面為目標。Worker run 每次也都從新的權重開始。
-- **沒有依記憶體的准入。** Run 與在控制面上一樣，以每個裝置名額的數量准入；沒有任何機制檢查 run 是否放得進卡的記憶體（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）。
+- **依記憶體准入需逐卡開啟。** Run 與在控制面上一樣，以每個裝置名額的數量准入，除非該卡設為 **依記憶體共用**（[多 GPU：共用一張卡](/usage/multi-gpu#sharing-a-card)）。
 - **一個 run，一台機器。** Run 只使用一個 worker 的裝置；沒有跨卡或跨機器的 `DistributedDataParallel`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **以 Linux 為主。** Worker 在 Linux 上開發與測試；macOS 可用，Windows 盡力支援。
 - **控制面重新啟動會結束 worker 上的 run。** 它停止時正在執行的 run 會以 `interrupted` 結束，與本機 run 相同（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)）。

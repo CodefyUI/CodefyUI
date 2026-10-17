@@ -333,10 +333,14 @@ class WorkerStore:
         await self.db.run(_touch)
 
     async def delete_worker(self, name: str) -> bool:
-        """Revoke *name*'s credential by deleting its row."""
+        """Revoke *name*'s credential by deleting its row, and its device
+        policies (#788) with it."""
         def _delete(conn: sqlite3.Connection) -> bool:
-            return conn.execute("DELETE FROM workers WHERE id = ?",
-                                (name,)).rowcount > 0
+            with transaction(conn):
+                conn.execute("DELETE FROM worker_device_policies "
+                             "WHERE worker = ?", (name,))
+                return conn.execute("DELETE FROM workers WHERE id = ?",
+                                    (name,)).rowcount > 0
 
         return await self.db.run(_delete)
 
@@ -362,6 +366,38 @@ class WorkerStore:
                                 (name,)).fetchone() is not None
 
         return await self.db.run(_exists)
+
+    # ── device admission policies (#788, migration 014) ──────────────────
+
+    async def list_device_policies(self) -> list[tuple[str, str, str]]:
+        """Every stored ``(worker, device, policy)``, by worker then device."""
+        def _list(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+            rows = conn.execute(
+                "SELECT worker, device, policy FROM worker_device_policies "
+                "ORDER BY worker, device").fetchall()
+            return [(row["worker"], row["device"], row["policy"])
+                    for row in rows]
+
+        return await self.db.run(_list)
+
+    async def set_device_policy(self, worker: str, device: str,
+                                policy: str) -> None:
+        """Store *worker*'s *device* policy. ``exclusive``, the default, is
+        stored as no row."""
+        def _set(conn: sqlite3.Connection) -> None:
+            if policy == "exclusive":
+                conn.execute("DELETE FROM worker_device_policies "
+                             "WHERE worker = ? AND device = ?",
+                             (worker, device))
+                return
+            conn.execute(
+                "INSERT INTO worker_device_policies (worker, device, policy, "
+                "updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (worker, device) "
+                "DO UPDATE SET policy = excluded.policy, "
+                "updated_at = excluded.updated_at",
+                (worker, device, policy, utc_now_iso()))
+
+        await self.db.run(_set)
 
     # ── SSH workers (#784, migration 012) ─────────────────────────────────
 

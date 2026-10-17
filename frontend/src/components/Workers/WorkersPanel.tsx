@@ -1,9 +1,11 @@
 import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  DevicePolicy,
   SshWorker,
   TunnelState,
   WorkerDevice,
+  WorkerDeviceAdmission,
   WorkerInfo,
   WorkerNodeCatalog,
   WorkerRejection,
@@ -56,10 +58,62 @@ function RunLinks({ runIds }: { runIds: string[] }) {
   );
 }
 
-function DeviceRow({ device }: { device: WorkerDevice }) {
+/** The device kinds a policy can be set for (#788). */
+const SHAREABLE_KINDS: ReadonlySet<string> = new Set(['cuda', 'mps']);
+
+/** Percent of *total* that *part* is, clamped to 0..100. */
+function share(part: number, total: number): number {
+  return Math.max(0, Math.min(100, (part / total) * 100));
+}
+
+/**
+ * A shared card's memory (#788): in use on the card now (any process,
+ * other users' jobs included), promised to runs that have not started yet,
+ * and what a new budget may take, with the budgets in words beside it.
+ */
+function AdmissionBar({ admission }: { admission: WorkerDeviceAdmission }) {
   const { t } = useI18n();
+  const { total_bytes: total, free_bytes: free, headroom_bytes: headroom } = admission;
+  const line = t('workers.admission.line', {
+    headroom: headroom === null ? '-' : formatBytes(headroom),
+    running: formatBytes(admission.running_bytes),
+    reserved: formatBytes(admission.reserved_bytes),
+  });
+  return (
+    <div className={styles.admission}>
+      {total !== null && total > 0 && (
+        <div className={styles.bar} role="img" aria-label={line}>
+          <span
+            className={styles.barUsed}
+            style={{ width: `${share(free === null ? 0 : total - free, total)}%` }}
+            title={free === null ? undefined : t('workers.admission.used', { amount: formatBytes(total - free) })}
+          />
+          <span
+            className={styles.barReserved}
+            style={{ width: `${share(admission.reserved_bytes, total)}%` }}
+            title={t('workers.admission.reserved', { amount: formatBytes(admission.reserved_bytes) })}
+          />
+          <span
+            className={styles.barHeadroom}
+            style={{ width: `${share(headroom ?? 0, total)}%` }}
+            title={t('workers.admission.headroom', { amount: formatBytes(headroom ?? 0) })}
+          />
+        </div>
+      )}
+      <span className={styles.fact}>{line}</span>
+      {admission.runs.length > 0 && <RunLinks runIds={admission.runs} />}
+    </div>
+  );
+}
+
+function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: string }) {
+  const { t } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[workerId]));
+  const setPolicy = useWorkerStore((s) => s.setPolicy);
   const memory = device.memory;
   const hasMemory = memory != null && memory.free_bytes !== null && memory.total_bytes !== null;
+  const shareable = device.policy !== undefined && SHAREABLE_KINDS.has(device.kind);
+  const admission = device.admission ?? null;
   return (
     <li className={styles.device}>
       <span className={styles.deviceName}>
@@ -68,7 +122,7 @@ function DeviceRow({ device }: { device: WorkerDevice }) {
           <span className={styles.muted}> {device.name}</span>
         )}
       </span>
-      {device.slots && (
+      {device.slots && admission === null && (
         <span className={styles.fact}>
           {t('workers.device.slots', { taken: device.slots.taken, limit: device.slots.limit })}
         </span>
@@ -81,7 +135,29 @@ function DeviceRow({ device }: { device: WorkerDevice }) {
           })}
         </span>
       )}
+      {shareable && (
+        // Never disabled: a disabled control drops the focus to the page,
+        // where the dialog's Escape and Tab trap cannot hear it.
+        <select
+          className={styles.policy}
+          value={device.policy}
+          aria-label={t('workers.policy.aria', { device: device.value })}
+          aria-disabled={busy}
+          title={t('workers.policy.title')}
+          onChange={(event) => {
+            if (!busy) void setPolicy(workerId, device.value, event.target.value as DevicePolicy);
+          }}
+        >
+          <option value="exclusive">{t('workers.policy.exclusive')}</option>
+          <option value="shared">{t('workers.policy.shared')}</option>
+        </select>
+      )}
       {device.running && <RunLinks runIds={device.running} />}
+      {admission !== null && (
+        admission.by_memory
+          ? <AdmissionBar admission={admission} />
+          : <span className={`${styles.warn} ${styles.admission}`}>{t('workers.admission.notEnforced')}</span>
+      )}
     </li>
   );
 }
@@ -389,7 +465,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
       </dl>
       <ul className={styles.devices}>
         {worker.devices.map((device) => (
-          <DeviceRow key={device.value} device={device} />
+          <DeviceRow key={device.value} device={device} workerId={worker.id} />
         ))}
       </ul>
     </article>

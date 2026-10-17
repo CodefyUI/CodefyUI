@@ -9,7 +9,9 @@ import {
   defaultKind,
   deviceKind,
   localDeviceChoices,
+  parseMemoryGib,
   toggleDevice,
+  usesSharedDevice,
   workerDeviceChoices,
   type DeviceChoice,
 } from './queueTargets';
@@ -114,5 +116,29 @@ describe('anyKinds / defaultKind', () => {
     expect(defaultKind(['cpu', 'cuda'], 'cuda:1')).toBe('cuda');
     expect(defaultKind(['cpu', 'cuda'], 'auto')).toBe('cuda');
     expect(defaultKind(['cpu'], 'mps')).toBe('cpu');
+  });
+
+  it('knows when a run may land on a device shared by memory (#788)', () => {
+    const box = worker('box', 'online', [['cuda:0', 'cuda'], ['cuda:1', 'cuda']]);
+    box.memory_budget = true;
+    box.devices[1].policy = 'shared';
+    const old = worker('old', 'online', [['cuda:0', 'cuda']]);
+    old.devices[0].policy = 'shared';
+    expect(usesSharedDevice('box', box, ['cuda:1'], [box], 'cuda')).toBe(true);
+    expect(usesSharedDevice('box', box, ['cuda:0'], [box], 'cuda')).toBe(false);
+    expect(usesSharedDevice('old', old, ['cuda:0'], [old], 'cuda')).toBe(false);
+    expect(usesSharedDevice('local', null, ['cuda:0'], [box], 'cuda')).toBe(false);
+    expect(usesSharedDevice('any', null, [], [old, box], 'cuda')).toBe(true);
+    expect(usesSharedDevice('any', null, [], [box], 'cpu')).toBe(false);
+  });
+
+  it('reads a memory budget field (#788)', () => {
+    expect(parseMemoryGib('  ')).toBeNull();
+    expect(parseMemoryGib('6')).toBe(6);
+    expect(parseMemoryGib('2.5')).toBe(2.5);
+    expect(parseMemoryGib('.5')).toBe(0.5);
+    for (const bad of ['0', '-1', '1e3', 'abc', '4097', '1.2.3']) {
+      expect(parseMemoryGib(bad)).toBeUndefined();
+    }
   });
 });

@@ -3,6 +3,8 @@
     GET    /api/workers                      every known worker (open read)
     POST   /api/workers/{id}/drain           no new runs on it (session token)
     POST   /api/workers/{id}/undrain         take new runs again (session token)
+    PUT    /api/workers/{id}/devices/{device}/policy
+                                             exclusive | shared (token; #788)
     DELETE /api/workers/{id}                 revoke + disconnect + forget (token)
     POST   /api/workers/enrollments          a new enrollment token (token)
     GET    /api/workers/enrollments          the enrollment tokens (token)
@@ -47,6 +49,19 @@ without a run service; its ``mounts`` is this server's own label and path,
 #782), so a Workers panel can draw this server beside its
 workers.
 
+Memory admission (#788): every worker device entry carries ``policy``
+(``exclusive``, the default, or ``shared``) and, for a shared one,
+``admission``: ``{"by_memory", "total_bytes", "free_bytes",
+"reserved_bytes", "running_bytes", "headroom_bytes", "runs"}``. The budgets
+promised on the card (reserved: assigned, not started; running: started
+with their cap in place), what a new budget may take, and the runs holding
+budgets there. ``by_memory`` is false when the policy is ``shared`` but the
+worker's agent does not enforce budgets (no ``memory_budget`` capability):
+its card then admits by count. A worker entry's ``memory_budget`` says
+whether its agent enforces budgets. ``PUT .../policy`` with ``{"policy":
+"shared"}`` stores the policy (``worker_device_policies``) and reschedules;
+it is accepted for a CUDA or MPS device the worker reports.
+
 Handshake validation (#781): each worker entry carries ``node_catalog``
 (``{"status": "match" | "mismatch" | "unknown", "hash", "missing",
 "extra"}``: its node catalog against this server's, the type lists sorted)
@@ -76,6 +91,7 @@ from pydantic import BaseModel, Field
 from ..config import settings
 from ..core import tls_fingerprint as tls_fp
 from ..core import ssh_launch
+from ..core import memory_admission as mem
 from ..core import worker_protocol as wp
 from ..core import worker_store as ws_store
 from ..core.api_keys import require_session_token
@@ -161,7 +177,8 @@ def _store(request: Request) -> Any:
     return store
 
 
-def _describe(worker: Any, service: Any) -> dict[str, Any]:
+def _describe(worker: Any, service: Any,
+              registry: Any = None) -> dict[str, Any]:
     """``worker.describe()`` with each device's slot usage filled in.
 
     ``mounts`` are the labels the worker declared (``--mount``, #782); a
@@ -182,7 +199,34 @@ def _describe(worker: Any, service: Any) -> dict[str, Any]:
                                  else None)
         device["slots"] = (None if service is None or value is None
                            else service.slot_usage(slot_for(worker, value)))
+        device["policy"] = (registry.device_policy(worker.id, value)
+                            if registry is not None and value is not None
+                            else mem.POLICY_EXCLUSIVE)
+        device["admission"] = (
+            _admission(worker, value, device, service)
+            if device["policy"] == mem.POLICY_SHARED and service is not None
+            else None)
+    entry["memory_budget"] = wp.CAPABILITY_MEMORY_BUDGET in (
+        getattr(worker, "capabilities", None) or ())
     return entry
+
+
+def _admission(worker: Any, value: str, device: dict[str, Any],
+               service: Any) -> dict[str, Any]:
+    """A shared device's ledger, as ``GET /api/workers`` shows it (#788)."""
+    memory = device.get("memory") or {}
+    total = memory.get("total_bytes")
+    free = memory.get("free_bytes")
+    account = service.memory_account(slot_for(worker, value))
+    return {
+        "by_memory": wp.CAPABILITY_MEMORY_BUDGET in (
+            getattr(worker, "capabilities", None) or ()),
+        "total_bytes": total, "free_bytes": free,
+        "reserved_bytes": account.reserved,
+        "running_bytes": account.running,
+        "headroom_bytes": mem.headroom(total, free, account),
+        "runs": list(account.runs),
+    }
 
 
 def _describe_local(service: Any) -> dict[str, Any] | None:
@@ -199,17 +243,19 @@ def _describe_local(service: Any) -> dict[str, Any] | None:
 async def list_workers(request: Request) -> dict[str, Any]:
     registry = _registry(request)
     service = _service(request)
-    return {"workers": [_describe(w, service) for w in registry.workers()],
+    return {"workers": [_describe(w, service, registry)
+                        for w in registry.workers()],
             "local": _describe_local(service),
             "rejections": registry.rejections()}
 
 
 def _set_draining(request: Request, worker_id: str,
                   draining: bool) -> dict[str, Any]:
-    worker = _registry(request).drain(worker_id, draining)
+    registry = _registry(request)
+    worker = registry.drain(worker_id, draining)
     if worker is None:
         raise HTTPException(404, f"no worker named {worker_id!r}")
-    return _describe(worker, _service(request))
+    return _describe(worker, _service(request), registry)
 
 
 @router.post("/{worker_id}/drain")
@@ -220,6 +266,41 @@ async def drain_worker(request: Request, worker_id: str) -> dict[str, Any]:
 @router.post("/{worker_id}/undrain")
 async def undrain_worker(request: Request, worker_id: str) -> dict[str, Any]:
     return _set_draining(request, worker_id, False)
+
+
+class PolicyRequest(BaseModel):
+    policy: str = Field(..., max_length=20)
+
+
+@router.put("/{worker_id}/devices/{device}/policy")
+async def set_device_policy(request: Request, worker_id: str, device: str,
+                            body: PolicyRequest) -> dict[str, Any]:
+    """Set how *worker_id*'s *device* admits runs (#788): ``exclusive``
+    (by count, the default) or ``shared`` (by memory budget). Stored, so
+    it survives a reconnect and a restart; runs already on the card are
+    not touched. Answers the worker's entry."""
+    registry = _registry(request)
+    worker = registry.get(worker_id)
+    if worker is None:
+        raise HTTPException(404, f"no worker named {worker_id!r}")
+    if body.policy not in mem.POLICIES:
+        raise HTTPException(422, f"policy must be one of "
+                                 f"{', '.join(mem.POLICIES)}")
+    try:
+        value = canonical_device(device)
+    except ValueError:
+        raise HTTPException(422, f"unknown device {device!r}") from None
+    if not worker.offers(value):
+        raise HTTPException(404, f"worker {worker_id} does not report "
+                                 f"{value}")
+    if value.split(":")[0] not in mem.SHAREABLE_KINDS:
+        raise HTTPException(422, f"{value} cannot be shared by memory: only "
+                                 "a CUDA or MPS device can")
+    store = getattr(request.app.state, "worker_store", None)
+    if store is not None:
+        await store.set_device_policy(worker_id, value, body.policy)
+    registry.set_device_policy(worker_id, value, body.policy)
+    return _describe(worker, _service(request), registry)
 
 
 # ── enrollment (#780) ─────────────────────────────────────────────────────
@@ -594,6 +675,7 @@ async def _revoke_worker(request: Request, worker_id: str,
     registry = getattr(request.app.state, "worker_registry", None)
     removed = None
     if registry is not None:
+        registry.forget_policies(worker_id)
         removed = registry.forget(
             worker_id, f"{reason} and its credential revoked" if revoked
             else reason)

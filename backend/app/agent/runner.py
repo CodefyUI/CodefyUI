@@ -337,6 +337,10 @@ class RunHandle:
     #: A cancel came while a transfer run's last uploads were going: send
     #: nothing more, say so in a warning.
     uploads_cancelled: bool = False
+    #: A run with memory budgets (#788): its ``run_started``, held until the
+    #: subprocess reports its cap in place (``memory_limit``); None once
+    #: sent, or for a run without budgets (sent at start).
+    held_started: Any = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     #: Set once the reader has joined the process (it is gone).
     exited: asyncio.Event = field(default_factory=asyncio.Event)
@@ -454,6 +458,11 @@ class Runner:
             raise AssignmentRefused(
                 f"device {frame.device!r} is not the first device of the "
                 f"assigned set {devices}")
+        for budgeted in frame.memory_budgets:
+            if canonical_device(budgeted) not in (canonical_set or [device]):
+                raise AssignmentRefused(
+                    f"memory budget for {budgeted!r}, which is not an "
+                    f"assigned device ({canonical_set or [device]})")
         named = device if kind == "cuda" else frame.device.strip().lower()
         return child_device(named, canonical_set), canonical_set
 
@@ -645,6 +654,11 @@ class Runner:
             "options": frame.options, "device": device,
             "env": env, "log_path": str(log_path), "mount": mount,
         }
+        if frame.memory_budgets:
+            # As the child numbers its cards (#788): it sees only the set.
+            spec["memory_budgets"] = {
+                child_device(canonical_device(d), devices or [frame.device]):
+                    nbytes for d, nbytes in frame.memory_budgets.items()}
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)
         process = self._ctx.Process(
@@ -671,9 +685,14 @@ class Runner:
         self.runs[frame.run_id] = handle
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
-        await self.send(wp.RunStarted(run_id=frame.run_id,
-                                      seq=handle.next_seq(), pid=process.pid,
-                                      execution_facts=facts))
+        started = wp.RunStarted(run_id=frame.run_id, seq=1, pid=process.pid,
+                                execution_facts=facts)
+        if frame.memory_budgets:
+            # Sent once the subprocess has capped its allocator (#788):
+            # ``run_started`` is what moves the budget to ``running``.
+            handle.held_started = started
+        else:
+            await self.send(_numbered(handle, started))
         handle.reader = threading.Thread(
             target=self._read, args=(handle, self._loop),
             name=f"run-reader-{frame.run_id}", daemon=True)
@@ -817,6 +836,13 @@ class Runner:
             frame = wp.Artifact(run_id=run_id, seq=1, **message[1])
         elif kind == child_module.MSG_WARNING:
             frame = wp.RunWarning(run_id=run_id, seq=1, **message[1])
+        elif kind == child_module.MSG_MEMORY_LIMIT:
+            started, handle.held_started = handle.held_started, None
+            if started is None:
+                return None
+            frame = started.model_copy(update={"execution_facts": {
+                **(started.execution_facts or {}),
+                "memory_limit": message[1]}})
         elif kind == child_module.MSG_FINISHED:
             frame = self._reported_end(handle, message[1], 1)
         else:

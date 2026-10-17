@@ -118,6 +118,46 @@ export function anyKinds(local: readonly DeviceChoice[], workers: readonly Worke
   return ['cpu', ...ACCELERATORS.filter((kind) => offered.has(kind))];
 }
 
+/** A device shared by memory on a worker whose agent enforces budgets (#788). */
+function sharedByMemory(worker: WorkerInfo, device: WorkerDevice): boolean {
+  return device.policy === 'shared' && worker.memory_budget === true;
+}
+
+/**
+ * Whether a run sent where the picker points could land on a device shared
+ * by memory (#788), so its memory budget matters: one of the chosen
+ * worker's chosen devices, or, for `any`, a device of the chosen kind on a
+ * connected worker.
+ */
+export function usesSharedDevice(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): boolean {
+  if (target === TARGET_ANY) {
+    return online.some((w) => w.devices.some((d) => deviceKind(d.value) === kind && sharedByMemory(w, d)));
+  }
+  if (worker === null) return false;
+  return worker.devices.some((d) => selected.includes(d.value) && sharedByMemory(worker, d));
+}
+
+/**
+ * A memory budget field's text as `target.memory_gib` (#788): `null` for a
+ * blank field (the server's default applies), `undefined` for text that is
+ * not a number above 0 and at most {@link MAX_MEMORY_GIB}.
+ */
+export const MAX_MEMORY_GIB = 4096;
+
+export function parseMemoryGib(raw: string): number | null | undefined {
+  const text = raw.trim();
+  if (text === '') return null;
+  if (!/^\d*\.?\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  return value > 0 && value <= MAX_MEMORY_GIB ? value : undefined;
+}
+
 /** The kind an `any` run starts with: the graph device's kind when it is
  * offered, else the first accelerator, else CPU. */
 export function defaultKind(kinds: readonly string[], graphDevice: string): string {

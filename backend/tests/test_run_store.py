@@ -131,7 +131,7 @@ async def _make_run(store: RunStore, **kwargs) -> RunRecord:
 
 
 def test_fresh_install_creates_the_exec_tables_and_sweeps(db):
-    assert _user_version(db) == len(MIGRATIONS) == 13
+    assert _user_version(db) == len(MIGRATIONS) == 14
     assert EXEC_TABLES <= _tables(db)
     # NOT in EXEC_TABLES: that set is the `exec_`-prefixed namespace and
     # `sweeps` is not in it.

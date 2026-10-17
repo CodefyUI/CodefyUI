@@ -982,6 +982,27 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def last_peak_memory(
+        self, graph_hash: str,
+    ) -> tuple[str, Any] | None:
+        """``(run_id, peak_memory)`` of the newest succeeded run whose
+        ``execution_facts.graph_hash`` is *graph_hash* and that reported a
+        peak (#788), or None. The default memory budget of a run that
+        declares none (``memory_admission.HistoryBudgetSource``)."""
+        def _lookup(conn: sqlite3.Connection) -> tuple[str, Any] | None:
+            row = conn.execute(
+                "SELECT id, json_extract(execution_facts, '$.peak_memory') "
+                "AS peak FROM exec_runs WHERE status = ? "
+                "AND json_extract(execution_facts, '$.graph_hash') = ? "
+                "AND json_extract(execution_facts, '$.peak_memory') "
+                "IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+                (STATUS_SUCCEEDED, graph_hash)).fetchone()
+            if row is None:
+                return None
+            return row["id"], _loads(row["peak"])
+
+        return await self.db.run(_lookup)
+
     async def record_fingerprint(self, fingerprint: dict[str, Any],
                                  digest: str | None = None) -> str:
         """Store an environment document without a run; returns its digest.

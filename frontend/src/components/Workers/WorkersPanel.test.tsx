@@ -9,6 +9,7 @@ import {
   fetchSshWorkers,
   fetchWorkers,
   removeWorker,
+  setDevicePolicy,
   setSshWorkerEnabled,
   undrainWorker,
   type SshWorker,
@@ -29,6 +30,7 @@ vi.mock('../../api/workers', async (importOriginal) => ({
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
+  setDevicePolicy: vi.fn(),
   fetchEnrollments: vi.fn(),
   createEnrollment: vi.fn(),
   deleteEnrollment: vi.fn(),
@@ -556,6 +558,107 @@ describe('WorkersPanel', () => {
     const dialog = await openPanel([worker('a')]);
     expect(within(dialog).getByText('線上')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '排空' })).toBeInTheDocument();
+  });
+
+  // ── memory admission (#788) ──
+
+  const GIB = 1024 ** 3;
+
+  function sharedBox(extra: Partial<WorkerInfo> = {}): WorkerInfo {
+    return worker('gpu-box', {
+      memory_budget: true,
+      devices: [
+        {
+          value: 'cuda:0', kind: 'cuda', index: 0, name: 'RTX',
+          memory: { total_bytes: 16 * GIB, free_bytes: 12 * GIB, source: 'nvml' },
+          slots: { limit: 1, taken: 2 },
+          policy: 'shared',
+          admission: {
+            by_memory: true, total_bytes: 16 * GIB, free_bytes: 12 * GIB,
+            reserved_bytes: 2 * GIB, running_bytes: 6 * GIB, headroom_bytes: 8 * GIB,
+            runs: ['run-aaaaaaaa-1', 'run-bbbbbbbb-2'],
+          },
+        },
+        {
+          value: 'cuda:1', kind: 'cuda', index: 1, name: 'RTX',
+          memory: null, slots: { limit: 1, taken: 0 }, policy: 'exclusive', admission: null,
+        },
+        { value: 'cpu', kind: 'cpu', index: null, name: 'cpu', memory: null, policy: 'exclusive' },
+      ],
+      ...extra,
+    });
+  }
+
+  it('shows how each card admits runs, and a shared card\'s ledger', async () => {
+    const dialog = await openPanel([sharedBox()]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    const shared = within(card).getByRole('combobox', { name: 'How cuda:0 admits runs' });
+    expect(shared).toHaveValue('shared');
+    expect(within(card).getByRole('combobox', { name: 'How cuda:1 admits runs' })).toHaveValue('exclusive');
+    // The CPU has no policy to set.
+    expect(within(card).queryByRole('combobox', { name: 'How cpu admits runs' })).toBeNull();
+    // A shared card shows its budgets instead of a slot count.
+    expect(within(card).queryByText('Slots 2 / 1')).toBeNull();
+    expect(within(card).getByText('Slots 0 / 1')).toBeInTheDocument();
+    const line = '8.0 GB fits a new budget; budgets: 6.0 GB running, 2.0 GB reserved';
+    expect(within(card).getByText(line)).toBeInTheDocument();
+    const bar = within(card).getByRole('img', { name: line });
+    const [used, reserved, headroom] = Array.from(bar.children) as HTMLElement[];
+    expect(used.style.width).toBe('25%');
+    expect(used).toHaveAttribute('title', '4.0 GB in use on the card (every process)');
+    expect(reserved.style.width).toBe('12.5%');
+    expect(headroom.style.width).toBe('50%');
+    expect(within(card).getByRole('button', { name: 'run-bbbb' })).toBeInTheDocument();
+  });
+
+  it('draws what it knows of a card that reports part of its memory', async () => {
+    const box = sharedBox();
+    box.devices[0].admission = {
+      by_memory: true, total_bytes: 16 * GIB, free_bytes: null, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: null, runs: [],
+    };
+    box.devices[1].admission = {
+      by_memory: true, total_bytes: null, free_bytes: null, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: null, runs: [],
+    };
+    box.devices[1].policy = 'shared';
+    const dialog = await openPanel([box]);
+    const bars = within(dialog).getAllByRole('img');
+    expect(bars).toHaveLength(1);
+    const [used, , headroom] = Array.from(bars[0].children) as HTMLElement[];
+    expect(used.style.width).toBe('0%');
+    expect(used).not.toHaveAttribute('title');
+    expect(headroom.style.width).toBe('0%');
+    expect(within(dialog).getAllByText('- fits a new budget; budgets: 0 B running, 0 B reserved')).toHaveLength(2);
+  });
+
+  it('says when the agent cannot enforce budgets', async () => {
+    const box = sharedBox({ memory_budget: false });
+    box.devices[0].admission = { ...box.devices[0].admission!, by_memory: false };
+    const dialog = await openPanel([box]);
+    expect(within(dialog).getByText(/cannot enforce memory budgets/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('img')).toBeNull();
+  });
+
+  it('changes a policy, and ignores a change while an action is in flight', async () => {
+    vi.mocked(setDevicePolicy).mockReset().mockResolvedValue(sharedBox());
+    const dialog = await openPanel([sharedBox()]);
+    const select = within(dialog).getByRole('combobox', { name: 'How cuda:1 admits runs' });
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'shared' } });
+    });
+    expect(setDevicePolicy).toHaveBeenCalledWith('gpu-box', 'cuda:1', 'shared');
+    act(() => useWorkerStore.setState({ busy: { 'gpu-box': true } }));
+    expect(select).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.change(select, { target: { value: 'exclusive' } });
+    expect(setDevicePolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it('words the policies in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const dialog = await openPanel([sharedBox()]);
+    expect(within(dialog).getByRole('combobox', { name: 'cuda:0 接收 run 的方式' })).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('option', { name: '依記憶體共用' })).toHaveLength(2);
   });
 
   // ── SSH workers (#784) ──

@@ -30,6 +30,15 @@ Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
   ``mount_label`` None.
 - ``("warning", {"kind", "detail", "node_id"})``
 - ``("finished", {"status", "error", "peak_memory"})``, last.
+- ``("memory_limit", {device: {"budget_bytes", "total_bytes",
+  "fraction"}})``, FIRST, for a run with memory budgets (#788,
+  ``spec["memory_budgets"]``, as this process numbers its cards): each
+  card's caching allocator is capped with
+  ``set_per_process_memory_fraction(budget / total)`` before anything
+  else touches torch, so a run that outgrows its budget runs out of memory
+  alone. The agent sends ``run_started`` on this message. A cap that
+  cannot be set fails the run before it starts (``finished`` with no
+  ``memory_limit``).
 
 Paths on a shared mount (#782) are mapped at exactly two places, both fed
 by the assignment (``spec["mount"]``, built once by ``Runner.storage_plan``):
@@ -55,6 +64,7 @@ MSG_METRICS = "metrics"
 MSG_ARTIFACT = "artifact"
 MSG_WARNING = "warning"
 MSG_FINISHED = "finished"
+MSG_MEMORY_LIMIT = "memory_limit"
 MSG_CANCEL = "cancel"
 
 Send = Callable[[tuple], None]
@@ -261,6 +271,43 @@ def _listen_for_cancel(control_in: Any, context: Any) -> None:
             context.cancel()
 
 
+def apply_memory_budgets(budgets: dict[str, int]) -> dict[str, Any]:
+    """Cap each card's allocator to its budget (#788). Imports torch.
+
+    *budgets* maps a device as THIS process numbers it (``cuda:0`` is the
+    first card of its ``CUDA_VISIBLE_DEVICES``) to bytes. The fraction is
+    of the card's total memory, clamped to 1. Returns what was applied, for
+    ``run_started``'s ``execution_facts.memory_limit``. Raises
+    ``RuntimeError`` when a cap cannot be set: a run admitted to a shared
+    card must not run uncapped.
+    """
+    import torch
+
+    applied: dict[str, Any] = {}
+    for device, budget in budgets.items():
+        kind, _, index = str(device).partition(":")
+        try:
+            if kind == "cuda":
+                card = int(index or 0)
+                total = int(torch.cuda.get_device_properties(card).total_memory)
+                fraction = min(1.0, budget / total)
+                torch.cuda.set_per_process_memory_fraction(fraction, card)
+            elif kind == "mps":
+                total = int(torch.mps.recommended_max_memory())
+                fraction = min(1.0, budget / total)
+                torch.mps.set_per_process_memory_fraction(fraction)
+            else:
+                raise ValueError(f"{kind} has no allocator to cap")
+        except Exception as exc:  # noqa: BLE001 -- re-raised with context
+            raise RuntimeError(
+                f"could not cap {device}'s memory to its budget of "
+                f"{budget} bytes: {type(exc).__name__}: {exc}") from exc
+        applied[str(device)] = {"budget_bytes": int(budget),
+                                "total_bytes": total,
+                                "fraction": round(fraction, 6)}
+    return applied
+
+
 def _normalised_graph(graph: dict[str, Any]) -> dict[str, Any]:
     graph = dict(graph)
     graph.setdefault("edges", [])
@@ -282,6 +329,12 @@ def run_assignment(spec: dict[str, Any], send: Send,
 
         from ..core.executors import ExecutionRequest, InProcessExecutor
         from ..core.runtime import initialize_runtime
+
+        # Before discovery: a node module that touches the card at import
+        # must already find it capped (#788).
+        budgets = spec.get("memory_budgets") or {}
+        if budgets:
+            send((MSG_MEMORY_LIMIT, apply_memory_budgets(budgets)))
 
         # The same discovery the server's lifespan runs: built-in, custom
         # and plugin nodes, presets. Payloads depend on the registry (media

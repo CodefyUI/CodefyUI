@@ -335,3 +335,22 @@ def slow_upload_child(spec: dict[str, Any], events_out: Any,
     events_out.send((child.MSG_ARTIFACT, {"kind": "x", "bogus": 1}))
     events_out.send(("nonsense",))
     quick_child(spec, events_out, control_in)
+
+
+def budget_child(spec: dict[str, Any], events_out: Any,
+                 control_in: Any) -> None:
+    """Report the memory cap (#788) as the real child would, then succeed."""
+    total = 16 * 1024 ** 3
+    events_out.send((child.MSG_MEMORY_LIMIT, {
+        device: {"budget_bytes": nbytes, "total_bytes": total,
+                 "fraction": nbytes / total}
+        for device, nbytes in (spec.get("memory_budgets") or {}).items()}))
+    quick_child(spec, events_out, control_in)
+
+
+def uncapped_child(spec: dict[str, Any], events_out: Any,
+                   control_in: Any) -> None:
+    """Fail before the cap is set (#788): no ``memory_limit``."""
+    events_out.send((child.MSG_FINISHED, {
+        "status": "failed", "error": "could not cap cuda:0",
+        "peak_memory": None}))

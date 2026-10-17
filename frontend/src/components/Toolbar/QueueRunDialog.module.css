@@ -92,6 +92,13 @@
   color: var(--status-error);
 }
 
+/* The memory budget block (#788): shown only for a device shared by memory. */
+.memory {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
 @media (max-width: 859px) {
   .pair {
     grid-template-columns: 1fr;

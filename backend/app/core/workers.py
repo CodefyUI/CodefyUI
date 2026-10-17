@@ -362,6 +362,11 @@ class WorkerRegistry:
             = None
         self._clock = clock
         self._workers: dict[str, Worker] = {}
+        #: ``(worker id, canonical device)`` -> ``shared`` (#788); a pair
+        #: with no entry is ``exclusive``. Kept by name, apart from the
+        #: ``Worker`` objects, so a reconnect (which builds a new one) and a
+        #: same-host worker known only in memory both keep theirs.
+        self._policies: dict[tuple[str, str], str] = {}
         self._listeners: list[Callable[[], None]] = []
         self._watchdog: asyncio.Task | None = None
         #: Fire-and-forget closes, kept so they are not collected mid-flight
@@ -502,6 +507,50 @@ class WorkerRegistry:
                     "matches no card of this server; it keeps a slot of "
                     "its own", worker.name, value, report.uuid or "unknown")
         return shared
+
+    # ── device admission policies (#788) ─────────────────────────────────
+
+    def load_policies(self, rows: Any) -> None:
+        """Load stored ``(worker, device, policy)`` rows
+        (``WorkerStore.list_device_policies``). An unknown policy or a
+        device this side cannot parse is skipped (logged)."""
+        from .memory_admission import POLICIES
+
+        for worker_id, device, policy in rows:
+            canonical = _canonical_or_none(device)
+            if canonical is None or policy not in POLICIES:
+                logger.warning("ignoring stored policy %r for %s on %s",
+                               policy, device, worker_id)
+                continue
+            self._policies[(worker_id, canonical)] = policy
+
+    def device_policy(self, worker_id: str, device: str) -> str:
+        """``exclusive`` (the default) or ``shared`` for *worker_id*'s
+        *device*, as that worker numbers it."""
+        from .memory_admission import POLICY_EXCLUSIVE
+
+        canonical = _canonical_or_none(device)
+        if canonical is None:
+            return POLICY_EXCLUSIVE
+        return self._policies.get((worker_id, canonical), POLICY_EXCLUSIVE)
+
+    def set_device_policy(self, worker_id: str, device: str,
+                          policy: str) -> None:
+        """Set a policy (the caller stored it) and reschedule: a card that
+        became shared may take waiting runs now."""
+        from .memory_admission import POLICY_EXCLUSIVE
+
+        canonical = wp.canonical_device(device)
+        if policy == POLICY_EXCLUSIVE:
+            self._policies.pop((worker_id, canonical), None)
+        else:
+            self._policies[(worker_id, canonical)] = policy
+        logger.info("worker %s: %s is now %s", worker_id, canonical, policy)
+        self._changed()
+
+    def forget_policies(self, worker_id: str) -> None:
+        for key in [k for k in self._policies if k[0] == worker_id]:
+            del self._policies[key]
 
     # ── change notification ───────────────────────────────────────────────
 

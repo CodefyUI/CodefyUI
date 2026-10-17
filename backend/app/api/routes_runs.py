@@ -6,6 +6,7 @@ any connection: submit from one client, close it, and query status, events
 and metrics from another.
 
     POST   /api/runs                     submit  -> {run_id, status}
+    POST   /api/runs/estimate            default memory budget for a graph (#788)
     GET    /api/runs                     list (newest first, + queue position)
     GET    /api/runs/{id}                one row + last event cursor + environment
     DELETE /api/runs/{id}                drop a FINISHED run and its children
@@ -55,6 +56,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ValidationError
 
 from ..config import settings
+from ..core import memory_admission as mem
 from ..core.auth import TOKEN_HEADER, constant_time_equals, session_token
 from ..core.run_service import (
     RunService,
@@ -298,6 +300,37 @@ async def submit_run(request: Request):
     except RunServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     return {"run_id": result.run_id, "status": result.status}
+
+
+class EstimateRequest(BaseModel):
+    """``{graph}``: the graph a run would submit."""
+
+    graph: dict[str, Any]
+
+
+@router.post("/estimate")
+async def estimate_memory(body: EstimateRequest, request: Request
+                          ) -> dict[str, Any]:
+    """The memory budget a run of *graph* would get by default (#788).
+
+    ``{"suggested_gib", "source", "peak_bytes", "from_run"}``: the last
+    peak of a succeeded run of the same graph times 1.2 (``source:
+    "history"``), or all null when there is none. What the Queue on...
+    dialog offers as ``target.memory_gib`` for a shared card; #794 adds a
+    static estimate. 400 for a malformed graph.
+    """
+    service = _get_service(request)
+    try:
+        suggestion = await service.suggest_memory(body.graph)
+    except RunSubmitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if suggestion is None:
+        return {"suggested_gib": None, "source": None, "peak_bytes": None,
+                "from_run": None}
+    budget = suggestion.budget
+    return {"suggested_gib": round(budget.bytes / mem.GIB, 2),
+            "source": budget.source, "peak_bytes": suggestion.peak_bytes,
+            "from_run": budget.from_run}
 
 
 @router.get("")

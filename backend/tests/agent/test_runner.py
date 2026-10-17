@@ -435,3 +435,49 @@ async def test_agent_never_imports_torch_and_child_events_match_in_process(
     local = await h.in_process_events(h.tensor_graph(), h.TENSOR_OPTIONS)
     assert worker == local
     assert len(local) == 8  # running + completed for each of four nodes
+
+
+# ── memory budgets (#788) ─────────────────────────────────────────────────
+
+
+async def test_run_started_waits_for_the_memory_cap(tmp_path):
+    """A budgeted run's ``run_started`` goes out once the subprocess says
+    its cap is set, carrying what was applied; the budget reaches the child
+    in the child's own numbering (its set starts at cuda:0)."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.budget_child,
+                     offered_devices={"cpu", "cuda:0", "cuda:1"})
+    gib6 = 6 * 1024 ** 3
+    await runner.assign(_assign("b1", device="cuda:1", devices=["cuda:1"],
+                                memory_budgets={"cuda:1": gib6}))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    started, end = sink.of("b1")
+    assert isinstance(started, wp.RunStarted) and started.seq == 1
+    assert started.execution_facts["memory_limit"] == {"cuda:0": {
+        "budget_bytes": gib6, "total_bytes": 16 * 1024 ** 3,
+        "fraction": 0.375}}
+    assert started.execution_facts["visible_devices"] == "1"
+    assert end is finished and finished.seq == 2
+    assert finished.status == "succeeded"
+
+
+async def test_a_run_whose_cap_failed_never_reports_started(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.uncapped_child,
+                     offered_devices={"cuda:0"})
+    await runner.assign(_assign("b2", device="cuda:0", devices=["cuda:0"],
+                                memory_budgets={"cuda:0": 1024}))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert sink.of("b2") == [finished]
+    assert finished.status == "failed" and finished.seq == 1
+
+
+async def test_a_budget_for_a_card_outside_the_set_is_refused(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.budget_child,
+                     offered_devices={"cuda:0", "cuda:1"})
+    await runner.assign(_assign("b3", device="cuda:0", devices=["cuda:0"],
+                                memory_budgets={"cuda:1": 1024}))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert finished.status == "failed"
+    assert "not an assigned device" in finished.error

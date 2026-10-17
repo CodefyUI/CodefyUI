@@ -366,6 +366,32 @@ export async function deleteRun(
 export interface RunTarget {
   worker: string;
   devices?: string[];
+  /** The run's memory budget per device, for a card shared by memory (#788). */
+  memory_gib?: number;
+  /** Wait when the budget does not fit a shared card now (#788). */
+  wait?: boolean;
+}
+
+/**
+ * `POST /api/runs/estimate` (#788): the budget a run of the graph gets by
+ * default, from the last peak of the same graph times 1.2; all null when
+ * no earlier run reported one.
+ */
+export interface MemoryEstimate {
+  suggested_gib: number | null;
+  source: string | null;
+  peak_bytes: number | null;
+  from_run: string | null;
+}
+
+export async function estimateMemory(graph: Record<string, unknown>): Promise<MemoryEstimate> {
+  const res = await apiFetch(`${BASE_URL}/runs/estimate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph }),
+  });
+  if (!res.ok) return detailError(res, 'Memory estimate failed');
+  return res.json();
 }
 
 export interface SubmitRunRequest {

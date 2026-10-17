@@ -5,9 +5,11 @@ import {
   fetchSshWorkers,
   fetchWorkerList,
   removeWorker,
+  setDevicePolicy,
   setSshWorkerEnabled,
   undrainWorker,
   WorkersApiError,
+  type DevicePolicy,
   type SshWorker,
   type WorkerInfo,
   type WorkerRejection,
@@ -74,6 +76,8 @@ interface WorkerState {
   setDraining: (workerId: string, draining: boolean) => Promise<void>;
   /** Revoke the worker's credential and drop it from the list (#780). */
   remove: (workerId: string) => Promise<void>;
+  /** Set how a worker's device admits runs (#788). */
+  setPolicy: (workerId: string, device: string, policy: DevicePolicy) => Promise<void>;
   /** Enable or disable an SSH worker's tunnel (#784). */
   setSshEnabled: (id: string, enabled: boolean) => Promise<void>;
   /** Stop an SSH worker and delete its entry (#784). */
@@ -238,6 +242,12 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
       });
     }
   },
+
+  setPolicy: (workerId, device, policy) =>
+    guarded(workerId, 'workers.policy.failed', async (seq) => {
+      const updated = await setDevicePolicy(workerId, device, policy);
+      if (claim(seq)) set((s) => ({ workers: s.workers.map((w) => (w.id === workerId ? updated : w)) }));
+    }),
 
   setSshEnabled: (id, enabled) =>
     guarded(id, enabled ? 'workers.ssh.enable.failed' : 'workers.ssh.disable.failed', async (seq) => {

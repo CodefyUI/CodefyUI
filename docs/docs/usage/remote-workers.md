@@ -340,7 +340,7 @@ journalctl -u codefyui-agent -f
 
 - **The canvas runs on the control plane.** **Run** always executes there, with its cache and persistent weights; to send the tab's graph to a worker, use **Queue on...**.
 - **No captured outputs on a worker.** `record_outputs` is refused for a run on a worker ([#789](https://github.com/CodefyUI/CodefyUI/issues/789)); target the control plane to capture outputs for the Inspector. A worker run also starts with fresh weights every time.
-- **No memory admission.** Runs are admitted by count per device slot, as on the control plane; nothing checks that a run fits a card's memory ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)).
+- **Memory admission is opt-in per card.** Runs are admitted by count per device slot, as on the control plane, unless the card is set to **Shared by memory** ([Multi-GPU, Sharing a card](/usage/multi-gpu#sharing-a-card)).
 - **One run, one machine.** A run uses the devices of one worker; there is no `DistributedDataParallel` across cards or machines ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
 - **Linux first.** Workers are developed and tested on Linux; macOS works, and Windows is best effort.
 - **The control plane restarting ends worker runs.** Runs executing when it stops end `interrupted`, as local runs do ([Run Queue, When the server stops](./run-queue#when-the-server-stops)).

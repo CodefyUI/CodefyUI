@@ -31,6 +31,26 @@ export interface WorkerDeviceSlots {
   taken: number;
 }
 
+/** How a worker's card admits runs (#788): by count, or by memory budget. */
+export type DevicePolicy = 'exclusive' | 'shared';
+
+/**
+ * A shared card's ledger (#788): the budgets promised on it (reserved:
+ * assigned, not started; running: started with the cap in place), what a
+ * new budget may take (`headroom_bytes`), and the runs holding budgets.
+ * `by_memory` is false when the worker's agent cannot enforce budgets: the
+ * card then admits by count.
+ */
+export interface WorkerDeviceAdmission {
+  by_memory: boolean;
+  total_bytes: number | null;
+  free_bytes: number | null;
+  reserved_bytes: number;
+  running_bytes: number;
+  headroom_bytes: number | null;
+  runs: string[];
+}
+
 export interface WorkerDevice {
   value: string;
   kind: string;
@@ -41,6 +61,10 @@ export interface WorkerDevice {
   slots?: WorkerDeviceSlots;
   /** Run ids on this device, when the server reports them per device. */
   running?: string[];
+  /** `exclusive` (the default) or `shared` (#788); absent from an older server. */
+  policy?: DevicePolicy;
+  /** A shared card's ledger; `null` for an exclusive one (#788). */
+  admission?: WorkerDeviceAdmission | null;
 }
 
 /**
@@ -102,6 +126,8 @@ export interface WorkerInfo {
   node_catalog?: WorkerNodeCatalog;
   /** Why `status` reads `degraded`: `node_catalog`, `heartbeat` (#781). */
   degraded_reasons?: string[];
+  /** Its agent enforces memory budgets, so its cards can be shared (#788). */
+  memory_budget?: boolean;
 }
 
 /** `GET /api/workers`: the workers and each name's last refused handshake. */
@@ -199,6 +225,22 @@ export function drainWorker(workerId: string): Promise<WorkerInfo> {
 /** Let the worker take new runs again. */
 export function undrainWorker(workerId: string): Promise<WorkerInfo> {
   return setDraining(workerId, 'undrain');
+}
+
+/** Set how the worker's *device* admits runs (#788); answers the worker. */
+export async function setDevicePolicy(
+  workerId: string,
+  device: string,
+  policy: DevicePolicy,
+): Promise<WorkerInfo> {
+  const path = `${encodeURIComponent(workerId)}/devices/${encodeURIComponent(device)}/policy`;
+  const res = await apiFetch(`${BASE_URL}/${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ policy }),
+  });
+  if (!res.ok) throw await failure(res, 'Policy change failed');
+  return res.json();
 }
 
 /** Revoke the worker's credential, disconnect it and forget it (#780). */

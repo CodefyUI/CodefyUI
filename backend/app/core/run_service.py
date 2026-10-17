@@ -198,6 +198,7 @@ import heapq
 import itertools
 import json
 import logging
+import math
 import time
 import weakref
 from collections import deque
@@ -292,6 +293,7 @@ from .run_store import (
     RunStore,
     json_safe,
 )
+from . import memory_admission as mem
 from .scheduling import (
     LOCAL_WORKER_ID,
     LocalScheduler,
@@ -304,6 +306,7 @@ from .scheduling import (
     no_mount,
     on_a_worker,
     renumbered_on_a_worker,
+    target_wait,
 )
 from .secret_params import (
     SecretVault,
@@ -727,6 +730,8 @@ TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
 #: Upper bound on ``target.devices``. A device set names cards on ONE
 #: host; the cap keeps a stored row bounded like every other option.
 MAX_TARGET_DEVICES = 64
+#: ``options.target``'s keys (#769, #788).
+TARGET_KEYS = frozenset({"worker", "devices", "memory_gib", "wait"})
 
 
 def _content_index(store: Any) -> Any:
@@ -806,8 +811,12 @@ def _concrete_device(device: str) -> str:
 def normalize_target(raw: Any) -> dict[str, Any] | None:
     """Validate ``options.target`` (#769). ``None`` means "not given".
 
-    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...]}``, both
-    keys optional and no others. ``worker`` is trimmed and lowercased;
+    Shape: ``{"worker": "local" | "any" | <name>, "devices": [...],
+    "memory_gib": N, "wait": bool}``, every key optional and no others.
+    ``memory_gib`` (#788) is the run's memory budget per device, for a card
+    whose policy is ``shared``; ``wait`` says whether a run that does not
+    fit a shared card now waits (default: yes for ``any``, no for a named
+    worker). Both appear in the result only when given. ``worker`` is trimmed and lowercased;
     absent, it is ``local``. Whether a named worker is connected is not
     known here: :meth:`RunService.submit` checks it against the worker
     registry (#772).
@@ -833,11 +842,11 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise RunSubmitError(
             f"target must be an object, got {type(raw).__name__}")
-    unknown = sorted(set(raw) - {"worker", "devices"})
+    unknown = sorted(set(raw) - TARGET_KEYS)
     if unknown:
         raise RunSubmitError(
             f"unknown target key(s) {unknown}; supported: "
-            "['devices', 'worker']")
+            f"{sorted(TARGET_KEYS)}")
 
     worker = raw.get("worker")
     if worker is None:
@@ -874,7 +883,30 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
                 f"target.devices mixes device kinds {kinds}; a device set is "
                 "one kind")
         devices = cleaned
-    return {"worker": worker, "devices": devices}
+    target: dict[str, Any] = {"worker": worker, "devices": devices}
+    # #788: present only when given, so a target without them stores the
+    # row it stored before.
+    memory_gib = raw.get("memory_gib")
+    if memory_gib is not None:
+        if isinstance(memory_gib, bool) \
+                or not isinstance(memory_gib, (int, float)) \
+                or not math.isfinite(memory_gib) \
+                or not 0 < memory_gib <= mem.MAX_MEMORY_GIB:
+            raise RunSubmitError(
+                f"target.memory_gib must be a number above 0 and at most "
+                f"{mem.MAX_MEMORY_GIB:g}")
+        if worker == TARGET_WORKER_LOCAL:
+            raise RunSubmitError(
+                "target.memory_gib needs a worker: a budget is enforced in "
+                "a worker's run subprocess, and this server runs its own "
+                "runs in one shared process")
+        target["memory_gib"] = float(memory_gib)
+    wait = raw.get("wait")
+    if wait is not None:
+        if not isinstance(wait, bool):
+            raise RunSubmitError("target.wait must be true or false")
+        target["wait"] = wait
+    return target
 
 
 def target_devices(options: Any) -> Any:
@@ -1442,6 +1474,13 @@ class _QueuedRun:
     #: The node types the run executes (``graph_node_types``), for a run
     #: that targets a worker (#781); None for a local one.
     node_types: frozenset[str] | None = None
+    #: Its memory budget (#788): declared (``target.memory_gib``) or from
+    #: the budget source. None: none, so it never takes a shared card.
+    memory_budget: "mem.Budget | None" = None
+    #: ``memory_admission.graph_hash`` of its stored graph, for a run that
+    #: targets a worker: recorded in ``execution_facts`` so a later run of
+    #: the same graph finds this one's peak (#788). None for a local run.
+    graph_hash: str | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails.
@@ -1486,6 +1525,9 @@ class _ActiveRun:
     #: The node types it executes, computed at submit for a run that
     #: targets a worker (#781); the executor's pre-assignment check.
     node_types: frozenset[str] | None = None
+    #: ``_QueuedRun.memory_budget`` and ``.graph_hash`` (#788).
+    memory_budget: "mem.Budget | None" = None
+    graph_hash: str | None = None
     #: True once this run's admission — its device slot, or its interactive
     #: slot and session key — has been given back. Released EARLY (see
     #: ``_release_admission``), so the flag is what keeps ``_drive``'s
@@ -1559,15 +1601,28 @@ class RunService:
         executor: Executor | None = None,
         scheduler: Scheduler | None = None,
         workers: "WorkerRegistry | None" = None,
+        budget_source: "mem.BudgetSource | None" = None,
     ) -> None:
         self.store = store
         # The connected worker agents (#772). With a registry, a run that
         # targets a worker is placed by ``WorkerScheduler`` and executed by
         # ``WorkerExecutor``; a run without a target never meets either.
         self._workers = workers
+        # Memory admission (#788): the budgets promised on shared cards,
+        # read by the scheduler and moved by the executor's ``run_started``;
+        # and where a run that declares no ``memory_gib`` gets its default.
+        # Both idle unless a card's policy is ``shared``.
+        ledger = getattr(scheduler, "ledger", None)
+        self._ledger: mem.MemoryLedger = (
+            ledger if isinstance(ledger, mem.MemoryLedger)
+            else mem.MemoryLedger())
+        self._budget_source: mem.BudgetSource = (
+            mem.HistoryBudgetSource(self._last_peak_memory)
+            if budget_source is None else budget_source)
         self._worker_executor: Executor | None = (
             None if workers is None else WorkerExecutor(
-                workers, content_index=_content_index(store)))
+                workers, content_index=_content_index(store),
+                on_started=self._ledger.started))
         # Where a run's graph executes (#766). In this process unless a
         # caller hands over another executor; the service schedules, records
         # and fans out the same way whichever one it is.
@@ -1595,7 +1650,8 @@ class RunService:
         if scheduler is None:
             scheduler = (LocalScheduler(self._limits) if workers is None
                          else WorkerScheduler(self._limits, workers,
-                                              _local_device_values))
+                                              _local_device_values,
+                                              ledger=self._ledger))
         self._scheduler: Scheduler = scheduler
         if workers is not None:
             # A worker connecting, draining, undraining or going away is
@@ -1932,6 +1988,15 @@ class RunService:
         # re-injects them; see ``self._run_secrets`` for why that is safe.
         stored_graph, secrets = split_graph_secrets(
             normalized_graph, unknown_types_as_secret=True)
+        budget, graph_digest = None, None
+        if needs is not None:
+            # A run that targets a worker (#788): its budget, and the
+            # refusal of one that cannot fit a shared card. Before the row
+            # is written, so a refusal leaves nothing behind.
+            graph_digest = mem.graph_hash(stored_graph)
+            budget = await self._memory_budget(
+                normalized_options, stored_graph,
+                batch_child=sweep_id is not None or study_id is not None)
         record = await self.store.create_run(
             graph_snapshot=stored_graph,
             options=normalized_options,
@@ -1971,7 +2036,8 @@ class RunService:
         entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
                            options=normalized_options, signal=_Broadcast(),
                            seq=next(self._submit_seq),
-                           needs=needs, node_types=node_types)
+                           needs=needs, node_types=node_types,
+                           memory_budget=budget, graph_hash=graph_digest)
         self._enqueue(entry)
         self._pump(queue_key)
         return SubmitResult(
@@ -2020,6 +2086,74 @@ class RunService:
             needs = self._needs_of(normalized_graph)
         self._check_storage(normalized_options, needs)
         return normalized_graph, normalized_options, queue_key, needs
+
+    async def _memory_budget(self, options: dict[str, Any],
+                             graph: dict[str, Any], *,
+                             batch_child: bool = False) -> "mem.Budget | None":
+        """A worker run's memory budget (#788), or ``RunSubmitError``.
+
+        ``target.memory_gib`` when declared; otherwise, only when a shared
+        card could take the run, the budget source's suggestion (the last
+        peak of this graph, times 1.2). Then the scheduler's refusal, if
+        any (``WorkerScheduler.memory_refusal``): no budget for a run that
+        can only go to shared cards, a budget larger than every card, or
+        (unless the run may wait) one that fits no card now. A named
+        worker's run waits only with ``target.wait: true``; ``any``, and a
+        sweep's or a study's child (refusing one would leave half a batch
+        submitted), wait unless ``target.wait: false``.
+        """
+        target = options.get("target") or {}
+        declared = target.get("memory_gib")
+        budget = (None if declared is None
+                  else mem.Budget(mem.gib_to_bytes(declared)))
+        wants = getattr(self._scheduler, "wants_budget", None)
+        if wants is None or not wants(options):
+            return budget
+        if budget is None:
+            suggestion = await self._budget_source.suggest(graph)
+            budget = None if suggestion is None else suggestion.budget
+        refusal = getattr(self._scheduler, "memory_refusal", None)
+        if refusal is not None:
+            worker_id, _ = entry_target(options)
+            message = refusal(
+                options, None if budget is None else budget.bytes,
+                self._slots,
+                wait=target_wait(options, default=(
+                    batch_child or worker_id == TARGET_WORKER_ANY)))
+            if message is not None:
+                raise RunSubmitError(message)
+        return budget
+
+    async def _last_peak_memory(self, digest: str) -> Any:
+        lookup = getattr(self.store, "last_peak_memory", None)
+        return None if lookup is None else await lookup(digest)
+
+    def _check_declared_budget(self, options: dict[str, Any]) -> None:
+        """Refuse a batch whose declared ``target.memory_gib`` fits no
+        shared card it may go to, ever (#788), before any child is
+        written. A child without a declared budget is judged at its own
+        submit (its default comes from history, which is awaited)."""
+        declared = (options.get("target") or {}).get("memory_gib")
+        refusal = getattr(self._scheduler, "memory_refusal", None)
+        if declared is None or refusal is None:
+            return
+        message = refusal(options, mem.gib_to_bytes(declared), self._slots,
+                          wait=True)
+        if message is not None:
+            raise RunSubmitError(message)
+
+    async def suggest_memory(self, graph: Any) -> "mem.Suggestion | None":
+        """The default budget the budget source gives *graph* (#788), for
+        the Queue on... dialog. Raises ``RunSubmitError`` on a malformed
+        graph."""
+        normalized = normalize_graph(graph)
+        stored, _secrets = split_graph_secrets(
+            normalized, unknown_types_as_secret=True)
+        return await self._budget_source.suggest(stored)
+
+    def memory_account(self, slot: SlotKey) -> "mem.SlotAccount":
+        """What the ledger holds on *slot* (#788), for ``GET /api/workers``."""
+        return self._ledger.account(slot)
 
     def _check_worker_catalog(self, options: dict[str, Any],
                               node_types: frozenset[str]) -> None:
@@ -2072,6 +2206,7 @@ class RunService:
             if key not in checked:
                 _, checked[key], _, _ = self._prepare(
                     graph, options, batch_child=True, needs=None)
+                self._check_declared_budget(checked[key])
             child_options = checked[key]
             if entry_target(child_options)[0] == TARGET_WORKER_LOCAL:
                 result.append(None)
@@ -2485,7 +2620,9 @@ class RunService:
                         placement=placement,
                         signal=entry.signal, subscribers=entry.subscribers,
                         node_types=entry.node_types,
-                        needs=entry.needs)
+                        needs=entry.needs,
+                        memory_budget=entry.memory_budget,
+                        graph_hash=entry.graph_hash)
         except Exception:
             # Two things must not happen here, and both did before this
             # guard. The entry must not be LOST — it has already left
@@ -2514,6 +2651,8 @@ class RunService:
         subscribers: set[RunSubscription] | None = None,
         node_types: frozenset[str] | None = None,
         needs: dict[str, Any] | None = None,
+        memory_budget: "mem.Budget | None" = None,
+        graph_hash: str | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -2598,6 +2737,8 @@ class RunService:
             subscribers=set() if subscribers is None else subscribers,
             node_types=node_types,
             needs=needs,
+            memory_budget=memory_budget,
+            graph_hash=graph_hash,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -2614,6 +2755,12 @@ class RunService:
             # slot was taken in ``_admit_interactive`` before its row existed.
             for slot in active.placement.slots if active.placement else ():
                 self._slots[slot] = self._slots.get(slot, 0) + 1
+            if active.placement is not None \
+                    and active.placement.memory_budget is not None:
+                # Reserved until the worker's ``run_started`` says its cap
+                # is in place (#788), released with the slots.
+                self._ledger.reserve(run_id, active.placement.budget_slots,
+                                     active.placement.memory_budget)
         elif self._session_key(session) is not None:
             self._interactive_sessions[self._session_key(session)] = run_id
         active.task = task
@@ -2648,6 +2795,7 @@ class RunService:
             self._release_interactive(active.session)
             return
         slots = active.placement.slots if active.placement else ()
+        self._ledger.release(active.run_id)
         for slot in slots:
             remaining = self._slots.get(slot, 0) - 1
             if remaining > 0:
@@ -2837,6 +2985,8 @@ class RunService:
             digest = None
             fingerprint, facts = await self._environment_record(
                 active, graph, options)
+        if facts is not None:
+            facts = {**facts, **self._memory_facts(active)}
         started = await self.store.mark_running(
             active.run_id, queue_key=active.row_queue_key,
             # The worker it got (an ``any`` run's row said ``any``); a local
@@ -2853,6 +3003,24 @@ class RunService:
         await self._emit(active.run_id, EVENT_RUN_STARTED,
                          {"run_id": active.run_id})
         return True
+
+    @staticmethod
+    def _memory_facts(active: _ActiveRun) -> dict[str, Any]:
+        """The run's ``execution_facts`` keys of #788: ``graph_hash`` (a
+        worker-targeted run's), and ``memory_budget`` (``{"bytes",
+        "source", "devices", ["from_run"]}``) when it was admitted to a
+        shared card by memory. Nothing for a local run."""
+        facts: dict[str, Any] = {}
+        if active.graph_hash:
+            facts["graph_hash"] = active.graph_hash
+        placement = active.placement
+        if placement is not None and placement.memory_budget is not None:
+            budget = active.memory_budget or mem.Budget(
+                placement.memory_budget)
+            facts["memory_budget"] = {
+                **budget.describe(), "bytes": placement.memory_budget,
+                "devices": list(placement.budget_devices)}
+        return facts
 
     @staticmethod
     async def _environment_record(
