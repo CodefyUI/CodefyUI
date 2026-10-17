@@ -22,6 +22,20 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-10-17
+
+3.1.0 lets a run choose where it executes: in the server as before, on one or
+more GPUs of a multi-GPU machine, or on a worker agent on another machine
+(`cdui agent start`), enrolled from the new Workers panel or started by the
+server itself over SSH. Worker runs execute in a subprocess of their own, so
+a run that crashes takes no other run with it; they survive a dropped
+connection for up to five minutes, and runs that read uploads or write files
+work on workers with or without a shared filesystem. A run with no target
+executes exactly as in 3.0.2, and the exported Python script is unchanged; a
+new `single-node-parity` CI check holds both to that. New guides:
+`docs/docs/usage/multi-gpu.md`, `docs/docs/usage/remote-workers.md` and
+`docs/docs/advanced/execution-architecture.md`.
+
 ### Added
 
 - **Runs accept a `target` option and record where they execute** ([#769]). `POST /api/runs` takes `options.target` as `{"worker": "local", "devices": ["cuda:0", "cuda:1"]}`, and `cdui run` sends it with `--target NAME` and `--devices cuda:0,cuda:1` and prints a Target line. Only `local` (this server) is accepted for now; another worker name, or `any`, is refused with `400` until remote workers arrive. `devices` must list concrete devices of one kind (`cpu`, `cuda:N`, `mps:N`) with no duplicates; its first entry becomes the run's device when `device` is omitted, `auto`, or only the kind (`cuda` with `["cuda:1"]` runs on `cuda:1`), and any other `device` that differs is refused. Run rows gain `worker_id` (`local`, also for runs from before this change) and `devices` (the requested list, or `null`). In this release only the first device is used, to queue and to execute; the rest is recorded as asked and not checked. `cdui run` no longer accepts abbreviated flags other than `--dev` for `--device`. A run submitted without `target` stores the same options, joins the same queue and emits the same events as before.
@@ -6095,7 +6109,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...main
+[3.1.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...3.1.0
 [3.0.2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.1...3.0.2
 [3.0.1]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0...3.0.1
 [3.0.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0rc2...3.0.0
