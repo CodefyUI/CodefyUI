@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）、斷線與續接（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）、SSH 反向通道（[#784](https://github.com/CodefyUI/CodefyUI/issues/784)）、transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框。遠端 worker 的設定方式見[遠端 Worker](/usage/remote-workers)。
+程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）、斷線與續接（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）、SSH 反向通道（[#784](https://github.com/CodefyUI/CodefyUI/issues/784)）、transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）與它的 S3／MinIO 替代方案（[#791](https://github.com/CodefyUI/CodefyUI/issues/791)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框。遠端 worker 的設定方式見[遠端 Worker](/usage/remote-workers)。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -77,7 +77,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | 方向 | Frame |
 |-----------|--------|
 | agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊與節點型別、capabilities、machine id、裝置、mount、平台）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished` |
-| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities、選用的 `resume_grace_s`：控制面保留已斷線 worker 之 run 的時間，agent 的上傳重試依此計算）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄） |
+| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities、選用的 `resume_grace_s`：控制面保留已斷線 worker 之 run 的時間，agent 的上傳重試依此計算）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄）、`credentials`（run id、執行中 `s3` run 的新 S3 憑證，只送給列出 `s3` 的 agent） |
 
 ## 排程 {/* #scheduling */}
 
@@ -119,6 +119,8 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **Transfer**（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)、`core/transfer.py`、`agent/transfer.py`）。適用於沒有該標籤的 worker，且 run 使用的檔案全部是上傳檔、總大小不超過 `CODEFYUI_TRANSFER_MAX_INPUT_BYTES`：`assign.storage` 的 `backend` 為 `"transfer"`，並以 SHA-256 列出輸入檔（存在 `file_hashes` 資料表，檔案大小或 mtime 改變時重新計算）。agent 從下載路徑以 worker token 取得 `agent-cache` 中沒有的檔案，給 run 一個自己的資料夾，並在 `run_finished` 之前，由獨立的執行緒把 run 寫出的檔案上傳到 `POST /api/runs/{id}/artifacts/upload`，中斷 checkpoint 最後上傳。這些資料列的 `backend` 為 `"transfer"`：artifact 放在 `<資料夾>/runs/<run id>/`，run 保留機制與刪除會一併移除；寫檔節點的檔案放在資料夾中的相對路徑，會保留。有 mount 的 worker 優先。
 
+**S3**（[#791](https://github.com/CodefyUI/CodefyUI/issues/791)、`core/s3.py`、`agent/s3.py`）。啟用 `CODEFYUI_S3_ENABLED`，且 worker 的 `hello` 列出 `s3`（它的 agent 有 boto3）時，同樣的 run 改用 `backend: "s3"`：`assign.storage.s3` 指出 bucket、run 的 key prefix（`runs/<run id>/`）與憑證，每個輸入附上物件 `key`（`inputs/<sha256>`，由控制面上傳一次）。憑證是向 STS `AssumeRole` 取得、session policy 只限該 run 的 prefix 與輸入的暫時憑證，在過期前以 `credentials` frame 更新；或是控制面自己的 key（`CODEFYUI_S3_CREDENTIALS`）。Agent 透過與 transfer 後端相同的 `RunTransfer` 驅動 `S3Client`，資料在 worker 與 bucket 之間傳送；`artifact` frame 帶有 `backend: "s3"` 與 key，資料列儲存它。保留機制與刪除會移除 run 的 prefix，但保留 `output/`（以及 interrupted run 的 `checkpoint/`）；下載路徑會轉送物件，或導向預先簽署的 URL。沒有列出 `s3` 的 worker 會收到 transfer 後端，並附上 `storage_fallback` 警告。
+
 面向使用者的說明，包括拒絕規則與範例，見[遠端 Worker：儲存](/usage/remote-workers#storage)。
 
 ## 安全 {/* #security */}
@@ -139,7 +141,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **節點目錄與指紋**（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）。agent 永遠不 import torch，所以啟動時由一個短暫的輔助子程序以 run 的方式探索節點，計算節點目錄（`node_registry.node_catalog`：每個節點型別連同 `GET /api/nodes` 提供的定義的 sha256；參數選項採宣告值，不依機器的裝置縮減，所以硬體不影響它）與環境指紋。`hello` 帶著這兩者。節點目錄雜湊與伺服器不同時，worker 會標為 `degraded`，並列出雙方各自缺少的型別；伺服器自己的節點目錄改變時會重新比對。以 worker 為目標的 run，會在送出時於另一個執行緒中計算一次它的節點型別（`worker_handshake.graph_node_types`：準備好的圖，加上 Map 執行的每個已安裝 preset 中的節點）；指定的 worker 若節點目錄不同，就必須擁有全部型別，`WorkerExecutor` 在 `assign` 前也會再檢查一次。指紋文件與 run 的指紋存在同一處（`exec_run_fingerprints`），摘要記在 `workers` 那一列，worker 執行的每個 run 也以它作為 `fingerprint_digest`。
 
-**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack`、`mounts` 與 `transfer`）；只有雙方清單都列出的功能才會使用，因此只有 `hello` 列出 `transfer` 的 worker 才會收到經 transfer 後端的 run。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；新增的功能改為宣告 capability。
+**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack`、`mounts`、`transfer` 與 `s3`，最後一項只有具備 boto3 的 agent 會列出）；只有雙方清單都列出的功能才會使用，因此只有 `hello` 列出 `transfer` 的 worker 才會收到經 transfer 後端的 run。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；新增的功能改為宣告 capability。
 
 **TLS。** Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 

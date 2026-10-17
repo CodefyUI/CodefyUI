@@ -1805,8 +1805,9 @@ class RunStore:
                     (row["id"], row["status"] == STATUS_INTERRUPTED)
                     for row in conn.execute(
                         "SELECT id, status FROM exec_runs WHERE "
-                        f"{where_clause} AND id IN (SELECT run_id FROM "
-                        "exec_run_artifacts WHERE backend = 's3')",
+                        f"{where_clause} AND EXISTS (SELECT 1 FROM "
+                        "exec_run_artifacts a WHERE a.run_id = exec_runs.id "
+                        "AND a.backend = 's3')",
                         params).fetchall()]
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,

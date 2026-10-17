@@ -237,7 +237,9 @@ def control_client(service: str = "s3") -> Any:
                 secret_access_key=settings.S3_SECRET_ACCESS_KEY
                 .get_secret_value(),
                 service=service)
-            _clients.clear()  # settings changed: drop the stale ones
+            # The settings changed: drop this service's stale client.
+            for stale in [k for k in _clients if k[0] == service]:
+                del _clients[stale]
             _clients[key] = client
         return client
 
