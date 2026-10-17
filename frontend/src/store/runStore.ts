@@ -296,8 +296,10 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
           path: payload.path,
           meta: (payload.meta ?? null) as Record<string, unknown> | null,
           created_at: event.ts,
-          // A worker's upload (#785): what offers the Download link.
-          ...(payload.backend === 'transfer' ? { backend: 'transfer' } : {}),
+          // A worker's upload, here (#785) or to the S3 bucket (#791):
+          // what offers the Download link.
+          ...(payload.backend === 'transfer' || payload.backend === 's3'
+            ? { backend: payload.backend } : {}),
         }];
         break;
       }

@@ -62,7 +62,7 @@ from uuid import uuid4
 
 from ..config import settings
 from .db import Database, transaction, utc_now_iso
-from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKENDS, translate
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_S3, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
 from .worker_protocol import TARGET_ANY, TARGET_LOCAL
@@ -119,9 +119,10 @@ WORKER_LOCAL = TARGET_LOCAL
 #: The worker id an ``any`` run carries until it is placed (#772).
 WORKER_ANY = TARGET_ANY
 
-#: SQL: an artifact row that is not a ``transfer`` row (#785), whose file
-#: retention removes with its run's directory instead.
-_NOT_TRANSFER = "(backend IS NULL OR backend != 'transfer')"
+#: SQL: an artifact row that is neither a ``transfer`` row (#785), whose
+#: file retention removes with its run's directory instead, nor an ``s3``
+#: row (#791), whose object goes with the run's prefix in the bucket.
+_NOT_TRANSFER = "(backend IS NULL OR backend NOT IN ('transfer', 's3'))"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
@@ -1513,7 +1514,8 @@ class RunStore:
         copy, so the returned record always equals what a re-read gives.
         A ``mount`` row (#782) stores *path* relative to the mount
         *mount_label* names; the record returned carries this server's path
-        for it, as :meth:`list_artifacts` does. *worker_id* is the worker
+        for it, as :meth:`list_artifacts` does. An ``s3`` row (#791) keeps
+        its bucket in *mount_label*. *worker_id* is the worker
         whose run wrote the file (``local``: this process).
         """
         if backend not in BACKENDS:
@@ -1530,7 +1532,7 @@ class RunStore:
                 "created_at, backend, mount_label, worker_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, kind, path, encoded, created_at, backend,
-                 mount_label if backend == BACKEND_MOUNT else None,
+                 mount_label if backend in (BACKEND_MOUNT, BACKEND_S3) else None,
                  worker_id),
             )
             # lastrowid is Optional in the driver's typing; after a
@@ -1541,7 +1543,7 @@ class RunStore:
         return ArtifactRecord.build(
             id=artifact_id, run_id=run_id, kind=kind, stored_path=path,
             meta=meta, created_at=created_at, backend=backend,
-            mount_label=mount_label if backend == BACKEND_MOUNT else None,
+            mount_label=mount_label if backend in (BACKEND_MOUNT, BACKEND_S3) else None,
             worker_id=worker_id)
 
     async def list_artifacts(
@@ -1559,6 +1561,19 @@ class RunStore:
             return conn.execute(sql, params).fetchall()
 
         return [ArtifactRecord.from_row(r) for r in await self.db.run(_select)]
+
+    async def s3_objects(self, run_id: str) -> list[tuple[str, str | None,
+                                                         str]]:
+        """``(run_id, bucket, key)`` of *run_id*'s ``s3`` rows (#791): only
+        those two columns, through the ``run_id`` index; empty for a run
+        that wrote nothing to a bucket."""
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                "SELECT DISTINCT mount_label, path FROM exec_run_artifacts "
+                "WHERE run_id = ? AND backend = 's3'", (run_id,)).fetchall()
+
+        return [(run_id, row["mount_label"], row["path"])
+                for row in await self.db.run(_select)]
 
     # ── retention ─────────────────────────────────────────────────────────
 
@@ -1798,13 +1813,52 @@ class RunStore:
                         f"{where_clause} AND worker_id IS NOT NULL "
                         "AND worker_id NOT IN (?, ?)",
                         (*params, WORKER_LOCAL, WORKER_ANY)).fetchall()]
+                # A worker run that wrote to the S3 bucket (#791): its
+                # objects go with it, the same way, from the bucket and
+                # prefix its rows recorded.
+                interrupted = {
+                    row["id"]: row["status"] == STATUS_INTERRUPTED
+                    for row in conn.execute(
+                        "SELECT id, status FROM exec_runs WHERE "
+                        f"{where_clause} AND EXISTS (SELECT 1 FROM "
+                        "exec_run_artifacts a WHERE a.run_id = exec_runs.id "
+                        "AND a.backend = 's3')",
+                        params).fetchall()}
+                s3_rows = [
+                    (row["run_id"], row["mount_label"], row["path"])
+                    for run_id in interrupted
+                    for row in conn.execute(
+                        "SELECT DISTINCT run_id, mount_label, path FROM "
+                        "exec_run_artifacts WHERE run_id = ? "
+                        "AND backend = 's3'", (run_id,)).fetchall()]
+                s3_runs = (interrupted, s3_rows)
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
-                return deleted, doomed_paths, doomed_logdirs, worker_runs
+                return (deleted, doomed_paths, doomed_logdirs, worker_runs,
+                        s3_runs)
 
-        deleted, doomed_paths, doomed_logdirs, worker_runs = \
+        deleted, doomed_paths, doomed_logdirs, worker_runs, s3_runs = \
             await self.db.run(_prune)
+        if s3_runs[0]:
+            from . import s3
+
+            interrupted, s3_rows = s3_runs
+            if s3.configured():
+                places = [(run_id, interrupted[run_id], bucket, prefix)
+                          for run_id, bucket, prefix in s3.locations(s3_rows)]
+                removed, _ = await asyncio.to_thread(s3.remove_runs_objects,
+                                                     places)
+                if removed:
+                    logger.info("run retention: removed the S3 objects of "
+                                "%d worker run(s): %s", len(removed),
+                                ", ".join(removed))
+            else:
+                logger.warning(
+                    "run retention: %d run(s) had files in an S3 bucket, "
+                    "which this server can no longer reach (%s); their "
+                    "objects stay", len(s3_runs[0]),
+                    s3.unconfigured())
         if worker_runs:
             from .transfer import remove_run_files
 

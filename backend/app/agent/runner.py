@@ -25,7 +25,10 @@
    data directory of its own under the run's folder, filled with its
    inputs from the control plane (``agent.transfer``) by a task, so the
    connection keeps serving meanwhile; a cancel during the fetch ends the
-   run ``cancelled`` without a subprocess;
+   run ``cancelled`` without a subprocess. ``storage.backend == "s3"``
+   (#791) is the same run with an ``agent.s3.S3Client`` built from
+   ``storage.s3`` instead: the bytes go to and from the bucket, and a
+   ``credentials`` frame renews the client's keys (:meth:`Runner.renew`);
 3. reads the child's pipe on a thread of its own and forwards every message
    as a protocol frame, in order, stamped with the run's next ``seq``. The
    thread waits for each frame to be handed to the connection before it
@@ -93,6 +96,8 @@ REFUSE_DRAINING = "this worker is draining and takes no new runs"
 REFUSE_DUPLICATE = "this worker is already running {run_id}"
 REFUSE_NO_TRANSFER = ("this agent cannot fetch input files from the control "
                       "plane (no transfer client)")
+REFUSE_NO_S3 = ("this agent cannot use the S3 bucket: boto3 is not installed "
+                "here (the `s3` extra)")
 
 _DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
 
@@ -355,6 +360,9 @@ class RunHandle:
     escalation: asyncio.Task | None = None
     #: A transfer run's outputs (#785); None for every other run.
     transfer: transfer_module.RunTransfer | None = None
+    #: An ``s3`` run's client (#791), whose credentials ``credentials``
+    #: renews; None for every other run.
+    s3: Any = None
     #: The reader thread has joined the process: it is gone and reaped, so
     #: nothing may signal its pid again (the escalation checks this).
     reaped: bool = False
@@ -389,11 +397,16 @@ class Runner:
         exit_after_finished_s: float = EXIT_AFTER_FINISHED_S,
         child_entry: Callable[..., None] = child_module.main,
         transfer: transfer_module.TransferClient | None = None,
+        s3_client: Callable[[Any], Any] | None = None,
     ) -> None:
         self.runs_dir = runs_dir
         #: Fetches inputs and uploads outputs for ``transfer`` runs (#785);
         #: ``AgentConnection`` provides one when none is given.
         self.transfer = transfer
+        #: Builds an ``s3`` run's client from its ``storage.s3`` (#791);
+        #: None (the default) builds an ``agent.s3.S3Client`` when boto3 is
+        #: installed. Tests pass a fake.
+        self.s3_client = s3_client
         self.offered_devices = {canonical_device(d) for d in offered_devices}
         #: ``--mount`` label -> directory on this machine (#782), sent in
         #: ``hello.mounts``.
@@ -449,8 +462,12 @@ class Runner:
             raise AssignmentRefused(REFUSE_DUPLICATE.format(run_id=frame.run_id))
         if frame.options.get("record_outputs"):
             raise AssignmentRefused(REFUSE_RECORD_OUTPUTS)
-        if _transfers(frame) and self.transfer is None:
+        if _transfers(frame) and frame.storage.backend == "transfer" \
+                and self.transfer is None:
             raise AssignmentRefused(REFUSE_NO_TRANSFER)
+        if _transfers(frame) and frame.storage.backend == "s3" \
+                and (frame.storage.s3 is None or not self.speaks_s3()):
+            raise AssignmentRefused(REFUSE_NO_S3)
         offered = self.offered_devices
         devices = list(frame.devices)
         canonical_set = [canonical_device(device) for device in devices]
@@ -543,6 +560,35 @@ class Runner:
         await self.send(wp.RunFinished(run_id=run_id, seq=seq,
                                        status=wp.FINISHED_FAILED, error=error))
 
+    def speaks_s3(self) -> bool:
+        """Whether this agent can run ``s3`` assignments (#791): what its
+        ``hello`` lists as the ``s3`` capability."""
+        if self.s3_client is not None:
+            return True
+        from . import s3 as s3_module
+
+        return s3_module.client_available()
+
+    def _new_s3_client(self, access: Any) -> Any:
+        if self.s3_client is not None:
+            return self.s3_client(access)
+        from . import s3 as s3_module
+
+        cache = self.transfer.cache if self.transfer is not None else \
+            transfer_module.InputCache(self.runs_dir.parent
+                                       / transfer_module.CACHE_DIRNAME)
+        return s3_module.S3Client(access, cache)
+
+    def renew(self, run_id: str, access: Any) -> bool:
+        """New credentials for *run_id*'s bucket (``credentials``, #791).
+        False when it is not an ``s3`` run here (any more)."""
+        handle = self.runs.get(run_id)
+        if handle is None or handle.s3 is None:
+            return False
+        handle.s3.update_access(access)
+        logger.info("run %s: S3 credentials renewed", run_id)
+        return True
+
     def available_mounts(self) -> dict[str, str]:
         """The configured mounts whose directory exists now (#782).
 
@@ -597,7 +643,7 @@ class Runner:
         start it (#785). Never raises: a failure, or a cancel while
         fetching, ends the run here with its ``run_finished``."""
         storage = frame.storage
-        assert storage is not None and self.transfer is not None
+        assert storage is not None
         loop = asyncio.get_running_loop()
         run_dir = self.runs_dir / frame.run_id
 
@@ -610,11 +656,15 @@ class Runner:
             return handle.cancel_requested
 
         try:
+            if storage.backend == "s3":
+                client = handle.s3 = self._new_s3_client(storage.s3)
+            else:
+                client = self.transfer
             run_dir.mkdir(parents=True, exist_ok=True)
             root = await asyncio.to_thread(transfer_module.run_data_root,
                                            run_dir, _own_data_root())
             placed = await asyncio.to_thread(
-                transfer_module.prepare_inputs, self.transfer,
+                transfer_module.prepare_inputs, client,
                 list(storage.inputs or []), root, progress, cancelled)
         except transfer_module.TransferCancelled:
             await self._end_unstarted(handle, wp.FINISHED_CANCELLED, None)
@@ -630,7 +680,7 @@ class Runner:
             await self._end_unstarted(handle, wp.FINISHED_CANCELLED, None)
             return
         handle.transfer = transfer_module.RunTransfer(
-            run_id=frame.run_id, root=root, client=self.transfer,
+            run_id=frame.run_id, root=root, client=client,
             max_upload_bytes=storage.max_upload_bytes, inputs=placed,
             stop=lambda: handle.uploads_cancelled,
             retry_window_s=lambda: self.upload_window_s)
@@ -1168,8 +1218,10 @@ def _own_data_root() -> Path | None:
 
 
 def _transfers(frame: wp.Assign) -> bool:
-    """Whether *frame* assigns a run through the transfer backend (#785)."""
-    return frame.storage is not None and frame.storage.backend == "transfer"
+    """Whether *frame* assigns a run whose files a backend ships: the
+    transfer backend (#785) or the S3 bucket (#791)."""
+    return frame.storage is not None \
+        and frame.storage.backend in ("transfer", "s3")
 
 
 async def _drop(frame: Any) -> None:  # pragma: no cover - placeholder sink
