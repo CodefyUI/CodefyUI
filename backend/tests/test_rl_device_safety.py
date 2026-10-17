@@ -214,3 +214,25 @@ def test_bradley_terry_loss_accepts_halves_on_different_devices():
     )
     assert float(out["score_diff"]) == pytest.approx(2.26, abs=1e-4)
     assert float(out["preference_prob"]) == pytest.approx(0.905510, abs=1e-5)
+
+
+def _preference_pairs(device):
+    g = torch.Generator().manual_seed(0)
+    won, lost = torch.randn(40, 6, generator=g) + 0.5, torch.randn(40, 6, generator=g)
+    return {"train_w": won[:30].to(device), "train_l": lost[:30].to(device),
+            "holdout_w": won[30:].to(device), "holdout_l": lost[30:].to(device)}
+
+
+@cuda_only
+def test_bradley_terry_train_fits_pairs_on_cuda_and_matches_cpu():
+    """#808 sweep: the reward head was built on the CPU, so on a GPU run (the
+    pairs aligned onto cuda:0) Reward-Hacking-Shortcut died at the first
+    forward. The curves are the textbook's numbers and must not move."""
+    from app.nodes.rl.bradley_terry_node import BradleyTerryTrainNode
+
+    params = {"epochs": 5, "hidden_dim": 8, "seed": 0}
+    gpu = BradleyTerryTrainNode().execute(_preference_pairs("cuda"), params)
+    cpu = BradleyTerryTrainNode().execute(_preference_pairs("cpu"), params)
+    assert next(gpu["model"].parameters()).device.type == "cuda"
+    assert gpu["losses"].tolist() == pytest.approx(cpu["losses"].tolist(), abs=1e-5)
+    assert gpu["holdout_accuracy"].tolist() == cpu["holdout_accuracy"].tolist()
