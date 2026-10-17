@@ -22,6 +22,18 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sweep variant's Final metrics come from the objective's node** ([#841]). On a graph that trains two models side by side (the Weight decay example), a sweep of one branch's `lr` ranked by that branch's `train_loss` showed the other branch's `lr 0.01` and loss for every variant: `final_metrics` was the Runs table's run-wide summary, which collapses a name several nodes log. `GET /api/sweeps/{id}` now reads each variant's `final_metrics` from the objective's node (the one the sweep names, or the only producer of a name-only objective once harvested) and says which in the new `final_metrics_node_id`; it stays run-wide, with `null`, for an unharvested name-only variant, a run-level objective and an ambiguous one. A study attempt's `final_metrics` are read from its objective node the same way. The objective itself, the ranking and `GET /api/runs` are unchanged.
+- **An `any` run waiting behind a draining worker says so** ([#841]). It showed no reason while a run naming the same worker showed "worker X is draining"; it now reads `waiting for a worker that offers cuda: X is draining` (and names draining and `any`-skipped workers together when both block it).
+- **The Runs panel words queue reasons and worker run errors in the panel's language, and lays the table out without cutting them** ([#841]). Every `GET /api/runs` row adds `queue_reason_code` and `queue_reason_params` beside the English `queue_reason`, which the API and the CLI keep; the panel words the code in English or Traditional Chinese, and a worker run's error and warnings ("worker X went away: ...", "worker X disconnected (...)") too. The error of a run whose reconnected worker no longer reports it reads `after reconnecting it did not report this run as still running` instead of naming the `run_alive` frame. The reason sits on a line of its own under the row instead of being cut to a dozen characters in the Worker cell, the Status column fits DISCONNECTED, a queued run's place reads `Any queue #N` for an `any` run (a run naming a worker and an `any` run wait in different lines), with the queue on hover, a final loss below 0.001 is shown in scientific notation, the metric legend and the event log show whole node ids, and the event log says it is loading until its first page arrives. The memory tooltip of a worker run no longer says it shares the server process. The zh-TW Remove tooltip spells the status as the chip does.
+- **The New sweep dialog keeps its layout and tells two branches' parameters apart** ([#841]). The device radios and checkboxes no longer stretch to the dialog's width, the header and the Start button stay in view while the body scrolls, and each parameter is named with its node's id (`Optimizer (opt-plain) · lr`), as the Objective node list already was; sweep table columns add the id when two would read the same.
+- **The canvas toolbar no longer wraps to a second row at 1440 px when a run completes** ([#841]). The status label has a fixed width (a longer one, a queued run's, is cut with the whole label on hover), and the device list is 1 rem narrower.
+
+### Changed
+
+- **The remote-workers guide shows `CODEFYUI_RELEASE_TAG=<version>` instead of a pinned 3.0.2** ([#841]).
+
 ## [3.1.1] — 2026-10-17
 
 Fixes a data-loss bug in 3.1.0's transfer backend: on a worker without a
@@ -6275,3 +6287,4 @@ Release candidates before 1.0.0 are on the
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
 [#838]: https://github.com/CodefyUI/CodefyUI/issues/838
+[#841]: https://github.com/CodefyUI/CodefyUI/issues/841

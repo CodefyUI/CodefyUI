@@ -183,6 +183,14 @@ describe('NewSweepDialog', () => {
     expect(within(dialog).getByText('1 variant')).toBeInTheDocument();
   });
 
+  it('names each parameter by its node id too, so two branches read apart (#841)', () => {
+    setupGraph([trainNode('opt-plain', 'Optimizer'), trainNode('opt-decay', 'Optimizer')]);
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('option', { name: 'Optimizer (opt-plain) · rate' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('option', { name: 'Optimizer (opt-decay) · rate' })).toBeInTheDocument();
+  });
+
   it('offers the params of the graph Start sends while a block is open', () => {
     // Inside a block the canvas shows the block's nodes, but a sweep runs the
     // root graph, so a block node's address is a 400 from the server.
@@ -506,7 +514,7 @@ describe('NewSweepDialog', () => {
 
     fireEvent.change(screen.getByLabelText('Domain'), { target: { value: 'range' } });
     fireEvent.change(screen.getByLabelText('Count'), { target: { value: '100000' } });
-    expect(screen.getByText(/Trainer · rate: 100000 values/)).toBeInTheDocument();
+    expect(screen.getByText(/Trainer \(train\) · rate: 100000 values/)).toBeInTheDocument();
   });
 
   it('warns about a fifth parameter', () => {
@@ -549,6 +557,91 @@ describe('NewSweepDialog', () => {
       fireEvent.click(screen.getByRole('button', { name: '開始掃描' }));
     });
     expect(screen.getByRole('alert')).toHaveTextContent('「2.5」必須是整數。');
+  });
+
+  it('closes on a press on the backdrop, not on one inside the dialog', () => {
+    const onClose = vi.fn();
+    render(<NewSweepDialog onClose={onClose} />);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.mouseDown(screen.getByLabelText('Values'));
+    fireEvent.mouseDown(dialog);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.mouseDown(dialog.parentElement!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restore focus to an opener that is gone', () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const { unmount } = render(<NewSweepDialog onClose={vi.fn()} />);
+    opener.remove();
+    unmount();
+    expect(document.activeElement).not.toBe(opener);
+  });
+
+  it('sends the chosen direction, a log range and a random sample count', async () => {
+    const createSweep = vi.fn().mockResolvedValue(true);
+    useSweepStore.setState({ createSweep });
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/direction/i), { target: { value: 'maximize' } });
+    fireEvent.change(screen.getByLabelText('Parameter'), { target: { value: 'train.rate' } });
+    fireEvent.change(screen.getByLabelText('Domain'), { target: { value: 'range' } });
+    fireEvent.change(screen.getByLabelText('Minimum'), { target: { value: '0.001' } });
+    fireEvent.change(screen.getByLabelText('Maximum'), { target: { value: '0.1' } });
+    fireEvent.change(screen.getByLabelText('Count'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Scale'), { target: { value: 'log' } });
+    fireEvent.change(screen.getByLabelText(/method/i), { target: { value: 'random' } });
+    fireEvent.change(screen.getByLabelText('Samples'), { target: { value: '2' } });
+    expect(screen.getByText('2 variants')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    const request = createSweep.mock.calls[0][0];
+    expect(request.objective).toEqual({ metric: 'train_loss', direction: 'maximize' });
+    expect(request.sweep_spec).toMatchObject({
+      method: 'random', seed: 0, samples: 2,
+      params: [{ node_id: 'train', param: 'rate', range: { min: 0.001, max: 0.1, count: 3, scale: 'log', type: 'float' } }],
+    });
+  });
+
+  it('offers nothing to sweep when no tab is open', () => {
+    useTabStore.setState({ activeTabId: 'no-such-tab' });
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    expect(screen.getByText(useI18n.getState().t('sweeps.new.noParams'))).toBeInTheDocument();
+    expect(startButton()).toBeDisabled();
+  });
+
+  it('keeps the chosen parameters when the graph changes under the dialog', () => {
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Parameter'), { target: { value: 'train.rate' } });
+    act(() => {
+      setupGraph([trainNode('train', 'Trainer'), trainNode('opt', 'Optimizer')]);
+    });
+    expect(screen.getByLabelText('Parameter')).toHaveValue('train.rate');
+    expect(screen.getByRole('option', { name: 'Optimizer (opt) · rate' })).toBeInTheDocument();
+  });
+
+  it('fills only a parameter left without an address when the graph changes', () => {
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Parameter'), { target: { value: 'train.rate' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add parameter/i }));
+    fireEvent.change(screen.getByLabelText('Parameter 2'), { target: { value: '' } });
+    act(() => {
+      setupGraph([trainNode('train', 'Trainer'), trainNode('opt', 'Optimizer')]);
+    });
+    expect(screen.getByLabelText('Parameter 1')).toHaveValue('train.rate');
+    expect(screen.getByLabelText('Parameter 2')).toHaveValue('train.epochs');
+  });
+
+  it('shows a thrown value that is not an Error as text', async () => {
+    useSweepStore.setState({ createSweep: vi.fn().mockRejectedValue('worker pool closed') });
+    render(<NewSweepDialog onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Values'), { target: { value: '2, 4' } });
+    await act(async () => {
+      fireEvent.click(startButton());
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('worker pool closed');
   });
 });
 
