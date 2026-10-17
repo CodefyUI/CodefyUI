@@ -336,6 +336,47 @@ journalctl -u codefyui-agent -f
 
 `--foreground` is required for the same reason as the server's: without it `cdui agent start` starts a background agent and exits, and systemd treats the exit of a `Type=exec` service's main process as the service ending. An agent refused for a version mismatch exits with an error, and `Restart=on-failure` retries it every 5 s until you update; `systemctl stop codefyui-agent` while you update avoids that. Keep `KillMode=mixed`: it lets the agent stop its runs itself, so a run in progress ends `cancelled` (a training loop writes its interrupt checkpoint); with systemd's default the run subprocesses get SIGTERM directly and the run ends `failed` with `run subprocess exited with code -15`. An SSH worker needs no unit: the control plane keeps its agent running.
 
+## One-shot workers: SLURM and ssh {/* #one-shot-workers */}
+
+`cdui agent start --one-shot` takes **exactly one run**, reports it and exits, like a GitHub runner started with `--ephemeral`. Start it inside a batch job or an `ssh` command: the batch system decides which machine and which GPU the job gets, and CodefyUI sends the graph and records the result.
+
+```bash
+cdui agent start --one-shot --control https://codefyui.example.com
+```
+
+- **Which runs reach it.** **Any available** never sends a run to a one-shot worker. A run reaches it when it names the worker (`"target": {"worker": "<name>"}`) or the one-shot pool: **A one-shot worker** in **Queue on...**, or `"target": {"pool": "one-shot"}` in `POST /api/runs` (with `device` set to the kind it needs, such as `cuda`). A pool run is never refused for want of a worker: it waits for a one-shot worker that offers its device, with `queue_reason` saying so, and fails after `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` (24 hours by default, `0` waits forever). Pool runs wait in one line per device kind, oldest first. `--run-id <id>` makes the agent take only that run, wherever it is in its line; the run must be waiting in the pool or name the worker, otherwise the agent is refused when it connects.
+- **Exit code.** `0`: the run succeeded and the control plane recorded it. `1`: it failed, was cancelled or ended `interrupted`, or its outcome could not be delivered. `2`: the control plane refused the agent (another version, a name another agent holds, a `--run-id` that does not wait for it) or a flag is wrong. `3`: the agent was stopped (SIGTERM, Ctrl-C, the job's time limit) before a run arrived. `4`: it could not start (enrollment failed, or `--mount` was refused). A refusal after the agent took its run (a reconnect the control plane refused) is `1`: the run's outcome was not recorded.
+- **A dropped connection.** The run keeps going and the agent reconnects, as any agent does ([When the connection drops](#when-the-connection-drops)). It exits only once the control plane has acknowledged the run's end; if that has not happened within `CODEFYUI_WORKER_RESUME_GRACE_S` after the run ended, it exits anyway with `1` and leaves the result spooled for a later agent with the same user-data folder.
+- **Afterwards.** The Workers panel lists it with a **One-shot** badge and **Offline** status, and **One-shot run** links to the run it took (or says it left without one). The next job's agent under the same name takes the next run.
+- **One agent per name at a time.** The credential names the worker, so two jobs started with the same credential would share a name. While a one-shot worker is connected, or its run is in flight, another agent under its name is refused with exit code `2`. For jobs that run at the same time, enroll one name per concurrent job, each with its own user-data folder (`CODEFYUI_USER_DATA_DIR`), as in the script below.
+- It is always in the foreground and writes no pidfile, so it never conflicts with a background agent on the same machine. Without the batch system's time limit, nothing ends an agent that no run reaches: wrap an `ssh` command in `timeout` if it must not wait forever.
+
+### SLURM {/* #slurm */}
+
+Enroll once from a login node (or any machine sharing the home directory) with a token from **Add worker**, then submit jobs. The script below keeps one credential per array task, so up to four tasks run at the same time:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=codefyui-run
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=04:00:00
+#SBATCH --array=0-3
+#SBATCH --output=codefyui-%A_%a.log
+
+module load cuda/12.4          # what your cluster calls it
+export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent/$SLURM_ARRAY_TASK_ID"
+CDUI="$HOME/CodefyUI/cdui"
+CONTROL=https://codefyui.example.com
+
+# The first job of each task enrolls (an enrollment token valid for several
+# uses, from Add worker); every later job reuses the stored credential.
+"$CDUI" agent start --one-shot --control "$CONTROL" \
+    --name "slurm-$SLURM_ARRAY_TASK_ID" --token "$CODEFYUI_ENROLL_TOKEN"
+```
+
+Submit it with `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch`, after queueing runs with **Queue on... → A one-shot worker**. SLURM sets `CUDA_VISIBLE_DEVICES` to the GPU it allocated; the agent offers that card as `cuda:0`. At the job's time limit SLURM sends SIGTERM: the agent stops its run (`interrupted`, a training loop writes its interrupt checkpoint) and exits `1`. To run one specific run from a script, pass its id: `cdui agent start --one-shot --run-id <run id> ...`, which is also the form for a plain `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'`.
+
 ## Limits {/* #limits */}
 
 - **The canvas runs on the control plane.** **Run** always executes there, with its cache and persistent weights; to send the tab's graph to a worker, use **Queue on...**.
@@ -353,6 +394,7 @@ On the control plane:
 | --- | --- | --- |
 | `CODEFYUI_EXTRA_ALLOWED_HOSTS` | *(empty)* | Host names the worker (or a browser) dials, such as `gpu-gw.lan:8000` |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | Seconds a disconnected worker's runs wait for it; `0` ends them at once |
+| `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` | `86400` | Seconds a run waits for a one-shot worker before it fails ([One-shot workers](#one-shot-workers)); `0` waits forever |
 | `CODEFYUI_TLS_CERT_FILE` | *(empty)* | The proxy's certificate (PEM, leaf first), so the Add worker dialog can show its fingerprint |
 | `CODEFYUI_MOUNT_LABEL` | `data` | The label of the control plane's data folder |
 | `CODEFYUI_TRANSFER_ENABLED` | `1` | `0` turns the transfer backend off |
