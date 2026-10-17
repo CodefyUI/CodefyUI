@@ -135,6 +135,13 @@ LATE_RUNS_MAX = 1000
 
 #: Put in a run's inbox when its worker is gone: ``(WORKER_GONE, reason)``.
 WORKER_GONE = object()
+#: Why a run ends when its reconnected worker did not list it in
+#: ``run_alive`` in time. Worded for the user (#841): the run's error reads
+#: "worker X went away: <this>", and the protocol's frame name meant
+#: nothing there. The Runs panel words it in the viewer's language by this
+#: exact text (``frontend/src/utils/workerErrors.ts``).
+ALIVE_MISSING_REASON = ("after reconnecting it did not report this run as "
+                        "still running")
 #: Put in a run's inbox when its worker's connection dropped and the run
 #: waits for it to come back: ``(WORKER_DISCONNECTED, reason)`` (#783).
 WORKER_DISCONNECTED = object()
@@ -923,7 +930,7 @@ class WorkerRegistry:
                 worker.alive_deadline = None
                 for run in list(worker.running.values()):
                     if run.awaiting_alive:
-                        self._end(worker, run, "no run_alive after reconnect")
+                        self._end(worker, run, ALIVE_MISSING_REASON)
 
     def _expire_detached(self, worker: Worker, now: float) -> None:
         """End the runs of a disconnected *worker* whose grace ran out."""

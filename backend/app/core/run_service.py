@@ -296,6 +296,7 @@ from .scheduling import (
     LOCAL_WORKER_ID,
     LocalScheduler,
     Placement,
+    QueueReason,
     Scheduler,
     SlotKey,
     WorkerScheduler,
@@ -1747,8 +1748,14 @@ class RunService:
         for worker X to reconnect", "worker X is draining". None for a run
         that is not waiting, or that waits only for its turn.
         """
+        reason = self.queue_wait(run_id)
+        return None if reason is None else reason.text
+
+    def queue_wait(self, run_id: str) -> QueueReason | None:
+        """:meth:`queue_reason` with its code and parameters (#841), which
+        the Runs list words in the viewer's language."""
         entry = self._pending_by_id.get(run_id)
-        explain = getattr(self._scheduler, "explain", None)
+        explain = getattr(self._scheduler, "explain_reason", None)
         if entry is None or explain is None:
             return None
         try:
