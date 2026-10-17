@@ -16,6 +16,7 @@ import {
   previewSweepVariants,
   SWEEP_LIMIT_DEFAULTS,
   SweepInputError,
+  sweepParamLabel,
   type EligibleSweepParam,
   type SweepLimitWarning,
 } from './sweepParams';
@@ -98,7 +99,12 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   // Where the variants run (#777): the Queue on... dialog's target picker.
   // Left at This server with its default device, the sweep is sent exactly
   // as before, with the graph's device and no target.
-  const target = useRunTargetChoice(tab?.graphDevice ?? globalDevice, { keepGraphDevice: true });
+  // A worker (and Any available) starts on its accelerator unless the tab
+  // names a device: the Settings device describes this server (#840).
+  const target = useRunTargetChoice(tab?.graphDevice ?? globalDevice, {
+    keepGraphDevice: true,
+    workerDevice: tab?.graphDevice ?? 'auto',
+  });
   // What a blank Name sends, shown as the field's placeholder.
   const defaultName = tabDefaultName(tab);
   // The ROOT graph, flushed exactly as Start serializes it: inside a block the
@@ -161,7 +167,10 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
 
   const addEditor = () => {
     const next = eligible.find((entry) => !usedAddresses.has(addressOf(entry)));
+    // Add shows only while editors < eligible, and eligible addresses are unique.
+    /* v8 ignore start */
     if (!next) return;
+    /* v8 ignore stop */
     const added = newEditor(addressOf(next));
     focusEditor.current = added.id;
     setEditors((current) => [...current, added]);
@@ -170,7 +179,10 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
   const removeEditor = (id: number) => {
     const index = editors.findIndex((editor) => editor.id === id);
     const remaining = editors.filter((editor) => editor.id !== id);
+    // Remove shows only with two or more editors, so one always remains.
+    /* v8 ignore start */
     focusEditor.current = remaining[Math.min(index, remaining.length - 1)]?.id ?? null;
+    /* v8 ignore stop */
     setEditors(remaining);
   };
 
@@ -207,9 +219,13 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
       case 'params':
         return t('sweeps.new.limitParams', { count: warning.count, limit: SWEEP_LIMIT_DEFAULTS.params });
       case 'values': {
+        // The preview is built from these editors in order, and buildDomains
+        // throws for an address eligibleByAddress lacks: both fallbacks are dead.
+        /* v8 ignore start */
         const entry = eligibleByAddress.get(editors[warning.index]?.address ?? '');
         return t('sweeps.new.limitValues', {
-          name: entry ? `${entry.nodeLabel} · ${entry.param.name}` : String(warning.index + 1),
+          name: entry ? sweepParamLabel(entry) : String(warning.index + 1),
+          /* v8 ignore stop */
           count: warning.count,
           limit: SWEEP_LIMIT_DEFAULTS.values,
         });
@@ -305,7 +321,9 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
               <label>{t('sweeps.new.name')}<input ref={firstRef} value={name} placeholder={defaultName} maxLength={MAX_RUN_NAME_LENGTH} onChange={(event) => setName(event.target.value)} /></label>
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
-            <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
+            <div className={styles.target}>
+              <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
+            </div>
             <div className={styles.pair}>
               <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => {
                 const metric = event.target.value;
@@ -345,7 +363,7 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
                       }}
                     >{eligible.map((entry) => {
                       const address = addressOf(entry);
-                      return <option key={address} value={address} disabled={usedAddresses.has(address) && address !== editor.address}>{entry.nodeLabel} · {entry.param.name}</option>;
+                      return <option key={address} value={address} disabled={usedAddresses.has(address) && address !== editor.address}>{sweepParamLabel(entry)}</option>;
                     })}</select>
                     {numeric && <label className={styles.mode}>{t('sweeps.new.domain')}<select value={editor.mode} onChange={(event) => updateEditor(editor.id, { mode: event.target.value as DomainMode })}><option value="values">{t('sweeps.new.values')}</option><option value="range">{t('sweeps.new.range')}</option></select></label>}
                     {editors.length > 1 && <button type="button" className={styles.remove} onClick={() => removeEditor(editor.id)} aria-label={t('sweeps.new.removeParameter', { index: editorIndex + 1 })}>{t('sweeps.new.remove')}</button>}

@@ -412,6 +412,9 @@ async def test_drain_holds_runs_and_undrain_releases_them(env):
         row = (await client.get(f"/api/runs/{run_id}")).json()
         assert (row["status"], row["queue_reason"]) == (
             "queued", "worker box is draining")
+        # The same, for a client to word in its own language (#841).
+        assert (row["queue_reason_code"], row["queue_reason_params"]) == (
+            "worker_draining", {"worker": "box"})
         assert (await client.post("/api/workers/box/undrain")).json()[
             "draining"] is False
         assign = await agent.recv()
@@ -490,7 +493,9 @@ async def test_a_queued_run_says_which_worker_it_waits_for(env):
             await agent.recv()
             await agent.recv()
             row = (await client.get(f"/api/runs/{third}")).json()
-            assert (row["queue_position"], row["queue_reason"]) == (1, None)
+            assert (row["queue_position"], row["queue_reason"],
+                    row["queue_reason_code"], row["queue_reason_params"]) \
+                == (1, None, None, None)
         await _terminal(service, first)
         await _terminal(service, second)
         listed = {r["id"]: r for r in

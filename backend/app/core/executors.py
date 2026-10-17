@@ -172,6 +172,10 @@ class ExecutionOutcome:
     #: the end; None when no card holds memory (a plain CPU run), without
     #: torch or a CUDA context, or when the allocator could not be read. See :meth:`PeakMemoryScope.read`.
     peak_memory: dict[str, Any] | None = None
+    #: ``{code, params}`` of *error* when it is a coded message (#841: a
+    #: worker run's "worker X went away: ..."), stored as the row's
+    #: ``execution_facts.error_reason`` so the Runs panel can word it.
+    error_reason: dict[str, Any] | None = None
 
 
 class Executor(Protocol):
@@ -655,7 +659,15 @@ class WorkerExecutor:
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         from . import worker_protocol as wp
-        from .workers import WORKER_DISCONNECTED, WORKER_GONE, WORKER_RECONNECTED
+        from .workers import (
+            WORKER_DISCONNECTED,
+            WORKER_GONE,
+            WORKER_RECONNECTED,
+            gone_message,
+            not_connected_message,
+            transfer_failed_message,
+            unreachable_message,
+        )
 
         placement = request.placement
         if placement is None:
@@ -664,9 +676,9 @@ class WorkerExecutor:
         worker_id = placement.worker_id
         worker = self._registry.get(worker_id)
         if worker is None or not worker.online:
-            detail = f"worker {worker_id} is not connected"
-            await _worker_gone_warning(request, detail)
-            return self._gone(request, detail)
+            message = not_connected_message(worker_id)
+            await _worker_gone_warning(request, message)
+            return self._gone(request, message)
         # The submit-time check again, against the worker as it is now: it
         # may have reconnected with fewer node types since (#781).
         refusal = await self._catalog_refusal(request, worker)
@@ -681,9 +693,9 @@ class WorkerExecutor:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
-                return ExecutionOutcome(STATUS_FAILED, (
-                    f"cannot send this run's input files to worker "
-                    f"{worker_id}: {exc}"))
+                message = transfer_failed_message(worker_id, exc)
+                return ExecutionOutcome(STATUS_FAILED, message.text,
+                                        error_reason=_reason_of(message))
         run = self._registry.open_run(worker, request.run_id)
         watcher: asyncio.Task | None = None
         acks: _Acks | None = None
@@ -706,9 +718,9 @@ class WorkerExecutor:
                     await acks.flush()
                     continue
                 if isinstance(item, tuple) and item and item[0] is WORKER_GONE:
-                    detail = f"worker {worker_id} went away: {item[1]}"
-                    await _worker_gone_warning(request, detail)
-                    return self._gone(request, detail)
+                    message = gone_message(worker_id, item[1])
+                    await _worker_gone_warning(request, message)
+                    return self._gone(request, message)
                 if isinstance(item, tuple) and item \
                         and item[0] is WORKER_DISCONNECTED:
                     await self._disconnected(request, worker_id, item[1])
@@ -738,9 +750,9 @@ class WorkerExecutor:
         except Exception as exc:  # noqa: BLE001 -- e.g. the socket closed under send
             logger.warning("run %s: worker %s failed: %s", request.run_id,
                            worker_id, exc, exc_info=True)
-            detail = f"could not reach worker {worker_id}: {exc}"
-            await _worker_gone_warning(request, detail)
-            return self._gone(request, detail)
+            message = unreachable_message(worker_id, exc)
+            await _worker_gone_warning(request, message)
+            return self._gone(request, message)
         finally:
             if watcher is not None:
                 watcher.cancel()
@@ -750,22 +762,23 @@ class WorkerExecutor:
                                      finished=finished)
 
     async def _disconnected(self, request: ExecutionRequest, worker_id: str,
-                            reason: str) -> None:
+                            reason: Any) -> None:
         """The worker's connection dropped; the run waits for it (#783)."""
+        from .workers import disconnected_message
+
         grace = getattr(self._registry, "resume_grace_s", 0)
-        await _warning(request, WARNING_WORKER_DISCONNECTED, (
-            f"worker {worker_id} disconnected ({reason}); the run keeps "
-            f"running there and waits up to {grace:.0f} s for it to "
-            "reconnect"))
+        await _warning(request, WARNING_WORKER_DISCONNECTED,
+                       disconnected_message(worker_id, reason, grace))
         await _record_connection(request, False)
 
     async def _reconnected(self, request: ExecutionRequest, worker_id: str,
                            acks: "_Acks") -> None:
         """The worker is back and still has the run (#783)."""
         from . import worker_protocol as wp
+        from .workers import reconnected_message
 
         await _warning(request, WARNING_WORKER_RECONNECTED,
-                       f"worker {worker_id} reconnected; the run continues")
+                       reconnected_message(worker_id))
         await _record_connection(request, True)
         # Its replay starts after the last ack it got; tell it what this
         # side already has, and repeat a stop it may never have received.
@@ -800,13 +813,14 @@ class WorkerExecutor:
             return None
 
     @staticmethod
-    def _gone(request: ExecutionRequest, detail: str) -> ExecutionOutcome:
+    def _gone(request: ExecutionRequest, message: Any) -> ExecutionOutcome:
         """The outcome of a run whose worker is gone: a stop if one was
         asked (``_stopped_status`` keeps a user's Stop ``cancelled``),
-        else ``interrupted``."""
+        else ``interrupted`` with *message* (a ``workers.WorkerReason``)."""
         if request.context.should_stop():
             return ExecutionOutcome(STATUS_CANCELLED, None)
-        return ExecutionOutcome(STATUS_INTERRUPTED, detail)
+        return ExecutionOutcome(STATUS_INTERRUPTED, str(message),
+                                error_reason=_reason_of(message))
 
     async def _forward_cancel(self, request: ExecutionRequest,
                               worker_id: str) -> None:
@@ -955,18 +969,37 @@ async def transfer_storage(label: str, needs: Mapping[str, Any],
         max_upload_bytes=int(settings.MAX_UPLOAD_SIZE))
 
 
-async def _worker_gone_warning(request: ExecutionRequest, detail: str) -> None:
-    await _warning(request, WARNING_WORKER_DISCONNECTED, detail)
+def _reason_of(message: Any) -> dict[str, Any] | None:
+    """``{code, params}`` of a coded message, or None for plain text
+    (``workers.reason_dict``)."""
+    from .workers import reason_dict
+
+    return reason_dict(message)
 
 
-async def _warning(request: ExecutionRequest, kind: str, detail: str) -> None:
+async def _worker_gone_warning(request: ExecutionRequest,
+                               message: Any) -> None:
+    await _warning(request, WARNING_WORKER_DISCONNECTED, message)
+
+
+async def _warning(request: ExecutionRequest, kind: str,
+                   message: Any) -> None:
+    """A ``run_warning`` about the run's worker. *message* is a
+    ``workers.WorkerReason``: ``detail`` is its English text, and ``code``
+    and ``params`` let the Runs panel word it (#841). Only worker runs
+    send these, so a run with no target never carries the two keys."""
+    payload: dict[str, Any] = {"kind": kind, "detail": str(message),
+                               "node_id": None}
+    reason = _reason_of(message)
+    if reason is not None:
+        payload.update(reason)
     try:
-        await request.sinks.emit(EVENT_WARNING, {
-            "kind": kind, "detail": detail, "node_id": None})
+        await request.sinks.emit(EVENT_WARNING, payload)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 -- observability
-        logger.warning("run %s: could not record %s", request.run_id, detail)
+        logger.warning("run %s: could not record %s", request.run_id,
+                       message)
 
 
 async def _record_connection(request: ExecutionRequest,
