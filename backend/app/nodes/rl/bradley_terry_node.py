@@ -197,11 +197,16 @@ class BradleyTerryTrainNode(BaseNode):
             nn.ReLU(),
             nn.Linear(int(params.get("hidden_dim", 32)), 1),
         ), int(params.get("seed", 0)))
+        # Initialised on the CPU (the seeded draw is the same everywhere),
+        # then moved to the pairs' device: on a GPU run they arrive on it and
+        # a CPU model refused them (#808 sweep, Reward-Hacking-Shortcut).
+        model = model.to(tw.device)
         opt = torch.optim.Adam(model.parameters(), lr=float(params.get("lr", 0.01)))
 
         def acc(a, b):
             with torch.no_grad():
-                return float(((model(a.float()) - model(b.float())).squeeze(-1) > 0).float().mean())
+                a, b = a.float().to(tw.device), b.float().to(tw.device)
+                return float(((model(a) - model(b)).squeeze(-1) > 0).float().mean())
 
         losses, tr_acc, ho_acc, lines = [], [], [], []
         for ep in range(epochs):
