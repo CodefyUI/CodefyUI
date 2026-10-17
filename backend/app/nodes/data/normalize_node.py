@@ -217,7 +217,9 @@ class NormalizeNode(BaseNode):
         shape[axis] = 1
 
         def stat(key: str) -> torch.Tensor:
-            t = torch.as_tensor(stats[key], dtype=torch.float32)
+            # The stats are plain lists (made with .tolist()), so as_tensor
+            # puts them on the CPU; on a GPU run ``x`` is on the GPU (#808).
+            t = torch.as_tensor(stats[key], dtype=torch.float32, device=x.device)
             expected = 1
             for d in shape:
                 expected *= d

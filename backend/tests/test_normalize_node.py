@@ -116,6 +116,20 @@ def test_wired_stats_reproduce_the_training_transform_on_test_rows(mode):
     assert torch.allclose(again["tensor"], fit["tensor"], atol=1e-6)
 
 
+@pytest.mark.parametrize("mode", ["zscore", "minmax", "unit_norm"])
+def test_wired_stats_follow_the_device_of_the_tensor(mode):
+    """The stats are lists, and turning them back into tensors put them on
+    the CPU, so on a GPU run (test rows on cuda:0) Iris-Sklearn-KNN and
+    Tabular-Iris-Pipeline died with "found at least two devices" (found in
+    the #808 sweep). The meta device stands in for the GPU, which CI does not
+    have: an op mixing meta and CPU tensors refuses the same way."""
+    fit = _run(_TRAIN, mode=mode, axis=0)
+    applied = NormalizeNode().execute(
+        {"tensor": _TEST.to("meta"), "stats": fit["stats"]}, {"axis": 0}
+    )
+    assert applied["tensor"].device.type == "meta"
+
+
 def test_wired_stats_do_not_refit_on_the_test_rows():
     fit = _run(_TRAIN, mode="zscore", axis=0)
     applied = NormalizeNode().execute(
