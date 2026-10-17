@@ -61,14 +61,17 @@ logger = logging.getLogger(__name__)
 
 # ── the structural hash ──────────────────────────────────────────────────
 
-#: Params that never change how much memory a run needs: identity and
-#: display text, seeds, and how long it runs.
+#: Params that never change how much device memory a run needs: identity
+#: and display text, seeds, how long it runs, and the host-side loader
+#: workers.
 IGNORED_PARAMS = frozenset({
     "seed", "name", "label", "title", "description", "comment", "note",
     "notes", "tag", "tags", "color", "lr", "learning_rate", "epochs",
     "episodes", "max_steps", "log_interval", "early_stopping_patience",
     "patience", "tensorboard", "checkpoint_every", "checkpoint_every_steps",
     "val_every_steps",
+    # How the batches are fed, on the host: the device sees the same ones.
+    "num_workers", "persistent_workers", "prefetch_factor", "shuffle",
 })
 
 
@@ -287,6 +290,9 @@ class StaticEstimate:
     notes: list[str] = field(default_factory=list)
     #: No batch size in the graph: :data:`DEFAULT_BATCH` was assumed.
     batch_assumed: bool = False
+    #: Which pass the activation term is mostly from: ``training`` (at
+    #: ``batch_size``) or ``evaluation`` (at ``eval_batch_size``).
+    activation_phase: str = "training"
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -306,6 +312,7 @@ class StaticEstimate:
                        for m in self.models],
             "uncounted": self.uncounted, "notes": self.notes,
             "batch_assumed": self.batch_assumed,
+            "activation_phase": self.activation_phase,
         }
 
 
@@ -779,6 +786,7 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
 
     element = ACTIVATION_BYTES.get(precision, 4.0)
     activations = 0.0
+    by_phase = {"training": 0.0, "evaluation": 0.0}
     for model in models:
         if model.node_type in FORMULA_TYPES or not model.parameters:
             continue
@@ -792,8 +800,11 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
         per_sample_eval = (model.activation_elements * 4.0
                            * EVAL_ACTIVATION_FACTOR
                            + model.output_elements * 4)
-        activations += max(train_batch * per_sample_train if training else 0,
-                           eval_batch * per_sample_eval)
+        train_term = train_batch * per_sample_train if training else 0.0
+        eval_term = eval_batch * per_sample_eval
+        activations += max(train_term, eval_term)
+        by_phase["training" if train_term >= eval_term
+                 else "evaluation"] += max(train_term, eval_term)
     if uncounted:
         notes.append("not counted: " + ", ".join(sorted(set(uncounted))))
     total = int(math.ceil((weights + activations) * RESERVE_FACTOR
@@ -807,7 +818,9 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
         precision=precision, weights_bytes=int(weights),
         activation_bytes=int(activations), workspace_bytes=WORKSPACE_BYTES,
         models=models, uncounted=sorted(set(uncounted)), notes=notes,
-        batch_assumed=batch_assumed)
+        batch_assumed=batch_assumed,
+        activation_phase=("evaluation" if by_phase["evaluation"]
+                          > by_phase["training"] else "training"))
 
 
 async def estimate_static_async(graph: Mapping[str, Any], *,

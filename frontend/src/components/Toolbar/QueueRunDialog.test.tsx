@@ -524,7 +524,7 @@ const STATIC: StaticMemoryEstimate = {
   training: true, optimizer: 'SGD', multiplier: 3, batch_size: 128, eval_batch_size: 512, precision: 'bf16',
   weights_bytes: 0.125 * 1024 ** 3, activation_bytes: 1.3 * 1024 ** 3, workspace_bytes: 256 * 1024 ** 2,
   models: [{ type: 'SequentialModel', parameters: 11173962, activations_known: true, probe_input: [[3, 32, 32]] }],
-  uncounted: [], notes: [], batch_assumed: false,
+  uncounted: [], notes: [], batch_assumed: false, activation_phase: 'training',
 };
 
 describe('QueueRunDialog: memory budget (#788)', () => {
@@ -633,8 +633,8 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(screen.queryByText('Measured')).toBeNull();
     expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
       'Not a measured peak: no earlier run of this graph on these devices reported one. Estimated from the model: '
-      + '11,173,962 parameters x 12 bytes (weights, gradients, optimizer state) = 128.0 MB, activations for batch 128 '
-      + 'about 1.3 GB, and 256.0 MB for the CUDA libraries. Lower it if you know better; the next run of this graph is measured.', { normalizeWhitespace: true },
+      + '11,173,962 parameters x 12 bytes (weights, gradients, optimizer state) = 128.0 MB, activations of a training step at batch 128 '
+      + 'about 1.3 GB, and 256.0 MB of library workspace. Lower it if you know better; the next run of this graph is measured.', { normalizeWhitespace: true },
     );
     await submit();
     expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'] });

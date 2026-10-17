@@ -102,6 +102,9 @@ def test_the_hash_ignores_ids_layout_seeds_and_run_length():
                                )["data"]["params"]
     same = _training_graph(ids="copy-", seed=7, epochs=50,
                            layers=_layers(x=300))
+    # Host-side loader workers do not change what the device holds.
+    next(n for n in same["nodes"] if n["type"] == "DataLoader")["data"][
+        "params"].update(num_workers=4, persistent_workers=True)
     assert me.structural_hash(graph) == me.structural_hash(same)
     assert mem.graph_hash(graph) == me.structural_hash(graph)
 
@@ -196,6 +199,22 @@ def test_the_activation_term_grows_with_the_batch():
     assert small is not None and large is not None
     assert large.activation_bytes == 64 * small.activation_bytes
     assert large.weights_bytes == small.weights_bytes
+    assert large.activation_phase == "training"
+
+
+def test_an_evaluation_at_a_larger_batch_can_be_the_peak():
+    """An EvaluateModel at batch 4096 next to training at 64: no
+    gradients, but 64 times the samples, so it sets the activation term and
+    the breakdown says which pass it is."""
+    graph = _training_graph(extra=[_node("eval", "EvaluateModel",
+                                         batch_size=4096)])
+    estimate = me.estimate_static(graph)
+    assert estimate is not None
+    assert (estimate.batch_size, estimate.eval_batch_size) == (64, 4096)
+    assert estimate.activation_phase == "evaluation"
+    per_sample = (16 + 16 + 4) * 4 * me.EVAL_ACTIVATION_FACTOR + 4 * 4
+    assert estimate.activation_bytes == int(4096 * per_sample)
+    assert estimate.describe()["activation_phase"] == "evaluation"
 
 
 def test_a_conv_model_takes_its_image_side_from_the_data_nodes():

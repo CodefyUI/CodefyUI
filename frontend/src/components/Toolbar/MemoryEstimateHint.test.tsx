@@ -11,7 +11,7 @@ const STATIC: StaticMemoryEstimate = {
   optimizer: null, multiplier: 1, batch_size: 0, eval_batch_size: 16, precision: 'fp32',
   weights_bytes: 4000, activation_bytes: GIB, workspace_bytes: 256 * 1024 ** 2,
   models: [{ type: 'SequentialModel', parameters: 1000, activations_known: true, probe_input: [[8]] }],
-  uncounted: [], notes: [], batch_assumed: false,
+  uncounted: [], notes: [], batch_assumed: false, activation_phase: 'evaluation',
 };
 
 const empty = { suggested_gib: null, source: null, peak_bytes: null, from_run: null };
@@ -25,7 +25,7 @@ describe('MemoryEstimateHint (#794)', () => {
     render(<MemoryEstimateHint estimate={{ ...empty, suggested_gib: 2, source: 'estimate', static: STATIC }} error={null} />);
     expect(screen.getByText('Estimate')).toBeInTheDocument();
     expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
-      '1,000 parameters x 4 bytes (weights, gradients, optimizer state) = 3.9 KB, activations for batch 16 about 1.0 GB',
+      '1,000 parameters x 4 bytes (weights, gradients, optimizer state) = 3.9 KB, activations of an evaluation pass at batch 16 about 1.0 GB',
     );
   });
 

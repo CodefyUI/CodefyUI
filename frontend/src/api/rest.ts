@@ -418,6 +418,8 @@ export interface StaticMemoryEstimate {
   uncounted: string[];
   notes: string[];
   batch_assumed: boolean;
+  /** The pass the activation term is mostly from: `training` (at `batch_size`) or `evaluation` (at `eval_batch_size`). */
+  activation_phase: string;
 }
 
 export async function estimateMemory(

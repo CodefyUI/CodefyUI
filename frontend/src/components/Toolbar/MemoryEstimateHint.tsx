@@ -37,7 +37,10 @@ export function MemoryEstimateHint({ estimate, error }: MemoryEstimateHintProps)
     return (
       <p className={styles.hint} aria-live="polite">
         <span className={`${styles.tag} ${styles.tagEstimate}`}>{t('queueRun.memory.tag.estimate')}</span>{' '}
-        <span>{t('queueRun.memory.estimated', breakdown(statics))}</span>
+        <span>
+          {t(statics.activation_phase === 'evaluation' ? 'queueRun.memory.estimatedEval' : 'queueRun.memory.estimated',
+            breakdown(statics))}
+        </span>
       </p>
     );
   }
@@ -59,7 +62,7 @@ function breakdown(estimate: StaticMemoryEstimate): Record<string, string> {
     // The parts in the unit that reads best (a small model's weights are
     // kilobytes); the total stays in GiB, the unit the field takes.
     weights: formatBytes(estimate.weights_bytes),
-    batch: String(estimate.training ? estimate.batch_size : estimate.eval_batch_size),
+    batch: String(estimate.activation_phase === 'evaluation' ? estimate.eval_batch_size : estimate.batch_size),
     activations: formatBytes(estimate.activation_bytes),
     workspace: formatBytes(estimate.workspace_bytes),
   };
