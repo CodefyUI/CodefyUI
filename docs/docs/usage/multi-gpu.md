@@ -16,7 +16,7 @@ The CodefyUI **server** is one process. A **run** executes in that process by de
 | Executes in | Always the server process | The server process, or a worker when its `target` says so |
 | Waits for a free card | No: starts at once (two at most, one per tab) | Yes: joins the queue of its device |
 | Devices | One: the graph's device, else Settings | One device, or a device set on a worker |
-| Keeps weights and cache between clicks, captures outputs for the Inspector | Yes | No (outputs only with `record_outputs`, and only on the server) |
+| Keeps weights and cache between clicks, captures outputs for the Inspector | Yes | No (outputs only with `record_outputs`; a worker keeps them and the Inspector reads them from it) |
 
 Use **Run** while you build and debug a graph. Queue a run for anything long, anything you want on a particular card, and anything that needs more than one card.
 
@@ -26,7 +26,7 @@ The caret next to **Run** in the toolbar opens a menu whose **Queue on...** item
 
 - **Target**: **This server**, each connected worker with its status and devices (a draining worker is listed but cannot be chosen), and **Any available** once a worker is connected.
 - **Devices**: one device for This server; for a worker, a set of one kind, kept in the order the worker lists its devices, with each CUDA card's in-run name shown as you tick it (`cuda:2 -> cuda:0 in this run`); for Any available, a kind (CPU, CUDA GPU, Apple MPS).
-- **Name**, **Random seed**, **Deterministic algorithms** and **Record node outputs** start from the tab's settings. Record node outputs is disabled for a worker or Any available.
+- **Name**, **Random seed**, **Deterministic algorithms** and **Record node outputs** start from the tab's settings. On a worker the recorded outputs stay on the worker, and the dialog says so.
 
 **Queue** submits the run, closes the dialog and opens it in the Runs tab. A refusal from the server is shown in the dialog.
 
@@ -132,7 +132,7 @@ When a run finishes, its detail header shows **Peak memory** for CUDA (the alloc
 - **Memory admission on workers only.** A card on this server is admitted by count per slot: a run is not refused because the card lacks memory, and an over-full card fails with an out-of-memory error. A worker's card can be [shared by memory](#sharing-a-card). See [Training Memory](/advanced/training-memory).
 - **The ledger counts budgets, not what runs use.** A running run is counted at its budget, and free memory comes from the worker's heartbeat (every 10 seconds) for the whole card: memory another user's job takes between two heartbeats is not seen until the next one, and per-run use is not measured.
 - **Plain HTTP between machines.** A remote worker enrolls and connects over whatever the control plane serves; without a TLS proxy or an SSH tunnel its token and run inputs cross the network unencrypted ([Remote Workers, Trust](/usage/remote-workers#trust-between-agent-and-control-plane)).
-- **No captured outputs on a worker** (`record_outputs`, [#789](https://github.com/CodefyUI/CodefyUI/issues/789)), and no persistent weights: every worker run starts fresh.
+- **Captured outputs stay on the worker** (`record_outputs`, [#789](https://github.com/CodefyUI/CodefyUI/issues/789)): the Inspector reads them only while the worker is connected. No persistent weights: every worker run starts fresh.
 - **A long disconnect ends the run.** A worker that loses its connection keeps its runs going for `CODEFYUI_WORKER_RESUME_GRACE_S` (5 minutes); past that they end `interrupted` ([Remote Workers, When the connection drops](/usage/remote-workers#when-the-connection-drops)).
 
 ## See also

@@ -436,7 +436,7 @@ CONTROL=https://codefyui.example.com
 ## 限制 {/* #limits */}
 
 - **畫布在控制面執行。** **Run** 一律在那裡執行，連同它的快取與持久化權重；要把分頁的圖送到 worker，請使用**排入佇列...**。
-- **Worker 上不擷取輸出。** 目標為 worker 的 run 不接受 `record_outputs`（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）；要為 Inspector 擷取輸出，請以控制面為目標。Worker run 每次也都從新的權重開始。
+- **擷取的輸出保存在 worker 上。** 開啟**錄製節點輸出**時，worker run 的擷取資料保存在 worker 上，Inspector 經由它的連線讀取，因此只有 worker 連線時才能讀取（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)，[執行架構：Worker 上的錄製輸出](/advanced/execution-architecture#recorded-outputs-on-a-worker)）。Worker run 每次都從新的權重開始。
 - **依記憶體准入需逐卡開啟。** Run 與在控制面上一樣，以每個裝置名額的數量准入，除非該卡設為 **依記憶體共用**（[多 GPU：共用一張卡](/usage/multi-gpu#sharing-a-card)）。
 - **一個 run，一台機器。** Run 只使用一個 worker 的裝置；沒有跨卡或跨機器的 `DistributedDataParallel`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **以 Linux 為主。** Worker 在 Linux 上開發與測試；macOS 可用，Windows 盡力支援。
@@ -450,6 +450,7 @@ CONTROL=https://codefyui.example.com
 | --- | --- | --- |
 | `CODEFYUI_EXTRA_ALLOWED_HOSTS` | *（空）* | Worker（或瀏覽器）連線用的主機名稱，例如 `gpu-gw.lan:8000` |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | 斷線 worker 的 run 等待它的秒數；`0` 立即結束 |
+| `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S` | `60` | 讀取 worker run 錄製輸出時等待 worker 回覆的秒數，逾時回 `504` |
 | `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` | `86400` | run 等待單次 worker 的秒數，逾時即失敗（[單次 worker](#one-shot-workers)）；`0` 表示一直等 |
 | `CODEFYUI_TLS_CERT_FILE` | *（空）* | Proxy 的憑證（PEM，leaf 在前），讓新增 worker 對話框顯示它的指紋 |
 | `CODEFYUI_MOUNT_LABEL` | `data` | 控制面資料夾的 label |
@@ -471,7 +472,7 @@ CONTROL=https://codefyui.example.com
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | SSH worker 的槽位編號：決定 worker 在遠端主機上的狀態資料夾（`~/.codefyui-ssh/<id>-<槽位>/`，通道的 socket 就在裡面），也是它存放憑證所用的位址 |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | 設為 `yes` 時要求主機已在 `known_hosts` 中 |
 
-在 worker 上，未給 `--token` 時由 `CODEFYUI_AGENT_TOKEN` 提供 token（[CLI 指令：環境變數](/getting-started/cli-commands#environment-variables)）。
+在 worker 上，`CODEFYUI_RUN_OUTPUT_STORE_MAX_MB`（2048）限制它保留的錄製輸出；未給 `--token` 時由 `CODEFYUI_AGENT_TOKEN` 提供 token（[CLI 指令：環境變數](/getting-started/cli-commands#environment-variables)）。
 
 ## 另請參閱 {/* #see-also */}
 
