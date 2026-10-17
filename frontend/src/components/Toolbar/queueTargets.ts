@@ -70,9 +70,12 @@ export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
 
 /** The workers a run can name in the dialog: the connected ones, and the
  * enrolled ones that are `offline` (#780), for which the run waits in the
- * queue until the worker connects. */
+ * queue until the worker connects. An instance of a shared credential
+ * (#845) that left is never coming back under its id: not offered. */
 export function targetableWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
-  return workers.filter((w) => w.status !== 'disconnected');
+  return workers.filter(
+    (w) => w.status !== 'disconnected' && !(w.instance_of && w.status === 'offline'),
+  );
 }
 
 const ACCELERATORS = ['cuda', 'mps'];

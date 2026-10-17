@@ -96,6 +96,11 @@ async function openPanel(workers: WorkerInfo[] = [worker('gpu-box')]) {
 
 const t = useI18n.getState().t;
 
+/** A card's own facts list, not one of a nested instance card's (#845). */
+function ownFacts(card: HTMLElement): Element | null {
+  return Array.from(card.children).find((child) => child.tagName === 'DL') ?? null;
+}
+
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   _resetWorkerStoreForTesting();
@@ -266,6 +271,99 @@ describe('WorkersPanel', () => {
     act(() => useI18n.setState({ locale: 'zh-TW' }));
     expect(card('took').getByText('單次')).toBeInTheDocument();
     expect(card('idle').getByText('未接 run 就結束')).toBeInTheDocument();
+  });
+
+  it('groups the instances of a shared credential under it (#845)', async () => {
+    const instance = (id: string, extra: Partial<WorkerInfo> = {}) => worker(`gpu.${id}`, {
+      instance_of: 'gpu', instance: id, one_shot: { run_id: null, took: null }, ...extra,
+    });
+    const dialog = await openPanel([
+      worker('gpu', { status: 'offline', enrolled: true, one_shot: { run_id: null, took: null }, devices: [
+        { value: 'cuda:0', kind: 'cuda', index: 0, name: 'stale', memory: null },
+      ] }),
+      instance('4821-1', { status: 'offline', one_shot: { run_id: null, took: 'run-aaaaaaaa' } }),
+      instance('4821-2', { running: ['run-bbbbbbbb'], one_shot: { run_id: null, took: 'run-bbbbbbbb' } }),
+      instance('4821-3'),
+      worker('box'),
+    ]);
+    const credential = within(dialog).getByRole('article', { name: 'gpu' });
+    // The credential is the group's header: its own stale facts are not shown.
+    expect(within(credential).getByText('Shared credential')).toHaveAttribute(
+      'title', expect.stringMatching(/--instance/));
+    expect(within(credential).queryByText('stale')).toBeNull();
+    expect(ownFacts(credential)).toBeNull();
+    expect(within(credential).getByText('Instances: 3 (2 connected, 1 running)')).toBeInTheDocument();
+    const cards = within(credential).getAllByRole('article');
+    // Connected ones first; each shows its instance id, the full id as its tooltip.
+    expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual(['gpu.4821-2', 'gpu.4821-3', 'gpu.4821-1']);
+    const second = within(cards[0]);
+    expect(second.getByRole('heading', { name: '4821-2' })).toHaveAttribute('title', 'gpu.4821-2');
+    expect(second.getByText('Online')).toBeInTheDocument();
+    // An instance has no credential to re-key, nor anything to drain.
+    expect(second.queryByRole('button', { name: 'Re-key' })).toBeNull();
+    expect(second.queryByRole('button', { name: 'Drain' })).toBeNull();
+    expect(second.getByRole('button', { name: 'Remove' })).toHaveAttribute(
+      'title', 'Remove this instance from the list; the credential stays enrolled');
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(within(credential).getByText('共用憑證')).toBeInTheDocument();
+    expect(within(credential).getByText('執行個體：3 個（2 個已連線，1 個執行中）')).toBeInTheDocument();
+    act(() => useI18n.setState({ locale: 'en' }));
+    // Removing the credential revokes it for every instance: asked twice while one is connected.
+    const revoke = within(credential).getAllByRole('button', { name: 'Remove' })[0];
+    expect(revoke).toHaveAttribute('title', expect.stringMatching(/every instance disconnects/));
+    await act(async () => fireEvent.click(revoke));
+    expect(removeWorker).not.toHaveBeenCalled();
+    expect(revoke).toHaveTextContent('Confirm remove');
+    await act(async () => fireEvent.click(revoke));
+    expect(removeWorker).toHaveBeenCalledWith('gpu');
+    // A worker no instance shares is a card of its own, as before.
+    const box = within(dialog).getByRole('article', { name: 'box' });
+    expect(within(box).queryByText(/Instances:/)).toBeNull();
+    expect(within(box).getByRole('button', { name: 'Re-key' })).toBeInTheDocument();
+  });
+
+  it('lists instances whose name has no card under a header of their own (#845)', async () => {
+    vi.mocked(fetchWorkerList).mockImplementation(async () => ({
+      workers: await fetchWorkers(),
+      rejections: [{ name: 'gpu', reason: 'version mismatch', at: NOW_S - 10, peer: null }],
+    }));
+    const dialog = await openPanel([
+      worker('gpu', { status: 'offline', enrolled: true }),
+      worker('gpu.9', { instance_of: 'gpu', instance: '9' }),
+      worker('lab.1', { instance_of: 'lab', instance: '1', status: 'offline', one_shot: { run_id: null, took: null } }),
+      worker('lab.2', { instance_of: 'lab', instance: '2', one_shot: { run_id: null, took: null } }),
+    ]);
+    const group = within(dialog).getByRole('article', { name: 'lab' });
+    expect(within(group).getByText('Instances')).toHaveAttribute('title', expect.stringMatching(/SLURM array/));
+    expect(within(group).getByText('Instances: 2 (1 connected, 0 running)')).toBeInTheDocument();
+    expect(within(group).getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['lab.2', 'lab.1']);
+    // One that left goes at once; the credential's card is not asked about.
+    const left = within(within(group).getByRole('article', { name: 'lab.1' })).getByRole('button', { name: 'Remove' });
+    await act(async () => fireEvent.click(left));
+    expect(removeWorker).toHaveBeenCalledWith('lab.1');
+    // A shared credential's own refused handshake still shows in its card.
+    const credential = within(dialog).getByRole('article', { name: 'gpu' });
+    expect(within(credential).getByText('Shared credential')).toBeInTheDocument();
+    expect(ownFacts(credential)).toHaveTextContent('version mismatch');
+  });
+
+  it('shows a connected credential with instances as itself (#845)', async () => {
+    const dialog = await openPanel([
+      worker('gpu', { enrolled: true }),
+      worker('gpu.1', { instance_of: 'gpu', instance: '1', status: 'offline' }),
+    ]);
+    const credential = within(dialog).getByRole('article', { name: 'gpu' });
+    expect(within(credential).queryByText('Shared credential')).toBeNull();
+    expect(within(credential).getAllByText('Online')).toHaveLength(1);
+    expect(ownFacts(credential)).toHaveTextContent('Version');
+    expect(within(credential).getByText('Instances: 1 (0 connected, 0 running)')).toBeInTheDocument();
+    // Only the instance id shows when the server sent none apart.
+    expect(within(credential).getByRole('heading', { name: '1' })).toBeInTheDocument();
+  });
+
+  it('names an instance by its id when the server sent no instance part (#845)', async () => {
+    const dialog = await openPanel([worker('gpu.7', { instance_of: 'gpu', instance: null })]);
+    expect(within(dialog).getByRole('heading', { name: 'gpu.7' })).toHaveAttribute('title', 'gpu.7');
   });
 
   it('shows a status this build does not know as sent, in a neutral chip', async () => {
