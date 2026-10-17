@@ -37,7 +37,10 @@ A ``--one-shot`` agent (#790, :class:`~app.agent.one_shot.OneShot`) says so
 in ``hello``, takes the first run it is assigned (refusing any other),
 and stops once the control plane has acknowledged that run's
 ``run_finished``. A control plane whose ``welcome`` does not list the
-``one_shot`` capability is refused like a ``reject``.
+``one_shot`` capability is refused like a ``reject``. With ``--instance``
+(#845) it also says ``hello.instance`` and is registered as
+``<name>.<instance>``; a control plane without the ``instances``
+capability is refused the same way.
 """
 
 from __future__ import annotations
@@ -179,23 +182,31 @@ class AgentConnection:
         facts: AgentFacts | None = None,
         uds: str | None = None,
         one_shot: OneShot | None = None,
+        instance: str | None = None,
     ) -> None:
         self.runner = runner
         #: ``--one-shot`` (#790): this agent's one run, or None.
         self.one_shot = one_shot
-        #: Random per agent process (#790, ``hello.instance_id``).
-        self.instance_id = secrets.token_hex(8)
+        #: ``--instance`` (#845, ``hello.instance``): this one-shot agent is
+        #: one of several on the credential of *name*, or None.
+        self.instance = instance
+        #: Random per agent process (#790, ``hello.instance_id``). For an
+        #: instance it is also what tells it apart from the others holding
+        #: the same worker token (#845), so it is never logged.
+        self.instance_id = secrets.token_hex(16)
         runner.send = self.send_frame
         if runner.transfer is None:
             # The transfer backend's HTTP side (#785): the same control
             # plane and token as this socket, read per request.
-            from .transfer import CACHE_DIRNAME, InputCache, TransferClient
+            from .transfer import InputCache, TransferClient
 
             runner.transfer = TransferClient(
                 base_url=lambda: self._resolve(self._control_url),
                 token=lambda: self._resolve(self._token),
-                cache=InputCache(runner.runs_dir.parent / CACHE_DIRNAME),
-                ssl_context=self._http_tls, uds=uds)
+                cache=InputCache(runner.cache_dir),
+                ssl_context=self._http_tls, uds=uds,
+                # An instance's uploads say which instance it is (#845).
+                instance_id=self.instance_id if instance else None)
         #: Every run's frames not acknowledged yet (#783).
         self.spools = spools if spools is not None else SpoolStore(
             runner.runs_dir)
@@ -499,7 +510,7 @@ class AgentConnection:
                              else self.one_shot.run_id),
             one_shot_taken=(None if self.one_shot is None
                             else self.one_shot.taken),
-            instance_id=self.instance_id)
+            instance_id=self.instance_id, instance=self.instance)
         await ws.send(wp.encode_frame(hello))
         raw = await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S)
         frame = wp.decode_control_frame(raw)
@@ -516,6 +527,11 @@ class AgentConnection:
             raise AgentRejected(
                 "the control plane does not support one-shot workers "
                 "(--one-shot); update it to this version")
+        if self.instance is not None \
+                and wp.CAPABILITY_INSTANCES not in frame.capabilities:
+            raise AgentRejected(
+                "the control plane does not support one-shot instances "
+                "(--instance); update it to this version")
         return frame
 
     async def _serve(self, ws: Any, stop: asyncio.Event) -> bool:

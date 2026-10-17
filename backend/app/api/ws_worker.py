@@ -41,7 +41,12 @@ is remembered per name for the Workers panel
 refused when another agent holds its name while connected or with a run in
 flight (``worker_handshake.one_shot_refusal``), and, started with
 ``--run-id``, when that run does not wait for it
-(``RunService.one_shot_run_refusal``). Otherwise the worker is registered
+(``RunService.one_shot_run_refusal``). A one-shot agent started with
+``--instance`` (#845) is registered as ``<name>.<instance>`` under its
+credential's name, and every check above applies to that id; a run that
+instance took before this server restarted can be taken back only by the
+agent process that took it (``worker_handshake.instance_refusal``).
+Otherwise the worker is registered
 (replacing an older connection under the same name, but only one that
 authenticated the same way: a session-token agent cannot take over an
 enrolled worker's name, nor an enrolled worker a connected same-host
@@ -250,10 +255,18 @@ async def websocket_worker(ws: WebSocket) -> None:
         logger.warning("a worker connection said no valid hello: %s", exc)
         await close()
         return
-    refusal = (handshake.refusal(hello, control_version=get_version())
+    refusal = handshake.refusal(hello, control_version=get_version())
+    if refusal is None and hello.instance is not None:
+        # One of several one-shot agents on this credential (#845): it is
+        # registered, and from here on known, as ``<name>.<instance>``.
+        hello = hello.model_copy(update={"name": wp.instance_worker_id(
+            hello.name, hello.instance)})
+    refusal = (refusal
                or handshake.identity_refusal(
                    hello, credential=auth.credential, enrolled_as=enrolled_as,
-                   registry=registry))
+                   registry=registry)
+               or handshake.instance_refusal(
+                   hello, registry.adopted_instance_hash(hello.name)))
     if refusal is None:
         refusal = await _one_shot_run_refusal(ws, registry, hello)
     if refusal is not None:
@@ -291,11 +304,20 @@ async def websocket_worker(ws: WebSocket) -> None:
         hello, send=send, close=close,
         same_host=_peer_is_loopback(ws)
         and same_machine(hello.machine_id, machine_identity()),
-        credential=auth.credential, enrolled=enrolled_as is not None,
+        credential=auth.credential,
+        # An instance (#845) is not the enrolled worker itself: its
+        # credential is revoked by removing the worker it belongs to.
+        enrolled=enrolled_as is not None and hello.instance is None,
         plain_http=plain_from_another_machine(ws))
+    if hello.instance is not None:
+        base = registry.get(worker.instance_of)
+        if base is not None and not base.online:
+            # Its next start after a restart reads the same (migration 016).
+            base.one_shot = True
     store = getattr(ws.app.state, "worker_store", None)
     if enrolled_as is not None and store is not None:
-        await _touch(store, hello, fingerprint_digest=worker.fingerprint)
+        await _touch(store, hello, enrolled_as,
+                     fingerprint_digest=worker.fingerprint)
     launcher = getattr(ws.app.state, "ssh_launcher", None)
     if launcher is not None:
         launcher.worker_connected(worker.name)
@@ -375,18 +397,20 @@ async def _touch(store: Any, hello: wp.Hello | None,
                  name: str | None = None, *,
                  fingerprint_digest: str | None = None) -> None:
     # On ``hello`` the digest is always written: None clears a stale one.
-    """Record an enrolled worker as seen (with its facts, on ``hello``).
-    A failed write is logged; it never costs the connection."""
+    """Record an enrolled worker *name* as seen (with its facts, on
+    ``hello``; an instance's hello records them on its credential's row,
+    #845). A failed write is logged; it never costs the connection."""
     try:
         if hello is None:
             await store.touch(name)
         else:
             await store.touch(
-                hello.name, platform=dict(hello.platform),
+                name or hello.name, platform=dict(hello.platform),
                 mounts=dict(hello.mounts),
                 devices=[d.model_dump() for d in hello.devices],
                 machine_id=hello.machine_id,
-                fingerprint_digest=fingerprint_digest)
+                fingerprint_digest=fingerprint_digest,
+                one_shot=hello.one_shot)
     except Exception:  # noqa: BLE001
         logger.warning("could not record worker %s as seen",
                        name or (hello.name if hello else "?"), exc_info=True)

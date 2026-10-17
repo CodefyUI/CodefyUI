@@ -762,6 +762,25 @@ async def _uploader(request: Request) -> str | None:
     return name
 
 
+def _instance_uploads(request: Request, worker: str, running_on: str) -> bool:
+    """Whether *worker*'s token may upload for a run on *running_on*, an
+    instance of its credential (#845). The instances of a credential share
+    its token, so the token is not enough: the request must also carry the
+    ``instance_id`` that instance's agent process said in its ``hello``
+    (:data:`~app.core.worker_protocol.INSTANCE_HEADER`), which only that
+    process and this server know."""
+    from ..core import worker_protocol as wp
+
+    name, instance = wp.instance_parts(running_on)
+    if instance is None or name != worker:
+        return False
+    registry = getattr(request.app.state, "worker_registry", None)
+    holder = None if registry is None else registry.get(running_on)
+    expected = getattr(holder, "instance_id", None)
+    presented = request.headers.get(wp.INSTANCE_HEADER)
+    return bool(expected) and constant_time_equals(presented, expected)
+
+
 @router.post("/{run_id}/artifacts/upload")
 async def upload_run_artifact(run_id: str, request: Request):
     """Receive a file a worker run wrote (#785, the ``transfer`` backend).
@@ -792,6 +811,10 @@ async def upload_run_artifact(run_id: str, request: Request):
     service = _get_service(request)
     worker = await _uploader(request)
     running_on = service.running_on(run_id)
+    if running_on is not None and worker is not None \
+            and running_on != worker and _instance_uploads(
+                request, worker, running_on):
+        worker = running_on
     if running_on is None or (worker is not None and running_on != worker):
         raise HTTPException(status_code=409, detail=(
             f"run '{run_id}' is not running on "

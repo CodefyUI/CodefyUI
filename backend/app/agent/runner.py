@@ -406,8 +406,14 @@ class Runner:
         child_entry: Callable[..., None] = child_module.main,
         transfer: transfer_module.TransferClient | None = None,
         s3_client: Callable[[Any], Any] | None = None,
+        cache_dir: Path | None = None,
     ) -> None:
         self.runs_dir = runs_dir
+        #: Where fetched inputs are cached by content (#785): beside
+        #: *runs_dir* unless given (an instance's runs dir is its own, its
+        #: cache the user data dir's, #845).
+        self.cache_dir = (cache_dir if cache_dir is not None
+                          else runs_dir.parent / transfer_module.CACHE_DIRNAME)
         #: Fetches inputs and uploads outputs for ``transfer`` runs (#785);
         #: ``AgentConnection`` provides one when none is given.
         self.transfer = transfer
@@ -588,8 +594,7 @@ class Runner:
         from . import s3 as s3_module
 
         cache = self.transfer.cache if self.transfer is not None else \
-            transfer_module.InputCache(self.runs_dir.parent
-                                       / transfer_module.CACHE_DIRNAME)
+            transfer_module.InputCache(self.cache_dir)
         return s3_module.S3Client(access, cache)
 
     def renew(self, run_id: str, access: Any) -> bool:

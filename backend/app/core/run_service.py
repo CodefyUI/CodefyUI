@@ -325,11 +325,16 @@ from .secret_params import (
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
-from .worker_handshake import catalog_refusal, graph_node_types
+from .worker_handshake import (
+    catalog_refusal,
+    graph_node_types,
+    instance_id_hash,
+)
 from .worker_protocol import (
     POOL_ONE_SHOT,
     TARGET_ANY,
     TARGET_LOCAL,
+    WORKER_ID_PATTERN,
     WORKER_NAME_PATTERN,
     canonical_device,
 )
@@ -739,10 +744,10 @@ TARGET_WORKER_LOCAL = WORKER_LOCAL
 #: "Place it wherever there is room": the connected workers first, then
 #: this process (#772).
 TARGET_WORKER_ANY = TARGET_ANY
-#: Worker names (#769), matched with ``fullmatch``. ``local`` and ``any``
-#: match it too; they are the two reserved names a worker cannot enroll
-#: under.
-TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
+#: Worker ids (#769), matched with ``fullmatch``: a worker name, or an
+#: instance's ``<name>.<instance>`` (#845). ``local`` and ``any`` match it
+#: too; they are the two reserved names a worker cannot enroll under.
+TARGET_WORKER_PATTERN = WORKER_ID_PATTERN
 #: The queue-key family of ``target.pool: "one-shot"`` runs (#790):
 #: ``pool:one-shot/<device>``. The ``:`` cannot occur in a worker name, so
 #: it never collides with a ``<worker>/<device>`` key, and the pool's FIFO
@@ -917,7 +922,8 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
             or TARGET_WORKER_PATTERN.fullmatch(worker) is None:
         raise RunSubmitError(
             "target.worker must be 'local', 'any' or a worker name "
-            "(lowercase letters, digits and '-', at most 63 chars)")
+            "(lowercase letters, digits and '-', at most 63 chars; an "
+            "instance's id adds '.<instance>')")
     if pool and worker != TARGET_WORKER_ANY:
         raise RunSubmitError(
             "target.pool picks the worker: leave target.worker out (or "
@@ -3409,6 +3415,12 @@ class RunService:
                 devices=list(active.placement.devices))
             # What a restarted server needs to adopt the run (#793).
             facts[WORKER_RESUME_KEY] = self._worker_resume(active, 0)
+            if getattr(worker, "instance_of", None) is not None \
+                    and worker.instance_id:
+                # Which agent process may take the run back after a
+                # restart (#845): its instances share one worker token.
+                facts[WORKER_RESUME_KEY]["instance"] = instance_id_hash(
+                    worker.instance_id)
         else:
             digest = None
             fingerprint, facts = await self._environment_record(
@@ -4360,8 +4372,13 @@ class RunService:
         options = record.options if isinstance(record.options, dict) else {}
         facts = (record.execution_facts
                  if isinstance(record.execution_facts, dict) else {})
+        resume = facts.get(WORKER_RESUME_KEY)
+        instance = (resume.get("instance") if isinstance(resume, dict)
+                    else None)
         self._workers.adopt(placement.worker_id, record.id,
-                            last_seq=last_seq)
+                            last_seq=last_seq,
+                            instance_hash=(instance if isinstance(instance, str)
+                                           and instance else None))
         try:
             self._start(record.id, {}, options,
                         queue_key=record.queue_key or placement.devices[0],

@@ -663,16 +663,26 @@ async def _revoke_worker(request: Request, worker_id: str,
         revoked = await store.delete_worker(worker_id)
     registry = getattr(request.app.state, "worker_registry", None)
     removed = None
+    instances: list[str] = []
     if registry is not None:
         registry.forget_policies(worker_id)
-        removed = registry.forget(
-            worker_id, f"{reason} and its credential revoked" if revoked
-            else reason)
+        why = f"{reason} and its credential revoked" if revoked else reason
+        removed = registry.forget(worker_id, why)
+        # Every instance of the credential goes with it (#845): they
+        # authenticated with the token just revoked.
+        instances = registry.forget_instances(worker_id, why)
+        if removed is None and instances:
+            removed = instances
     if revoked:
-        logger.info("worker %s: credential revoked", worker_id)
+        logger.info("worker %s: credential revoked%s", worker_id,
+                    f" ({len(instances)} instance(s) removed)"
+                    if instances else "")
     service = _service(request)
-    failed = [] if service is None else await service.fail_queued_for_worker(
-        worker_id, f"worker {worker_id} was removed")
+    failed = []
+    if service is not None:
+        for target in [worker_id, *instances]:
+            failed += await service.fail_queued_for_worker(
+                target, f"worker {target} was removed")
     return revoked, removed, failed
 
 

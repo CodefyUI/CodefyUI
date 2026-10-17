@@ -95,6 +95,16 @@ old one, those runs move to the new connection and wait for its
 if no ``run_alive`` arrives within a heartbeat interval) ends
 ``interrupted``. Nothing is lost silently: each outcome is logged.
 
+Instances (#845, ``cdui agent start --one-shot --instance``): one
+credential serves several concurrent one-shot agents (a SLURM array's
+tasks). Each registers under a worker id of its own,
+``<name>.<instance>`` (``worker_protocol.instance_worker_id``;
+:attr:`Worker.instance_of` names the credential), and is an ordinary
+one-shot worker from then on: its own slots, its own run, its own row in
+``GET /api/workers``. Revoking the credential removes every instance
+(:meth:`WorkerRegistry.forget_instances`). Instances are known in memory
+only; at most :data:`MAX_LEFT_INSTANCES` that left are kept per credential.
+
 After a restart of this server (#793), ``RunService.recover_interrupted``
 hands every worker run its previous process left in flight to
 :meth:`WorkerRegistry.adopt`: the run waits, detached, exactly as if its
@@ -146,6 +156,10 @@ INBOX_HIGH_WATER = 10_000
 INBOX_DRAIN_POLL_S = 0.05
 #: Names whose last handshake refusal is remembered; the oldest is dropped.
 MAX_REJECTIONS = 100
+#: Instances of one credential that left (#845) kept listed; the oldest
+#: is dropped. A SLURM array of hundreds of tasks would otherwise list
+#: every finished task until this server restarts.
+MAX_LEFT_INSTANCES = 50
 #: ``degraded_reasons`` entries.
 DEGRADED_NODE_CATALOG = "node_catalog"
 DEGRADED_HEARTBEAT = "heartbeat"
@@ -271,6 +285,16 @@ class Worker:
     one_shot_assigned: bool = False
     #: ``hello.instance_id``: which agent process holds the name (#790).
     instance_id: str | None = None
+    #: The credential's name when this is one of its instances (#845,
+    #: ``<instance_of>.<instance>``), else None.
+    instance_of: str | None = None
+    #: ``hello.instance`` (#845), else None.
+    instance: str | None = None
+    #: On a placeholder of runs adopted after a restart (#793) under an
+    #: instance's id: the hashed ``instance_id`` of the agent process that
+    #: took the run (``worker_handshake.instance_id_hash``). Only that
+    #: process may take the id (``worker_handshake.instance_refusal``).
+    instance_hash: str | None = None
 
     @property
     def online(self) -> bool:
@@ -363,6 +387,10 @@ class Worker:
                 "run_id": self.one_shot_run_id,
                 "took": self.one_shot_claim,
             },
+            # #845: the credential this instance shares, and its own part
+            # of the id; both None for a worker that is not an instance.
+            "instance_of": self.instance_of,
+            "instance": self.instance,
         }
 
 
@@ -702,6 +730,10 @@ class WorkerRegistry:
             catalog_checked=self._node_catalog is not None,
             one_shot=hello.one_shot, one_shot_run_id=hello.one_shot_run_id,
             instance_id=hello.instance_id)
+        if hello.instance is not None:
+            # ``ws_worker`` registered it under ``<name>.<instance>`` (#845).
+            worker.instance_of = wp.instance_parts(hello.name)[0]
+            worker.instance = hello.instance
         if old is not None and old.one_shot and hello.one_shot \
                 and old.instance_id == hello.instance_id:
             # The same one-shot agent reconnecting (#790): the run it took
@@ -737,11 +769,47 @@ class WorkerRegistry:
                 logger.warning("worker %s: a new connection replaced the "
                                "old one", hello.name)
         self._workers[hello.name] = worker
+        if worker.instance_of is not None:
+            self._prune_left_instances(worker.instance_of)
         self._ensure_watchdog()
         logger.info("worker %s connected (%s, devices %s)", worker.name,
                     worker.version, worker.device_values())
         self._changed()
         return worker, replaced
+
+    # ── instances (#845) ──────────────────────────────────────────────────
+
+    def instances_of(self, name: str) -> list[Worker]:
+        """Every instance of *name*'s credential this registry lists."""
+        return [w for w in self._workers.values() if w.instance_of == name]
+
+    def _prune_left_instances(self, name: str) -> None:
+        """Keep at most :data:`MAX_LEFT_INSTANCES` instances of *name* that
+        left (offline, nothing in flight); the oldest go first."""
+        left = sorted((w for w in self.instances_of(name)
+                       if w.status == STATUS_OFFLINE and not w.running),
+                      key=lambda w: w.connected_at)
+        for worker in left[:max(0, len(left) - MAX_LEFT_INSTANCES)]:
+            del self._workers[worker.id]
+
+    def forget_instances(self, name: str, reason: str) -> list[str]:
+        """Drop every instance of *name*'s credential (it was revoked), and
+        the runs adopted after a restart under an instance's id, as
+        :meth:`forget` does for one worker. Returns the dropped ids."""
+        prefix = f"{name}{wp.INSTANCE_SEPARATOR}"
+        ids = sorted({w.id for w in self.instances_of(name)}
+                     | {i for i in self._adopted if i.startswith(prefix)})
+        for worker_id in ids:
+            self.forget(worker_id, reason)
+        return ids
+
+    def adopted_instance_hash(self, worker_id: str) -> str | None:
+        """The hashed ``instance_id`` that may take *worker_id* while runs
+        adopted after a restart wait under it (#845), else None."""
+        placeholder = self._adopted.get(worker_id)
+        if placeholder is None or not placeholder.running:
+            return None
+        return placeholder.instance_hash
 
     # ── known workers (#780) ──────────────────────────────────────────────
 
@@ -774,7 +842,11 @@ class WorkerRegistry:
                 devices=devices, send=_not_connected, close=_nothing,
                 heartbeat_s=self.heartbeat_s, status=STATUS_OFFLINE,
                 connected_at=seen or 0.0, last_heartbeat_at=seen,
-                enrolled=True)
+                enrolled=True,
+                # Its last agent was one-shot (#845, migration 016): a run
+                # naming it is timed by the one-shot queue rule before that
+                # agent is back.
+                one_shot=bool(getattr(entry, "one_shot", False)))
             self._workers[entry.name] = worker
             added.append(worker)
         if added:
@@ -1010,7 +1082,8 @@ class WorkerRegistry:
         return run
 
     def adopt(self, worker_id: str, run_id: str, *,
-              last_seq: int = 0) -> WorkerRun:
+              last_seq: int = 0,
+              instance_hash: str | None = None) -> WorkerRun:
         """Take over *run_id*, left in flight on *worker_id* by a previous
         process of this server (#793). STARTUP, before workers connect.
 
@@ -1021,6 +1094,9 @@ class WorkerRegistry:
         it are dropped as duplicates (:meth:`route`). A worker known here
         (an enrolled one, offline) holds it in its ``running``; for one not
         known yet an unlisted placeholder does, until it connects.
+        *instance_hash*: the run was taken by an instance (#845); only the
+        agent process it names may take the id back
+        (:meth:`adopted_instance_hash`).
         """
         worker = self._workers.get(worker_id)
         if worker is None:
@@ -1031,6 +1107,8 @@ class WorkerRegistry:
                 platform={}, mounts={}, devices=[], send=_not_connected,
                 close=_nothing, heartbeat_s=self.heartbeat_s,
                 status=STATUS_OFFLINE, last_heartbeat_at=None)
+        if instance_hash is not None:
+            worker.instance_hash = instance_hash
         run = WorkerRun(run_id=run_id, last_seq=max(0, int(last_seq)),
                         detached_at=self._clock(), detached_wall=time.time(),
                         adopted=True)

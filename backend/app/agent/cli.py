@@ -51,6 +51,15 @@ never collides with a background agent's; the exit code says how the run
 went (0 succeeded, 1 failed / cancelled / interrupted, 2 refused, 3 no run
 arrived before the agent was stopped, 4 it could not start: enrollment
 failed or ``--mount`` was refused).
+
+``--one-shot --instance [ID]`` (#845): one of several concurrent one-shot
+agents on ONE stored credential and user data dir, such as the tasks of a
+SLURM array. It registers as ``<name>.<ID>`` (ID: given, else
+``<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>``, ``SLURM_JOB_ID`` or random:
+:func:`derive_instance`), keeps its runs under
+``<user-data>/agent-instances/<ID>`` (deleted when it exits), and enrolls
+holding a file lock, so tasks started together with one enrollment token
+enroll once and the rest use the credential the first one stored.
 """
 
 from __future__ import annotations
@@ -86,6 +95,15 @@ DAEMON_FLAG = "--daemonized"
 PIDFILE_NAME = "agent.pid"
 LOGFILE_NAME = "agent.log"
 RUNS_DIR_NAME = "agent-runs"
+#: Each ``--instance`` agent's own runs directory lives under this one
+#: (#845): ``<user-data>/agent-instances/<instance>``. Apart from
+#: :data:`RUNS_DIR_NAME`, whose leftovers a starting agent retires.
+INSTANCES_DIR_NAME = "agent-instances"
+#: ``--instance`` without a value: derived from the batch system.
+INSTANCE_AUTO = "auto"
+#: Held while an ``--instance`` agent looks for, or creates, the stored
+#: credential, so the tasks of an array started together enroll once.
+ENROLL_LOCK_NAME = "enroll.lock"
 
 #: How long ``start`` watches a fresh background agent before reporting it.
 START_SETTLE_S = 1.5
@@ -144,6 +162,81 @@ def logfile() -> Path:
 
 def runs_dir() -> Path:
     return user_data_dir() / RUNS_DIR_NAME
+
+
+def instance_runs_dir(instance: str) -> Path:
+    """An ``--instance`` agent's runs directory (#845): its own, so the
+    instances sharing a user data dir never retire each other's spools."""
+    return user_data_dir() / INSTANCES_DIR_NAME / instance
+
+
+def derive_instance(env: Any = None) -> str:
+    """``--instance`` without a value (#845): ``<array job>-<task>`` in a
+    SLURM array task (unique across arrays started on one credential), else
+    ``SLURM_JOB_ID``, else six random hex characters."""
+    env = os.environ if env is None else env
+    array_job = str(env.get("SLURM_ARRAY_JOB_ID") or "").strip()
+    task = str(env.get("SLURM_ARRAY_TASK_ID") or "").strip()
+    if array_job and task:
+        return f"{array_job}-{task}"
+    job = str(env.get("SLURM_JOB_ID") or "").strip()
+    if job:
+        return job
+    import secrets
+
+    return secrets.token_hex(3)
+
+
+def resolve_instance(raw: str, env: Any = None) -> str:
+    """The instance id ``--instance`` *raw* asks for. ``ValueError``
+    (bilingual) when it is not ``[a-z0-9][a-z0-9-]{0,31}``."""
+    value = raw.strip().lower()
+    if value == INSTANCE_AUTO:
+        value = derive_instance(env).lower()
+    if _wp.INSTANCE_PATTERN.fullmatch(value) is None:
+        raise ValueError(t(
+            f"--instance {value!r} 不合法：只能用小寫英數字與 -，最長 32 字",
+            f"invalid --instance {value!r}: lower-case letters, digits and "
+            "'-', at most 32 characters"))
+    return value
+
+
+class _EnrollmentLock:
+    """``<user-data>/agent/enroll.lock``, held with ``flock`` (#845): the
+    tasks of one SLURM array share a user data dir, and the first to hold
+    it enrolls; the others then find the credential it stored. Where
+    ``fcntl`` is missing (Windows) nothing is locked."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._file: Any = None
+
+    def __enter__(self) -> "_EnrollmentLock":
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows
+            return self
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.path, "a+b")
+        fcntl.flock(self._file.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        if self._file is not None:
+            self._file.close()  # releases the lock
+            self._file = None
+
+
+def enrollment_lock(args: argparse.Namespace) -> Any:
+    """The lock an ``--instance`` agent holds while it looks for (and
+    perhaps creates) its credential; a no-op for every other agent."""
+    import contextlib
+
+    from .enroll import credential_dir
+
+    if getattr(args, "instance", None) is None:
+        return contextlib.nullcontext()
+    return _EnrollmentLock(credential_dir(user_data_dir()) / ENROLL_LOCK_NAME)
 
 
 def _server_addr_files() -> list[Path]:
@@ -250,6 +343,15 @@ def build_parser() -> argparse.ArgumentParser:
         "worker 名稱送出）",
         "with --one-shot: take only this run (submitted with target.pool "
         "one-shot, or naming this worker)"))
+    start.add_argument("--instance", nargs="?", const=INSTANCE_AUTO,
+                       default=None, metavar="ID", help=t(
+        "搭配 --one-shot：同一張 worker 憑證同時跑多個 agent（SLURM array），"
+        "這個 agent 以 <名稱>.<ID> 登記；不給 ID 時取 SLURM 的 array job 與 "
+        "task id、job id，否則隨機",
+        "with --one-shot: one of several concurrent agents on one worker "
+        "credential (a SLURM array); this one registers as <name>.<ID>. "
+        "Without ID: SLURM's array job and task id, else its job id, else "
+        "a random one"))
     start.add_argument(DAEMON_FLAG, action="store_true",
                        help=argparse.SUPPRESS)
     sub.add_parser("stop", help=t("停止背景 agent", "stop the background agent"))
@@ -603,13 +705,19 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     from .facts import gather as gather_facts
     from .one_shot import OneShot
     from .runner import Runner
+    from .transfer import CACHE_DIRNAME
 
     name = args.name
     wanted = parse_devices(args.devices)
     offered = {report.value for report in devices}
-    runner = Runner(runs_dir=runs_dir(), offered_devices=offered,
-                    mounts=mounts,
-                    keep_last=settings.RUN_RETENTION_KEEP_LAST)
+    instance = getattr(args, "instance", None)
+    # An instance's runs dir is its own (#845): the agents sharing this user
+    # data dir would otherwise retire each other's in-flight spools.
+    runner = Runner(runs_dir=(runs_dir() if instance is None
+                              else instance_runs_dir(instance)),
+                    offered_devices=offered, mounts=mounts,
+                    keep_last=settings.RUN_RETENTION_KEEP_LAST,
+                    cache_dir=user_data_dir() / CACHE_DIRNAME)
 
     def probe() -> list[wp.DeviceReport]:
         return [_report(fact) for fact in offered_reports(
@@ -648,7 +756,8 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             trust=trust,
             on_trusted=(fingerprint_recorder(control)
                         if isinstance(control, str) else None),
-            uds=getattr(args, "uds", None), one_shot=one_shot)
+            uds=getattr(args, "uds", None), one_shot=one_shot,
+            instance=instance)
         code = await connection.run(stop)
         return code if one_shot is None else one_shot.exit_code(code)
 
@@ -658,12 +767,21 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
                     (mounts or {}).items())) or "none",
                 "" if one_shot is None else (
                     f"; one-shot, run {one_shot.run_id}" if one_shot.run_id
-                    else "; one-shot"))
+                    else "; one-shot") + (
+                    "" if instance is None
+                    else f"; instance {_wp.instance_worker_id(name, instance)}"))
     try:
         return asyncio.run(serve())
     finally:
         if args.daemonized and _read_pid() == os.getpid():
             pidfile().unlink(missing_ok=True)
+        if instance is not None:
+            # Nothing comes back for an instance's directory (#845): no
+            # later agent is this instance, so its spool would never be
+            # replayed. Its run's outcome is on the control plane.
+            import shutil
+
+            shutil.rmtree(runner.runs_dir, ignore_errors=True)
         logger.info("agent stopped")
 
 
@@ -844,7 +962,8 @@ def enroll_now(args: argparse.Namespace, control: str, token: str,
 
 
 def check_one_shot(args: argparse.Namespace) -> None:
-    """``--run-id`` needs ``--one-shot`` and a run id; ``--one-shot``
+    """``--run-id`` needs ``--one-shot`` and a run id; ``--instance`` needs
+    ``--one-shot`` and becomes the instance id (#845); ``--one-shot``
     implies ``--foreground`` (a batch job waits for the agent's exit code).
     ``ValueError`` (bilingual) for a bad combination."""
     run_id = getattr(args, "run_id", None)
@@ -857,6 +976,13 @@ def check_one_shot(args: argparse.Namespace) -> None:
             raise ValueError(t(f"--run-id {run_id!r} 不是 run id",
                                f"--run-id {run_id!r} is not a run id"))
         args.run_id = run_id.strip()
+    instance = getattr(args, "instance", None)
+    if instance is not None:
+        if not one_shot:
+            # A regular agent keeps one name per credential (#845).
+            raise ValueError(t("--instance 需要搭配 --one-shot",
+                               "--instance needs --one-shot"))
+        args.instance = resolve_instance(instance)
     if one_shot:
         args.foreground = True
 
@@ -870,6 +996,65 @@ def setup_failed(args: argparse.Namespace) -> int:
 
     return EXIT_SETUP if getattr(args, "one_shot", False) else 1
 
+
+def _resolve_credential(args: argparse.Namespace, control: Any,
+                        explicit_name: str | None, pin: str | None,
+                        uds: str | None, interactive: bool,
+                        facts: list[Any]) -> Any:
+    """The token to connect with: ``(control, token, token_source,
+    trust)``, or the exit code of a start that cannot go on. Finds the
+    stored credential, else enrolls with an enrollment token; an
+    ``--instance`` agent does it holding :func:`enrollment_lock`, so the
+    tasks of an array started together enroll once (#845)."""
+    from .trust import is_https
+
+    with enrollment_lock(args):
+        stored = None
+        if isinstance(control, str):
+            try:
+                stored = use_stored_credential(args, control, explicit_name)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+        if pin is not None and not (isinstance(control, str)
+                                    and is_https(control)):
+            _err("--ca-fingerprint 需要 https:// 控制面網址。",
+                 "--ca-fingerprint needs an https:// control URL.")
+            return 2
+        if plain_http_to_another_machine(control) and not args.daemonized \
+                and not uds:  # ssh carries the socket across the network
+            warn_plain_http(control)
+        trust = (build_trust(control, pin, stored)
+                 if isinstance(control, str) and is_https(control) else None)
+        token_source = None
+        if stored is not None:
+            token: Any = stored.worker_token
+            token_source = (f"the stored credential {stored.path} (cdui agent "
+                            f"forget {control} to enroll again)")
+        else:
+            token = resolve_token(args.token, interactive=interactive)
+        from ..core.worker_store import is_enrollment_token
+
+        if isinstance(token, str) and is_enrollment_token(token):
+            if args.daemonized:
+                print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
+                        "cdui agent start。",
+                        "The background agent was given an enrollment "
+                        "token; run cdui agent start again in a terminal."),
+                      file=sys.stderr)
+                return 2
+            from .enroll import EnrollError
+
+            url = control() if callable(control) else control
+            try:
+                token = enroll_now(args, url, token, facts, trust)
+            except (EnrollError, ValueError) as exc:
+                _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
+                return setup_failed(args)
+            control = url
+            token_source = (f"the stored credential (cdui agent forget {url} to "
+                            "enroll again)")
+    return control, token, token_source, trust
 
 def cmd_start(args: argparse.Namespace) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
@@ -890,7 +1075,6 @@ def cmd_start(args: argparse.Namespace) -> int:
         return setup_failed(args)
     explicit_name = args.name
     from ..core import tls_fingerprint
-    from .trust import is_https
 
     try:
         pin = (tls_fingerprint.normalize(args.ca_fingerprint)
@@ -917,50 +1101,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
-    stored = None
-    if isinstance(control, str):
-        try:
-            stored = use_stored_credential(args, control, explicit_name)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-    if pin is not None and not (isinstance(control, str)
-                                and is_https(control)):
-        _err("--ca-fingerprint 需要 https:// 控制面網址。",
-             "--ca-fingerprint needs an https:// control URL.")
-        return 2
-    if plain_http_to_another_machine(control) and not args.daemonized \
-            and not uds:  # ssh carries the socket across the network
-        warn_plain_http(control)
-    trust = (build_trust(control, pin, stored)
-             if isinstance(control, str) and is_https(control) else None)
-    token_source = None
-    if stored is not None:
-        token: Any = stored.worker_token
-        token_source = (f"the stored credential {stored.path} (cdui agent "
-                        f"forget {control} to enroll again)")
-    else:
-        token = resolve_token(args.token, interactive=interactive)
-    from ..core.worker_store import is_enrollment_token
-
-    if isinstance(token, str) and is_enrollment_token(token):
-        if args.daemonized:
-            print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
-                    "cdui agent start。",
-                    "The background agent was given an enrollment token; run "
-                    "cdui agent start again in a terminal."), file=sys.stderr)
-            return 2
-        from .enroll import EnrollError
-
-        url = control() if callable(control) else control
-        try:
-            token = enroll_now(args, url, token, facts, trust)
-        except (EnrollError, ValueError) as exc:
-            _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
-            return setup_failed(args)
-        control = url
-        token_source = (f"the stored credential (cdui agent forget {url} to "
-                        "enroll again)")
+    outcome = _resolve_credential(args, control, explicit_name, pin, uds,
+                                  interactive, facts)
+    if isinstance(outcome, int):
+        return outcome
+    control, token, token_source, trust = outcome
     if not args.daemonized:
         try:
             require_token(token)

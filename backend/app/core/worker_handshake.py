@@ -13,6 +13,9 @@ testable without one:
   reason names both); a malformed or reserved name.
 - :func:`identity_refusal`: why this credential may not register under the
   name the ``hello`` uses (#780).
+- :func:`instance_refusal`: why a one-shot instance (#845) may not take
+  the worker id it asks for: a run adopted after a restart under that id
+  belongs to the agent process that took it.
 - :func:`check_catalog`: how the worker's node catalog compares with this
   server's (``node_registry.node_catalog``). Equal hashes: ``match``.
   Different: ``mismatch``, with the node types this server has and the
@@ -38,6 +41,8 @@ loads it on every connection.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 from dataclasses import dataclass
@@ -103,7 +108,20 @@ def refusal(frame: Any, *, control_version: str) -> str | None:
                 "digits and '-', at most 63 characters")
     if frame.name in wp.RESERVED_WORKER_NAMES:
         return f"worker name {frame.name!r} is reserved"
+    if frame.instance is not None and not frame.one_shot:
+        # Several agents on one credential are for batch jobs that each
+        # take one run (#845); regular agents keep one name per credential.
+        return ("--instance is for one-shot agents (--one-shot) only; a "
+                "regular agent connects under its own name")
     return None
+
+
+def instance_id_hash(instance_id: str | None) -> str | None:
+    """How an agent process's ``hello.instance_id`` is recorded (#845):
+    its sha256 hex, so the stored form cannot be replayed as the id."""
+    if not instance_id:
+        return None
+    return hashlib.sha256(instance_id.encode("utf-8")).hexdigest()
 
 
 def identity_refusal(hello: wp.Hello, *, credential: str,
@@ -115,13 +133,24 @@ def identity_refusal(hello: wp.Hello, *, credential: str,
     And a connection may replace a live one under the same name only if it
     authenticated the same way: the session token cannot take over an
     enrolled worker's name, nor a worker token a live same-host agent's.
+
+    ``hello.name`` may already be an instance's worker id (#845,
+    ``<name>.<instance>``, as ``ws_worker`` rewrites it): the credential
+    must then name the part before the separator, and the session token
+    may not open instances under an enrolled worker's name.
     """
     from .workers import CREDENTIAL_SESSION
 
-    if enrolled_as is not None and hello.name != enrolled_as:
+    name, instance = wp.instance_parts(hello.name)
+    if enrolled_as is not None and name != enrolled_as:
         return (f"this worker token belongs to worker {enrolled_as!r}, not "
-                f"{hello.name!r}; start the agent with --name {enrolled_as}, "
-                f"or enroll {hello.name!r} with a new token")
+                f"{name!r}; start the agent with --name {enrolled_as}, "
+                f"or enroll {name!r} with a new token")
+    if instance is not None and credential == CREDENTIAL_SESSION:
+        base = registry.get(name)
+        if base is not None and base.enrolled:
+            return (f"worker {name!r} is enrolled; its instances connect "
+                    "with its worker token, not the session token")
     existing = registry.get(hello.name)
     if existing is None:
         return None
@@ -154,8 +183,29 @@ def one_shot_refusal(hello: wp.Hello, existing: Any) -> str | None:
         return None
     state = "connected" if existing.online else "its run is in flight"
     return (f"worker {hello.name!r} is busy: another agent holds the name "
-            f"({state}). One one-shot agent per worker name at a time; give "
-            "each concurrent job its own name (--name) and user data dir")
+            f"({state}). One one-shot agent per worker name at a time; "
+            "start concurrent jobs on one credential with --instance, each "
+            "with an instance id of its own")
+
+
+def instance_refusal(hello: wp.Hello, adopted_hash: str | None) -> str | None:
+    """Why *hello* may not take an instance's worker id (#845) whose run
+    this server adopted after a restart, or None.
+
+    The run's agent process recorded who it is (``instance_id``, hashed:
+    *adopted_hash*) when the run started. Every instance of a credential
+    holds the same worker token, so the token alone cannot tell them
+    apart: without this, another instance under the same id would be
+    handed the run and end it. *adopted_hash* None: nothing to protect.
+    """
+    if adopted_hash is None:
+        return None
+    presented = instance_id_hash(hello.instance_id)
+    if presented is not None and hmac.compare_digest(presented, adopted_hash):
+        return None
+    return (f"worker {hello.name!r} has a run in flight from before this "
+            "server restarted; only the agent process that runs it may "
+            "take the name")
 
 
 # ── the node catalog ──────────────────────────────────────────────────────

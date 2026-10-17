@@ -142,8 +142,13 @@ PROTOCOL_VERSION = 3
 #: ``inputs[].key``, ``artifact.backend == "s3"``, and the ``credentials``
 #: frame. An agent lists it only when it can load an S3 client (boto3):
 #: :func:`agent_capabilities`.
+#: ``instances`` (#845): ``hello.instance``: one credential serves several
+#: concurrent one-shot agents, each registered as ``<name>.<instance>``
+#: (:func:`instance_worker_id`); a ``--instance`` agent refuses a control
+#: plane whose ``welcome`` lacks it.
 CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
-                                 "memory_budget", "one_shot", "s3")
+                                 "memory_budget", "one_shot", "s3",
+                                 "instances")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
@@ -156,6 +161,8 @@ CAPABILITY_ONE_SHOT = "one_shot"
 POOL_ONE_SHOT = "one-shot"
 #: The capability name of the S3 artifact backend (#791).
 CAPABILITY_S3 = "s3"
+#: The capability name of one-shot instances (#845).
+CAPABILITY_INSTANCES = "instances"
 
 
 def agent_capabilities(s3_client: bool) -> list[str]:
@@ -213,8 +220,40 @@ TARGET_ANY = "any"
 #: under either name would collide with them in ``/api/workers/{id}``.
 RESERVED_WORKER_NAMES = frozenset({TARGET_LOCAL, TARGET_ANY, "enroll",
                                    "enrollments"})
-#: Worker names, matched with ``fullmatch`` (the ``target.worker`` alphabet).
+#: Worker names, matched with ``fullmatch``: what ``--name``, an
+#: enrollment and ``hello.name`` use.
 WORKER_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+#: ``hello.instance`` (#845): one one-shot agent among several sharing a
+#: credential (a SLURM array task's id, a job id, a random suffix).
+INSTANCE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+#: Between a credential's name and an instance in the instance's worker id.
+#: Not in :data:`WORKER_NAME_PATTERN`'s alphabet, so an instance id can
+#: never be a name some other credential enrolled.
+INSTANCE_SEPARATOR = "."
+#: Worker ids, matched with ``fullmatch`` (the ``target.worker``
+#: alphabet): a worker name, or ``<name>.<instance>`` for an instance.
+WORKER_ID_PATTERN = re.compile(
+    rf"{WORKER_NAME_PATTERN.pattern}"
+    rf"(?:\{INSTANCE_SEPARATOR}{INSTANCE_PATTERN.pattern})?")
+
+
+#: The HTTP header an instance's transfer requests carry (#845): its
+#: ``hello.instance_id``, which tells it apart from the other instances
+#: holding the same worker token.
+INSTANCE_HEADER = "X-CodefyUI-Worker-Instance"
+
+
+def instance_worker_id(name: str, instance: str | None) -> str:
+    """The worker id a ``hello`` registers under: *name*, or
+    ``<name>.<instance>`` for an instance of *name*'s credential (#845)."""
+    return name if instance is None else f"{name}{INSTANCE_SEPARATOR}{instance}"
+
+
+def instance_parts(worker_id: str) -> tuple[str, str | None]:
+    """``(name, instance)`` of a worker id; ``instance`` is None for a
+    worker that is not an instance."""
+    name, separator, instance = worker_id.partition(INSTANCE_SEPARATOR)
+    return (name, instance) if separator else (worker_id, None)
 
 _DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
 
@@ -355,6 +394,12 @@ class Hello(_Frame):
     #: a control plane that restarted since has no other record of it, and
     #: keeps it from placing a second run there.
     one_shot_taken: RunId | None = None
+    #: ``--instance`` (#845): this one-shot agent is one of several sharing
+    #: the credential of ``name``; it registers as ``<name>.<instance>``
+    #: (:func:`instance_worker_id`). None: it is ``name`` itself. Only a
+    #: one-shot agent may send it.
+    instance: str | None = Field(
+        default=None, pattern=f"^{INSTANCE_PATTERN.pattern}$")
 
 
 class Heartbeat(_Frame):
