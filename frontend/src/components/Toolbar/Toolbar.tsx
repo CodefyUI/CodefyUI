@@ -890,7 +890,11 @@ export function Toolbar() {
           data-tour="device"
           aria-label={t('toolbar.device.aria')}
           title={t('toolbar.device.title')}
-          className={runQueue === null ? styles.deviceSelect : `${styles.deviceSelect} ${styles.deviceSelectQueued}`}
+          // Narrowed only while the status names the device it waits for:
+          // a seed wait's label does not, so the select keeps it (#848 review).
+          className={runQueue === null || runQueue.reason === 'seed'
+            ? styles.deviceSelect
+            : `${styles.deviceSelect} ${styles.deviceSelectQueued}`}
           value={storedDevice ?? ''}
           disabled={activeTab.readOnly}
           onChange={(e) => setGraphDevice(e.target.value || null)}

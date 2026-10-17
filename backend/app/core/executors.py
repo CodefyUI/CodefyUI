@@ -970,13 +970,11 @@ async def transfer_storage(label: str, needs: Mapping[str, Any],
 
 
 def _reason_of(message: Any) -> dict[str, Any] | None:
-    """``{code, params}`` of a coded message (``workers.WorkerReason``), or
-    None for plain text."""
-    payload = getattr(message, "payload", None)
-    if not callable(payload):
-        return None
-    coded = payload()
-    return {"code": coded["code"], "params": coded["params"]}
+    """``{code, params}`` of a coded message, or None for plain text
+    (``workers.reason_dict``)."""
+    from .workers import reason_dict
+
+    return reason_dict(message)
 
 
 async def _worker_gone_warning(request: ExecutionRequest,

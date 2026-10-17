@@ -1,5 +1,7 @@
 import { useMemo, useRef, useState, type Ref } from 'react';
-import { downloadSweepCsv, type SweepDetail as SweepDetailData, type SweepVariant } from '../../api/rest';
+import {
+  downloadSweepCsv, TERMINAL_RUN_STATUSES, type SweepDetail as SweepDetailData, type SweepVariant,
+} from '../../api/rest';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useSweepStore } from '../../store/sweepStore';
@@ -182,10 +184,16 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
     ? [...new Set(detail.variants.flatMap((variant) => Object.keys(variant.final_metrics ?? {})))].sort()
     : [];
 
-  // Where the Final metrics come from (#841): the objective's node, whose
-  // series the server scopes them to, or the run-wide summary.
+  // Whose values the Final metrics prefer (#841): every series the run
+  // logged, with the objective node's own value where several nodes log a
+  // name; `null` is the plain run-wide summary. Only settled variants
+  // decide: a name-only variant still running has `null` until its harvest
+  // names the node, and must not turn the header into "one of them".
   const metricsNodes = [...new Set(detail.variants
-    .filter((variant) => variant.final_metrics !== undefined)
+    .filter((variant) => variant.final_metrics !== undefined
+      && (variant.final_metrics_node_id != null
+        || (variant.status !== null && variant.status !== 'missing'
+          && TERMINAL_RUN_STATUSES.includes(variant.status))))
     .map((variant) => variant.final_metrics_node_id ?? null))];
   const metricsTitle = metricsNodes.length === 1 && metricsNodes[0] !== null
     ? t('sweeps.col.metricsNode', { node: nodeName(metricsNodes[0]) })

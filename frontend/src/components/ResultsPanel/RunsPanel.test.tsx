@@ -5,6 +5,7 @@ import {
   RunsPanel,
   formatDuration,
   formatElapsed,
+  errorCode,
   formatLoss,
   formatStarted,
   deviceMemoryEntries,
@@ -19,7 +20,7 @@ import { formatBytes } from '../../utils/formatBytes';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
-import { _resetRunStoreForTesting, useRunStore, type RunDetail } from '../../store/runStore';
+import { _resetRunStoreForTesting, useRunStore, type RunDetail, type RunLogLine } from '../../store/runStore';
 import { isAnyModalOpen } from '../../store/modalState';
 import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
@@ -1635,6 +1636,21 @@ describe('RunsPanel helpers', () => {
     expect(formatLoss(0)).toBe('0.0000');
     expect(formatLoss(-0.0002)).toBe('-2.00e-4');
     expect(formatLoss(0.001)).toBe('0.0010');
+  });
+
+  it("reads an error's code off the row, else off the event that reported it (#848 review)", () => {
+    const removed = { code: 'worker_removed', params: { worker: 'box' } };
+    const line = (detail: string, coded?: typeof removed): RunLogLine => ({
+      cursor: 1, ts: 't', kind: 'failed', tone: 'error', detail, coded,
+    });
+    const queued = makeRun({ id: 'q', status: 'failed', error: 'worker box was removed', execution_facts: null });
+    // A run that never started: only the event has the code.
+    expect(errorCode(queued, [line('other'), line('worker box was removed', removed)])).toEqual(removed);
+    expect(errorCode(queued, [line('other', removed)])).toBeUndefined();
+    expect(errorCode(queued, [{ ...line('worker box was removed', removed), kind: 'warning' }])).toBeUndefined();
+    // The row's own code wins.
+    const started = { ...queued, execution_facts: { error_reason: { code: 'worker_gone', params: {} } } };
+    expect(errorCode(started, [line('worker box was removed', removed)])).toEqual({ code: 'worker_gone', params: {} });
   });
 });
 

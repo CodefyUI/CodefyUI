@@ -256,6 +256,40 @@ def producer_last_value(
     return None if row is None else row["value"]
 
 
+#: :data:`_LATEST_METRICS_SQL` with one node's own last point in place of
+#: the run-wide one, for every name that node logged (#841): the overlay
+#: :func:`objective_metric_values` returns, in ONE statement per run.
+#: ``own_id`` is the node's last point by a descending seek on
+#: ``idx_exec_run_metrics_producer`` (``id`` is the rowid, so that seek is
+#: covering), and its value is then read by rowid. The point's presence,
+#: not its value, decides: a node whose last point is non-finite (NULL)
+#: still wins, so its series is left out rather than filled from a sibling.
+_OBJECTIVE_METRICS_SQL = """
+WITH RECURSIVE series(name) AS (
+    SELECT (SELECT MIN(name) FROM exec_run_metrics WHERE run_id = ?1)
+  UNION ALL
+    SELECT (SELECT MIN(name) FROM exec_run_metrics
+             WHERE run_id = ?1 AND name > series.name)
+      FROM series WHERE series.name IS NOT NULL
+),
+lasts(name, value, own_id) AS (
+    SELECT series.name,
+           (SELECT value FROM exec_run_metrics
+             WHERE run_id = ?1 AND name = series.name
+             ORDER BY step DESC, id DESC LIMIT 1),
+           (SELECT id FROM exec_run_metrics
+             WHERE run_id = ?1 AND name = series.name AND node_id = ?2
+             ORDER BY step DESC, id DESC LIMIT 1)
+      FROM series WHERE series.name IS NOT NULL
+)
+SELECT name,
+       CASE WHEN own_id IS NULL THEN value
+            ELSE (SELECT value FROM exec_run_metrics WHERE id = own_id)
+       END AS value
+  FROM lasts
+"""
+
+
 def objective_metric_values(
     conn: sqlite3.Connection, run_id: str, node_id: str,
 ) -> dict[str, float]:
@@ -275,22 +309,17 @@ def objective_metric_values(
     and a sibling's number is not its value. Everything else follows
     :func:`last_metric_values`.
 
-    One pass of the series leapfrog plus one producer seek per series name
-    (``idx_exec_run_metrics_producer``), so the cost tracks the number of
-    series and never the number of points. Asking that index for the node's
-    names directly (``DISTINCT name WHERE node_id = ?``) cannot seek:
-    ``node_id`` follows ``name`` in it, so sqlite walks every point of the
-    run (measured: ~1M VDBE steps against ~240 for this at 200k points).
+    One statement (:data:`_OBJECTIVE_METRICS_SQL`): the series leapfrog
+    with a producer seek per name, so the cost tracks the number of series
+    and never the number of points. Asking the producer index for the
+    node's names directly (``DISTINCT name WHERE node_id = ?``) cannot
+    seek: ``node_id`` follows ``name`` in it, so sqlite walks every point
+    of the run (measured: ~1M VDBE steps against ~240 for this at 200k
+    points).
     """
-    values: dict[str, float] = {}
-    for row in conn.execute(_LATEST_METRICS_SQL, (run_id,)).fetchall():
-        name = row["name"]
-        own = conn.execute(_PRODUCER_LAST_SQL,
-                           (run_id, name, node_id)).fetchone()
-        value = row["value"] if own is None else own["value"]
-        if value is not None:
-            values[name] = value
-    return values
+    return {row["name"]: row["value"]
+            for row in conn.execute(_OBJECTIVE_METRICS_SQL, (run_id, node_id))
+            if row["value"] is not None}
 
 
 def _json_safe(value: Any) -> Any:
@@ -1079,10 +1108,13 @@ class RunStore:
 
         *error_reason* (``{code, params}``, #841) is what *error* says, in
         a form the Runs panel words in the viewer's language. It goes into
-        ``execution_facts.error_reason`` in the same transaction, creating
-        the document for a run that never started (a queued run whose
-        worker was removed): ``error_reason`` describes how the run ended,
-        so it needs no environment beside it.
+        ``execution_facts.error_reason`` in the same transaction, but only
+        when the run HAS a facts document: a NULL column means "not
+        recorded" (the run never started), and a document holding only the
+        reason would read as a recorded environment with every field
+        missing (see :meth:`update_execution_facts`). A run that never
+        started (a queued run whose worker was removed) keeps the code on
+        its ``execution_error`` event instead, which the Runs panel reads.
         """
         if status not in TERMINAL_STATUSES:
             raise ValueError(
@@ -1119,7 +1151,11 @@ class RunStore:
                 facts = (_loads(row["execution_facts"])
                          if row["execution_facts"] is not None else None)
                 if not isinstance(facts, dict):
-                    facts = {}
+                    return conn.execute(
+                        "UPDATE exec_runs SET status = ?, error = ?, "
+                        f"finished_at = ? {guard}",
+                        (status, error, stamp, run_id, *allowed),
+                    ).rowcount
                 facts["error_reason"] = reason
                 return conn.execute(
                     "UPDATE exec_runs SET status = ?, error = ?, "

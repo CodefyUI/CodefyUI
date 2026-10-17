@@ -17,7 +17,7 @@ import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
 import { deviceAliasLines, runDevice, runDevices, runWorker, runWorkerLabel } from '../../utils/runPlacement';
-import { codedMessage, queueReasonText, workerMessageText } from '../../utils/runReasons';
+import { codedMessage, queueReasonText, workerMessageText, type CodedMessage } from '../../utils/runReasons';
 import { LossChart } from './LossChart';
 import { SweepDetail } from './SweepDetail';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -71,6 +71,22 @@ function finalLoss(run: RunSummary): number | null {
  */
 export function formatLoss(value: number): string {
   return value !== 0 && Math.abs(value) < 1e-3 ? value.toExponential(2) : value.toFixed(4);
+}
+
+/**
+ * The code of a run's error (#841): the row's `execution_facts.error_reason`,
+ * else the `execution_error` line that reported the same error. A run that
+ * never started (a queued run whose worker was removed) has no facts
+ * document, so its code is only on that event.
+ */
+export function errorCode(run: RunSummary, log: RunLogLine[]): CodedMessage | undefined {
+  const fromRow = codedMessage(run.execution_facts?.error_reason);
+  if (fromRow) return fromRow;
+  for (let i = log.length - 1; i >= 0; i -= 1) {
+    const line = log[i];
+    if (line.kind === 'failed' && line.detail === run.error) return line.coded;
+  }
+  return undefined;
 }
 
 /**
@@ -494,7 +510,7 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
       {run?.error && (
         <div className={styles.detailError}>
           {t('runs.detail.error')}: {friendlyError(workerMessageText(
-            run.error, codedMessage(run.execution_facts?.error_reason), t))}
+            run.error, errorCode(run, detail.log), t))}
         </div>
       )}
 

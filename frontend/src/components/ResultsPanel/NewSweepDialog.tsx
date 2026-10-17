@@ -316,7 +316,9 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
               <label>{t('sweeps.new.name')}<input ref={firstRef} value={name} placeholder={defaultName} maxLength={MAX_RUN_NAME_LENGTH} onChange={(event) => setName(event.target.value)} /></label>
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
-            <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
+            <div className={styles.target}>
+              <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
+            </div>
             <div className={styles.pair}>
               <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => {
                 const metric = event.target.value;

@@ -662,7 +662,7 @@ def test_an_any_run_behind_a_draining_worker_says_so():
     entry = _Entry("r1", "any/cuda", _target("any", "cuda"))
     assert scheduler.place(entry, {}) is None
     reason = scheduler.explain_reason(entry)
-    assert (reason.code, reason.params) == ("any_unavailable", {
+    assert (reason.code, reason.params_dict()) == ("any_unavailable", {
         "devices": "cuda", "draining": ["meow"], "skipped": []})
     assert reason.text == scheduler.explain(entry) == (
         "waiting for a worker that offers cuda: meow is draining")
@@ -678,7 +678,7 @@ def test_draining_and_skipped_workers_are_both_named():
                            _cataloged("a-box", "cuda:0"))
     reason = scheduler.explain_reason(
         _Entry("r1", "any/cuda", _target("any", "cuda")))
-    assert reason.params == {"devices": "cuda",
+    assert reason.params_dict() == {"devices": "cuda",
                              "draining": ["b-box", "c-box"],
                              "skipped": ["a-box"]}
     assert reason.text == (
@@ -692,7 +692,7 @@ def test_every_reason_carries_a_code_and_params(data_label):
 
     def reason(entry: _Entry) -> tuple[str, dict[str, Any]]:
         found = scheduler.explain_reason(entry)
-        return found.code, found.params
+        return found.code, found.params_dict()
 
     assert reason(_Entry("r", "box/cpu", _target("box"))) == (
         "worker_draining", {"worker": "box"})

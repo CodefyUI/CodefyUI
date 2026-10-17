@@ -50,7 +50,15 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.body label,
+/* The shared target picker (#777) sits in `.target` and keeps its own
+   styles: the rules below stop at it, so New sweep renders it exactly as
+   Queue on... does (#841). `display: contents` leaves its parts as items
+   of `.body`, spaced by its gap as before. */
+.target {
+  display: contents;
+}
+
+.body label:not(.target *),
 .domain legend {
   display: flex;
   flex-direction: column;
@@ -60,9 +68,9 @@
   font-weight: var(--fw-semibold);
 }
 
-.body input,
-.body select,
-.body textarea {
+.body input:not(.target *),
+.body select:not(.target *),
+.body textarea:not(.target *) {
   width: 100%;
   box-sizing: border-box;
   min-height: var(--h-control-sm);

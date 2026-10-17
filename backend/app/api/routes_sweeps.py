@@ -608,7 +608,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
 
 
 async def _harvested_sweep(
-    service: RunService, store: SweepStore, sweep_id: str,
+    service: RunService, store: SweepStore, sweep_id: str, *,
+    with_metrics: bool = True,
 ) -> tuple[SweepRecord, dict[str, RunRecord], dict[str, dict[str, float]]]:
     """Seam A: harvest, then hand back everything a read needs.
 
@@ -633,6 +634,9 @@ async def _harvested_sweep(
     row still exists, and that row is terminal. Writing rather than merely
     computing is RULING 4: retention deletes finished runs, and a value
     computed for one response is gone with it.
+
+    *with_metrics* False skips the summary read (an empty map comes back):
+    a cancel and the CSV export show no ``final_metrics``.
     """
     sweep = await store.get_sweep(sweep_id)
     if sweep is None:
@@ -681,6 +685,8 @@ async def _harvested_sweep(
                                       finished=finished)
         if updated is not None:
             sweep = updated
+    if not with_metrics:
+        return sweep, children, {}
     scopes = {variant.run_id: node
               for variant in sweep.variants
               if variant.run_id in children
@@ -817,12 +823,19 @@ def _objective_warning(
     warning = f"no variant recorded a metric named '{metric}'"
     if node_id:
         warning += f" from node '{node_id}'"
-        others = sorted({node for series in (producers or {}).values()
-                         for node in series.get(metric, [])
-                         if node != node_id},
+        logged = {node for series in (producers or {}).values()
+                  for node in series.get(metric, [])}
+        if node_id in logged:
+            # It logged the series, yet nothing ranked: its last point
+            # was non-finite (a diverged loss), which is the thing to fix,
+            # not the choice of node.
+            warning += (f"; '{node_id}' logged '{metric}', but its last "
+                        "value was not finite (NaN or infinite)")
+        others = sorted(logged - {node_id},
                         key=lambda node: (node is not None, node or ""))
         if others:
-            warning += (f"; '{metric}' was recorded by "
+            also = " also" if node_id in logged else ""
+            warning += (f"; '{metric}' was{also} recorded by "
                         + ", ".join(_producer_label(node) for node in others))
     if names:
         warning += ("; the series recorded across this sweep were: "
@@ -919,8 +932,8 @@ async def get_sweep(
     """
     service = _get_service(request)
     store = _get_sweep_store(request)
-    sweep, children, metrics = await _harvested_sweep(service, store,
-                                                      sweep_id)
+    sweep, children, metrics = await _harvested_sweep(
+        service, store, sweep_id, with_metrics=format != "csv")
     ranked = rank_variants(
         sweep.variants,
         direction=sweep.objective.get("direction", "minimize"))
@@ -1046,8 +1059,8 @@ async def cancel_sweep(sweep_id: str, request: Request):
     # already terminal. It is also what keeps a cancel from LOSING results:
     # whatever a stopped child had logged is copied onto the sweep row here
     # rather than waiting for a read that may never come.
-    sweep, _children, _metrics = await _harvested_sweep(service, store,
-                                                        sweep_id)
+    sweep, _children, _metrics = await _harvested_sweep(
+        service, store, sweep_id, with_metrics=False)
     return {"sweep_id": sweep.id, "state": sweep.state,
             "cancelled": cancelled, "already_finished": already_finished,
             "variants": results}

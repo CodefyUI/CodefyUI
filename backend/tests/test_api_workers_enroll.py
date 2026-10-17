@@ -577,8 +577,9 @@ async def test_a_restart_knows_enrolled_workers_and_runs_queue_for_them(
         assert events[-1]["payload"] == {
             "error": "worker gpu-box was removed", "code": "worker_removed",
             "params": {"worker": "gpu-box"}}
-        assert row["execution_facts"] == {"error_reason": {
-            "code": "worker_removed", "params": {"worker": "gpu-box"}}}
+        # It never started: no facts document is made for the code, which
+        # the event above carries (#848 review).
+        assert row["execution_facts"] is None
     finally:
         await service.shutdown()
         await registry.shutdown()

@@ -209,7 +209,7 @@ def _run_payload(record: RunRecord, *, queue_position: int | None,
     payload["queue_reason_code"] = None if queue_reason is None \
         else queue_reason.code
     payload["queue_reason_params"] = None if queue_reason is None \
-        else queue_reason.params
+        else queue_reason.params_dict()
     payload["active"] = active
     payload["final_metrics"] = final_metrics or {}
     payload["metric_producers"] = metric_producers or {}

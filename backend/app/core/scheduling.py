@@ -55,6 +55,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from .coded_text import freeze, thaw
 from .mounts import holds_mount
 from .transfer import refusal as transfer_refusal
 from .transfer import transferable
@@ -282,14 +283,25 @@ REASON_ANY_NO_WORKER_MOUNT = "any_no_worker_mount"
 REASON_ANY_UNAVAILABLE = "any_unavailable"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class QueueReason:
-    """Why a waiting run cannot start, beyond a busy slot (#772, #841)."""
+    """Why a waiting run cannot start, beyond a busy slot (#772, #841).
+
+    Immutable: *params* is frozen (``coded_text.freeze``) on construction,
+    and ``eq=False`` keeps it hashable by identity; :meth:`params_dict`
+    is the plain copy the API sends.
+    """
 
     code: str
-    params: dict[str, Any]
+    params: Mapping[str, Any]
     #: The English sentence: ``queue_reason`` in the API and the CLI.
     text: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "params", freeze(self.params))
+
+    def params_dict(self) -> dict[str, Any]:
+        return thaw(self.params)
 
 
 class WorkerScheduler:

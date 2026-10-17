@@ -483,9 +483,12 @@ export interface SweepVariant {
   run_exists?: boolean;
   final_metrics?: Record<string, number>;
   /**
-   * The node `final_metrics` were read from (#841): the objective's node,
-   * or `null` for the run-wide summary, which collapses a name several
-   * nodes log. Absent with `final_metrics`, and from a server before #841.
+   * The node whose values `final_metrics` prefer (#841): every series the
+   * run logged, with this node's own last value for each name it logged
+   * (the objective's node). `null` for the plain run-wide summary, where a
+   * name several nodes log shows the last one written (an unharvested
+   * name-only variant, a run-level or an ambiguous objective). Absent with
+   * `final_metrics`, and from a server before #841.
    */
   final_metrics_node_id?: string | null;
   /**

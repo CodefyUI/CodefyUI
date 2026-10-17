@@ -90,9 +90,11 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, Awaitable, Callable
 
 from . import worker_protocol as wp
+from .coded_text import freeze, thaw
 from .worker_handshake import (
     CATALOG_UNKNOWN,
     CatalogCheck,
@@ -159,22 +161,35 @@ REASON_REKEYED = "rekeyed"
 REASON_OTHER = "other"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class WorkerReason:
     """Why a worker's runs lost it: a code, its parameters, and the English
-    sentence the API keeps (``str()`` of it)."""
+    sentence the API keeps (``str()`` of it).
+
+    Immutable, since several are module constants every run shares:
+    *params* is frozen (``coded_text.freeze``) on construction, and
+    ``eq=False`` keeps it hashable by identity.
+    """
 
     code: str
     text: str
-    params: dict[str, Any] = field(default_factory=dict)
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "params", freeze(self.params))
 
     def __str__(self) -> str:
         return self.text
 
     def payload(self) -> dict[str, Any]:
-        """``{code, params, text}``, as messages carry it."""
-        return {"code": self.code, "params": dict(self.params),
+        """``{code, params, text}``, as a nested reason carries it."""
+        return {"code": self.code, "params": thaw(self.params),
                 "text": self.text}
+
+    def reason_dict(self) -> dict[str, Any]:
+        """``{code, params}``: what a ``run_warning`` / ``execution_error``
+        payload adds, and a row's ``execution_facts.error_reason``."""
+        return {"code": self.code, "params": thaw(self.params)}
 
     @classmethod
     def of(cls, reason: "str | WorkerReason") -> "WorkerReason":
@@ -182,6 +197,15 @@ class WorkerReason:
         if isinstance(reason, WorkerReason):
             return reason
         return cls(REASON_OTHER, str(reason))
+
+
+def reason_dict(message: Any) -> dict[str, Any] | None:
+    """``{code, params}`` of a coded message (a :class:`WorkerReason`), or
+    None for plain text: the one place the executor's errors and warnings
+    and ``RunService.fail_queued_for_worker`` turn a message into what a
+    payload and ``execution_facts.error_reason`` carry."""
+    return message.reason_dict() if isinstance(message, WorkerReason) \
+        else None
 
 
 CONNECTION_CLOSED = WorkerReason(REASON_CONNECTION_CLOSED,

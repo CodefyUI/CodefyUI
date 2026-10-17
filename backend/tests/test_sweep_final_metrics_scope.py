@@ -210,6 +210,56 @@ async def test_a_named_node_that_ranked_nothing_is_warned_with_the_runs_series(
         "train_loss, val_acc")
 
 
+async def test_a_named_node_that_diverged_is_named_with_the_reason(
+        runs, sweeps, http):
+    """#848 review: the named node DID log the metric, but its last point
+    was non-finite. The warning says so instead of pointing only at the
+    other branch, which would be the wrong fix."""
+    sweep = await _sweep(sweeps, {"metric": "train_loss", "direction": MIN,
+                                  "node_id": "train-plain"})
+    points = _two_branches(0.003, 0.05)
+    points.append(MetricPoint("train_loss", float("nan"), 2, "train-plain"))
+    await _child(runs, sweeps, sweep.id, 0, points)
+
+    warning = (await _get(http, sweep.id))["objective_warning"]
+    assert warning.startswith(
+        "no variant recorded a metric named 'train_loss' from node "
+        "'train-plain'; 'train-plain' logged 'train_loss', but its last "
+        "value was not finite (NaN or infinite); 'train_loss' was also "
+        "recorded by train-decay; ")
+
+
+async def test_a_cancel_and_the_csv_do_not_read_the_metrics(
+        runs, sweeps, http, monkeypatch):
+    """#848 review: neither shows ``final_metrics``, so neither pays for
+    the summary read."""
+    sweep = await _sweep(sweeps, {"metric": "train_loss", "direction": MIN,
+                                  "node_id": "train-plain"})
+    await _child(runs, sweeps, sweep.id, 0, _two_branches(0.003, 0.05))
+    reads: list[Any] = []
+    real = runs.latest_metrics
+
+    async def counted(*args, **kwargs):
+        reads.append(args)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(runs, "latest_metrics", counted)
+    response = await http.get(f"/api/sweeps/{sweep.id}?format=csv")
+    assert response.status_code == 200
+    assert reads == []
+
+    async def no_such_run(_run_id):
+        return None
+
+    service = http._transport.app.state.run_service  # type: ignore[attr-defined]
+    service.cancel = no_such_run
+    response = await http.post(f"/api/sweeps/{sweep.id}/cancel")
+    assert response.status_code == 200, response.text
+    assert reads == []
+    await _get(http, sweep.id)
+    assert len(reads) == 1
+
+
 async def test_a_named_node_whose_metric_nobody_logged_names_no_producer(
         runs, sweeps, http):
     sweep = await _sweep(sweeps, {"metric": "val_loss", "direction": MIN,
@@ -252,9 +302,9 @@ async def test_objective_metric_values_overlays_the_node_on_the_run(db, runs):
 
 
 async def test_objective_metric_values_seeks_and_never_scans(db, runs):
-    """Every statement the overlay runs is an index SEARCH -- the series
-    leapfrog, then one producer seek per name -- so its cost tracks the
-    series, never the points."""
+    """The overlay is ONE statement per run, and every touch of the metrics
+    table in it is an index SEARCH -- the series leapfrog, and a producer
+    seek per name -- so its cost tracks the series, never the points."""
     record = await runs.create_run(
         graph_snapshot={"nodes": [], "edges": []}, options={},
         provenance=RunProvenance())
@@ -274,8 +324,8 @@ async def test_objective_metric_values_seeks_and_never_scans(db, runs):
 
     assert await db.run(_run) == {"loss": 1.0, "lr": 1.0, "val_acc": 1.0}
     reads = [sql for sql in executed if "exec_run_metrics" in sql]
-    # One leapfrog plus one seek per series name.
-    assert len(reads) == 4, executed
+    # ONE statement per run, whatever the number of series (#848 review).
+    assert len(reads) == 1, executed
 
     def _plans(conn: sqlite3.Connection) -> list[str]:
         return [" ".join(row["detail"] for row in conn.execute(
@@ -285,3 +335,4 @@ async def test_objective_metric_values_seeks_and_never_scans(db, runs):
         assert "SCAN exec_run_metrics" not in plan, plan
         assert "TEMP B-TREE" not in plan, plan
         assert "SEARCH" in plan, plan
+        assert "idx_exec_run_metrics_producer" in plan, plan

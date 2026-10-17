@@ -3487,11 +3487,9 @@ class RunService:
 
         *error* is the text, or a coded message (``workers.removed_message``,
         #841) whose code is stored with it."""
-        payload = getattr(error, "payload", None)
-        error_reason = None
-        if callable(payload):
-            coded = payload()
-            error_reason = {"code": coded["code"], "params": coded["params"]}
+        from .workers import reason_dict
+
+        error_reason = reason_dict(error)
         error = str(error)
         failed: list[str] = []
         for run_id, waiting in list(self._pending_by_id.items()):

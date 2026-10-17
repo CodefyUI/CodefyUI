@@ -488,6 +488,19 @@ describe('SweepDetail', () => {
     expect(header()).toHaveAttribute('title', "Last value of each series this run logged; a name several nodes log shows Trainer (train)'s value");
     first.unmount();
 
+    // A name-only variant still running has no node yet (#848 review): only
+    // settled variants decide, so the header still names the node.
+    const mixed = sweep('running');
+    mixed.variants = mixed.variants.map((entry) => ({
+      ...entry, final_metrics_node_id: entry.status === 'running' ? null : 'train',
+    }));
+    act(() => {
+      useSweepStore.setState({ detail: mixed });
+    });
+    const third = view();
+    expect(header()).toHaveAttribute('title', "Last value of each series this run logged; a name several nodes log shows Trainer (train)'s value");
+    third.unmount();
+
     // A run-wide summary (several producers, or a server before #841).
     act(() => {
       useSweepStore.setState({ detail: sweep('finished') });

@@ -29,6 +29,8 @@ from app.core.workers import (
     WorkerReason,
     WorkerRegistry,
     gone_message,
+    no_reconnect,
+    reason_dict,
     removed,
     ssh_stopped,
 )
@@ -139,6 +141,31 @@ def test_every_reason_keeps_its_english_and_names_its_code():
         "code": "other", "params": {}, "text": "the moon is full"}
     assert WorkerReason.of(REKEYED) is REKEYED
     assert gone_message("box", "x").text == "worker box went away: x"
+
+
+def test_reasons_are_immutable_and_hashable():
+    """#848 review: the module constants are shared by every run, so their
+    parameters cannot be changed through one, nested values included, and
+    a reason can be a dict key or a set member."""
+    from app.core.scheduling import QueueReason
+
+    message = gone_message("box", no_reconnect("box", 300))
+    with pytest.raises(TypeError):
+        message.params["worker"] = "other"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        message.params["reason"]["params"]["seconds"] = 1  # type: ignore[index]
+    # What leaves it is a plain copy: changing that changes nothing here.
+    copy = message.reason_dict()
+    copy["params"]["reason"]["params"]["seconds"] = 1
+    assert message.reason_dict()["params"]["reason"]["params"] == {
+        "worker": "box", "seconds": 300}
+    queued = QueueReason("any_unavailable",
+                         {"devices": "cuda", "draining": ["a"]}, "text")
+    assert queued.params["draining"] == ("a",)
+    assert queued.params_dict() == {"devices": "cuda", "draining": ["a"]}
+    assert len({message, REKEYED, queued, REKEYED}) == 3
+    assert reason_dict("plain text") is None
+    assert reason_dict(REKEYED) == {"code": "rekeyed", "params": {}}
 
 
 # ── where they land ───────────────────────────────────────────────────────
@@ -291,7 +318,8 @@ def store(tmp_path):
 
 async def test_the_rows_error_keeps_its_code_in_execution_facts(store):
     reason = {"code": "worker_removed", "params": {"worker": "box"}}
-    # A queued run has no facts document: one is made for the reason.
+    # A queued run has no facts document, and gets none: NULL stays "not
+    # recorded" (#848 review). Its code is on its execution_error event.
     queued = await store.create_run(graph_snapshot={"nodes": []}, options={},
                                     provenance=RunProvenance())
     assert await store.mark_finished(queued.id, "failed",
@@ -300,7 +328,7 @@ async def test_the_rows_error_keeps_its_code_in_execution_facts(store):
                                      error_reason=reason)
     row = await store.get_run(queued.id)
     assert (row.error, row.execution_facts) == (
-        "worker box was removed", {"error_reason": reason})
+        "worker box was removed", None)
 
     # A started run's facts keep everything else.
     started = await store.create_run(graph_snapshot={"nodes": []}, options={},

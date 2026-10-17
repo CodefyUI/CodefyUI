@@ -434,8 +434,11 @@ describe('Toolbar', () => {
     expect(screen.getByText(label)).toBeInTheDocument();
     expect(screen.queryByText('Running')).toBeNull();
     expect(screen.getByRole('button', { name: 'Queued...' })).toBeDisabled();
-    // The whole label shows; the device select narrows to make room (#848 review).
-    expect(screen.getByRole('combobox', { name: 'Device for this graph' }).className).toContain('deviceSelectQueued');
+    // The whole label shows. The device select narrows to make room only
+    // while the label names the device; a seed wait's does not (#848 review).
+    const select = screen.getByRole('combobox', { name: 'Device for this graph' });
+    if (runQueue.reason === 'seed') expect(select.className).not.toContain('deviceSelectQueued');
+    else expect(select.className).toContain('deviceSelectQueued');
     fireEvent.click(screen.getByText('Stop'));
     expect(stop).toHaveBeenCalledTimes(1);
   });

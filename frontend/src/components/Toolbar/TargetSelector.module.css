@@ -44,23 +44,6 @@
   margin: 0;
 }
 
-/* Inside a dialog whose body styles every label and input (New sweep's
-   `.body label` / `.body input`), the device rows keep this layout: a
-   radio stretched to the dialog's width and centred over its label is
-   what #841 found. Two classes outrank the dialog's class + element. */
-.devices .check {
-  flex-direction: row;
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-normal);
-}
-
-.devices .check input {
-  width: auto;
-  min-height: 0;
-  padding: 0;
-}
-
 .deviceId {
   font-family: monospace;
   color: var(--text-primary);
