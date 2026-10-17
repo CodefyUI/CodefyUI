@@ -116,6 +116,8 @@ RACY_WINDOW_NS = 3_000_000_000
 #: The stamp of an entry verified within :data:`RACY_WINDOW_NS` of its last
 #: write: it never matches, so the next lookup hashes the entry again.
 RACY_STAMP = "racy"
+#: The wall clock the racy window is measured on (the file clock's).
+_now_ns = time.time_ns
 
 
 class TransferError(RuntimeError):
@@ -157,8 +159,8 @@ class InputCache:
     longer matches (someone edited the cache) is hashed again before it is
     used, and fetched again when it no longer hashes to its name.
 
-    A stat taken within :data:`RACY_WINDOW_NS` of the entry's last write
-    proves nothing: the file clock ticks coarsely (about 16 ms on Windows,
+    A stat taken within :data:`RACY_WINDOW_NS` of the entry's last change
+    (its mtime, or its ctime when later, off Windows) proves nothing: the file clock ticks coarsely (about 16 ms on Windows,
     a few ms on Linux, 2 s on FAT), so an edit of the same size in the same
     tick leaves every field as it was. Such an entry gets a stamp that never
     matches, and is hashed again on its next lookup (git's "racily clean"
@@ -174,9 +176,12 @@ class InputCache:
     def _stamp(self, path: Path) -> str:
         stat = path.stat()
         fields = [stat.st_size, stat.st_mtime_ns, stat.st_ino]
+        changed = stat.st_mtime_ns
         if os.name != "nt":  # st_ctime is the creation time on Windows
             fields.append(stat.st_ctime_ns)
-        if abs(time.time_ns() - stat.st_mtime_ns) < RACY_WINDOW_NS:
+            changed = max(changed, stat.st_ctime_ns)
+        # A last change in the future (a clock that moved) is racy too.
+        if _now_ns() - changed < RACY_WINDOW_NS:
             return RACY_STAMP
         return " ".join(str(value) for value in fields)
 

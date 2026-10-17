@@ -100,10 +100,12 @@ def test_an_entry_edited_in_the_cache_is_rehashed_and_dropped(tmp_path):
     assert cache.lookup(_sha(data), len(data)) == path
 
 
-def _settle(path: Path) -> None:
-    """Date *path*'s last write well before the racy window."""
-    past = time.time_ns() - 10 * tr.RACY_WINDOW_NS
-    os.utime(path, ns=(past, past))
+def _later(monkeypatch) -> None:
+    """The cache's clock, well past the racy window of anything written so
+    far (a ctime cannot be dated back, so the clock moves instead)."""
+    real = tr._now_ns
+    monkeypatch.setattr(tr, "_now_ns",
+                        lambda: real() + 10 * tr.RACY_WINDOW_NS)
 
 
 def test_an_entry_stamped_right_after_its_write_is_hashed_again(
@@ -113,27 +115,48 @@ def test_an_entry_stamped_right_after_its_write_is_hashed_again(
     path = cache.add(_sha(data), [data])
     stamp = path.with_name(f"{_sha(data)}.ok")
     assert stamp.read_text(encoding="utf-8") == tr.RACY_STAMP
-    _settle(path)
     hashed: list[Path] = []
     real = tr.sha256_file
     monkeypatch.setattr(tr, "sha256_file",
                         lambda p: hashed.append(p) or real(p))
+    # Still within the window: hashed on every lookup, never trusted.
     assert cache.lookup(_sha(data), len(data)) == path
+    assert stamp.read_text(encoding="utf-8") == tr.RACY_STAMP
     assert hashed == [path]
+    _later(monkeypatch)
+    assert cache.lookup(_sha(data), len(data)) == path
+    assert hashed == [path, path]
     # Re-stamped once settled: trusted from now on, not hashed again.
     assert stamp.read_text(encoding="utf-8") != tr.RACY_STAMP
     assert cache.lookup(_sha(data), len(data)) == path
-    assert hashed == [path]
+    assert hashed == [path, path]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="no ctime on Windows")
-def test_a_settled_entry_edited_with_its_mtime_put_back_is_dropped(tmp_path):
+def test_a_last_change_in_the_future_is_racy(tmp_path):
     cache = tr.InputCache(tmp_path / "cache")
     data = b"original"
     path = cache.add(_sha(data), [data])
-    _settle(path)
+    future = tr._now_ns() + 10 * tr.RACY_WINDOW_NS
+    os.utime(path, ns=(future, future))
+    assert cache.lookup(_sha(data), len(data)) == path
+    assert path.with_name(f"{_sha(data)}.ok").read_text(
+        encoding="utf-8") == tr.RACY_STAMP
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no ctime on Windows")
+def test_a_settled_entry_edited_with_its_mtime_put_back_is_dropped(
+        tmp_path, monkeypatch):
+    cache = tr.InputCache(tmp_path / "cache")
+    data = b"original"
+    path = cache.add(_sha(data), [data])
+    _later(monkeypatch)
     assert cache.lookup(_sha(data), len(data)) == path  # trusted stamp
+    assert path.with_name(f"{_sha(data)}.ok").read_text(
+        encoding="utf-8") != tr.RACY_STAMP
     before = path.stat()
+    # A later edit: past the file clock's tick (Linux: a few ms), as any
+    # edit after a trusted stamp is (the stamp is 3 s past the last change).
+    time.sleep(0.05)
     path.write_bytes(b"modified")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert cache.lookup(_sha(data), len(data)) is None
