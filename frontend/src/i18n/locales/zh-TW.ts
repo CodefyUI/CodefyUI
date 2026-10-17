@@ -549,6 +549,10 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.uploadFailed': '上傳失敗',
   'paramField.downloadFailed': '下載失敗',
   'paramField.secretHint': '僅本次工作階段有效，存檔時清除。金鑰請改存在環境變數。',
+  'paramField.device.stored': '{device}（本伺服器沒有）',
+  'paramField.device.notLocal': '本伺服器沒有 {device}：在這裡執行時會改用其他裝置，並記在 run 的紀錄中。',
+  'paramField.device.inRunGroup': 'run 裝置集合內的名稱',
+  'paramField.device.inRunHint': 'worker 上的 run 依裝置集合的順序把卡看成 cuda:0、cuda:1……；節點以這些名稱指定。',
 
   // ParamField（畫布內 Python，core#131）
   'paramField.code.checking': '檢查中…',

@@ -644,6 +644,12 @@ const en = {
   'paramField.uploadFailed': 'Upload failed',
   'paramField.downloadFailed': 'Download failed',
   'paramField.secretHint': 'Session only, cleared on save. Store secrets in an environment variable.',
+  // A node's device select (#839): a stored device this server does not
+  // list, and the workers' cards by the name a run on that worker uses.
+  'paramField.device.stored': '{device} (not on this server)',
+  'paramField.device.notLocal': 'This server has no {device}: a run here falls back to another device and notes it in the run log.',
+  'paramField.device.inRunGroup': "Inside a run's device set",
+  'paramField.device.inRunHint': 'A worker run sees the cards of its device set as cuda:0, cuda:1, ... in set order; a node names them that way.',
 
   // ParamField (in-canvas Python, core#131)
   'paramField.code.checking': 'checking...',
