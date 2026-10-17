@@ -59,6 +59,19 @@ received — each links to the release it was published as.
   active one. Rows started by 3.1.0, which recorded no resume point, are
   retired as before.
 
+## [3.1.1] — 2026-10-17
+
+Fixes a data-loss bug in 3.1.0's transfer backend: on a worker without a
+shared folder, checkpoint file names were cut at 48 characters, so a later
+checkpoint could overwrite an earlier one (epoch 100 replaced epoch 10).
+Names now arrive whole. Checkpoints 3.1.0 already overwrote cannot be
+recovered; runs on this server or on workers with a shared folder were not
+affected.
+
+### Fixed
+
+- **A worker without a shared folder no longer overwrites one checkpoint with another** ([#838]). The transfer backend cut every received file name at 48 characters, the cap meant for one run or node id. A periodic checkpoint is named `<run id>-<node id>-e<epoch>.pt`, so with a 32-character run id the name lost its extension and the end of its epoch stamp: epoch 100 came back as `-e10` and replaced the epoch-10 file, and both artifact rows downloaded epoch 100. Received names now map one to one to stored names: a name that is already safe and at most 128 characters (240 bytes) is kept whole, and any other name (one with spaces or other unsafe characters, or a longer one) is cleaned and gets a short hash of the name as sent before its extension; a long one is shortened in the middle, keeping its start (`events.out.tfevents.` for TensorBoard), the end with the epoch stamp, and the extension. So the same name sent again replaces its file (a retry, or a file that grew), as before, and two names, or two folders, never share one. On Windows the last name is shortened further to keep the whole path within 259 characters, and a path that still cannot fit is refused with HTTP 400, which the worker reports as a failed upload at once instead of retrying. This covers TensorBoard event files and writer outputs (`ModelSaver`, `ImageWriter`) as well. Rows recorded by 3.1.0 keep downloading the file they name; a checkpoint 3.1.0 already overwrote cannot be recovered.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6146,7 +6159,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.1.1...main
+[3.1.1]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...3.1.1
 [3.1.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...3.1.0
 [3.0.2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.1...3.0.2
 [3.0.1]: https://github.com/CodefyUI/CodefyUI/compare/3.0.0...3.0.1
@@ -6300,3 +6314,4 @@ Release candidates before 1.0.0 are on the
 [#790]: https://github.com/CodefyUI/CodefyUI/issues/790
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
+[#838]: https://github.com/CodefyUI/CodefyUI/issues/838
