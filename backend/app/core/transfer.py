@@ -21,19 +21,19 @@ Without a shared filesystem the control plane is the artifact repository
 
   * ``run``: a file the run reported as an artifact (a checkpoint, a
     TensorBoard folder file by file), kept at
-    ``<data root>/runs/<run_id>/<kind>/<name>`` (:func:`run_key`, the
-    name kept whole: :func:`file_part`); the run owns it.
+    ``<data root>/runs/<run_id>/<kind>/<name>`` (:func:`run_key`); the
+    run owns it.
   * ``data``: a file a writer node wrote (``CheckpointSaver``,
     ``ModelSaver``, ``ImageWriter``, ``VideoWrite``), kept where the same
     node writes on a local run: this server's ``MODELS_DIR``, ``MEDIA_DIR``
     or ``<data root>/output``, at the same relative path (:data:`DATA_PLACES`).
     Like a local run's, these are the user's: retention leaves them.
 
-  ``run``: the same name sent again replaces its file (a retry); another
-  name that cleans to a name already taken is suffixed (``a-1.pt``), the
-  names recorded in the run's :data:`RUN_NAMES_FILE` (#838). ``data``: a
-  different file already there is kept and the new one suffixed
-  (``saved-1.pt``); the same content is the same file. Either way the worker reports the key the upload answered with in its
+  ``run``: one name as sent maps to one key and back (:func:`file_part`),
+  so the same name sent again replaces its file (a retry, a file that
+  grew) and two names never share a key (#838). ``data``: a different file
+  already there is kept and the new one suffixed (``saved-1.pt``); the same
+  content is the same file. Either way the worker reports the key the upload answered with in its
   ``artifact`` frame (``backend: "transfer"``), which records the row in
   the run's event order; :func:`key_path` maps a key back to a file and
   refuses one that is neither of those shapes.
@@ -54,13 +54,11 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
-import json
 import logging
 import os
 import re
 import shutil
 import sqlite3
-import threading
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
@@ -344,16 +342,23 @@ def _part(value: str) -> str:
 #: id components plus the ``-e<epoch>b<batch>.pt`` stamp).
 MAX_FILE_NAME = 128
 MAX_FILE_NAME_BYTES = 240
-#: Characters a shortened name keeps from its end (the position stamp and
-#: the extension).
+#: Characters a shortened name keeps from the end of its stem (the
+#: position stamp).
 KEEP_TAIL = 40
-#: The shortest a shortened name may be (:func:`file_part`): below it the
+#: The fewest it keeps when its start up to the first digit takes the rest.
+MIN_TAIL = 8
+#: Starts a shortened name always keeps when they fit (TensorBoard finds
+#: its event files by ``tfevents`` in the name).
+KEEP_PREFIXES = ("events.out.tfevents.",)
+#: The longest extension kept apart from the stem (``.pt``, ``.0``).
+MAX_EXTENSION = 10
+#: The shortest a name may be cut to (:func:`file_part`): below it the
 #: name is refused (:class:`NameTooLong`) rather than cut to nothing.
 MIN_FILE_NAME = 24
-#: The longest absolute path a received file may have, or None for no
-#: limit beyond the per-name caps. Windows without long paths enabled
-#: refuses a path over 259 characters (MAX_PATH less its NUL), so there the
-#: last name is shortened to fit the folder it lands in (#838).
+#: The longest absolute path a received file may have, in UTF-16 code
+#: units, or None for no limit beyond the per-name caps. Windows without
+#: long paths enabled refuses a path over 259 (MAX_PATH less its NUL), so
+#: there the last name is shortened to fit the folder it lands in (#838).
 PATH_BUDGET: int | None = 259 if os.name == "nt" else None
 
 
@@ -365,43 +370,79 @@ def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8", "surrogatepass"))
 
 
-def file_part(value: str, limit: int = MAX_FILE_NAME) -> str:
-    """One file-name component of a received file: the characters
-    ``checkpoints._safe_part`` keeps (``checkpoints._clean_part``), the
-    length kept too (#838).
+def _path_len(path: Path | str) -> int:
+    """Length as Windows counts it: UTF-16 code units."""
+    return len(str(path).encode("utf-16-le", "surrogatepass")) // 2
 
-    ``_safe_part`` caps an id component at 48 characters; a whole file name
-    (``<run id>-<node id>-e100.pt``) cut there lost its epoch stamp and
-    extension, and two checkpoints took one name. A name over *limit*
-    characters (at most :data:`MAX_FILE_NAME`) or :data:`MAX_FILE_NAME_BYTES`
-    bytes is shortened in the middle: its start, a hash of the whole name,
-    and its end (up to :data:`KEEP_TAIL` characters), so distinct names stay
-    distinct and the stamp and extension survive. A name within
-    ``MAX_NAME_PART`` comes out exactly as ``_safe_part`` made it.
-    ``NameTooLong`` when *limit* is under :data:`MIN_FILE_NAME`.
+
+def _bytes_prefix(text: str, limit: int) -> str:
+    """The longest start of *text* within *limit* UTF-8 bytes."""
+    used = 0
+    for index, char in enumerate(text):
+        used += _utf8_len(char)
+        if used > limit:
+            return text[:index]
+    return text
+
+
+def file_part(value: str, limit: int = MAX_FILE_NAME) -> str:
+    """One path component of a received file, one to one with *value*
+    (#838).
+
+    A name that is already safe (``checkpoints._clean_part`` leaves it as
+    it is) and fits *limit* characters (at most :data:`MAX_FILE_NAME`) and
+    :data:`MAX_FILE_NAME_BYTES` bytes is kept as it is: a name of up to 48
+    characters comes out exactly as 3.1.0 made it. Any other name is
+    cleaned and gets ``-<8 hex of sha256(value)>`` before its extension,
+    so two names never share a result and the same name always gets the
+    same one, with no state. One too long is cut in the middle: it keeps
+    its start up to the first digit (``events.out.tfevents.``), the end of
+    its stem (up to :data:`KEEP_TAIL` characters: the epoch stamp) and its
+    extension. ``NameTooLong`` when *limit* is under :data:`MIN_FILE_NAME`.
+
+    3.1.0 cut every name at 48 characters, so ``<run>-<node>-e100.pt``
+    became ``...-e10`` and replaced the epoch-10 checkpoint.
     """
     from .checkpoints import _clean_part
 
     limit = min(limit, MAX_FILE_NAME)
     cleaned = _clean_part(value)
-    if len(cleaned) <= limit and _utf8_len(cleaned) <= MAX_FILE_NAME_BYTES:
+    if cleaned == value and len(cleaned) <= limit \
+            and _utf8_len(cleaned) <= MAX_FILE_NAME_BYTES:
         return cleaned
     if limit < MIN_FILE_NAME:
         raise NameTooLong(f"{value!r} does not fit this server's path limit")
-    digest = hashlib.sha256(
+    tag = "-" + hashlib.sha256(
         value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
-    room = limit - len(digest) - 2  # head + tail, around "-<digest>-"
-    tail = cleaned[-min(KEEP_TAIL, room // 2):]
-    head = cleaned[:room - len(tail)]
-    spare = MAX_FILE_NAME_BYTES - _utf8_len(tail) - len(digest) - 2
-    if _utf8_len(head) > spare:  # multi-byte characters: trim to the bytes
-        used, keep = 0, 0
-        for keep, char in enumerate(head):  # noqa: B007
-            used += _utf8_len(char)
-            if used > spare:
-                break
-        head = head[:keep]
-    return f"{head}-{digest}-{tail}"
+    stem, dot, ext = cleaned.rpartition(".")
+    if not (dot and stem and 0 < len(ext) <= MAX_EXTENSION):
+        stem, ext = cleaned, ""
+    else:
+        ext = "." + ext
+    room = limit - len(tag) - len(ext)
+    spare = MAX_FILE_NAME_BYTES - len(tag) - _utf8_len(ext)
+    if len(stem) <= room and _utf8_len(stem) <= spare:
+        return f"{stem}{tag}{ext}"
+    room = min(room, len(stem))
+    # Keep the start that names the file's kind: a known prefix, or the
+    # start up to the first digit when that leaves the end a few
+    # characters; otherwise half the room.
+    known = next((p for p in KEEP_PREFIXES if stem.startswith(p)), None)
+    digits = re.search(r"\d", stem)
+    if known and len(known) <= room:
+        keep = len(known)
+    elif digits and digits.start() <= room - MIN_TAIL - 1:
+        keep = digits.start()
+    else:
+        keep = room // 2
+    tail_len = min(KEEP_TAIL, room - keep - 1)
+    tail = stem[len(stem) - tail_len:] if tail_len > 0 else ""
+    head = stem[:room - len(tail) - (1 if tail else 0)]
+    if _utf8_len(head) + _utf8_len(tail) + 1 > spare:  # multi-byte
+        while _utf8_len(tail) > spare // 2:
+            tail = tail[1:]
+        head = _bytes_prefix(head, spare - _utf8_len(tail) - 1)
+    return f"{head}-{tail}{tag}{ext}" if tail else f"{head}{tag}{ext}"
 
 
 def checked_relative(name: str) -> PurePosixPath:
@@ -455,10 +496,15 @@ def owned_run_dir(run_id: str) -> Path | None:
 
 
 def run_key(run_id: str, kind: str, name: str) -> str:
-    """``runs/<run_id>/<kind>/<name>``: a ``place=run`` key, relative to the
-    data root."""
-    return PurePosixPath(RUNS_DIRNAME, _part(run_id), _part(kind),
-                         clean_name(name)).as_posix()
+    """``runs/<run_id>/<kind>/<name>``: the key a ``place=run`` upload of
+    *name* is stored under, relative to the data root. Each part of *name*
+    through :func:`file_part`, the last one also shortened to fit
+    :data:`PATH_BUDGET` (:func:`_fit_name`)."""
+    raw = checked_relative(name).parts
+    folders = [file_part(part) for part in raw[:-1]]
+    folder = run_files_dir(run_id).joinpath(_part(kind), *folders)
+    return PurePosixPath(RUNS_DIRNAME, _part(run_id), _part(kind), *folders,
+                         _fit_name(raw[-1], folder)).as_posix()
 
 
 def _data_base(first: str) -> Path | None:
@@ -519,8 +565,6 @@ def remove_run_files(run_id: str, *, keep_checkpoints: bool = False) -> bool:
         if child.name == "checkpoint" and child.is_dir() \
                 and not child.is_symlink():
             continue
-        if child.name == RUN_NAMES_FILE:  # who took the kept names
-            continue
         if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child, ignore_errors=True)
         else:
@@ -564,20 +608,13 @@ def sweep_incoming() -> int:
     return removed
 
 
-#: In a run's directory: which source name took each received name
-#: (:func:`place_file`), ``{"<kind>/<name>": "<name as sent>"}``.
-RUN_NAMES_FILE = ".names.json"
-_run_names_lock = threading.Lock()
-
-
-def _fit_name(raw: str, folder: Path, n: int = 0, *,
-              budget: bool = True) -> str:
+def _fit_name(raw: str, folder: Path, n: int = 0) -> str:
     """:func:`file_part` of *raw* for a file in *folder*, suffixed ``-n``
-    when *n*, shortened to fit :data:`PATH_BUDGET` when *budget*."""
+    when *n*, shortened to fit :data:`PATH_BUDGET`."""
     tag = f"-{n}" if n else ""
     limit = MAX_FILE_NAME - len(tag)
-    if budget and PATH_BUDGET is not None:
-        limit = min(limit, PATH_BUDGET - len(str(folder)) - 1 - len(tag))
+    if PATH_BUDGET is not None:
+        limit = min(limit, PATH_BUDGET - _path_len(folder) - 1 - len(tag))
     name = file_part(raw, limit)
     if not tag:
         return name
@@ -585,33 +622,55 @@ def _fit_name(raw: str, folder: Path, n: int = 0, *,
     return f"{stem}{tag}.{ext}" if dot and stem else f"{name}{tag}"
 
 
+def _over_budget(path: Path) -> bool:
+    return PATH_BUDGET is not None and _path_len(path) > PATH_BUDGET
+
+
 def _check_budget(path: Path) -> None:
-    if PATH_BUDGET is not None and len(str(path)) > PATH_BUDGET:
+    if _over_budget(path):
         raise NameTooLong(f"{path} is over this server's path limit of "
                           f"{PATH_BUDGET} characters")
 
 
-def _too_long(exc: OSError) -> bool:
-    return exc.errno == errno.ENAMETOOLONG \
-        or getattr(exc, "winerror", None) == 206  # ERROR_FILENAME_EXCED_RANGE
+def _too_long(exc: OSError, path: Path) -> bool:
+    """Whether *exc*, raised writing *path*, says the path is too long.
+    ``ENAMETOOLONG`` and Windows' error 206 always do; Windows reports a
+    path over MAX_PATH as "not found" (error 3, ``FileNotFoundError``), so
+    those count only for a *path* over :data:`PATH_BUDGET`, and a genuine
+    missing file still surfaces as itself."""
+    if exc.errno == errno.ENAMETOOLONG \
+            or getattr(exc, "winerror", None) == 206:
+        return True
+    return (isinstance(exc, FileNotFoundError)
+            or getattr(exc, "winerror", None) == 3) and _over_budget(path)
 
 
 def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
                sha256: str) -> str:
     """Move the received *tmp* to its place; the key. Blocking.
 
-    ``run``: under the run's directory (:func:`_place_run`): the same name
-    sent again replaces its file atomically (a retry, a file that grew); a
-    different name that cleans to a name another one took is suffixed
-    ``-1``, ``-2`` ... (#838). ``data``: the writer's path under
-    :data:`DATA_PLACES`, never over a different file (:func:`_claim`).
-    Either way the last name is shortened to fit :data:`PATH_BUDGET`.
-    ``ValueError`` for a name that fits neither, ``NameTooLong`` (a
-    ``ValueError`` too) for a path this server cannot hold.
+    ``run``: :func:`run_key`, replaced atomically: one name maps to one
+    key, so the same name sent again (a retry, a file that grew) is the
+    same file and two names never share one (#838). ``data``: the writer's
+    path under :data:`DATA_PLACES`, never over a different file
+    (:func:`_claim`). Either way the last name is shortened to fit
+    :data:`PATH_BUDGET`. ``ValueError`` for a name that fits neither,
+    ``NameTooLong`` (a ``ValueError`` too) for a path this server cannot
+    hold.
     """
+    destination: Path = tmp
     try:
         if place == PLACE_RUN:
-            return _place_run(tmp, run_id, kind, name)
+            key = run_key(run_id, kind, name)
+            destination = key_location(key)
+            assert destination is not None
+            _check_budget(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if owned_run_dir(run_id) is None:
+                raise ValueError(
+                    "the run's directory is not a plain directory")
+            os.replace(tmp, destination)
+            return key
         if place != PLACE_DATA:
             raise ValueError(f"unknown place {place!r}")
         raw = checked_relative(name).parts
@@ -621,71 +680,16 @@ def place_file(tmp: Path, place: str, run_id: str, kind: str, name: str,
                              f"{', '.join(DATA_PLACES)}")
         base = _data_base(relative.parts[0])
         assert base is not None
-        folder = base.joinpath(*relative.parts[1:-1])
+        folder = destination = base.joinpath(*relative.parts[1:-1])
         folder.mkdir(parents=True, exist_ok=True)
         candidate = _claim(
             tmp, lambda n: folder / _fit_name(raw[-1], folder, n), sha256)
         key_parts = (relative.parts[0], *candidate.relative_to(base).parts)
         return PurePosixPath(*key_parts).as_posix()
     except OSError as exc:
-        if _too_long(exc):
+        if _too_long(exc, destination):
             raise NameTooLong(f"{name!r}: {exc.strerror or exc}") from None
         raise
-
-
-def _read_names(path: Path) -> dict[str, str]:
-    try:
-        names = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return names if isinstance(names, dict) else {}
-
-
-def _place_run(tmp: Path, run_id: str, kind: str, name: str) -> str:
-    """``place=run``: each part of *name* takes the cleaned name it maps to,
-    unless a different source name (recorded in :data:`RUN_NAMES_FILE`) or
-    a file nobody recorded (one 3.1.0 received) holds it; then ``-1``,
-    ``-2`` ... So a directory artifact (``tb run/...``) claims its folder
-    once, and another folder that cleans alike (``tb_run/...``) gets its
-    own."""
-    raw = checked_relative(name).parts
-    run_dir = run_files_dir(run_id)
-    if owned_run_dir(run_id) is None:
-        raise ValueError("the run's directory is not a plain directory")
-    kind_part = _part(kind)
-    with _run_names_lock:
-        ledger = run_dir / RUN_NAMES_FILE
-        names = _read_names(ledger)
-        changed = False
-        folder = run_dir / kind_part
-        taken: list[str] = [kind_part]
-        for depth, part in enumerate(raw):
-            source = "/".join(raw[:depth + 1])
-            last = depth == len(raw) - 1
-            n = 0
-            while True:
-                candidate = _fit_name(part, folder, n, budget=last)
-                key = "/".join((*taken, candidate))
-                path = folder / candidate
-                owner = names.get(key)
-                wrong_type = path.is_dir() if last else path.is_file()
-                if owner == source and not wrong_type:
-                    break
-                if owner is None and not os.path.lexists(path):
-                    names[key] = source
-                    changed = True
-                    break
-                n += 1
-            taken.append(candidate)
-            folder = path
-        _check_budget(folder)
-        folder.parent.mkdir(parents=True, exist_ok=True)
-        if changed:
-            scratch = ledger.with_name(f"{INCOMING_PREFIX}{uuid.uuid4().hex}")
-            scratch.write_text(json.dumps(names), encoding="utf-8")
-            os.replace(scratch, ledger)
-        os.replace(tmp, folder)
-    return PurePosixPath(RUNS_DIRNAME, _part(run_id), *taken).as_posix()
 
 
 def _claim(tmp: Path, candidate_at: Callable[[int], Path],
@@ -715,7 +719,7 @@ def _claim(tmp: Path, candidate_at: Callable[[int], Path],
             n += 1
             continue
         except OSError as exc:  # no hard links here: claim the name alone
-            if _too_long(exc):
+            if _too_long(exc, candidate):
                 raise
             try:
                 fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
