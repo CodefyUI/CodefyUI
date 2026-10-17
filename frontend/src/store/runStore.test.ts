@@ -90,6 +90,7 @@ function emptyDetail(overrides: Partial<RunDetail> = {}): RunDetail {
     artifacts: [],
     cursor: 0,
     loading: false,
+    logLoading: false,
     error: null,
     ...overrides,
   };
@@ -268,13 +269,14 @@ describe('runStore — selecting a run', () => {
     expect(useRunStore.getState().detail!.error).toBe(
       useI18n.getState().t('runs.error.gone'),
     );
+    expect(useRunStore.getState().detail!.logLoading).toBe(false);
     expect(api.getRunEvents).not.toHaveBeenCalled();
   });
 
   it('reports a failed detail fetch instead of spinning forever', async () => {
     api.getRun.mockRejectedValue(new Error('boom'));
     await useRunStore.getState().select('r1');
-    expect(useRunStore.getState().detail).toMatchObject({ loading: false, error: 'boom' });
+    expect(useRunStore.getState().detail).toMatchObject({ loading: false, logLoading: false, error: 'boom' });
   });
 
   it('survives metrics or artifacts being unavailable', async () => {
@@ -287,6 +289,18 @@ describe('runStore — selecting a run', () => {
       series: {},
       artifacts: [],
     });
+  });
+
+  it('says the log is loading until a page of events is in, and only if there are events (#841)', async () => {
+    api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1' }), last_cursor: 0 });
+    await useRunStore.getState().select('r1');
+    expect(useRunStore.getState().detail!.logLoading).toBe(false);
+
+    api.getRun.mockResolvedValue({ ...makeRun({ id: 'r2' }), last_cursor: 11500 });
+    await useRunStore.getState().select('r2');
+    expect(useRunStore.getState().detail!.logLoading).toBe(true);
+    const after = reduceRunEvents(useRunStore.getState().detail!, eventsPage({ cursor: 11500 }));
+    expect(after.logLoading).toBe(false);
   });
 
   it('clears the detail when nothing is selected', async () => {
@@ -729,7 +743,9 @@ describe('toChartSeries', () => {
     const a = seriesKey('loss', 'node-aaaaaaaaaa');
     const b = seriesKey('loss', 'node-bbbbbbbbbb');
     const both = toChartSeries({ [a]: { 1: 1 }, [b]: { 1: 2 } }, [a, b]);
-    expect(both.map((s) => s.name)).toEqual(['loss @node-aaa', 'loss @node-bbb']);
+    // The whole id (#841): a cut one could not tell `train-plain` from
+    // `train-pl...`; the legend cuts it for display, with a title.
+    expect(both.map((s) => s.name)).toEqual(['loss @node-aaaaaaaaaa', 'loss @node-bbbbbbbbbb']);
     // ...and both still colour as `loss`, so one arriving late does not
     // recolour the other.
     expect(both.map((s) => s.colorKey)).toEqual(['loss', 'loss']);
@@ -981,5 +997,134 @@ describe('isActiveRun', () => {
     for (const status of ['succeeded', 'failed', 'cancelled', 'interrupted'] as RunStatus[]) {
       expect(isActiveRun(status)).toBe(false);
     }
+  });
+});
+
+// ── races and odd payloads ────────────────────────────────────────────────
+
+describe('runStore — a selection the world moved past', () => {
+  /** A promise and its resolve/reject, for a request held in flight. */
+  function held<T>() {
+    let resolve: (value: T) => void = () => {};
+    let reject: (reason: unknown) => void = () => {};
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  it('drops a failed fetch for a superseded selection', async () => {
+    const first = held<rest.RunInfo | null>();
+    api.getRun
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValue({ ...makeRun({ id: 'r2' }), last_cursor: 1 });
+    const pending = useRunStore.getState().select('r1');
+    await useRunStore.getState().select('r2');
+    first.reject(new Error('late'));
+    await pending;
+    expect(useRunStore.getState().detail).toMatchObject({ runId: 'r2', error: null });
+  });
+
+  it('words a non-Error failure, and paints nothing over a detail replaced meanwhile', async () => {
+    api.getRun.mockRejectedValueOnce('plain text');
+    await useRunStore.getState().select('r1');
+    expect(useRunStore.getState().detail!.error).toBe('plain text');
+
+    for (const outcome of ['reject', 'gone', 'loaded'] as const) {
+      const run = held<rest.RunInfo | null>();
+      api.getRun.mockImplementationOnce(() => run.promise);
+      const pending = useRunStore.getState().select('r1');
+      // Another writer replaced the detail; the generation did not move.
+      useRunStore.setState({ detail: null });
+      if (outcome === 'reject') run.reject(new Error('late'));
+      else run.resolve(outcome === 'gone' ? null : { ...makeRun({ id: 'r1' }), last_cursor: 3 });
+      await pending;
+      expect(useRunStore.getState().detail).toBeNull();
+    }
+  });
+
+  it('drops the metrics of a superseded selection', async () => {
+    const metrics = held<rest.RunMetrics>();
+    api.getRun.mockImplementation(async (id: string) => ({ ...makeRun({ id }), last_cursor: 1 }));
+    api.getRunMetrics.mockImplementationOnce(() => metrics.promise);
+    const pending = useRunStore.getState().select('r1');
+    await vi.waitFor(() => expect(api.getRunMetrics).toHaveBeenCalledTimes(1));
+    await useRunStore.getState().select('r2');
+    metrics.resolve({ run_id: 'r1', names: ['loss'], metrics: [{ node_id: null, name: 'loss', step: 1, value: 9 }] });
+    await pending;
+    expect(useRunStore.getState().detail).toMatchObject({ runId: 'r2', series: {} });
+  });
+
+  it('drops an events page for a superseded follower or a replaced detail', async () => {
+    vi.useFakeTimers();
+    const release = useRunStore.getState().watch();
+    api.getRun.mockImplementation(async (id: string) => ({ ...makeRun({ id, status: 'running' }), last_cursor: 0 }));
+    const firstPage = held<RunEventsPage>();
+    api.getRunEvents.mockImplementationOnce(() => firstPage.promise);
+    await useRunStore.getState().select('r1');
+    await vi.advanceTimersByTimeAsync(0);
+    // Superseded: the old follower's page lands after a new selection. Its
+    // request was aborted, but a server that answers anyway must not paint.
+    api.getRunEvents.mockImplementation(() => new Promise(() => {}));
+    await useRunStore.getState().select('r2');
+    firstPage.resolve(eventsPage({ cursor: 5, events: [{ cursor: 5, type: 'execution_complete', ts: 't', payload: null }] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useRunStore.getState().detail!.log).toEqual([]);
+
+    // Same generation, but the detail now shows another run.
+    const thirdPage = held<RunEventsPage>();
+    api.getRunEvents.mockImplementationOnce(() => thirdPage.promise);
+    await useRunStore.getState().select('r3');
+    await vi.advanceTimersByTimeAsync(0);
+    useRunStore.setState({ detail: { ...useRunStore.getState().detail!, runId: 'other' } });
+    thirdPage.resolve(eventsPage({ status: 'succeeded', active: false, cursor: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useRunStore.getState().detail!.runId).toBe('other');
+    release();
+  });
+
+  it('reads a metric point a node logged and a node_status without a node or status', () => {
+    const next = reduceRunEvents(emptyDetail(), eventsPage({
+      cursor: 2,
+      events: [
+        { cursor: 1, type: 'metric', ts: 't', payload: { points: [{ name: 'loss', step: 1, value: 2, node_id: 'loop' }] } },
+        { cursor: 2, type: 'node_status', ts: 't', payload: {} },
+      ],
+    }));
+    expect(next.series).toEqual({ [seriesKey('loss', 'loop')]: { 1: 2 } });
+    expect(next.log[0]).toMatchObject({ kind: 'node', nodeId: undefined, status: '' });
+  });
+
+  it('labels a run-level series plainly beside a node series of the same name', () => {
+    const run = seriesKey('loss', null);
+    const node = seriesKey('loss', 'loop');
+    expect(toChartSeries({ [run]: { 1: 1 }, [node]: { 1: 2 } }, [run, node]).map((s) => s.name))
+      .toEqual(['loss', 'loss @loop']);
+  });
+
+  it('keeps one list timer when a watcher returns while a poll is in flight', async () => {
+    vi.useFakeTimers();
+    const poll = held<ReturnType<typeof page>>();
+    api.listRuns.mockImplementationOnce(() => poll.promise);
+    const first = useRunStore.getState().watch();
+    first();
+    const second = useRunStore.getState().watch();
+    await vi.advanceTimersByTimeAsync(0);
+    poll.resolve(page([]));
+    await vi.advanceTimersByTimeAsync(0);
+    const calls = api.listRuns.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_MS);
+    // One poll per interval, not two: the second tick replaced the timer.
+    expect(api.listRuns.mock.calls.length).toBe(calls + 1);
+    second();
+  });
+
+  it('schedules nothing when the last watcher left during a poll', async () => {
+    vi.useFakeTimers();
+    const poll = held<ReturnType<typeof page>>();
+    api.listRuns.mockImplementationOnce(() => poll.promise);
+    const release = useRunStore.getState().watch();
+    release();
+    poll.resolve(page([]));
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_MS * 2);
+    expect(api.listRuns).toHaveBeenCalledTimes(1);
   });
 });

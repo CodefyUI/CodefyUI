@@ -164,6 +164,12 @@ export interface RunDetail {
   /** Highest event cursor applied — where the follower resumes. */
   cursor: number;
   loading: boolean;
+  /**
+   * True until the first page of the run's events is in (#841): the tail of
+   * a long run takes seconds to read, and an empty log meanwhile is not a
+   * run that logged nothing.
+   */
+  logLoading: boolean;
   error: string | null;
 }
 
@@ -212,6 +218,7 @@ function emptyDetail(runId: string, status: RunStatus,
     artifacts: [],
     cursor: 0,
     loading: true,
+    logLoading: true,
     error: null,
   };
 }
@@ -358,6 +365,8 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
     log,
     // Never moves backwards: an empty page returns the cursor we sent.
     cursor: Math.max(detail.cursor, page.cursor),
+    // A page is in, so an empty log from here on means no log lines.
+    logLoading: false,
   };
 }
 
@@ -376,15 +385,17 @@ export function toChartSeries(
   maxPoints = MAX_CHART_POINTS,
 ): { name: string; colorKey: string; points: { x: number; y: number }[] }[] {
   // A node id is only worth showing when it is what tells two lines apart.
-  const perName = new Map<string, number>();
+  const seen = new Set<string>();
+  const shared = new Set<string>();
   for (const key of keys) {
     const { name } = splitSeriesKey(key);
-    perName.set(name, (perName.get(name) ?? 0) + 1);
+    if (seen.has(name)) shared.add(name);
+    seen.add(name);
   }
   return keys.map((key) => {
     const { name, nodeId } = splitSeriesKey(key);
-    const label = (perName.get(name) ?? 0) > 1 && nodeId
-      ? `${name} @${nodeId.slice(0, 8)}`
+    const label = shared.has(name) && nodeId
+      ? `${name} @${nodeId}`
       : name;
     const steps = Object.keys(series[key] ?? {})
       .map(Number)
@@ -432,7 +443,12 @@ function scheduleList() {
 
 async function tickList() {
   listTimer = null;
+  // Unreachable today: `watch()` calls this with a watcher registered, and
+  // the last release clears the timer. Kept so a future caller cannot poll
+  // with nothing on screen.
+  /* v8 ignore start */
   if (watchers === 0) return;
+  /* v8 ignore stop */
   await useRunStore.getState().refresh();
   if (watchers > 0) scheduleList();
 }
@@ -565,7 +581,7 @@ export const useRunStore = create<RunState>((set, get) => ({
     } catch (err) {
       if (generation !== followGeneration) return;
       set((state) => (state.detail?.runId === runId
-        ? { detail: { ...state.detail, loading: false, error: errorMessage(err) } }
+        ? { detail: { ...state.detail, loading: false, logLoading: false, error: errorMessage(err) } }
         : {}));
       return;
     }
@@ -577,6 +593,7 @@ export const useRunStore = create<RunState>((set, get) => ({
           detail: {
             ...state.detail,
             loading: false,
+            logLoading: false,
             error: useI18n.getState().t('runs.error.gone'),
           },
         }
@@ -612,6 +629,8 @@ export const useRunStore = create<RunState>((set, get) => ({
           artifacts: artifacts?.artifacts ?? [],
           cursor: startCursor,
           loading: false,
+          // Nothing to read when the run has no events past the tail start.
+          logLoading: run.last_cursor > startCursor,
         },
       }
       : {}));

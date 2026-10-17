@@ -89,7 +89,7 @@ run 的圖完成後會立即歸還裝置名額，再寫入最終狀態與結束�
 
 ### 執行任務面板 {/* #runs-panel */}
 
-結果面板的 **執行任務** 分頁會列出伺服器持有的最新 50 個 run，不論它是從哪個分頁、**排入佇列...**、`cdui run` 或 API 啟動，並依最新到最舊排列。篩選 chip 包含 **全部／執行中／排隊中／已成功／失敗／已取消／已中斷**，欄位是**名稱、狀態、Worker、裝置、開始、耗時、最終損失**。**Worker** 對本機 run 顯示**本伺服器**，對尚未放置的 `any` run 顯示**任一可用**，其餘顯示 worker 名稱；**裝置**列出 run 的裝置集合或裝置，worker 上的 run 在滑鼠停留時會顯示每張卡在 run 內的名稱。從分頁啟動的 run 會以該分頁的名稱列出，最多 64 個字元。篩選 chip 會在取前 50 筆之前套用，**重新整理**旁的數字會顯示符合條件的 run 列出了幾筆（`50 / 312`）。更早的 run 可以用 `GET /api/runs?offset=` 取得。等待中的 run 會在裝置旁顯示 `佇列第 N 位`，若有等待原因，也會在 worker 下方顯示（`queue_reason`，例如 `waiting for worker gpu-box to reconnect`）。**新增掃描**可建立[參數掃描](#in-the-runs-panel)。每一列最多提供四個動作：
+結果面板的 **執行任務** 分頁會列出伺服器持有的最新 50 個 run，不論它是從哪個分頁、**排入佇列...**、`cdui run` 或 API 啟動，並依最新到最舊排列。篩選 chip 包含 **全部／執行中／排隊中／已成功／失敗／已取消／已中斷**，欄位是**名稱、狀態、Worker、裝置、開始、耗時、最終損失**。**Worker** 對本機 run 顯示**本伺服器**，對尚未放置的 `any` run 顯示**任一可用**，其餘顯示 worker 名稱；**裝置**列出 run 的裝置集合或裝置，worker 上的 run 在滑鼠停留時會顯示每張卡在 run 內的名稱。從分頁啟動的 run 會以該分頁的名稱列出，最多 64 個字元。篩選 chip 會在取前 50 筆之前套用，**重新整理**旁的數字會顯示符合條件的 run 列出了幾筆（`50 / 312`）。更早的 run 可以用 `GET /api/runs?offset=` 取得。等待中的 run 會在裝置下方顯示它的排隊位置：`佇列第 N 位`，`any` run 則顯示 `任一可用佇列第 N 位`，因為它在自己的佇列（`any/<device>`）中等待，不與指定 worker 的 run 一起計算；滑鼠停留時會顯示佇列名稱。run 除了排隊之外還在等待其他條件時，原因會以面板的語言顯示在該列下方（`queue_reason`，例如 `waiting for worker gpu-box to reconnect`，`any` run 則如 `waiting for a worker that offers cuda: gpu-box is draining`）。worker 上 run 的錯誤與警告也以面板的語言顯示，最終損失小於 0.001 時改用科學記號。**新增掃描**可建立[參數掃描](#in-the-runs-panel)。每一列最多提供四個動作：
 
 | 動作 | 用途 |
 | --- | --- |
@@ -225,7 +225,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 ### 讀取結果 {/* #reading-the-results */}
 
-`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`、`worker_id`、`devices` 與 `queue_key`（執行的位置；等待中的 `any` variant 在被放置前顯示 `any` 與 `any/<device>`）。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 是執行任務表格的摘要，不用來選取 objective：多個節點記錄同一名稱時，它仍只顯示一個數字。
+`GET /api/sweeps/{id}` 會回傳該 sweep：它的 `state`（`running`、`cancelling`、`finished`；若送出迴圈中途失敗則為 `failed`，但已排入佇列的 child 仍會繼續）、objective、依 status 分組的 `counts`、包含每個展開後 domain 的 `params`，以及按**排名順序**、最佳者優先的 `variants`。每個 variant 會帶著自己的 `index`（送出順序）、`run_id`、即時 `status`、收到的 `params`、`seed`、達到的 `objective` 值、`objective_node_id`（讀取該值的節點）、`ambiguous_producers`（僅在只以名稱選取且有歧義時出現）、`rank`、`run_exists`；child run 仍存在時另有其 `final_metrics`、`worker_id`、`devices` 與 `queue_key`（執行的位置；等待中的 `any` variant 在被放置前顯示 `any` 與 `any/<device>`）。`best` 指向排名第 1 的 variant。run 結束且記錄過 objective 後，variant 會依該 series 的最終值排名；run 即使在記錄後失敗仍會列入排名，沒有排名的 variant 則保留自己的資料列，以 index 順序排列並顯示 `rank: null`。`?format=csv` 可將同一份表格下載成試算表，包含 `objective_metric`、`objective_node_id` 與 `ambiguous_producers`（以 `;` 分隔，未經節點記錄的 series 寫作 `(run)`）欄位，每個掃描參數各佔一欄。`final_metrics` 不用來選取 objective。它是 objective 節點記錄的每個 series 的最後一個值，因此有兩條訓練分支的圖會顯示被掃描那條分支的數字；`final_metrics_node_id` 指出該節點。僅以名稱指定、尚未收回的 variant、run 層級的 objective，以及有歧義的 objective，則改用執行任務表格的整個 run 摘要（每個名稱一個數字，多個節點記錄同名時取最後寫入者），`final_metrics_node_id` 為 `null`。
 
 即使 child run 被移除，結果仍會保留：每次 `GET /api/sweeps/{id}` 與每次取消，都會把每個已結束 variant 的 status 與 objective 複製到 sweep 資料列上，而 retention 會在刪減 run 前對任何尚未讀取的結果做同樣的事。因此，被 retention 刪減的 child 會保留已收回的 `status`、`objective`、`objective_node_id` 與 `ambiguous_producers`，並顯示 `run_exists: false`，不含 `final_metrics`。在任何讀取或取消收回結果之前就以 `DELETE /api/runs/{id}` 刪除的 child，會顯示 `status: "missing"` 與 `objective: null`。兩種情況下，該 variant 的資料列都會保留。
 
@@ -241,9 +241,9 @@ sweep 的 `state` 還是 `running` 或 `finished` 時，它仍可能帶著 `erro
 
 ### 在執行任務面板中 {/* #in-the-runs-panel */}
 
-[執行任務面板](#runs-panel)工具列上的**新增掃描**會從目前開啟的圖建立 sweep。對話框會列出圖中最上層已註冊節點的 int、float、bool 與 select 參數；在 block 內編輯時，列出的仍是最上層的圖，因為 sweep 執行的是那張圖。自由文字的 string 參數只能透過 API 掃描。每個參數可以填一串值，數值參數也可以用區間，對話框會顯示這樣會產生幾個 variant。超過上表三個預設上限之一時，對話框會發出警告並指出對應的設定，但仍會送出 sweep：伺服器可能已調高上限，無法執行的請求則由伺服器拒絕。目標指標預設為 `train_loss`，`TrainingLoop` 每個 epoch 都會記錄它；欄位也會建議清單中各 run 記錄過的 series。**目標節點**會列出這些 run 中記錄所選指標的節點；選擇**任一節點**時只送出名稱，若列出的 run 顯示有多個節點記錄它，對話框會發出警告。各 variant 沿用分頁的裝置與執行設定，但不包括亂數種子（請改用**每個變體都設定亂數種子**），也不錄製輸出。**目標**與**裝置**和 [Queue on...](#workers) 對話框相同：**本伺服器**、已連線的 worker 加上裝置集合，或**任一可用**加上裝置種類，後者會把 variant 分散到所有空閒的卡上（見上方的 `options.target`）。選擇器一開始是**本伺服器**與分頁的裝置；`auto`（由伺服器選擇）或這台伺服器沒有的裝置會照原樣列出。維持不變時，sweep 會像以往一樣以分頁的裝置送出，不帶 target。**名稱**留白時，sweep 會以分頁的名稱命名，最多 64 個字元。
+[執行任務面板](#runs-panel)工具列上的**新增掃描**會從目前開啟的圖建立 sweep。對話框會列出圖中最上層已註冊節點的 int、float、bool 與 select 參數，每個參數以節點的標籤與 id 命名（`Optimizer (opt-plain) · lr`），兩條分支的節點因此能分辨；在 block 內編輯時，列出的仍是最上層的圖，因為 sweep 執行的是那張圖。自由文字的 string 參數只能透過 API 掃描。每個參數可以填一串值，數值參數也可以用區間，對話框會顯示這樣會產生幾個 variant。超過上表三個預設上限之一時，對話框會發出警告並指出對應的設定，但仍會送出 sweep：伺服器可能已調高上限，無法執行的請求則由伺服器拒絕。目標指標預設為 `train_loss`，`TrainingLoop` 每個 epoch 都會記錄它；欄位也會建議清單中各 run 記錄過的 series。**目標節點**會列出這些 run 中記錄所選指標的節點；選擇**任一節點**時只送出名稱，若列出的 run 顯示有多個節點記錄它，對話框會發出警告。各 variant 沿用分頁的裝置與執行設定，但不包括亂數種子（請改用**每個變體都設定亂數種子**），也不錄製輸出。**目標**與**裝置**和 [Queue on...](#workers) 對話框相同：**本伺服器**、已連線的 worker 加上裝置集合，或**任一可用**加上裝置種類，後者會把 variant 分散到所有空閒的卡上（見上方的 `options.target`）。選擇器一開始是**本伺服器**與分頁的裝置；`auto`（由伺服器選擇）或這台伺服器沒有的裝置會照原樣列出。維持不變時，sweep 會像以往一樣以分頁的裝置送出，不帶 target。**名稱**留白時，sweep 會以分頁的名稱命名，最多 64 個字元。
 
-**開始掃描**會開啟該 sweep：狀態、目標指標、各狀態的數量，以及每個 variant 一列的表格，列出參數值、目標值、排名、最終指標，以及執行所在的 **Worker** 與**裝置**（`any` variant 被放置前顯示 `any`），表格下方是目標曲線。sweep 結束前，畫面每 2 秒重新讀取一次。點**排名**、**狀態**或**目標值**的欄位標題即可排序；沒有值的列一律排在最後。**查看**會開啟該 variant 的 run，child run 詳細資訊中的**開啟所屬掃描**則會回到 sweep。**停止掃描**會送出 `POST /api/sweeps/{id}/cancel`，**下載 CSV** 會下載 `?format=csv` 的表格。
+**開始掃描**會開啟該 sweep：狀態、目標指標、各狀態的數量，以及每個 variant 一列的表格，列出參數值、目標值、排名、最終指標（objective 節點記錄的每個 series 的最後一個值，滑鼠停留在欄位標題時會顯示該節點），以及執行所在的 **Worker** 與**裝置**（`any` variant 被放置前顯示 `any`），表格下方是目標曲線。sweep 結束前，畫面每 2 秒重新讀取一次。點**排名**、**狀態**或**目標值**的欄位標題即可排序；沒有值的列一律排在最後。**查看**會開啟該 variant 的 run，child run 詳細資訊中的**開啟所屬掃描**則會回到 sweep。**停止掃描**會送出 `POST /api/sweeps/{id}/cancel`，**下載 CSV** 會下載 `?format=csv` 的表格。
 
 child 都是一般 run：它們在執行任務面板的清單中以 sweep 的 `name` 加上 variant 編號列出，編號與 sweep 表格上的相同，即其 `index` 加一（`lr x batch #3`）；兩者合計超過 64 個字元時，會截短 sweep 的名稱。沒有名稱的 sweep，其 child 也沒有名稱。`GET /api/runs` 的每一列都帶有 `sweep_id` 與 `sweep_variant`。要跟隨某一個 variant，可像其他 run 一樣使用 `GET /api/runs/{id}/events`。編輯器沒有過往 sweep 的清單；要再次開啟，請使用 child run 的**開啟所屬掃描**。
 
@@ -290,7 +290,7 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 `GET /api/studies/{id}` 會回傳 study 的 `status`、`revision`（study 或其 attempt 每次變動都會增加）、目前 attempt 依狀態分類的 `counts`，以及每個變體一筆資料，內容包括：
 
 - `repetitions`：每次重複的種子與目前的 attempt。
-- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`；child run 仍存在時另有 `worker_id`、`devices` 與 `queue_key`（執行的位置，與 sweep variant 相同）。每個重複的 `current` attempt 也帶有這些欄位。
+- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics`（objective 節點記錄的每個 series 的最後一個值）與 `fingerprint_digest`；child run 仍存在時另有 `worker_id`、`devices` 與 `queue_key`（執行的位置，與 sweep variant 相同）。每個重複的 `current` attempt 也帶有這些欄位。
 - `aggregate`：對記錄到目標值的目前 attempt 計算的 `count`、`mean` 與 `std`，以及 `values`，也就是每次重複的原始值（沒有值時為 `null`）。`std` 是樣本標準差，值少於兩個時為 `null`。
 - `eligible`、`ineligible_reasons`、`rank`、`tie` 與 `tied_with`。
 
