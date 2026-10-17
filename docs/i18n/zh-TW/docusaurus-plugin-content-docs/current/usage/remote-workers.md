@@ -159,7 +159,7 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
 
 ## 儲存 {/* #storage */}
 
-不使用資料夾中檔案的 run（純 tensor 的圖，或 Dataset、HuggingFaceDataset 節點下載到自己快取的圖）可以在任何 worker 上執行。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端。有共用資料夾的 worker 優先。
+不使用資料夾中檔案的 run（純 tensor 的圖、Dataset、HuggingFaceDataset 節點下載到自己快取的圖，或讀取 `data/samples/iris.csv` 這類內建範例的圖；每個安裝都有內建範例，worker 讀自己的那份）可以在任何 worker 上執行。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端。有共用資料夾的 worker 優先。
 
 | Run | 有 `data` 掛載的 worker | 沒有掛載的 worker |
 | --- | --- | --- |

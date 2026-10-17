@@ -10,6 +10,7 @@ import asyncio
 import multiprocessing
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -238,4 +239,55 @@ def test_children_ignore_ctrl_c():
         assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
     finally:
         signal.signal(signal.SIGINT, previous)
+
+
+# ── the run subprocess works in the install's backend/ (#839) ────────────
+
+
+def test_enter_install_dir_moves_to_the_install_and_pins_relative_settings(
+        monkeypatch, tmp_path):
+    started_in = tmp_path / "home"
+    install = tmp_path / "install"
+    started_in.mkdir()
+    install.mkdir()
+    monkeypatch.chdir(started_in)
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", "rel/user-data")
+    monkeypatch.setenv("CODEFYUI_DB_PATH", str(tmp_path / "abs.db"))
+    monkeypatch.setenv("CODEFYUI_MODELS_DIR", "")
+    monkeypatch.setenv("CODEFYUI_MOUNT_LABEL", "data")
+    child.enter_install_dir(install)
+    assert Path.cwd().resolve() == install.resolve()
+    pinned = Path(os.environ["CODEFYUI_USER_DATA_DIR"])
+    assert pinned.is_absolute()
+    assert pinned == started_in.resolve() / "rel" / "user-data"
+    assert os.environ["CODEFYUI_DB_PATH"] == str(tmp_path / "abs.db")
+    assert os.environ["CODEFYUI_MODELS_DIR"] == ""
+    assert os.environ["CODEFYUI_MOUNT_LABEL"] == "data"
+
+
+def test_the_install_dir_is_backend():
+    assert (child.INSTALL_DIR / "app" / "agent" / "child.py").is_file()
+    assert (child.INSTALL_DIR / "data" / "samples" / "iris.csv").is_file()
+
+
+def _sample_csv_graph():
+    return {"nodes": [h.node("start", "Start"),
+                      h.node("csv", "CSVReader", path="data/samples/iris.csv")],
+            "edges": [h.trigger("start", "csv")]}
+
+
+def test_a_bundled_sample_reads_from_any_starting_directory(
+        monkeypatch, tmp_path):
+    """B2 of #839: an agent started over SSH runs in the home directory,
+    where ``data/samples/iris.csv`` is not; the run failed with
+    ``CSVReader: file not found``. In the install's directory it reads."""
+    monkeypatch.chdir(tmp_path)
+    missed = _run(_spec(_sample_csv_graph()))
+    assert missed[-1][1]["status"] == "failed"
+    assert "file not found" in missed[-1][1]["error"]
+
+    child.enter_install_dir()
+    sent = _run(_spec(_sample_csv_graph()))
+    assert sent[-1] == (child.MSG_FINISHED, {
+        "status": "succeeded", "error": None, "peak_memory": None})
 

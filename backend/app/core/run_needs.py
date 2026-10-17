@@ -182,7 +182,9 @@ def _typed_files(node_cls: Any, params: dict[str, Any]
     return files
 
 
-def _executable_nodes(graph: dict[str, Any]) -> list[dict[str, Any]]:
+def executable_nodes(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    """The nodes a run of *graph* executes, every param filled in (see the
+    module docstring); also read by ``core.device_fallback`` (#839)."""
     from .graph_engine import build_preset_fallback, prepare_executable_graph
 
     try:
@@ -251,7 +253,7 @@ def needs(graph: dict[str, Any], *,
     mounted = False
     inputs: set[tuple[str, str]] = set()
     paths: set[str] = set()
-    for node in _executable_nodes(graph):
+    for node in executable_nodes(graph):
         node_type = node.get("type")
         data = node.get("data")
         params = data.get("params") if isinstance(data, dict) else None

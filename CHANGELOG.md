@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run's devices are checked against this server, a device fallback shows in the run log, and node device fields show what they hold** ([#839]). `options.target` `{"worker": "local", "devices": [...]}` naming a device this server does not have (`cuda:0` on a Mac) is refused with `400` (`this server does not offer cuda:0 (it offers cpu, mps:0)`), as a worker's is; it used to run on the CPU while its row named `cuda:0`. A run without `target.devices` keeps its fallback (`device: cuda` on a machine without CUDA still runs on the CPU), and that fallback, or a node whose `device` names a device the machine lacks, is now recorded before the graph runs as a `run_warning` of kind `device_fallback`, which the Runs panel shows; the server log line is unchanged and a run with no fallback emits nothing new. A worker's run subprocess now runs in the install's `backend/` directory, as the server does, so a bundled sample such as `data/samples/iris.csv` is read from the worker's own install on a worker without the `data` mount; an agent started over SSH used to look for it in the home directory and fail with `CSVReader: file not found`. A node's `device` field shows a stored value this server does not list (`cuda:0` imported on a Mac) instead of `auto`, with a note that a run here falls back, and lists the cards of the known workers under **Worker devices** so a node can be pinned to a worker's card from a control plane without one. English and zh-TW.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6245,6 +6249,7 @@ Release candidates before 1.0.0 are on the
 [#809]: https://github.com/CodefyUI/CodefyUI/issues/809
 [#808]: https://github.com/CodefyUI/CodefyUI/issues/808
 [#829]: https://github.com/CodefyUI/CodefyUI/issues/829
+[#839]: https://github.com/CodefyUI/CodefyUI/issues/839
 [#774]: https://github.com/CodefyUI/CodefyUI/issues/774
 [#775]: https://github.com/CodefyUI/CodefyUI/issues/775
 [#783]: https://github.com/CodefyUI/CodefyUI/issues/783

@@ -549,6 +549,10 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.uploadFailed': '上傳失敗',
   'paramField.downloadFailed': '下載失敗',
   'paramField.secretHint': '僅本次工作階段有效，存檔時清除。金鑰請改存在環境變數。',
+  'paramField.device.stored': '{device}（本伺服器沒有）',
+  'paramField.device.workerGroup': 'worker 的裝置',
+  'paramField.device.onWorkers': '{device} · {workers}',
+  'paramField.device.notLocal': '本伺服器沒有 {device}：在這裡執行時會改用其他裝置，並記在 run 的紀錄中；在有 {device} 的 worker 上執行時會使用它。',
 
   // ParamField（畫布內 Python，core#131）
   'paramField.code.checking': '檢查中…',

@@ -215,6 +215,31 @@ class InProcessExecutor:
         finally:
             scope.close()
 
+    async def _warn_device_fallbacks(self, request: ExecutionRequest) -> None:
+        """Send a ``run_warning`` (``device_fallback``) for every device the
+        run asked for and will not get (#839). Before the graph executes,
+        so the warning precedes the work it is about. The fallback itself is
+        unchanged (``resolve_device``); a run that meets none emits nothing.
+        In a worker's run subprocess the run's own device is not judged:
+        its cards are renumbered there, and submit checked the set."""
+        from .device_fallback import WARNING_DEVICE_FALLBACK, device_fallbacks
+
+        try:
+            found = device_fallbacks(
+                request.graph, request.options.get("device"),
+                request.context.device,
+                where="this worker" if self.exclusive_process
+                else "this server",
+                check_run=not self.exclusive_process)
+        except Exception:  # noqa: BLE001 -- a report, never the run's failure
+            logger.debug("run %s: device fallback check failed",
+                         request.run_id, exc_info=True)
+            return
+        for entry in found:
+            await request.sinks.warn(WarningSignal(
+                kind=WARNING_DEVICE_FALLBACK, detail=entry["detail"],
+                node_id=entry["node_id"]))
+
     async def _execute(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph and classify the outcome. Never raises but cancel."""
         graph = request.graph
@@ -222,6 +247,7 @@ class InProcessExecutor:
         session = request.session
         media_ports = declared_media_ports(graph["nodes"])
         on_progress = _progress_bridge(request, media_ports)
+        await self._warn_device_fallbacks(request)
         try:
             # The RUN-level baseline (``seeding.seed_rngs``): anything that
             # draws outside a node's ``execute`` (preset expansion, a

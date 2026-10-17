@@ -2095,7 +2095,9 @@ class RunService:
         """The FIFO a submitted run joins, or ``RunSubmitError``.
 
         Without a target, or with ``target.worker == "local"``: the
-        resolved device, exactly as before #772. On a worker the device is
+        resolved device, exactly as before #772; a ``local`` run with
+        ``target.devices`` must name devices this server has (#839). On a
+        worker the device is
         the WORKER's to resolve, so the key is ``<worker>/<device as
         asked>`` (``gpu-box/cuda:1``, ``gpu-box/cuda``) and ``any/<device>``
         for ``any``; :data:`WORKER_QUEUE_SEPARATOR` cannot occur in a device
@@ -2119,6 +2121,17 @@ class RunService:
         """
         worker_id, devices = entry_target(options)
         if worker_id == TARGET_WORKER_LOCAL:
+            if devices:
+                # An explicit set is a promise about hardware (#839): one this
+                # server lacks is refused, as a worker's is, instead of the
+                # run landing on the CPU while its row names the set. A run
+                # without ``target.devices`` keeps its 3.0 fallback.
+                offered = _local_device_values()
+                missing = [d for d in devices if d not in offered]
+                if missing:
+                    raise RunSubmitError(
+                        f"this server does not offer {', '.join(missing)} "
+                        f"(it offers {', '.join(offered)})")
             return _local_queue_key(options.get("device"))
         if options.get("lane") == LANE_INTERACTIVE:
             raise RunSubmitError(WORKER_REFUSES_INTERACTIVE)

@@ -159,7 +159,7 @@ The control plane holds the queue and records every event, so a run on a worker 
 
 ## Storage {/* #storage */}
 
-A run that uses no files in the data folder (a pure-tensor graph, or one whose Dataset or HuggingFaceDataset nodes download into a cache of their own) runs on any worker. A run that reads uploads or writes files needs one of two things: a folder both machines share, or the transfer backend, which moves the files over the agent's connection. A worker with the shared folder is preferred.
+A run that uses no files in the data folder (a pure-tensor graph, one whose Dataset or HuggingFaceDataset nodes download into a cache of their own, or one that reads a bundled sample such as `data/samples/iris.csv`, which every install has and a worker reads from its own) runs on any worker. A run that reads uploads or writes files needs one of two things: a folder both machines share, or the transfer backend, which moves the files over the agent's connection. A worker with the shared folder is preferred.
 
 | Run | Worker with the `data` mount | Worker without it |
 | --- | --- | --- |
