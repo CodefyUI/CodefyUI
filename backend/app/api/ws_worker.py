@@ -170,6 +170,38 @@ async def refuse_token(ws: WebSocket) -> None:
     await ws.close(code=4401, reason="Missing or invalid token")
 
 
+#: Why a revoked credential was refused, by ``WorkerStore.revoked``'s why.
+REVOKED_REASONS = {
+    "removed": "its credential was revoked: the worker was removed in the "
+               "Workers panel. Stop that agent, or enroll it again with a "
+               "new token (cdui agent forget <address> first)",
+    "rekeyed": "its credential was replaced by a re-key; only the agent "
+               "that enrolled with the re-key token can connect",
+}
+
+
+def _note_revoked(ws: WebSocket) -> None:
+    """A refused credential this server revoked (a Remove, a re-key) is
+    listed under its worker's name in the Workers panel, so an agent left
+    running after its worker was removed does not go unseen (#840). Any
+    other refused token names no worker and is not listed."""
+    store = getattr(ws.app.state, "worker_store", None)
+    registry = getattr(ws.app.state, "worker_registry", None)
+    revoked = getattr(store, "revoked", None)
+    if revoked is None or registry is None:
+        return
+    found = revoked(ws.headers.get("x-codefyui-token")
+                    or ws.query_params.get(TOKEN_QUERY_PARAM))
+    if found is None:
+        return
+    name, why = found
+    reason = REVOKED_REASONS.get(why, "its credential was revoked")
+    logger.warning("worker connection refused: %s presented a revoked "
+                   "credential (%s)", name, why)
+    registry.record_rejection(
+        name, reason, peer=ws.client.host if ws.client is not None else None)
+
+
 async def authorise(ws: WebSocket) -> Authorised | None:
     provided = (ws.headers.get("x-codefyui-token")
                 or ws.query_params.get(TOKEN_QUERY_PARAM))
@@ -199,6 +231,7 @@ async def websocket_worker(ws: WebSocket) -> None:
         # side cannot tell the agent from another client of the listener.
         # The launcher acts on the agent's own report instead
         # (``ssh_launch.TOKEN_REFUSED``).
+        _note_revoked(ws)
         await refuse_token(ws)
         return
     enrolled_as = auth.worker

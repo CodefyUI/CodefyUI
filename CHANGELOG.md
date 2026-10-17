@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An SSH worker stops retrying what a retry cannot fix, and a removed worker's agent stops instead of retrying forever** ([#840]). An SSH worker whose login is refused (`Permission denied`), whose host name does not resolve, whose host key does not verify, or whose `cdui` path the remote shell cannot run (exit 127 / 126) now stops at once with the reason and a **Retry** button, instead of retrying every minute; one that has been up since it was (re)started stops after three such failures in a row, so a laptop that lost its network is still retried. **Recent ssh output** holds the last attempt's lines instead of the same line once per attempt, and no remote agent pid is shown for an agent that never started. An agent whose worker credential the server refuses with HTTP 401 (the worker was removed or re-keyed, or the credential belongs to another control plane) now logs why and exits with status 2 instead of retrying; an agent on the session token still retries, and an SSH worker still restarts its agent with a fresh enrollment. The server remembers the credentials it revoked since it started, so such an attempt is listed under **Refused connections** with its worker's name. Worker device lists name the CPU by its brand (`Apple M3`, `AMD Ryzen 9 9950X 16-Core Processor`) instead of `arm` / `x86_64`, and MPS as `mps:0`, as this server does.
+
 ## [3.1.0] — 2026-10-17
 
 3.1.0 lets a run choose where it executes: in the server as before, on one or
@@ -6260,3 +6264,4 @@ Release candidates before 1.0.0 are on the
 [#789]: https://github.com/CodefyUI/CodefyUI/issues/789
 [#778]: https://github.com/CodefyUI/CodefyUI/issues/778
 [#764]: https://github.com/CodefyUI/CodefyUI/issues/764
+[#840]: https://github.com/CodefyUI/CodefyUI/issues/840

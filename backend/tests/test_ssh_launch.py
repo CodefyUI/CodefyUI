@@ -259,19 +259,76 @@ def test_the_stop_grace_outlasts_the_agents_own_shutdown(tmp_path):
 
 async def test_a_failing_ssh_is_retried_with_its_error_surfaced(
         launcher, fake_ssh, monkeypatch):
-    monkeypatch.setenv("FAKE_SSH_MODE", "fail")
+    monkeypatch.setenv("FAKE_SSH_MODE", "down")
     await launcher.add(_entry())
     await _until(lambda: len(_all_calls(fake_ssh)) >= 3
                  and launcher.describe("gpu-box")["state"] == "failed",
                  "ssh was not retried")
     view = launcher.describe("gpu-box")
     assert view["gave_up"] is False
-    assert "Permission denied (publickey)" in view["last_error"]
+    assert "Connection refused" in view["last_error"]
     assert view["exit_code"] == 255
     assert view["attempts"] >= 3
-    assert any("Permission denied" in line for line in view["tail"])
-    # Each attempt minted a new token and deleted the unspent one before.
-    assert len(await launcher.store.list_enrollments()) <= 1
+    # The last attempt's output only, not one line per attempt (#840).
+    assert view["tail"] == [
+        "ssh: connect to host gpu-box port 22: Connection refused"]
+
+
+@pytest.mark.parametrize("mode, words", [
+    ("fail", "the host refused the login"),
+    ("nohost", "the host name does not resolve"),
+])
+async def test_a_failure_no_retry_fixes_stops_the_retries(
+        launcher, fake_ssh, monkeypatch, mode, words):
+    """#840: a refused login or an unknown host fails the same way on
+    every retry; the loop stops with the reason, and Retry starts it."""
+    monkeypatch.setenv("FAKE_SSH_MODE", mode)
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the retries never stopped")
+    view = launcher.describe("gpu-box")
+    assert view["state"] == "failed" and view["retry_at"] is None
+    assert words in view["last_error"] and "press Retry" in view["last_error"]
+    assert view["exit_code"] == 255
+    assert len(_all_calls(fake_ssh)) == 1
+    assert len(view["tail"]) == 1
+    monkeypatch.setenv("FAKE_SSH_MODE", "hold")
+    await launcher.set_enabled("gpu-box", True)
+    await _until(lambda: _tokens(fake_ssh), "Retry did not start it")
+    assert launcher.describe("gpu-box")["gave_up"] is False
+
+
+async def test_a_missing_cdui_stops_the_retries_without_a_pid(
+        launcher, fake_ssh, monkeypatch):
+    """#840: a wrong cdui path exits 127; the pid the remote script
+    printed was an agent that never ran."""
+    monkeypatch.setenv("FAKE_SSH_MODE", "nocdui")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the retries never stopped")
+    view = launcher.describe("gpu-box")
+    assert view["remote_pid"] is None
+    assert "cannot run" in view["last_error"]
+    assert "not found" in view["last_error"]
+    assert "agent pid" not in view["last_error"]
+    assert view["exit_code"] == 127
+    assert len(_calls(fake_ssh)) == 1
+
+
+def test_a_permanent_failure_needs_a_streak_once_the_worker_was_up():
+    entry = _entry()
+    assert ssh_launch.permanent_failure(
+        255, ["x: Host key verification failed."], entry).startswith(
+        "the host key")
+    assert "not executable" in ssh_launch.permanent_failure(126, [], entry)
+    assert ssh_launch.permanent_failure(
+        255, ["ssh: connect to host x port 22: Connection timed out"],
+        entry) is None
+    # Never up since its start: at once. Up before (a laptop that lost its
+    # network also fails to resolve): only after a streak.
+    assert ssh_launch.gives_up(False, 1)
+    assert not ssh_launch.gives_up(True, 1)
+    assert ssh_launch.gives_up(True, ssh_launch.PERMANENT_GIVE_UP)
 
 
 def test_the_backoff_doubles_up_to_a_minute():

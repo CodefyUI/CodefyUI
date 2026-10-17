@@ -99,6 +99,58 @@ async def test_an_unknown_token_is_refused(enrolled, remote_peer, token):
     assert refused.value.code == 4401
 
 
+async def test_a_removed_workers_credential_is_listed_when_refused(
+        enrolled, remote_peer):
+    """#840: an agent left running after its worker was removed is
+    refused, and the refusal is listed under its name, with why."""
+    _, registry, store, worker_token = enrolled
+    assert store.revoked(worker_token) is None
+    assert not await store.delete_worker("ghost")
+    assert await store.delete_worker("gpu-box")
+    assert store.revoked(worker_token) == ("gpu-box", "removed")
+    async with _client(token=False) as client:
+        with pytest.raises(WebSocketDisconnect) as refused:
+            async with aconnect_ws(_path(worker_token), client):
+                pass
+    assert refused.value.code == 4401
+    [rejection] = registry.rejections()
+    assert rejection["name"] == "gpu-box"
+    assert "the worker was removed" in rejection["reason"]
+    # Another refused token names nobody and is not listed.
+    async with _client(token=False) as client:
+        with pytest.raises(WebSocketDisconnect):
+            async with aconnect_ws(_path("wrong"), client):
+                pass
+    assert len(registry.rejections()) == 1
+
+
+async def test_a_rekeyed_credential_is_listed_when_refused(enrolled,
+                                                           remote_peer):
+    _, registry, store, worker_token = enrolled
+    rekey = await store.create_enrollment(worker="gpu-box")
+    await store.enroll(rekey["token"], name="gpu-box", platform={},
+                       mounts={}, devices=[])
+    assert store.revoked(worker_token) == ("gpu-box", "rekeyed")
+    async with _client(token=False) as client:
+        with pytest.raises(WebSocketDisconnect):
+            async with aconnect_ws(_path(worker_token), client):
+                pass
+    [rejection] = registry.rejections()
+    assert "replaced by a re-key" in rejection["reason"]
+
+
+def test_the_store_remembers_a_bounded_number_of_revocations(monkeypatch):
+    from app.core import worker_store
+
+    monkeypatch.setattr(worker_store, "MAX_REVOKED", 2)
+    store = WorkerStore(None)
+    for n in range(3):
+        store._remember_revoked(f"h{n}", f"w{n}", "removed")
+    store._remember_revoked("", "nobody", "removed")
+    assert list(store._revoked) == ["h1", "h2"]
+    assert store.revoked(None) is None
+
+
 async def test_a_worker_token_only_registers_its_own_name(enrolled,
                                                           remote_peer):
     _, registry, _, worker_token = enrolled

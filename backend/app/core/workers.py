@@ -289,8 +289,11 @@ class Worker:
             "fingerprint_digest": self.fingerprint,
             "platform": dict(self.platform),
             "mounts": dict(self.mounts),
+            # Canonical, as this server names its own (#840): an agent
+            # reports MPS as ``mps``, the server and a run say ``mps:0``.
             "devices": [{
-                "value": d.value, "kind": d.kind, "index": d.index,
+                "value": _canonical_or_none(d.value) or d.value,
+                "kind": d.kind, "index": d.index,
                 "name": d.name,
                 "memory": None if d.source == "none" else {
                     "total_bytes": d.total_bytes,

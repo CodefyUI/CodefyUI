@@ -184,10 +184,91 @@ def test_broken_psutil_degrades_to_null_memory(monkeypatch):
     assert cpu.memory() is None
 
 
+def _no_brand(monkeypatch):
+    for probe in ("_cpu_brand_darwin", "_cpu_brand_linux",
+                  "_cpu_brand_windows"):
+        monkeypatch.setattr(resources, probe, lambda: None)
+    resources.cpu_name.cache_clear()
+
+
 def test_cpu_name_falls_back_when_platform_is_silent(monkeypatch):
+    _no_brand(monkeypatch)
     monkeypatch.setattr(resources.platform, "processor", lambda: "")
     monkeypatch.setattr(resources.platform, "machine", lambda: "")
     assert probe_devices()[0].name == "CPU"
+    resources.cpu_name.cache_clear()
+
+
+def test_cpu_name_falls_back_to_the_architecture(monkeypatch):
+    _no_brand(monkeypatch)
+    monkeypatch.setattr(resources.platform, "processor", lambda: "")
+    monkeypatch.setattr(resources.platform, "machine", lambda: "x86_64")
+    assert resources.cpu_name() == "x86_64"
+    resources.cpu_name.cache_clear()
+
+
+@pytest.mark.parametrize("platform_name, probe", [
+    ("darwin", "_cpu_brand_darwin"),
+    ("linux", "_cpu_brand_linux"),
+    ("win32", "_cpu_brand_windows"),
+])
+def test_cpu_name_is_the_brand_string(monkeypatch, platform_name, probe):
+    """#840: the brand (``Apple M3``), not ``arm`` / ``x86_64``."""
+    _no_brand(monkeypatch)
+    monkeypatch.setattr(resources.sys, "platform", platform_name)
+    monkeypatch.setattr(resources, probe, lambda: "Brand CPU 9000")
+    assert resources.cpu_name() == "Brand CPU 9000"
+    resources.cpu_name.cache_clear()
+
+
+def test_the_linux_brand_reads_proc_cpuinfo(monkeypatch, tmp_path):
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text("processor\t: 0\nmodel\t\t: 183\n"
+                       "model name\t: AMD Ryzen 9 9950X 16-Core Processor\n")
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda path, *a, **k: real_open(
+        cpuinfo if path == "/proc/cpuinfo" else path, *a, **k))
+    assert resources._cpu_brand_linux() == (
+        "AMD Ryzen 9 9950X 16-Core Processor")
+    cpuinfo.write_text("processor\t: 0\nBogoMIPS\t: 48.00\n")
+    assert resources._cpu_brand_linux() is None
+    cpuinfo.unlink()
+    assert resources._cpu_brand_linux() is None
+
+
+def test_the_darwin_brand_asks_sysctl(monkeypatch):
+    class Done:
+        stdout = "Apple M3\n"
+
+    monkeypatch.setattr(resources.subprocess, "run", lambda *a, **k: Done())
+    assert resources._cpu_brand_darwin() == "Apple M3"
+    Done.stdout = ""
+    assert resources._cpu_brand_darwin() is None
+
+    def fail(*_a, **_k):
+        raise OSError("no sysctl")
+
+    monkeypatch.setattr(resources.subprocess, "run", fail)
+    assert resources._cpu_brand_darwin() is None
+
+
+def test_the_windows_brand_reads_the_registry(monkeypatch):
+    import types
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=0, OpenKey=lambda *_a: Key(),
+        QueryValueEx=lambda *_a: ("  Intel(R) Core(TM) i9  ", 1))
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    assert resources._cpu_brand_windows() == "Intel(R) Core(TM) i9"
+    monkeypatch.setitem(sys.modules, "winreg", None)
+    assert resources._cpu_brand_windows() is None
 
 
 # ── torch-free: NVML alone ───────────────────────────────────────────

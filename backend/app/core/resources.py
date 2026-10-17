@@ -43,9 +43,12 @@ or an odd answer yields ``None`` fields (or no entry) and a debug log line.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 import os
 import platform
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -122,8 +125,57 @@ def _available_ram() -> int | None:
         return None
 
 
+def _cpu_brand_darwin() -> str | None:
+    try:
+        out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                             capture_output=True, text=True, timeout=2,
+                             check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.strip() or None
+
+
+def _cpu_brand_linux() -> str | None:
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                key, _, value = line.partition(":")
+                # x86 says "model name"; some ARM kernels only "Model".
+                if key.strip().lower() in ("model name", "model") \
+                        and not value.strip().isdigit() and value.strip():
+                    return value.strip()
+    except OSError:
+        return None
+    return None
+
+
+def _cpu_brand_windows() -> str | None:
+    try:
+        import winreg  # type: ignore[import-not-found]
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"HARDWARE\DESCRIPTION\System\CentralProcessor"
+                            r"\0") as key:
+            value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+    except (ImportError, OSError):
+        return None
+    return str(value).strip() or None
+
+
+@functools.lru_cache(maxsize=1)
+def cpu_name() -> str:
+    """The CPU's brand string (``Apple M3``, ``AMD EPYC 7763 64-Core
+    Processor``), for the device lists (#840); the architecture
+    (``platform.processor()``, ``platform.machine()``) when the system does
+    not say, which is all ``arm`` / ``x86_64`` told before."""
+    probe = {"darwin": _cpu_brand_darwin, "win32": _cpu_brand_windows}.get(
+        sys.platform, _cpu_brand_linux)
+    return (probe() or platform.processor() or platform.machine()
+            or "CPU")
+
+
 def _cpu_fact() -> DeviceFact:
-    name = platform.processor() or platform.machine() or "CPU"
+    name = cpu_name()
     try:
         import psutil
 
