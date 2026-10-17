@@ -1308,19 +1308,20 @@ describe('queued run submit (#775)', () => {
 describe('memory estimate (#788)', () => {
   const estimate = { suggested_gib: 2.4, source: 'history', peak_bytes: 2147483648, from_run: 'r1' };
 
-  it('posts the graph and returns the suggestion', async () => {
+  it('posts the graph with the devices it would run on and returns the suggestion', async () => {
     const fetchMock = mockFetch(200, estimate);
     const graph = { nodes: [], edges: [] };
-    await expect(estimateMemory(graph)).resolves.toEqual(estimate);
+    const options = { device: 'cuda:1', target: { devices: ['cuda:1'] } };
+    await expect(estimateMemory(graph, options)).resolves.toEqual(estimate);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/runs/estimate');
     expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({ graph });
+    expect(JSON.parse(init.body)).toEqual({ graph, options });
   });
 
   it('throws the server sentence for a malformed graph', async () => {
     mockFetch(400, { detail: 'graph.nodes is empty' });
-    await expect(estimateMemory({})).rejects.toThrow('graph.nodes is empty');
+    await expect(estimateMemory({}, {})).rejects.toThrow('graph.nodes is empty');
   });
 });
 

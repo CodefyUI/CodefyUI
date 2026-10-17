@@ -10,7 +10,7 @@ import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
 import { formatGiB } from '../../utils/formatGiB';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
-import { TARGET_ANY, parseMemoryGib, usesSharedDevice } from './queueTargets';
+import { TARGET_ANY, estimateOptions, parseMemoryGib, usesSharedDevice } from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
 import styles from './QueueRunDialog.module.css';
 
@@ -86,22 +86,41 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   const isWorker = choice.isWorker;
 
   // Memory admission (#788): a budget matters only where the run may land
-  // on a device shared by memory. The suggestion is looked up the first
-  // time that is so, and fills the field until the user types in it.
+  // on a device shared by memory. The suggestion is looked up when that is
+  // so, again whenever the device kind or count changes (the history is
+  // kept per both), and fills the field until the user types in it.
   const shared = usesSharedDevice(choice.target, choice.worker, choice.selected, choice.online, choice.kind);
   const [memoryText, setMemoryText] = useState<string | null>(null);
   const [wait, setWait] = useState(false);
   const [estimate, setEstimate] = useState<MemoryEstimate | 'loading' | null>(null);
   const [estimateError, setEstimateError] = useState<string | null>(null);
+  const shape = estimateOptions(choice.target, choice.selected, choice.kind);
+  const shapeKey = `${shape.device.split(':')[0]} x${shape.target.devices?.length ?? 1}`;
+  const shapeJson = JSON.stringify(shape);
+  const [estimatedFor, setEstimatedFor] = useState<string | null>(null);
+  // The answer for the shape asked last wins; an earlier one landing late
+  // is dropped.
+  const askedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!shared || estimate !== null) return;
+    if (!shared || estimatedFor === shapeKey) return;
+    setEstimatedFor(shapeKey);
     setEstimate('loading');
-    const graph = useTabStore.getState().getSerializedGraph({ keepSecrets: true });
-    estimateMemory(graph).then(setEstimate, (err: unknown) => {
-      setEstimate({ suggested_gib: null, source: null, peak_bytes: null, from_run: null });
-      setEstimateError(err instanceof Error ? err.message : String(err));
-    });
-  }, [shared, estimate]);
+    setEstimateError(null);
+    askedFor.current = shapeKey;
+    // Without secrets: the estimate needs what the graph computes, never a
+    // session key (the server scrubs them anyway).
+    const graph = useTabStore.getState().getSerializedGraph();
+    estimateMemory(graph, JSON.parse(shapeJson)).then(
+      (result) => {
+        if (askedFor.current === shapeKey) setEstimate(result);
+      },
+      (err: unknown) => {
+        if (askedFor.current !== shapeKey) return;
+        setEstimate({ suggested_gib: null, source: null, peak_bytes: null, from_run: null });
+        setEstimateError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  }, [shared, shapeKey, shapeJson, estimatedFor]);
   const suggested = estimate !== null && estimate !== 'loading' ? estimate : null;
   const memoryValue = memoryText ?? (suggested?.suggested_gib == null ? '' : String(suggested.suggested_gib));
 
@@ -141,9 +160,12 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     // No device: the picker says so beside the devices.
     const resolved = choice.resolve();
     if (resolved === null) return;
+    // The suggestion left as it is goes unsaid: the server derives the same
+    // default and keeps where it came from (the run it was measured on).
+    const declared = memoryText !== null ? memoryGib : null;
     const target = {
       ...resolved.target,
-      ...(memoryGib !== null ? { memory_gib: memoryGib } : {}),
+      ...(declared !== null ? { memory_gib: declared } : {}),
       ...(shared && wait && choice.target !== TARGET_ANY ? { wait: true } : {}),
     };
     const store = useTabStore.getState();

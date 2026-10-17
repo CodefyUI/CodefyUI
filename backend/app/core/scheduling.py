@@ -126,6 +126,13 @@ class QueuedEntry(Protocol):
     # run that targets a worker; read through :func:`entry_mount`.
 
 
+#: A slot count that means "reserved": ``RunService._admission_view`` fills
+#: the slots of an earlier device-set run's reservation with it, so every
+#: later run sees them full (#773). Memory admission tells it apart from a
+#: run holding the card (#788).
+RESERVED_SLOT = 1 << 30
+
+
 def entry_budget(entry: Any) -> int | None:
     """The memory budget in bytes *entry*'s run was given at submit (#788),
     or None."""
@@ -649,6 +656,8 @@ class WorkerScheduler:
             return False, False, (f"{device} on {worker.id} has "
                                   f"{mem.format_gib(total)} in total")
         slot = slot_for(worker, device)
+        if taken.get(slot, 0) >= RESERVED_SLOT:
+            return True, False, mem.reserved_for_a_set(device, worker.id)
         # A holder without a budget (a same-host card's in-process run, a
         # run from before the card became shared, a reserved set) has the
         # card to itself until it ends.
@@ -768,7 +777,8 @@ class WorkerScheduler:
             return None
         if budget is None:
             worker, device = places[0][0]
-            return mem.no_budget_message(f"{device} on {worker.id}")
+            return mem.no_budget_message(f"{device} on {worker.id}",
+                                         waiting=True)
         reasons = []
         for place in places:
             for worker, device in place:

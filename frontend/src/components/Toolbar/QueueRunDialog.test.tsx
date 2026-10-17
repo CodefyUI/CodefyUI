@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import * as rest from '../../api/rest';
-import type { DeviceInfo } from '../../api/rest';
+import type { DeviceInfo, MemoryEstimate } from '../../api/rest';
 import * as workersApi from '../../api/workers';
 import type { WorkerInfo } from '../../api/workers';
 import { QueueRunDialog } from './QueueRunDialog';
@@ -537,15 +537,58 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:1 / }));
     await settle();
-    expect(api.estimateMemory).toHaveBeenCalledWith(GRAPH);
-    expect(serialize).toHaveBeenCalledWith({ keepSecrets: true });
+    expect(api.estimateMemory).toHaveBeenCalledWith(GRAPH, { device: 'cuda:1', target: { devices: ['cuda:1'] } });
+    // The estimate is asked without the session's secrets.
+    expect(serialize).toHaveBeenCalledWith();
+    expect(serialize).not.toHaveBeenCalledWith({ keepSecrets: true });
     expect(memoryField()).toHaveValue('2.4');
     expect(screen.getByText('Suggested from the last run of this graph: its peak was 2.0 GiB, plus 20%.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Wait in the queue when it does not fit now' }));
     await submit();
+    // Left as suggested: the server derives the same default and keeps
+    // the run it came from.
     expect(sentRequest().options.target).toEqual({
-      worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 2.4, wait: true,
+      worker: 'gpu-box', devices: ['cuda:1'], wait: true,
     });
+  });
+
+  it('asks again when the run would use another number of devices, and keeps only the last answer', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    let late: (value: MemoryEstimate) => void = () => {};
+    api.estimateMemory
+      .mockReturnValueOnce(new Promise((resolve) => { late = resolve; }))
+      .mockResolvedValueOnce({ suggested_gib: 5, source: 'history', peak_bytes: 4 * 1024 ** 3, from_run: 'r2' });
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    await settle();
+    expect(api.estimateMemory).toHaveBeenLastCalledWith(GRAPH, { device: 'cuda:0', target: { devices: ['cuda:0', 'cuda:1'] } });
+    expect(memoryField()).toHaveValue('5');
+    await act(async () => late({ suggested_gib: 1, source: 'history', peak_bytes: 1024 ** 3, from_run: 'r1' }));
+    expect(memoryField()).toHaveValue('5');
+    // Typed, even to the same number: declared.
+    fireEvent.change(memoryField(), { target: { value: '5.0' } });
+    await submit();
+    expect(sentRequest().options.target).toMatchObject({ memory_gib: 5 });
+  });
+
+  it('drops a failed lookup for a shape it no longer asks about', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    let fail: (reason: unknown) => void = () => {};
+    api.estimateMemory
+      .mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }))
+      .mockResolvedValueOnce({ suggested_gib: 5, source: 'history', peak_bytes: 4 * 1024 ** 3, from_run: 'r2' });
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
+    await settle();
+    await act(async () => fail('offline'));
+    expect(screen.queryByText(/Could not look up a suggestion/)).toBeNull();
+    expect(memoryField()).toHaveValue('5');
   });
 
   it('sends a typed budget, none for a blank field, and refuses one that is not a number', async () => {

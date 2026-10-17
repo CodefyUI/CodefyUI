@@ -135,8 +135,9 @@ function sharedByMemory(worker: WorkerInfo, device: WorkerDevice): boolean {
 /**
  * Whether a run sent where the picker points could land on a device shared
  * by memory (#788), so its memory budget matters: one of the chosen
- * worker's chosen devices, or, for `any`, a device of the chosen kind on a
- * connected worker.
+ * worker's chosen devices; for `any`, a device of the chosen kind on a
+ * connected worker that is not one-shot; for the one-shot pool (#790), one
+ * on a connected one-shot worker.
  */
 export function usesSharedDevice(
   target: string,
@@ -145,8 +146,12 @@ export function usesSharedDevice(
   online: readonly WorkerInfo[],
   kind: string,
 ): boolean {
-  if (target === TARGET_ANY) {
-    return online.some((w) => w.devices.some((d) => deviceKind(d.value) === kind && sharedByMemory(w, d)));
+  if (target === TARGET_ANY || target === TARGET_ONE_SHOT) {
+    const pool = target === TARGET_ONE_SHOT;
+    return online.some(
+      (w) => Boolean(w.one_shot) === pool
+        && w.devices.some((d) => deviceKind(d.value) === kind && sharedByMemory(w, d)),
+    );
   }
   if (worker === null) return false;
   return worker.devices.some((d) => selected.includes(d.value) && sharedByMemory(worker, d));
@@ -165,6 +170,23 @@ export function parseMemoryGib(raw: string): number | null | undefined {
   if (!/^\d*\.?\d+$/.test(text)) return undefined;
   const value = Number(text);
   return value > 0 && value <= MAX_MEMORY_GIB ? value : undefined;
+}
+
+/**
+ * What a run's memory history is kept by (#788): its `device` and how many
+ * devices it uses (`target.devices`), as `POST /api/runs/estimate` takes
+ * them. A worker's chosen set; one device of the kind for `any` and the
+ * one-shot pool.
+ */
+export function estimateOptions(
+  target: string,
+  selected: readonly string[],
+  kind: string,
+): { device: string; target: { devices: string[] | null } } {
+  if (target === TARGET_ANY || target === TARGET_ONE_SHOT || selected.length === 0) {
+    return { device: kind, target: { devices: null } };
+  }
+  return { device: selected[0], target: { devices: [...selected] } };
 }
 
 /** The kind an `any` run starts with: the graph device's kind when it is

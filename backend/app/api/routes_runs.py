@@ -306,6 +306,9 @@ class EstimateRequest(BaseModel):
     """``{graph}``: the graph a run would submit."""
 
     graph: dict[str, Any]
+    #: The run's ``device`` and ``target.devices`` (#788): the history is per
+    #: device kind and count. Absent: one CPU, which has no history.
+    options: dict[str, Any] | None = None
 
 
 @router.post("/estimate")
@@ -321,7 +324,7 @@ async def estimate_memory(body: EstimateRequest, request: Request
     """
     service = _get_service(request)
     try:
-        suggestion = await service.suggest_memory(body.graph)
+        suggestion = await service.suggest_memory(body.graph, body.options)
     except RunSubmitError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if suggestion is None:

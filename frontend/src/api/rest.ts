@@ -376,8 +376,9 @@ export interface RunTarget {
 
 /**
  * `POST /api/runs/estimate` (#788): the budget a run of the graph gets by
- * default, from the last peak of the same graph times 1.2; all null when
- * no earlier run reported one.
+ * default, from the last peak of the same graph on the same kind and number
+ * of devices (`options.device`, `options.target.devices`) times 1.2; all
+ * null when no earlier run reported one.
  */
 export interface MemoryEstimate {
   suggested_gib: number | null;
@@ -386,11 +387,14 @@ export interface MemoryEstimate {
   from_run: string | null;
 }
 
-export async function estimateMemory(graph: Record<string, unknown>): Promise<MemoryEstimate> {
+export async function estimateMemory(
+  graph: Record<string, unknown>,
+  options: Record<string, unknown>,
+): Promise<MemoryEstimate> {
   const res = await apiFetch(`${BASE_URL}/runs/estimate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ graph }),
+    body: JSON.stringify({ graph, options }),
   });
   if (!res.ok) return detailError(res, 'Memory estimate failed');
   return res.json();

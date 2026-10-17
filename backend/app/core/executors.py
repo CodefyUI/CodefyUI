@@ -696,6 +696,17 @@ class WorkerExecutor:
         refusal = await self._catalog_refusal(request, worker)
         if refusal is not None:
             return ExecutionOutcome(STATUS_FAILED, refusal)
+        if placement.memory_budget and wp.CAPABILITY_MEMORY_BUDGET not in (
+                getattr(worker, "capabilities", None) or ()):
+            # Admitted to a shared card by its budget, but the worker that is
+            # connected now (an older agent that reconnected) cannot cap it:
+            # never run it uncapped beside the card's other runs (#788).
+            return ExecutionOutcome(STATUS_FAILED, (
+                f"worker {worker_id} no longer enforces memory budgets (its "
+                f"agent reconnected without the memory_budget capability), so "
+                f"this run, admitted to a shared card by its budget, was not "
+                f"started; update the agent, or set the card to Exclusive, "
+                f"and queue the run again"))
         devices = list(placement.devices)
         storage = assignment_storage(worker)
         if uses_transfer(worker, request.needs):

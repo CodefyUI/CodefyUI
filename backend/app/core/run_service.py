@@ -296,6 +296,7 @@ from .run_store import (
 from . import memory_admission as mem
 from .scheduling import (
     LOCAL_WORKER_ID,
+    RESERVED_SLOT,
     LocalScheduler,
     Placement,
     Scheduler,
@@ -358,7 +359,7 @@ _NOT_MEASURED = object()
 
 #: What a slot reserved for an earlier waiting run counts as in
 #: ``RunService._admission_view``: more than any cap, so it reads as full.
-_RESERVED = 1 << 30
+_RESERVED = RESERVED_SLOT
 
 #: The frames that END a run's log: a client replaying it over the WS
 #: attach view (the canvas) takes one of them as the run's end.
@@ -1973,8 +1974,13 @@ class RunService:
         study_id: str | None = None,
         study_attempt_id: str | None = None,
         needs: Any = NEEDS_UNKNOWN,
+        memory_budget: "mem.Budget | None" = None,
     ) -> SubmitResult:
         """Persist a run, then SCHEDULE it. Raises ``RunSubmitError`` on input.
+
+        *memory_budget* (#788) is a sweep's or study's child's default budget
+        as :meth:`check_batch_budgets` derived it, so the child does not look
+        its history up again; None derives it here.
 
         The two halves are separate on purpose. ``create_run`` makes the run
         exist and queryable before anything can execute, so a crash between
@@ -2062,10 +2068,11 @@ class RunService:
             # A run that targets a worker (#788): its budget, and the
             # refusal of one that cannot fit a shared card. Before the row
             # is written, so a refusal leaves nothing behind.
-            graph_digest = mem.graph_hash(stored_graph)
+            graph_digest = mem.graph_hash(stored_graph, normalized_options)
             budget = await self._memory_budget(
                 normalized_options, stored_graph,
-                batch_child=sweep_id is not None or study_id is not None)
+                batch_child=sweep_id is not None or study_id is not None,
+                derived=memory_budget)
         record = await self.store.create_run(
             graph_snapshot=stored_graph,
             options=normalized_options,
@@ -2160,14 +2167,18 @@ class RunService:
 
     async def _memory_budget(self, options: dict[str, Any],
                              graph: dict[str, Any], *,
-                             batch_child: bool = False) -> "mem.Budget | None":
+                             batch_child: bool = False,
+                             derived: "mem.Budget | None" = None,
+                             ) -> "mem.Budget | None":
         """A worker run's memory budget (#788), or ``RunSubmitError``.
 
-        ``target.memory_gib`` when declared; otherwise the budget source's
-        suggestion (the last peak of this graph, times 1.2), for every
-        worker run: a card set to ``shared`` while the run waits can then
-        still take it (:meth:`refresh_budgets` derives it again then). Then,
-        when a shared card could take the run, the scheduler's refusal, if
+        ``target.memory_gib`` when declared. Otherwise, only when a shared
+        card could take the run, *derived* (a batch child's, from
+        :meth:`check_batch_budgets`) or the budget source's suggestion (the
+        last peak of this graph on these devices, times 1.2). A run that
+        waits for an exclusive card gets its default later, when the card is
+        set to ``shared`` or a run of its graph reports a peak
+        (:meth:`refresh_budgets`). Then the scheduler's refusal, if
         any (``WorkerScheduler.memory_refusal``): no budget for a run that
         can only go to shared cards, a budget larger than every card, or
         (unless the run may wait) one that fits no card now. A named
@@ -2180,13 +2191,13 @@ class RunService:
         budget = (None if declared is None
                   else mem.Budget(mem.gib_to_bytes(declared)))
         wants = getattr(self._scheduler, "wants_budget", None)
-        if wants is None:
+        if wants is None or not wants(options):
             return budget
         if budget is None:
-            suggestion = await self._budget_source.suggest(graph)
+            budget = derived
+        if budget is None:
+            suggestion = await self._budget_source.suggest(graph, options)
             budget = None if suggestion is None else suggestion.budget
-        if not wants(options):
-            return budget
         refusal = getattr(self._scheduler, "memory_refusal", None)
         if refusal is not None:
             worker_id, _ = entry_target(options)
@@ -2203,35 +2214,26 @@ class RunService:
         lookup = getattr(self.store, "last_peak_memory", None)
         return None if lookup is None else await lookup(digest)
 
-    def _check_declared_budget(self, options: dict[str, Any]) -> None:
-        """Refuse a batch whose declared ``target.memory_gib`` fits no
-        shared card it may go to, ever (#788), before any child is
-        written. One without a declared budget is checked by
-        :meth:`check_batch_budgets`, which derives each child's."""
-        declared = (options.get("target") or {}).get("memory_gib")
-        refusal = getattr(self._scheduler, "memory_refusal", None)
-        if declared is None or refusal is None:
-            return
-        message = refusal(options, mem.gib_to_bytes(declared), self._slots,
-                          wait=True)
-        if message is not None:
-            raise RunSubmitError(message)
-
     async def check_batch_budgets(self, graphs: Iterable[Any],
-                                  options: Any) -> None:
+                                  options: Any) -> list["mem.Budget | None"]:
         """Refuse, before anything is written, a sweep or study one of whose
         children would be refused for memory at its submit (#788): every
         child's budget as :meth:`_memory_budget` derives it (declared, or
-        its graph's last peak), judged as a waiting child is (it may wait
-        for room, never for a card too small or for no budget at all). Call
-        after :meth:`check_placeable_batch`, whose checks this assumes."""
+        its graph's last peak on its devices), judged as that child's submit
+        judges it (``target.wait`` as given, else it waits). Returns each
+        child's derived default budget in order (None: declared, not on a
+        shared card, or none), for the caller to hand to :meth:`submit`
+        (``memory_budget=``). Call after :meth:`check_placeable_batch`, whose
+        checks this assumes."""
+        graphs = list(graphs)
+        result: list[mem.Budget | None] = [None] * len(graphs)
         wants = getattr(self._scheduler, "wants_budget", None)
         refusal = getattr(self._scheduler, "memory_refusal", None)
         if wants is None or refusal is None:
-            return
+            return result
         checked: dict[str, dict[str, Any]] = {}
         seen: set[tuple[str, int | None]] = set()
-        for graph in graphs:
+        for index, graph in enumerate(graphs):
             settings_ = graph.get("settings") if isinstance(graph, dict) \
                 else None
             key = json.dumps(settings_, sort_keys=True, default=str)
@@ -2247,35 +2249,52 @@ class RunService:
             else:
                 stored, _ = split_graph_secrets(
                     normalize_graph(graph), unknown_types_as_secret=True)
-                suggestion = await self._budget_source.suggest(stored)
+                suggestion = await self._budget_source.suggest(
+                    stored, child_options)
+                if suggestion is not None:
+                    result[index] = suggestion.budget
                 budget = None if suggestion is None else suggestion.budget.bytes
             if (key, budget) in seen:
                 continue
             seen.add((key, budget))
-            message = refusal(child_options, budget, self._slots, wait=True)
+            # The child's own wait (``_memory_budget``: a batch child waits
+            # unless ``target.wait: false``), so a child the submit would
+            # refuse is refused here, before any row.
+            message = refusal(child_options, budget, self._slots,
+                              wait=target_wait(child_options, default=True))
             if message is not None:
                 raise RunSubmitError(message)
+        return result
 
-    async def refresh_budgets(self) -> None:
-        """Give a waiting worker run with no budget its graph's default
-        again (#788), then reschedule: after a card is set to ``shared``, a
-        run submitted while it was exclusive (or before its graph had a
-        peak) is otherwise never placed on it. One that still has none
-        keeps waiting, and its reason says so."""
-        for entry in list(self._pending_by_id.values()):
-            if entry.needs is None or entry.memory_budget is not None:
-                continue
-            declared = (entry.options.get("target") or {}).get("memory_gib")
-            if declared is not None:
-                entry.memory_budget = mem.Budget(mem.gib_to_bytes(declared))
-                continue
+    def _budgetless(self, graph_hash: str | None = None) -> list[_QueuedRun]:
+        """Waiting worker runs a shared card could take that have no budget
+        (a declared one is set at submit), of *graph_hash* when given."""
+        wants = getattr(self._scheduler, "wants_budget", None)
+        if wants is None:
+            return []
+        return [entry for entry in self._pending_by_id.values()
+                if entry.needs is not None and entry.memory_budget is None
+                and (graph_hash is None or entry.graph_hash == graph_hash)
+                and wants(entry.options)]
+
+    async def refresh_budgets(self, graph_hash: str | None = None) -> None:
+        """Give each waiting run :meth:`_budgetless` finds its default
+        budget (#788), then reschedule. Called when a card is set to
+        ``shared`` (a run submitted while it was exclusive has none) and when
+        a run of *graph_hash* succeeds with a peak (a run submitted before
+        its graph had one). One that still has none keeps waiting, and its
+        reason says how to get it going."""
+        entries = self._budgetless(graph_hash)
+        for entry in entries:
             graph = await self.store.get_graph_snapshot(entry.run_id)
             if graph is None or entry.run_id not in self._pending_by_id:
                 continue
-            suggestion = await self._budget_source.suggest(graph)
+            suggestion = await self._budget_source.suggest(graph,
+                                                           entry.options)
             if suggestion is not None:
                 entry.memory_budget = suggestion.budget
-        self.reschedule()
+        if entries:
+            self.reschedule()
 
     def _memory_waiting(self, worker_id: str) -> bool:
         """Whether a waiting run with a memory budget may go to *worker_id*
@@ -2297,14 +2316,21 @@ class RunService:
         admission = getattr(self._scheduler, "admission", None)
         return None if admission is None else admission(worker, device)
 
-    async def suggest_memory(self, graph: Any) -> "mem.Suggestion | None":
-        """The default budget the budget source gives *graph* (#788), for
-        the Queue on... dialog. Raises ``RunSubmitError`` on a malformed
-        graph."""
+    async def suggest_memory(self, graph: Any, options: Any = None
+                             ) -> "mem.Suggestion | None":
+        """The default budget the budget source gives *graph* run with
+        *options* (its ``device`` and ``target.devices``: the history is per
+        device kind and count) (#788), for the Queue on... dialog. Raises
+        ``RunSubmitError`` on a malformed graph or options."""
         normalized = normalize_graph(graph)
         stored, _secrets = split_graph_secrets(
             normalized, unknown_types_as_secret=True)
-        return await self._budget_source.suggest(stored)
+        shape = options if isinstance(options, dict) else {}
+        target = shape.get("target") if isinstance(shape.get("target"),
+                                                   dict) else {}
+        return await self._budget_source.suggest(stored, {
+            "device": shape.get("device"),
+            "target": {"devices": target.get("devices")}})
 
     def _check_worker_catalog(self, options: dict[str, Any],
                               node_types: frozenset[str]) -> None:
@@ -2357,7 +2383,6 @@ class RunService:
             if key not in checked:
                 _, checked[key], _, _ = self._prepare(
                     graph, options, batch_child=True, needs=None)
-                self._check_declared_budget(checked[key])
             child_options = checked[key]
             if entry_target(child_options)[0] == TARGET_WORKER_LOCAL:
                 result.append(None)
@@ -3491,6 +3516,19 @@ class RunService:
                 active.run_id, status)
         else:
             await self._notify_terminal(active.run_id, status)
+            if status == STATUS_SUCCEEDED and active.graph_hash \
+                    and active.peak_memory and self._budgetless(
+                        active.graph_hash):
+                # Its peak is a default for runs of the same graph that
+                # wait without a budget (#788).
+                try:
+                    await self.refresh_budgets(active.graph_hash)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 -- a default, never an error
+                    logger.warning("could not give waiting runs of %s a "
+                                   "memory budget", active.graph_hash,
+                                   exc_info=True)
         await self.prune_retention()
 
     async def _record_peak_memory(self, active: _ActiveRun) -> None:

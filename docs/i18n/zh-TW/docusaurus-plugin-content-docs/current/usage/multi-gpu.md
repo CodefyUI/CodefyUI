@@ -90,7 +90,7 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 共用，在 [Workers 面板](#the-workers-panel)把該卡設為 **依記憶體共用**。這個設定依 worker 與卡儲存，重新連線與伺服器重啟後都會保留。只有 CUDA 與 MPS 卡可以共用，而且只能在 worker 上：這台伺服器上的 run 與這裡所有其他 run 共用一個程序，沒有辦法把它限制在預算內。
 
-送到共用卡的 run 要宣告**記憶體預算**，單位是 GiB、針對其裝置集合中的每張卡：`target.memory_gib`，或[排入佇列...](#queue-on)中的 **記憶體預算** 欄位。若同一張圖先前有成功結束的 run，欄位會預先填入它的 CUDA 峰值再加 20%（MPS 沒有峰值，只有結束時驅動程式持有的量，所以 MPS 的 run 要自行宣告預算）；兩者都沒有時，伺服器會拒絕該 run 並要求填寫預算。sweep 或 study 會在寫入任何 run 之前整批檢查：只要其中一個 run 會被拒（沒有預算，或預算比它能用的每張卡都大），整個 sweep 或 study 就會被拒。
+送到共用卡的 run 要宣告**記憶體預算**，單位是 GiB、針對其裝置集合中的每張卡：`target.memory_gib`，或[排入佇列...](#queue-on)中的 **記憶體預算** 欄位。若同一張圖先前在相同張數的卡上有成功結束的 run，欄位會預先填入它的 CUDA 峰值再加 20%（兩張卡的 run 的每卡峰值，不代表同一張圖在一張卡上的用量；MPS 沒有峰值，只有結束時驅動程式持有的量，所以 MPS 的 run 要自行宣告預算）。未修改的建議值不會送出：伺服器會套用同一個預設值，Runs 面板的預算欄也會標出它來自哪個 run。兩者都沒有時，伺服器會拒絕該 run 並要求填寫預算。sweep 或 study 會在寫入任何 run 之前整批檢查，每個 run 依它自己的 `target.wait`：只要其中一個 run 會被拒（沒有預算、預算比它能用的每張卡都大，或在 `wait: false` 時目前放不下），整個 sweep 或 study 就會被拒。
 
 ```json
 {"options": {"target": {"worker": "gpu-box", "devices": ["cuda:0"], "memory_gib": 6}}}
@@ -104,7 +104,7 @@ worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 
 - `any` 的 run 會等到有卡放得下，除非它的預算比每張候選卡都大（拒絕），或 `target.wait` 為 `false`（拒絕而不等待）。送往 one-shot pool（`target.pool`）的 run 以同樣方式判斷，候選卡是 one-shot worker 的卡；
 - 等待記憶體的 run，Runs 面板會在它的 worker 下方說明。
 
-沒有預算的 run 不會被送到共用卡；共用卡上沒有預算的 run（同機 worker 卡上的畫布 run，或在該卡改為共用之前就開始的 run）會獨佔該卡直到結束。Runs 面板的 **預算** 欄顯示每個 run 的預算，Workers 面板則畫出每張共用卡的記憶體：使用中、已保留，以及新預算可用的量（已扣除 CUDA context）。在卡為獨佔時排入等待的 run，會在該卡改為共用時取得其圖的預設預算；仍然沒有預算的 run 會繼續等待，Runs 面板會說明原因。
+沒有預算的 run 不會被送到共用卡；共用卡上沒有預算的 run（同機 worker 卡上的畫布 run，或在該卡改為共用之前就開始的 run）會獨佔該卡直到結束。Runs 面板的 **預算** 欄顯示每個 run 的預算，Workers 面板則畫出每張共用卡的記憶體：使用中、已保留，以及新預算可用的量（已扣除 CUDA context）。在卡為獨佔時排入等待的 run，會在該卡改為共用時取得其圖的預設預算，或之後在同一張圖於相同張數的卡上成功執行時取得；在那之前它會繼續等待，Runs 面板會說明（想早點開始，可以取消後帶著預算重新排入）。依預算准入的 run 不會在無法限制它的 agent 上啟動：若 worker 在這段期間以舊版 agent 重新連線，該 run 會失敗並說明原因。
 
 ## Workers 面板 {/* #the-workers-panel */}
 

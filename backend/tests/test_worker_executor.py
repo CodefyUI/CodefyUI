@@ -621,3 +621,22 @@ async def test_a_same_host_worker_without_a_mount_borrows_this_servers_path(
     agent.worker.mounts = {"data": "/mnt/own"}
     assert assignment_storage(agent.worker) == wp.Storage(
         mount="data", relative_artifacts=False)
+
+
+async def test_a_budgeted_run_is_never_sent_to_an_agent_that_cannot_cap(
+        registry):
+    """#788 review round 2, item 3: admitted to a shared card by its budget,
+    but the agent connected now does not speak ``memory_budget`` (an older
+    one reconnected): the run fails with the reason and nothing is sent."""
+    from dataclasses import replace
+
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    request = _request(recorder)
+    request = replace(request, placement=replace(
+        request.placement, memory_budget=1024 ** 3,
+        budget_devices=("cuda:2",), budget_slots=(("box", "cuda:2"),)))
+    outcome = await WorkerExecutor(registry).run(request)
+    assert outcome.status == "failed"
+    assert "no longer enforces memory budgets" in outcome.error
+    assert agent.sent == []

@@ -125,8 +125,9 @@ async def test_the_history_source_suggests_the_last_peak_times_1_2():
         return ("run-1", {"cuda:0": {"reserved_bytes": 10 * GIB}})
 
     graph = {"nodes": [{"id": "a", "type": "T"}], "edges": []}
-    suggestion = await mem.HistoryBudgetSource(lookup).suggest(graph)
-    assert seen == [mem.graph_hash(graph)]
+    options = {"device": "cuda:0", "target": {"devices": None}}
+    suggestion = await mem.HistoryBudgetSource(lookup).suggest(graph, options)
+    assert seen == [mem.graph_hash(graph, options)]
     assert suggestion.budget == mem.Budget(12 * GIB, mem.SOURCE_HISTORY,
                                            from_run="run-1")
     assert suggestion.peak_bytes == 10 * GIB
@@ -143,7 +144,8 @@ async def test_the_history_source_suggests_the_last_peak_times_1_2():
         raise OSError("disk")
 
     for lookup_ in (nothing, no_peak, broken):
-        assert await mem.HistoryBudgetSource(lookup_).suggest(graph) is None
+        assert await mem.HistoryBudgetSource(lookup_).suggest(
+            graph, options) is None
 
 
 def test_messages_name_the_card_its_room_and_its_runs():
@@ -269,7 +271,8 @@ def test_two_budgets_share_a_card_and_a_third_does_not_fit():
 def test_a_run_without_a_budget_never_takes_a_shared_card():
     scheduler = _sched(_worker("box", _card("cuda:0")))
     assert scheduler.place(_entry("r1"), {}) is None
-    assert "declare target.memory_gib" in scheduler.explain(_entry("r1"))
+    assert "queue it again with target.memory_gib" in scheduler.explain(
+        _entry("r1"))
 
 
 def test_a_holder_without_a_budget_keeps_the_card_to_itself():
@@ -620,18 +623,28 @@ async def test_two_6_gib_runs_share_a_16_gib_card_and_a_third_is_refused(
         assert facts["memory_budget"] == {"bytes": 6 * GIB,
                                           "source": "declared",
                                           "devices": ["cuda:0"]}
-        assert facts["graph_hash"] == mem.graph_hash(_graph())
+        assert facts["graph_hash"] == mem.graph_hash(
+            _graph(), {"device": "cuda:0"})
         assert facts["peak_memory"]["cuda:0"]["reserved_bytes"] == 2 * GIB
         queued = await agent.assignment()
         assert queued.run_id == waiting.json()["run_id"]
         assert queued.memory_budgets == {"cuda:0": 6 * GIB}
 
         # The same graph again, no budget: the last peak times 1.2.
-        estimate = (await client.post("/api/runs/estimate",
-                                      json={"graph": _graph()})).json()
+        on_one_card = {"device": "cuda:0",
+                       "target": {"worker": "box", "devices": ["cuda:0"]}}
+        estimate = (await client.post("/api/runs/estimate", json={
+            "graph": _graph(), "options": on_one_card})).json()
         assert estimate == {"suggested_gib": 2.4, "source": "history",
                             "peak_bytes": 2 * GIB,
                             "from_run": assigns[0].run_id}
+        # Round 2, item 2: the peak is per card of a one-card run; the same
+        # graph on two cards, or with no device at all, has no history.
+        for options in ({"device": "cuda:0", "target": {
+                "worker": "box", "devices": ["cuda:0", "cuda:1"]}}, None):
+            assert (await client.post("/api/runs/estimate", json={
+                "graph": _graph(), "options": options})).json()[
+                "suggested_gib"] is None
         again = await submit()
         assert again.json()["status"] == "running"
         budgeted = await agent.assignment()
@@ -676,7 +689,7 @@ async def test_a_named_run_may_wait_and_a_never_fitting_batch_is_refused(
             "waiting for memory: needs 12.0 GiB, cuda:0 on box has 3.0 GiB")
         await agent.nothing()
         with pytest.raises(RunSubmitError, match="16.0 GiB in total"):
-            service.check_placeable_batch([_graph()], {
+            await service.check_batch_budgets([_graph()], {
                 "device": "cuda:0",
                 "target": {"worker": "box", "memory_gib": 20}})
         assert service.check_placeable_batch([_graph()], {
@@ -893,8 +906,11 @@ class _LaterSource:
 
     def __init__(self) -> None:
         self.budget: int | None = None
+        self.calls = 0
 
-    async def suggest(self, _graph: Any) -> mem.Suggestion | None:
+    async def suggest(self, _graph: Any,
+                      _options: Any) -> mem.Suggestion | None:
+        self.calls += 1
         if self.budget is None:
             return None
         return mem.Suggestion(mem.Budget(self.budget, "history", "x" * 32),
@@ -903,9 +919,10 @@ class _LaterSource:
 
 async def test_a_run_queued_while_its_card_was_exclusive_is_not_stranded(
         env):
-    """Review item 2: a run that waited for an exclusive card gets its
-    graph's default (at submit, or again when the card is set to shared),
-    so it is placed once the card admits by memory."""
+    """Review item 2 (round 1): a run that waited for an exclusive card gets
+    its graph's default when the card is set to shared, so it is placed once
+    the card admits by memory. Round 2 item 7: no history lookup at submit
+    while no shared card could take the run."""
     service, registry = env
     source = service._budget_source = _LaterSource()
     async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
@@ -921,38 +938,66 @@ async def test_a_run_queued_while_its_card_was_exclusive_is_not_stranded(
         holder_assign = await agent.assignment()
         assert holder_assign.memory_budgets == {}
         source.budget = 2 * GIB
-        early = await submit(1.0)  # its default, though the card counts
-        source.budget = None
-        late = await submit(2.0)  # nothing to say yet
-        assert early.json()["status"] == late.json()["status"] == "queued"
+        early = await submit(1.0)
+        assert early.json()["status"] == "queued"
+        assert source.calls == 0  # exclusive: not looked up
         assert service._pending_by_id[early.json()["run_id"]] \
-            .memory_budget.bytes == 2 * GIB
-        assert service._pending_by_id[late.json()["run_id"]] \
             .memory_budget is None
 
-        source.budget = 3 * GIB
         await client.put("/api/workers/box/devices/cuda:0/policy",
                          json={"policy": "shared"})
-        assert service._pending_by_id[late.json()["run_id"]] \
-            .memory_budget.bytes == 3 * GIB
-        # The holder has no budget: the two wait for it, and say so.
+        assert service._pending_by_id[early.json()["run_id"]] \
+            .memory_budget.bytes == 2 * GIB
+        # The holder has no budget: the run waits for it, and says so.
         assert "held by a run without a memory budget" in \
             service.queue_reason(early.json()["run_id"])
         await agent.send(wp.RunStarted(run_id=holder_assign.run_id, seq=1,
                                        pid=1))
         await agent.finish(holder_assign)
-        placed = [await agent.assignment(), await agent.assignment()]
-        assert [a.memory_budgets for a in placed] == [
-            {"cuda:0": 2 * GIB}, {"cuda:0": 3 * GIB}]
-        for assign in placed:
-            await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1,
-                                           pid=1))
-            await agent.finish(assign)
-            await _terminal(service, assign.run_id)
+        placed = await agent.assignment()
+        assert placed.memory_budgets == {"cuda:0": 2 * GIB}
+        await agent.send(wp.RunStarted(run_id=placed.run_id, seq=1, pid=1))
+        await agent.finish(placed)
+        await _terminal(service, placed.run_id)
 
 
-async def test_refresh_budgets_keeps_a_declared_budget_and_skips_a_gone_run(
-        env):
+async def test_a_waiting_run_takes_the_peak_a_run_of_its_graph_reports(env):
+    """Review round 2, item 5: a run waiting on a shared card with no budget
+    (its graph had no history) gets one the moment a run of the same graph on
+    the same devices succeeds with a peak; until then its reason says how to
+    get it going."""
+    service, registry = env
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+
+        def submit() -> Any:
+            return client.post("/api/runs", json={
+                "graph": _graph(), "options": {
+                    "device": "cuda:0", "target": {"worker": "box"}}})
+
+        first = await submit()  # exclusive: by count
+        holder = await agent.assignment()
+        waiting = (await submit()).json()["run_id"]
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        assert service._pending_by_id[waiting].memory_budget is None
+        reason = service.queue_reason(waiting)
+        assert "cancel it and queue it again with target.memory_gib" in reason
+        await agent.send(wp.RunStarted(run_id=holder.run_id, seq=1, pid=1))
+        await agent.finish(holder, peak=2 * GIB)
+        assert (await _terminal(service, first.json()["run_id"])).status \
+            == "succeeded"
+        placed = await agent.assignment()
+        assert placed.run_id == waiting
+        assert placed.memory_budgets == {"cuda:0": mem.gib_to_bytes(2 * 1.2)}
+        await agent.send(wp.RunStarted(run_id=placed.run_id, seq=1, pid=1))
+        await agent.finish(placed)
+        record = await _terminal(service, placed.run_id)
+        assert record.execution_facts["memory_budget"]["source"] == "history"
+
+
+async def test_refresh_budgets_skips_a_gone_run_and_a_local_one(env):
     service, _ = env
     source = service._budget_source = _LaterSource()
     source.budget = GIB
@@ -963,25 +1008,29 @@ async def test_refresh_budgets_keeps_a_declared_budget_and_skips_a_gone_run(
         options: dict
         needs: Any = field(default_factory=dict)
         memory_budget: Any = None
+        graph_hash: str | None = None
 
-    declared = _Pending("d", {"target": {"worker": "box", "memory_gib": 2}})
+    service._scheduler.wants_budget = lambda _options: True
     gone = _Pending("g", {"target": {"worker": "box"}})
     local = _Pending("l", {}, needs=None)
-    service._pending_by_id.update(d=declared, g=gone, l=local)
+    service._pending_by_id.update(g=gone, l=local)
     try:
         await service.refresh_budgets()
+        assert service._budgetless("other") == []
     finally:
-        for run_id in ("d", "g", "l"):
+        for run_id in ("g", "l"):
             service._pending_by_id.pop(run_id, None)
-    assert declared.memory_budget == mem.Budget(2 * GIB)
+        del service._scheduler.wants_budget
     assert gone.memory_budget is None  # no row: nothing to read
     assert local.memory_budget is None
+    assert RunService(None)._budgetless() == []
 
 
 async def test_a_batch_without_a_budget_is_refused_before_any_child(env):
     """Review item 1: a sweep whose children declare no memory_gib and can
     only go to shared cards is refused whole, with no row, rather than part
-    way through its children; each child's default is derived first."""
+    way through its children; each child's default is derived first, and
+    handed to its submit (round 2, item 7)."""
     service, _ = env
     async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
         agent = FakeAgent(ws)
@@ -989,12 +1038,13 @@ async def test_a_batch_without_a_budget_is_refused_before_any_child(env):
         await client.put("/api/workers/box/devices/cuda:0/policy",
                          json={"policy": "shared"})
         options = {"device": "cuda:0", "target": {"worker": "box"}}
-        response = await client.post("/api/sweeps", json={
+        sweep = {
             "base_graph": _graph(),
             "sweep_spec": {"method": "grid", "params": [
                 {"node_id": "x", "param": "value", "values": [1.0, 2.0]}]},
             "objective": {"metric": "val_loss", "direction": "minimize"},
-            "options": options})
+            "options": options}
+        response = await client.post("/api/sweeps", json=sweep)
         assert response.status_code == 400, response.text
         assert "has no memory budget" in response.json()["detail"]
         assert await service.store.list_runs() == []
@@ -1006,14 +1056,67 @@ async def test_a_batch_without_a_budget_is_refused_before_any_child(env):
         with pytest.raises(RunSubmitError, match="16.0 GiB in total"):
             await service.check_batch_budgets([_graph(), _graph()], options)
         source.budget = 2 * GIB
-        await service.check_batch_budgets([_graph(), _graph(1.0)], options)
-        # Declared, or a card that counts: nothing to judge here.
-        await service.check_batch_budgets([_graph()], {
+        assert await service.check_batch_budgets(
+            [_graph(), _graph(1.0)], options) == [
+            mem.Budget(2 * GIB, "history", "x" * 32)] * 2
+        # Declared, or a card that counts: nothing to derive.
+        assert await service.check_batch_budgets([_graph()], {
             "device": "cuda:0",
-            "target": {"worker": "box", "memory_gib": 2}})
-        await service.check_batch_budgets([_graph()], {"device": "cpu"})
+            "target": {"worker": "box", "memory_gib": 2}}) == [None]
+        assert await service.check_batch_budgets(
+            [_graph()], {"device": "cpu"}) == [None]
         await agent.nothing()
-    await RunService(None).check_batch_budgets([_graph()], {})
+
+        # The sweep goes through, its children take the derived budgets
+        # without a second lookup each.
+        response = await client.post("/api/sweeps", json=sweep)
+        assert response.status_code == 201, response.text
+        calls = source.calls
+        first = await agent.assignment()
+        assert first.memory_budgets == {"cuda:0": 2 * GIB}
+        assert source.calls == calls
+        await agent.send(wp.RunStarted(run_id=first.run_id, seq=1, pid=1))
+        second = await agent.assignment()
+        assert second.memory_budgets == {"cuda:0": 2 * GIB}
+        for assign in (first, second):
+            if assign is second:
+                await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1,
+                                               pid=1))
+            await agent.finish(assign)
+            await _terminal(service, assign.run_id)
+    assert await RunService(None).check_batch_budgets([_graph()], {}) \
+        == [None]
+
+
+async def test_a_batch_child_that_may_not_wait_is_refused_up_front(env):
+    """Review round 2, item 1: the pre-check judges each child with its own
+    ``target.wait``, so ``wait: false`` refuses the whole batch when a child
+    does not fit now, instead of half of it at submit."""
+    service, _ = env
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        holder = await client.post("/api/runs", json={
+            "graph": _graph(), "options": {"device": "cuda:0", "target": {
+                "worker": "box", "memory_gib": 12}}})
+        assign = await agent.assignment()
+        body = {
+            "base_graph": _graph(),
+            "sweep_spec": {"method": "grid", "params": [
+                {"node_id": "x", "param": "value", "values": [1.0, 2.0]}]},
+            "objective": {"metric": "val_loss", "direction": "minimize"},
+            "options": {"device": "cuda:0", "target": {
+                "worker": "box", "memory_gib": 6, "wait": False}}}
+        response = await client.post("/api/sweeps", json=body)
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"].startswith("needs 6.0 GiB")
+        assert [r.id for r in await service.store.list_runs()] == [
+            holder.json()["run_id"]]
+        await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1, pid=1))
+        await agent.finish(assign)
+        await _terminal(service, assign.run_id)
 
 
 async def test_the_last_peak_is_found_by_an_indexed_column(tmp_path):
@@ -1076,3 +1179,38 @@ def test_the_one_shot_pool_is_judged_on_its_one_shot_workers_only():
     placement = scheduler.place(entry, {})
     assert placement.worker_id == "job-1"
     assert placement.memory_budget == 6 * GIB
+
+
+def test_the_history_key_counts_the_devices_a_run_uses():
+    """Review round 2, item 2: a per-card peak of a run on two cards is not
+    a budget for the same graph on one; MPS history is not CUDA's."""
+    graph = {"nodes": [{"id": "a", "type": "T"}], "edges": []}
+    assert mem.run_shape({"device": "cuda:1"}) == "cuda x1"
+    assert mem.run_shape({"device": "cuda", "target": {
+        "devices": ["cuda:2", "cuda:0"]}}) == "cuda x2"
+    assert mem.run_shape({"device": "mps"}) == "mps x1"
+    assert mem.run_shape(None) == "cpu x1"
+    assert mem.run_shape({"device": None, "target": None}) == "cpu x1"
+    one = mem.graph_hash(graph, {"device": "cuda:0"})
+    # Which card does not matter, how many and of what kind does.
+    assert one == mem.graph_hash(graph, {"device": "cuda:3", "target": {
+        "devices": ["cuda:3"]}})
+    assert one != mem.graph_hash(graph, {"device": "cuda:0", "target": {
+        "devices": ["cuda:0", "cuda:1"]}})
+    assert one != mem.graph_hash(graph, {"device": "mps"})
+
+
+def test_a_card_reserved_for_a_waiting_set_says_so():
+    """Review round 2, item 6: a slot the admission view marks reserved (an
+    earlier run waiting for its whole device set) is named as such, not as
+    a holder without a budget."""
+    from app.core.scheduling import RESERVED_SLOT
+
+    scheduler = _sched(_worker("box", _card("cuda:0")))
+    reason = scheduler.explain(_entry("r1", 6),
+                               {("box", "cuda:0"): RESERVED_SLOT})
+    assert reason == (
+        "waiting for memory: needs 6.0 GiB, cuda:0 on box is reserved for "
+        "an earlier run that waits for its whole device set")
+    assert scheduler.place(_entry("r1", 6),
+                           {("box", "cuda:0"): RESERVED_SLOT}) is None

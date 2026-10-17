@@ -219,15 +219,34 @@ def headroom(total: int | None, free: int | None,
 # ── the default budget source: history ────────────────────────────────────
 
 
-def graph_hash(graph: Mapping[str, Any]) -> str:
-    """A digest of what a graph computes, for "the same graph" (#788).
+def run_shape(options: Mapping[str, Any] | None) -> str:
+    """The device kind and the number of devices a run with *options* asks
+    for (``cuda x2``): ``target.devices`` when given, else ``device``. Part
+    of the history key (:func:`graph_hash`): a per-card peak of a run on two
+    cards is not a budget for the same graph on one."""
+    options = options if isinstance(options, Mapping) else {}
+    target = options.get("target")
+    devices = target.get("devices") if isinstance(target, Mapping) else None
+    if isinstance(devices, list) and devices:
+        first, count = str(devices[0]), len(devices)
+    else:
+        first, count = str(options.get("device") or "cpu"), 1
+    return f"{first.split(':')[0].strip().lower() or 'cpu'} x{count}"
+
+
+def graph_hash(graph: Mapping[str, Any],
+               options: Mapping[str, Any] | None = None) -> str:
+    """A digest of what a graph computes, and on what, for "the same run"
+    (#788): the key a run's peak is stored under and its default budget is
+    looked up by.
 
     Node ids, types and params, the edges (by their ends and handles), the
-    presets and subgraphs; not node positions, labels or ``settings`` (the
-    seed and the device do not change how much memory a run needs). #794
-    replaces this with a structural hash; until then, any params change is
-    a different graph, which errs toward "no history" rather than a wrong
-    one.
+    presets and subgraphs, and the run's :func:`run_shape` (device kind and
+    count; without *options*, one CPU); not node positions, labels or
+    ``settings`` (the seed does not change how much memory a run needs).
+    #794 replaces the graph part with a structural hash; until then, any
+    params change is a different graph, which errs toward "no history"
+    rather than a wrong one.
     """
     def canonical(value: Any) -> str:
         return json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -243,7 +262,8 @@ def graph_hash(graph: Mapping[str, Any]) -> str:
         for edge in graph.get("edges") or () if isinstance(edge, Mapping))
     document = {"nodes": nodes, "edges": edges,
                 "presets": graph.get("presets") or [],
-                "subgraphs": graph.get("subgraphs") or []}
+                "subgraphs": graph.get("subgraphs") or [],
+                "shape": run_shape(options)}
     return hashlib.sha256(canonical(document).encode("utf-8")).hexdigest()
 
 
@@ -282,9 +302,11 @@ class Suggestion:
 class BudgetSource(Protocol):
     """Where a run's default ``memory_gib`` comes from (#788; #794 adds a
     static estimate). ``suggest`` gets the graph as stored (secrets
-    scrubbed) and returns None when it has nothing to say."""
+    scrubbed) and the run's normalised options (its target and device), and
+    returns None when it has nothing to say."""
 
-    async def suggest(self, graph: Mapping[str, Any]) -> Suggestion | None: ...
+    async def suggest(self, graph: Mapping[str, Any],
+                      options: Mapping[str, Any]) -> Suggestion | None: ...
 
 
 class HistoryBudgetSource:
@@ -295,9 +317,10 @@ class HistoryBudgetSource:
     def __init__(self, lookup: Callable[[str], Awaitable[Any]]) -> None:
         self._lookup = lookup
 
-    async def suggest(self, graph: Mapping[str, Any]) -> Suggestion | None:
+    async def suggest(self, graph: Mapping[str, Any],
+                      options: Mapping[str, Any]) -> Suggestion | None:
         try:
-            found = await self._lookup(graph_hash(graph))
+            found = await self._lookup(graph_hash(graph, options))
         except Exception:  # noqa: BLE001 -- a suggestion, never an error
             logger.warning("could not look up this graph's memory history",
                            exc_info=True)
@@ -324,10 +347,24 @@ def held_without_budget(device: str, worker: str) -> str:
             "shared) until it ends")
 
 
-def no_budget_message(where: str) -> str:
+def no_budget_message(where: str, *, waiting: bool = False) -> str:
+    """No budget for a run that can only go to shared cards. *waiting*: the
+    run is already queued, so it says how to get it going."""
+    if waiting:
+        return (f"{where} is shared by memory and this run has no memory "
+                "budget: it takes one once a run of the same graph on the "
+                "same devices reports its peak, or cancel it and queue it "
+                "again with target.memory_gib")
     return (f"{where} is shared by memory and this run has no memory budget: "
-            "declare target.memory_gib (no earlier run of this graph "
-            "reported its peak memory)")
+            "declare target.memory_gib (no earlier run of this graph on these "
+            "devices reported its peak memory)")
+
+
+def reserved_for_a_set(device: str, worker: str) -> str:
+    """Why a shared card cannot take a run although memory is free: an
+    earlier run waiting for its whole device set holds it (#788)."""
+    return (f"{device} on {worker} is reserved for an earlier run that waits "
+            "for its whole device set")
 
 
 def does_not_fit(device: str, worker: str, room: int | None,
