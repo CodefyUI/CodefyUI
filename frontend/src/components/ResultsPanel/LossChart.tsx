@@ -192,12 +192,14 @@ export function LossChart({
       {series && (
         <div className={styles.chartLegend}>
           {lines.map((line) => (
-            <span key={line.name} className={styles.chartLegendItem}>
+            <span key={line.name} className={styles.chartLegendItem} title={line.name}>
               <span
                 className={styles.chartLegendSwatch}
                 style={{ background: colorOf(line) }}
               />
-              {line.name}
+              {/* A whole node id is in the name (#841), so a long one is cut
+                  here, with the whole name on hover, never in the store. */}
+              <span className={styles.chartLegendName}>{line.name}</span>
             </span>
           ))}
         </div>

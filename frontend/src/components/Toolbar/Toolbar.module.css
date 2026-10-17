@@ -118,8 +118,20 @@
   border-radius: var(--radius);
   cursor: pointer;
   font-family: inherit;
-  max-width: 14rem;
+  max-width: 13rem;
   flex-shrink: 0;
+}
+
+/* While the tab's run waits in a device queue (#841; not a seed wait): the
+   status names the device, so the select narrows (its options and title stay whole) and the
+   longer status label fits without wrapping a one-row toolbar. Only where
+   the toolbar is one row: on a narrower window it already wraps, the label
+   fits on its row, and narrowing would only move items between rows. */
+@media (min-width: 1400px) {
+  .deviceSelectQueued {
+    max-width: 8rem;
+    text-overflow: ellipsis;
+  }
 }
 
 .deviceSelect:hover:not(:disabled) {
@@ -318,14 +330,23 @@
 }
 
 /* ----- Status indicator ----- */
+/* At least as wide as "Completed" (#841): sized by its label alone, the
+   indicator grew from "Idle" to "Completed" when a run ended and pushed the
+   right-hand buttons onto a second row at 1440 px. A queued run's longer
+   label (#680: its place and device) is shown whole; the device select
+   gives it the room (.deviceSelectQueued). */
 .status {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+  min-width: 4.875rem;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  padding: 0 var(--sp-2);
   flex-shrink: 0;
+}
+
+.statusLabel {
+  white-space: nowrap;
 }
 
 .statusDot {

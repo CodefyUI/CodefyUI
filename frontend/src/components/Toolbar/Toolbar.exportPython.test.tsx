@@ -370,7 +370,8 @@ describe('Toolbar Export as Python: absolute file paths', () => {
   it.each([
     ['warnings that are not a list', { warnings: {} }],
     ['containers that are not a list', { warnings: [{ ...absolutePath(), containers: {} }] }],
-    ['a container with no label', { warnings: [{ ...absolutePath(), containers: [{ node_id: 'blk' }] }] }],
+    ['a container that is not an object', { warnings: [{ ...absolutePath(), containers: ['blk'] }] }],
+    ['a container with no label',{ warnings: [{ ...absolutePath(), containers: [{ node_id: 'blk' }] }] }],
     ['a value that is not text', { warnings: [{ ...absolutePath(), value: 42 }] }],
     ['an entry that is not an object', { warnings: [null] }],
   ])('drops %s and still reports a successful export', async (_case, body) => {

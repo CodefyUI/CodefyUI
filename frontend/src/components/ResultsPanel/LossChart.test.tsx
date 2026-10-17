@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
-import { render, act } from '@testing-library/react';
+import { render, act, screen } from '@testing-library/react';
 import { LossChart, SERIES_COLORS, colorForSeries } from './LossChart';
 
 /**
@@ -170,6 +170,8 @@ describe('LossChart — named series', () => {
     expect(polylines[1].getAttribute('stroke')).toBe(SERIES_COLORS[1]);  // teal
     expect(container.textContent).toContain('train_loss');
     expect(container.textContent).toContain('val_loss');
+    // The whole name is on hover: a long node id is cut on screen (#841).
+    expect(screen.getByTitle('train_loss')).toHaveTextContent('train_loss');
   });
 
   it('does not recolour a series when another one arrives later', () => {
