@@ -634,7 +634,7 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
       'Not a measured peak: no earlier run of this graph on these devices reported one. Estimated from the model: '
       + '11,173,962 parameters x 12 bytes (weights, gradients, optimizer state) = 128.0 MB, activations of a training step at batch 128 '
-      + 'about 1.3 GB, 256.0 MB of library workspace. Lower it if you know better; the next run of this graph is measured.', { normalizeWhitespace: true },
+      + 'about 1.3 GB, and 256.0 MB of library workspace. Lower it if you know better; the next run of this graph is measured.', { normalizeWhitespace: true },
     );
     await submit();
     expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'] });
@@ -661,8 +661,8 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(memoryField()).toHaveValue('');
     expect(screen.getByText('Rough estimate')).toBeInTheDocument();
     expect(screen.getByText(/^About 3.0 GiB/)).toHaveTextContent(
-      'About 3.0 GiB, too rough to use: could not count BradleyTerryTrain; no input shape for the activations of '
-      + 'VLAModel; no batch size in the graph (assumed 32). Declare a budget.',
+      'About 3.0 GiB, too rough to use: could not count BradleyTerryTrain, no input shape for the activations of '
+      + 'VLAModel, and no batch size in the graph (assumed 32). Declare a budget.',
     );
   });
 

@@ -26,7 +26,7 @@ describe('MemoryEstimateHint (#794)', () => {
     expect(screen.getByText('Estimate')).toBeInTheDocument();
     expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
       '1,000 parameters x 4 bytes (weights) = 3.9 KB, activations of an evaluation pass at batch 16 about 1.0 GB, '
-      + '256.0 MB of library workspace.',
+      + 'and 256.0 MB of library workspace.',
     );
   });
 
@@ -36,7 +36,7 @@ describe('MemoryEstimateHint (#794)', () => {
       error={null}
     />);
     expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
-      'Estimated from the model: 1,000 parameters x 4 bytes (weights) = 3.9 KB, 256.0 MB of library workspace.',
+      'Estimated from the model: 1,000 parameters x 4 bytes (weights) = 3.9 KB and 256.0 MB of library workspace.',
     );
   });
 

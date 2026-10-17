@@ -669,20 +669,23 @@ def _forward_probe(torch: Any, module: Any,
                     output = module(*args)
             except Exception:  # noqa: BLE001 -- the next shape, then none
                 continue
-            shapes = [list(_shape_of(spec)) for spec in candidate]
             return (totals["leaf"] / PROBE_BATCH,
-                    _numel(output) / PROBE_BATCH, shapes)
+                    _numel(output) / PROBE_BATCH, _shapes(candidate))
         return None
     finally:
         for handle in handles:
             handle.remove()
 
 
-def _shape_of(spec: tuple[str, Any]) -> tuple[int, ...]:
-    kind, shape = spec
-    if kind == "tuple":
-        return tuple(dim for part in shape for dim in _shape_of(part))
-    return tuple(shape)
+def _shapes(candidate: Iterable[tuple[str, Any]]) -> list[list[int]]:
+    """One sample's input shapes, a tuple input's parts one by one."""
+    shapes: list[list[int]] = []
+    for kind, shape in candidate:
+        if kind == "tuple":
+            shapes.extend(_shapes(shape))
+        else:
+            shapes.append(list(shape))
+    return shapes
 
 
 def _count_module(node_cls: Any, node_type: str, params: dict[str, Any],

@@ -37,7 +37,7 @@ export function MemoryEstimateHint({ estimate, error }: MemoryEstimateHintProps)
     return (
       <p className={styles.hint} aria-live="polite">
         <span className={`${styles.tag} ${styles.tagEstimate}`}>{t('queueRun.memory.tag.estimate')}</span>{' '}
-        <span>{t('queueRun.memory.estimated', { parts: breakdown(statics, t) })}</span>
+        <span>{t('queueRun.memory.estimated', { parts: listed(breakdown(statics, t), t) })}</span>
       </p>
     );
   }
@@ -45,7 +45,9 @@ export function MemoryEstimateHint({ estimate, error }: MemoryEstimateHintProps)
     return (
       <p className={styles.hint} aria-live="polite">
         <span className={`${styles.tag} ${styles.tagEstimate}`}>{t('queueRun.memory.tag.rough')}</span>{' '}
-        <span>{t('queueRun.memory.rough', { size: formatGiB(statics.bytes), why: roughReasons(statics, t) })}</span>
+        <span>
+          {t('queueRun.memory.rough', { size: formatGiB(statics.bytes), why: listed(roughReasons(statics, t), t) })}
+        </span>
       </p>
     );
   }
@@ -54,12 +56,21 @@ export function MemoryEstimateHint({ estimate, error }: MemoryEstimateHintProps)
 
 type Translate = ReturnType<typeof useI18n.getState>['t'];
 
+/** Items joined as the locale lists things ("a, b, and c"; "a、b和c"), from
+ * templates: a bare separator in the tables would be whitespace padding. */
+function listed(items: string[], t: Translate): string {
+  if (items.length < 2) return items.join('');
+  const last = items[items.length - 1];
+  const rest = items.slice(1, -1).reduce((joined, item) => t('queueRun.memory.list.next', { rest: joined, item }), items[0]);
+  return t(items.length === 2 ? 'queueRun.memory.list.pair' : 'queueRun.memory.list.last', { rest, last });
+}
+
 /** How the estimate adds up, part by part: the weights (and, for a graph
  * that trains, their gradients and optimizer state), the activations of the
  * pass that sets them when there is one, and the libraries' workspace. Each
  * part in the unit that reads best (a small model's weights are kilobytes);
  * the total stays in GiB, the unit the field takes. */
-function breakdown(estimate: StaticMemoryEstimate, t: Translate): string {
+function breakdown(estimate: StaticMemoryEstimate, t: Translate): string[] {
   const params = estimate.parameters.toLocaleString('en-US');
   const weights = formatBytes(estimate.weights_bytes);
   const parts = [
@@ -75,11 +86,11 @@ function breakdown(estimate: StaticMemoryEstimate, t: Translate): string {
     }));
   }
   parts.push(t('queueRun.memory.part.workspace', { workspace: formatBytes(estimate.workspace_bytes) }));
-  return parts.join(t('queueRun.memory.part.separator'));
+  return parts;
 }
 
 /** Why a static estimate is too rough to be the default, in words. */
-function roughReasons(estimate: StaticMemoryEstimate, t: Translate): string {
+function roughReasons(estimate: StaticMemoryEstimate, t: Translate): string[] {
   const reasons: string[] = [];
   if (estimate.uncounted.length > 0) {
     reasons.push(t('queueRun.memory.rough.uncounted', { nodes: estimate.uncounted.join(', ') }));
@@ -91,5 +102,5 @@ function roughReasons(estimate: StaticMemoryEstimate, t: Translate): string {
   if (estimate.batch_assumed) {
     reasons.push(t('queueRun.memory.rough.batch', { batch: String(estimate.batch_size) }));
   }
-  return reasons.join(t('queueRun.memory.rough.separator'));
+  return reasons;
 }

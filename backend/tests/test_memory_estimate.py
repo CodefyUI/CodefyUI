@@ -342,6 +342,25 @@ def test_a_causal_lm_is_counted_without_allocating_it():
     assert lm.probe_input == [[512]]
 
 
+def test_the_vla_and_diffusion_models_are_probed_with_their_own_inputs():
+    """VLAModel takes one (image, tokens, actions) tuple and DiffusionUNet
+    an image and a timestep: each has its recipe, so both get an
+    activation term."""
+    graph = _training_graph(extra=[
+        _node("vla", "VLAModel", d_model=64, n_layers=1, n_heads=2,
+              expert_layers=1, image_size=16, max_text_len=8),
+        _node("unet", "DiffusionUNet", in_channels=1, channel_mult="1,2"),
+        _node("shapes", "SyntheticShapes", image_size=16)])
+    estimate = me.estimate_static(graph)
+    assert estimate is not None
+    probes = {m.node_type: m for m in estimate.models}
+    assert probes["VLAModel"].probe_input == [[3, 16, 16], [8], [8, 2]]
+    # The largest side the graph names (its MNIST Dataset: 28) first.
+    assert probes["DiffusionUNet"].probe_input == [[1, 28, 28], []]
+    assert all(m.activation_elements for m in probes.values())
+    assert estimate.confidence == me.CONFIDENCE_MEDIUM
+
+
 def test_a_model_that_cannot_be_counted_makes_the_estimate_low():
     """BradleyTerryTrain builds its reward net inside ``execute`` from the
     data's width: nothing to count it by."""
