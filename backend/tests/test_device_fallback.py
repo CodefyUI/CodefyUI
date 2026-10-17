@@ -10,6 +10,7 @@ no fallback emits nothing new.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -85,7 +86,8 @@ def test_the_runs_own_device_falls_back():
     assert device_fallbacks([], "cuda", "cpu") == [{
         "detail": ("The run asked for device cuda, which this server does "
                    "not have; it runs on cpu."),
-        "node_id": None}]
+        "node_id": None, "code": "device_fallback_run",
+        "params": {"requested": "cuda", "device": "cpu", "where": "server"}}]
 
 
 @pytest.mark.parametrize("requested", ["auto", "cpu", "", None, "cuda"])
@@ -104,7 +106,10 @@ def test_a_pinned_node_falls_back_on_the_server(cpu_only):
         "detail": ("Node train (TrainingLoop) is set to device cuda:0, which "
                    "this server does not have; when it executes, it runs on "
                    "cpu."),
-        "node_id": "train"}]
+        "node_id": "train", "code": "device_fallback_node",
+        "params": {"node": "train", "type": "TrainingLoop",
+                   "requested": "cuda:0", "device": "cpu",
+                   "where": "server"}}]
 
 
 def test_a_malformed_node_device_is_reported(one_card):
@@ -137,7 +142,10 @@ def test_a_worker_node_is_described_in_the_runs_card_names(one_card):
         "detail": ("Node train (TrainingLoop) is set to device cuda:1; this "
                    "run has 1 card (cuda:0 = the worker's cuda:1), so when "
                    "it executes, it runs on cuda:0."),
-        "node_id": "train"}]
+        "node_id": "train", "code": "device_fallback_node_in_run",
+        "params": {"node": "train", "type": "TrainingLoop",
+                   "requested": "cuda:1", "device": "cuda:0",
+                   "cards": [["cuda:0", "cuda:1"]]}}]
 
 
 def test_a_worker_node_on_an_in_run_name_that_exists_is_quiet(one_card):
@@ -236,16 +244,16 @@ def test_the_check_does_not_log_the_fallback_a_second_time(caplog):
 async def _execute(graph: dict[str, Any], options: dict[str, Any],
                    device: str, *, exclusive: bool = False,
                    worker_run: bool = False,
-                   run_cards=None, warn=None) -> list[tuple[str, Any]]:
+                   run_cards=None,
+                   warning_sink_fails: bool = False) -> list[tuple[str, Any]]:
     from app.core.executors import ExecutionRequest, InProcessExecutor, RunSinks
 
     seen: list[tuple[str, Any]] = []
 
     async def emit(event_type, payload):
+        if warning_sink_fails and event_type == "run_warning":
+            raise RuntimeError("sink down")
         seen.append((event_type, payload))
-
-    async def record(signal):
-        seen.append(("run_warning", signal))
 
     async def ignore(*_: Any) -> None:
         return None
@@ -258,7 +266,7 @@ async def _execute(graph: dict[str, Any], options: dict[str, Any],
             context=ExecutionContext(device=device), session=None,
             output_store=None, record_outputs=False,
             sinks=RunSinks(emit=emit, record_metrics=ignore,
-                           record_artifact=ignore, warn=warn or record),
+                           record_artifact=ignore, warn=ignore),
             explicit_metric_nodes=set()))
     return seen
 
@@ -314,8 +322,9 @@ def _probe_graph(*devices: str) -> dict[str, Any]:
 
 
 def _warnings(seen):
-    return [s for kind, s in seen if kind == "run_warning"
-            and s.kind == WARNING_DEVICE_FALLBACK]
+    return [SimpleNamespace(**payload) for kind, payload in seen
+            if kind == "run_warning"
+            and payload["kind"] == WARNING_DEVICE_FALLBACK]
 
 
 async def test_the_executor_warns_before_any_node_runs(probe, cpu_only):
@@ -325,7 +334,11 @@ async def test_the_executor_warns_before_any_node_runs(probe, cpu_only):
     assert [w.node_id for w in warnings] == [None, "train"]
     first_node = next(i for i, (kind, _) in enumerate(seen)
                       if kind == "node_status")
-    assert seen.index(("run_warning", warnings[-1])) < first_node
+    last_warning = max(i for i, (kind, _) in enumerate(seen)
+                       if kind == "run_warning")
+    assert last_warning < first_node
+    assert [w.code for w in warnings] == ["device_fallback_run",
+                                          "device_fallback_node"]
 
 
 async def test_a_run_without_a_fallback_emits_no_warning(probe):
@@ -385,11 +398,8 @@ async def test_a_worker_subprocess_uses_in_run_names(probe, one_card):
 async def test_a_failing_report_never_fails_the_run(probe, cpu_only, caplog):
     """Review item 7: a sink that raises is logged; the run carries on to
     its own outcome."""
-    async def broken(signal):
-        raise RuntimeError("sink down")
-
     seen = await _execute(_probe_graph("cuda"), {"device": "cpu"},
-                          "cpu", warn=broken)
+                          "cpu", warning_sink_fails=True)
     assert any(kind == "node_status" for kind, _ in seen)
     assert "could not report device fallbacks" in caplog.text
 
@@ -434,8 +444,9 @@ async def test_a_cached_node_is_described_as_its_setting(probe, cpu_only):
 
     warned: list[Any] = []
 
-    async def warn(signal):
-        warned.append(signal)
+    async def emit(event_type, payload):
+        if event_type == "run_warning":
+            warned.append(SimpleNamespace(**payload))
 
     async def ignore(*_: Any) -> None:
         return None
@@ -445,8 +456,8 @@ async def test_a_cached_node_is_described_as_its_setting(probe, cpu_only):
             run_id="r", graph=_probe_graph("cuda"), options={"device": "cpu"},
             context=ExecutionContext(device="cpu"), session=_Session(),
             output_store=None, record_outputs=False,
-            sinks=RunSinks(emit=ignore, record_metrics=ignore,
-                           record_artifact=ignore, warn=warn),
+            sinks=RunSinks(emit=emit, record_metrics=ignore,
+                           record_artifact=ignore, warn=ignore),
             explicit_metric_nodes=set()))
     assert len(warned) == 2
     assert all("is set to device cuda" in w.detail

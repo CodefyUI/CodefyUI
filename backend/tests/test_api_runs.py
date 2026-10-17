@@ -415,6 +415,10 @@ async def test_a_run_without_a_device_set_keeps_its_fallback(
                 if e["type"] == "run_warning"]
     assert [w["kind"] for w in warnings] == ["device_fallback"]
     assert "asked for device cuda" in warnings[0]["detail"]
+    # Coded, so the Runs panel words it in its language (#841's mechanism).
+    assert warnings[0]["code"] == "device_fallback_run"
+    assert warnings[0]["params"] == {"requested": "cuda", "device": "cpu",
+                                     "where": "server"}
 
 
 async def test_a_target_without_worker_or_devices_is_local(client):

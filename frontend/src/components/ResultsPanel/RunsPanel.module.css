@@ -108,7 +108,7 @@
   display: grid;
   grid-template-columns:
     minmax(90px, 240px)   /* name */
-    84px                  /* status chip */
+    108px                 /* status chip: DISCONNECTED is the widest */
     minmax(70px, 120px)   /* worker (+ why it waits) */
     minmax(70px, 150px)   /* devices + queue position */
     68px                  /* started */
@@ -169,25 +169,31 @@
   white-space: nowrap;
 }
 
+/* A line of its own under the device (#841): it names the queue now
+   ("Any queue #1"), too long to share the device's line. */
 .queuePos {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--accent-deep);
 }
 
-/* The worker's name, and under it why a queued run waits (#772). */
 .workerCell {
-  display: flex;
-  flex-direction: column;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* Why a queued run waits (#772), or how long its worker has been away
+   (#783): a line of its own under the row, from the status chip to the
+   final loss, wrapping rather than cut (#841). */
 .queueReason {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  grid-column: 2 / -2;
+  margin-top: calc(-1 * var(--sp-2));
   color: var(--status-warning);
   font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
 }
 
 .empty {
@@ -497,7 +503,7 @@
 @container (max-width: 780px) {
   .row {
     grid-template-columns:
-      minmax(80px, 200px) 84px minmax(60px, 100px) minmax(70px, 130px) 68px 76px minmax(120px, 1fr);
+      minmax(80px, 200px) 108px minmax(60px, 100px) minmax(70px, 130px) 68px 76px minmax(120px, 1fr);
   }
 
   .colStarted {
@@ -533,7 +539,7 @@
      that says what the run achieved; a sixth dropped column is cheaper than
      losing it, and 70+84+68+76+110 plus gaps still fits inside 560px. */
   .row {
-    grid-template-columns: minmax(70px, 1fr) 84px 68px 76px minmax(110px, auto);
+    grid-template-columns: minmax(70px, 1fr) 108px 68px 76px minmax(110px, auto);
   }
 
   .colDevice,

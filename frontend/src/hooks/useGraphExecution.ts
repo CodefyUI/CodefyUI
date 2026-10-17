@@ -24,6 +24,7 @@ import { localizedPackTitle } from '../utils/packAvailability';
 import { friendlyError, missingPackFromError } from '../utils/errorMessages';
 import { dismissValidationToasts, issuesFromErrors, showValidationError, showValidationIssues } from '../utils/validationToasts';
 import { useI18n } from '../i18n';
+import { codedMessage, workerMessageText } from '../utils/runReasons';
 import {
   MESSAGE_TOO_BIG_EVENT,
   RECONNECTED_EVENT,
@@ -618,7 +619,11 @@ export function useGraphExecution() {
         }
         noteClosed(data.run_id);
         store.setTabStatus(tabId, 'error');
-        store.addTabLog(tabId, { message: useI18n.getState().t('runLog.error', { error: data.error }), type: 'error' });
+        // A worker's error carries a code (#841): worded here as the Runs
+        // panel words it, so the two views of one run agree.
+        const { t } = useI18n.getState();
+        const error = workerMessageText(data.error, codedMessage(data), t);
+        store.addTabLog(tabId, { message: t('runLog.error', { error }), type: 'error' });
         // A fail-fast run re-raises the node's exception, so a missing pack
         // reaches the client here too — untyped, which is why the message
         // has to identify itself. Deliberately after the `rejected` return

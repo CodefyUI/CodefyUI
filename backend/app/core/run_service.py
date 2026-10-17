@@ -296,6 +296,7 @@ from .scheduling import (
     LOCAL_WORKER_ID,
     LocalScheduler,
     Placement,
+    QueueReason,
     Scheduler,
     SlotKey,
     WorkerScheduler,
@@ -1520,6 +1521,9 @@ class _ActiveRun:
     #: no number to report, not a null one.
     peak_measured: bool = False
     peak_memory: dict[str, Any] | None = None
+    #: The executor's ``error_reason`` (#841): the code of the error it
+    #: reported, stored with it by ``_finalize``.
+    error_reason: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -1740,15 +1744,17 @@ class RunService:
                 return index
         return None  # pragma: no cover - as above
 
-    def queue_reason(self, run_id: str) -> str | None:
+    def queue_wait(self, run_id: str) -> QueueReason | None:
         """Why a waiting run cannot start, beyond a busy slot, or None.
 
-        The scheduler's word (``WorkerScheduler.explain``, #772): "waiting
-        for worker X to reconnect", "worker X is draining". None for a run
-        that is not waiting, or that waits only for its turn.
+        The scheduler's word (``WorkerScheduler.explain_reason``, #772,
+        #841): "waiting for worker X to reconnect", "worker X is draining",
+        as English text plus a code and parameters the Runs list words in
+        the viewer's language. None for a run that is not waiting, or that
+        waits only for its turn.
         """
         entry = self._pending_by_id.get(run_id)
-        explain = getattr(self._scheduler, "explain", None)
+        explain = getattr(self._scheduler, "explain_reason", None)
         if entry is None or explain is None:
             return None
         try:
@@ -2948,6 +2954,9 @@ class RunService:
         # ``interrupted`` (#772) falls through with its error: nobody here
         # asked for the stop -- the run's worker went away, or ended it on
         # its own -- and the error says which.
+        reason = getattr(outcome, "error_reason", None)
+        if isinstance(reason, dict) and outcome.error:
+            active.error_reason = reason
         return status, outcome.error
 
     async def _finalize(
@@ -2982,8 +2991,12 @@ class RunService:
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
         elif status == STATUS_FAILED:
-            await self._emit(active.run_id, EVENT_RUN_FAILED,
-                             {"error": error or "run failed"})
+            failed: dict[str, Any] = {"error": error or "run failed"}
+            if error is not None and active.error_reason is not None:
+                # A coded worker error (#841): only worker runs have one,
+                # so a run with no target carries the one key as before.
+                failed.update(active.error_reason)
+            await self._emit(active.run_id, EVENT_RUN_FAILED, failed)
         else:
             reason = (STOP_REASON_INTERRUPTED if status == STATUS_INTERRUPTED
                       else STOP_REASON_CANCELLED)
@@ -2995,8 +3008,11 @@ class RunService:
         # landed, which is how a cancel racing a completion is resolved
         # (#119): the loser simply did not write, instead of a succeeded run
         # being filed forever as cancelled by a late writer.
-        landed = await self.store.mark_finished(active.run_id, status,
-                                                error=error)
+        landed = await self.store.mark_finished(
+            active.run_id, status, error=error,
+            error_reason=(active.error_reason
+                          if error is not None and status != STATUS_SUCCEEDED
+                          else None))
         if not landed:
             logger.info(
                 "run %s was already terminal when %s was reported",
@@ -3476,11 +3492,18 @@ class RunService:
                              cancelled=False)
 
     async def fail_queued_for_worker(self, worker_id: str,
-                                     error: str) -> list[str]:
+                                     error: Any) -> list[str]:
         """Fail every run still waiting for *worker_id* (#780: the worker
         was removed, so nothing will ever place them). Running runs are not
         touched here; closing the worker's socket interrupts those.
-        Returns the run ids that were failed."""
+        Returns the run ids that were failed.
+
+        *error* is the text, or a coded message (``workers.removed_message``,
+        #841) whose code is stored with it."""
+        from .workers import reason_dict
+
+        error_reason = reason_dict(error)
+        error = str(error)
         failed: list[str] = []
         for run_id, waiting in list(self._pending_by_id.items()):
             if entry_target(waiting.options)[0] != worker_id:
@@ -3490,9 +3513,11 @@ class RunService:
                 continue
             self._run_secrets.pop(run_id, None)
             landed = await self.store.mark_finished(
-                run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
+                run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,),
+                error_reason=error_reason)
             if landed:
-                await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
+                await self._emit(run_id, EVENT_RUN_FAILED,
+                                 {"error": error, **(error_reason or {})})
             entry.close()
             if landed:
                 await self._notify_terminal(run_id, STATUS_FAILED)

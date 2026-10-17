@@ -16,7 +16,8 @@ import {
 import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
-import { deviceAliasLines, runDevice, runDevices, runWorkerLabel } from '../../utils/runPlacement';
+import { deviceAliasLines, runDevice, runDevices, runWorker, runWorkerLabel } from '../../utils/runPlacement';
+import { codedMessage, queueReasonText, workerMessageText, type CodedMessage } from '../../utils/runReasons';
 import { LossChart } from './LossChart';
 import { SweepDetail } from './SweepDetail';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -62,6 +63,53 @@ function finalLoss(run: RunSummary): number | null {
     .sort()
     .find((name) => name.toLowerCase().includes('loss'));
   return fallback === undefined ? null : metrics[fallback];
+}
+
+/**
+ * The Final loss cell: four decimals, and scientific notation below 1e-3,
+ * where four decimals read a still-falling loss as `0.0000` (#841).
+ */
+export function formatLoss(value: number): string {
+  return value !== 0 && Math.abs(value) < 1e-3 ? value.toExponential(2) : value.toFixed(4);
+}
+
+/**
+ * The code of a run's error (#841): the row's `execution_facts.error_reason`,
+ * else the `execution_error` line that reported the same error. A run that
+ * never started (a queued run whose worker was removed) has no facts
+ * document, so its code is only on that event.
+ */
+export function errorCode(run: RunSummary, log: RunLogLine[]): CodedMessage | undefined {
+  const fromRow = codedMessage(run.execution_facts?.error_reason);
+  if (fromRow) return fromRow;
+  for (let i = log.length - 1; i >= 0; i -= 1) {
+    const line = log[i];
+    if (line.kind === 'failed' && line.detail === run.error) return line.coded;
+  }
+  return undefined;
+}
+
+/**
+ * A queued run's place in line, and which line (#841): a run naming a
+ * worker and an `any` run waiting for the same card wait in different
+ * FIFOs, and both read "Queue #1". An `any` run says so; the hover names
+ * the queue. Null for a run that is not queued.
+ */
+export function queuePositionLabel(
+  run: RunSummary, t: ReturnType<typeof useI18n.getState>['t'],
+): { text: string; title: string | undefined } | null {
+  if (run.status !== 'queued') return null;
+  // A null position is "we cannot say", not zero -- the queue was deeper
+  // than the server's scan limit.
+  if (run.queue_position === null) return { text: '-', title: undefined };
+  const position = run.queue_position;
+  const queue = run.queue_key;
+  return {
+    text: runWorker(run) === 'any'
+      ? t('runs.queuePositionAny', { position })
+      : t('runs.queuePosition', { position }),
+    title: queue ? t('runs.queuePositionTitle', { queue }) : undefined,
+  };
 }
 
 /**
@@ -217,6 +265,24 @@ function deviceMemoryLine(entry: DeviceMemoryEntry, t: ReturnType<typeof useI18n
   return entry.shared ? `${line} ${t('runs.detail.peakMemoryShared')}` : line;
 }
 
+/**
+ * Why the memory figures are approximate, when they are (#841). A run in
+ * this server process shares its devices with the other runs here. A run on
+ * a worker has a process of its own: its MPS figure is its own process's
+ * (the line already says the driver's cache is in it), and a CUDA peak is
+ * approximate only on a card another run uses too.
+ */
+function memoryNote(
+  run: RunSummary | null, entries: DeviceMemoryEntry[], t: ReturnType<typeof useI18n.getState>['t'],
+): string[] {
+  if (run !== null && runWorker(run) !== 'local') {
+    return entries.some((entry) => entry.kind === 'peak' && !entry.exact)
+      ? [t('runs.detail.peakMemoryApproximateWorker')]
+      : [];
+  }
+  return entries.every((entry) => entry.exact) ? [] : [t('runs.detail.peakMemoryApproximate')];
+}
+
 /** How many hex characters of an environment digest the header shows. */
 export const DIGEST_SHORT_LENGTH = 12;
 
@@ -260,7 +326,7 @@ function LogLine({ line }: { line: RunLogLine }) {
       case 'completed':
         return t('runs.log.completed');
       case 'failed':
-        return t('runs.log.failed', { error: line.detail ?? '' });
+        return t('runs.log.failed', { error: workerMessageText(line.detail ?? '', line.coded, t) });
       case 'stopped': {
         const reasonKey =
           STOP_REASON_KEY[line.detail as keyof typeof STOP_REASON_KEY];
@@ -269,15 +335,18 @@ function LogLine({ line }: { line: RunLogLine }) {
         });
       }
       case 'warning':
-        return t('runs.log.warning', { detail: line.detail ?? '' });
+        return t('runs.log.warning', { detail: workerMessageText(line.detail ?? '', line.coded, t) });
       default: {
         // The backend's node statuses are a small closed vocabulary; an
         // unknown one from a newer backend falls through as its raw token
         // rather than being dropped or rendered as a missing key.
         const key = NODE_STATUS_KEY[line.status as keyof typeof NODE_STATUS_KEY];
         return (
+          // The whole id (#841): cut to eight characters, two branches'
+          // `train-plain` and `train-decay` both read `train-pl`/`train-de`
+          // stubs. The line wraps.
           t('runs.log.node', {
-            node: (line.nodeId ?? '').slice(0, 8),
+            node: line.nodeId ?? '',
             status: key ? t(key) : (line.status ?? ''),
           }) + (line.detail ? `: ${friendlyError(line.detail)}` : '')
         );
@@ -354,9 +423,7 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
   const memoryTitle = memoryEntries
     ? [
         ...memoryEntries.map((entry) => deviceMemoryLine(entry, t)),
-        ...(memoryEntries.every((entry) => entry.exact)
-          ? []
-          : [t('runs.detail.peakMemoryApproximate')]),
+        ...memoryNote(run, memoryEntries, t),
       ].join('\n')
     : '';
 
@@ -442,7 +509,8 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
       )}
       {run?.error && (
         <div className={styles.detailError}>
-          {t('runs.detail.error')}: {friendlyError(run.error)}
+          {t('runs.detail.error')}: {friendlyError(workerMessageText(
+            run.error, errorCode(run, detail.log), t))}
         </div>
       )}
 
@@ -540,7 +608,14 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
       <div className={styles.detailSection}>
         <div className={styles.sectionHeader}>{t('runs.detail.log')}</div>
         {detail.log.length === 0 ? (
-          <div className={styles.detailEmpty}>{t('runs.detail.noLog')}</div>
+          <div className={styles.detailEmpty}>
+            {/* Until the first page of events is in: a long run's tail takes
+                seconds, and "No events yet" read as a run that logged
+                nothing (#841). */}
+            {(detail.loading || detail.logLoading) && !detail.error
+              ? t('runs.detail.loadingLog')
+              : t('runs.detail.noLog')}
+          </div>
         ) : (
           <div className={styles.logList}>
             {detail.log.map((line) => (
@@ -808,8 +883,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               // Why a queued run waits beyond its place in line (#772), or
               // how long a running one has waited for its worker (#783).
               const queueReason = run.status === 'queued'
-                ? run.queue_reason || null
+                ? queueReasonText(run, t)
                 : disconnectedNote(run, clock, t);
+              const position = queuePositionLabel(run, t);
               return (
                 // Opening a run is this panel's primary interaction, so the
                 // row is a real control: focusable, Enter/Space activated,
@@ -836,27 +912,17 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                     {run.name || t('runs.unnamed')}
                   </span>
                   <StatusChip run={run} />
-                  <span
-                    className={`${styles.workerCell} ${styles.colWorker}`}
-                    title={queueReason ?? undefined}
-                  >
+                  <span className={`${styles.workerCell} ${styles.colWorker}`} title={workerName}>
                     {workerName}
-                    {queueReason && (
-                      <span className={styles.queueReason}>{queueReason}</span>
-                    )}
                   </span>
                   <span
                     className={`${styles.mono} ${styles.colDevice}`}
                     title={deviceAliasLines(run, t) ?? undefined}
                   >
                     {runDevices(run)}
-                    {run.status === 'queued' && (
-                      <span className={styles.queuePos}>
-                        {/* A null position is "we cannot say", not zero — the
-                            queue was deeper than the server's scan limit. */}
-                        {run.queue_position === null
-                          ? ' -'
-                          : ` ${t('runs.queuePosition', { position: run.queue_position })}`}
+                    {position && (
+                      <span className={styles.queuePos} title={position.title}>
+                        {` ${position.text}`}
                       </span>
                     )}
                   </span>
@@ -866,8 +932,8 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                   <span className={styles.mono}>
                     {formatDuration(run.started_at, run.finished_at, clock)}
                   </span>
-                  <span className={styles.mono}>
-                    {loss === null ? '-' : loss.toFixed(4)}
+                  <span className={styles.mono} title={loss === null ? undefined : String(loss)}>
+                    {loss === null ? '-' : formatLoss(loss)}
                   </span>
                   <span
                     className={styles.actions}
@@ -921,6 +987,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                       </button>
                     )}
                   </span>
+                  {/* Why it waits, on a line of its own under the row
+                      (#841): in the Worker cell it was cut to a dozen
+                      characters with the rest of the row empty. */}
+                  {queueReason && (
+                    <span className={styles.queueReason}>{queueReason}</span>
+                  )}
                 </div>
               );
             })

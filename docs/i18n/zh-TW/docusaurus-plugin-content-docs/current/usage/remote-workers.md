@@ -28,10 +28,10 @@ Run 依它的 target 交給 worker：**Run** 旁的**排入佇列...**、`cdui r
 1. **在 GPU 伺服器上安裝與控制面相同版本的 CodefyUI。** 先在控制面用 `cdui --version` 查看版本，然後在 GPU 伺服器上執行：
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | CODEFYUI_RELEASE_TAG=3.0.2 bash
+   curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | CODEFYUI_RELEASE_TAG=<version> bash
    ```
 
-   請換成 `cdui --version` 印出的版本。版本不同的 agent 連線時會被拒絕（[讓 worker 保持同步](#keeping-workers-in-sync)）。需要特定 CUDA 或 ROCm 版本的 PyTorch 時，見 [GPU 與裝置設定](/getting-started/gpu-device)（`cdui install --gpu <選項>`）。
+   把 `<version>` 換成 `cdui --version` 印出的版本（例如 `3.1.0`）。版本不同的 agent 連線時會被拒絕（[讓 worker 保持同步](#keeping-workers-in-sync)）。需要特定 CUDA 或 ROCm 版本的 PyTorch 時，見 [GPU 與裝置設定](/getting-started/gpu-device)（`cdui install --gpu <選項>`）。
 2. **讓 GPU 伺服器連得到控制面**，方式見[連到控制面](#reaching-the-control-plane)。使用 SSH 方式時，略過接下來兩步：控制面會自己啟動 agent。
 3. **產生 token。** 開啟 **Workers**（**Settings → 執行 → Workers → 管理**，或 Runs 面板標題列的 **Workers**），按 **新增 worker**，停在 **另一台機器**。位址欄預設為此頁面使用的位址；若是 `127.0.0.1` 或 `localhost`，請改選伺服器的其他位址，或輸入 worker 連得到的位址。選擇 token 的有效期限（預設 24 小時）與可供幾個 agent 使用（預設 1），再按 **產生 token**。
 

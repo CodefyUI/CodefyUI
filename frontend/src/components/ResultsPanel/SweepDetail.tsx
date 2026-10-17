@@ -1,5 +1,7 @@
 import { useMemo, useRef, useState, type Ref } from 'react';
-import { downloadSweepCsv, type SweepDetail as SweepDetailData, type SweepVariant } from '../../api/rest';
+import {
+  downloadSweepCsv, TERMINAL_RUN_STATUSES, type SweepDetail as SweepDetailData, type SweepVariant,
+} from '../../api/rest';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useSweepStore } from '../../store/sweepStore';
@@ -76,11 +78,15 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
   const nodes = useMemo(() => (tab ? flushSubgraphEditing(tab).nodes : []), [tab]);
   const columns = useMemo(() => {
     if (!detail) return [];
-    return detail.params.map((param) => {
+    const plain = detail.params.map((param) => sweepParamTitle(param, definitions, nodes));
+    return detail.params.map((param, index) => {
       const address = `${param.node_id}.${param.param}`;
+      // Two branches' Optimizers both read "Optimizer · lr" (#841): a title
+      // another column shares gets the node's id too.
+      const shared = plain[index] !== null && plain.filter((title) => title === plain[index]).length > 1;
       return {
         address,
-        title: sweepParamTitle(param, definitions, nodes) ?? `${param.node_id.slice(0, 8)} · ${param.param}`,
+        title: sweepParamTitle(param, definitions, nodes, shared) ?? `${shortNodeId(param.node_id)} · ${param.param}`,
       };
     });
   }, [detail, definitions, nodes]);
@@ -178,6 +184,21 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
     ? [...new Set(detail.variants.flatMap((variant) => Object.keys(variant.final_metrics ?? {})))].sort()
     : [];
 
+  // Whose values the Final metrics prefer (#841): every series the run
+  // logged, with the objective node's own value where several nodes log a
+  // name; `null` is the plain run-wide summary. Only settled variants
+  // decide: a name-only variant still running has `null` until its harvest
+  // names the node, and must not turn the header into "one of them".
+  const metricsNodes = [...new Set(detail.variants
+    .filter((variant) => variant.final_metrics !== undefined
+      && (variant.final_metrics_node_id != null
+        || (variant.status !== null && variant.status !== 'missing'
+          && TERMINAL_RUN_STATUSES.includes(variant.status))))
+    .map((variant) => variant.final_metrics_node_id ?? null))];
+  const metricsTitle = metricsNodes.length === 1 && metricsNodes[0] !== null
+    ? t('sweeps.col.metricsNode', { node: nodeName(metricsNodes[0]) })
+    : metricsNodes.length > 0 ? t('sweeps.col.metricsRun') : undefined;
+
   const stopping = cancelledRequested === null || cancelledRequested === 0
     ? t('sweeps.detail.stoppingUnknown')
     : cancelledRequested === 1
@@ -231,7 +252,7 @@ export function SweepDetail({ onBack, onOpenRun, chartHeight, backRef }: SweepDe
             <SortableHeader label={t('sweeps.col.status')} active={sortKey === 'status'} direction={sortDirection} onSort={() => setSort('status')} />
             {columns.map((column) => <th key={column.address} title={column.address}>{column.title}</th>)}
             <SortableHeader label={t('sweeps.col.objective')} active={sortKey === 'objective'} direction={sortDirection} onSort={() => setSort('objective')} />
-            <th>{t('sweeps.col.metrics')}</th>
+            <th title={metricsTitle}>{t('sweeps.col.metrics')}</th>
             <th>{t('runs.col.worker')}</th>
             <th>{t('runs.col.devices')}</th>
             <th>{t('sweeps.col.run')}</th>
@@ -301,6 +322,15 @@ function sortValue(variant: SweepVariant, key: SortKey): number | null {
       return order === -1 ? STATUS_ORDER.length : order;
     }
   }
+}
+
+/**
+ * A node id the open graph cannot name, for a column title: whole when it is
+ * short (`opt-plain`, an example's id), else its first eight characters and
+ * an ellipsis (a palette UUID). The title has the whole address (#841).
+ */
+function shortNodeId(nodeId: string): string {
+  return nodeId.length <= 16 ? nodeId : `${nodeId.slice(0, 8)}…`;
 }
 
 function formatValue(value: unknown): string {

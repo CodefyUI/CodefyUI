@@ -46,6 +46,14 @@ from .device_utils import DEVICE_SYNTAX, split_device
 #: ``run_warning`` kind for a device the run asked for and does not get.
 WARNING_DEVICE_FALLBACK = "device_fallback"
 
+#: ``code`` of each sentence, with ``params`` beside the English ``detail``,
+#: so the Runs panel words it in its own language (#841's coded messages,
+#: ``frontend/src/utils/runReasons.ts``). ``where`` is ``server`` or
+#: ``worker``; ``cards`` is ``[[in_run, worker_card], ...]``.
+CODE_RUN = "device_fallback_run"
+CODE_NODE = "device_fallback_node"
+CODE_NODE_IN_RUN = "device_fallback_node_in_run"
+
 #: Set while :func:`_node_device` asks ``resolve_device``; the filter
 #: below drops that call's log records and nothing else's (a context
 #: variable, so a node resolving on another thread still logs).
@@ -123,18 +131,32 @@ def _cards_text(run_cards: Mapping[str, str]) -> str:
     return f"{count} card{'s' if count != 1 else ''} ({pairs})"
 
 
-def _node_sentence(node_id: Any, node_type: Any, value: str, resolved: str,
-                   where: str, run_cards: Mapping[str, str] | None) -> str:
+def _node_entry(node_id: Any, node_type: Any, value: str, resolved: str,
+                where: str, run_cards: Mapping[str, str] | None
+                ) -> dict[str, Any]:
+    """One node's report: the English ``detail`` and its ``code`` and
+    ``params``."""
     # Worded as the node's setting: a node the run serves from its cache
     # never executes, and the sentence stays true for it.
     head = f"Node {node_id} ({node_type}) is set to device {value}"
     tail = f"when it executes, it runs on {resolved}."
+    params: dict[str, Any] = {"node": str(node_id), "type": str(node_type),
+                              "requested": value, "device": resolved}
     if run_cards is not None and split_device(value)[0] == "cuda":
         # In a worker's run subprocess: a cuda name is an in-run name.
-        if run_cards:
-            return f"{head}; this run has {_cards_text(run_cards)}, so {tail}"
-        return f"{head}; this run has no CUDA card, so {tail}"
-    return f"{head}, which {where} does not have; {tail}"
+        params["cards"] = [[in_run, physical]
+                           for in_run, physical in run_cards.items()]
+        detail = (f"{head}; this run has {_cards_text(run_cards)}, so {tail}"
+                  if run_cards else
+                  f"{head}; this run has no CUDA card, so {tail}")
+        return {"detail": detail, "code": CODE_NODE_IN_RUN, "params": params}
+    params["where"] = _where_code(where)
+    return {"detail": f"{head}, which {where} does not have; {tail}",
+            "code": CODE_NODE, "params": params}
+
+
+def _where_code(where: str) -> str:
+    return "worker" if "worker" in where else "server"
 
 
 def device_fallbacks(nodes: Iterable[Mapping[str, Any]], requested: Any,
@@ -142,7 +164,8 @@ def device_fallbacks(nodes: Iterable[Mapping[str, Any]], requested: Any,
                      check_run: bool = True,
                      run_cards: Mapping[str, str] | None = None,
                      ) -> list[dict[str, Any]]:
-    """``[{"detail", "node_id"}, ...]``: every device substitution a run of
+    """``[{"detail", "node_id", "code", "params"}, ...]``: every device
+    substitution a run of
     *nodes* (the expanded node list it executes) will meet, the run's own
     first.
 
@@ -164,7 +187,9 @@ def device_fallbacks(nodes: Iterable[Mapping[str, Any]], requested: Any,
         found.append({
             "detail": (f"The run asked for device {asked}, which {where} "
                        f"does not have; it runs on {run_device}."),
-            "node_id": None,
+            "node_id": None, "code": CODE_RUN,
+            "params": {"requested": asked, "device": run_device,
+                       "where": _where_code(where)},
         })
     seen: dict[tuple[Any, Any], str | None] = {}
     for node in nodes:
@@ -187,8 +212,8 @@ def device_fallbacks(nodes: Iterable[Mapping[str, Any]], requested: Any,
             continue
         node_id = node.get("id")
         found.append({
-            "detail": _node_sentence(node_id, node.get("type"), value,
-                                     resolved, where, run_cards),
+            **_node_entry(node_id, node.get("type"), value, resolved, where,
+                          run_cards),
             "node_id": node_id if isinstance(node_id, str) else None,
         })
     return found

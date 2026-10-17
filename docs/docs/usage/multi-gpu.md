@@ -96,7 +96,7 @@ Open it with **Workers** in the Runs panel header, or from **Settings → Execut
 
 Agents the server refused (another version, for example) and that have no card are listed under **Refused connections** with the reason ([Remote Workers, Keeping workers in sync](/usage/remote-workers#keeping-workers-in-sync)).
 
-**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why under the run's worker. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options. **Re-key** gives a worker a new credential, and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)).
+**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why on a line under the run, for an `any` run too when the only workers that offer its device are draining. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options. **Re-key** gives a worker a new credential, and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)).
 
 ## What the canvas does {/* #the-canvas */}
 
