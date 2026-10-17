@@ -191,6 +191,39 @@ async def test_a_control_plane_without_instances_is_refused(tmp_path):
         assert len(cp.of_type(wp.Hello)) == 1
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
+def test_a_second_agent_with_the_same_instance_touches_nothing(monkeypatch,
+                                                              tmp_path):
+    """Found on Meow: a second agent started with a live instance's id
+    retired its spool (runner start) and deleted its runs dir (exit), so
+    the live agent's run could not report its end. Now it is refused
+    before it builds a runner, and leaves the directory alone."""
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    held = cli.InstanceLock("7")
+    held.acquire()
+    live = cli.instance_runs_dir("7") / "run1"
+    live.mkdir(parents=True)
+    (live / "spool.jsonl").write_text("{}\n")
+    with pytest.raises(cli.InstanceBusy, match="give each concurrent job"):
+        cli.InstanceLock("7").acquire()
+    cli.InstanceLock("8").acquire()  # another id is another lock
+
+    def no_runner(**_: Any) -> Any:
+        raise AssertionError("a busy instance must not build a runner")
+
+    monkeypatch.setattr("app.agent.runner.Runner", no_runner)
+    args = _args(one_shot=True, instance="7")
+    cli.check_one_shot(args)
+    assert cli.run_agent(args, "http://127.0.0.1:9", "t", []) == 2
+    assert (live / "spool.jsonl").exists()
+    held.release()
+    held.release()  # idempotent
+    assert not held.path.exists()
+    again = cli.InstanceLock("7")
+    again.acquire()
+    again.release()
+
+
 def test_a_regular_transfer_client_sends_no_instance_header(tmp_path):
     plain = TransferClient(base_url="http://x", token="t",
                            cache=InputCache(tmp_path))

@@ -57,7 +57,9 @@ agents on ONE stored credential and user data dir, such as the tasks of a
 SLURM array. It registers as ``<name>.<ID>`` (ID: given, else
 ``<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>``, ``SLURM_JOB_ID`` or random:
 :func:`derive_instance`), keeps its runs under
-``<user-data>/agent-instances/<ID>`` (deleted when it exits), and enrolls
+``<user-data>/agent-instances/<ID>`` (deleted when it exits; a second
+agent with the same ID in that user data dir exits 2 before touching it,
+:class:`InstanceLock`), and enrolls
 holding a file lock, so tasks started together with one enrollment token
 enroll once and the rest use the credential the first one stored.
 """
@@ -199,6 +201,53 @@ def resolve_instance(raw: str, env: Any = None) -> str:
             f"invalid --instance {value!r}: lower-case letters, digits and "
             "'-', at most 32 characters"))
     return value
+
+
+class InstanceBusy(RuntimeError):
+    """Another agent process holds this instance id in this user data dir."""
+
+
+class InstanceLock:
+    """``<user-data>/agent-instances/<instance>.lock``, held with a
+    non-blocking ``flock`` for the agent's whole life (#845).
+
+    The instance's runs directory belongs to the one agent process using
+    the id: a second one started with the same ``--instance`` would retire
+    the first one's spools when its runner starts and delete the directory
+    when it exits, and the first one's run could then not report its end.
+    So the second is refused before it touches anything
+    (:class:`InstanceBusy`). The lock file is removed while it is still held,
+    so a later agent creates a fresh one. Where ``fcntl`` is missing
+    (Windows) nothing is locked."""
+
+    def __init__(self, instance: str) -> None:
+        self.path = user_data_dir() / INSTANCES_DIR_NAME / f"{instance}.lock"
+        self._file: Any = None
+
+    def acquire(self) -> None:
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(self.path, "a+b")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            raise InstanceBusy(t(
+                f"另一個 agent 正以執行個體 {self.path.stem!r} 使用這個 user data "
+                "目錄；每個並行的 job 需要不同的 --instance",
+                f"another agent uses instance {self.path.stem!r} in this user "
+                "data dir; give each concurrent job its own --instance"))
+        self._file = handle
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        self.path.unlink(missing_ok=True)
+        self._file.close()  # releases the lock
+        self._file = None
 
 
 class _EnrollmentLock:
@@ -711,6 +760,16 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     wanted = parse_devices(args.devices)
     offered = {report.value for report in devices}
     instance = getattr(args, "instance", None)
+    instance_lock = None
+    if instance is not None:
+        # Before the runner exists: it retires the spools in its runs dir.
+        instance_lock = InstanceLock(instance)
+        try:
+            instance_lock.acquire()
+        except InstanceBusy as exc:
+            # Refused, like a busy name at the control plane: exit 2.
+            logger.error("%s", exc)
+            return 2
     # An instance's runs dir is its own (#845): the agents sharing this user
     # data dir would otherwise retire each other's in-flight spools.
     runner = Runner(runs_dir=(runs_dir() if instance is None
@@ -782,6 +841,7 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             import shutil
 
             shutil.rmtree(runner.runs_dir, ignore_errors=True)
+            instance_lock.release()
         logger.info("agent stopped")
 
 
