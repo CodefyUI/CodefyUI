@@ -649,16 +649,21 @@ describe('WorkersPanel', () => {
     expect(within(dialog).getByRole('article', { name: 'gpu-box' })).toBeInTheDocument();
   });
 
-  it('shows the remote agent pid, Retry for a tunnel that gave up, and a failed SSH read', async () => {
+  it('shows the remote agent pid, Retry for a failed or given-up tunnel, and a failed SSH read', async () => {
     vi.mocked(fetchSshWorkers).mockResolvedValue(sshList([
       ssh('gpu-box', { remote_pid: 4242 }),
       ssh('back-box', { remote_pid: 77, reattached: true }),
       ssh('stuck', { state: 'failed', gave_up: true, last_error: 'administratively prohibited' }),
+      ssh('waiting', { state: 'failed', gave_up: false, last_error: 'the host refused the login. Retrying' }),
+      ssh('fine', { state: 'connecting' }),
     ]));
     vi.mocked(setSshWorkerEnabled).mockResolvedValue(ssh('stuck', { state: 'connecting' }));
     const dialog = await openPanel([worker('gpu-box')]);
     expect(within(dialog).getByText('remote agent pid 4242')).toBeInTheDocument();
     expect(within(dialog).getByText('remote agent pid 77, re-attached after a dropped session')).toBeInTheDocument();
+    // #840 review: Retry also while it is still retrying a failure.
+    expect(within(within(dialog).getByRole('article', { name: 'waiting' })).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(within(within(dialog).getByRole('article', { name: 'fine' })).queryByRole('button', { name: 'Retry' })).toBeNull();
     const stuck = within(dialog).getByRole('article', { name: 'stuck' });
     await act(async () => fireEvent.click(within(stuck).getByRole('button', { name: 'Retry' })));
     expect(setSshWorkerEnabled).toHaveBeenCalledWith('stuck', true);

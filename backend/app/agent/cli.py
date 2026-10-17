@@ -574,8 +574,11 @@ def _install_stop_handlers(loop: asyncio.AbstractEventLoop,
 def run_agent(args: argparse.Namespace, control: Any, token: Any,
               devices: list[Any], token_source: str | None = None,
               mounts: dict[str, str] | None = None,
-              trust: Any = None) -> int:
-    """The agent itself: connect and serve until stopped."""
+              trust: Any = None, worker_credential: bool = False) -> int:
+    """The agent itself: connect and serve until stopped.
+
+    *worker_credential*: *token* is the credential an enrollment stored, so
+    a 401 to it stops the agent (#840)."""
     from ..config import settings
     from ..core import worker_protocol as wp
     from ..core.version import get_version
@@ -624,7 +627,8 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             trust=trust,
             on_trusted=(fingerprint_recorder(control)
                         if isinstance(control, str) else None),
-            uds=getattr(args, "uds", None))
+            uds=getattr(args, "uds", None),
+            worker_credential=worker_credential)
         return await connection.run(stop)
 
     logger.info("agent %s starting (pid %s); offering %s; mounts %s", name,
@@ -874,6 +878,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     trust = (build_trust(control, pin, stored)
              if isinstance(control, str) and is_https(control) else None)
     token_source = None
+    worker_credential = stored is not None
     if stored is not None:
         token: Any = stored.worker_token
         token_source = (f"the stored credential {stored.path} (cdui agent "
@@ -898,6 +903,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
             return 1
         control = url
+        worker_credential = True
         token_source = (f"the stored credential (cdui agent forget {url} to "
                         "enroll again)")
     if not args.daemonized:
@@ -910,7 +916,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         return _start_background(args, control, token)
     _setup_logging(args.daemonized)
     return run_agent(args, control, token, facts, token_source=token_source,
-                     mounts=mounts, trust=trust)
+                     mounts=mounts, trust=trust,
+                     worker_credential=worker_credential)
 
 
 def main(argv: list[str] | None = None) -> int:

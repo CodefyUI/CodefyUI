@@ -180,7 +180,7 @@ REVOKED_REASONS = {
 }
 
 
-def _note_revoked(ws: WebSocket) -> None:
+def _note_revoked(ws: WebSocket, provided: str | None) -> None:
     """A refused credential this server revoked (a Remove, a re-key) is
     listed under its worker's name in the Workers panel, so an agent left
     running after its worker was removed does not go unseen (#840). Any
@@ -190,8 +190,7 @@ def _note_revoked(ws: WebSocket) -> None:
     revoked = getattr(store, "revoked", None)
     if revoked is None or registry is None:
         return
-    found = revoked(ws.headers.get("x-codefyui-token")
-                    or ws.query_params.get(TOKEN_QUERY_PARAM))
+    found = revoked(provided)
     if found is None:
         return
     name, why = found
@@ -202,9 +201,14 @@ def _note_revoked(ws: WebSocket) -> None:
         name, reason, peer=ws.client.host if ws.client is not None else None)
 
 
-async def authorise(ws: WebSocket) -> Authorised | None:
-    provided = (ws.headers.get("x-codefyui-token")
-                or ws.query_params.get(TOKEN_QUERY_PARAM))
+def presented_token(ws: WebSocket) -> str | None:
+    """The token the handshake carries (header first, then the query)."""
+    return (ws.headers.get("x-codefyui-token")
+            or ws.query_params.get(TOKEN_QUERY_PARAM))
+
+
+async def authorise(ws: WebSocket,
+                    provided: str | None) -> Authorised | None:
     # Through an SSH worker's listener the peer is ssh on this machine, but
     # the client is anyone who can reach the forward's far end: never the
     # session token there (#784).
@@ -225,13 +229,14 @@ async def websocket_worker(ws: WebSocket) -> None:
     if ws.headers.get("origin"):
         await ws.close(code=4003, reason="Browsers may not connect here")
         return
-    auth = await authorise(ws)
+    provided = presented_token(ws)
+    auth = await authorise(ws, provided)
     if auth is None:
         # Not reported to the SSH launcher, even through a tunnel: this
         # side cannot tell the agent from another client of the listener.
         # The launcher acts on the agent's own report instead
         # (``ssh_launch.TOKEN_REFUSED``).
-        _note_revoked(ws)
+        _note_revoked(ws, provided)
         await refuse_token(ws)
         return
     enrolled_as = auth.worker

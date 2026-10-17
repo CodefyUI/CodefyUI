@@ -188,7 +188,7 @@ function TunnelLine({ entry }: { entry: SshWorker }) {
       >
         {t(entry.enabled ? 'workers.ssh.disable' : 'workers.ssh.enable')}
       </button>
-      {entry.enabled && entry.gave_up && (
+      {entry.enabled && (entry.gave_up || entry.state === 'failed') && (
         <button
           type="button"
           className={styles.btn}

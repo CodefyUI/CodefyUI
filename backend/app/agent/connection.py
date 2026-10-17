@@ -8,8 +8,8 @@ Per connection:
 
 1. send ``hello``; wait for ``welcome`` (``reject`` ends the agent: a refused
    token or version does not get better by retrying; so does an HTTP 401
-   to a fixed worker credential, #840, while the session token, read
-   again on each dial, is retried);
+   to the agent's stored worker credential, #840, while a session token
+   or a ``--token`` is retried);
 2. if runs survived a previous connection, send ``run_alive``;
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
@@ -172,6 +172,7 @@ class AgentConnection:
         on_trusted: Callable[[str], None] | None = None,
         facts: AgentFacts | None = None,
         uds: str | None = None,
+        worker_credential: bool = False,
     ) -> None:
         self.runner = runner
         runner.send = self.send_frame
@@ -200,6 +201,11 @@ class AgentConnection:
         self.backoff_min_s = backoff_min_s
         #: Where the token comes from, for error messages (a file path).
         self.token_source = token_source
+        #: The token is this worker's own credential, stored by an
+        #: enrollment (#780): a 401 to it means it was revoked, and the
+        #: agent stops (#840). Any other token (the session token, one
+        #: given with --token) is retried as before.
+        self.worker_credential = worker_credential
         #: Verifies the control plane over ``wss`` (#786); one without a pin
         #: (system CAs) is created at the first ``wss`` dial when none is
         #: given.
@@ -399,13 +405,11 @@ class AgentConnection:
                     logger.error(
                         "the control plane refused the token (HTTP 401); "
                         "token from %s", self.token_source)
-                    if not callable(self._token):
+                    if self.worker_credential:
                         # A worker credential the server no longer knows
                         # (the worker was removed or re-keyed, or the
                         # server's database is another one) never comes
-                        # back by retrying (#840). The session token is
-                        # read again on each dial, so a server restart
-                        # that wrote a new one is retried as before.
+                        # back by retrying (#840).
                         logger.error(
                             "stopping: this agent's credential was revoked "
                             "(the worker was removed or re-keyed in the "
@@ -415,6 +419,14 @@ class AgentConnection:
                                 self._control_url))
                         code = 2
                         break
+                    if not callable(self._token):
+                        # A token given on the command line: most likely a
+                        # session token from before the server restarted.
+                        logger.error(
+                            "if the server restarted, its session token "
+                            "changed: start the agent again with the new "
+                            "one, or without --token on the server's "
+                            "machine (it reads the token file); retrying")
                 elif status == 403:
                     # Refused for another reason (a Host or Origin check, no
                     # worker registry yet), or by a control plane that

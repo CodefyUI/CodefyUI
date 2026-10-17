@@ -102,15 +102,17 @@ forward carries to this server. Facts that shape it:
   up). A server that refuses the forward (``AllowStreamLocalForwarding`` /
   ``DisableForwarding``: an explicit refusal, or :data:`FORWARD_GIVE_UP`
   failed forwards in a row) is a final failure with that reason, until
-  Enable. So is a failure no retry can fix (#840, :func:`permanent_failure`):
-  ssh refused the login (``Permission denied``), the host name does not
-  resolve, the host key does not verify, or the remote shell cannot run
-  ``cdui`` (exit 127 / 126) -- at once when the worker has not been up
-  since it was (re)started, after :data:`PERMANENT_GIVE_UP` in a row when
-  it has (a laptop that lost its network also fails to resolve). The last
-  lines ssh and the agent wrote (those of the last attempt only), and the
-  remote agent's pid once that agent ran, are kept and shown in the
-  Workers panel.
+  Enable. So is a failure that cannot heal by itself (#840,
+  :func:`classify_failure`): the host key does not verify, or the session's
+  remote shell cannot run ``cdui`` (exit 127 / 126). A refused login
+  (``Permission denied``) or a host name that does not resolve can heal
+  by itself (an ssh-agent or keychain unlocked after login, a VPN or Wi-Fi
+  coming up), so those are retried with the usual backoff, the reason
+  shown, and end the retries only once they have lasted
+  :data:`LASTING_GIVE_UP_S` without a break. Retry (Enable on a running
+  entry) tries again at once. The last lines ssh and the agent wrote
+  (those of the last attempt only), and the remote agent's pid once that
+  agent ran, are kept and shown in the Workers panel.
 - **Stored credentials that do not fit.** The first launch on a slot this
   entry has not used before runs ``cdui agent forget`` first, so a
   credential another worker (or another control plane) left for that
@@ -198,22 +200,29 @@ FORWARD_FORBIDDEN = ("administratively prohibited", "forwarding disabled",
                      "allowstreamlocalforwarding")
 #: Forward failures this many times in a row: forwarding is not allowed.
 FORWARD_GIVE_UP = 3
-#: A permanent failure (:func:`permanent_failure`) this many times in a
-#: row gives up even on a worker that was up since its last start (#840).
-PERMANENT_GIVE_UP = 3
+#: A failure that may heal by itself (a refused login, a name that does
+#: not resolve) ends the retries once it has lasted this long, without a
+#: break (#840).
+LASTING_GIVE_UP_S = 600.0
 #: The remote shell's exit status when it cannot find, or cannot run, the
 #: command (``cdui`` at the wrong path).
 COMMAND_NOT_FOUND_EXIT = 127
 COMMAND_NOT_EXECUTABLE_EXIT = 126
-#: ssh's words for failures no retry fixes, and what to do about each.
-PERMANENT_WORDS = (
-    ("permission denied (", "the host refused the login (check the user "
-     "name and that the key works without a prompt: ssh -o BatchMode=yes "
-     "{target} true)"),
-    ("could not resolve hostname", "the host name does not resolve (check "
-     "the target, or the Host alias in ~/.ssh/config)"),
-    ("host key verification failed", "the host key does not verify (the "
-     "host is not in known_hosts, or its key changed)"),
+#: How a failure is treated (:func:`classify_failure`): ``final`` ends the
+#: retries at once, ``lasting`` once it has lasted :data:`LASTING_GIVE_UP_S`.
+FAILURE_FINAL = "final"
+FAILURE_LASTING = "lasting"
+#: ssh's words for failures a retry does not fix by itself, their kind, and
+#: what to do about each.
+FAILURE_WORDS = (
+    ("host key verification failed", FAILURE_FINAL, "the host key does not "
+     "verify (the host is not in known_hosts, or its key changed)"),
+    ("permission denied (", FAILURE_LASTING, "the host refused the login "
+     "(check the user name and that the key works without a prompt: ssh -o "
+     "BatchMode=yes {target} true)"),
+    ("could not resolve hostname", FAILURE_LASTING, "the host name does not "
+     "resolve (check the target, the Host alias in ~/.ssh/config, or this "
+     "machine's network)"),
 )
 #: The agent's words when its stored credential names another worker
 #: (``app.agent.cli.use_stored_credential``; the remote runs in English).
@@ -718,33 +727,46 @@ async def run_oneshot(launcher: SshLauncher, entry: SshWorker, command: str,
     return proc.returncode, lines
 
 
+async def _first_of(stop: asyncio.Event, wake: asyncio.Event,
+                    timeout: float) -> bool:
+    """Wait up to *timeout* for *stop* or *wake*; True when *wake* came."""
+    waiters = [asyncio.ensure_future(stop.wait()),
+               asyncio.ensure_future(wake.wait())]
+    try:
+        await asyncio.wait(waiters, timeout=timeout,
+                           return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+    return wake.is_set() and not stop.is_set()
+
+
 def next_backoff(current: float) -> float:
     return min(BACKOFF_MAX_S, max(BACKOFF_MIN_S, current * 2))
 
 
-def permanent_failure(code: int | None, lines: list[str],
-                      entry: SshWorker) -> str | None:
-    """Why a failed ssh (exit *code*, output *lines*) will fail again the
-    same way, in words with what to do, or None for one worth retrying
-    (#840): a refused login, an unknown host, a host key that does not
-    verify, a remote ``cdui`` that is missing or cannot run."""
+def classify_failure(code: int | None, lines: list[str], entry: SshWorker,
+                     *, session: bool) -> tuple[str, str] | None:
+    """``(kind, reason)`` for a failed ssh (exit *code*, output *lines*)
+    that a plain retry will not fix, or None for one worth retrying
+    (#840). ``final``: the host key does not verify, or, for the *session*
+    (not a one-shot, which never runs ``cdui``), the remote shell cannot
+    run ``cdui`` (exit 127 / 126). ``lasting``: a refused login or a host
+    name that does not resolve, which can heal by themselves."""
     lowered = " ".join(lines).lower()
-    for words, reason in PERMANENT_WORDS:
+    for words, kind, reason in FAILURE_WORDS:
         if words in lowered:
-            return reason.format(target=entry.target)
-    if code in (COMMAND_NOT_FOUND_EXIT, COMMAND_NOT_EXECUTABLE_EXIT):
-        return (f"the remote host cannot run {entry.remote_cdui} (exit "
-                f"{code}: {'not found' if code == COMMAND_NOT_FOUND_EXIT else 'not executable'}); "
-                "fix the cdui path of this SSH worker, or install CodefyUI "
-                "there with install.sh")
+            return kind, reason.format(target=entry.target)
+    if session and code in (COMMAND_NOT_FOUND_EXIT,
+                            COMMAND_NOT_EXECUTABLE_EXIT):
+        what = "not found" if code == COMMAND_NOT_FOUND_EXIT else (
+            "not executable")
+        return FAILURE_FINAL, (
+            f"the remote host cannot run {entry.remote_cdui} (exit {code}: "
+            f"{what}); fix the cdui path of this SSH worker, or install "
+            "CodefyUI there with install.sh")
     return None
-
-
-def gives_up(ever_up: bool, streak: int) -> bool:
-    """Whether a permanent failure, the *streak*-th in a row, ends the
-    retries: at once for a worker not up since its last start, after
-    :data:`PERMANENT_GIVE_UP` for one that was (#840)."""
-    return not ever_up or streak >= PERMANENT_GIVE_UP
 
 
 # ── one entry ─────────────────────────────────────────────────────────────
@@ -777,10 +799,11 @@ class SshLaunch:
         self._refused = False
         self._mismatch = False
         self._forward_failures = 0
-        #: Permanent failures in a row, and whether the worker came up since
-        #: the last :meth:`start` (#840, :func:`gives_up`).
-        self._permanent_failures = 0
-        self._ever_up = False
+        #: When (monotonic) the current unbroken run of ``lasting``
+        #: failures began, or None (#840, :func:`classify_failure`).
+        self._lasting_since: float | None = None
+        #: Set by Retry while the loop waits out its backoff: try now.
+        self._wake = asyncio.Event()
         #: The next tail line starts a new attempt's output (#840).
         self._fresh_tail = False
         #: The slot a session last attached on (the remote script printed
@@ -803,13 +826,15 @@ class SshLaunch:
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
+            # Retry on an entry still retrying: cut its backoff short.
+            self._wake.set()
             return
         self._stop = asyncio.Event()
+        self._wake = asyncio.Event()
         self.state = STATE_CONNECTING
         self.gave_up = False
         self._forward_failures = 0
-        self._permanent_failures = 0
-        self._ever_up = False
+        self._lasting_since = None
         self._task = asyncio.get_running_loop().create_task(
             self._loop(), name=f"ssh-worker-{self.entry.id}")
 
@@ -881,9 +906,9 @@ class SshLaunch:
             self.retry_at = time.time() + backoff
             logger.info("SSH worker %s: retrying in %.0f s", self.entry.id,
                         backoff)
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), backoff)
-            backoff = next_backoff(backoff)
+            woken = await _first_of(self._stop, self._wake, backoff)
+            self._wake.clear()
+            backoff = BACKOFF_MIN_S if woken else next_backoff(backoff)
 
     def _fail(self, message: str, exit_code: int | None = None) -> None:
         self.state = STATE_FAILED
@@ -925,7 +950,9 @@ class SshLaunch:
         self._refused = False
         self._mismatch = False
         self.remote_pid = None
-        self.tail.clear()
+        # The session's output replaces the prepare step's, once it has
+        # some: the card never goes blank meanwhile.
+        self._fresh_tail = True
         self.state = STATE_CONNECTING
         logger.info("SSH worker %s: ssh %s (slot %d, forward to %s)",
                     self.entry.id, self.entry.target, port, listener)
@@ -967,8 +994,7 @@ class SshLaunch:
                         self.last_error = None
                         self.exit_code = None
                         self._forward_failures = 0
-                        self._permanent_failures = 0
-                        self._ever_up = True
+                        self._lasting_since = None
                         logger.info("SSH worker %s is up", self.entry.id)
                         await self._drop_enrollment()
                     was_up = True
@@ -1030,7 +1056,7 @@ class SshLaunch:
                 return was_up
         else:
             self._forward_failures = 0
-        if self._permanent(code, tail, message, was_up):
+        if self._permanent(code, tail, message, was_up, session=True):
             return was_up
         self._fail(message, code)
         logger.warning("SSH worker %s: ssh exited with status %s: %s",
@@ -1038,19 +1064,35 @@ class SshLaunch:
         return was_up
 
     def _permanent(self, code: int | None, lines: list[str], message: str,
-                   was_up: bool = False) -> bool:
-        """Give up when the failure is one no retry fixes (#840); True if
-        it did. Otherwise the streak of such failures ends."""
-        reason = None if was_up else permanent_failure(code, lines,
-                                                       self.entry)
-        if reason is None:
-            self._permanent_failures = 0
+                   was_up: bool = False, *, session: bool = False) -> bool:
+        """Record a failure a plain retry does not fix (#840): a ``final``
+        one ends the retries; a ``lasting`` one is shown with its reason and
+        retried, and ends them once it has lasted :data:`LASTING_GIVE_UP_S`.
+        True when it recorded the failure (the caller records nothing)."""
+        found = None if was_up else classify_failure(
+            code, lines, self.entry, session=session)
+        if found is None:
+            self._lasting_since = None
             return False
-        self._permanent_failures += 1
-        if not gives_up(self._ever_up, self._permanent_failures):
-            return False
-        self._give_up(f"{reason}. Not retrying; press Retry once it is "
-                      f"fixed.\n{message}", code)
+        kind, reason = found
+        if kind == FAILURE_FINAL:
+            self._lasting_since = None
+            self._give_up(f"{reason}. Not retrying; press Retry once it is "
+                          f"fixed.\n{message}", code)
+            return True
+        now = time.monotonic()
+        if self._lasting_since is None:
+            self._lasting_since = now
+        lasted = now - self._lasting_since
+        if lasted >= LASTING_GIVE_UP_S:
+            self._give_up(f"{reason}, for {lasted / 60:.0f} min. Not "
+                          "retrying; press Retry once it is fixed.\n"
+                          f"{message}", code)
+            return True
+        self._fail(f"{reason}. Retrying; it stops if this lasts "
+                   f"{LASTING_GIVE_UP_S / 60:.0f} min. Retry tries again "
+                   f"now.\n{message}", code)
+        logger.warning("SSH worker %s: %s (retrying)", self.entry.id, reason)
         return True
 
     def _give_up(self, message: str, code: int | None) -> None:

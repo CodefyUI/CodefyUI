@@ -9,6 +9,9 @@ JSON line, to ``$FAKE_SSH_LOG`` and the first stdin line (the token) to
   -- an ssh session whose remote agent ends when its stdin does;
 - ``fail``: print an ssh authentication error and exit 255;
 - ``nohost``: print ssh's "Could not resolve hostname" and exit 255;
+- ``hostkey``: print ssh's "Host key verification failed." and exit 255;
+- ``prepare127``: exit 127 from the prepare command (a remote shell that
+  lacks a tool the prepare step runs), then hold like ``hold``;
 - ``down``: print ssh's "Connection refused" and exit 255 (a failure
   worth retrying);
 - ``nocdui``: answer the prepare command, then in the session print the
@@ -138,6 +141,13 @@ def main() -> int:
         print("ssh: Could not resolve hostname gpu-box: Name or service not "
               "known", file=sys.stderr, flush=True)
         return 255
+    if mode == "hostkey":
+        print("Host key verification failed.", file=sys.stderr, flush=True)
+        return 255
+    if mode == "prepare127" and "-R" not in argv \
+            and "codefyui-ssh: dir" in argv[-1]:
+        print("sh: 1: mkdir: not found", file=sys.stderr, flush=True)
+        return 127
     if mode == "down":
         print("ssh: connect to host gpu-box port 22: Connection refused",
               file=sys.stderr, flush=True)

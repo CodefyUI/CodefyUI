@@ -278,10 +278,33 @@ async def test_a_failing_ssh_is_retried_with_its_error_surfaced(
     ("fail", "the host refused the login"),
     ("nohost", "the host name does not resolve"),
 ])
-async def test_a_failure_no_retry_fixes_stops_the_retries(
+async def test_a_failure_that_may_heal_is_retried_with_its_reason(
         launcher, fake_ssh, monkeypatch, mode, words):
-    """#840: a refused login or an unknown host fails the same way on
-    every retry; the loop stops with the reason, and Retry starts it."""
+    """#840 review: a refused login (an ssh-agent not unlocked yet) or a
+    name that does not resolve (no network yet) can heal by itself: the
+    loop keeps retrying, the card says why and when it will stop."""
+    monkeypatch.setenv("FAKE_SSH_MODE", mode)
+    await launcher.add(_entry())
+    await _until(lambda: len(_all_calls(fake_ssh)) >= 3,
+                 "the failure was not retried")
+    view = launcher.describe("gpu-box")
+    assert view["gave_up"] is False and view["state"] == "failed"
+    assert words in view["last_error"]
+    assert "Retrying; it stops if this lasts 10 min" in view["last_error"]
+    assert view["exit_code"] == 255
+    assert len(view["tail"]) == 1
+
+
+@pytest.mark.parametrize("mode, words", [
+    ("fail", "the host refused the login"),
+    ("nohost", "the host name does not resolve"),
+])
+async def test_a_failure_that_lasts_stops_the_retries(
+        launcher, fake_ssh, monkeypatch, mode, words):
+    """#840: once it has lasted LASTING_GIVE_UP_S without a break, the loop
+    stops with the reason, also for a worker that was up before; Retry
+    starts it again."""
+    monkeypatch.setattr(ssh_launch, "LASTING_GIVE_UP_S", 0.3)
     monkeypatch.setenv("FAKE_SSH_MODE", mode)
     await launcher.add(_entry())
     await _until(lambda: launcher.describe("gpu-box")["gave_up"],
@@ -290,12 +313,53 @@ async def test_a_failure_no_retry_fixes_stops_the_retries(
     assert view["state"] == "failed" and view["retry_at"] is None
     assert words in view["last_error"] and "press Retry" in view["last_error"]
     assert view["exit_code"] == 255
-    assert len(_all_calls(fake_ssh)) == 1
+    assert len(_all_calls(fake_ssh)) >= 2
     assert len(view["tail"]) == 1
     monkeypatch.setenv("FAKE_SSH_MODE", "hold")
     await launcher.set_enabled("gpu-box", True)
     await _until(lambda: _tokens(fake_ssh), "Retry did not start it")
     assert launcher.describe("gpu-box")["gave_up"] is False
+
+
+async def test_a_break_in_the_failure_restarts_its_window(
+        launcher, fake_ssh, monkeypatch):
+    """Only an unbroken run of lasting failures ends the retries: a session
+    that came up, or another failure, starts the window again."""
+    launch = ssh_launch.SshLaunch(_entry(), launcher)
+    lines = ["ssh: Could not resolve hostname gpu-box: nodename nor "
+             "servname provided"]
+    assert launch._permanent(255, lines, "x") is True
+    first = launch._lasting_since
+    assert first is not None and not launch.gave_up
+    assert launch._permanent(255, ["Connection refused"], "y") is False
+    assert launch._lasting_since is None
+    assert launch._permanent(255, lines, "x", was_up=True) is False
+    assert launch._lasting_since is None
+
+
+async def test_retry_cuts_the_backoff_short(launcher, fake_ssh, monkeypatch):
+    """Retry on an entry still retrying (a long backoff ahead) tries again
+    at once."""
+    monkeypatch.setattr(ssh_launch, "BACKOFF_MIN_S", 30.0)
+    monkeypatch.setenv("FAKE_SSH_MODE", "nohost")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["retry_at"],
+                 "it never waited to retry")
+    assert len(_all_calls(fake_ssh)) == 1
+    monkeypatch.setenv("FAKE_SSH_MODE", "hold")
+    await launcher.set_enabled("gpu-box", True)
+    await _until(lambda: _tokens(fake_ssh), "Retry did not try again now")
+
+
+async def test_a_host_key_that_does_not_verify_stops_at_once(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_MODE", "hostkey")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the retries never stopped")
+    view = launcher.describe("gpu-box")
+    assert "the host key does not verify" in view["last_error"]
+    assert len(_all_calls(fake_ssh)) == 1
 
 
 async def test_a_missing_cdui_stops_the_retries_without_a_pid(
@@ -315,20 +379,35 @@ async def test_a_missing_cdui_stops_the_retries_without_a_pid(
     assert len(_calls(fake_ssh)) == 1
 
 
-def test_a_permanent_failure_needs_a_streak_once_the_worker_was_up():
+async def test_a_prepare_step_that_exits_127_is_retried(
+        launcher, fake_ssh, monkeypatch):
+    """#840 review: 127 / 126 means a wrong cdui only in the session; the
+    prepare step never runs cdui, so its 127 is retried as any failure."""
+    monkeypatch.setenv("FAKE_SSH_MODE", "prepare127")
+    await launcher.add(_entry())
+    await _until(lambda: len(_all_calls(fake_ssh)) >= 3,
+                 "the prepare failure was not retried")
+    view = launcher.describe("gpu-box")
+    assert view["gave_up"] is False
+    assert "cannot run" not in (view["last_error"] or "")
+    assert view["exit_code"] == 127
+
+
+def test_the_failures_a_retry_does_not_fix():
     entry = _entry()
-    assert ssh_launch.permanent_failure(
-        255, ["x: Host key verification failed."], entry).startswith(
-        "the host key")
-    assert "not executable" in ssh_launch.permanent_failure(126, [], entry)
-    assert ssh_launch.permanent_failure(
+    kind, reason = ssh_launch.classify_failure(
+        255, ["x: Host key verification failed."], entry, session=False)
+    assert (kind, reason.startswith("the host key")) == (
+        ssh_launch.FAILURE_FINAL, True)
+    kind, reason = ssh_launch.classify_failure(126, [], entry, session=True)
+    assert kind == ssh_launch.FAILURE_FINAL and "not executable" in reason
+    assert ssh_launch.classify_failure(127, [], entry, session=False) is None
+    assert ssh_launch.classify_failure(
+        255, ["alice@x: Permission denied (publickey)."], entry,
+        session=True)[0] == ssh_launch.FAILURE_LASTING
+    assert ssh_launch.classify_failure(
         255, ["ssh: connect to host x port 22: Connection timed out"],
-        entry) is None
-    # Never up since its start: at once. Up before (a laptop that lost its
-    # network also fails to resolve): only after a streak.
-    assert ssh_launch.gives_up(False, 1)
-    assert not ssh_launch.gives_up(True, 1)
-    assert ssh_launch.gives_up(True, ssh_launch.PERMANENT_GIVE_UP)
+        entry, session=True) is None
 
 
 def test_the_backoff_doubles_up_to_a_minute():

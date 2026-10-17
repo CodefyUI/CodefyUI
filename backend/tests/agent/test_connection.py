@@ -371,6 +371,7 @@ async def test_a_refused_worker_credential_stops_the_agent(tmp_path, caplog):
     try:
         port = server.sockets[0].getsockname()[1]
         agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
+        agent.connection.worker_credential = True
         with caplog.at_level("ERROR", logger="app.agent.connection"):
             agent.task = asyncio.create_task(agent.connection.run(agent.stop))
             assert await asyncio.wait_for(agent.task, 10) == 2
@@ -380,6 +381,43 @@ async def test_a_refused_worker_credential_stops_the_agent(tmp_path, caplog):
         assert "stopping: this agent's credential was revoked" in errors[1]
         assert f"cdui agent forget http://127.0.0.1:{port}" in errors[1]
         assert len(dials) == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_refused_explicit_token_is_retried(tmp_path, caplog):
+    """#840 review: a token given with --token / $CODEFYUI_AGENT_TOKEN is
+    most likely a session token from before a server restart: the agent
+    says how to get the new one and keeps retrying, as it did before."""
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    dials = []
+
+    def refuse(connection, request):
+        dials.append(request.path)
+        return Response(401, "No", Headers(), b"no")
+
+    server = await websockets.serve(lambda ws: None, "127.0.0.1", 0,
+                                    process_request=refuse)
+    try:
+        port = server.sockets[0].getsockname()[1]
+        agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
+        assert agent.connection.worker_credential is False
+        assert not callable(agent.connection._token)
+        with caplog.at_level("ERROR", logger="app.agent.connection"):
+            async with agent:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and len(dials) < 2:
+                    await asyncio.sleep(0.05)
+            assert not agent.task.done() or agent.task.result() == 0
+        errors = [r.getMessage() for r in caplog.records
+                  if r.levelname == "ERROR"]
+        assert len(dials) >= 2
+        assert "the control plane refused the token" in errors[0]
+        assert "session token changed" in errors[1]
+        assert not any("stopping" in e for e in errors)
     finally:
         server.close()
         await server.wait_closed()

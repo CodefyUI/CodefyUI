@@ -43,11 +43,9 @@ or an odd answer yields ``None`` fields (or no entry) and a debug log line.
 from __future__ import annotations
 
 import dataclasses
-import functools
 import logging
 import os
 import platform
-import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -126,27 +124,48 @@ def _available_ram() -> int | None:
 
 
 def _cpu_brand_darwin() -> str | None:
+    """``machdep.cpu.brand_string`` through ``sysctlbyname``: an in-process
+    call, so the probe never waits on a subprocess (it may run on the event
+    loop, #840)."""
     try:
-        out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
-                             capture_output=True, text=True, timeout=2,
-                             check=False).stdout
-    except (OSError, subprocess.SubprocessError):
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib",
+                           use_errno=True)
+        key = b"machdep.cpu.brand_string"
+        size = ctypes.c_size_t(0)
+        if libc.sysctlbyname(key, None, ctypes.byref(size), None, 0) != 0 \
+                or size.value == 0:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctlbyname(key, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+    except (OSError, AttributeError):
         return None
-    return out.strip() or None
+    return buf.value.decode("utf-8", "replace").strip() or None
+
+
+#: /proc/cpuinfo keys that name the processor, best first: x86 and most ARM
+#: kernels say ``model name``, POWER says ``cpu``, older ARM kernels
+#: ``Hardware`` (the SoC) or ``Processor``. ``Model`` is never used: on a
+#: Raspberry Pi it names the board.
+_CPUINFO_KEYS = ("model name", "cpu", "hardware", "processor")
 
 
 def _cpu_brand_linux() -> str | None:
+    found: dict[str, str] = {}
     try:
         with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 key, _, value = line.partition(":")
-                # x86 says "model name"; some ARM kernels only "Model".
-                if key.strip().lower() in ("model name", "model") \
-                        and not value.strip().isdigit() and value.strip():
-                    return value.strip()
+                key, value = key.strip().lower(), value.strip()
+                # "processor : 0" is the core index on x86 and ARM.
+                if key in _CPUINFO_KEYS and value and not value.isdigit():
+                    found.setdefault(key, value)
     except OSError:
         return None
-    return None
+    return next((found[key] for key in _CPUINFO_KEYS if key in found), None)
 
 
 def _cpu_brand_windows() -> str | None:
@@ -162,16 +181,27 @@ def _cpu_brand_windows() -> str | None:
     return str(value).strip() or None
 
 
-@functools.lru_cache(maxsize=1)
+#: The brand string, once a probe found one; a probe that found nothing is
+#: tried again next time (#840).
+_cpu_brand: str | None = None
+
+
 def cpu_name() -> str:
     """The CPU's brand string (``Apple M3``, ``AMD EPYC 7763 64-Core
     Processor``), for the device lists (#840); the architecture
     (``platform.processor()``, ``platform.machine()``) when the system does
-    not say, which is all ``arm`` / ``x86_64`` told before."""
+    not say, which is all ``arm`` / ``x86_64`` told before. Every probe is
+    in-process (no subprocess), so a call on the event loop is cheap."""
+    global _cpu_brand
+    if _cpu_brand is not None:
+        return _cpu_brand
     probe = {"darwin": _cpu_brand_darwin, "win32": _cpu_brand_windows}.get(
         sys.platform, _cpu_brand_linux)
-    return (probe() or platform.processor() or platform.machine()
-            or "CPU")
+    brand = probe()
+    if brand:
+        _cpu_brand = brand
+        return brand
+    return platform.processor() or platform.machine() or "CPU"
 
 
 def _cpu_fact() -> DeviceFact:
