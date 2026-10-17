@@ -28,10 +28,10 @@ A run reaches a worker through its target: **Queue on...** next to **Run**, `cdu
 1. **Install CodefyUI on the GPU server, in the same version as the control plane.** Check the control plane's version with `cdui --version`, then on the GPU server:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | CODEFYUI_RELEASE_TAG=3.0.2 bash
+   curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | CODEFYUI_RELEASE_TAG=<version> bash
    ```
 
-   Use the version `cdui --version` printed. A different version is refused when the agent connects ([Keeping workers in sync](#keeping-workers-in-sync)). For a specific CUDA or ROCm build of PyTorch, see [GPU & Device Setup](/getting-started/gpu-device) (`cdui install --gpu <choice>`).
+   Replace `<version>` with the version `cdui --version` printed (for example `3.1.0`). A different version is refused when the agent connects ([Keeping workers in sync](#keeping-workers-in-sync)). For a specific CUDA or ROCm build of PyTorch, see [GPU & Device Setup](/getting-started/gpu-device) (`cdui install --gpu <choice>`).
 2. **Make the control plane reachable from the GPU server** in one of the ways under [Reaching the control plane](#reaching-the-control-plane). For the SSH way, skip the next two steps: the control plane starts the agent itself.
 3. **Generate a token.** Open **Workers** (**Settings → Execution → Workers → Manage**, or **Workers** in the Runs panel header), press **Add worker** and stay on **Another machine**. The address field starts from the address the page uses; when that is `127.0.0.1` or `localhost`, pick one of the server's other addresses or type the one the worker reaches. Choose how long the token is valid (24 hours by default) and how many agents may use it (1 by default), then press **Generate token**.
 
