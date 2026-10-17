@@ -215,7 +215,7 @@ def test_keys_name_the_runs_directory_or_a_writers_folder(data_root):
     assert transfer.run_key("r1", "checkpoint", "a.pt") == \
         "runs/r1/checkpoint/a.pt"
     assert transfer.run_key("r1", "tensorboard", "train/ev 1") == \
-        "runs/r1/tensorboard/train/ev_1"
+        f"runs/r1/tensorboard/train/ev_1{_tag('ev 1')}"
     for bad in ("", "/abs", "../up", "a/../../b"):
         with pytest.raises(ValueError):
             transfer.run_key("r1", "checkpoint", bad)
@@ -291,14 +291,193 @@ def test_a_writers_file_takes_a_name_without_hard_links(data_root,
     assert os.path.exists(models / "saved.pt")
 
 
-def test_a_run_file_is_replaced_atomically(data_root):
+def _tag(raw: str) -> str:
+    return "-" + hashlib.sha256(raw.encode()).hexdigest()[:8]
+
+
+def test_the_same_name_sent_again_replaces_its_run_file(data_root):
+    """A retry, or a file that grew since (a TensorBoard event file), is a
+    newer version of the same file: replaced atomically, never suffixed."""
     run_dir = data_root / "runs" / "r1"
     first = transfer.place_file(_tmp(run_dir, b"1"), "run", "r1",
                                 "checkpoint", "a.pt", _sha(b"1"))
-    second = transfer.place_file(_tmp(run_dir, b"1"), "run", "r1",
-                                 "checkpoint", "a.pt", _sha(b"1"))
+    second = transfer.place_file(_tmp(run_dir, b"12"), "run", "r1",
+                                 "checkpoint", "a.pt", _sha(b"12"))
     assert first == second == "runs/r1/checkpoint/a.pt"
-    assert (run_dir / "checkpoint" / "a.pt").read_bytes() == b"1"
+    assert (run_dir / "checkpoint" / "a.pt").read_bytes() == b"12"
+    assert sorted(p.name for p in (run_dir / "checkpoint").iterdir()) == \
+        ["a.pt"]
+
+
+def test_a_file_name_keeps_its_stamp_and_extension():
+    """#838: the 48-character id cap cut ``<run>-<node>-e100.pt`` to
+    ``...-e10``. A safe name keeps its length; any other name is cleaned
+    and tagged with a hash of the name as sent, one to one."""
+    from app.core.checkpoints import _safe_part
+
+    run_id = "819383fcde8d4067b2ca3a0890e7926b"
+    for epoch in (10, 100, 120):
+        name = f"{run_id}-train-plain-e{epoch}.pt"
+        assert transfer.file_part(name) == name
+    # A safe name of up to 48 characters: exactly what 3.1.0 made of it.
+    for name in ("a.pt", "x" * 48, "é" * 48, "events.out.tfevents.1.h.2.0"):
+        assert transfer.file_part(name) == _safe_part(name) == name
+    # The longest name a checkpoint builder makes fits whole.
+    longest = f"{'r' * 48}-{'n' * 48}-e{2 ** 31}b{2 ** 31}.pt"
+    assert transfer.file_part(longest) == longest
+    # A name cleaning changes is tagged before its extension, so it never
+    # meets the safe name it cleans to.
+    assert transfer.file_part("a b.pt") == f"a_b{_tag('a b.pt')}.pt"
+    assert transfer.file_part("a_b.pt") == "a_b.pt"
+    assert transfer.file_part("..") == f"unnamed{_tag('..')}"
+    # What the 48-character cap still does to an id component.
+    assert transfer.run_key("r" * 60, "checkpoint", "a.pt") == \
+        f"runs/{'r' * 48}/checkpoint/a.pt"
+    # Over the cap: cut in the middle, tagged, stamp and extension kept.
+    long_a = "x" * 300 + "-e10.pt"
+    long_b = "x" * 300 + "-e100.pt"
+    cut_a, cut_b = transfer.file_part(long_a), transfer.file_part(long_b)
+    assert cut_a != cut_b
+    assert cut_a.endswith(f"-e10{_tag(long_a)}.pt")
+    assert cut_b.endswith(f"-e100{_tag(long_b)}.pt")
+    assert len(cut_a) == transfer.MAX_FILE_NAME
+    # A tighter limit (the path budget): still the stamp, still distinct.
+    short_a = transfer.file_part(long_a, 30)
+    short_b = transfer.file_part(long_b, 30)
+    assert len(short_a) == len(short_b) == 30 and short_a != short_b
+    assert "-e10-" in short_a and "-e100-" in short_b
+    with pytest.raises(transfer.NameTooLong):
+        transfer.file_part(long_a, transfer.MIN_FILE_NAME - 1)
+    # Multi-byte characters: capped in bytes too, the stamp kept.
+    wide = transfer.file_part("模" * 200 + "-e7.pt")
+    assert len(wide.encode()) <= transfer.MAX_FILE_NAME_BYTES
+    assert wide.endswith(f"-e7{_tag('模' * 200 + '-e7.pt')}.pt")
+    # The same name always gives the same result; no state.
+    assert transfer.file_part(long_a) == cut_a
+
+
+@pytest.mark.parametrize("limit", [32, 40, 51])
+def test_a_shortened_event_file_keeps_its_tfevents_start(limit):
+    """TensorBoard finds event files by ``tfevents`` in the name."""
+    name = "events.out.tfevents.1697040000.Meow-QAQ-Jump.12345.0"
+    cut = transfer.file_part(name, limit)
+    assert len(cut) == limit
+    assert cut.startswith("events.out.tfevents.")
+    assert cut.endswith(f"{_tag(name)}.0")
+    assert transfer.file_part(name) == name
+
+
+def test_two_names_never_share_a_run_file(data_root):
+    """Two names that clean alike (#838) get their own keys, each one the
+    same every time; folders the same, part by part."""
+    run_dir = data_root / "runs" / "r1"
+
+    def put(kind: str, name: str, data: bytes) -> str:
+        return transfer.place_file(_tmp(run_dir, data), "run", "r1", kind,
+                                   name, _sha(data))
+
+    spaced = put("checkpoint", "a b.pt", b"epoch 10")
+    plain = put("checkpoint", "a_b.pt", b"epoch 100")
+    assert spaced == f"runs/r1/checkpoint/a_b{_tag('a b.pt')}.pt"
+    assert plain == "runs/r1/checkpoint/a_b.pt"
+    assert put("checkpoint", "a b.pt", b"epoch 10 again") == spaced
+    assert transfer.key_path("r1", spaced).read_bytes() == b"epoch 10 again"
+    assert transfer.key_path("r1", plain).read_bytes() == b"epoch 100"
+    assert put("tensorboard", "tb run/ev", b"1") == \
+        f"runs/r1/tensorboard/tb_run{_tag('tb run')}/ev"
+    assert put("tensorboard", "tb_run/ev", b"2") == \
+        "runs/r1/tensorboard/tb_run/ev"
+    assert put("tensorboard", "tb run/sub/ev2", b"3") == \
+        f"runs/r1/tensorboard/tb_run{_tag('tb run')}/sub/ev2"
+    # run_key predicts every key.
+    assert transfer.run_key("r1", "tensorboard", "tb run/sub/ev2") == \
+        f"runs/r1/tensorboard/tb_run{_tag('tb run')}/sub/ev2"
+    assert not list(data_root.rglob(".incoming-*"))
+
+
+def test_a_run_file_needs_no_hard_links(data_root, monkeypatch):
+    """``place=run`` moves the file with ``os.replace`` (no ``os.link``),
+    so a filesystem without hard links behaves the same."""
+    def no_links(*_: Any) -> None:
+        raise OSError("hard links not supported")
+
+    monkeypatch.setattr(transfer.os, "link", no_links)
+    run_dir = data_root / "runs" / "r1"
+    for name, data in (("a b.pt", b"1"), ("a_b.pt", b"2"), ("a b.pt", b"3")):
+        transfer.place_file(_tmp(run_dir, data), "run", "r1", "checkpoint",
+                            name, _sha(data))
+    assert {p.name: p.read_bytes() for p in (run_dir / "checkpoint").iterdir()
+            } == {f"a_b{_tag('a b.pt')}.pt": b"3", "a_b.pt": b"2"}
+
+
+def test_a_long_path_is_shortened_to_the_budget_or_refused(data_root,
+                                                          monkeypatch):
+    """A Windows control plane without long paths holds 259 UTF-16 code
+    units; the last name is shortened to what its folder leaves, and a
+    folder that leaves too little is refused (a ValueError: the route's
+    400)."""
+    run_dir = data_root / "runs" / "r1"
+    name = "819383fcde8d4067b2ca3a0890e7926b-train-plain-e100.pt"
+    room = len(str(run_dir / "checkpoint")) + 1 + 40
+    monkeypatch.setattr(transfer, "PATH_BUDGET", room)
+    keys = [transfer.place_file(_tmp(run_dir, d), "run", "r1", "checkpoint",
+                                n, _sha(d))
+            for n, d in ((name, b"100"), (name.replace("e100", "e10"),
+                                          b"10"))]
+    assert len(set(keys)) == 2
+    for key in keys:
+        assert len(str(transfer.key_path("r1", key))) <= room
+        assert key.endswith(".pt")
+    assert "-e100-" in keys[0] and "-e10-" in keys[1]
+    assert keys == [transfer.run_key("r1", "checkpoint", n)
+                    for n in (name, name.replace("e100", "e10"))]
+    # Suffixed data-folder names fit too.
+    models = data_root / "models"
+    monkeypatch.setattr(transfer, "PATH_BUDGET", len(str(models)) + 1 + 30)
+    (models / ("x" * 30)).write_bytes(b"user's")
+    key = transfer.place_file(_tmp(models, b"new"), "data", "r1", "output",
+                              "models/" + "x" * 30, _sha(b"new"))
+    assert len(str(data_root / key)) <= len(str(models)) + 1 + 30
+    assert (data_root / key).read_bytes() == b"new"
+    # UTF-16 code units: a character outside the BMP counts two.
+    assert transfer._path_len("a\U0001F600") == 3
+    # No room left for a name: refused, nothing left behind.
+    monkeypatch.setattr(transfer, "PATH_BUDGET", len(str(run_dir)) + 10)
+    with pytest.raises(transfer.NameTooLong):
+        transfer.place_file(_tmp(run_dir, b"x"), "run", "r1", "checkpoint",
+                            name, _sha(b"x"))
+    with pytest.raises(ValueError):
+        transfer.place_file(_tmp(run_dir, b"x"), "run", "r1", "tensorboard",
+                            "d" * 100 + "/e", _sha(b"x"))
+
+
+def test_only_a_too_long_path_error_is_a_refusal(data_root, monkeypatch):
+    """ENAMETOOLONG is a refusal (400); "not found" is one only for a path
+    over the budget (how Windows reports a path over MAX_PATH), so a
+    genuine missing file still surfaces as itself."""
+    import errno
+
+    run_dir = data_root / "runs" / "r1"
+    raised: list[OSError] = []
+
+    def failing(*_: Any) -> None:
+        raise raised[0]
+
+    monkeypatch.setattr(transfer.os, "replace", failing)
+    raised[:] = [OSError(errno.ENAMETOOLONG, "File name too long")]
+    with pytest.raises(transfer.NameTooLong, match="too long"):
+        transfer.place_file(_tmp(run_dir, b"x"), "run", "r1", "checkpoint",
+                            "a.pt", _sha(b"x"))
+    raised[:] = [FileNotFoundError(errno.ENOENT, "No such file")]
+    with pytest.raises(FileNotFoundError):
+        transfer.place_file(_tmp(run_dir, b"x"), "run", "r1", "checkpoint",
+                            "a.pt", _sha(b"x"))
+    long_path = data_root / ("d" * 300)
+    monkeypatch.setattr(transfer, "PATH_BUDGET", 259)
+    assert transfer._too_long(FileNotFoundError(errno.ENOENT, "x"),
+                              long_path)
+    assert not transfer._too_long(FileNotFoundError(errno.ENOENT, "x"),
+                                  data_root / "d")
 
 
 def _receiving(directory: Path, data: bytes) -> transfer.Receiver:
@@ -617,6 +796,74 @@ async def test_an_uploaded_file_downloads_and_nothing_else_does(
     listed = (await http.get("/api/runs/r1/artifacts")).json()["artifacts"]
     assert listed[0]["backend"] == "transfer"
     assert listed[0]["relative_path"] == "runs/r1/checkpoint/a.pt"
+
+
+async def test_every_periodic_checkpoint_gets_its_own_file(http, data_root,
+                                                           monkeypatch):
+    """#838: TrainingLoop's periodic checkpoints of a run with a 32-char id
+    and a long node id, epochs past 100, through the upload route: one
+    file each, named as the worker named it, each downloading its own
+    bytes."""
+    from app.core.checkpoints import periodic_checkpoint_path
+
+    run_id = "819383fcde8d4067b2ca3a0890e7926b"
+    store = app.state.run_service.store
+    await store.create_run(graph_snapshot={"nodes": []}, status="running",
+                           run_id=run_id, worker_id="gpu-1")
+    http.running[run_id] = "gpu-1"
+    node_ids = ("train-plain", "preset1__a_rather_long_training_loop_node")
+    rows = []
+    for node_id in node_ids:
+        for epoch in (*range(10, 130, 10), 1000):
+            name = periodic_checkpoint_path(run_id, node_id,
+                                            epoch=epoch).name
+            data = f"{node_id} epoch {epoch}".encode()
+            response = await _upload(http, "token-gpu-1", run_id=run_id,
+                                     data=data, name=name, sha=_sha(data))
+            assert response.status_code == 200, response.text
+            key = response.json()["path"]
+            assert key == f"runs/{run_id}/checkpoint/{name}"
+            row = await store.add_artifact(run_id, "checkpoint", key,
+                                           backend="transfer",
+                                           worker_id="gpu-1")
+            rows.append((row.id, name, data))
+    assert len({name for _, name, _ in rows}) == len(rows) == 26
+    for artifact_id, name, data in rows:
+        got = await http.get(
+            f"/api/runs/{run_id}/artifacts/{artifact_id}/download")
+        assert got.status_code == 200 and got.content == data
+        assert name in got.headers["content-disposition"]
+
+
+async def test_a_path_over_the_limit_is_a_400(http, data_root,
+                                               monkeypatch):
+    """The agent takes a 4xx as final (``transfer_failed``) instead of
+    retrying a 500 until its window ends."""
+    monkeypatch.setattr(transfer, "PATH_BUDGET",
+                        len(str(data_root / "runs" / "r1")) + 10)
+    response = await _upload(http, "token-gpu-1", name="a" * 60 + ".pt")
+    assert response.status_code == 400
+    assert "path limit" in response.json()["detail"]
+    assert not list(data_root.rglob(".incoming-*"))
+
+
+async def test_a_key_cut_short_by_3_1_0_still_downloads(http, data_root):
+    """3.1.0 stored keys cut at 48 characters, without the extension; such
+    a row keeps downloading the file it names."""
+    old = "819383fcde8d4067b2ca3a0890e7926b-train-plain-e10"
+    path = data_root / "runs" / "r1" / "checkpoint" / old
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"epoch 100")
+    store = app.state.run_service.store
+    row = await store.add_artifact("r1", "checkpoint",
+                                   f"runs/r1/checkpoint/{old}",
+                                   backend="transfer", worker_id="gpu-1")
+    got = await http.get(f"/api/runs/r1/artifacts/{row.id}/download")
+    assert got.status_code == 200 and got.content == b"epoch 100"
+    # A new upload under the full name lands beside it.
+    response = await _upload(http, "token-gpu-1", name=f"{old}0.pt")
+    assert response.json()["path"] == f"runs/r1/checkpoint/{old}0.pt"
+    assert path.read_bytes() == b"epoch 100"
 
 
 # ── placement ─────────────────────────────────────────────────────────────
