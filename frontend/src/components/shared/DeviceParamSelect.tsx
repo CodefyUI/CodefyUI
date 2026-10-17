@@ -78,15 +78,20 @@ export function DeviceParamSelect({
   const current = selected == null ? '' : String(selected);
   const local = param.options;
   const remote = loaded ? workerDeviceChoices(workers, local) : [];
-  const onLocal = current === '' || local.some((v) => sameDevice(v, current));
-  const onWorker = remote.some((choice) => sameDevice(choice.value, current));
-  const notListed = !onLocal && !onWorker;
+  // The option that names the stored device, spelled as the option is
+  // (`mps` for a stored `mps:0`), so the select shows it; the stored value
+  // is not rewritten until someone picks another.
+  const localMatch = local.find((v) => sameDevice(v, current));
+  const remoteMatch = remote.find((choice) => sameDevice(choice.value, current))?.value;
+  const onLocal = current === '' || localMatch !== undefined;
+  const notListed = !onLocal && remoteMatch === undefined;
+  const shown = localMatch ?? remoteMatch ?? current;
 
   return (
     <div>
       <label className={styles.label}>{displayLabel}</label>
       <select
-        value={current}
+        value={shown}
         onChange={(e) => onChange(param.name, e.target.value)}
         className={`${styles.input} ${styles.select}`}
         aria-describedby={onLocal ? undefined : hintId}

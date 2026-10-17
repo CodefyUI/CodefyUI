@@ -118,6 +118,7 @@ describe('DeviceParamSelect', () => {
 
   it('mps:0 stored on a server listing mps is the same device', () => {
     render(<DeviceParamSelect param={deviceParam()} value="mps:0" onChange={vi.fn()} displayLabel="device" />);
+    expect(select().value).toBe('mps');
     expect(optionTexts()).toEqual(['auto', 'cpu', 'mps']);
     expect(screen.queryByText(/This server has no/)).toBeNull();
   });
@@ -151,6 +152,21 @@ describe('DeviceParamSelect', () => {
     expect(optionTexts()).toEqual(['auto', 'cpu', 'mps', 'cuda:0 · meow', 'cuda:1 · meow']);
     fireEvent.change(select(), { target: { value: 'cuda:1' } });
     expect(onChange).toHaveBeenCalledWith('device', 'cuda:1');
+  });
+
+  it('a stored mps on a server without MPS selects a worker mps:0', () => {
+    useWorkerStore.setState({ workers: [worker('mac', [['mps:0', 'mps']])] });
+    render(
+      <DeviceParamSelect
+        param={deviceParam({ options: ['auto', 'cpu'] })}
+        value="mps"
+        onChange={vi.fn()}
+        displayLabel="device"
+      />,
+    );
+    expect(select().value).toBe('mps:0');
+    expect(optionTexts()).toEqual(['auto', 'cpu', 'mps:0 · mac']);
+    expect(screen.getByText(/This server has no mps/)).toBeTruthy();
   });
 
   it('a stored worker card is selected in the worker group, with the hint', () => {
