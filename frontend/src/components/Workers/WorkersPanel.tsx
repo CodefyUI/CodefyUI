@@ -170,7 +170,7 @@ function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: strin
                   ? t('workers.device.sameCard.local', { device: peer.device })
                   : `${peer.worker} ${peer.device}`,
               )
-              .join(t('workers.device.sameCard.separator')),
+              .reduce((list, peer) => t('workers.device.sameCard.more', { list, peer })),
           })}
         </span>
       )}

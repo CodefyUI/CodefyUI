@@ -1174,7 +1174,7 @@ const en = {
   // One physical card offered by several workers (#842).
   'workers.device.sameCard': 'Same physical card as {peers}',
   'workers.device.sameCard.title': 'Matched by the card UUID. Runs through any of them count against one set of slots (the smallest limit) and one memory budget.',
-  'workers.device.sameCard.separator': ', ',
+  'workers.device.sameCard.more': '{list}, {peer}',
   'workers.device.sameCard.local': 'this server ({device})',
   // How a card admits runs (#788).
   'workers.policy.aria': 'How {device} admits runs',
