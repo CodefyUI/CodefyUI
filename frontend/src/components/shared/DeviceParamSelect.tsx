@@ -16,9 +16,12 @@ import styles from './ParamField.module.css';
  *    matches no option shows its first option, `auto`, which misstates the
  *    node. It is listed as stored, selectable so the browser keeps it, with
  *    a hint saying a run here falls back (and records that in its run log).
- *  - the cards of the workers this server knows, by the name a run on that
- *    worker uses (`cuda:1`), so a node can be pinned to a worker's card from
- *    a control plane without one (U1).
+ *  - the names a node can use inside a run on a worker (U1). A node's
+ *    device is a name INSIDE the run: a worker run sees the cards of its
+ *    device set as `cuda:0..N-1` in set order (#774), whichever physical
+ *    cards they are. So the select offers those in-run names, up to the
+ *    most cards any known worker has, and never a worker's physical card
+ *    (`cuda:1 · gpu-box` would promise a card the run may not get).
  */
 
 /** Whether *param* is a node `device` select (a device vocabulary). */
@@ -26,30 +29,45 @@ export function isDeviceParam(param: ParamDefinition): boolean {
   return param.param_type === 'select' && param.name === 'device' && param.options.includes('cpu');
 }
 
-/** `mps` and `mps:0` are one device; everything else compares as spelled. */
-function sameDevice(a: string, b: string): boolean {
-  const norm = (v: string) => (v === 'mps:0' ? 'mps' : v);
-  return norm(a) === norm(b);
+/**
+ * One spelling per device for comparing a stored value with an option:
+ * `mps:0` is `mps` (there is one), and `cuda:0` is `cuda` when *local* lists
+ * only the bare `cuda` (a one-card server, which lists no `cuda:N`).
+ */
+function canonical(value: string, local: readonly string[]): string {
+  if (value === 'mps:0') return 'mps';
+  if (value === 'cuda:0' && local.includes('cuda') && !local.some((v) => v.startsWith('cuda:'))) {
+    return 'cuda';
+  }
+  return value;
 }
 
-/** Accelerator values the workers offer that the local list lacks, with the
- * workers offering each, in first-seen order. */
-export function workerDeviceChoices(
-  workers: readonly WorkerInfo[],
-  local: readonly string[],
-): { value: string; workers: string[] }[] {
-  const found = new Map<string, string[]>();
+/**
+ * In-run device names the known workers make possible and the local list
+ * lacks: `cuda:0..cuda:(N-1)` for the most CUDA cards any worker has, and
+ * `mps` when a worker offers it. A string, so a component can select it
+ * from the store and re-render only when it changes (the Workers poll
+ * replaces the list every 5 s).
+ */
+export function inRunChoicesKey(workers: readonly WorkerInfo[], local: readonly string[]): string {
+  let cards = 0;
+  let mps = false;
   for (const worker of workers) {
-    for (const device of worker.devices) {
-      if (device.kind === 'cpu' || device.value === 'cpu') continue;
-      if (local.some((v) => sameDevice(v, device.value))) continue;
-      const key = [...found.keys()].find((v) => sameDevice(v, device.value)) ?? device.value;
-      const names = found.get(key) ?? [];
-      if (!names.includes(worker.name)) names.push(worker.name);
-      found.set(key, names);
-    }
+    cards = Math.max(cards, worker.devices.filter((d) => d.kind === 'cuda').length);
+    mps = mps || worker.devices.some((d) => d.kind === 'mps');
   }
-  return [...found.entries()].map(([value, names]) => ({ value, workers: names }));
+  const names = Array.from({ length: cards }, (_, i) => `cuda:${i}`);
+  if (mps) names.push('mps');
+  const have = new Set(local.map((v) => canonical(v, local)));
+  return names.filter((name) => !have.has(canonical(name, local))).join(' ');
+}
+
+/** The worker list is read once per page by whichever select mounts first. */
+let workerListRequested = false;
+
+/** Test seam: let the next mount read the worker list again. */
+export function _resetWorkerListRequestForTesting(): void {
+  workerListRequested = false;
 }
 
 export function DeviceParamSelect({
@@ -65,27 +83,33 @@ export function DeviceParamSelect({
 }) {
   const { t } = useI18n();
   const hintId = useId();
-  const workers = useWorkerStore((s) => s.workers);
-  const loaded = useWorkerStore((s) => s.loaded);
+  const local = param.options;
+  const choicesKey = useWorkerStore((s) => (s.loaded ? inRunChoicesKey(s.workers, local) : ''));
 
-  // One read when nothing has asked for the list yet; the Workers panel's
-  // poll keeps it fresh while that is open.
+  // One read per page when nothing has read the list yet; the Workers
+  // panel's poll keeps it fresh while that is open.
   useEffect(() => {
-    if (!useWorkerStore.getState().loaded) void useWorkerStore.getState().refresh();
+    if (workerListRequested || useWorkerStore.getState().loaded) return;
+    workerListRequested = true;
+    void useWorkerStore.getState().refresh();
   }, []);
 
   const selected = value ?? param.default;
   const current = selected == null ? '' : String(selected);
-  const local = param.options;
-  const remote = loaded ? workerDeviceChoices(workers, local) : [];
+  const inRun = choicesKey === '' ? [] : choicesKey.split(' ');
+  const key = canonical(current, local);
   // The option that names the stored device, spelled as the option is
   // (`mps` for a stored `mps:0`), so the select shows it; the stored value
-  // is not rewritten until someone picks another.
-  const localMatch = local.find((v) => sameDevice(v, current));
-  const remoteMatch = remote.find((choice) => sameDevice(choice.value, current))?.value;
+  // is not rewritten until someone picks another. An exact match first, so
+  // `cuda:0` on a multi-card server is its own option.
+  const localMatch = local.find((v) => v === current) ?? local.find((v) => canonical(v, local) === key);
+  const inRunMatch = inRun.find((v) => v === current || canonical(v, local) === key);
   const onLocal = current === '' || localMatch !== undefined;
-  const notListed = !onLocal && remoteMatch === undefined;
-  const shown = localMatch ?? remoteMatch ?? current;
+  const notListed = !onLocal && inRunMatch === undefined;
+  const shown = localMatch ?? inRunMatch ?? current;
+  const describedBy = [onLocal ? null : hintId, inRun.length > 0 ? `${hintId}-in-run` : null]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div>
@@ -94,7 +118,7 @@ export function DeviceParamSelect({
         value={shown}
         onChange={(e) => onChange(param.name, e.target.value)}
         className={`${styles.input} ${styles.select}`}
-        aria-describedby={onLocal ? undefined : hintId}
+        aria-describedby={describedBy || undefined}
       >
         {local.map((option) => (
           <option key={option} value={option} style={{ background: 'var(--surface-input)' }}>
@@ -106,18 +130,11 @@ export function DeviceParamSelect({
             {t('paramField.device.stored', { device: current })}
           </option>
         )}
-        {remote.length > 0 && (
-          <optgroup label={t('paramField.device.workerGroup')}>
-            {remote.map((choice) => (
-              <option
-                key={choice.value}
-                value={choice.value}
-                style={{ background: 'var(--surface-input)' }}
-              >
-                {t('paramField.device.onWorkers', {
-                  device: choice.value,
-                  workers: choice.workers.join(', '),
-                })}
+        {inRun.length > 0 && (
+          <optgroup label={t('paramField.device.inRunGroup')}>
+            {inRun.map((name) => (
+              <option key={name} value={name} style={{ background: 'var(--surface-input)' }}>
+                {name}
               </option>
             ))}
           </optgroup>
@@ -126,6 +143,11 @@ export function DeviceParamSelect({
       {!onLocal && (
         <span id={hintId} className={`${styles.hint} ${styles.hintWarning}`}>
           {t('paramField.device.notLocal', { device: current })}
+        </span>
+      )}
+      {inRun.length > 0 && (
+        <span id={`${hintId}-in-run`} className={styles.hint}>
+          {t('paramField.device.inRunHint')}
         </span>
       )}
     </div>

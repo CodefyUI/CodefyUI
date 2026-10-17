@@ -2,17 +2,19 @@
 
 ``resolve_device`` still falls back (exported scripts and saved graphs rely
 on it); ``core.device_fallback`` only reports it, and ``InProcessExecutor``
-sends each report as a ``run_warning`` of kind ``device_fallback`` before
-the graph executes. A run that meets no fallback emits nothing new.
+sends each report as a ``run_warning`` of kind ``device_fallback`` from
+``execute_graph``'s ``on_expanded``, before any node runs. A run that meets
+no fallback emits nothing new.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
 
-from app.core import device_fallback
+from app.core import device_fallback, device_utils
 from app.core.device_fallback import (
     WARNING_DEVICE_FALLBACK,
     device_fallbacks,
@@ -21,13 +23,18 @@ from app.core.device_fallback import (
 from app.core.execution_context import ExecutionContext
 
 
-def _graph(*nodes: dict[str, Any]) -> dict[str, Any]:
-    return {"nodes": list(nodes), "edges": [], "presets": [],
+def _node(node_id: str, node_type: str, **params: Any) -> dict[str, Any]:
+    return {"id": node_id, "type": node_type, "data": {"params": params}}
+
+
+def _graph(*nodes: dict[str, Any], edges=None) -> dict[str, Any]:
+    return {"nodes": list(nodes), "edges": list(edges or []), "presets": [],
             "subgraphs": []}
 
 
-def _node(node_id: str, node_type: str, **params: Any) -> dict[str, Any]:
-    return {"id": node_id, "type": node_type, "data": {"params": params}}
+def _trigger(source: str, target: str) -> dict[str, Any]:
+    return {"id": f"t-{source}-{target}", "source": source, "target": target,
+            "sourceHandle": "trigger", "type": "trigger"}
 
 
 @pytest.fixture
@@ -37,7 +44,19 @@ def cpu_only(monkeypatch):
         kind = requested.split(":")[0]
         return "cpu" if kind in ("cuda", "mps") else requested
 
-    monkeypatch.setattr(device_fallback, "resolve_device", resolve)
+    monkeypatch.setattr(device_utils, "resolve_device", resolve)
+
+
+@pytest.fixture
+def one_card(monkeypatch):
+    """A run subprocess that sees one CUDA card: every CUDA name is cuda:0."""
+    def resolve(requested: str) -> str:
+        kind = requested.split(":")[0].strip()
+        if kind == "cuda":
+            return "cuda:0"
+        return "cpu" if kind == "mps" else requested
+
+    monkeypatch.setattr(device_utils, "resolve_device", resolve)
 
 
 @pytest.mark.parametrize("requested,resolved,expected", [
@@ -53,14 +72,17 @@ def cpu_only(monkeypatch):
     ("mps:1", "mps", True),
     ("cpu", "cpu", False),
     (" CUDA:0 ", "cuda:0", False),
+    # Malformed spellings never come back as written (review item 9).
+    ("cuda:abc", "cuda:0", True),
+    ("cuda: 0", "cuda:0", True),
+    ("cuda:", "cuda:0", True),
 ])
 def test_substituted(requested, resolved, expected):
     assert substituted(requested, resolved) is expected
 
 
-def test_the_runs_own_device_falls_back(cpu_only):
-    found = device_fallbacks(_graph(), "cuda", "cpu")
-    assert found == [{
+def test_the_runs_own_device_falls_back():
+    assert device_fallbacks([], "cuda", "cpu") == [{
         "detail": ("The run asked for device cuda, which this server does "
                    "not have; it runs on cpu."),
         "node_id": None}]
@@ -69,37 +91,90 @@ def test_the_runs_own_device_falls_back(cpu_only):
 @pytest.mark.parametrize("requested", ["auto", "cpu", "", None, "cuda"])
 def test_a_run_on_the_device_it_asked_for_is_not_reported(requested):
     run_device = "cuda:0" if requested == "cuda" else "cpu"
-    assert device_fallbacks(_graph(), requested, run_device) == []
+    assert device_fallbacks([], requested, run_device) == []
 
 
-def test_check_run_false_leaves_the_runs_device_alone(cpu_only):
-    """A worker's run subprocess sees its cards renumbered (``cuda:1`` is
-    its ``cuda:0``); submit checked the set against the worker."""
-    assert device_fallbacks(_graph(), "cuda:1", "cuda:0",
-                            check_run=False) == []
+def test_check_run_false_leaves_the_runs_device_alone():
+    assert device_fallbacks([], "cuda:1", "cuda:0", check_run=False) == []
 
 
-def test_a_pinned_node_falls_back(cpu_only):
-    graph = _graph(_node("train", "TrainingLoop", device="cuda:0"))
-    assert device_fallbacks(graph, "cpu", "cpu", where="this worker") == [{
+def test_a_pinned_node_falls_back_on_the_server(cpu_only):
+    nodes = [_node("train", "TrainingLoop", device="cuda:0")]
+    assert device_fallbacks(nodes, "cpu", "cpu") == [{
         "detail": ("Node train (TrainingLoop) asks for device cuda:0, which "
-                   "this worker does not have; it runs on cpu."),
+                   "this server does not have; it runs on cpu."),
         "node_id": "train"}]
 
 
+def test_a_malformed_node_device_is_reported(one_card):
+    """Review item 9: ``cuda:abc`` lands on cuda:0 like any wrong name."""
+    nodes = [_node("a", "TrainingLoop", device="cuda:abc"),
+             _node("b", "TrainingLoop", device="cuda: 0")]
+    found = device_fallbacks(nodes, "cpu", "cpu")
+    assert [entry["node_id"] for entry in found] == ["a", "b"]
+    assert "asks for device cuda:abc" in found[0]["detail"]
+
+
+# ── in-run names on a worker (review item 1) ─────────────────────────────
+
+
+def test_a_worker_node_is_described_in_the_runs_card_names(one_card):
+    """Set ``[cuda:1]``: the run's only card is cuda:0 (the worker's cuda:1).
+    A node pinned to cuda:1 names a card the run does not have."""
+    nodes = [_node("train", "TrainingLoop", device="cuda:1")]
+    found = device_fallbacks(nodes, "cuda:1", "cuda:0", where="this worker",
+                             check_run=False, run_cards={"cuda:0": "cuda:1"})
+    assert found == [{
+        "detail": ("Node train (TrainingLoop) asks for device cuda:1; this "
+                   "run has 1 card (cuda:0 = the worker's cuda:1), so it "
+                   "runs on cuda:0."),
+        "node_id": "train"}]
+
+
+def test_a_worker_node_on_an_in_run_name_that_exists_is_quiet(one_card):
+    nodes = [_node("train", "TrainingLoop", device="cuda:0")]
+    assert device_fallbacks(nodes, "cuda:1", "cuda:0", where="this worker",
+                            check_run=False,
+                            run_cards={"cuda:0": "cuda:1"}) == []
+
+
+def test_several_cards_are_all_named(monkeypatch):
+    monkeypatch.setattr(device_utils, "resolve_device", lambda r: "cuda:0")
+    nodes = [_node("train", "TrainingLoop", device="cuda:5")]
+    found = device_fallbacks(
+        nodes, "cuda:2", "cuda:0", where="this worker", check_run=False,
+        run_cards={"cuda:0": "cuda:2", "cuda:1": "cuda:0"})
+    assert ("this run has 2 cards (cuda:0 = the worker's cuda:2, cuda:1 = "
+            "the worker's cuda:0), so it runs on cuda:0.") in found[0]["detail"]
+
+
+def test_a_cpu_run_on_a_worker_sees_no_card(cpu_only):
+    nodes = [_node("train", "TrainingLoop", device="cuda:0"),
+             _node("eval", "TrainingLoop", device="mps")]
+    found = device_fallbacks(nodes, "cpu", "cpu", where="this worker",
+                             check_run=False, run_cards={})
+    assert [entry["detail"] for entry in found] == [
+        ("Node train (TrainingLoop) asks for device cuda:0; this run has no "
+         "CUDA card, so it runs on cpu."),
+        ("Node eval (TrainingLoop) asks for device mps, which this worker "
+         "does not have; it runs on cpu.")]
+
+
+# ── guards ────────────────────────────────────────────────────────────────
+
+
 def test_auto_and_non_device_values_are_not_reported(cpu_only):
-    graph = _graph(
+    nodes = [
         _node("a", "TrainingLoop", device="auto"),
         _node("b", "TrainingLoop", device=""),
         _node("c", "TrainingLoop", device="/dev/ttyUSB0"),
         _node("d", "TrainingLoop", device=3),
         _node("e", "TrainingLoop", device="cpu"),
-        # Not a declared param: a stray key does not steer anything.
         _node("f", "Print", device="cuda"),
         _node("g", "NoSuchNodeType", device="cuda"),
         {"id": "h", "type": "TrainingLoop", "data": "broken"},
-    )
-    assert device_fallbacks(graph, "cpu", "cpu") == []
+    ]
+    assert device_fallbacks(nodes, "cpu", "cpu") == []
 
 
 def test_a_node_whose_params_cannot_be_read_is_skipped(monkeypatch,
@@ -114,8 +189,8 @@ def test_a_node_whose_params_cannot_be_read_is_skipped(monkeypatch,
     real_get = registry.get
     monkeypatch.setattr(registry, "get", lambda name: Broken
                         if name == "BrokenNode" else real_get(name))
-    graph = _graph(_node("x", "BrokenNode", device="cuda"))
-    assert device_fallbacks(graph, "cpu", "cpu") == []
+    assert device_fallbacks([_node("x", "BrokenNode", device="cuda")],
+                            "cpu", "cpu") == []
 
 
 def test_one_resolution_per_device_string(monkeypatch):
@@ -125,20 +200,32 @@ def test_one_resolution_per_device_string(monkeypatch):
         calls.append(requested)
         return "cpu"
 
-    monkeypatch.setattr(device_fallback, "resolve_device", resolve)
-    graph = _graph(_node("a", "TrainingLoop", device="cuda"),
-                   _node("b", "TrainingLoop", device="cuda"))
-    found = device_fallbacks(graph, "cpu", "cpu")
+    monkeypatch.setattr(device_utils, "resolve_device", resolve)
+    nodes = [_node("a", "TrainingLoop", device="cuda"),
+             _node("b", "TrainingLoop", device="cuda")]
+    found = device_fallbacks(nodes, "cpu", "cpu")
     assert [entry["node_id"] for entry in found] == ["a", "b"]
     assert calls == ["cuda"]
 
 
-# ── InProcessExecutor sends them as run_warning ──────────────────────────
+def test_the_check_does_not_log_the_fallback_a_second_time(caplog):
+    """Review item 6: the node logs its fallback; the pre-check must not."""
+    caplog.set_level(logging.WARNING, logger=device_utils.logger.name)
+    device_fallbacks([_node("a", "TrainingLoop", device="cuda:abc")],
+                     "cpu", "cpu")
+    assert [r for r in caplog.records
+            if r.name == device_utils.logger.name] == []
+    # The node's own resolution still logs.
+    device_utils.resolve_device("cuda:abc")
+    assert [r for r in caplog.records if r.name == device_utils.logger.name]
+
+
+# ── InProcessExecutor sends them from on_expanded ────────────────────────
 
 
 async def _execute(graph: dict[str, Any], options: dict[str, Any],
-                   device: str, *, exclusive: bool = False
-                   ) -> list[tuple[str, Any]]:
+                   device: str, *, exclusive: bool = False,
+                   run_cards=None, warn=None) -> list[tuple[str, Any]]:
     from app.core.executors import ExecutionRequest, InProcessExecutor, RunSinks
 
     seen: list[tuple[str, Any]] = []
@@ -146,69 +233,160 @@ async def _execute(graph: dict[str, Any], options: dict[str, Any],
     async def emit(event_type, payload):
         seen.append((event_type, payload))
 
-    async def warn(signal):
+    async def record(signal):
         seen.append(("run_warning", signal))
 
     async def ignore(*_: Any) -> None:
         return None
 
-    outcome = await InProcessExecutor(exclusive_process=exclusive).run(
+    await InProcessExecutor(exclusive_process=exclusive,
+                            run_cards=run_cards).run(
         ExecutionRequest(
             run_id="r", graph=graph, options=options,
             context=ExecutionContext(device=device), session=None,
             output_store=None, record_outputs=False,
             sinks=RunSinks(emit=emit, record_metrics=ignore,
-                           record_artifact=ignore, warn=warn),
+                           record_artifact=ignore, warn=warn or record),
             explicit_metric_nodes=set()))
-    # An empty graph fails ("no entry points"): what matters here is what
-    # was said before the engine looked at it.
-    assert outcome.status == "failed", outcome
     return seen
 
 
-async def test_the_executor_warns_before_the_graph_runs(cpu_only):
-    seen = await _execute(_graph(), {"device": "cuda"}, "cpu")
-    assert seen[0][0] == "run_warning"
-    signal = seen[0][1]
-    assert signal.kind == WARNING_DEVICE_FALLBACK
-    assert signal.node_id is None
-    assert "asked for device cuda" in signal.detail
-    assert sum(1 for kind, _ in seen if kind == "run_warning") == 1
+@pytest.fixture
+def probe():
+    from app.core.node_base import (
+        BaseNode,
+        DataType,
+        ParamDefinition,
+        ParamType,
+        PortDefinition,
+    )
+    from app.core.node_registry import registry
+    from app.nodes.control.start_node import StartNode
+
+    class DeviceProbeNode(BaseNode):
+        NODE_NAME = "_DeviceProbe"
+        CATEGORY = "Test"
+
+        @classmethod
+        def define_inputs(cls) -> list:
+            return []
+
+        @classmethod
+        def define_outputs(cls) -> list:
+            return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+        @classmethod
+        def define_params(cls) -> list:
+            return [ParamDefinition(
+                name="device", param_type=ParamType.SELECT, default="auto",
+                options=list(device_utils.DEVICE_PARAM_OPTIONS))]
+
+        def execute(self, inputs: dict, params: dict, *,
+                    context: Any = None) -> dict:
+            return {"value": 0}
+
+    registry.register(StartNode)
+    registry.register(DeviceProbeNode)
+    yield
+    registry._nodes.pop("_DeviceProbe", None)
 
 
-async def test_a_run_without_a_fallback_emits_no_warning():
-    seen = await _execute(_graph(), {"device": "cpu"}, "cpu")
-    assert all(kind != "run_warning" for kind, _ in seen)
+def _probe_graph(*devices: str) -> dict[str, Any]:
+    nodes = [_node("start", "Start")]
+    edges = []
+    for i, device in enumerate(devices):
+        node_id = "train" if i == 0 else f"train{i}"
+        nodes.append(_node(node_id, "_DeviceProbe", device=device))
+        edges.append(_trigger("start", node_id))
+    return _graph(*nodes, edges=edges)
 
 
-async def test_a_worker_subprocess_names_the_worker(cpu_only):
-    graph = _graph(_node("train", "TrainingLoop", device="mps"))
-    from app.core.executors import InProcessExecutor
-
-    executor = InProcessExecutor(exclusive_process=True)
-    warned: list[Any] = []
-
-    class _Sinks:
-        async def warn(self, signal):
-            warned.append(signal)
-
-    class _Request:
-        run_id = "r"
-        options = {"device": "cuda:1"}
-        context = ExecutionContext(device="cuda:0")
-        sinks = _Sinks()
-
-    _Request.graph = graph
-    await executor._warn_device_fallbacks(_Request())
-    # The run's own device is not judged there (renumbered); the node is.
-    assert [s.node_id for s in warned] == ["train"]
-    assert "this worker does not have" in warned[0].detail
+def _warnings(seen):
+    return [s for kind, s in seen if kind == "run_warning"
+            and s.kind == WARNING_DEVICE_FALLBACK]
 
 
-async def test_a_failing_check_never_fails_the_run(monkeypatch):
+async def test_the_executor_warns_before_any_node_runs(probe, cpu_only):
+    seen = await _execute(_probe_graph("cuda:0"), {"device": "cuda"},
+                          "cpu")
+    warnings = _warnings(seen)
+    assert [w.node_id for w in warnings] == [None, "train"]
+    first_node = next(i for i, (kind, _) in enumerate(seen)
+                      if kind == "node_status")
+    assert seen.index(("run_warning", warnings[-1])) < first_node
+
+
+async def test_a_run_without_a_fallback_emits_no_warning(probe):
+    seen = await _execute(_probe_graph("cpu"), {"device": "cpu"},
+                          "cpu")
+    assert _warnings(seen) == []
+
+
+async def test_a_graph_that_does_not_prepare_warns_about_nothing(probe, cpu_only):
+    """Review item 4: no entry point, so nothing runs and nothing is said."""
+    graph = _graph(_node("train", "_DeviceProbe", device="cuda"))
+    seen = await _execute(graph, {"device": "cuda"}, "cpu")
+    assert _warnings(seen) == []
+
+
+async def test_a_bypassed_or_unreachable_node_warns_about_nothing(probe, cpu_only):
+    bypassed = _node("off", "_DeviceProbe", device="cuda")
+    bypassed["data"]["bypassed"] = True
+    graph = _graph(_node("start", "Start"), bypassed,
+                   _node("island", "_DeviceProbe", device="cuda"),
+                   _node("train", "_DeviceProbe", device="cpu"),
+                   edges=[_trigger("start", "train"),
+                          _trigger("start", "off")])
+    seen = await _execute(graph, {"device": "cpu"}, "cpu")
+    assert _warnings(seen) == []
+
+
+async def test_the_graph_is_expanded_once(probe, monkeypatch, cpu_only):
+    """Review item 5: the check reads execute_graph's own expansion."""
+    from app.core import graph_engine
+
+    calls = []
+    real = graph_engine.prepare_executable_graph
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(graph_engine, "prepare_executable_graph", counting)
+    seen = await _execute(_probe_graph("cuda"), {"device": "cpu"},
+                          "cpu")
+    assert len(_warnings(seen)) == 1
+    assert len(calls) == 1
+
+
+async def test_a_worker_subprocess_uses_in_run_names(probe, one_card):
+    seen = await _execute(_probe_graph("cuda:1"),
+                          {"device": "cuda:1"}, "cuda:0", exclusive=True,
+                          run_cards={"cuda:0": "cuda:1"})
+    (warning,) = _warnings(seen)
+    assert warning.node_id == "train"
+    assert "this run has 1 card (cuda:0 = the worker's cuda:1)" \
+        in warning.detail
+
+
+async def test_a_failing_report_never_fails_the_run(probe, cpu_only, caplog):
+    """Review item 7: a sink that raises is logged; the run carries on to
+    its own outcome."""
+    async def broken(signal):
+        raise RuntimeError("sink down")
+
+    seen = await _execute(_probe_graph("cuda"), {"device": "cpu"},
+                          "cpu", warn=broken)
+    assert any(kind == "node_status" for kind, _ in seen)
+    assert "could not report device fallbacks" in caplog.text
+
+
+async def test_a_failing_check_never_fails_the_run(probe, monkeypatch):
     def boom(*_: Any, **__: Any) -> Any:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(device_fallback, "device_fallbacks", boom)
-    seen = await _execute(_graph(), {"device": "cuda"}, "cpu")
-    assert all(kind != "run_warning" for kind, _ in seen)
+    seen = await _execute(_probe_graph("cpu"), {"device": "cuda"},
+                          "cpu")
+    assert _warnings(seen) == []
+    assert any(kind == "node_status" for kind, _ in seen)

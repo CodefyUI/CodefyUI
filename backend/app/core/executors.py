@@ -194,8 +194,13 @@ class InProcessExecutor:
     ever ``shared``. The server's executor keeps the default, False.
     """
 
-    def __init__(self, *, exclusive_process: bool = False) -> None:
+    def __init__(self, *, exclusive_process: bool = False,
+                 run_cards: Mapping[str, str] | None = None) -> None:
         self.exclusive_process = exclusive_process
+        #: A worker's run subprocess (#839): each in-run CUDA name and the
+        #: worker's card it is (``{"cuda:0": "cuda:1"}``), for the
+        #: ``device_fallback`` sentence. None on the server.
+        self.run_cards = None if run_cards is None else dict(run_cards)
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph, classify the outcome and attach its peak memory.
@@ -215,30 +220,38 @@ class InProcessExecutor:
         finally:
             scope.close()
 
-    async def _warn_device_fallbacks(self, request: ExecutionRequest) -> None:
+    async def _warn_device_fallbacks(self, request: ExecutionRequest,
+                                     expanded: list[dict[str, Any]]) -> None:
         """Send a ``run_warning`` (``device_fallback``) for every device the
-        run asked for and will not get (#839). Before the graph executes,
-        so the warning precedes the work it is about. The fallback itself is
-        unchanged (``resolve_device``); a run that meets none emits nothing.
-        In a worker's run subprocess the run's own device is not judged:
-        its cards are renumbered there, and submit checked the set."""
+        run asked for and will not get (#839).
+
+        Called from ``execute_graph``'s ``on_expanded``, with the node list
+        it already expanded, before any node runs: no second expansion, and
+        a graph that does not prepare (or a bypassed node) warns about
+        nothing. The fallback itself is unchanged (``resolve_device``); a
+        run that meets none emits nothing. In a worker's run subprocess the
+        run's own device is not judged (its cards are renumbered there and
+        submit checked the set), and a CUDA node is described in the run's
+        own card names (``run_cards``). Never raises: a failure here is
+        logged and the run goes on.
+        """
         from .device_fallback import WARNING_DEVICE_FALLBACK, device_fallbacks
 
         try:
             found = device_fallbacks(
-                request.graph, request.options.get("device"),
+                expanded, request.options.get("device"),
                 request.context.device,
                 where="this worker" if self.exclusive_process
                 else "this server",
-                check_run=not self.exclusive_process)
+                check_run=not self.exclusive_process,
+                run_cards=self.run_cards)
+            for entry in found:
+                await request.sinks.warn(WarningSignal(
+                    kind=WARNING_DEVICE_FALLBACK, detail=entry["detail"],
+                    node_id=entry["node_id"]))
         except Exception:  # noqa: BLE001 -- a report, never the run's failure
-            logger.debug("run %s: device fallback check failed",
-                         request.run_id, exc_info=True)
-            return
-        for entry in found:
-            await request.sinks.warn(WarningSignal(
-                kind=WARNING_DEVICE_FALLBACK, detail=entry["detail"],
-                node_id=entry["node_id"]))
+            logger.warning("run %s: could not report device fallbacks",
+                           request.run_id, exc_info=True)
 
     async def _execute(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph and classify the outcome. Never raises but cancel."""
@@ -247,7 +260,10 @@ class InProcessExecutor:
         session = request.session
         media_ports = declared_media_ports(graph["nodes"])
         on_progress = _progress_bridge(request, media_ports)
-        await self._warn_device_fallbacks(request)
+        async def on_expanded(expanded: list[dict[str, Any]]) -> None:
+            media_ports.update(declared_media_ports(expanded))
+            await self._warn_device_fallbacks(request, expanded)
+
         try:
             # The RUN-level baseline (``seeding.seed_rngs``): anything that
             # draws outside a node's ``execute`` (preset expansion, a
@@ -268,8 +284,7 @@ class InProcessExecutor:
                     request, on_progress, media_ports),
                 # The nodes inside blocks and preset cards declare media too:
                 # read once, from the node list the run executes (#559).
-                on_expanded=lambda expanded: media_ports.update(
-                    declared_media_ports(expanded)),
+                on_expanded=on_expanded,
                 on_signal=_signal_bridge(request),
                 context=request.context,
                 error_mode=options.get("error_mode", DEFAULT_ERROR_MODE),

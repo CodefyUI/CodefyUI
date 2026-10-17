@@ -7,6 +7,7 @@ the registry is the one ``conftest`` populated (``discover=False``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import multiprocessing
 import os
 import threading
@@ -244,8 +245,55 @@ def test_children_ignore_ctrl_c():
 # ── the run subprocess works in the install's backend/ (#839) ────────────
 
 
-def test_enter_install_dir_moves_to_the_install_and_pins_relative_settings(
+@contextlib.contextmanager
+def _environ_restored():
+    """``enter_install_dir`` rewrites any relative ``CODEFYUI_*_DIR`` in
+    ``os.environ``; put the whole environment back afterwards, whatever it
+    touched (monkeypatch restores ``chdir``)."""
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(snapshot)
+
+
+@pytest.fixture
+def saved_environ():
+    with _environ_restored():
+        yield
+
+
+def test_saved_environ_undoes_what_enter_install_dir_changes(
         monkeypatch, tmp_path):
+    """Review item 10: a relative setting set OUTSIDE monkeypatch (as the
+    test process may have) is rewritten, and must not leak to later
+    tests."""
+    monkeypatch.chdir(tmp_path)
+    os.environ["CODEFYUI_ZZ_TEST_DIR"] = "relative/here"
+    with _environ_restored():
+        child.enter_install_dir(tmp_path)
+        assert os.path.isabs(os.environ["CODEFYUI_ZZ_TEST_DIR"])
+    assert os.environ["CODEFYUI_ZZ_TEST_DIR"] == "relative/here"
+    del os.environ["CODEFYUI_ZZ_TEST_DIR"]
+
+
+def test_child_run_cards_read_the_agents_environment():
+    """In-run CUDA name -> the worker's card (#839 review item 1)."""
+    from app.agent.runner import child_environment
+
+    def spec(device, devices):
+        return {"env": child_environment(device, devices)}
+
+    assert child.run_cards(spec("cuda:2", ["cuda:2", "cuda:0"])) == {
+        "cuda:0": "cuda:2", "cuda:1": "cuda:0"}
+    assert child.run_cards(spec("cpu", [])) == {}
+    assert child.run_cards(spec("cuda", [])) is None
+    assert child.run_cards({}) is None
+
+
+def test_enter_install_dir_moves_to_the_install_and_pins_relative_settings(
+        monkeypatch, tmp_path, saved_environ):
     started_in = tmp_path / "home"
     install = tmp_path / "install"
     started_in.mkdir()
@@ -277,7 +325,7 @@ def _sample_csv_graph():
 
 
 def test_a_bundled_sample_reads_from_any_starting_directory(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, saved_environ):
     """B2 of #839: an agent started over SSH runs in the home directory,
     where ``data/samples/iris.csv`` is not; the run failed with
     ``CSVReader: file not found``. In the install's directory it reads."""
