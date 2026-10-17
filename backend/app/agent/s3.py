@@ -45,7 +45,7 @@ from ..core.s3 import (
     error_code,
     make_client,
 )
-from ..core.transfer import PLACE_DATA, PLACE_RUN, clean_name, sha256_file
+from ..core.transfer import PLACE_DATA, PLACE_RUN, checked_relative, sha256_file
 from .transfer import (
     ATTEMPTS,
     OUTAGE_STATUSES,
@@ -159,11 +159,13 @@ class S3Client:
 
     def key_for(self, kind: str, name: str, place: str = PLACE_RUN) -> str:
         """The object key a file the run uploads as *kind*/*name* gets."""
-        from ..core.transfer import _part
+        from ..core.s3 import key_part
 
         prefix = self._access.prefix
         try:
-            relative = clean_name(name).as_posix()
+            # The name as the run wrote it, part for part: no part is
+            # shortened or rewritten, so two files never share a key (#838).
+            relative = checked_relative(name).as_posix()
         except ValueError:
             raise TransferError(f"refusing the output name {name!r}") \
                 from None
@@ -171,7 +173,7 @@ class S3Client:
             return f"{prefix}{OUTPUT_DIRNAME}/{relative}"
         if place != PLACE_RUN:
             raise TransferError(f"unknown place {place!r}")
-        return f"{prefix}{_part(kind)}/{relative}"
+        return f"{prefix}{key_part(kind)}/{relative}"
 
     def fetch(self, entry: Any, cancelled: Callable[[], bool] = lambda: False,
               *, client: Any = None) -> tuple[Path, bool]:

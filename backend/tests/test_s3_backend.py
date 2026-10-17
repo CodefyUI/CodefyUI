@@ -107,6 +107,10 @@ def test_the_secret_key_never_shows_in_the_settings_repr(s3_on):
 def test_keys_sit_under_the_prefix_and_a_run_owns_only_its_own(
         s3_on, monkeypatch):
     assert s3.run_prefix("r1") == "runs/r1/"
+    long_id = "a" * 100
+    assert s3.run_prefix(long_id) == f"runs/{long_id}/"  # never shortened
+    assert s3.owns_key(long_id, f"runs/{long_id}/checkpoint/{'b' * 80}.pt")
+    assert s3.key_part("../we ird") == "we_ird"
     assert s3.input_key("ab" * 32) == f"inputs/{'ab' * 32}"
     monkeypatch.setattr(settings, "S3_PREFIX", "/codefyui/lab/")
     assert s3.key_prefix() == "codefyui/lab/"

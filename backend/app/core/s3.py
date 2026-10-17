@@ -129,10 +129,15 @@ def enabled() -> bool:
 # ── keys ──────────────────────────────────────────────────────────────────
 
 
-def _part(value: str) -> str:
-    from .checkpoints import _safe_part
+def key_part(value: str) -> str:
+    """One key component from an id (a run id, an artifact kind): every
+    character outside ``[A-Za-z0-9._-]`` becomes ``_``. Never shortened:
+    ``checkpoints._safe_part`` cuts at 48 characters, which would make two
+    long names one key (#838); an object key may be 1024 bytes."""
+    cleaned = "".join(c if (c.isascii() and (c.isalnum() or c in "._-"))
+                      else "_" for c in str(value))
+    return cleaned.strip("._") or "unnamed"
 
-    return _safe_part(value)
 
 
 def key_prefix() -> str:
@@ -146,7 +151,7 @@ def key_prefix() -> str:
 
 def run_prefix(run_id: str) -> str:
     """``<prefix>runs/<run_id>/``: every object *run_id* writes."""
-    return f"{key_prefix()}{RUNS_DIRNAME}/{_part(run_id)}/"
+    return f"{key_prefix()}{RUNS_DIRNAME}/{key_part(run_id)}/"
 
 
 def input_key(sha256: str) -> str:
@@ -332,7 +337,7 @@ def issue_access(run_id: str, input_keys: Iterable[str] = ()) -> Any:
             answer = control_client("sts").assume_role(
                 RoleArn=(settings.S3_STS_ROLE_ARN
                          or "arn:aws:iam::000000000000:role/codefyui"),
-                RoleSessionName=f"codefyui-{_part(run_id)}"[:64],
+                RoleSessionName=f"codefyui-{key_part(run_id)}"[:64],
                 Policy=session_policy(settings.S3_BUCKET, prefix,
                                       input_keys),
                 DurationSeconds=int(settings.S3_STS_DURATION_S))

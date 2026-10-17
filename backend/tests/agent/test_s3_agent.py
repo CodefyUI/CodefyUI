@@ -94,6 +94,13 @@ def test_outputs_go_under_the_runs_prefix_with_their_hash(bucket, tmp_path):
                           place=tr.PLACE_DATA)
     assert saved == "runs/r1/output/models/best.pt"
     assert client.key_for("../up", "b.pt").startswith("runs/r1/")
+    # Long names keep every character (#838): no two checkpoints share a key.
+    run_id = "93ead97cebd444ddafe453ea56d34e53"
+    names = [f"{run_id}-preset1__train_loop-e{n}.pt" for n in (100, 200)]
+    keys = [client.key_for("checkpoint", n) for n in names]
+    assert keys == [f"runs/r1/checkpoint/{n}" for n in names]
+    assert client.key_for("checkpoint", "dir/模型 v2.pt") == \
+        "runs/r1/checkpoint/dir/模型 v2.pt"
     for climbing in ("../x", "a/../b.pt", "/abs"):
         with pytest.raises(tr.TransferError, match="refusing"):
             client.key_for("checkpoint", climbing)
