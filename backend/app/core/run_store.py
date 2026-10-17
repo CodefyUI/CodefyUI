@@ -982,6 +982,22 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def set_worker_seq(self, run_id: str, seq: int) -> bool:
+        """Store a worker run's acknowledged seq (#793) as
+        ``execution_facts.worker_resume.last_seq``, that key alone (one
+        ``json_set``, no read-modify-write of the document). False when the
+        run has no ``worker_resume`` to update."""
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET execution_facts = json_set("
+                "execution_facts, '$.worker_resume.last_seq', ?) "
+                "WHERE id = ? AND json_type(execution_facts, "
+                "'$.worker_resume') = 'object'",
+                (int(seq), run_id),
+            ).rowcount
+
+        return await self.db.run(_update) > 0
+
     async def record_fingerprint(self, fingerprint: dict[str, Any],
                                  digest: str | None = None) -> str:
         """Store an environment document without a run; returns its digest.

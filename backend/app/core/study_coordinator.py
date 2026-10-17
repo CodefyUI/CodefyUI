@@ -190,9 +190,6 @@ class StudyCoordinator:
         self._needs: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
-        #: Studies :meth:`recover` left unsettled because a child of theirs
-        #: was adopted after the restart (#793); settled once it ends.
-        self._awaiting_adoption: set[str] = set()
         service.add_terminal_listener(self._on_terminal)
 
     # ── plumbing ─────────────────────────────────────────────────────────
@@ -209,23 +206,19 @@ class StudyCoordinator:
             signal.notify()
 
     def _schedule_tick(self, study_id: str) -> None:
-        self._background(self.tick, study_id)
-
-    def _background(self, step: Any, study_id: str) -> None:
-        """Run ``step(study_id)`` in the background; a failure is logged."""
         if self._closed:
             return
         try:
-            task = asyncio.ensure_future(self._quietly(step, study_id))
+            task = asyncio.ensure_future(self._tick_quietly(study_id))
         except RuntimeError:  # pragma: no cover - no running loop
             return
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         task.add_done_callback(_swallow_task_result)
 
-    async def _quietly(self, step: Any, study_id: str) -> None:
+    async def _tick_quietly(self, study_id: str) -> None:
         try:
-            await step(study_id)
+            await self.tick(study_id)
         except Exception:
             logger.warning("study %s: a scheduled tick failed", study_id,
                            exc_info=True)
@@ -237,10 +230,7 @@ class StudyCoordinator:
         touched = await self.store.harvest_runs([run_id])
         for study_id in touched:
             self._notify(study_id)
-            if study_id in self._awaiting_adoption:
-                self._background(self._recover_deferred, study_id)
-            else:
-                self._schedule_tick(study_id)
+            self._schedule_tick(study_id)
 
     async def shutdown(self) -> None:
         """Stop scheduling; wait briefly for in-flight ticks. Call BEFORE
@@ -327,9 +317,6 @@ class StudyCoordinator:
             return None
         if await self._reconcile(study_id):
             self._notify(study_id)
-        if study_id in self._awaiting_adoption:
-            # Settled once its adopted children end (#793), not advanced.
-            return study
         study = await self._advance(study)
         self._notify(study_id)
         return study
@@ -612,10 +599,11 @@ class StudyCoordinator:
         every study the previous process left active. Returns how many.
 
         A study with a child the run service adopted (#793: a worker run
-        that waits for its worker to come back) is not settled yet: it
-        waits until no adopted child is active any more, which is at most
-        the resume grace, and is then settled the same way
-        (:meth:`_recover_deferred`). Meanwhile it schedules nothing.
+        that waits for its worker to come back) is not settled: that child
+        is still active, so the study carries on as any study with an
+        active child does, and its ticks decide what follows when the
+        child ends (a success counts; an ``interrupted`` child interrupts
+        the study, which then waits for a resume).
         """
         settled = 0
         for study_id in await self.store.list_study_ids(STUDY_ACTIVE):
@@ -625,9 +613,8 @@ class StudyCoordinator:
                     continue
                 await self._reconcile(study_id)
                 if await self._has_adopted_child(study_id):
-                    self._awaiting_adoption.add(study_id)
-                    logger.info("study %s: waiting for its adopted worker "
-                                "run(s) before it is settled", study_id)
+                    logger.info("study %s carries on: a child of it was "
+                                "taken over from its worker", study_id)
                     continue
                 await self._settle_recovered(study_id, study)
                 settled += 1
@@ -644,25 +631,6 @@ class StudyCoordinator:
         return any(a.status in ATTEMPT_ACTIVE and a.run_id is not None
                    and self.service.is_active(a.run_id)
                    for a in current.values())
-
-    async def _recover_deferred(self, study_id: str) -> None:
-        """Settle a study :meth:`recover` deferred, once none of its
-        adopted children is active (#793)."""
-        async with self._lock(study_id):
-            if study_id not in self._awaiting_adoption:
-                return
-            await self._reconcile(study_id)
-            if await self._has_adopted_child(study_id):
-                return
-            self._awaiting_adoption.discard(study_id)
-            study = await self.store.get_study(study_id)
-            if study is None or study.status not in STUDY_ACTIVE:
-                return
-            await self._settle_recovered(study_id, study)
-            logger.warning("study %s: settled after its adopted worker "
-                           "run(s) ended", study_id)
-        self._notify(study_id)
-        await self._auto_resume(study_id)
 
     async def _settle_recovered(self, study_id: str,
                                 study: StudyRecord) -> None:

@@ -807,6 +807,8 @@ class WorkerRegistry:
                             worker.name)
                 if run.detached_at is not None:
                     run.detached_at = run.detached_wall = None
+                    # Back: a later drop is an ordinary one (#793).
+                    run.adopted = False
                     run.inbox.put_nowait((WORKER_RECONNECTED,))
             else:
                 self._end(worker, run, "the reconnected agent does not have it")
@@ -864,6 +866,17 @@ class WorkerRegistry:
         self._ensure_watchdog()
         return run
 
+    def end_waiting(self, worker_id: str, run_id: str, reason: str) -> bool:
+        """End *run_id* now if it waits for *worker_id* to come back (a
+        drop, or adopted after a restart): this server is shutting down
+        and nothing will come back for it here (#793). True if ended."""
+        worker = self._workers.get(worker_id) or self._adopted.get(worker_id)
+        run = None if worker is None else worker.running.get(run_id)
+        if run is None or run.detached_at is None:
+            return False
+        self._end(worker, run, reason)
+        return True
+
     def claim_adopted(self, run_id: str) -> WorkerRun | None:
         """The run :meth:`adopt` took over as *run_id*, once: its inbox
         holds what happened to it meanwhile (an end included)."""
@@ -884,6 +897,14 @@ class WorkerRegistry:
         worker = self._workers.get(worker_id)
         if worker is not None:
             worker.running.pop(run_id, None)
+        # A run adopted for a worker not known yet (#793): its placeholder
+        # must not hand a run nothing reads to the worker's connection.
+        self._unclaimed.pop(run_id, None)
+        placeholder = self._adopted.get(worker_id)
+        if placeholder is not None:
+            placeholder.running.pop(run_id, None)
+            if not placeholder.running:
+                del self._adopted[worker_id]
         if finished:
             now = self._clock()
             self._recently_closed[run_id] = now

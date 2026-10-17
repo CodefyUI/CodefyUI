@@ -36,8 +36,9 @@ received — each links to the release it was published as.
   run's metrics. A worker that does not come back within
   `CODEFYUI_WORKER_RESUME_GRACE_S` ends the run `interrupted`, saying the
   server restarted. Local runs and queued rows are retired as before, a
-  transfer run's uploads continue, and a study waits for its adopted child
-  before it is settled.
+  transfer run's uploads continue, and a study keeps an adopted child as an
+  active one. Rows started by 3.1.0, which recorded no resume point, are
+  retired as before.
 
 ## [3.1.0] — 2026-10-17
 

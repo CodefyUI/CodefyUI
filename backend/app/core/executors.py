@@ -1048,8 +1048,9 @@ class _Acks:
     Before an ack goes out, ``sinks.record_worker_seq`` makes the frames it
     covers durable and persists the seq (#793): the agent forgets what is
     acknowledged, so a restarted server must have all of it, and knows
-    where to resume (*recorded*, for an adopted run). A frame recorded
-    after the last persisted seq is delivered again after a restart.
+    where to resume (*recorded*, for an adopted run). No ack goes out when
+    that fails. A frame recorded after the last persisted seq is delivered
+    again after a restart.
     """
 
     def __init__(self, executor: WorkerExecutor, request: ExecutionRequest,
@@ -1080,24 +1081,31 @@ class _Acks:
         self.cancel_timer()
         if self.recorded <= self.acked:
             return
-        self.acked = self.recorded
-        await self._persist(self.acked)
-        await self._send(self.acked)
+        seq = self.recorded
+        if not await self._persist(seq):
+            # Not acknowledged: the agent keeps the frames, so a restart
+            # that resumes after the stored seq still finds them. The next
+            # frame (or run_finished) tries again.
+            return
+        self.acked = seq
+        await self._send(seq)
 
-    async def _persist(self, seq: int) -> None:
-        """``sinks.record_worker_seq(seq)``; a failure is logged and the
-        ack still goes out (what was recorded stays recorded; a restart
-        would only see some frames twice)."""
+    async def _persist(self, seq: int) -> bool:
+        """``sinks.record_worker_seq(seq)``. False when it failed (logged):
+        the frames up to *seq* must then not be acknowledged."""
         record = self._request.sinks.record_worker_seq
         if record is None:
-            return
+            return True
         try:
             await record(seq)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 -- observability
-            logger.warning("run %s: could not persist seq %d",
-                           self._request.run_id, seq, exc_info=True)
+        except Exception:  # noqa: BLE001 -- retried at the next ack
+            logger.warning("run %s: could not persist seq %d; not "
+                           "acknowledging it yet", self._request.run_id, seq,
+                           exc_info=True)
+            return False
+        return True
 
     async def resend(self) -> None:
         """Repeat the last ack (its first may not have reached the agent)."""

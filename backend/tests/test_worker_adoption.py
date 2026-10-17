@@ -315,6 +315,7 @@ async def test_local_and_queued_rows_are_retired_as_before(db, tmp_path):
     for run_id, worker, status in (("local-run", "local", "running"),
                                    ("queued-run", "box", "queued"),
                                    ("any-run", "any", "queued"),
+                                   ("legacy-run", "box", "running"),
                                    ("box-run", "box", "running")):
         await store.create_run(run_id=run_id, graph_snapshot=_graph(),
                                options={}, worker_id=worker)
@@ -322,18 +323,20 @@ async def test_local_and_queued_rows_are_retired_as_before(db, tmp_path):
             await store.mark_running(run_id, queue_key=(
                 "cpu" if worker == "local" else f"{worker}/cpu"),
                 worker_id=worker, devices=None if worker == "local"
-                else ["cpu"], execution_facts={})
+                else ["cpu"], execution_facts=(
+                    {WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}} if run_id == "box-run" else {}))
     await first.close()
     second = db()
-    assert await second.service.recover_interrupted() == 3
-    for run_id in ("local-run", "queued-run", "any-run"):
+    assert await second.service.recover_interrupted() == 4
+    # ``legacy-run`` recorded no resume point (a 3.1.0 row): its slots
+    # cannot be known, so it is retired rather than double-booking a card.
+    for run_id in ("local-run", "queued-run", "any-run", "legacy-run"):
         record = await store.get_run(run_id)
         assert record.status == "interrupted", run_id
         assert (await store.get_events(run_id))[-1].type == "execution_stopped"
     adopted = await store.get_run("box-run")
     assert adopted.status == "disconnected"
     assert second.service.active_run_ids() == ["box-run"]
-    # A row from before ``worker_resume`` was recorded: one slot per device.
     assert second.service.slot_usage(("box", "cpu"))["taken"] == 1
 
 
@@ -346,7 +349,7 @@ async def test_without_a_grace_or_registry_every_row_is_retired(
                            options={}, worker_id="box")
     await store.mark_running("box-run", queue_key="box/cpu",
                              worker_id="box", devices=["cpu"],
-                             execution_facts={})
+                             execution_facts={WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}})
     if registry:
         service = db(grace=grace).service
     else:
@@ -364,7 +367,8 @@ async def test_a_run_whose_log_already_closed_is_not_adopted(db, tmp_path):
     await store.create_run(run_id="box-run", graph_snapshot=_graph(),
                            options={}, worker_id="box")
     await store.mark_running("box-run", queue_key="box/cpu", worker_id="box",
-                             devices=["cpu"], execution_facts={})
+                             devices=["cpu"],
+                             execution_facts={WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}})
     await store.append_event("box-run", "execution_complete", None)
     await first.close()
     second = db()
@@ -395,7 +399,8 @@ async def test_a_run_that_cannot_be_adopted_ends_interrupted(db, tmp_path,
     await store.create_run(run_id="box-run", graph_snapshot=_graph(),
                            options={}, worker_id="box")
     await store.mark_running("box-run", queue_key="box/cpu", worker_id="box",
-                             devices=["cpu"], execution_facts={})
+                             devices=["cpu"],
+                             execution_facts={WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}})
     await first.close()
     second = db()
 
@@ -451,7 +456,8 @@ async def test_stopping_an_unknown_workers_adopted_run_ends_it(db, tmp_path):
     await store.create_run(run_id="box-run", graph_snapshot=_graph(),
                            options={}, worker_id="box")
     await store.mark_running("box-run", queue_key="box/cpu", worker_id="box",
-                             devices=["cpu"], execution_facts={})
+                             devices=["cpu"],
+                             execution_facts={WORKER_RESUME_KEY: {"last_seq": 0, "slots": [["box", "cpu"]]}})
     await first.close()
     second = db()
     await second.service.recover_interrupted()
@@ -484,8 +490,11 @@ async def _study_status(coordinator: StudyCoordinator, study_id: str) -> str:
 
 
 @pytest.mark.parametrize("outcome", ["succeeded", "expired"])
-async def test_a_study_waits_for_its_adopted_child_before_it_settles(
+async def test_a_study_with_an_adopted_child_carries_on_with_it(
         db, tmp_path, outcome):
+    """The adopted child is an ordinary active child: a read (tick) before
+    it ends changes nothing and strands nothing; its success lets the
+    study continue to the end, its interruption interrupts the study."""
     clock = [1000.0]
     first = db(studies=True)
     async with _client() as client:
@@ -510,37 +519,46 @@ async def test_a_study_waits_for_its_adopted_child_before_it_settles(
         await second.service.recover_interrupted()
         assert await second.coordinator.recover() == 0
         assert await _study_status(second.coordinator, study_id) == "running"
-        # A read repairs, but schedules nothing while the child is adopted.
-        await second.coordinator.tick(study_id)
+        # A read reconciles the study first (the review's stuck case): it
+        # stays running and schedules nothing past its budget of one.
+        response = await client.get(f"/api/studies/{study_id}")
+        assert response.status_code == 200
         assert await _study_status(second.coordinator, study_id) == "running"
         assert second.service.active_run_ids() == [assign.run_id]
 
         if outcome == "succeeded":
-            await spooler.produce(wp.Metrics(
-                run_id=assign.run_id, seq=spooler._next(), points=[
-                    wp.MetricPointReport(name="val_loss", value=0.5, step=1,
-                                         node_id="x")]))
             await spooler.produce(spooler.frame("finished"))
             async with aconnect_ws(_path(), client) as ws:
                 agent = FakeAgent(ws)
                 await agent.hello()
                 await spooler.resume(agent)
                 await _terminal(second.service, assign.run_id)
+                nxt = await agent.recv()
+                while not isinstance(nxt, wp.Assign):
+                    nxt = await agent.recv()
+                assert nxt.options["seed"] == 12  # repetition 2
+                await agent.finish_run(nxt)
+                await _terminal(second.service, nxt.run_id)
+                wanted = "succeeded"
+                for _ in range(250):
+                    if await _study_status(second.coordinator,
+                                           study_id) == wanted:
+                        break
+                    await asyncio.sleep(0.02)
         else:
             clock[0] += 301
             second.registry.check()
             await _terminal(second.service, assign.run_id)
-
-        for _ in range(250):
-            if await _study_status(second.coordinator, study_id) \
-                    == "interrupted":
-                break
-            await asyncio.sleep(0.02)
-    # Repetition 2 never ran: the study waits for a resume, as after any
-    # restart, with the adopted child's outcome recorded on its attempt.
-    assert await _study_status(second.coordinator, study_id) == "interrupted"
+            wanted = "interrupted"
+            for _ in range(250):
+                if await _study_status(second.coordinator,
+                                       study_id) == wanted:
+                    break
+                await asyncio.sleep(0.02)
+    assert await _study_status(second.coordinator, study_id) == wanted
     attempts = await second.coordinator.store.list_attempts(study_id)
     statuses = sorted(a.status for a in attempts)
-    expected = "succeeded" if outcome == "succeeded" else "interrupted"
-    assert statuses == sorted([expected, "pending"])
-    assert second.coordinator._awaiting_adoption == set()
+    if outcome == "succeeded":
+        assert statuses == ["succeeded", "succeeded"]
+    else:
+        assert statuses == ["interrupted", "pending"]

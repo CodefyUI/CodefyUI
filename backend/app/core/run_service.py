@@ -2523,6 +2523,7 @@ class RunService:
         subscribers: set[RunSubscription] | None = None,
         node_types: frozenset[str] | None = None,
         needs: dict[str, Any] | None = None,
+        resume_seq: int | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -2607,6 +2608,7 @@ class RunService:
             subscribers=set() if subscribers is None else subscribers,
             node_types=node_types,
             needs=needs,
+            resume_seq=resume_seq,
         )
         # The task is created BEFORE anything is mutated, so this method is
         # all-or-nothing: if scheduling the task fails (a closed loop during
@@ -2735,7 +2737,9 @@ class RunService:
             # it before the first node rather than after it: the engine's
             # earliest checkpoint is inside the level loop, and "cancelled"
             # should never mean "ran one node first".
-            if active.context.should_stop():
+            # Not for an adopted worker run (#793): it is executing on its
+            # worker, which must be told to stop (``WorkerExecutor``).
+            if active.resume_seq is None and active.context.should_stop():
                 await self._finalize(active, self._stopped_status(active), None)
                 return
             # Taken BEFORE ``_begin`` so a seeded run waiting its turn is
@@ -2746,7 +2750,10 @@ class RunService:
             gate = (contextlib.nullcontext() if on_a_worker(active.placement)
                     else run_exclusion().for_seed(options.get("seed")))
             async with gate:
-                if not await self._begin(active, graph, options):
+                # An adopted worker run (#793) began under the previous
+                # process: its row and start event are already there.
+                if active.resume_seq is None \
+                        and not await self._begin(active, graph, options):
                     return
                 status, error = await self._execute(active, graph, options,
                                                     session)
@@ -3044,9 +3051,12 @@ class RunService:
                 self.store.update_execution_facts, active.run_id),
             record_worker_connection=functools.partial(
                 self._record_worker_connection, active),
+            # Only read by a restarted server's adoption (#793): with no
+            # resume grace nothing would ever read it.
             record_worker_seq=(functools.partial(self._record_worker_seq,
                                                  active)
-                               if on_a_worker(active.placement) else None),
+                               if on_a_worker(active.placement)
+                               and self._resume_grace() > 0 else None),
         )
 
     @staticmethod
@@ -3064,9 +3074,12 @@ class RunService:
         flush the metric buffer, so nothing the agent then forgets lives
         only in this process's memory, and persist *seq* for a restart."""
         await self._flush_metrics(active, force=True)
-        await self.store.update_execution_facts(
-            active.run_id, {WORKER_RESUME_KEY: self._worker_resume(active,
-                                                                   seq)})
+        await self.store.set_worker_seq(active.run_id, seq)
+
+    def _resume_grace(self) -> float:
+        """``CODEFYUI_WORKER_RESUME_GRACE_S`` as the registry has it; 0
+        without a registry."""
+        return float(getattr(self._workers, "resume_grace_s", 0) or 0)
 
     async def _record_worker_connection(self, active: _ActiveRun,
                                         connected: bool) -> None:
@@ -3641,40 +3654,34 @@ class RunService:
         adopts (#793); none without a worker registry or a resume grace.
 
         The placement is rebuilt from the row: its worker and devices, and
-        the slots ``execution_facts.worker_resume`` recorded (a row from
-        before it was recorded holds ``(worker, device)`` per device). A
-        row naming no device cannot be placed and is retired instead.
+        the slots ``execution_facts.worker_resume`` recorded. A row without
+        that record (started by a server before 3.2, or one that never
+        recorded it) is retired as before: its slots cannot be known (a
+        same-host card's slot is this process's, ``("local", "cuda:0")``),
+        and guessing them would let another run onto its card. So is a
+        row naming no device.
         """
-        workers = self._workers
-        if workers is None or getattr(workers, "resume_grace_s", 0) <= 0:
+        if self._workers is None or self._resume_grace() <= 0:
             return []
         adoptable = []
         for record in await self.store.list_worker_runs_in_flight(
                 closing_types=CLOSING_EVENTS):
             devices = [d for d in (record.devices or []) if isinstance(d, str)]
-            if not devices and record.queue_key \
-                    and WORKER_QUEUE_SEPARATOR in record.queue_key:
-                devices = [record.queue_key.split(WORKER_QUEUE_SEPARATOR,
-                                                  1)[1]]
-            if not devices:
-                logger.warning("run %s on worker %s names no device; it "
-                               "cannot be adopted", record.id,
-                               record.worker_id)
-                continue
             facts = (record.execution_facts
                      if isinstance(record.execution_facts, dict) else {})
             resume = facts.get(WORKER_RESUME_KEY)
             resume = resume if isinstance(resume, dict) else {}
             last_seq = resume.get("last_seq")
-            if not isinstance(last_seq, int) or isinstance(last_seq, bool) \
-                    or last_seq < 0:
-                last_seq = 0
             slots = tuple(
                 (slot[0], slot[1]) for slot in resume.get("slots") or ()
                 if isinstance(slot, list) and len(slot) == 2
                 and all(isinstance(part, str) and part for part in slot))
-            if not slots:
-                slots = tuple((record.worker_id, d) for d in devices)
+            if not devices or not slots or not isinstance(last_seq, int) \
+                    or isinstance(last_seq, bool) or last_seq < 0:
+                logger.warning("run %s on worker %s did not record where it "
+                               "can be resumed; it cannot be adopted",
+                               record.id, record.worker_id)
+                continue
             adoptable.append((record, Placement(
                 worker_id=record.worker_id, devices=tuple(devices),
                 slots=slots), last_seq))
@@ -3683,60 +3690,28 @@ class RunService:
     def _adopt(self, record: RunRecord, placement: Placement,
                last_seq: int) -> None:
         """Drive *record*, a worker run a previous process left in flight
-        (#793). SYNCHRONOUS, like :meth:`_start`: the registry, the slots
-        and the task are set up with no await in between.
+        (#793). SYNCHRONOUS: the registry, the slots and the task are set
+        up with no await in between.
 
-        The run holds its slots again (its subprocess still holds the
-        cards) and its row stays active, so retention keeps its files and
-        the transfer backend still takes its uploads. ``WorkerExecutor``
+        Started through :meth:`_start` like any run, with *last_seq* as its
+        resume point: it holds its slots again (its subprocess still holds
+        the cards) and its row stays active, so retention keeps its files
+        and the transfer backend still takes its uploads. ``_drive`` skips
+        ``_begin`` (the previous process did it) and ``WorkerExecutor``
         sends no ``assign``: it waits for the worker's reconnect and
         replay, after *last_seq*.
         """
         options = record.options if isinstance(record.options, dict) else {}
-        context = ExecutionContext(
-            execution_id=record.id,
-            device=placement.devices[0],
-            max_workers=settings.MAX_PARALLEL_NODES,
-            graph_id=str(options.get("graph_id") or ""),
-            seed=options.get("seed"),
-            deterministic=bool(options.get("deterministic")),
-        )
-        row_queue_key = record.queue_key or (
-            f"{placement.worker_id}{WORKER_QUEUE_SEPARATOR}"
-            f"{placement.devices[0]}")
-        active = _ActiveRun(
-            run_id=record.id, context=context, signal=_Broadcast(),
-            queue_key=row_queue_key, lane=DEFAULT_LANE, placement=placement,
-            row_queue_key=row_queue_key, resume_seq=last_seq)
-        task = asyncio.create_task(self._drive_adopted(active, options),
-                                   name=f"run:{record.id}")
+        self._workers.adopt(placement.worker_id, record.id,
+                            last_seq=last_seq)
         try:
-            self._workers.adopt(placement.worker_id, record.id,
-                                last_seq=last_seq)
+            self._start(record.id, {}, options,
+                        queue_key=record.queue_key or placement.devices[0],
+                        lane=DEFAULT_LANE, placement=placement,
+                        resume_seq=last_seq)
         except BaseException:
-            task.cancel()  # not started yet: it never runs
+            self._workers.close_run(placement.worker_id, record.id)
             raise
-        for slot in placement.slots:
-            self._slots[slot] = self._slots.get(slot, 0) + 1
-        active.task = task
-        self._runs[record.id] = active
-
-    async def _drive_adopted(self, active: _ActiveRun,
-                             options: dict[str, Any]) -> None:
-        """The task of an adopted worker run (#793): ``_drive`` without the
-        start, which happened under the previous process."""
-        try:
-            status, error = await self._execute(active, {}, options, None)
-            await self._finalize(active, status, error)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("run %s: unhandled error in the run task",
-                             active.run_id)
-        finally:
-            active.close()
-            self._runs.pop(active.run_id, None)
-            self._release_admission(active)
 
     async def scrub_stored_secrets(self) -> int:
         """Remove values an older build persisted. Returns rows changed.
@@ -3875,6 +3850,17 @@ class RunService:
             if entry.stop_reason is None:
                 entry.stop_reason = STOP_REASON_INTERRUPTED
             entry.context.cancel()
+            # A worker run waiting for its worker (a drop, or adopted after
+            # a restart, #793) cannot be told to stop: end it now, with a
+            # terminal row, instead of after the grace with none (which the
+            # next start would adopt again). Its worker is told to stop it
+            # when it next connects (an untracked run).
+            if on_a_worker(entry.placement) and self._workers is not None:
+                worker_id = entry.placement.worker_id
+                self._workers.end_waiting(
+                    worker_id, entry.run_id,
+                    f"this server is shutting down and worker {worker_id} "
+                    "is not connected")
         try:
             tasks = [entry.task for entry in active if entry.task is not None]
             if not tasks:
