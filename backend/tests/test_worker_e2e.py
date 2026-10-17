@@ -338,22 +338,26 @@ def test_a_dropped_connection_does_not_end_a_real_run(live_server, tmp_path):
         worker = registry.get("drop-box")
         asyncio.run_coroutine_threadsafe(worker.close(), loop).result(10)
 
-        seen_row = seen_status = False
+        # The agent re-dials after about 1 s, so the disconnected window is
+        # short: read ``worker_status`` in process, where a slow runner's
+        # HTTP round trips cannot miss it. The row's ``disconnected`` turn
+        # is the ``worker_disconnected`` warning checked below.
+        service = app.state.run_service
+        seen_status = False
+        deadline = time.monotonic() + 30
+        while not seen_status and time.monotonic() < deadline:
+            seen_status = (service.worker_status(run_id) or {}).get(
+                "state") == "disconnected"
+            time.sleep(0.005)
+        assert seen_status
+
         record: dict[str, Any] = {}
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             record = client.get(f"/api/runs/{run_id}").json()
-            # The row follows the executor; ``worker_status`` follows the
-            # registry, which learns of the reconnect first. Each is seen
-            # disconnected at some point, not necessarily in one read.
-            seen_row = seen_row or record["status"] == "disconnected"
-            seen_status = seen_status or (
-                record.get("worker_status") or {}).get("state") == (
-                    "disconnected")
             if record["status"] in TERMINAL:
                 break
             time.sleep(0.05)
-        assert seen_row and seen_status
         assert record["status"] == "succeeded", record
         assert agent.poll() is None  # the agent never restarted
         points = client.get(f"/api/runs/{run_id}/metrics").json()["metrics"]
