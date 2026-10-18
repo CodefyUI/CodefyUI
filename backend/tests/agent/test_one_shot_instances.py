@@ -88,7 +88,8 @@ def test_only_an_instance_takes_the_enrollment_lock(monkeypatch, tmp_path):
         assert held is None  # nullcontext
     lock = cli.enrollment_lock(_args(one_shot=True, instance="3"))
     with lock:
-        assert lock.path.exists()
+        # No fcntl on Windows: nothing is locked there, by design.
+        assert lock.path.exists() or sys.platform == "win32"
     assert lock._file is None
 
 
