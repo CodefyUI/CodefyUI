@@ -532,7 +532,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
                     provenance=provenance, sweep_id=sweep.id,
                     sweep_variant=variant.index,
                     needs=variant_needs[position],
-                    memory_budget=variant_budgets[position])
+                    memory_budget=variant_budgets[position].budget,
+                    graph_digest=variant_budgets[position].digest)
                 # Patched once per variant, not once at the end: a single
                 # patch at the end would lose every id if the loop broke
                 # half-way, which is precisely the case RULING 2 says must
