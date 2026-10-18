@@ -117,6 +117,75 @@ def _err(zh: str, en: str) -> None:
     print(t(zh, en), file=sys.stderr, flush=True)
 
 
+# ── working directory (#839) ──────────────────────────────────────────────
+
+#: Environment variables that name a path: every path-typed ``Settings``
+#: field (``CODEFYUI_<FIELD>``) and the user-data root ``config`` reads
+#: directly. Read off the model, not guessed from a name suffix, so a flag
+#: such as ``CODEFYUI_PREFER_WORKING_DIR=true`` is never taken for a path.
+def path_setting_envs() -> list[str]:
+    import typing
+
+    from ..config import Settings
+
+    names = ["CODEFYUI_USER_DATA_DIR"]
+    for field_name, field in Settings.model_fields.items():
+        annotation = field.annotation
+        if annotation is Path or Path in typing.get_args(annotation):
+            names.append(f"CODEFYUI_{field_name}")
+    return names
+
+
+def pin_path_settings(env: dict[str, str], base: Path) -> None:
+    """Make every relative path setting in *env* absolute against *base*,
+    the directory the agent was started in, so it keeps naming that place
+    once the agent (or its daemon) works in ``backend/``."""
+    for name in path_setting_envs():
+        value = env.get(name)
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            env[name] = str(base / path)
+
+
+def enter_backend_dir() -> bool:
+    """Work in the install's ``backend/``, as the server and the background
+    agent (``_start_background``) do; False, with the reason printed, when
+    that is not possible.
+
+    A graph's relative paths resolve against the working directory: the
+    bundled samples (``data/samples/iris.csv``) are spelled that way, and
+    ``core.run_needs`` lets such a run go to a worker without the ``data``
+    mount because every install has them. ``cdui agent start --foreground``
+    (what an SSH worker runs) kept the directory it was started in, the
+    home directory over SSH, so the sample was looked for there (#839).
+    The run subprocesses inherit this directory. Relative path settings
+    given at start keep meaning "relative to where I started"
+    (:func:`pin_path_settings`).
+    """
+    try:
+        here = Path.cwd()
+    except OSError as exc:
+        _err(f"錯誤：無法讀取目前的工作目錄（{exc}）；請在存在的目錄中啟動 agent。",
+             f"Error: cannot read the current working directory ({exc}); "
+             "start the agent from a directory that exists.")
+        return False
+    env = dict(os.environ)
+    pin_path_settings(env, here)
+    try:
+        os.chdir(_BACKEND_DIR)
+    except OSError as exc:
+        _err(f"錯誤：無法切換到安裝目錄 {_BACKEND_DIR}（{exc}）。",
+             f"Error: cannot change to the install's directory "
+             f"{_BACKEND_DIR} ({exc}).")
+        return False
+    for name in path_setting_envs():
+        if env.get(name) != os.environ.get(name):
+            os.environ[name] = env[name]
+    return True
+
+
 # ── paths and same-host defaults ──────────────────────────────────────────
 
 
@@ -503,6 +572,9 @@ def _start_background(args: argparse.Namespace, control: Any,
     argv = [sys.executable, "-m", "app.agent", "start", "--foreground",
             DAEMON_FLAG]
     env = dict(os.environ)
+    # The daemon starts in backend/ (below); relative path settings keep
+    # naming the directory this command ran in (#839).
+    pin_path_settings(env, Path.cwd())
     if isinstance(control, str):
         argv += ["--control", control]
     if getattr(args, "uds", None):
@@ -914,6 +986,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             return 2
     if not args.foreground:
         return _start_background(args, control, token)
+    if not enter_backend_dir():
+        return 1
     _setup_logging(args.daemonized)
     return run_agent(args, control, token, facts, token_source=token_source,
                      mounts=mounts, trust=trust,

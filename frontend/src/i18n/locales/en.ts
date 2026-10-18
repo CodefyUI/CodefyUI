@@ -644,6 +644,12 @@ const en = {
   'paramField.uploadFailed': 'Upload failed',
   'paramField.downloadFailed': 'Download failed',
   'paramField.secretHint': 'Session only, cleared on save. Store secrets in an environment variable.',
+  // A node's device select (#839): a stored device this server does not
+  // list, and the workers' cards by the name a run on that worker uses.
+  'paramField.device.stored': '{device} (not on this server)',
+  'paramField.device.notLocal': 'This server has no {device}: a run here falls back to another device and notes it in the run log.',
+  'paramField.device.inRunGroup': "Inside a run's device set",
+  'paramField.device.inRunHint': 'A worker run sees the cards of its device set as cuda:0, cuda:1, ... in set order; a node names them that way.',
 
   // ParamField (in-canvas Python, core#131)
   'paramField.code.checking': 'checking...',
@@ -1319,6 +1325,17 @@ const en = {
   'runs.workerMsg.reason.sshStopped': 'SSH worker {worker} was stopped',
   'runs.workerMsg.transferFailed': 'cannot send this run\'s input files to worker {worker}: {detail}',
   'runs.workerMsg.removed': 'worker {worker} was removed',
+  // A device the run or a node asked for and did not get (#839).
+  'runs.deviceFallback.run': 'The run asked for device {requested}, which {where} does not have; it runs on {device}.',
+  'runs.deviceFallback.node': 'Node {node} ({type}) is set to device {requested}, which {where} does not have; when it executes, it runs on {device}.',
+  'runs.deviceFallback.nodeInRun': 'Node {node} ({type}) is set to device {requested}; this run has {cards}, so when it executes, it runs on {device}.',
+  'runs.deviceFallback.nodeNoCard': 'Node {node} ({type}) is set to device {requested}; this run has no CUDA card, so when it executes, it runs on {device}.',
+  'runs.deviceFallback.server': 'this server',
+  'runs.deviceFallback.worker': 'this worker',
+  'runs.deviceFallback.cardsOne': '1 card ({map})',
+  'runs.deviceFallback.cardsMany': '{count} cards ({map})',
+  'runs.deviceFallback.card': "{inRun} = the worker's {physical}",
+  'runs.deviceFallback.cardJoin': '{a}, {b}',
   'runs.workerMsg.reason.sshDeleted': 'the SSH worker was deleted',
   'runs.workerMsg.reason.sshDeletedRevoked': 'the SSH worker was deleted and its credential revoked',
   'runs.workerMsg.reason.rekeyed': 'the worker was re-keyed; its old credential no longer works',
