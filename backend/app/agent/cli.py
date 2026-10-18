@@ -106,6 +106,13 @@ INSTANCE_AUTO = "auto"
 #: Held while an ``--instance`` agent looks for, or creates, the stored
 #: credential, so the tasks of an array started together enroll once.
 ENROLL_LOCK_NAME = "enroll.lock"
+#: :class:`InstanceLock` tries this many times, this far apart, before an
+#: instance id counts as held by another agent.
+INSTANCE_LOCK_TRIES = 5
+INSTANCE_LOCK_RETRY_S = 0.2
+#: A left instance directory (:func:`retire_left_instances`) in which
+#: nothing changed for this long is retired once its lock is free.
+INSTANCE_LEFTOVER_AGE_S = 24 * 3600.0
 
 #: How long ``start`` watches a fresh background agent before reporting it.
 START_SETTLE_S = 1.5
@@ -175,7 +182,8 @@ def instance_runs_dir(instance: str) -> Path:
 def derive_instance(env: Any = None) -> str:
     """``--instance`` without a value (#845): ``<array job>-<task>`` in a
     SLURM array task (unique across arrays started on one credential), else
-    ``SLURM_JOB_ID``, else six random hex characters."""
+    ``SLURM_JOB_ID``, else 16 random hex characters (64 bits: agents started
+    by hand on one credential do not collide)."""
     env = os.environ if env is None else env
     array_job = str(env.get("SLURM_ARRAY_JOB_ID") or "").strip()
     task = str(env.get("SLURM_ARRAY_TASK_ID") or "").strip()
@@ -186,7 +194,7 @@ def derive_instance(env: Any = None) -> str:
         return job
     import secrets
 
-    return secrets.token_hex(3)
+    return secrets.token_hex(8)
 
 
 def resolve_instance(raw: str, env: Any = None) -> str:
@@ -207,85 +215,184 @@ class InstanceBusy(RuntimeError):
     """Another agent process holds this instance id in this user data dir."""
 
 
-class InstanceLock:
-    """``<user-data>/agent-instances/<instance>.lock``, held with a
-    non-blocking ``flock`` for the agent's whole life (#845).
+class FileLock:
+    """An exclusive ``flock`` on *path* (#845), for the locks the agents
+    sharing one user data dir take: :class:`InstanceLock`, and the
+    enrollment lock (:func:`enrollment_lock`, a context manager).
+
+    :meth:`acquire` re-checks after locking that *path* is still the file
+    it locked (same inode), and starts over if not: :meth:`release` with
+    *unlink* removes the file while still holding it, and an agent that
+    opened it just before then would otherwise hold a lock on a file no
+    one else can see, beside one that took the fresh file. Where ``fcntl``
+    is missing (Windows) nothing is locked: :meth:`acquire` returns True
+    and :attr:`held` stays False."""
+
+    def __init__(self, path: Path, *, unlink: bool = False) -> None:
+        self.path = path
+        self.unlink = unlink
+        self._file: Any = None
+
+    @property
+    def held(self) -> bool:
+        return self._file is not None
+
+    def acquire(self, *, blocking: bool) -> bool:
+        """Take the lock. Non-blocking: False if another holds it."""
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            handle = open(self.path, "a+b")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (
+                    0 if blocking else fcntl.LOCK_NB))
+            except OSError:
+                handle.close()
+                return False
+            try:
+                same = os.stat(self.path).st_ino == os.fstat(
+                    handle.fileno()).st_ino
+            except FileNotFoundError:
+                same = False
+            if same:
+                self._file = handle
+                return True
+            handle.close()  # unlinked while we waited: lock the new one
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        if self.unlink:
+            # Still held: see :meth:`acquire` for why that is safe.
+            self.path.unlink(missing_ok=True)
+        self._file.close()  # releases the lock
+        self._file = None
+
+    def __enter__(self) -> "FileLock":
+        self.acquire(blocking=True)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.release()
+
+
+class InstanceLock(FileLock):
+    """``<user-data>/agent-instances/<instance>.lock``, held for the agent's
+    whole life (#845).
 
     The instance's runs directory belongs to the one agent process using
     the id: a second one started with the same ``--instance`` would retire
     the first one's spools when its runner starts and delete the directory
     when it exits, and the first one's run could then not report its end.
     So the second is refused before it touches anything
-    (:class:`InstanceBusy`). The lock file is removed while it is still held,
-    so a later agent creates a fresh one. Where ``fcntl`` is missing
-    (Windows) nothing is locked."""
+    (:class:`InstanceBusy`). Tried a few times over
+    :data:`INSTANCE_LOCK_TRIES` x :data:`INSTANCE_LOCK_RETRY_S`: another
+    agent retiring this id's leftovers (:func:`retire_left_instances`)
+    holds it for a moment. Removed when released."""
 
     def __init__(self, instance: str) -> None:
-        self.path = user_data_dir() / INSTANCES_DIR_NAME / f"{instance}.lock"
-        self._file: Any = None
+        super().__init__(
+            user_data_dir() / INSTANCES_DIR_NAME / f"{instance}.lock",
+            unlink=True)
 
-    def acquire(self) -> None:
+    def acquire(self, *, blocking: bool = False) -> bool:  # type: ignore[override]
+        for attempt in range(INSTANCE_LOCK_TRIES):
+            if super().acquire(blocking=blocking):
+                return True
+            if attempt + 1 < INSTANCE_LOCK_TRIES:
+                time.sleep(INSTANCE_LOCK_RETRY_S)
+        raise InstanceBusy(t(
+            f"另一個 agent 正以執行個體 {self.path.stem!r} 使用這個 user data "
+            "目錄；每個並行的 job 需要不同的 --instance",
+            f"another agent uses instance {self.path.stem!r} in this user "
+            "data dir; give each concurrent job its own --instance"))
+
+
+def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
+    """Delete the runs directories of instances that are gone (#845).
+
+    An instance's directory goes when its agent exits; one killed
+    (``SIGKILL``, the OOM killer, a node reboot, a SLURM time limit) leaves
+    it, spools and outputs included, and no later agent is that instance.
+    Each starting ``--instance`` agent retires the others' leftovers: a
+    directory whose lock is free (no agent holds the id) and in which
+    nothing changed for :data:`INSTANCE_LEFTOVER_AGE_S` (the margin for a
+    file system whose locks do not reach across machines). The outcome of
+    a leftover's run is already on the control plane: it ended
+    ``interrupted`` when that agent did not come back. Where ``fcntl`` is
+    missing (Windows) nothing is retired. Returns the retired ids."""
+    try:
+        import fcntl  # noqa: F401
+    except ImportError:  # pragma: no cover - Windows
+        return []
+    import shutil
+
+    now = time.time() if now is None else now
+    base = user_data_dir() / INSTANCES_DIR_NAME
+    try:
+        candidates = sorted(p for p in base.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    retired = []
+    for path in candidates:
+        if path.name == own or _last_change(path) > now - \
+                INSTANCE_LEFTOVER_AGE_S:
+            continue
+        lock = FileLock(base / f"{path.name}.lock", unlink=True)
+        if not lock.acquire(blocking=False):
+            continue  # an agent holds the id
         try:
-            import fcntl
-        except ImportError:  # pragma: no cover - Windows
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(self.path, "a+b")
+            shutil.rmtree(path, ignore_errors=True)
+        finally:
+            lock.release()
+        retired.append(path.name)
+    if retired:
+        logger.warning("retired %d instance director%s left by agents that "
+                       "are gone: %s", len(retired),
+                       "y" if len(retired) == 1 else "ies",
+                       ", ".join(retired))
+    return retired
+
+
+def _last_change(path: Path) -> float:
+    """The newest mtime of *path*, its entries and theirs (a run directory
+    and its spool, which grows with every frame)."""
+    newest = 0.0
+    for each in [path, *_entries(path)]:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            newest = max(newest, each.stat().st_mtime)
         except OSError:
-            handle.close()
-            raise InstanceBusy(t(
-                f"另一個 agent 正以執行個體 {self.path.stem!r} 使用這個 user data "
-                "目錄；每個並行的 job 需要不同的 --instance",
-                f"another agent uses instance {self.path.stem!r} in this user "
-                "data dir; give each concurrent job its own --instance"))
-        self._file = handle
-
-    def release(self) -> None:
-        if self._file is None:
-            return
-        self.path.unlink(missing_ok=True)
-        self._file.close()  # releases the lock
-        self._file = None
+            continue
+        if each is not path and each.is_dir():
+            for inner in _entries(each):
+                try:
+                    newest = max(newest, inner.stat().st_mtime)
+                except OSError:
+                    continue
+    return newest
 
 
-class _EnrollmentLock:
-    """``<user-data>/agent/enroll.lock``, held with ``flock`` (#845): the
-    tasks of one SLURM array share a user data dir, and the first to hold
-    it enrolls; the others then find the credential it stored. Where
-    ``fcntl`` is missing (Windows) nothing is locked."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._file: Any = None
-
-    def __enter__(self) -> "_EnrollmentLock":
-        try:
-            import fcntl
-        except ImportError:  # pragma: no cover - Windows
-            return self
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(self.path, "a+b")
-        fcntl.flock(self._file.fileno(), fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *_: Any) -> None:
-        if self._file is not None:
-            self._file.close()  # releases the lock
-            self._file = None
+def _entries(path: Path) -> list[Path]:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
 
 
 def enrollment_lock(args: argparse.Namespace) -> Any:
     """The lock an ``--instance`` agent holds while it looks for (and
-    perhaps creates) its credential; a no-op for every other agent."""
+    perhaps creates) its credential, so the tasks of an array started
+    together enroll once; a no-op for every other agent."""
     import contextlib
 
     from .enroll import credential_dir
 
     if getattr(args, "instance", None) is None:
         return contextlib.nullcontext()
-    return _EnrollmentLock(credential_dir(user_data_dir()) / ENROLL_LOCK_NAME)
+    return FileLock(credential_dir(user_data_dir()) / ENROLL_LOCK_NAME)
 
 
 def _server_addr_files() -> list[Path]:
@@ -770,6 +877,8 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             # Refused, like a busy name at the control plane: exit 2.
             logger.error("%s", exc)
             return 2
+        # What killed instances left behind, nobody else removes.
+        retire_left_instances(instance)
     # An instance's runs dir is its own (#845): the agents sharing this user
     # data dir would otherwise retire each other's in-flight spools.
     runner = Runner(runs_dir=(runs_dir() if instance is None
@@ -1057,66 +1166,7 @@ def setup_failed(args: argparse.Namespace) -> int:
     return EXIT_SETUP if getattr(args, "one_shot", False) else 1
 
 
-def _resolve_credential(args: argparse.Namespace, control: Any,
-                        explicit_name: str | None, pin: str | None,
-                        uds: str | None, interactive: bool,
-                        facts: list[Any]) -> Any:
-    """The token to connect with: ``(control, token, token_source,
-    trust)``, or the exit code of a start that cannot go on. Finds the
-    stored credential, else enrolls with an enrollment token; an
-    ``--instance`` agent does it holding :func:`enrollment_lock`, so the
-    tasks of an array started together enroll once (#845)."""
-    from .trust import is_https
-
-    with enrollment_lock(args):
-        stored = None
-        if isinstance(control, str):
-            try:
-                stored = use_stored_credential(args, control, explicit_name)
-            except ValueError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
-        if pin is not None and not (isinstance(control, str)
-                                    and is_https(control)):
-            _err("--ca-fingerprint 需要 https:// 控制面網址。",
-                 "--ca-fingerprint needs an https:// control URL.")
-            return 2
-        if plain_http_to_another_machine(control) and not args.daemonized \
-                and not uds:  # ssh carries the socket across the network
-            warn_plain_http(control)
-        trust = (build_trust(control, pin, stored)
-                 if isinstance(control, str) and is_https(control) else None)
-        token_source = None
-        if stored is not None:
-            token: Any = stored.worker_token
-            token_source = (f"the stored credential {stored.path} (cdui agent "
-                            f"forget {control} to enroll again)")
-        else:
-            token = resolve_token(args.token, interactive=interactive)
-        from ..core.worker_store import is_enrollment_token
-
-        if isinstance(token, str) and is_enrollment_token(token):
-            if args.daemonized:
-                print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
-                        "cdui agent start。",
-                        "The background agent was given an enrollment "
-                        "token; run cdui agent start again in a terminal."),
-                      file=sys.stderr)
-                return 2
-            from .enroll import EnrollError
-
-            url = control() if callable(control) else control
-            try:
-                token = enroll_now(args, url, token, facts, trust)
-            except (EnrollError, ValueError) as exc:
-                _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
-                return setup_failed(args)
-            control = url
-            token_source = (f"the stored credential (cdui agent forget {url} to "
-                            "enroll again)")
-    return control, token, token_source, trust
-
-def cmd_start(args: argparse.Namespace) -> int:
+def _start(args: argparse.Namespace, enrolling: Any) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
     # process and in every run subprocess (``core.resources``).
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -1135,6 +1185,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         return setup_failed(args)
     explicit_name = args.name
     from ..core import tls_fingerprint
+    from .trust import is_https
 
     try:
         pin = (tls_fingerprint.normalize(args.ca_fingerprint)
@@ -1161,11 +1212,55 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
-    outcome = _resolve_credential(args, control, explicit_name, pin, uds,
-                                  interactive, facts)
-    if isinstance(outcome, int):
-        return outcome
-    control, token, token_source, trust = outcome
+    # An --instance agent looks for, and perhaps creates, its credential
+    # holding the enrollment lock (#845): the tasks of an array started
+    # together enroll once, and the others find what the first stored.
+    enrolling.__enter__()
+    stored = None
+    if isinstance(control, str):
+        try:
+            stored = use_stored_credential(args, control, explicit_name)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if pin is not None and not (isinstance(control, str)
+                                and is_https(control)):
+        _err("--ca-fingerprint 需要 https:// 控制面網址。",
+             "--ca-fingerprint needs an https:// control URL.")
+        return 2
+    if plain_http_to_another_machine(control) and not args.daemonized \
+            and not uds:  # ssh carries the socket across the network
+        warn_plain_http(control)
+    trust = (build_trust(control, pin, stored)
+             if isinstance(control, str) and is_https(control) else None)
+    token_source = None
+    if stored is not None:
+        token: Any = stored.worker_token
+        token_source = (f"the stored credential {stored.path} (cdui agent "
+                        f"forget {control} to enroll again)")
+    else:
+        token = resolve_token(args.token, interactive=interactive)
+    from ..core.worker_store import is_enrollment_token
+
+    if isinstance(token, str) and is_enrollment_token(token):
+        if args.daemonized:
+            print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
+                    "cdui agent start。",
+                    "The background agent was given an enrollment token; run "
+                    "cdui agent start again in a terminal."), file=sys.stderr)
+            return 2
+        from .enroll import EnrollError
+
+        url = control() if callable(control) else control
+        try:
+            token = enroll_now(args, url, token, facts, trust)
+        except (EnrollError, ValueError) as exc:
+            _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
+            return setup_failed(args)
+        control = url
+        token_source = (f"the stored credential (cdui agent forget {url} to "
+                        "enroll again)")
+    enrolling.__exit__(None, None, None)
     if not args.daemonized:
         try:
             require_token(token)
@@ -1177,6 +1272,15 @@ def cmd_start(args: argparse.Namespace) -> int:
     _setup_logging(args.daemonized)
     return run_agent(args, control, token, facts, token_source=token_source,
                      mounts=mounts, trust=trust)
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    enrolling = enrollment_lock(args)
+    try:
+        return _start(args, enrolling)
+    finally:
+        # A start that stopped while it held the lock (#845) lets it go.
+        enrolling.__exit__(None, None, None)
 
 
 def main(argv: list[str] | None = None) -> int:

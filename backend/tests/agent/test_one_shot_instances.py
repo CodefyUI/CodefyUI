@@ -41,7 +41,8 @@ def test_a_slurm_array_task_is_its_array_job_and_task():
     assert cli.derive_instance({"SLURM_ARRAY_TASK_ID": "3",
                                 "SLURM_JOB_ID": "77"}) == "77"
     first, second = cli.derive_instance({}), cli.derive_instance({})
-    assert len(first) == 6 and first != second
+    # 64 random bits (review of #855): agents started by hand do not collide.
+    assert len(first) == 16 and first != second
     assert wp.INSTANCE_PATTERN.fullmatch(first)
 
 
@@ -90,7 +91,104 @@ def test_only_an_instance_takes_the_enrollment_lock(monkeypatch, tmp_path):
     with lock:
         # No fcntl on Windows: nothing is locked there, by design.
         assert lock.path.exists() or sys.platform == "win32"
-    assert lock._file is None
+        assert lock.held or sys.platform == "win32"
+    assert not lock.held
+    assert lock.path.exists() or sys.platform == "win32"  # never unlinked
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
+def test_a_start_that_stops_while_enrolling_lets_the_lock_go(monkeypatch,
+                                                             tmp_path):
+    from app.agent.enroll import credential_dir
+    from app.core.resources import DeviceFact
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_probe_facts", lambda: [DeviceFact(
+        "cpu", "cpu", None, "", None, None, "none")])
+
+    def refused(*_: Any) -> Any:
+        raise ValueError("no")
+
+    monkeypatch.setattr(cli, "use_stored_credential", refused)
+    assert cli.main(["start", "--control", "http://127.0.0.1:9", "--name",
+                     "gpu", "--devices", "cpu", "--one-shot",
+                     "--instance", "3"]) == 2
+    probe = cli.FileLock(credential_dir(tmp_path) / cli.ENROLL_LOCK_NAME)
+    assert probe.acquire(blocking=False)
+    probe.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
+def test_a_lock_unlinked_while_held_is_never_held_twice(tmp_path):
+    """Review of #855: a lock removed while held, and an agent that opened
+    it just before, would hold a lock on a file nobody else sees; a third
+    then locked the fresh file, and two agents held the "same" lock."""
+    path = tmp_path / "7.lock"
+    first = cli.FileLock(path, unlink=True)
+    assert first.acquire(blocking=False)
+    waiting = cli.FileLock(path, unlink=True)
+    took = threading.Event()
+
+    def wait() -> None:
+        waiting.acquire(blocking=True)  # opens the file first holds
+        took.set()
+
+    thread = threading.Thread(target=wait)
+    thread.start()
+    time.sleep(0.2)  # it blocks on the first one's file
+    first.release()  # unlinked, then unlocked
+    assert took.wait(5)
+    # The waiter saw its file was gone and locked the fresh one: a third
+    # agent finds it held.
+    third = cli.FileLock(path, unlink=True)
+    assert not third.acquire(blocking=False)
+    waiting.release()
+    assert third.acquire(blocking=False)
+    third.release()
+    thread.join(5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
+def test_a_starting_instance_retires_what_killed_ones_left(monkeypatch,
+                                                           tmp_path):
+    """Review of #855: an instance's directory went only when its agent
+    exited; one killed (SIGKILL, OOM, a reboot) left its spool and outputs
+    for ever."""
+    import os
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    now = time.time()
+    old = now - cli.INSTANCE_LEFTOVER_AGE_S - 60
+
+    def leftover(instance: str, when: float) -> Any:
+        run = cli.instance_runs_dir(instance) / "run1"
+        run.mkdir(parents=True)
+        (run / "agent.spool").write_text("{}\n")
+        for each in (run / "agent.spool", run, run.parent):
+            os.utime(each, (when, when))
+        return run.parent
+
+    dead = leftover("dead", old)
+    held_dir = leftover("held", old)
+    fresh = leftover("fresh", now)
+    own = leftover("mine", old)
+    busy = cli.InstanceLock("held")
+    busy.acquire()
+    # A spool that still grows is recent, however old its directory.
+    growing = leftover("growing", old)
+    os.utime(growing / "run1" / "agent.spool", (now, now))
+    (tmp_path / cli.INSTANCES_DIR_NAME / "stray.lock").touch()  # not a dir
+    try:
+        assert cli.retire_left_instances("mine", now=now) == ["dead"]
+    finally:
+        busy.release()
+    assert not dead.exists()
+    assert not (dead.parent / "dead.lock").exists()
+    for kept in (held_dir, fresh, own, growing):
+        assert kept.exists()
+    # Nothing to look at: nothing retired.
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "empty"))
+    assert cli.retire_left_instances("x") == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
@@ -205,6 +303,7 @@ def test_a_second_agent_with_the_same_instance_touches_nothing(monkeypatch,
     live = cli.instance_runs_dir("7") / "run1"
     live.mkdir(parents=True)
     (live / "spool.jsonl").write_text("{}\n")
+    monkeypatch.setattr(cli, "INSTANCE_LOCK_RETRY_S", 0.0)
     with pytest.raises(cli.InstanceBusy, match="give each concurrent job"):
         cli.InstanceLock("7").acquire()
     cli.InstanceLock("8").acquire()  # another id is another lock
@@ -261,11 +360,20 @@ def test_an_instance_removes_its_runs_dir_when_it_exits(monkeypatch,
     monkeypatch.setattr("app.agent.facts.gather",
                         lambda cancel=None: object())
     monkeypatch.setattr(cli, "_install_stop_handlers", lambda *_: None)
+    import os
+
+    left = cli.instance_runs_dir("killed") / "run0"
+    left.mkdir(parents=True)
+    old = time.time() - cli.INSTANCE_LEFTOVER_AGE_S - 60
+    os.utime(left, (old, old))
+    os.utime(left.parent, (old, old))
     args = _args(one_shot=True, instance="9", name="gpu")
     cli.check_one_shot(args)
     args.name = "gpu"
     code = cli.run_agent(args, "http://127.0.0.1:9", "t", [])
     assert code == 3  # stopped before a run: the one-shot rule
+    # What a killed instance left is retired (no fcntl: kept, by design).
+    assert left.parent.exists() == (sys.platform == "win32")
     assert seen["instance"] == "9"
     assert seen["runs_dir"] == tmp_path / cli.INSTANCES_DIR_NAME / "9"
     assert seen["cache_dir"] == tmp_path / "agent-cache"
