@@ -78,6 +78,7 @@ import asyncio
 import dataclasses
 import logging
 import multiprocessing
+import multiprocessing.connection
 import os
 import queue
 import re
@@ -1136,7 +1137,7 @@ class Runner:
             uploader.start()
         while True:
             try:
-                message = handle.events_in.recv()
+                message = _next_message(handle)
             except (EOFError, OSError):
                 break
             except Exception:  # noqa: BLE001 -- an unpicklable message
@@ -1432,6 +1433,26 @@ class Runner:
 
             prune_outputs(self.runs_dir, self.outputs_max_bytes,
                           keep=run_dir.name)
+
+
+def _next_message(handle: RunHandle) -> Any:
+    """The child's next pipe message; ``EOFError`` once there is none left.
+
+    Waits on the pipe and on the process at once (#856): the pipe's EOF
+    alone does not say the child is gone on Windows. A spawned child there
+    takes its pipe ends over (``DuplicateHandle``) only once it has
+    unpickled its arguments, so one stopped while it still starts up
+    leaves a copy of its writing end in this process, and the read would
+    never end.
+    """
+    conn = handle.events_in
+    if not conn.poll(0):
+        ready = multiprocessing.connection.wait(
+            [conn, handle.process.sentinel])
+        # Gone: what it sent before exiting is still readable.
+        if conn not in ready and not conn.poll(0):
+            raise EOFError("the run subprocess exited")
+    return conn.recv()
 
 
 def _saving(message: Any) -> bool:

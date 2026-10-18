@@ -330,6 +330,41 @@ async def test_cancel_escalates_to_terminate_and_reports_interrupted(tmp_path):
     assert await runner.cancel("deaf1") is False  # gone: nothing to cancel
 
 
+async def test_a_cancel_while_the_subprocess_starts_is_reported(tmp_path):
+    """A cancel right after ``assign``, before the child said anything
+    (#856): the subprocess is stopped while it still starts up, and the
+    run still ends with a ``run_finished``, promptly, on every OS."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.deaf_child,
+                     kill_after_s=2.0)
+    await runner.assign(_assign("early1"))
+    handle = runner.runs["early1"]
+    started = time.monotonic()
+    assert await runner.cancel("early1", grace_s=0)
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=45)
+    assert time.monotonic() - started < 30
+    assert finished.status == "interrupted"
+    assert not handle.process.is_alive()
+    await asyncio.wait_for(handle.done.wait(), 15)
+    assert "early1" not in runner.runs
+    seqs = [f.seq for f in sink.of("early1")]
+    assert seqs == list(range(1, len(seqs) + 1))
+
+
+async def test_a_cooperative_cancel_before_the_first_event_ends_cancelled(
+        tmp_path):
+    """The ``cancel`` reaches the child before it listens (#856): it is
+    read once the child does, and the run ends ``cancelled``."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.slow_graph_child)
+    await runner.assign(_assign("early2", graph=h.slow_graph()))
+    assert await runner.cancel("early2", grace_s=60)
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=90)
+    assert finished.status == "cancelled"
+
+
 async def test_a_crash_while_stopping_is_still_a_crash(tmp_path):
     sink = h.FrameSink()
     runner = _runner(tmp_path, sink, child_entry=h.crash_on_cancel_child)
