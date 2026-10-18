@@ -129,9 +129,10 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from . import worker_protocol as wp
+from .scheduling import LOCAL_WORKER_ID, SlotKey
 from .worker_handshake import (
     CATALOG_UNKNOWN,
     CatalogCheck,
@@ -235,9 +236,14 @@ class Worker:
     #: Its ``hello.machine_id`` equals this process's: the same machine
     #: (#773). Decided by machine identity, never by the peer address.
     same_host: bool = False
+    #: Its ``hello.machine_id`` (a digest), or None: two agents on one
+    #: machine share its CPU and Apple GPU (#842, :func:`worker_host`).
+    machine_id: str | None = None
     #: Worker device -> this process's device for each card the two share
-    #: (#773, ``scheduling.slot_for``): ``cpu``, ``mps:0``, and each CUDA
-    #: card whose UUID matches one here. Empty for another machine.
+    #: (#773): ``cpu``, ``mps:0``, and each CUDA card whose UUID matches
+    #: one here. Empty for another machine. A description (the API's
+    #: ``shared_with``); the slots of one card are grouped by
+    #: ``WorkerRegistry.card_slots`` (#842).
     shared: dict[str, str] = field(default_factory=dict)
     connected_at: float = field(default_factory=time.time)
     last_heartbeat: float = field(default_factory=time.monotonic)
@@ -400,6 +406,10 @@ class Worker:
         }
 
 
+def _is_cuda(device: str) -> bool:
+    return str(device).strip().lower().startswith("cuda")
+
+
 def policy_owner(worker_id: str) -> str:
     """Whose device admission policies (#788) *worker_id* uses: its own,
     or for an instance (#845, ``<name>.<instance>``) its credential's, so
@@ -414,6 +424,48 @@ def _canonical_or_none(device: str) -> str | None:
         return None
 
 
+@dataclass
+class _CardIndex:
+    """Which slots are one physical device (#842)."""
+
+    #: Slot -> every slot on its device, for a device several slots name.
+    slots: dict[SlotKey, tuple[SlotKey, ...]] = field(default_factory=dict)
+    #: Slot -> its device identity (:func:`device_identity`).
+    identity: dict[SlotKey, str] = field(default_factory=dict)
+
+
+#: The machine part of this server's own devices' identities, and of a
+#: same-host worker's (``Worker.same_host``): never a reported machine id,
+#: so an agent elsewhere that claims this server's id joins nothing here.
+HOST_LOCAL = "local"
+
+
+def device_identity(value: str, uuid: str | None, *,
+                    host: str | None) -> str | None:
+    """What makes *value* one physical device across processes (#773,
+    #842): ``gpu:<uuid>`` for a CUDA card with a UUID (unique on every
+    machine), and ``host:<host>:cpu`` / ``host:<host>:mps:0`` for the CPU
+    and the Apple GPU of machine *host* (one of each per machine): this
+    server's (:data:`HOST_LOCAL`), or the machine id a worker reported, so
+    two agents on one remote machine share them too. None for anything
+    else: its slot is its own."""
+    if value.startswith("cuda"):
+        return f"gpu:{str(uuid).lower()}" if uuid else None
+    if host and (value == "cpu" or value.startswith("mps")):
+        return f"host:{host}:{value}"
+    return None
+
+
+def worker_host(worker: Any) -> str | None:
+    """The machine part of *worker*'s CPU and Apple GPU identities:
+    :data:`HOST_LOCAL` on this server's machine, else the machine id its
+    ``hello`` reported (None: unknown, its CPU is its own)."""
+    if getattr(worker, "same_host", False):
+        return HOST_LOCAL
+    machine = getattr(worker, "machine_id", None)
+    return f"m-{machine}" if machine else None
+
+
 def _device_identities(devices: list[wp.DeviceReport]) -> list[tuple]:
     """What placement reads off a device list: which devices, not their
     memory figures."""
@@ -424,9 +476,10 @@ class WorkerRegistry:
     """Every worker this control plane knows, by name. Event-loop only.
 
     *local_devices* returns this process's devices as ``DeviceFact``-like
-    objects (``value``, ``uuid``); it is called once, on the first
-    same-host worker, and is what a same-host worker's CUDA cards are
-    matched against by UUID. Without it no CUDA card is shared.
+    objects (``value``, ``uuid``); it is called once, off the event loop
+    at startup (:meth:`probe_local_devices`), or else on first use, and is
+    what workers' devices are matched against (#773, #842). Without it no
+    device of this process is shared with a worker.
     """
 
     def __init__(self, *, heartbeat_s: float = wp.DEFAULT_HEARTBEAT_S,
@@ -436,10 +489,17 @@ class WorkerRegistry:
                  local_devices: Callable[[], list[Any]] | None = None,
                  resume_grace_s: float = DEFAULT_RESUME_GRACE_S,
                  node_catalog: Callable[[], Any] | None = None,
-                 output_fetch_timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+                 output_fetch_timeout_s: float = DEFAULT_TIMEOUT_S,
+                 probe_off_loop: bool = False) -> None:
         self._local_devices_source = local_devices
         #: Reads of worker runs' recorded outputs in flight (#789).
         self.outputs = WorkerOutputs(self, timeout_s=output_fetch_timeout_s)
+        #: Never list this process's devices on the event loop: the probe
+        #: runs in a thread (:meth:`probe_local_devices`), and until it
+        #: has, this process has no device to share. The server sets it; a
+        #: registry built without it probes on first use.
+        self._probe_off_loop = probe_off_loop
+        self._probe_task: asyncio.Task | None = None
         #: This server's ``node_registry.node_catalog`` (#781); without it
         #: no worker's catalog is compared (every one reads ``unknown``).
         self._node_catalog = node_catalog
@@ -449,6 +509,15 @@ class WorkerRegistry:
         self._local_devices_cache: list[Any] | None = None
         #: ``(worker, device, uuid)`` already logged as not shared.
         self._unshared_logged: set[tuple[str, str, str | None]] = set()
+        #: The physical devices several slots name (#842), built on first
+        #: use and dropped by :meth:`_cards_changed`; see :meth:`card_slots`.
+        self._cards: _CardIndex | None = None
+        #: ``(identity, slots)`` already logged as one device.
+        self._cards_logged: set[tuple[str, tuple[SlotKey, ...]]] = set()
+        #: Run id -> ``{slot: device identity}`` of each run adopted after a
+        #: restart (#793), from its ``worker_resume``, until the run ends or
+        #: its worker reports its own devices; see :meth:`remember_cards`.
+        self._adopted_cards: dict[str, dict[SlotKey, str]] = {}
         self.heartbeat_s = heartbeat_s
         self.grace_s = grace_s
         self.missed_heartbeats = missed_heartbeats
@@ -579,55 +648,105 @@ class WorkerRegistry:
                 return holder
         return None
 
-    # ── same-host devices (#773) ─────────────────────────────────────────
+    # ── this process's devices (#773) ────────────────────────────────────
+
+    async def probe_local_devices(self) -> None:
+        """List this process's devices once, in a thread (the probe imports
+        torch and reads NVML). Awaited where a worker could share a card
+        with this server: ``/ws/worker`` before registering a same-host
+        worker (after ``welcome``), and ``RunService`` before adopting runs
+        after a restart, so neither is matched against a list that is not
+        there yet. Anything else that needs it first starts it in the
+        background (:meth:`_local_devices`). This process's devices do not
+        change while it runs, so the list is never refreshed; matching is
+        redone when it lands."""
+        if self._local_devices_cache is not None:
+            return
+        if self._local_devices_source is None:
+            self._local_devices_cache = []  # nothing to list, nothing to wait
+            return
+        if self._probe_task is None:
+            self._probe_task = asyncio.ensure_future(self._probe())
+        await asyncio.shield(self._probe_task)
+
+    async def _probe(self) -> None:
+        source = self._local_devices_source
+        try:
+            devices = list(await asyncio.to_thread(source)) if source else []
+        except Exception:  # noqa: BLE001 -- sharing degrades, never fails
+            logger.exception("could not list this server's devices; no "
+                             "device is shared with workers")
+            devices = []
+        self._local_devices_cache = devices
+        for worker in self._workers.values():
+            worker.shared = self._shared_devices(worker)
+        self._cards_changed()
+        self._changed()
 
     def _local_devices(self) -> list[Any]:
         if self._local_devices_cache is None:
+            if self._probe_off_loop:
+                if self._probe_task is None:
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:  # no running loop: nothing to do
+                        return []
+                    self._probe_task = loop.create_task(self._probe())
+                return []
             source = self._local_devices_source
             try:
                 self._local_devices_cache = list(source()) if source else []
             except Exception:  # noqa: BLE001 -- sharing degrades, never fails
                 logger.exception("could not list this server's devices; no "
-                                 "CUDA card is shared with same-host workers")
+                                 "device is shared with workers")
                 self._local_devices_cache = []
         return self._local_devices_cache
 
-    def _shared_devices(self, worker: Worker) -> dict[str, str]:
-        """Worker device -> this process's device, for the cards both use.
+    def _local_identities(self, *, cards: bool = True) -> dict[str, str]:
+        """Device identity (:func:`device_identity`) -> this process's
+        device: its CPU and Apple GPU always (no probe needed), and with
+        *cards* every CUDA card with a UUID (from the probe). The one place
+        a device of this process is matched to a worker's (#773, #842)."""
+        identities = {
+            device_identity(value, None, host=HOST_LOCAL): value
+            for value in ("cpu", "mps:0")}
+        if not cards:
+            return identities
+        for fact in self._local_devices():
+            value = _canonical_or_none(getattr(fact, "value", ""))
+            if value is None or not value.startswith("cuda"):
+                continue
+            identity = device_identity(value, getattr(fact, "uuid", None),
+                                       host=HOST_LOCAL)
+            if identity is not None:
+                identities.setdefault(identity, value)
+        return identities
 
-        Only for a same-host worker. ``cpu`` is shared, and ``mps:0`` when
-        this process has it too (one Apple GPU per machine). A CUDA card is
-        shared only when its UUID matches one of this process's cards, so
-        two processes that number the cards differently (another
-        ``CUDA_VISIBLE_DEVICES``) still agree on which card is which. A
-        CUDA card without a UUID, or whose UUID matches nothing here, keeps
-        a slot of its own; that is logged once.
-        """
+    def _shared_devices(self, worker: Worker) -> dict[str, str]:
+        """Worker device -> this process's device, for the devices a
+        same-host worker shares with this process (``shared_with`` in
+        ``GET /api/workers``): its ``cpu`` and ``mps:0`` always, and each
+        CUDA card whose UUID matches one here, whatever its number on
+        either side. A CUDA card without a UUID, or whose UUID matches
+        nothing here, is logged once (once this process's cards are
+        known). Description only: which runs share a device is the card
+        index's (:meth:`card_slots`)."""
         if not worker.same_host:
             return {}
-        local = self._local_devices()
-        by_uuid: dict[str, str] = {}
-        local_values: set[str] = set()
-        for fact in local:
-            value = _canonical_or_none(getattr(fact, "value", ""))
-            if value is None:
-                continue
-            local_values.add(value)
-            uuid = getattr(fact, "uuid", None)
-            if uuid and value.startswith("cuda"):
-                by_uuid[str(uuid).lower()] = value
+        cards = any(_is_cuda(r.value) for r in worker.devices)
+        local = self._local_identities(cards=cards)
+        probed = self._local_devices_cache is not None
         shared: dict[str, str] = {}
         for report in worker.devices:
             value = _canonical_or_none(report.value)
             if value is None:
                 continue
-            if value == "cpu" or (value.startswith("mps")
-                                  and value in local_values):
-                shared[value] = value
-                continue
-            match = by_uuid.get(report.uuid.lower()) if report.uuid else None
+            identity = device_identity(value, report.uuid, host=HOST_LOCAL)
+            match = None if identity is None else local.get(identity)
             if match is not None:
                 shared[value] = match
+                continue
+            if not value.startswith("cuda") or not probed:
                 continue
             key = (worker.name, value, report.uuid)
             if key not in self._unshared_logged:
@@ -637,6 +756,155 @@ class WorkerRegistry:
                     "matches no card of this server; it keeps a slot of "
                     "its own", worker.name, value, report.uuid or "unknown")
         return shared
+
+    # ── physical cards (#773, #842) ──────────────────────────────────────
+
+    def _card_index(self) -> "_CardIndex":
+        if self._cards is None:
+            self._cards = self._build_card_index()
+        return self._cards
+
+    def _build_card_index(self) -> "_CardIndex":
+        """Group every slot by the physical device it is
+        (:func:`device_identity`): each worker's devices (connected or not:
+        a disconnected worker's runs keep their slots while they wait for
+        it, #783), the slots of runs adopted after a restart whose worker
+        is not known yet (#793, :meth:`remember_cards`), and this
+        process's devices. Rebuilt only when one of those changes
+        (:meth:`_cards_changed`)."""
+        # One identity per slot: a worker's own report wins over what an
+        # adopted run recorded for the same slot.
+        identity_of: dict[SlotKey, str] = {}
+        for cards in self._adopted_cards.values():
+            identity_of.update(cards)
+        for worker in sorted(self._workers.values(), key=lambda w: w.name):
+            host = worker_host(worker)
+            for report in worker.devices:
+                value = _canonical_or_none(report.value)
+                if value is None:
+                    continue
+                identity = device_identity(value, report.uuid, host=host)
+                slot = (worker.id, value)
+                if worker.status == STATUS_OFFLINE and slot in identity_of:
+                    # Known from the table only (it has not connected
+                    # since this server started): what an adopted run
+                    # recorded is fresher than the stored report.
+                    continue
+                if identity is None:
+                    identity_of.pop(slot, None)
+                else:
+                    identity_of[slot] = identity
+        index = _CardIndex()
+        if not identity_of:
+            # No worker names a device: nothing to group, and this
+            # process's devices are not probed for it.
+            return index
+        members: dict[str, list[SlotKey]] = {}
+        # This server's cards are listed only where one could be shared: a
+        # same-host worker, or a run adopted after a restart. Once listed,
+        # every worker is matched against them.
+        cards = any(i.startswith("gpu:") for i in identity_of.values()) and (
+            self._local_devices_cache is not None or bool(self._adopted_cards)
+            or any(w.same_host for w in self._workers.values()))
+        for identity, value in self._local_identities(cards=cards).items():
+            members[identity] = [(LOCAL_WORKER_ID, value)]
+        for slot, identity in identity_of.items():
+            members.setdefault(identity, []).append(slot)
+        for identity, slots in members.items():
+            for slot in slots:
+                index.identity[slot] = identity
+            if len(slots) < 2:
+                continue
+            group = tuple(slots)
+            for slot in group:
+                index.slots[slot] = group
+            key = (identity, group)
+            if key not in self._cards_logged:
+                self._cards_logged.add(key)
+                logger.info(
+                    "one physical device (%s) is offered as %s; runs on it "
+                    "count against one budget", identity,
+                    ", ".join(f"{w}/{d}" for w, d in group))
+        return index
+
+    def _cards_changed(self) -> None:
+        """The devices behind the card index changed (a worker connected,
+        was loaded or forgotten, reported other devices, or a run was
+        adopted): rebuild it on next use. A heartbeat's memory figures or a
+        status change do not touch it."""
+        self._cards = None
+
+    def card_slots(self, slot: SlotKey) -> tuple[SlotKey, ...]:
+        """Every slot on the physical device *slot* is on (#842), *slot*
+        included; just ``(slot,)`` for a device no other slot names.
+
+        Two workers that offer one CUDA card report the same UUID, whatever
+        number each gives it (another ``CUDA_VISIBLE_DEVICES``, a SLURM
+        allocation); their slots ``(a, cuda:0)`` and ``(b, cuda:1)`` are
+        one card, and so is this process's ``("local", cuda:N)`` when it
+        has the card. A same-host worker's ``cpu`` and ``mps:0`` are this
+        process's (#773), and two agents that report one machine id share
+        theirs. The scheduler counts the runs on every slot of a
+        card against each of them (``scheduling.CardBudget``). A CUDA card
+        reported without a UUID keeps a slot of its own.
+        """
+        return self._card_index().slots.get(slot, (slot,))
+
+    def card_identity(self, slot: SlotKey) -> str | None:
+        """The physical identity of *slot*'s device (``gpu:<uuid>``,
+        ``host:cpu``, ...), or None. What ``execution_facts.worker_resume``
+        records beside a run's slots, so a restarted server groups an
+        adopted run's slots before its worker is back (#793)."""
+        return self._card_index().identity.get(slot)
+
+    def remember_cards(self, run_id: str,
+                       cards: Mapping[SlotKey, str]) -> None:
+        """The identities of adopted run *run_id*'s slots (#793), from its
+        ``worker_resume``: they group its slots with the other offerers of
+        the device while its worker is away. Dropped when the run ends,
+        when its worker connects (its own report replaces them) and when
+        the worker is stopped or forgotten."""
+        if cards:
+            self._adopted_cards[run_id] = dict(cards)
+            self._cards_changed()
+
+    def _forget_adopted_cards(self, *, run_id: str | None = None,
+                              worker_id: str | None = None) -> None:
+        dropped = False
+        for rid in list(self._adopted_cards):
+            cards = self._adopted_cards[rid]
+            if rid == run_id:
+                del self._adopted_cards[rid]
+                dropped = True
+            elif worker_id is not None and any(
+                    slot[0] == worker_id for slot in cards):
+                kept = {s: i for s, i in cards.items() if s[0] != worker_id}
+                if kept:
+                    self._adopted_cards[rid] = kept
+                else:
+                    del self._adopted_cards[rid]
+                dropped = True
+        if dropped:
+            self._cards_changed()
+
+    def card_peers(self, worker_id: str,
+                   device: str) -> tuple[tuple[str, str], ...]:
+        """The other ``(worker id, device)`` pairs that offer the physical
+        device *worker_id*'s *device* is (#842); ``local`` is this process.
+        Empty for a device nobody else offers."""
+        value = _canonical_or_none(device)
+        if value is None:
+            return ()
+        slot = (worker_id, value)
+        return tuple(s for s in self.card_slots(slot) if s != slot)
+
+    def slot_online(self, slot: SlotKey) -> bool:
+        """Whether *slot*'s offerer can take a run now: this process
+        always, a worker while it is connected."""
+        if slot[0] == LOCAL_WORKER_ID:
+            return True
+        worker = self._workers.get(slot[0])
+        return worker is not None and worker.online
 
     # ── device admission policies (#788) ─────────────────────────────────
 
@@ -752,7 +1020,7 @@ class WorkerRegistry:
             capabilities=tuple(hello.capabilities),
             catalog_checked=self._node_catalog is not None,
             one_shot=hello.one_shot, one_shot_run_id=hello.one_shot_run_id,
-            instance_id=hello.instance_id)
+            instance_id=hello.instance_id, machine_id=hello.machine_id)
         if hello.instance is not None:
             # ``ws_worker`` registered it under ``<name>.<instance>`` (#845).
             worker.instance_of = wp.instance_parts(hello.name)[0]
@@ -806,6 +1074,8 @@ class WorkerRegistry:
             ids.pop(worker.id, None)  # its newest connection goes last
             ids[worker.id] = None
             self._prune_left_instances(worker.instance_of)
+        self._forget_adopted_cards(worker_id=worker.id)
+        self._cards_changed()
         self._ensure_watchdog()
         logger.info("worker %s connected (%s, devices %s)", worker.name,
                     worker.version, worker.device_values())
@@ -895,6 +1165,7 @@ class WorkerRegistry:
             self._workers[entry.name] = worker
             added.append(worker)
         if added:
+            self._cards_changed()
             logger.info("%d enrolled worker(s) known, offline until they "
                         "connect: %s", len(added),
                         ", ".join(w.name for w in added))
@@ -909,6 +1180,7 @@ class WorkerRegistry:
         registry nothing (the watchdog included) would end them. Returns the
         dropped worker."""
         self._end_adopted(worker_id, reason)
+        self._forget_adopted_cards(worker_id=worker_id)
         worker = self._workers.get(worker_id)
         if worker is None:
             return None
@@ -920,6 +1192,7 @@ class WorkerRegistry:
             self._end(worker, run, reason)
         self._unindex(worker)
         del self._workers[worker_id]
+        self._cards_changed()
         logger.info("worker %s removed", worker_id)
         self._changed()
         return worker
@@ -937,6 +1210,7 @@ class WorkerRegistry:
         ones still on it end ``interrupted`` now instead of after the
         resume grace. A live connection is closed the same way."""
         self._end_adopted(worker_id, reason)
+        self._forget_adopted_cards(worker_id=worker_id)
         worker = self._workers.get(worker_id)
         if worker is None:
             return
@@ -999,6 +1273,7 @@ class WorkerRegistry:
             return
         run.gone = True
         worker.running.pop(run.run_id, None)
+        self._forget_adopted_cards(run_id=run.run_id)
         logger.warning("run %s on worker %s ends interrupted: %s",
                        run.run_id, worker.name, reason)
         # It may still be running there: a later run_finished is a late
@@ -1017,6 +1292,7 @@ class WorkerRegistry:
             worker.devices = list(frame.devices)
             if identity_changed:
                 worker.shared = self._shared_devices(worker)
+                self._cards_changed()
                 # A device appearing (or a card changing its slot) is
                 # capacity a waiting run may now take. Memory figures
                 # change on every heartbeat and are not, except on a card
@@ -1209,6 +1485,7 @@ class WorkerRegistry:
         worker = self._workers.get(worker_id)
         if worker is not None:
             worker.running.pop(run_id, None)
+        self._forget_adopted_cards(run_id=run_id)
         # A run adopted for a worker not known yet (#793): its placeholder
         # must not hand a run nothing reads to the worker's connection.
         self._unclaimed.pop(run_id, None)
@@ -1378,6 +1655,9 @@ class WorkerRegistry:
 
     async def shutdown(self) -> None:
         """Stop the watchdog and close every connection."""
+        if self._probe_task is not None and not self._probe_task.done():
+            # The thread itself finishes on its own; nothing waits for it.
+            self._probe_task.cancel()
         if self._watchdog is not None:
             self._watchdog.cancel()
             try:

@@ -13,6 +13,7 @@ import {
   setSshWorkerEnabled,
   undrainWorker,
   type SshWorker,
+  type WorkerCardPeer,
   type WorkerInfo,
 } from '../../api/workers';
 import { useI18n } from '../../i18n';
@@ -841,6 +842,122 @@ describe('WorkersPanel', () => {
     const dialog = await openPanel([sharedBox()]);
     expect(within(dialog).getByRole('combobox', { name: 'cuda:0 接收 run 的方式' })).toBeInTheDocument();
     expect(within(dialog).getAllByRole('option', { name: '依記憶體共用' })).toHaveLength(2);
+  });
+
+  // ── one physical card, several offerers (#842) ──
+
+  function cardWorker(id: string, peers: WorkerCardPeer[] | undefined) {
+    return worker(id, {
+      devices: [
+        { value: 'cuda:0', kind: 'cuda', index: 0, name: 'RTX PRO 6000', memory: null,
+          slots: { taken: 1, limit: 1 }, same_card: peers },
+        { value: 'cpu', kind: 'cpu', index: null, name: '', memory: null, slots: { taken: 0, limit: 2 }, same_card: [] },
+      ],
+    });
+  }
+
+  it('says when two workers offer one physical card, and names this server', async () => {
+    const dialog = await openPanel([
+      cardWorker('meow-e2e', [{ worker: 'meow-join', device: 'cuda:0' }]),
+      cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0' }, { worker: 'local', device: 'cuda:1' }]),
+      cardWorker('lone', undefined),
+    ]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    const note = within(first).getByText('Same physical card as meow-join cuda:0');
+    expect(note).toHaveAttribute('title', expect.stringContaining('card UUID'));
+    // Both read the card's own slots.
+    expect(within(first).getByText('Slots 1 / 1')).toBeInTheDocument();
+    const second = within(dialog).getByRole('article', { name: 'meow-join' });
+    expect(within(second).getByText('Same physical card as meow-e2e cuda:0, this server (cuda:1)'))
+      .toBeInTheDocument();
+    // No note for a card nobody else offers, or from an older server.
+    const lone = within(dialog).getByRole('article', { name: 'lone' });
+    expect(within(lone).queryByText(/Same physical card/)).toBeNull();
+  });
+
+  it('names the offerer whose limit a shared card takes (#842)', async () => {
+    const box = cardWorker('meow-e2e', [{ worker: 'meow-join', device: 'cuda:0', policy: 'exclusive', online: true }]);
+    box.devices[0].slots = { taken: 0, limit: 1, limited_by: { worker: 'meow-join', device: 'cuda:0' } };
+    const here = cardWorker('near', [{ worker: 'local', device: 'cuda:1', policy: null, online: true }]);
+    here.devices[0].slots = { taken: 1, limit: 1, limited_by: { worker: 'local', device: 'cuda:1' } };
+    const dialog = await openPanel([box, here]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    const slots = within(first).getByText('Slots 0 / 1 (limit of meow-join cuda:0)');
+    expect(slots).toHaveAttribute('title', expect.stringContaining('smallest limit'));
+    const second = within(dialog).getByRole('article', { name: 'near' });
+    expect(within(second).getByText('Slots 1 / 1 (limit of this server (cuda:1))')).toBeInTheDocument();
+    // Same policy everywhere, or only this server besides: no policy note.
+    expect(within(dialog).queryByText(/keeps this card Exclusive|shares this card by memory/)).toBeNull();
+  });
+
+  it('says when the workers offering one card disagree on its policy (#842)', async () => {
+    const shared = cardWorker('meow-e2e', [
+      { worker: 'meow-join', device: 'cuda:0', policy: 'exclusive', online: true },
+      { worker: 'gone', device: 'cuda:0', policy: 'exclusive', online: false },
+    ]);
+    shared.devices[0].policy = 'shared';
+    shared.devices[0].admission = {
+      by_memory: false, total_bytes: 16 * GIB, free_bytes: 15 * GIB, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: 15 * GIB, runs: [],
+    };
+    const exclusive = cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0', policy: 'shared', online: true }]);
+    exclusive.devices[0].policy = 'exclusive';
+    exclusive.devices[0].admission = null;
+    const dialog = await openPanel([shared, exclusive]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    expect(within(first).getByText(
+      'meow-join cuda:0 keeps this card Exclusive, so it admits runs by count. Set every worker offering it to Shared by memory to share it.',
+    )).toBeInTheDocument();
+    // The policy note replaces the "agent cannot enforce" one, and the
+    // card shows its count, since it admits by count.
+    expect(within(first).queryByText(/cannot enforce memory budgets/)).toBeNull();
+    expect(within(first).getByText('Slots 1 / 1')).toBeInTheDocument();
+    const second = within(dialog).getByRole('article', { name: 'meow-join' });
+    expect(within(second).getByText(
+      'meow-e2e cuda:0 shares this card by memory, but the card admits runs by count while this worker keeps it Exclusive.',
+    )).toBeInTheDocument();
+  });
+
+  it('names the peer whose agent cannot enforce budgets (#842)', async () => {
+    const box = cardWorker('meow-e2e', [
+      { worker: 'meow-join', device: 'cuda:0', policy: 'shared', online: true, memory_budget: false },
+      { worker: 'local', device: 'cuda:0', policy: null, online: true, memory_budget: null },
+    ]);
+    box.memory_budget = true;
+    box.devices[0].policy = 'shared';
+    box.devices[0].admission = {
+      by_memory: false, total_bytes: null, free_bytes: null, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: null, runs: [],
+    };
+    const own = cardWorker('old-agent', []);
+    own.memory_budget = false;
+    own.devices[0].policy = 'shared';
+    own.devices[0].admission = { ...box.devices[0].admission };
+    const dialog = await openPanel([box, own]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    expect(within(first).getByText(
+      'meow-join cuda:0 cannot enforce memory budgets (its agent is older), so this card admits runs by count. Update that agent to share it.',
+    )).toBeInTheDocument();
+    expect(within(first).queryByText(/This worker's agent cannot enforce/)).toBeNull();
+    const second = within(dialog).getByRole('article', { name: 'old-agent' });
+    expect(within(second).getByText(/This worker's agent cannot enforce/)).toBeInTheDocument();
+  });
+
+  it('words a shared CPU as the same machine, not the same card (#842)', async () => {
+    const box = cardWorker('meow-e2e', []);
+    box.devices[1].same_card = [{ worker: 'meow-join', device: 'cpu', policy: 'exclusive', online: true }];
+    const dialog = await openPanel([box]);
+    const note = within(dialog).getByText('Same machine as meow-join cpu');
+    expect(note).toHaveAttribute('title', expect.stringContaining('one machine'));
+    expect(within(dialog).queryByText(/Same physical card as meow-join cpu/)).toBeNull();
+  });
+
+  it('words the shared physical card in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const dialog = await openPanel([
+      cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0' }, { worker: 'local', device: 'cuda:0' }]),
+    ]);
+    expect(within(dialog).getByText('與 meow-e2e cuda:0、這台伺服器（cuda:0） 是同一張實體卡')).toBeInTheDocument();
   });
 
   // ── SSH workers (#784) ──

@@ -154,8 +154,9 @@ _AUTH_EXEMPT_PREFIXES = ("/api/apps", "/api/keys")
 
 
 def _local_device_facts() -> list:
-    """This process's devices with their CUDA UUIDs, for matching a
-    same-host worker's cards to ours (#773). Called once, lazily."""
+    """This process's devices with their CUDA UUIDs, for matching
+    workers' cards to ours (#773, #842). Called once, off the event loop,
+    when the first worker needs it (``WorkerRegistry.probe_local_devices``)."""
     from .core.resources import probe_devices
 
     return probe_devices()
@@ -409,7 +410,7 @@ async def _lifespan_body(app: FastAPI):
     # With none connected, the run service behaves exactly as without it:
     # a run without a target is placed and executed in this process.
     worker_registry = WorkerRegistry(
-        local_devices=_local_device_facts,
+        local_devices=_local_device_facts, probe_off_loop=True,
         resume_grace_s=settings.WORKER_RESUME_GRACE_S,
         node_catalog=node_catalog,
         output_fetch_timeout_s=settings.WORKER_OUTPUT_FETCH_TIMEOUT_S)

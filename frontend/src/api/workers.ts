@@ -29,6 +29,12 @@ export interface WorkerDeviceMemory {
 export interface WorkerDeviceSlots {
   limit: number;
   taken: number;
+  /**
+   * The offerer whose limit a card several workers share takes (the
+   * smallest among the online ones, #842); absent when it is this slot's
+   * own. `worker` is `local` for this server.
+   */
+  limited_by?: { worker: string; device: string };
 }
 
 /** How a worker's card admits runs (#788): by count, or by memory budget. */
@@ -67,6 +73,24 @@ export interface WorkerDevice {
   policy?: DevicePolicy;
   /** A shared card's ledger; `null` for an exclusive one (#788). */
   admission?: WorkerDeviceAdmission | null;
+  /**
+   * The other offerers of this physical card, matched by UUID (#842):
+   * `worker` is a worker id, or `local` for this server. Empty, or absent
+   * from an older server, for a card nobody else offers.
+   */
+  same_card?: WorkerCardPeer[];
+}
+
+/** One other offerer of a physical card (#842). */
+export interface WorkerCardPeer {
+  worker: string;
+  device: string;
+  /** How that offerer admits runs; `null` for this server (by count). */
+  policy?: DevicePolicy | null;
+  /** That offerer can take runs now (this server always). */
+  online?: boolean;
+  /** Its agent enforces memory budgets (#788); `null` for this server. */
+  memory_budget?: boolean | null;
 }
 
 /**

@@ -23,7 +23,7 @@ GPU 佇列達到上限時不會延遲 CPU run，兩張不同的卡也不會互�
 
 **准入規則。** 上限屬於*名額*（slot）：一台機器上的一個裝置。這台伺服器的 `cuda:0` 與 worker `gpu-box-1` 的 `cuda:0` 是兩個名額，各有各的上限。指定裝置集合的 run 需要集合中每一個裝置各一個名額：所有裝置都有空位時才會啟動，一次取得全部名額，結束時一次全部歸還。它排在佇列最前面等待時不佔用任何名額，但會**保留**這些卡：在它啟動之前，其他 run 都不能在保留的卡上啟動；已在這些卡上執行的 run 照常結束，結束後它就會啟動。代價是閒置：已經空出的保留卡會一直閒置到集合中其他卡也空出，最長等於那些卡上已在執行的最久的 run。保留依先來後到，因此兩個共用一張卡的裝置集合 run 會依序啟動。`"worker": "any"` 的裝置集合 run 不保留任何卡，因為它要用哪台機器的卡要到啟動時才決定。
 
-與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用名額：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 從 loopback 位址連入，且回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）。兩者缺一不可：SSH 通道也是 loopback，而 machine id 是 agent 自己回報的。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。數條佇列共用的名額空出時，由這些佇列最前面的等待 run 中最早送出的那個取得，所以一條很長的佇列不會讓另一條餓死。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
+與伺服器在同一台機器上的 [worker](#workers)，對實體上相同的裝置與這台伺服器共用額度：CPU、Apple GPU（`mps:0`），以及 UUID 與這台伺服器某張卡相同的每一張 CUDA 卡，不論兩邊各自給它什麼編號。各自保有自己的名額，但所有名額上的 run 都計入同一份額度，套用這台伺服器對該裝置的上限（或 worker 自己較小的 `<worker>/<device>` 覆寫），因此在上限為 1 時，這裡的 run 與那個 worker 上的 run 不會同時拿到同一張卡。「同一台機器」指 agent 從 loopback 位址連入，且回報的 machine id 與伺服器相同（`/etc/machine-id`、macOS 的硬體 UUID 或 Windows 的機器 GUID，以摘要值傳送）。兩者缺一不可：SSH 通道也是 loopback，而 machine id 是 agent 自己回報的。沒有 UUID、或 UUID 不在這台伺服器上的 CUDA 卡會保有自己的名額，伺服器會記錄一次。提供同一張實體卡的兩個 worker（UUID 相同，不論各自給它什麼編號，例如同一台 GPU 伺服器上的兩個 agent）也以同樣方式共用這張卡，即使這台伺服器沒有這張卡：經由任一 worker 的 run 都同時計入兩者，套用兩者中較小的上限（離線的提供者不計，除非它仍有 run 在這張卡上），Workers 面板會把這張卡標示為「與 ... 是同一張實體卡」。數條佇列共用的名額空出時，由這些佇列最前面的等待 run 中最早送出的那個取得，所以一條很長的佇列不會讓另一條餓死。等待中 run 的 `queue_position` 只計算它所在的那條佇列（裝置集合 run 排在第一個裝置的佇列），所以第 1 位代表那條佇列中沒有排在它前面的 run，不代表它下一個啟動。
 
 :::note 同一張卡的別名會併成同一條佇列
 `cuda` 與 `cuda:0` 指的是同一個實體裝置，因此會正規化成同一個佇列 key（`cuda:0`），而不是在同一張卡上開兩條各自獨立的 FIFO。`mps` 與 `mps:0` 也一樣。在多張卡的機器上，`cuda` 會跟隨該行程目前的裝置。
@@ -350,7 +350,7 @@ study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後�
 | `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES` | `4194304` (4 MB) | 單一 `GET /api/runs/{id}/events` page 的 byte 預算；提早停止的 page 會回傳 cursor，供下一次接續。 |
 | `CODEFYUI_MOUNT_LABEL` | `data` | 這台伺服器的資料夾給共用它的 worker 使用的 label（[遠端 Worker：儲存](./remote-workers#storage-shared-filesystem)）。 |
 
-例如 `gpu-box-1` 是另一台機器上的 worker 時，`CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` 讓這台伺服器的 `cuda:0` 可同時執行兩個 run、`gpu-box-1` 的 `cuda:0` 可同時執行三個，其他卡維持 1。同一台機器上的 worker 與這台伺服器共用的卡一律使用這台伺服器的上限；指向這種卡的 `<worker>/<device>` 覆寫會被忽略，並在 worker 連線時記錄警告。`local/<device>` 是只寫裝置的另一種寫法。
+例如 `gpu-box-1` 是另一台機器上的 worker 時，`CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box-1/cuda:0=3"` 讓這台伺服器的 `cuda:0` 可同時執行兩個 run、`gpu-box-1` 的 `cuda:0` 可同時執行三個，其他卡維持 1。同一台機器上的 worker 與這台伺服器共用的卡使用這台伺服器的上限（`cuda:0=2` 會提高它），除非該 worker 有自己的 `<worker>/<device>` 覆寫，而那只能降低它。兩個 worker 共用的卡使用兩者中較小的上限（離線的提供者不計）。被這條規則壓低的覆寫會在 worker 連線時記錄警告。`local/<device>` 是只寫裝置的另一種寫法。
 
 格式錯誤的覆寫項目會被忽略並記錄警告，不會讓伺服器啟動失敗。小於 1 的上限一律視為 1，避免佇列因無法排空而停滯。三項 sweep 上限列在[參數掃描](#sweeps)一節。
 

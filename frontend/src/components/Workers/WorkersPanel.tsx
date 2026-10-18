@@ -114,7 +114,12 @@ function AdmissionBar({ admission }: { admission: WorkerDeviceAdmission }) {
   );
 }
 
-function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: string }) {
+function DeviceRow({ device, workerId, enforces = true }: {
+  device: WorkerDevice;
+  workerId: string;
+  /** This worker's agent enforces memory budgets (#788); `false` from a server that says it cannot. */
+  enforces?: boolean;
+}) {
   const { t } = useI18n();
   const busy = useWorkerStore((s) => Boolean(s.busy[workerId]));
   const setPolicy = useWorkerStore((s) => s.setPolicy);
@@ -122,6 +127,26 @@ function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: strin
   const hasMemory = memory != null && memory.free_bytes !== null && memory.total_bytes !== null;
   const shareable = device.policy !== undefined && SHAREABLE_KINDS.has(device.kind);
   const admission = device.admission ?? null;
+  const peers = device.same_card ?? [];
+  const peerName = (peer: { worker: string; device: string }) =>
+    peer.worker === 'local'
+      ? t('workers.device.sameCard.local', { device: peer.device })
+      : `${peer.worker} ${peer.device}`;
+  const list = (names: string[]) => names.reduce((all, name) => t('workers.device.sameCard.more', { list: all, peer: name }));
+  // Other online workers offering the card with another policy: the card
+  // admits by count, the stricter policy (#842).
+  const otherPolicy = device.policy === undefined ? [] : peers.filter(
+    (peer) => peer.worker !== 'local' && peer.online !== false && peer.policy != null && peer.policy !== device.policy,
+  );
+  const byCount = admission === null || !admission.by_memory;
+  // Another online offerer whose agent cannot enforce budgets makes the
+  // card admit by count (#842): name it rather than this worker's agent.
+  const peersWithout = peers.filter(
+    (peer) => peer.worker !== 'local' && peer.online !== false && peer.memory_budget === false,
+  );
+  // The CPU and Apple GPU of one machine are not matched by a card UUID.
+  const machineWide = device.kind === 'cpu' || device.kind === 'mps';
+  const limitedBy = device.slots?.limited_by ?? null;
   return (
     <li className={styles.device}>
       <span className={styles.deviceName}>
@@ -130,10 +155,22 @@ function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: strin
           <span className={styles.muted}> {device.name}</span>
         )}
       </span>
-      {device.slots && admission === null && (
-        <span className={styles.fact}>
-          {t('workers.device.slots', { taken: device.slots.taken, limit: device.slots.limit })}
-        </span>
+      {device.slots && byCount && (
+        limitedBy === null
+          ? (
+            <span className={styles.fact}>
+              {t('workers.device.slots', { taken: device.slots.taken, limit: device.slots.limit })}
+            </span>
+          )
+          : (
+            <span className={styles.fact} title={t('workers.device.slotsLimitedBy.title')}>
+              {t('workers.device.slotsLimitedBy', {
+                taken: device.slots.taken,
+                limit: device.slots.limit,
+                peer: peerName(limitedBy),
+              })}
+            </span>
+          )
       )}
       {hasMemory && (
         <span className={styles.fact} title={memory.source}>
@@ -160,11 +197,34 @@ function DeviceRow({ device, workerId }: { device: WorkerDevice; workerId: strin
           <option value="shared">{t('workers.policy.shared')}</option>
         </select>
       )}
+      {peers.length > 0 && (
+        <span
+          className={styles.sameCard}
+          title={t(machineWide ? 'workers.device.sameMachine.title' : 'workers.device.sameCard.title')}
+        >
+          {t(machineWide ? 'workers.device.sameMachine' : 'workers.device.sameCard', {
+            peers: list(peers.map(peerName)),
+          })}
+        </span>
+      )}
+      {otherPolicy.length > 0 && (
+        <span className={`${styles.warn} ${styles.admission}`}>
+          {t(device.policy === 'shared' ? 'workers.device.policyDiffers' : 'workers.device.policyDiffersHere', {
+            peers: list(otherPolicy.map(peerName)),
+          })}
+        </span>
+      )}
       {device.running && <RunLinks runIds={device.running} />}
       {admission !== null && (
         admission.by_memory
           ? <AdmissionBar admission={admission} />
-          : <span className={`${styles.warn} ${styles.admission}`}>{t('workers.admission.notEnforced')}</span>
+          : otherPolicy.length === 0 && (
+            <span className={`${styles.warn} ${styles.admission}`}>
+              {!enforces || peersWithout.length === 0
+                ? t('workers.admission.notEnforced')
+                : t('workers.admission.peerNotEnforced', { peers: list(peersWithout.map(peerName)) })}
+            </span>
+          )
       )}
     </li>
   );
@@ -640,7 +700,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
       {!shared && (
         <ul className={styles.devices}>
           {worker.devices.map((device) => (
-            <DeviceRow key={device.value} device={device} workerId={worker.id} />
+            <DeviceRow key={device.value} device={device} workerId={worker.id} enforces={worker.memory_budget !== false} />
           ))}
         </ul>
       )}

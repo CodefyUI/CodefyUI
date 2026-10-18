@@ -35,13 +35,21 @@ nothing: which worker's cards it needs is not known until it is placed.
 A CUDA set a worker would renumber never runs in this process
 (:func:`renumbered_on_a_worker`, :class:`WorkerScheduler`).
 
-Same-host workers (#773): a worker whose ``hello.machine_id`` equals this
-process's runs on this machine. Each card it shares with this process
-(``Worker.shared``: ``cpu``, ``mps:0``, and every CUDA card whose UUID
-matches one here, whatever its index on either side) is ALIASED onto this
-process's slot (:func:`slot_for`), one budget under the local cap, so an
-in-process run and a worker run cannot both take one physical card under
-``gpu=1``. A card with no UUID or no match keeps a slot of its own.
+One device, several slots (#773, #842): every slot stays its offerer's
+own ``(worker, device)``, and the slots that are one physical device
+are grouped (``WorkerRegistry.card_slots``): a CUDA card by the UUID its
+offerers report, whatever number each gives it, and a same-host worker's
+``cpu`` and ``mps:0`` with this process's (a worker whose
+``hello.machine_id`` equals this process's runs on this machine). Two
+agents on one GPU server, or a same-host agent and this process, then
+admit as one card (:class:`CardBudget`): the runs on every slot of it
+count against each of them, under the smallest cap among the offerers
+that are online (or hold a run there), so an in-process run and worker
+runs never share one card past ``gpu=1``. A card's memory ledger is read
+across its slots, and it admits by memory only while every online worker
+offering it has it ``shared`` (the stricter policy wins). A CUDA card
+without a UUID keeps a slot of its own; a device no other slot names
+admits exactly as before.
 
 Memory admission (#788): a worker's card whose policy is ``shared``
 (``WorkerRegistry.device_policy``) is admitted by memory instead of by
@@ -61,6 +69,7 @@ without a cycle.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -79,6 +88,8 @@ from .worker_protocol import (
     TARGET_LOCAL,
     canonical_device,
 )
+
+logger = logging.getLogger(__name__)
 
 #: ``(worker_id, device)``, e.g. ``("local", "cuda:0")``.
 SlotKey = tuple[str, str]
@@ -201,18 +212,10 @@ class SlotLimits(Protocol):
 
 
 def slot_for(worker: Any, device: str) -> SlotKey:
-    """The slot a run on *device* of *worker* takes.
-
-    ``(worker.id, device)``, except for a card a same-host worker shares
-    with this process (``worker.shared``, see
-    ``WorkerRegistry._shared_devices``): that card's slot is this
-    process's, ``("local", <its device here>)``, with this process's
-    budget and cap.
-    """
-    shared = getattr(worker, "shared", None) or {}
-    local = shared.get(device)
-    if local is not None:
-        return (LOCAL_WORKER_ID, local)
+    """The slot a run on *device* of *worker* takes: ``(worker.id,
+    device)``. A device several slots name (a same-host worker's card that
+    is this process's, one card two workers offer) is grouped by
+    :class:`CardBudget`, never aliased (#842)."""
     return (worker.id, device)
 
 
@@ -236,14 +239,109 @@ def local_set_slots(queue_key: str,
     return tuple(slots)
 
 
-def _free(limits: SlotLimits, slot: SlotKey,
-          taken: Mapping[SlotKey, int]) -> bool:
-    return taken.get(slot, 0) < limits.for_slot(slot)
+class SlotBudget:
+    """Count admission per slot, the 3.0 rule: a slot admits while fewer
+    than its cap hold it. :class:`CardBudget` counts per physical card."""
+
+    def __init__(self, limits: SlotLimits) -> None:
+        self.limits = limits
+
+    def held(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> int:
+        """How many runs hold *slot* (a reserved slot reads
+        :data:`RESERVED_SLOT` or more)."""
+        return taken.get(slot, 0)
+
+    def limit(self, slot: SlotKey, taken: Mapping[SlotKey, int]
+              ) -> tuple[int, SlotKey]:
+        """``(cap, the slot whose cap it is)`` of *slot*."""
+        return self.limits.for_slot(slot), slot
+
+    def free(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> bool:
+        return self.held(slot, taken) < self.limit(slot, taken)[0]
+
+    def all_free(self, slots: tuple[SlotKey, ...],
+                 taken: Mapping[SlotKey, int]) -> bool:
+        return all(self.free(slot, taken) for slot in slots)
 
 
-def _all_free(limits: SlotLimits, slots: tuple[SlotKey, ...],
-              taken: Mapping[SlotKey, int]) -> bool:
-    return all(_free(limits, slot, taken) for slot in slots)
+class CardBudget(SlotBudget):
+    """Count admission per physical device (#773, #842).
+
+    A slot's device is every slot ``registry.card_slots`` groups with it.
+    What it holds is the runs on all of them; its cap is the smallest cap
+    among the slot asked about and the others whose offerer is online
+    (``registry.slot_online``) or holds a run there, so an offerer that
+    went away does not keep the card's cap down. A same-host worker's slot
+    without an override of its own takes this server's cap for the device
+    (:meth:`slot_cap`), so ``cuda:0=2`` raises a card a same-host worker
+    shares, as before #842. A registry that does not group leaves every
+    slot its own; one whose grouping FAILS makes the slot read busy
+    (logged once), never free.
+    """
+
+    def __init__(self, limits: SlotLimits, registry: Any) -> None:
+        super().__init__(limits)
+        self._registry = registry
+        #: The last grouping failure logged, so a broken index is logged
+        #: once per distinct error rather than on every placement.
+        self._failure: str | None = None
+
+    def _group(self, slot: SlotKey) -> tuple[SlotKey, ...] | None:
+        """Every slot on *slot*'s device, or None when grouping failed."""
+        cards = getattr(self._registry, "card_slots", None)
+        if cards is None:
+            return (slot,)
+        try:
+            group = tuple(cards(slot)) or (slot,)
+        except Exception as exc:  # noqa: BLE001 -- fail safe, see held()
+            failure = f"{type(exc).__name__}: {exc}"
+            if failure != self._failure:
+                self._failure = failure
+                logger.exception("could not group slot %s/%s with the other "
+                                 "offerers of its device; it reads busy "
+                                 "until the grouping works", *slot)
+            return None
+        self._failure = None
+        return group
+
+    def card(self, slot: SlotKey) -> tuple[SlotKey, ...]:
+        """Every slot on *slot*'s device, *slot* included (just *slot*
+        when the grouping fails: for descriptions, never for admission)."""
+        return self._group(slot) or (slot,)
+
+    def online(self, slot: SlotKey) -> bool:
+        """Whether *slot*'s offerer can take a run now
+        (``registry.slot_online``; every slot without a registry)."""
+        online = getattr(self._registry, "slot_online", None)
+        return True if online is None else bool(online(slot))
+
+    def held(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> int:
+        group = self._group(slot)
+        if group is None:
+            return RESERVED_SLOT  # unknown: busy, never free
+        return sum(taken.get(s, 0) for s in group)
+
+    def slot_cap(self, slot: SlotKey) -> int:
+        """*slot*'s own cap: ``limits.for_slot``, except that a same-host
+        worker's device with no ``<worker>/<device>`` override takes this
+        server's cap for the same device (it IS that device)."""
+        override_for = getattr(self.limits, "override_for", None)
+        if slot[0] != LOCAL_WORKER_ID and override_for is not None \
+                and override_for(slot) is None:
+            get = getattr(self._registry, "get", None)
+            worker = None if get is None else get(slot[0])
+            local = (getattr(worker, "shared", None) or {}).get(slot[1])
+            if local is not None:
+                return self.limits.for_slot((LOCAL_WORKER_ID, local))
+        return self.limits.for_slot(slot)
+
+    def limit(self, slot: SlotKey, taken: Mapping[SlotKey, int]
+              ) -> tuple[int, SlotKey]:
+        counted = [s for s in self.card(slot) if s == slot
+                   or taken.get(s, 0) > 0 or self.online(s)]
+        # The smallest cap; on a tie, the slot asked about.
+        by = min(counted, key=lambda s: (self.slot_cap(s), s != slot))
+        return self.slot_cap(by), by
 
 
 class Scheduler(Protocol):
@@ -278,15 +376,16 @@ class LocalScheduler:
     (:func:`local_set_slots`); it still executes on its queue key.
     """
 
-    def __init__(self, limits: SlotLimits) -> None:
-        self._limits = limits
+    def __init__(self, limits: "SlotLimits | SlotBudget") -> None:
+        self._budget = (limits if isinstance(limits, SlotBudget)
+                        else SlotBudget(limits))
 
     def place(self, entry: QueuedEntry,
               taken: Mapping[SlotKey, int]) -> Placement | None:
         queue_key = entry.queue_key
         _, devices = entry_target(entry.options)
         slots = local_set_slots(queue_key, devices)
-        if not _all_free(self._limits, slots, taken):
+        if not self._budget.all_free(slots, taken):
             return None
         return Placement(LOCAL_WORKER_ID, (queue_key,), slots)
 
@@ -370,8 +469,8 @@ class WorkerScheduler:
       device, as a local run with a set does.
 
     Every worker slot is ``(worker_id, device)`` capped by
-    ``limits.for_slot(slot)`` (a same-host worker's is this process's slot,
-    see :func:`slot_for`); a device set takes one slot per device, here or
+    ``limits.for_slot(slot)``, counted per physical device
+    (:class:`CardBudget`); a device set takes one slot per device, here or
     on a worker, and starts only when all of them are free.
 
     Storage (#782): a run whose ``needs`` name a mount (``run_needs``) goes
@@ -398,13 +497,27 @@ class WorkerScheduler:
     def __init__(self, limits: SlotLimits, registry: Any,
                  local_devices: Callable[[], list[str]],
                  ledger: "mem.MemoryLedger | None" = None) -> None:
-        self._limits = limits
         self._registry = registry
+        # Counts and caps per physical device (#773, #842).
+        self._budget = CardBudget(limits, registry)
         self._local_devices = local_devices
-        self._local = LocalScheduler(limits)
+        self._local = LocalScheduler(self._budget)
         #: The budgets promised per slot (#788); ``RunService`` reserves,
         #: starts and releases them, this class reads them.
         self.ledger = mem.MemoryLedger() if ledger is None else ledger
+
+    def card_slots(self, slot: SlotKey) -> tuple[SlotKey, ...]:
+        """Every slot on *slot*'s physical device (#842)."""
+        return self._budget.card(slot)
+
+    def card_limit(self, slot: SlotKey, taken: Mapping[SlotKey, int]
+                   ) -> tuple[int, SlotKey]:
+        """``(cap, the slot whose cap it is)`` of *slot*'s device (#842)."""
+        return self._budget.limit(slot, taken)
+
+    def card_held(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> int:
+        """How many runs hold *slot*'s device, on any of its slots."""
+        return self._budget.held(slot, taken)
 
     def place(self, entry: QueuedEntry,
               taken: Mapping[SlotKey, int]) -> Placement | None:
@@ -486,6 +599,7 @@ class WorkerScheduler:
                 taken: Mapping[SlotKey, int] | None = None) -> str | None:
         """Why *entry* is waiting, when it is not just a busy slot.
         *taken* is the slot counts it is judged against (memory, #788)."""
+        taken = taken or {}
         worker_id, devices = entry_target(entry.options)
         if worker_id == TARGET_LOCAL:
             return None
@@ -508,7 +622,7 @@ class WorkerScheduler:
                                 transfer_refusal(getattr(entry, "needs",
                                                          None)))
             return self._memory_wait(entry.options, entry_budget(entry),
-                                     taken or {})
+                                     taken)
         wanted = ", ".join(devices) if devices else requested
         if entry_pool(entry.options) == POOL_ONE_SHOT:
             return (f"waiting for a one-shot worker that offers {wanted} "
@@ -576,12 +690,12 @@ class WorkerScheduler:
                 return None
             first = canonical_device(devices[0])
             slots = local_set_slots(first, devices)
-            if _all_free(self._limits, slots, taken):
+            if self._budget.all_free(slots, taken):
                 return Placement(LOCAL_WORKER_ID, (first,), slots)
             return None
         for device in candidate_devices(offered, requested):
             slot: SlotKey = (LOCAL_WORKER_ID, device)
-            if _free(self._limits, slot, taken):
+            if self._budget.free(slot, taken):
                 return Placement(LOCAL_WORKER_ID, (device,), (slot,))
         return None
 
@@ -616,9 +730,32 @@ class WorkerScheduler:
     # ── memory admission (#788) ───────────────────────────────────────────
 
     def shared(self, worker: Any, device: str) -> bool:
-        """Whether *worker*'s *device* admits by memory: its policy is
-        ``shared``, it is a CUDA or MPS device, and the agent enforces
-        budgets (the ``memory_budget`` capability)."""
+        """Whether *worker*'s *device* admits by memory: it does
+        (:meth:`_by_memory`), and so does every other online worker that
+        offers the same physical card (#842): the stricter policy wins, so
+        a card one offerer keeps ``exclusive`` admits by count. This
+        process's runs on the card are holders without a budget, as
+        before."""
+        if not self._by_memory(worker, device):
+            return False
+        try:
+            device = canonical_device(device)
+        except ValueError:  # pragma: no cover - _by_memory said it parses
+            return False
+        for peer_id, peer_device in self._budget.card((worker.id, device)):
+            if peer_id in (LOCAL_WORKER_ID, worker.id):
+                continue
+            if not self._budget.online((peer_id, peer_device)):
+                continue
+            peer = self._registry.get(peer_id)
+            if peer is not None and not self._by_memory(peer, peer_device):
+                return False
+        return True
+
+    def _by_memory(self, worker: Any, device: str) -> bool:
+        """Whether *worker*'s *device* is set to admit by memory: its
+        policy is ``shared``, it is a CUDA or MPS device, and the agent
+        enforces budgets (the ``memory_budget`` capability)."""
         policy = getattr(self._registry, "device_policy", None)
         if policy is None:
             return False
@@ -640,7 +777,9 @@ class WorkerScheduler:
         report = _report(worker, device)
         total = None if report is None else report.total_bytes
         free = None if report is None else report.free_bytes
-        account = self.ledger.account(slot_for(worker, device))
+        # One account per physical card (#842).
+        account = self.ledger.account(*self._budget.card(
+            slot_for(worker, device)))
         return total, mem.headroom(total, free, account), account
 
     def admission(self, worker: Any, device: str) -> dict[str, Any]:
@@ -673,12 +812,13 @@ class WorkerScheduler:
             return False, False, (f"{device} on {worker.id} has "
                                   f"{mem.format_gib(total)} in total")
         slot = slot_for(worker, device)
-        if taken.get(slot, 0) >= RESERVED_SLOT:
+        held = self._budget.held(slot, taken)
+        if held >= RESERVED_SLOT:
             return True, False, mem.reserved_for_a_set(device, worker.id)
         # A holder without a budget (a same-host card's in-process run, a
         # run from before the card became shared, a reserved set) has the
         # card to itself until it ends.
-        if taken.get(slot, 0) > self.ledger.holders(slot):
+        if held > self.ledger.holders(*self._budget.card(slot)):
             return True, False, mem.held_without_budget(device, worker.id)
         if room is None or room < need:
             return True, False, mem.does_not_fit(device, worker.id, room,
@@ -688,7 +828,7 @@ class WorkerScheduler:
     def _admits(self, worker: Any, device: str,
                 taken: Mapping[SlotKey, int], budget: int | None) -> bool:
         if not self.shared(worker, device):
-            return _free(self._limits, slot_for(worker, device), taken)
+            return self._budget.free(slot_for(worker, device), taken)
         return budget is not None \
             and self.card_state(worker, device, taken, budget)[1]
 
