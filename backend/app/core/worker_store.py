@@ -126,8 +126,8 @@ class KnownWorker:
     last_seen_at: str | None
     #: Its last connection's environment fingerprint digest (#781).
     fingerprint_digest: str | None = None
-    #: Its last agent was one-shot (#845, migration 016), itself or one of
-    #: its instances.
+    #: Its own last agent was one-shot (#845, migration 016); its
+    #: instances (``--instance``) never set it.
     one_shot: bool = False
 
 

@@ -182,19 +182,28 @@ def instance_runs_dir(instance: str) -> Path:
 def derive_instance(env: Any = None) -> str:
     """``--instance`` without a value (#845): ``<array job>-<task>`` in a
     SLURM array task (unique across arrays started on one credential), else
-    ``SLURM_JOB_ID``, else 16 random hex characters (64 bits: agents started
-    by hand on one credential do not collide)."""
+    ``SLURM_JOB_ID``; inside a job step (``srun``, ``SLURM_STEP_ID``
+    numeric) ``-<step>-<SLURM_PROCID>`` follows, so the tasks of
+    ``srun -n 4`` differ. Outside SLURM: 16 random hex characters (64 bits:
+    agents started by hand on one credential do not collide)."""
     env = os.environ if env is None else env
-    array_job = str(env.get("SLURM_ARRAY_JOB_ID") or "").strip()
-    task = str(env.get("SLURM_ARRAY_TASK_ID") or "").strip()
-    if array_job and task:
-        return f"{array_job}-{task}"
-    job = str(env.get("SLURM_JOB_ID") or "").strip()
-    if job:
-        return job
-    import secrets
 
-    return secrets.token_hex(8)
+    def get(key: str) -> str:
+        return str(env.get(key) or "").strip()
+
+    array_job, task = get("SLURM_ARRAY_JOB_ID"), get("SLURM_ARRAY_TASK_ID")
+    base = (f"{array_job}-{task}" if array_job and task
+            else get("SLURM_JOB_ID"))
+    if not base:
+        import secrets
+
+        return secrets.token_hex(8)
+    step = get("SLURM_STEP_ID")
+    if step.isdigit():
+        # ``batch`` / ``extern`` steps, and the batch script itself, have
+        # one process: the job's id is enough there.
+        base = f"{base}-{step}-{get('SLURM_PROCID') or '0'}"
+    return base
 
 
 def resolve_instance(raw: str, env: Any = None) -> str:
@@ -238,7 +247,15 @@ class FileLock:
         return self._file is not None
 
     def acquire(self, *, blocking: bool) -> bool:
-        """Take the lock. Non-blocking: False if another holds it."""
+        """Take the lock. Non-blocking: False if another holds it.
+
+        A file system without ``flock`` (Lustre mounted ``noflock``, some
+        NFS: ``ENOLCK``, ``ENOSYS``, ``EINVAL``, ``EOPNOTSUPP``) is treated
+        as Windows is: True, nothing locked (:attr:`held` stays False),
+        and a warning once per process. Only ``EWOULDBLOCK`` / ``EAGAIN``
+        mean another holds it."""
+        import errno
+
         try:
             import fcntl
         except ImportError:  # pragma: no cover - Windows
@@ -249,9 +266,12 @@ class FileLock:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (
                     0 if blocking else fcntl.LOCK_NB))
-            except OSError:
+            except OSError as exc:
                 handle.close()
-                return False
+                if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    return False
+                _warn_no_flock(self.path, exc)
+                return True
             try:
                 same = os.stat(self.path).st_ino == os.fstat(
                     handle.fileno()).st_ino
@@ -277,6 +297,19 @@ class FileLock:
 
     def __exit__(self, *_: Any) -> None:
         self.release()
+
+
+_NO_FLOCK_WARNED: list[bool] = []
+
+
+def _warn_no_flock(path: Path, exc: OSError) -> None:
+    if _NO_FLOCK_WARNED:
+        return
+    _NO_FLOCK_WARNED.append(True)
+    logger.warning(
+        "file locks are not supported where %s is (%s); going on without "
+        "them: give every concurrent --instance its own id, and enroll "
+        "once before starting an array", path.parent, exc)
 
 
 class InstanceLock(FileLock):
@@ -323,12 +356,20 @@ def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
     :data:`INSTANCE_LEFTOVER_AGE_S`, the margin for a file system whose
     locks do not reach across machines. The outcome of a leftover's run is
     already on the control plane: it ended ``interrupted`` when that agent
-    did not come back. Where ``fcntl`` is missing (Windows) nothing is
-    retired. Returns the retired ids."""
+    did not come back. Where ``fcntl`` is missing (Windows), or the file
+    system has no locks, nothing is retired: a free lock would prove
+    nothing.
+
+    Under the id's lock the directory is only renamed out of the way
+    (``.trash-<id>-<random>``, fast); the lock is released, then the trash
+    is deleted, so an agent starting with that id is not kept waiting by
+    a long delete. Trash a killed retirement left is deleted too. Returns
+    the retired ids."""
     try:
         import fcntl  # noqa: F401
     except ImportError:  # pragma: no cover - Windows
         return []
+    import secrets
     import shutil
 
     now = time.time() if now is None else now
@@ -337,9 +378,11 @@ def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
         entries = list(base.iterdir())
     except OSError:
         return []
+    trash = [p for p in entries if p.name.startswith(_TRASH_PREFIX)]
     # An id is its directory, its lock file, or both: an agent killed
     # before its first run made no directory.
-    ids = sorted({p.name for p in entries if p.is_dir()}
+    ids = sorted({p.name for p in entries
+                  if p.is_dir() and not p.name.startswith(".")}
                  | {p.stem for p in entries
                     if p.is_file() and p.suffix == ".lock"})
     retired = []
@@ -355,15 +398,30 @@ def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
         lock = FileLock(lock_path, unlink=True)
         if not lock.acquire(blocking=False):
             continue  # an agent holds the id
+        if not lock.held:
+            return []  # no locks on this file system: nothing proves it
         try:
-            shutil.rmtree(path, ignore_errors=True)
+            if path.is_dir():
+                moved = base / f"{_TRASH_PREFIX}{instance}-{secrets.token_hex(4)}"
+                path.rename(moved)
+                trash.append(moved)
+        except OSError:
+            logger.warning("could not retire %s", path, exc_info=True)
+            continue
         finally:
             lock.release()
         retired.append(instance)
+    for each in trash:
+        shutil.rmtree(each, ignore_errors=True)
     if retired:
         logger.warning("retired what %d instance(s) left, whose agents are "
                        "gone: %s", len(retired), ", ".join(retired))
     return retired
+
+
+#: A retired instance directory is renamed to this prefix, then deleted
+#: (:func:`retire_left_instances`).
+_TRASH_PREFIX = ".trash-"
 
 
 def _mtime(path: Path) -> float:
@@ -519,10 +577,11 @@ def build_parser() -> argparse.ArgumentParser:
                        default=None, metavar="ID", help=t(
         "搭配 --one-shot：同一張 worker 憑證同時跑多個 agent（SLURM array），"
         "這個 agent 以 <名稱>.<ID> 登記；不給 ID 時取 SLURM 的 array job 與 "
-        "task id、job id，否則隨機",
+        "task id、job id（srun step 中再加 step 與 SLURM_PROCID），否則隨機",
         "with --one-shot: one of several concurrent agents on one worker "
         "credential (a SLURM array); this one registers as <name>.<ID>. "
-        "Without ID: SLURM's array job and task id, else its job id, else "
+        "Without ID: SLURM's array job and task id, else its job id (plus "
+        "the step and SLURM_PROCID in an srun step), else "
         "a random one"))
     start.add_argument(DAEMON_FLAG, action="store_true",
                        help=argparse.SUPPRESS)
@@ -1182,7 +1241,7 @@ def setup_failed(args: argparse.Namespace) -> int:
     return EXIT_SETUP if getattr(args, "one_shot", False) else 1
 
 
-def _start(args: argparse.Namespace, enrolling: Any) -> int:
+def cmd_start(args: argparse.Namespace) -> int:
     # NVML numbers cards in PCI bus order; with this, CUDA does too, in this
     # process and in every run subprocess (``core.resources``).
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -1231,52 +1290,51 @@ def _start(args: argparse.Namespace, enrolling: Any) -> int:
     # An --instance agent looks for, and perhaps creates, its credential
     # holding the enrollment lock (#845): the tasks of an array started
     # together enroll once, and the others find what the first stored.
-    enrolling.__enter__()
-    stored = None
-    if isinstance(control, str):
-        try:
-            stored = use_stored_credential(args, control, explicit_name)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
+    with enrollment_lock(args):
+        stored = None
+        if isinstance(control, str):
+            try:
+                stored = use_stored_credential(args, control, explicit_name)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+        if pin is not None and not (isinstance(control, str)
+                                    and is_https(control)):
+            _err("--ca-fingerprint 需要 https:// 控制面網址。",
+                 "--ca-fingerprint needs an https:// control URL.")
             return 2
-    if pin is not None and not (isinstance(control, str)
-                                and is_https(control)):
-        _err("--ca-fingerprint 需要 https:// 控制面網址。",
-             "--ca-fingerprint needs an https:// control URL.")
-        return 2
-    if plain_http_to_another_machine(control) and not args.daemonized \
-            and not uds:  # ssh carries the socket across the network
-        warn_plain_http(control)
-    trust = (build_trust(control, pin, stored)
-             if isinstance(control, str) and is_https(control) else None)
-    token_source = None
-    if stored is not None:
-        token: Any = stored.worker_token
-        token_source = (f"the stored credential {stored.path} (cdui agent "
-                        f"forget {control} to enroll again)")
-    else:
-        token = resolve_token(args.token, interactive=interactive)
-    from ..core.worker_store import is_enrollment_token
+        if plain_http_to_another_machine(control) and not args.daemonized \
+                and not uds:  # ssh carries the socket across the network
+            warn_plain_http(control)
+        trust = (build_trust(control, pin, stored)
+                 if isinstance(control, str) and is_https(control) else None)
+        token_source = None
+        if stored is not None:
+            token: Any = stored.worker_token
+            token_source = (f"the stored credential {stored.path} (cdui agent "
+                            f"forget {control} to enroll again)")
+        else:
+            token = resolve_token(args.token, interactive=interactive)
+        from ..core.worker_store import is_enrollment_token
 
-    if isinstance(token, str) and is_enrollment_token(token):
-        if args.daemonized:
-            print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
-                    "cdui agent start。",
-                    "The background agent was given an enrollment token; run "
-                    "cdui agent start again in a terminal."), file=sys.stderr)
-            return 2
-        from .enroll import EnrollError
+        if isinstance(token, str) and is_enrollment_token(token):
+            if args.daemonized:
+                print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
+                        "cdui agent start。",
+                        "The background agent was given an enrollment token; run "
+                        "cdui agent start again in a terminal."), file=sys.stderr)
+                return 2
+            from .enroll import EnrollError
 
-        url = control() if callable(control) else control
-        try:
-            token = enroll_now(args, url, token, facts, trust)
-        except (EnrollError, ValueError) as exc:
-            _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
-            return setup_failed(args)
-        control = url
-        token_source = (f"the stored credential (cdui agent forget {url} to "
-                        "enroll again)")
-    enrolling.__exit__(None, None, None)
+            url = control() if callable(control) else control
+            try:
+                token = enroll_now(args, url, token, facts, trust)
+            except (EnrollError, ValueError) as exc:
+                _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
+                return setup_failed(args)
+            control = url
+            token_source = (f"the stored credential (cdui agent forget {url} to "
+                            "enroll again)")
     if not args.daemonized:
         try:
             require_token(token)
@@ -1288,15 +1346,6 @@ def _start(args: argparse.Namespace, enrolling: Any) -> int:
     _setup_logging(args.daemonized)
     return run_agent(args, control, token, facts, token_source=token_source,
                      mounts=mounts, trust=trust)
-
-
-def cmd_start(args: argparse.Namespace) -> int:
-    enrolling = enrollment_lock(args)
-    try:
-        return _start(args, enrolling)
-    finally:
-        # A start that stopped while it held the lock (#845) lets it go.
-        enrolling.__exit__(None, None, None)
 
 
 def main(argv: list[str] | None = None) -> int:

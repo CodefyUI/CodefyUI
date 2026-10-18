@@ -190,8 +190,8 @@ class AgentConnection:
         #: ``--instance`` (#845, ``hello.instance``): this one-shot agent is
         #: one of several on the credential of *name*, or None.
         self.instance = instance
-        #: Random per agent process (#790, ``hello.instance_id``). For an
-        #: instance it is also what tells it apart from the others holding
+        #: Random per agent process (#790, ``hello.instance_id``). It is
+        #: also what tells it apart from the other agents holding
         #: the same worker token (#845), so it is never logged.
         self.instance_id = secrets.token_hex(16)
         runner.send = self.send_frame
@@ -205,8 +205,9 @@ class AgentConnection:
                 token=lambda: self._resolve(self._token),
                 cache=InputCache(runner.cache_dir),
                 ssl_context=self._http_tls, uds=uds,
-                # An instance's uploads say which instance it is (#845).
-                instance_id=self.instance_id if instance else None)
+                # Its uploads say which agent process sends them (#845):
+                # the agents of one credential share its token.
+                instance_id=self.instance_id)
         #: Every run's frames not acknowledged yet (#783).
         self.spools = spools if spools is not None else SpoolStore(
             runner.runs_dir)

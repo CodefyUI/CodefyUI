@@ -1061,7 +1061,7 @@ const zhTW: Record<TranslationKey, string> = {
   'workers.instances.credential': '共用憑證',
   'workers.instances.summary': '執行個體：{count} 個（{connected} 個已連線，{running} 個執行中）',
   'workers.instances.remove.title': '撤銷這張憑證：所有執行個體都會中斷連線，正在執行的 run 以中斷結束',
-  'workers.instance.remove.title': '從清單移除這個執行個體；憑證仍保留',
+  'workers.instance.remove.title': '從清單移除這個已離開的執行個體；憑證仍保留',
   'workers.instance.left': '已離開',
   'workers.instances.left': '{count} 個已離開的執行個體',
   'workers.runLink': '在 Runs 面板顯示 run {id}',

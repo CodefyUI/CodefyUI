@@ -305,15 +305,15 @@ describe('WorkersPanel', () => {
     expect(left.getByRole('button', { name: 'run-aaaa' })).toBeInTheDocument();
     expect(left.getByTitle('Last heartbeat')).toHaveTextContent(/ago|now/);
     expect(left.getByRole('button', { name: 'Remove' })).toHaveAttribute(
-      'title', 'Remove this instance from the list; the credential stays enrolled');
+      'title', 'Remove this instance, which left, from the list; the credential stays enrolled');
     const second = within(cards[0]);
     expect(second.getByRole('heading', { name: '4821-2' })).toHaveAttribute('title', 'gpu.4821-2');
     expect(second.getByText('Online')).toBeInTheDocument();
-    // An instance has no credential to re-key, nor anything to drain.
+    // A live instance has no credential to re-key, nothing to drain, and
+    // no Remove of its own: its agent would only reconnect.
     expect(second.queryByRole('button', { name: 'Re-key' })).toBeNull();
     expect(second.queryByRole('button', { name: 'Drain' })).toBeNull();
-    expect(second.getByRole('button', { name: 'Remove' })).toHaveAttribute(
-      'title', 'Remove this instance from the list; the credential stays enrolled');
+    expect(second.queryByRole('button', { name: 'Remove' })).toBeNull();
     act(() => useI18n.setState({ locale: 'zh-TW' }));
     expect(within(credential).getByText('共用憑證')).toBeInTheDocument();
     expect(within(credential).getByText('執行個體：3 個（2 個已連線，1 個執行中）')).toBeInTheDocument();

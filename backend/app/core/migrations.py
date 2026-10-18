@@ -14,7 +14,7 @@ worker enrollment (#780); 010 says where each artifact's file lives
 the control plane launches (#784); 013 is the transfer backend's content
 index (#785); 014 records the S3 bucket of an artifact (#791); 015 the
 per-device admission policies and each run's graph hash (#788); 016
-whether an enrolled worker's last agent was one-shot (#845).
+whether an enrolled worker's own last agent was one-shot (#845).
 """
 
 from __future__ import annotations
@@ -633,13 +633,16 @@ CREATE INDEX idx_exec_runs_graph_hash
 
 # ── Migration 016: a one-shot worker known before it reconnects (#845) ────
 #
-# ``workers.one_shot`` is 1 when the worker's last agent said
-# ``hello.one_shot`` (#790), directly or as one of the credential's
-# instances (``--instance``), and 0 when it was a regular agent. A server
-# that restarted loads it with the row (``WorkerRegistry.load_known``), so
-# a run naming the worker before its next agent dials in is timed by
-# ``CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`` like any run waiting for a
-# one-shot worker. NULL: never reported (every row from before), read as 0.
+# ``workers.one_shot`` is 1 when the credential's own agent (``--name``,
+# no ``--instance``) last said ``hello.one_shot`` (#790), and 0 when it
+# was a regular agent. Instances of the credential (``--instance``) never
+# write it: they are known in memory only, and a credential used only by
+# instances stays 0 (feed an array through the one-shot pool, not by
+# naming the credential). A server that restarted loads it with the row
+# (``WorkerRegistry.load_known``), so a run naming the worker before its
+# next agent dials in is timed by ``CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S``
+# like any run waiting for a one-shot worker. NULL: never reported (every
+# row from before), read as 0.
 MIGRATION_016 = """
 ALTER TABLE workers ADD COLUMN one_shot INTEGER;
 """

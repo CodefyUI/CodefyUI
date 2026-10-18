@@ -267,9 +267,10 @@ class TransferClient:
                  uds: str | None = None,
                  instance_id: str | None = None) -> None:
         self._base_url = base_url
-        #: An instance's ``hello.instance_id`` (#845), sent with every
-        #: request: the control plane takes an upload for an instance's run
-        #: only from that instance, not from another holding the same token.
+        #: The agent's ``hello.instance_id`` (#845), sent with every
+        #: request: the control plane takes an upload for a run only from
+        #: the agent process running it, not from another agent holding
+        #: the same token (the credential's own agent, or an instance).
         self.instance_id = instance_id
         self._token = token
         self.cache = cache

@@ -303,7 +303,7 @@ async def test_only_the_newest_instances_that_left_stay_listed():
 async def test_a_run_adopted_under_an_instance_waits_for_its_process():
     registry = WorkerRegistry()
     try:
-        registry.adopt("gpu.3", "r1", instance_hash="h")
+        registry.adopt("gpu.3", "r1", instance_hash="h", one_shot=True)
         placeholder = registry.holder("gpu.3")
         assert placeholder.instance_hash == "h" and placeholder.one_shot
         assert registry.get("gpu.3") is None  # unlisted
@@ -311,6 +311,10 @@ async def test_a_run_adopted_under_an_instance_waits_for_its_process():
         registry.adopt("box", "r2")
         assert registry.holder("box").instance_hash is None
         assert not registry.holder("box").one_shot
+        # A regular run records its agent too (uploads), and stays regular.
+        registry.adopt("lab", "r3", instance_hash="k")
+        assert registry.holder("lab").instance_hash == "k"
+        assert not registry.holder("lab").one_shot
         # Revoking the credential ends the adopted run too.
         assert registry.forget_instances("gpu", "revoked") == ["gpu.3"]
         assert registry.holder("gpu.3") is None
@@ -455,12 +459,70 @@ async def test_removing_one_instance_keeps_the_credential(enrolled):
         async with _ws(client, token) as ws:
             await FakeAgent(ws).hello("gpu", one_shot=True, instance="a",
                                       instance_id="secret-a")
+            # Second review of #855: a live instance is not removed on its
+            # own (its agent would only reconnect, its run would end).
+            live = await client.delete("/api/workers/gpu.a")
+            assert live.status_code == 409
+            assert "remove the credential 'gpu'" in live.text
+            assert registry.get("gpu.a").online
         await _until(lambda: registry.get("gpu.a").status == STATUS_OFFLINE)
         removed = await client.delete("/api/workers/gpu.a")
         assert removed.status_code == 200
         assert removed.json()["revoked"] is False
         assert registry.get("gpu.a") is None
         assert await store.authenticate(token) == "gpu"
+
+
+async def test_revoking_fails_runs_naming_instances_no_longer_listed(
+        enrolled):
+    """Second review of #855: a run queued for an instance that left the
+    list (pruned, or not back since a restart) failed only if the
+    registry still indexed it; it stayed queued for ever."""
+    service, registry, _, token = enrolled
+    async with _client() as client:
+        async with _ws(client, token) as ws:
+            await FakeAgent(ws).hello("gpu", one_shot=True, instance="b",
+                                      instance_id="secret-b")
+            registry.claim_one_shot("gpu.b", "elsewhere")
+            queued = await _submit(client, {"worker": "gpu.b"})
+        await _until(lambda: registry.get("gpu.b").status == STATUS_OFFLINE)
+        registry.forget("gpu.b")  # as pruning does
+        assert registry.instances_of("gpu") == []
+        removed = (await client.delete("/api/workers/gpu")).json()
+    assert removed["failed_runs"] == [queued]
+    assert (await service.store.get_run(queued)).status == "failed"
+
+
+async def test_removing_a_session_token_worker_leaves_its_instances(env):  # noqa: F811
+    """Second review of #855: a same-host worker on the session token has
+    no credential to revoke; its instances did not use one, and stay."""
+    service, registry = env
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as ws_box, \
+                aconnect_ws(_path(), client) as ws_i:
+            await FakeAgent(ws_box).hello("box", instance_id="box")
+            await FakeAgent(ws_i).hello("box", one_shot=True, instance="1",
+                                        instance_id="secret-1")
+            registry.claim_one_shot("box.1", "elsewhere")
+            queued = await _submit(client, {"worker": "box.1"})
+            removed = await client.delete("/api/workers/box")
+            assert removed.status_code == 200, removed.text
+            assert removed.json()["revoked"] is False
+            assert removed.json()["failed_runs"] == []
+            assert registry.get("box") is None
+            assert registry.get("box.1").online
+        assert (await service.store.get_run(queued)).status == "queued"
+
+
+def test_a_run_naming_an_instance_is_timed_listed_or_not():
+    """Second review of #855: an instance is known in memory only; a run
+    naming one is timed by the one-shot rule even when the registry no
+    longer lists it (pruned, or gone with a restart)."""
+    service = RunService.__new__(RunService)
+    service._workers = WorkerRegistry()
+    assert service._waits_for_one_shot({"target": {"worker": "gpu.7"}})
+    assert not service._waits_for_one_shot({"target": {"worker": "gpu"}})
+    assert not service._waits_for_one_shot({"target": {"worker": "local"}})
 
 
 # ── 1. the one-shot flag survives a restart (migration 016) ─────────────
@@ -604,6 +666,38 @@ async def test_an_adopted_instance_run_is_taken_back_by_its_process_only(
 
 
 # ── the transfer upload ──────────────────────────────────────────────────
+
+
+async def test_an_instance_cannot_upload_into_the_credentials_own_run(
+        http, monkeypatch):  # noqa: F811
+    """Second review of #855 (security): every agent of a credential holds
+    its token; an upload for the credential's own worker's run is taken
+    only from the agent process running it, live or (after a restart)
+    by the hash its run recorded."""
+    http.running["r1"] = "gpu-1"
+    holders = {"gpu-1": SimpleNamespace(instance_id="regular",
+                                        instance_hash=None)}
+    registry = SimpleNamespace(holder=holders.get, get=holders.get)
+    monkeypatch.setattr(app.state, "worker_registry", registry,
+                        raising=False)
+
+    def upload(instance: str | None) -> Any:
+        headers = {TOKEN_HEADER: "token-gpu-1"}
+        if instance is not None:
+            headers[wp.INSTANCE_HEADER] = instance
+        return http.post("/api/runs/r1/artifacts/upload", headers=headers,
+                         data={"kind": "checkpoint", "name": "a.pt"},
+                         files={"file": ("a.pt", b"w",
+                                         "application/octet-stream")})
+
+    for intruder in ("secret-a", None, ""):  # an instance, or no id at all
+        assert (await upload(intruder)).status_code == 409
+    assert (await upload("regular")).status_code == 200
+    # After a restart, before the agent is back: the recorded hash.
+    holders["gpu-1"] = SimpleNamespace(
+        instance_id=None, instance_hash=instance_id_hash("regular"))
+    assert (await upload("secret-a")).status_code == 409
+    assert (await upload("regular")).status_code == 200
 
 
 async def test_an_instance_uploads_for_its_own_run_only(http, monkeypatch):  # noqa: F811

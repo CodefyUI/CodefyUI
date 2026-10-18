@@ -46,6 +46,105 @@ def test_a_slurm_array_task_is_its_array_job_and_task():
     assert wp.INSTANCE_PATTERN.fullmatch(first)
 
 
+def test_the_tasks_of_one_srun_step_get_ids_of_their_own():
+    """Second review of #855: ``srun -n 4`` gives its four tasks one
+    ``SLURM_JOB_ID`` (and one array task id); the step and the process
+    rank tell them apart. The batch script itself is no step."""
+    job = {"SLURM_JOB_ID": "77"}
+    ids = {cli.derive_instance({**job, "SLURM_STEP_ID": "0",
+                                "SLURM_PROCID": str(rank)})
+           for rank in range(4)}
+    assert ids == {"77-0-0", "77-0-1", "77-0-2", "77-0-3"}
+    assert cli.derive_instance({"SLURM_ARRAY_JOB_ID": "4821",
+                                "SLURM_ARRAY_TASK_ID": "3",
+                                "SLURM_STEP_ID": "2",
+                                "SLURM_PROCID": "1"}) == "4821-3-2-1"
+    for step in ("batch", "extern", ""):
+        assert cli.derive_instance({**job, "SLURM_STEP_ID": step,
+                                    "SLURM_PROCID": "0"}) == "77"
+    assert cli.derive_instance({**job, "SLURM_STEP_ID": "5"}) == "77-5-0"
+    for each in ids:
+        assert wp.INSTANCE_PATTERN.fullmatch(each)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
+def test_a_file_system_without_locks_runs_unlocked(monkeypatch, tmp_path,
+                                                   caplog):
+    """Second review of #855: Lustre ``noflock`` or an NFS without locks
+    answers ``flock`` with ENOLCK / ENOSYS / EINVAL; that is not "busy"
+    (every task of the array would exit 2), but no locks, as on Windows."""
+    import errno
+    import fcntl
+    import logging
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_NO_FLOCK_WARNED", [])
+    real = fcntl.flock
+
+    for code in (errno.ENOLCK, errno.ENOSYS, errno.EINVAL):
+        def no_locks(fd: int, op: int, code: int = code) -> None:
+            raise OSError(code, "no locks here")
+
+        monkeypatch.setattr(fcntl, "flock", no_locks)
+        lock = cli.InstanceLock(f"x{code}")
+        with caplog.at_level(logging.WARNING, logger="app.agent"):
+            assert lock.acquire() is True
+        assert not lock.held
+        lock.release()
+    # Warned once per process.
+    assert sum("file locks are not supported" in r.message
+               for r in caplog.records) == 1
+    # Nothing is retired without locks: a free lock proves nothing.
+    old = time.time() - cli.INSTANCE_LEFTOVER_AGE_S - 60
+    left = cli.instance_runs_dir("gone")
+    left.mkdir(parents=True)
+    import os
+
+    os.utime(left, (old, old))
+    assert cli.retire_left_instances("mine") == []
+    assert left.exists()
+
+    # A lock held elsewhere is still busy.
+    def held(fd: int, op: int) -> None:
+        raise BlockingIOError(errno.EWOULDBLOCK, "held")
+
+    monkeypatch.setattr(fcntl, "flock", held)
+    assert not cli.FileLock(tmp_path / "y.lock").acquire(blocking=False)
+    monkeypatch.setattr(fcntl, "flock", real)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no flock on Windows")
+def test_a_long_retirement_does_not_hold_the_ids_lock(monkeypatch, tmp_path):
+    """Second review of #855: the id's lock is held only to rename the
+    leftover out of the way; the delete, however long, runs after, so an
+    agent starting with that id is not turned away as busy."""
+    import os
+    import shutil
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    base = tmp_path / cli.INSTANCES_DIR_NAME
+    left = cli.instance_runs_dir("slow") / "run1"
+    left.mkdir(parents=True)
+    old = time.time() - cli.INSTANCE_LEFTOVER_AGE_S - 60
+    for each in (left, left.parent):
+        os.utime(each, (old, old))
+    stale_trash = base / ".trash-older-0000"  # a killed retirement's
+    stale_trash.mkdir()
+    real = shutil.rmtree
+    free_while_deleting: list[bool] = []
+
+    def slow_rmtree(path: Any, *args: Any, **kwargs: Any) -> None:
+        probe = cli.InstanceLock("slow")
+        free_while_deleting.append(probe.acquire())
+        probe.release()
+        real(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", slow_rmtree)
+    assert cli.retire_left_instances("mine") == ["slow"]
+    assert free_while_deleting and all(free_while_deleting)
+    assert sorted(p.name for p in base.iterdir()) == []
+
+
 def test_the_instance_flag_needs_one_shot_and_a_valid_id(monkeypatch):
     monkeypatch.setenv("SLURM_JOB_ID", "991")
     monkeypatch.delenv("SLURM_ARRAY_JOB_ID", raising=False)

@@ -762,23 +762,41 @@ async def _uploader(request: Request) -> str | None:
     return name
 
 
-def _instance_uploads(request: Request, worker: str, running_on: str) -> bool:
-    """Whether *worker*'s token may upload for a run on *running_on*, an
-    instance of its credential (#845). The instances of a credential share
-    its token, so the token is not enough: the request must also carry the
-    ``instance_id`` that instance's agent process said in its ``hello``
+def _agent_uploads(request: Request, worker: str, running_on: str) -> bool:
+    """Whether *worker*'s token may upload for a run on *running_on* (#845).
+
+    The run must be on the credential's worker or one of its instances,
+    and the request must come from the agent process running it: the
+    agents of one credential (its own, its instances) share its token, so
+    the token alone would let any of them write into another's run. Each
+    agent sends its ``instance_id``
     (:data:`~app.core.worker_protocol.INSTANCE_HEADER`), which only that
-    process and this server know."""
+    process and this server know; after a restart, before the agent is
+    back, it is checked against the hash the run recorded. A run whose
+    agent this server cannot name (nothing recorded, no registry) is
+    accepted on the token for the credential's own worker, never for an
+    instance."""
+    import hmac
+
     from ..core import worker_protocol as wp
+    from ..core.worker_handshake import instance_id_hash
 
     name, instance = wp.instance_parts(running_on)
-    if instance is None or name != worker:
+    if name != worker:
         return False
     registry = getattr(request.app.state, "worker_registry", None)
-    holder = None if registry is None else registry.get(running_on)
-    expected = getattr(holder, "instance_id", None)
+    lookup = (None if registry is None
+              else getattr(registry, "holder", None) or registry.get)
+    holder = None if lookup is None else lookup(running_on)
     presented = request.headers.get(wp.INSTANCE_HEADER)
-    return bool(expected) and constant_time_equals(presented, expected)
+    current = getattr(holder, "instance_id", None)
+    if current:
+        return constant_time_equals(presented, current)
+    recorded = getattr(holder, "instance_hash", None)
+    if recorded:
+        return bool(presented) and hmac.compare_digest(
+            instance_id_hash(presented) or "", recorded)
+    return instance is None
 
 
 @router.post("/{run_id}/artifacts/upload")
@@ -811,14 +829,14 @@ async def upload_run_artifact(run_id: str, request: Request):
     service = _get_service(request)
     worker = await _uploader(request)
     running_on = service.running_on(run_id)
-    if running_on is not None and worker is not None \
-            and running_on != worker and _instance_uploads(
-                request, worker, running_on):
-        worker = running_on
-    if running_on is None or (worker is not None and running_on != worker):
+    if running_on is None or (worker is not None and not _agent_uploads(
+            request, worker, running_on)):
         raise HTTPException(status_code=409, detail=(
             f"run '{run_id}' is not running on "
-            f"{'a worker' if worker is None else f'worker {worker}'}"))
+            f"{'a worker' if worker is None else f'worker {worker}'}"
+            + ("" if running_on is None or worker is None else
+               " (or this request is not from the agent process running "
+               "it)")))
 
     def destination_dir(fields: dict[str, str]) -> Path:
         place = fields.get("place") or transfer.PLACE_RUN

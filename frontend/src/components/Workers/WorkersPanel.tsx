@@ -489,7 +489,6 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   let removeTitle: TranslationKey = 'workers.remove.title';
   if (instances.length > 0) removeTitle = 'workers.instances.remove.title';
   else if (confirming) removeTitle = 'workers.remove.confirmTitle';
-  else if (instance !== null) removeTitle = 'workers.instance.remove.title';
 
   // One button that changes its word, never disabled: a disabled or swapped
   // button drops the focus to the page, where the dialog's Escape and Tab
@@ -563,16 +562,23 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
             {t('workers.rekey')}
           </button>
         )}
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.danger}`}
-          aria-disabled={busy}
-          title={t(removeTitle)}
-          onClick={() => void removeWorker()}
-          onBlur={() => setConfirming(false)}
-        >
-          {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
-        </button>
+        {/*
+          A live instance (#845) is not removed on its own: its agent would
+          only reconnect. It goes once it left (its line), or with its
+          credential.
+        */}
+        {instance === null && (
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.danger}`}
+            aria-disabled={busy}
+            title={t(removeTitle)}
+            onClick={() => void removeWorker()}
+            onBlur={() => setConfirming(false)}
+          >
+            {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
+          </button>
+        )}
       </header>
       {shared ? rejection && (
         <dl className={styles.facts}>

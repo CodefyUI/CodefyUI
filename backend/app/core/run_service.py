@@ -2710,6 +2710,11 @@ class RunService:
         if worker_id in (TARGET_WORKER_LOCAL, TARGET_WORKER_ANY) \
                 or self._workers is None:
             return False
+        if instance_parts(worker_id)[1] is not None:
+            # Only one-shot agents are instances (#845). An instance is
+            # known in memory only: a run queued for one that left the
+            # list (pruned, or gone with a restart) is timed all the same.
+            return True
         worker = self._workers.get(worker_id)
         return bool(getattr(worker, "one_shot", False))
 
@@ -3425,13 +3430,16 @@ class RunService:
                 devices=list(active.placement.devices))
             # What a restarted server needs to adopt the run (#793).
             facts[WORKER_RESUME_KEY] = self._worker_resume(active, 0)
-            if getattr(worker, "one_shot", False) and worker.instance_id:
-                # Which agent process may take a one-shot run back after a
-                # restart (#845): a restarted server knows the worker only
-                # from its row, and the instances of one credential share
-                # one worker token.
+            if getattr(worker, "instance_id", None):
+                # Which agent process runs it (#845): after a restart this
+                # server knows the worker only from its row, and the agents
+                # of one credential (its own and its instances) share one
+                # worker token. A one-shot run may be taken back only by
+                # that process, and only it may upload the run's files.
                 facts[WORKER_RESUME_KEY]["instance"] = instance_id_hash(
                     worker.instance_id)
+                if getattr(worker, "one_shot", False):
+                    facts[WORKER_RESUME_KEY]["one_shot"] = True
         else:
             digest = None
             fingerprint, facts = await self._environment_record(
@@ -4180,15 +4188,22 @@ class RunService:
         return CancelOutcome(run_id=run_id, status=record.status,
                              cancelled=False)
 
-    async def fail_queued_for_worker(self, worker_id: str,
-                                     error: str) -> list[str]:
+    async def fail_queued_for_worker(self, worker_id: str, error: str, *,
+                                     instances: bool = False) -> list[str]:
         """Fail every run still waiting for *worker_id* (#780: the worker
         was removed, so nothing will ever place them). Running runs are not
         touched here; closing the worker's socket interrupts those.
-        Returns the run ids that were failed."""
+        *instances*: also every run naming one of its instances (#845,
+        ``<worker_id>.<instance>``; its credential was revoked), whether
+        the registry still lists that instance or not. One pass over the
+        waiting runs. Returns the run ids that were failed."""
         failed: list[str] = []
         for run_id, waiting in list(self._pending_by_id.items()):
-            if entry_target(waiting.options)[0] != worker_id:
+            target = entry_target(waiting.options)[0]
+            if target != worker_id and not (
+                    instances and target is not None
+                    and instance_parts(target)[1] is not None
+                    and instance_parts(target)[0] == worker_id):
                 continue
             entry = self._dequeue(run_id)
             if entry is None:  # pragma: no cover - same loop, same index
@@ -4389,7 +4404,9 @@ class RunService:
         self._workers.adopt(placement.worker_id, record.id,
                             last_seq=last_seq,
                             instance_hash=(instance if isinstance(instance, str)
-                                           and instance else None))
+                                           and instance else None),
+                            one_shot=isinstance(resume, dict)
+                            and resume.get("one_shot") is True)
         try:
             self._start(record.id, {}, options,
                         queue_key=record.queue_key or placement.devices[0],

@@ -294,10 +294,11 @@ class Worker:
     instance_of: str | None = None
     #: ``hello.instance`` (#845), else None.
     instance: str | None = None
-    #: On a worker (or placeholder) holding a one-shot run adopted after a
-    #: restart (#793, #845): the hashed ``instance_id`` of the agent
-    #: process that took it (``worker_handshake.instance_id_hash``). Only
-    #: that process may take the id back (``worker_handshake.same_agent``).
+    #: On a worker (or placeholder) holding a run adopted after a restart
+    #: (#793, #845): the hashed ``instance_id`` of the agent process that
+    #: ran it (``worker_handshake.instance_id_hash``). Only that process
+    #: may upload the run's files, or take a one-shot id back
+    #: (``worker_handshake.same_agent``).
     instance_hash: str | None = None
 
     @property
@@ -1126,7 +1127,8 @@ class WorkerRegistry:
 
     def adopt(self, worker_id: str, run_id: str, *,
               last_seq: int = 0,
-              instance_hash: str | None = None) -> WorkerRun:
+              instance_hash: str | None = None,
+              one_shot: bool = False) -> WorkerRun:
         """Take over *run_id*, left in flight on *worker_id* by a previous
         process of this server (#793). STARTUP, before workers connect.
 
@@ -1137,10 +1139,12 @@ class WorkerRegistry:
         it are dropped as duplicates (:meth:`route`). A worker known here
         (an enrolled one, offline) holds it in its ``running``; for one not
         known yet an unlisted placeholder does, until it connects.
-        *instance_hash*: the run was taken by a one-shot agent (#845); only
-        the agent process it names (``worker_handshake.same_agent``) may
-        take the id back. A placeholder is marked one-shot, so the one-shot
-        rule (``worker_handshake.one_shot_refusal``) applies to it.
+        *instance_hash*: the hashed ``instance_id`` of the agent process
+        that ran it (#845): only that process may upload the run's files
+        (``routes_runs``) and, for a *one_shot* run, take the id back
+        (``worker_handshake.same_agent``). A placeholder of a one-shot run
+        is marked one-shot, so the one-shot rule
+        (``worker_handshake.one_shot_refusal``) applies to it.
         """
         worker = self._workers.get(worker_id)
         if worker is None:
@@ -1153,8 +1157,8 @@ class WorkerRegistry:
                 status=STATUS_OFFLINE, last_heartbeat_at=None)
         if instance_hash is not None:
             worker.instance_hash = instance_hash
-            if worker_id in self._adopted:
-                worker.one_shot = True
+        if one_shot and worker_id in self._adopted:
+            worker.one_shot = True
         run = WorkerRun(run_id=run_id, last_seq=max(0, int(last_seq)),
                         detached_at=self._clock(), detached_wall=time.time(),
                         adopted=True)
