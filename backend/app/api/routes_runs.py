@@ -810,6 +810,43 @@ async def _uploader(request: Request) -> str | None:
     return name
 
 
+def _agent_uploads(request: Request, worker: str, running_on: str) -> bool:
+    """Whether *worker*'s token may upload for a run on *running_on* (#845).
+
+    The run must be on the credential's worker or one of its instances,
+    and the request must come from the agent process running it: the
+    agents of one credential (its own, its instances) share its token, so
+    the token alone would let any of them write into another's run. Each
+    agent sends its ``instance_id``
+    (:data:`~app.core.worker_protocol.INSTANCE_HEADER`), which only that
+    process and this server know; after a restart, before the agent is
+    back, it is checked against the hash the run recorded. A run whose
+    agent this server cannot name (nothing recorded, no registry) is
+    accepted on the token for the credential's own worker, never for an
+    instance."""
+    import hmac
+
+    from ..core import worker_protocol as wp
+    from ..core.worker_handshake import instance_id_hash
+
+    name, instance = wp.instance_parts(running_on)
+    if name != worker:
+        return False
+    registry = getattr(request.app.state, "worker_registry", None)
+    lookup = (None if registry is None
+              else getattr(registry, "holder", None) or registry.get)
+    holder = None if lookup is None else lookup(running_on)
+    presented = request.headers.get(wp.INSTANCE_HEADER)
+    current = getattr(holder, "instance_id", None)
+    if current:
+        return constant_time_equals(presented, current)
+    recorded = getattr(holder, "instance_hash", None)
+    if recorded:
+        return bool(presented) and hmac.compare_digest(
+            instance_id_hash(presented) or "", recorded)
+    return instance is None
+
+
 @router.post("/{run_id}/artifacts/upload")
 async def upload_run_artifact(run_id: str, request: Request):
     """Receive a file a worker run wrote (#785, the ``transfer`` backend).
@@ -840,10 +877,14 @@ async def upload_run_artifact(run_id: str, request: Request):
     service = _get_service(request)
     worker = await _uploader(request)
     running_on = service.running_on(run_id)
-    if running_on is None or (worker is not None and running_on != worker):
+    if running_on is None or (worker is not None and not _agent_uploads(
+            request, worker, running_on)):
         raise HTTPException(status_code=409, detail=(
             f"run '{run_id}' is not running on "
-            f"{'a worker' if worker is None else f'worker {worker}'}"))
+            f"{'a worker' if worker is None else f'worker {worker}'}"
+            + ("" if running_on is None or worker is None else
+               " (or this request is not from the agent process running "
+               "it)")))
 
     def destination_dir(fields: dict[str, str]) -> Path:
         place = fields.get("place") or transfer.PLACE_RUN

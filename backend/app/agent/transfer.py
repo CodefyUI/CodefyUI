@@ -264,8 +264,14 @@ class TransferClient:
     def __init__(self, *, base_url: Any, token: Any, cache: InputCache,
                  timeout_s: float = TIMEOUT_S,
                  ssl_context: Callable[[], Any] | None = None,
-                 uds: str | None = None) -> None:
+                 uds: str | None = None,
+                 instance_id: str | None = None) -> None:
         self._base_url = base_url
+        #: The agent's ``hello.instance_id`` (#845), sent with every
+        #: request: the control plane takes an upload for a run only from
+        #: the agent process running it, not from another agent holding
+        #: the same token (the credential's own agent, or an instance).
+        self.instance_id = instance_id
         self._token = token
         self.cache = cache
         self.timeout_s = timeout_s
@@ -283,7 +289,12 @@ class TransferClient:
         from .connection import TOKEN_HEADER
 
         token = _resolve(self._token)
-        return {TOKEN_HEADER: token} if token else {}
+        headers = {TOKEN_HEADER: token} if token else {}
+        if self.instance_id:
+            from ..core.worker_protocol import INSTANCE_HEADER
+
+            headers[INSTANCE_HEADER] = self.instance_id
+        return headers
 
     def _client(self) -> Any:
         import httpx

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   DevicePolicy,
@@ -12,7 +12,7 @@ import type {
   WorkerRejection,
   WorkerStatus,
 } from '../../api/workers';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
 import { friendlyError } from '../../utils/errorMessages';
@@ -350,8 +350,106 @@ function OneShotLine({ oneShot, away }: { oneShot: WorkerOneShot; away: boolean 
   );
 }
 
-function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey }: {
+/** Instances of a shared credential (#845) with an agent connected first. */
+function byActivity(instances: readonly WorkerInfo[]): WorkerInfo[] {
+  return [...instances].sort((a, b) => Number(AWAY_STATUSES.has(a.status)) - Number(AWAY_STATUSES.has(b.status)));
+}
+
+/** An instance that left (#845): no agent connected, nothing in flight. */
+function hasLeft(worker: WorkerInfo): boolean {
+  return AWAY_STATUSES.has(worker.status) && worker.running.length === 0;
+}
+
+/**
+ * One line for an instance that left (#845): which one, how its run went,
+ * when it was last heard from. A SLURM array leaves many; a full card
+ * each would bury the live ones.
+ */
+function LeftInstanceRow({ worker, now, onRemoved }: {
   worker: WorkerInfo;
+  now: number;
+  onRemoved: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[worker.id]));
+  const remove = useWorkerStore((s) => s.remove);
+  return (
+    <li className={styles.leftInstance} aria-label={worker.name}>
+      <span className={styles.workerName} title={worker.id}>{worker.instance ?? worker.id}</span>
+      <span className={`${styles.chip} ${styles.chip_offline}`}>{t('workers.instance.left')}</span>
+      {worker.one_shot && <OneShotLine oneShot={worker.one_shot} away />}
+      <span className={styles.muted} title={t('workers.heartbeat')}>
+        {worker.last_heartbeat_at === null
+          ? t('workers.heartbeat.never')
+          : relativeTime(worker.last_heartbeat_at, locale, now) || '-'}
+      </span>
+      <span className={styles.spacer} />
+      <button
+        type="button"
+        className={`${styles.btn} ${styles.danger}`}
+        aria-disabled={busy}
+        title={t('workers.instance.remove.title')}
+        onClick={() => {
+          if (busy) return;
+          void remove(worker.id).then(() => {
+            if (document.activeElement === document.body) onRemoved();
+          });
+        }}
+      >
+        {t('workers.remove')}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * The instances of one credential (#845): how many, how many are connected
+ * and running, then a card for each. Open by default; a large array can
+ * be folded away.
+ */
+function InstanceList({ instances, children }: { instances: readonly WorkerInfo[]; children: ReactNode }) {
+  const { t } = useI18n();
+  const connected = instances.filter((w) => !AWAY_STATUSES.has(w.status)).length;
+  const running = instances.filter((w) => w.running.length > 0).length;
+  return (
+    <details className={styles.instances} open>
+      <summary>{t('workers.instances.summary', { count: instances.length, connected, running })}</summary>
+      <div className={styles.instanceList}>{children}</div>
+    </details>
+  );
+}
+
+/**
+ * Instances whose credential has no card of its own (#845): same-host
+ * agents on the session token, whose name nobody enrolled.
+ */
+function InstanceGroup({ name, instances, children }: {
+  name: string;
+  instances: readonly WorkerInfo[];
+  children: ReactNode;
+}) {
+  const { t } = useI18n();
+  return (
+    <article className={styles.card} aria-label={name}>
+      <header className={styles.cardHeader}>
+        <h3 className={styles.workerName}>{name}</h3>
+        <span className={`${styles.chip} ${styles.chip_neutral}`} title={t('workers.instances.title')}>
+          {t('workers.instances')}
+        </span>
+      </header>
+      <InstanceList instances={instances}>{children}</InstanceList>
+    </article>
+  );
+}
+
+function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey, instances = [], children }: {
+  worker: WorkerInfo;
+  /**
+   * The instances of this worker's credential (#845), shown in the card
+   * as *children*; empty for a worker no instance shares.
+   */
+  instances?: readonly WorkerInfo[];
+  children?: ReactNode;
   /** Its name's last refused handshake, if the server remembers one (#781). */
   rejection: WorkerRejection | undefined;
   /** Its SSH tunnel, when this server starts it over ssh (#784). */
@@ -378,6 +476,19 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const workerRuns = worker.running.filter((id) => !onDevices.has(id));
   const digest = worker.fingerprint_digest;
   const known = KNOWN_STATUSES.has(worker.status);
+  /** One of a shared credential's instances (#845), listed in its card. */
+  const instance = worker.instance_of ? worker.instance ?? worker.id : null;
+  /**
+   * The credential of instances whose own agent is not connected (#845):
+   * the card is their header, and its own last facts would only mislead.
+   */
+  const shared = instances.length > 0 && AWAY_STATUSES.has(worker.status);
+  const anyConnected = !AWAY_STATUSES.has(worker.status)
+    || instances.some((w) => !AWAY_STATUSES.has(w.status));
+  // A credential with instances says what revoking it does, asked or not.
+  let removeTitle: TranslationKey = 'workers.remove.title';
+  if (instances.length > 0) removeTitle = 'workers.instances.remove.title';
+  else if (confirming) removeTitle = 'workers.remove.confirmTitle';
 
   // One button that changes its word, never disabled: a disabled or swapped
   // button drops the focus to the page, where the dialog's Escape and Tab
@@ -393,7 +504,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   // that takes a second press; one that is away goes at once.
   const removeWorker = async () => {
     if (busy) return;
-    if (!AWAY_STATUSES.has(worker.status) && !confirming) {
+    if (anyConnected && !confirming) {
       setConfirming(true);
       return;
     }
@@ -402,12 +513,20 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   };
 
   return (
-    <article className={styles.card} aria-label={worker.name}>
+    <article className={instance === null ? styles.card : `${styles.card} ${styles.nested}`} aria-label={worker.name}>
       <header className={styles.cardHeader}>
-        <h3 className={styles.workerName}>{worker.name}</h3>
-        <span className={`${styles.chip} ${known ? styles[`chip_${worker.status}`] : styles.chip_neutral}`}>
-          {known ? t(`workers.status.${worker.status}`) : worker.status}
-        </span>
+        {instance === null
+          ? <h3 className={styles.workerName}>{worker.name}</h3>
+          : <h4 className={styles.workerName} title={worker.id}>{instance}</h4>}
+        {shared ? (
+          <span className={`${styles.chip} ${styles.chip_neutral}`} title={t('workers.instances.title')}>
+            {t('workers.instances.credential')}
+          </span>
+        ) : (
+          <span className={`${styles.chip} ${known ? styles[`chip_${worker.status}`] : styles.chip_neutral}`}>
+            {known ? t(`workers.status.${worker.status}`) : worker.status}
+          </span>
+        )}
         {worker.plain_http && (
           <span className={`${styles.chip} ${styles.chip_degraded}`} title={t('workers.plainHttp.title')}>
             {t('workers.plainHttp')}
@@ -432,25 +551,41 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
             {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
           </button>
         )}
-        <button
-          type="button"
-          className={styles.btn}
-          title={t('workers.rekey.title')}
-          onClick={() => onRekey(worker.id)}
-        >
-          {t('workers.rekey')}
-        </button>
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.danger}`}
-          aria-disabled={busy}
-          title={t(confirming ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
-          onClick={() => void removeWorker()}
-          onBlur={() => setConfirming(false)}
-        >
-          {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
-        </button>
+        {/* An instance has no credential of its own to re-key (#845). */}
+        {instance === null && (
+          <button
+            type="button"
+            className={styles.btn}
+            title={t('workers.rekey.title')}
+            onClick={() => onRekey(worker.id)}
+          >
+            {t('workers.rekey')}
+          </button>
+        )}
+        {/*
+          A live instance (#845) is not removed on its own: its agent would
+          only reconnect. It goes once it left (its line), or with its
+          credential.
+        */}
+        {instance === null && (
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.danger}`}
+            aria-disabled={busy}
+            title={t(removeTitle)}
+            onClick={() => void removeWorker()}
+            onBlur={() => setConfirming(false)}
+          >
+            {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
+          </button>
+        )}
       </header>
+      {shared ? rejection && (
+        <dl className={styles.facts}>
+          <dt>{t('workers.rejected')}</dt>
+          <dd><RejectionLine rejection={rejection} now={now} /></dd>
+        </dl>
+      ) : (
       <dl className={styles.facts}>
         {ssh && (
           <>
@@ -501,11 +636,15 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           </>
         )}
       </dl>
-      <ul className={styles.devices}>
-        {worker.devices.map((device) => (
-          <DeviceRow key={device.value} device={device} workerId={worker.id} />
-        ))}
-      </ul>
+      )}
+      {!shared && (
+        <ul className={styles.devices}>
+          {worker.devices.map((device) => (
+            <DeviceRow key={device.value} device={device} workerId={worker.id} />
+          ))}
+        </ul>
+      )}
+      {instances.length > 0 && <InstanceList instances={instances}>{children}</InstanceList>}
     </article>
   );
 }
@@ -581,7 +720,16 @@ function WorkersDialog() {
   } else if (workers.length === 0 && refusedOnly.length === 0 && sshOnly.length === 0 && error === null) {
     content = <p className={styles.muted}>{t('workers.empty')}</p>;
   } else {
-    content = workers.map((worker) => (
+    // A shared credential's instances (#845) are listed in its card, or
+    // under a header of their own when the credential has none.
+    const instancesOf = new Map<string, WorkerInfo[]>();
+    for (const worker of workers) {
+      if (!worker.instance_of) continue;
+      const group = instancesOf.get(worker.instance_of);
+      if (group) group.push(worker);
+      else instancesOf.set(worker.instance_of, [worker]);
+    }
+    const card = (worker: WorkerInfo, children?: ReactNode) => (
       <WorkerCard
         key={worker.id}
         worker={worker}
@@ -591,11 +739,38 @@ function WorkersDialog() {
         now={now}
         onRemoved={() => closeRef.current?.focus()}
         onRekey={(workerId) => setAdding({ rekey: workerId })}
-      />
-    ));
+        instances={worker.instance_of ? [] : instancesOf.get(worker.id)}
+      >
+        {children}
+      </WorkerCard>
+    );
+    // A card for each live instance, one line for each that left.
+    const instanceCards = (group: readonly WorkerInfo[] | undefined) => {
+      if (!group) return undefined;
+      const left = group.filter(hasLeft);
+      return (
+        <>
+          {byActivity(group.filter((w) => !hasLeft(w))).map((w) => card(w))}
+          {left.length > 0 && (
+            <ul className={styles.leftInstances} aria-label={t('workers.instances.left', { count: left.length })}>
+              {left.map((w) => (
+                <LeftInstanceRow key={w.id} worker={w} now={now} onRemoved={() => closeRef.current?.focus()} />
+              ))}
+            </ul>
+          )}
+        </>
+      );
+    };
+    const tops = workers.filter((w) => !w.instance_of);
+    const topIds = new Set(tops.map((w) => w.id));
     content = (
       <>
-        {content}
+        {tops.map((worker) => card(worker, instanceCards(instancesOf.get(worker.id))))}
+        {[...instancesOf.entries()].filter(([name]) => !topIds.has(name)).map(([name, group]) => (
+          <InstanceGroup key={`instances:${name}`} name={name} instances={group}>
+            {instanceCards(group)}
+          </InstanceGroup>
+        ))}
         {sshOnly.map((entry) => <SshOnlyCard key={`ssh:${entry.id}`} entry={entry} />)}
       </>
     );

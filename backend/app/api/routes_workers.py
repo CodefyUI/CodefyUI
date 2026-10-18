@@ -109,7 +109,7 @@ from ..core.mounts import (
 )
 from ..core.scheduling import LOCAL_WORKER_ID, slot_for
 from ..core.worker_protocol import canonical_device
-from ..core.workers import CREDENTIAL_SESSION
+from ..core.workers import CREDENTIAL_SESSION, policy_owner
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +282,10 @@ async def set_device_policy(request: Request, worker_id: str, device: str,
                                  "a CUDA or MPS device can")
     store = getattr(request.app.state, "worker_store", None)
     if store is not None:
-        await store.set_device_policy(worker_id, value, body.policy)
+        # An instance's card admits as its credential's does (#845): set
+        # on one instance, it is set for the credential and all of them.
+        await store.set_device_policy(policy_owner(worker_id), value,
+                                      body.policy)
     registry.set_device_policy(worker_id, value, body.policy)
     service = _service(request)
     if service is not None and body.policy == mem.POLICY_SHARED:
@@ -653,27 +656,42 @@ async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
 
 
 async def _revoke_worker(request: Request, worker_id: str,
-                         reason: str) -> tuple[bool, Any, list[Any]]:
+                         reason: str) -> tuple[bool, bool, list[str]]:
     """Revoke *worker_id*'s credential, drop it from the registry (its runs
-    end ``interrupted``) and fail its queued runs. Returns (revoked, the
-    registry's removed worker or None, the failed run ids)."""
+    end ``interrupted``) and fail its queued runs. Returns (revoked,
+    whether the registry dropped anything, the failed run ids).
+
+    Revoking a credential also drops its instances (#845), which
+    authenticated with the token just revoked, and fails the runs queued
+    for any of them, listed or not (an instance that left the list, or
+    has not reconnected since a restart). Without a revoked credential (a
+    same-host worker on the session token) its instances are left alone:
+    they did not use it."""
     store = getattr(request.app.state, "worker_store", None)
     revoked = False
     if store is not None:
         revoked = await store.delete_worker(worker_id)
     registry = getattr(request.app.state, "worker_registry", None)
-    removed = None
+    dropped = False
+    instances: list[str] = []
     if registry is not None:
         registry.forget_policies(worker_id)
-        removed = registry.forget(
-            worker_id, f"{reason} and its credential revoked" if revoked
-            else reason)
+        why = f"{reason} and its credential revoked" if revoked else reason
+        dropped = registry.forget(worker_id, why) is not None
+        if revoked:
+            instances = registry.forget_instances(worker_id, why)
+            dropped = dropped or bool(instances)
     if revoked:
-        logger.info("worker %s: credential revoked", worker_id)
+        logger.info("worker %s: credential revoked%s", worker_id,
+                    f" ({len(instances)} instance(s) removed)"
+                    if instances else "")
     service = _service(request)
-    failed = [] if service is None else await service.fail_queued_for_worker(
-        worker_id, f"worker {worker_id} was removed")
-    return revoked, removed, failed
+    failed: list[str] = []
+    if service is not None:
+        failed = await service.fail_queued_for_worker(
+            worker_id, f"worker {worker_id} was removed",
+            instances=revoked)
+    return revoked, dropped, failed
 
 
 @router.delete("/ssh/{name}")
@@ -706,9 +724,23 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
     Its running runs end ``interrupted`` (the socket closes), and the runs
     still queued for it fail at once: nothing would ever place them. An SSH
     worker's session is ended and its row deleted first, so it does not
-    come back; its remote clean-up follows in the background.
+    come back; its remote clean-up follows in the background. An
+    instance of a shared credential (#845) is only taken off the list,
+    and only once it left (409 while it is connected or has a run in
+    flight); removing the credential removes all of them.
     """
-    _registry(request)
+    registry = _registry(request)
+    name, instance = wp.instance_parts(worker_id)
+    held = None if instance is None else registry.get(worker_id)
+    if held is not None and (held.online or held.running):
+        # A live instance (#845) is not removed on its own: its agent,
+        # holding a valid token, would only reconnect, and its run would
+        # end. It leaves the list when its agent exits, or with its
+        # credential.
+        raise HTTPException(409, (
+            f"instance {worker_id} is connected or has a run in flight; "
+            "it can be removed once its agent has left. To disconnect "
+            f"every instance, remove the credential {name!r}"))
     launcher = getattr(request.app.state, "ssh_launcher", None)
     outcome: dict[str, Any] = {}
 
@@ -721,8 +753,8 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
                                              before_cleanup=revoke))
     if "result" not in outcome:
         await revoke()
-    revoked, removed, failed = outcome["result"]
-    if removed is None and not revoked and not ssh_removed:
+    revoked, dropped, failed = outcome["result"]
+    if not dropped and not revoked and not ssh_removed:
         raise HTTPException(404, f"no worker named {worker_id!r}")
     return {"id": worker_id, "revoked": revoked, "failed_runs": failed}
 

@@ -328,14 +328,19 @@ from .secret_params import (
     split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
-from .worker_handshake import catalog_refusal, graph_node_types
+from .worker_handshake import (
+    catalog_refusal,
+    graph_node_types,
+    instance_id_hash,
+)
 from .worker_protocol import (
     CAPABILITY_RECORD_OUTPUTS,
     POOL_ONE_SHOT,
     TARGET_ANY,
     TARGET_LOCAL,
-    WORKER_NAME_PATTERN,
+    WORKER_ID_PATTERN,
     canonical_device,
+    instance_parts,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -558,13 +563,23 @@ class QueueLimits:
         Never zero: a cap of 0 would accept runs into a queue that can never
         drain, which is a hang dressed up as a configuration. A user who
         wants that should not submit the run.
+
+        An instance's slot (#845, ``<name>.<instance>``) takes an override
+        of its own id, else its credential's (``<name>/<device>``): each
+        task of a SLURM array gets the cap set for the credential.
         """
         worker_id, device = slot
-        key = (device if worker_id == LOCAL_WORKER_ID
-               else f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}")
-        for override, value in self.overrides:
-            if override == key:
-                return max(1, value)
+        if worker_id == LOCAL_WORKER_ID:
+            keys = [device]
+        else:
+            keys = [f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}"]
+            name, instance = instance_parts(worker_id)
+            if instance is not None:
+                keys.append(f"{name}{WORKER_QUEUE_SEPARATOR}{device}")
+        for key in keys:
+            for override, value in self.overrides:
+                if override == key:
+                    return max(1, value)
         return max(1, self.cpu if device == CPU_QUEUE_KEY else self.gpu)
 
     @classmethod
@@ -645,7 +660,7 @@ def _worker_override_key(entry: str, key: str) -> str | None:
     worker, _, device = key.partition(WORKER_QUEUE_SEPARATOR)
     worker, device = worker.strip(), device.strip()
     if worker != TARGET_LOCAL and (
-            worker == TARGET_ANY or not WORKER_NAME_PATTERN.fullmatch(worker)):
+            worker == TARGET_ANY or not WORKER_ID_PATTERN.fullmatch(worker)):
         logger.warning("ignoring run queue override %r: %r is not a worker "
                        "name", entry, worker)
         return None
@@ -743,10 +758,10 @@ TARGET_WORKER_LOCAL = WORKER_LOCAL
 #: "Place it wherever there is room": the connected workers first, then
 #: this process (#772).
 TARGET_WORKER_ANY = TARGET_ANY
-#: Worker names (#769), matched with ``fullmatch``. ``local`` and ``any``
-#: match it too; they are the two reserved names a worker cannot enroll
-#: under.
-TARGET_WORKER_PATTERN = WORKER_NAME_PATTERN
+#: Worker ids (#769), matched with ``fullmatch``: a worker name, or an
+#: instance's ``<name>.<instance>`` (#845). ``local`` and ``any`` match it
+#: too; they are the two reserved names a worker cannot enroll under.
+TARGET_WORKER_PATTERN = WORKER_ID_PATTERN
 #: The queue-key family of ``target.pool: "one-shot"`` runs (#790):
 #: ``pool:one-shot/<device>``. The ``:`` cannot occur in a worker name, so
 #: it never collides with a ``<worker>/<device>`` key, and the pool's FIFO
@@ -971,7 +986,8 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
             or TARGET_WORKER_PATTERN.fullmatch(worker) is None:
         raise RunSubmitError(
             "target.worker must be 'local', 'any' or a worker name "
-            "(lowercase letters, digits and '-', at most 63 chars)")
+            "(lowercase letters, digits and '-', at most 63 chars; an "
+            "instance's id adds '.<instance>')")
     if pool and worker != TARGET_WORKER_ANY:
         raise RunSubmitError(
             "target.pool picks the worker: leave target.worker out (or "
@@ -2759,8 +2775,10 @@ class RunService:
         if options.get("record_outputs") and capabilities \
                 and CAPABILITY_RECORD_OUTPUTS not in capabilities:
             raise RunSubmitError(worker_cannot_record_outputs(worker_id))
-        if options.get("record_outputs") and getattr(worker, "one_shot",
-                                                     False):
+        if options.get("record_outputs") and (
+                getattr(worker, "one_shot", False)
+                # An instance (#845) is one-shot by construction.
+                or instance_parts(worker_id)[1] is not None):
             raise RunSubmitError(ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         offered = worker.device_values()
         wanted = devices or []
@@ -2934,6 +2952,11 @@ class RunService:
         if worker_id in (TARGET_WORKER_LOCAL, TARGET_WORKER_ANY) \
                 or self._workers is None:
             return False
+        if instance_parts(worker_id)[1] is not None:
+            # Only one-shot agents are instances (#845). An instance is
+            # known in memory only: a run queued for one that left the
+            # list (pruned, or gone with a restart) is timed all the same.
+            return True
         worker = self._workers.get(worker_id)
         return bool(getattr(worker, "one_shot", False))
 
@@ -3649,6 +3672,16 @@ class RunService:
                 devices=list(active.placement.devices))
             # What a restarted server needs to adopt the run (#793).
             facts[WORKER_RESUME_KEY] = self._worker_resume(active, 0)
+            if getattr(worker, "instance_id", None):
+                # Which agent process runs it (#845): after a restart this
+                # server knows the worker only from its row, and the agents
+                # of one credential (its own and its instances) share one
+                # worker token. A one-shot run may be taken back only by
+                # that process, and only it may upload the run's files.
+                facts[WORKER_RESUME_KEY]["instance"] = instance_id_hash(
+                    worker.instance_id)
+                if getattr(worker, "one_shot", False):
+                    facts[WORKER_RESUME_KEY]["one_shot"] = True
         else:
             digest = None
             fingerprint, facts = await self._environment_record(
@@ -4402,15 +4435,22 @@ class RunService:
         return CancelOutcome(run_id=run_id, status=record.status,
                              cancelled=False)
 
-    async def fail_queued_for_worker(self, worker_id: str,
-                                     error: str) -> list[str]:
+    async def fail_queued_for_worker(self, worker_id: str, error: str, *,
+                                     instances: bool = False) -> list[str]:
         """Fail every run still waiting for *worker_id* (#780: the worker
         was removed, so nothing will ever place them). Running runs are not
         touched here; closing the worker's socket interrupts those.
-        Returns the run ids that were failed."""
+        *instances*: also every run naming one of its instances (#845,
+        ``<worker_id>.<instance>``; its credential was revoked), whether
+        the registry still lists that instance or not. One pass over the
+        waiting runs. Returns the run ids that were failed."""
         failed: list[str] = []
         for run_id, waiting in list(self._pending_by_id.items()):
-            if entry_target(waiting.options)[0] != worker_id:
+            target = entry_target(waiting.options)[0]
+            if target != worker_id and not (
+                    instances and target is not None
+                    and instance_parts(target)[1] is not None
+                    and instance_parts(target)[0] == worker_id):
                 continue
             entry = self._dequeue(run_id)
             if entry is None:  # pragma: no cover - same loop, same index
@@ -4605,8 +4645,15 @@ class RunService:
         options = record.options if isinstance(record.options, dict) else {}
         facts = (record.execution_facts
                  if isinstance(record.execution_facts, dict) else {})
+        resume = facts.get(WORKER_RESUME_KEY)
+        instance = (resume.get("instance") if isinstance(resume, dict)
+                    else None)
         self._workers.adopt(placement.worker_id, record.id,
-                            last_seq=last_seq)
+                            last_seq=last_seq,
+                            instance_hash=(instance if isinstance(instance, str)
+                                           and instance else None),
+                            one_shot=isinstance(resume, dict)
+                            and resume.get("one_shot") is True)
         try:
             self._start(record.id, {}, options,
                         queue_key=record.queue_key or placement.devices[0],

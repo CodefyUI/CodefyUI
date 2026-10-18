@@ -126,6 +126,9 @@ class KnownWorker:
     last_seen_at: str | None
     #: Its last connection's environment fingerprint digest (#781).
     fingerprint_digest: str | None = None
+    #: Its own last agent was one-shot (#845, migration 016); its
+    #: instances (``--instance``) never set it.
+    one_shot: bool = False
 
 
 def _loads(raw: str | None, default: Any) -> Any:
@@ -307,12 +310,14 @@ class WorkerStore:
                     mounts: dict[str, str] | None = None,
                     devices: list[dict[str, Any]] | None = None,
                     machine_id: str | None = None,
-                    fingerprint_digest: Any = KEEP) -> None:
+                    fingerprint_digest: Any = KEEP,
+                    one_shot: bool | None = None) -> None:
         """Record that *name* was seen now, with the facts it reported.
         A None fact leaves the stored one, except *fingerprint_digest*: a
         ``hello`` passes it always, and its None (the agent reported no
         fingerprint) clears the stored digest rather than keep a stale one
-        (#781); :data:`KEEP`, the default, leaves it."""
+        (#781); :data:`KEEP`, the default, leaves it. *one_shot* (#845):
+        whether the agent that said ``hello`` is one-shot."""
         def _touch(conn: sqlite3.Connection) -> None:
             sets, values = ["last_seen_at = ?"], [utc_now_iso()]
             for column, value in (("platform", platform),
@@ -327,6 +332,9 @@ class WorkerStore:
             if fingerprint_digest is not KEEP:
                 sets.append("fingerprint_digest = ?")
                 values.append(fingerprint_digest)
+            if one_shot is not None:
+                sets.append("one_shot = ?")
+                values.append(1 if one_shot else 0)
             conn.execute(f"UPDATE workers SET {', '.join(sets)} WHERE id = ?",
                          (*values, name))
 
@@ -355,7 +363,8 @@ class WorkerStore:
                 devices=_loads(row["devices_json"], []),
                 created_at=row["created_at"],
                 last_seen_at=row["last_seen_at"],
-                fingerprint_digest=row["fingerprint_digest"]) for row in rows]
+                fingerprint_digest=row["fingerprint_digest"],
+                one_shot=bool(row["one_shot"])) for row in rows]
 
         return await self.db.run(_list)
 
