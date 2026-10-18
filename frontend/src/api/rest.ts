@@ -261,6 +261,12 @@ export interface RunSummary {
    */
   queue_reason?: string | null;
   /**
+   * A waiting run's current memory budget (#794): an accepted estimate, or
+   * the measured one it was raised to; `null` otherwise (a running run's is
+   * `execution_facts.memory_budget`). Optional: an older server omits it.
+   */
+  queued_budget?: { bytes: number; source: string; from_run?: string; raised_from?: number } | null;
+  /**
    * An active worker run's connection to its worker (#783); `null` for
    * every other run. Optional: a server before #783 does not send it.
    */

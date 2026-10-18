@@ -688,20 +688,42 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'] });
   });
 
-  it('explains a shared device with no memory total instead of asking for a budget (#788)', async () => {
-    workersMock.fetchWorkers.mockResolvedValue([sharedWorker('mac', false)]);
-    patchTab({ graphDevice: 'cuda:1' });
+  it('explains a shared MPS card with no memory total instead of asking for a budget (#788)', async () => {
+    const base = worker({ name: 'mac', memory_budget: true });
+    const mac: WorkerInfo = {
+      ...base,
+      devices: [
+        { value: 'cpu', kind: 'cpu', index: null, name: '', memory: null },
+        { value: 'mps', kind: 'mps', index: 0, name: 'Apple M3', memory: null, policy: 'shared' },
+      ],
+    };
+    workersMock.fetchWorkers.mockResolvedValue([mac]);
+    patchTab({ graphDevice: 'mps' });
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'mac' } });
     await settle();
     expect(screen.queryByRole('textbox', { name: /Memory budget/ })).toBeNull();
     expect(api.estimateMemory).not.toHaveBeenCalled();
     expect(screen.getByRole('note')).toHaveTextContent(
-      'cuda:1 is shared by memory but reports no memory total (an MPS card reports none), so it cannot admit a run '
+      'mps is shared by memory but reports no memory total (an MPS card reports none), so it cannot admit a run '
       + 'by budget and refuses this one. Set it to exclusive in Workers to run here.',
     );
     await submit();
-    expect(sentRequest().options.target).toEqual({ worker: 'mac', devices: ['cuda:1'] });
+    expect(sentRequest().options.target).toEqual({ worker: 'mac', devices: ['mps'] });
+  });
+
+  it('keeps the field for a CUDA card that has not reported its memory yet (#794 review 2)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker('gpu-box', false)]);
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    expect(memoryField()).toBeInTheDocument();
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(screen.getByText(
+      "cuda:1 has not reported its memory yet (it comes with the worker's next heartbeat): the budget is judged "
+      + 'against the card once it has.',
+    )).toBeInTheDocument();
   });
 
   it('shows a rough estimate with why it is not offered, and leaves the field empty (#794)', async () => {

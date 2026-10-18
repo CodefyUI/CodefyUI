@@ -118,7 +118,7 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 WORKER_LOCAL = TARGET_LOCAL
 #: The worker id an ``any`` run carries until it is placed (#772).
 WORKER_ANY = TARGET_ANY
-#: How many of a graph's newest succeeded runs ``last_peak_memory`` reads
+#: How many of a graph's newest succeeded runs ``peak_history`` reads
 #: for one that reported a peak (#788).
 PEAK_LOOKUP_ROWS = 20
 
@@ -666,7 +666,7 @@ class RunStore:
         ``mark_running`` replaces both with the placement of a worker run.
 
         *graph_hash* (``memory_admission.graph_hash``, #788) is what
-        :meth:`last_peak_memory` finds the run by.
+        :meth:`peak_history` finds the run by.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
@@ -994,27 +994,14 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
-    async def last_peak_memory(
-        self, graph_hash: str,
-    ) -> tuple[str, Any] | None:
-        """``(run_id, peak_memory)`` of the newest succeeded run whose
-        ``graph_hash`` column is *graph_hash* and that reported a peak
-        (#788), or None. The default memory budget of a run that declares
-        none (``memory_admission.HistoryBudgetSource``): the first row of
-        :meth:`peak_history`."""
-        rows = await self.peak_history(graph_hash, limit=1)
-        if not rows:
-            return None
-        run_id, _, peak = rows[0]
-        return run_id, peak
-
     async def peak_history(
         self, graph_hash: str, limit: int = 5,
     ) -> list[tuple[str, Any, Any]]:
         """``(run_id, finished_at, peak_memory)`` of up to *limit* newest
         succeeded runs whose ``graph_hash`` is *graph_hash* and that
         reported a peak (#788, #794), newest first: the history ``POST
-        /api/runs/estimate`` lists, and (its first row) the default budget.
+        /api/runs/estimate`` lists, and (its first row) the default budget
+        (``memory_admission.history_suggestion``).
 
         A seek on ``idx_exec_runs_graph_hash``, newest first; only the
         newest :data:`PEAK_LOOKUP_ROWS` runs of the graph are read, so a

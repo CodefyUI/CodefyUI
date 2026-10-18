@@ -1,7 +1,7 @@
 """Memory estimates for a run's memory budget (#794).
 
 #788 gave a run on a card shared by memory a default budget from the last
-peak of the same graph (``memory_admission.HistoryBudgetSource``). This
+peak of the same graph (``memory_admission.history_suggestion``). This
 module adds what that needs and what it lacks:
 
 - :func:`structural_hash`, the history key: what the executable graph
@@ -27,14 +27,18 @@ How the static estimate counts, without building a real model
 --------------------------------------------------------------
 A node that holds weights through :class:`StatefulModuleMixin` builds its
 module from its params alone (``build_module(params)``). That build runs
-on PyTorch's ``meta`` device (shapes, no storage), in a single worker
-thread off the event loop, under :data:`STATIC_TIMEOUT_S`; torch is
-imported there, never on the request path. The same meta module then runs
+on PyTorch's ``meta`` device (shapes, no storage), in a daemon thread of
+its own off the event loop, under :data:`STATIC_TIMEOUT_S`; torch is
+imported there, never on the request path. A build that overruns is
+abandoned (a thread cannot be killed, but nothing waits for it, and a
+daemon thread never holds up shutdown); at most
+:data:`MAX_ESTIMATE_THREADS` run at once, so stuck builds cannot pile up. The same meta module then runs
 one forward pass on a meta input of the run's batch size, with a hook on
 every leaf layer adding up the size of what it outputs: the activations a
 training step keeps for backward. The input's shape comes from the model's
 first layer (``in_features``, ``in_channels``, ...) and the graph's data
-nodes (``image_size``, ``seq_len``, a known dataset's resolution); when no
+nodes (``image_size``, ``seq_len`` set explicitly on a node that provides
+data, or a known dataset's resolution; a default never pins a size); when no
 shape fits, or the node has no recipe for its inputs, the activation term is
 missing and the estimate is ``low`` confidence (shown, never prefilled).
 So is one whose input size was guessed: a size the graph does not name,
@@ -51,7 +55,6 @@ times it.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import hashlib
 import json
 import logging
@@ -183,7 +186,7 @@ def _structure(nodes: list[Any], edges: list[Any], *,
                 for source, source_handle, target, target_handle in wires)}
 
 
-def _prepared(graph: Mapping[str, Any]
+def _prepared(graph: Mapping[str, Any], *, fill_defaults: bool = True
               ) -> tuple[list[dict], list[dict], bool]:
     """``(nodes, edges, prepared)``: the graph as it executes (presets and
     subgraphs expanded, bypassed and note nodes gone, params filled with
@@ -200,7 +203,8 @@ def _prepared(graph: Mapping[str, Any]
         nodes, edges, _ = prepare_executable_graph(
             nodes, edges,
             preset_fallback=build_preset_fallback(graph.get("presets") or []),
-            subgraphs=graph.get("subgraphs") or [], fill_defaults=True)
+            subgraphs=graph.get("subgraphs") or [],
+            fill_defaults=fill_defaults)
     except Exception:  # noqa: BLE001 -- read it as drawn instead
         logger.debug("memory estimate: the graph does not prepare; "
                      "reading it as drawn", exc_info=True)
@@ -426,8 +430,36 @@ def _int(value: Any) -> int | None:
     return None
 
 
-def _hints(nodes: Iterable[Mapping[str, Any]]) -> tuple[list[int], list[int]]:
-    """Image sides and sequence lengths the graph names, largest first."""
+#: Output types of a node that provides data: its size params describe
+#: the samples a model sees (a ``Resize`` transform included).
+_DATA_OUTPUTS = frozenset({"DATASET", "DATALOADER", "TRANSFORM"})
+
+
+def _provides_data(node_type: str) -> bool:
+    from .node_registry import registry
+
+    node_cls = registry.get(node_type)
+    if node_cls is None:
+        return False
+    try:
+        outputs = node_cls.define_outputs()
+    except Exception:  # noqa: BLE001 -- a broken plugin node
+        return False
+    return any(str(getattr(getattr(port, "data_type", ""), "value",
+                           getattr(port, "data_type", ""))) in _DATA_OUTPUTS
+               for port in outputs)
+
+
+def _hints(nodes: Iterable[Mapping[str, Any]],
+           explicit: Iterable[Mapping[str, Any]] = ()
+           ) -> tuple[list[int], list[int]]:
+    """Image sides and sequence lengths the graph names, largest first: a
+    ``Dataset`` node's known resolution (*nodes*, defaults filled: its
+    ``name`` is the data it loads, set or not), and the size params set
+    EXPLICITLY (*explicit*, the graph as drawn) on nodes that provide data
+    (:data:`_DATA_OUTPUTS`). A default never pins a size: a
+    ``PositionalEncoding``'s ``max_len`` or a grid world's ``size`` says
+    nothing about the model's input."""
     sides: set[int] = set()
     lengths: set[int] = set()
     for node in nodes:
@@ -438,6 +470,10 @@ def _hints(nodes: Iterable[Mapping[str, Any]]) -> tuple[list[int], list[int]]:
                     "_", "").lower())
             if side:
                 sides.add(side)
+    for node in explicit:
+        params = _params(node)
+        if not params or not _provides_data(str(node.get("type") or "")):
+            continue
         for key in IMAGE_HINT_PARAMS:
             value = _int(params.get(key))
             if value and 1 < value <= 4096:
@@ -574,19 +610,14 @@ def _model_source(node_cls: Any) -> bool:
 
 # ── the meta-device probe (worker thread only) ───────────────────────────
 
-_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
-_EXECUTOR_LOCK = threading.Lock()
+_LOCK = threading.Lock()
 _CACHE: dict[str, ModelCount | None] = {}
 _CACHE_MAX = 256
-
-
-def _executor() -> concurrent.futures.ThreadPoolExecutor:
-    global _EXECUTOR
-    with _EXECUTOR_LOCK:
-        if _EXECUTOR is None:
-            _EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="memory-estimate")
-        return _EXECUTOR
+#: Static estimates building at once. One that overran its time limit
+#: still counts until its thread ends; past this many, no estimate is
+#: offered rather than another thread started.
+MAX_ESTIMATE_THREADS = 4
+_RUNNING = 0
 
 
 def _first_layers(spec: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -876,9 +907,10 @@ def _count_module(node_cls: Any, node_type: str, params: dict[str, Any],
         logger.debug("memory estimate: %s did not build on the meta device",
                      node_type, exc_info=True)
         result = None
-    if len(_CACHE) >= _CACHE_MAX:
-        _CACHE.clear()
-    _CACHE[key] = result
+    with _LOCK:  # several estimates may build at once
+        if len(_CACHE) >= _CACHE_MAX:
+            _CACHE.clear()
+        _CACHE[key] = result
     return result
 
 
@@ -890,7 +922,8 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
     from .stateful_module import StatefulModuleMixin
 
     nodes, edges = executable(graph)
-    sides, lengths = _hints(nodes)
+    drawn, _, _ = _prepared(graph, fill_defaults=False)
+    sides, lengths = _hints(nodes, drawn)
     models: list[ModelCount] = []
     uncounted: list[str] = []
     notes: list[str] = []
@@ -997,22 +1030,51 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
 async def estimate_static_async(graph: Mapping[str, Any], *,
                                 timeout: float | None = None
                                 ) -> StaticEstimate | None:
-    """:func:`estimate_static` in the estimate thread, under *timeout*
-    (:data:`STATIC_TIMEOUT_S`). None when it fails or takes too long: a
-    suggestion is never an error and never holds a request up for long."""
+    """:func:`estimate_static` in a daemon thread of its own, under
+    *timeout* (:data:`STATIC_TIMEOUT_S`). None when it fails, takes too
+    long, or :data:`MAX_ESTIMATE_THREADS` are already building: a
+    suggestion is never an error, never holds a request up for long, and a
+    build that hangs holds up nothing but its own thread (abandoned, and a
+    daemon, so shutdown does not wait for it)."""
+    global _RUNNING
+    limit = STATIC_TIMEOUT_S if timeout is None else timeout
+    with _LOCK:
+        if _RUNNING >= MAX_ESTIMATE_THREADS:
+            logger.warning("memory estimate: %d static estimates are still "
+                           "building; none offered", _RUNNING)
+            return None
+        _RUNNING += 1
     loop = asyncio.get_running_loop()
-    future = loop.run_in_executor(_executor(), estimate_static, graph)
+    future: asyncio.Future[StaticEstimate | None] = loop.create_future()
+
+    def settle(result: StaticEstimate | None) -> None:
+        if not future.done():
+            future.set_result(result)
+
+    def work() -> None:
+        global _RUNNING
+        result = None
+        try:
+            result = estimate_static(graph)
+        except Exception:  # noqa: BLE001 -- a suggestion, never an error
+            logger.warning("memory estimate: the static estimate failed",
+                           exc_info=True)
+        finally:
+            with _LOCK:
+                _RUNNING -= 1
+        try:
+            loop.call_soon_threadsafe(settle, result)
+        except RuntimeError:  # the loop closed while it built
+            pass
+
+    threading.Thread(target=work, name="memory-estimate",
+                     daemon=True).start()
     try:
-        return await asyncio.wait_for(
-            future, STATIC_TIMEOUT_S if timeout is None else timeout)
+        return await asyncio.wait_for(asyncio.shield(future), limit)
     except asyncio.TimeoutError:
         logger.warning("memory estimate: the static estimate took longer "
-                       "than %.0f s; none offered", STATIC_TIMEOUT_S
-                       if timeout is None else timeout)
-        return None
-    except Exception:  # noqa: BLE001 -- a suggestion, never an error
-        logger.warning("memory estimate: the static estimate failed",
-                       exc_info=True)
+                       "than %.0f s; none offered (its build is abandoned)",
+                       limit)
         return None
 
 
@@ -1052,7 +1114,8 @@ class EstimateBudgetSource:
 
     *peaks* is ``RunStore.peak_history`` (``hash, limit -> [(run_id,
     finished_at, peak_memory)]``, newest first). Both methods take the
-    graph's *digest* when the caller has it, so a submit hashes once."""
+    graph's *digest* when the caller has it (the ``BudgetSource``
+    protocol), so a submit hashes once."""
 
     def __init__(self, peaks: Callable[[str, int], Awaitable[Any]], *,
                  static: Callable[[Mapping[str, Any]],
@@ -1071,18 +1134,21 @@ class EstimateBudgetSource:
     async def explain(self, graph: Mapping[str, Any],
                       options: Mapping[str, Any], *,
                       digest: str | None = None) -> Estimate:
+        """The earlier peaks, and the static estimate only when they give
+        no suggestion: a measured default needs no estimate, and a slow
+        build must not hold up an answer the history already has."""
         if digest is None:
             digest = await structural_hash_async(graph, options)
-        rows, static = await asyncio.gather(
-            self._rows(digest, HISTORY_ROWS), self._static(graph))
+        rows = await self._rows(digest, HISTORY_ROWS)
         history = []
         for run_id, finished_at, peak_memory in rows:
             peak = mem.peak_bytes(peak_memory)
             if peak is not None:
                 history.append({"run_id": run_id, "peak_bytes": peak,
                                 "finished_at": finished_at})
-        return Estimate(suggestion=_from_history(rows[:1]), history=history,
-                        static=static)
+        suggestion = _from_history(rows[:1])
+        static = None if suggestion is not None else await self._static(graph)
+        return Estimate(suggestion=suggestion, history=history, static=static)
 
     async def _rows(self, digest: str, limit: int) -> list[Any]:
         try:
@@ -1098,14 +1164,9 @@ HISTORY_ROWS = 5
 
 
 def _from_history(rows: list[Any]) -> mem.Suggestion | None:
-    """#788's default from the newest row with a peak: its CUDA peak times
-    the margin, or None (an MPS or CPU peak is no budget)."""
+    """#788's default from the newest row with a peak
+    (``memory_admission.history_suggestion``), or None."""
     if not rows:
         return None
     run_id, _, peak_memory = rows[0]
-    peak = mem.peak_bytes(peak_memory)
-    if peak is None:
-        return None
-    return mem.Suggestion(
-        mem.Budget(int(math.ceil(peak * mem.HISTORY_MARGIN)),
-                   mem.SOURCE_HISTORY, from_run=run_id), peak_bytes=peak)
+    return mem.history_suggestion(run_id, peak_memory)

@@ -64,6 +64,7 @@ const zhTW: Record<TranslationKey, string> = {
   'queueRun.memory.estimateFailed': '無法取得建議值：{error}',
   'queueRun.memory.wait': '目前放不下時在佇列中等待',
   'queueRun.memory.noTotal': '{devices} 依記憶體共用，但沒有回報記憶體總量（MPS 裝置不回報），因此無法依預算接收 run，會拒絕此 run。若要在此執行，請在 Workers 中將它設為獨佔。',
+  'queueRun.memory.awaitingReport': '{devices} 尚未回報記憶體（會隨 worker 的下一次心跳回報）：回報後才會依這張卡判斷預算。',
   'queueRun.error.memory': '記憶體預算必須是大於 0、最多 4096 的數字。',
   'queueRun.error.noDevice': '請至少選一個裝置。',
   'queueRun.submit': '排入佇列',

@@ -42,11 +42,10 @@ Budgets
 -------
 ``target.memory_gib`` declares one (GiB per device of the run). A run that
 declares none gets one from a :class:`BudgetSource` (the default,
-:class:`HistoryBudgetSource`: the last peak of a succeeded run of the same
-graph, times :data:`HISTORY_MARGIN`; a CUDA peak only: MPS reports what
-the driver holds at the end, which is not a peak); #794's
-``memory_estimate.EstimateBudgetSource`` keeps that rule, keyed by the
-graph's structure. A static estimate from the graph's parameter counts is
+``memory_estimate.EstimateBudgetSource``: the last peak of a succeeded run
+of the same graph, by its structural hash (#794), times
+:data:`HISTORY_MARGIN`, :func:`history_suggestion`; a CUDA peak only: MPS
+reports what the driver holds at the end, which is not a peak). A static estimate from the graph's parameter counts is
 never a default: the dialog offers it, and a run carries it only as a
 declared ``target.memory_gib`` with ``target.memory_source: "estimate"``.
 A run with no budget cannot go to a shared card.
@@ -64,7 +63,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -292,39 +291,30 @@ class Suggestion:
 
 class BudgetSource(Protocol):
     """Where a run's default ``memory_gib`` comes from (#788; #794 keys it
-    by the graph's structure). ``suggest`` gets the graph as stored (secrets
-    scrubbed) and the run's normalised options (its target and device), and
-    returns None when it has nothing to say."""
+    by the graph's structure). ``suggest`` gets the graph (secrets
+    scrubbed), the run's normalised options (its target and device) and,
+    when the caller has it, the graph's history key *digest*
+    (:func:`graph_hash` of the graph before unknown node types' params were
+    scrubbed), and returns None when it has nothing to say."""
 
     async def suggest(self, graph: Mapping[str, Any],
-                      options: Mapping[str, Any]) -> Suggestion | None: ...
+                      options: Mapping[str, Any], *,
+                      digest: str | None = None) -> Suggestion | None: ...
 
 
-class HistoryBudgetSource:
-    """The last peak of a succeeded run of the same graph, times
-    :data:`HISTORY_MARGIN`. *lookup* is ``RunStore.last_peak_memory``:
-    ``graph hash -> (run_id, peak_memory) | None``."""
-
-    def __init__(self, lookup: Callable[[str], Awaitable[Any]]) -> None:
-        self._lookup = lookup
-
-    async def suggest(self, graph: Mapping[str, Any],
-                      options: Mapping[str, Any]) -> Suggestion | None:
-        try:
-            found = await self._lookup(graph_hash(graph, options))
-        except Exception:  # noqa: BLE001 -- a suggestion, never an error
-            logger.warning("could not look up this graph's memory history",
-                           exc_info=True)
-            return None
-        if not found:
-            return None
-        run_id, peak_memory = found
-        peak = peak_bytes(peak_memory)
-        if peak is None:
-            return None
-        return Suggestion(Budget(int(math.ceil(peak * HISTORY_MARGIN)),
-                                 SOURCE_HISTORY, from_run=run_id),
-                          peak_bytes=peak)
+def history_suggestion(run_id: str | None,
+                       peak_memory: Any) -> Suggestion | None:
+    """The default budget a measured run gives its graph (#788): its CUDA
+    peak (:func:`peak_bytes`) times :data:`HISTORY_MARGIN`, from *run_id*;
+    None for a run with no CUDA peak. The one place the rule lives: the
+    budget source's suggestion, a waiting estimate's raise and a submitted
+    estimate's raise (#794) all go through it."""
+    peak = peak_bytes(peak_memory)
+    if peak is None:
+        return None
+    return Suggestion(Budget(int(math.ceil(peak * HISTORY_MARGIN)),
+                             SOURCE_HISTORY, from_run=run_id),
+                      peak_bytes=peak)
 
 
 # ── messages ──────────────────────────────────────────────────────────────

@@ -54,6 +54,24 @@ describe('runPlacement', () => {
     expect(runBudget({ execution_facts: null }, t)).toBeNull();
   });
 
+  it('reads a waiting run\'s current budget before the one it asked for (#794 review 2)', () => {
+    const waiting = { options: { target: { memory_gib: 1 } } };
+    expect(runBudget({ ...waiting, queued_budget: { bytes: 1024 ** 3, source: 'estimate' } }, t)).toEqual({
+      text: '1.0 GiB est.',
+      title: 'Memory budget per device, a static estimate from the graph (no earlier run of it reported a peak)',
+    });
+    expect(runBudget({
+      ...waiting,
+      queued_budget: { bytes: 2.4 * 1024 ** 3, source: 'history', from_run: 'abcdef0123', raised_from: 1024 ** 3 },
+    }, t)).toEqual({
+      text: '2.4 GiB',
+      title: 'Memory budget per device, from the peak of run abcdef01: raised from the accepted estimate of 1.0 GiB, which was lower',
+    });
+    expect(runBudget({ ...waiting, queued_budget: null }, t)?.title).toBe(
+      'Memory budget asked for; used only on a device shared by memory',
+    );
+  });
+
   it('says a measured budget replaced a lower accepted estimate (#794)', () => {
     expect(runBudget({
       execution_facts: { memory_budget: { bytes: 2 * 1024 ** 3, source: 'history', from_run: 'abcdef0123', raised_from: 1024 ** 3 } },

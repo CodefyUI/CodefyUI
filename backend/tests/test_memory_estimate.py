@@ -499,6 +499,60 @@ def test_a_slow_or_failing_estimate_offers_none(monkeypatch):
     assert asyncio.run(me.estimate_static_async(_training_graph())) is None
 
 
+def test_a_hung_build_never_blocks_the_next_estimate(monkeypatch):
+    """Review 2, item 1: a build past its time limit is abandoned in a
+    daemon thread of its own; the next estimate builds at once beside it,
+    and once :data:`MAX_ESTIMATE_THREADS` are stuck no estimate is offered
+    (rather than one more thread queued behind them)."""
+    release = threading.Event()
+    started: list[threading.Thread] = []
+
+    def stuck_or_fast(graph):
+        started.append(threading.current_thread())
+        if graph.get("stuck"):
+            release.wait(5)
+        return "built"
+
+    monkeypatch.setattr(me, "estimate_static", stuck_or_fast)
+    try:
+        assert asyncio.run(me.estimate_static_async(
+            {"stuck": True}, timeout=0.05)) is None
+        began = time.monotonic()
+        assert asyncio.run(me.estimate_static_async({}, timeout=2)) == "built"
+        assert time.monotonic() - began < 1
+        assert all(thread.daemon for thread in started)
+        monkeypatch.setattr(me, "MAX_ESTIMATE_THREADS", 1)
+        assert asyncio.run(me.estimate_static_async({}, timeout=2)) is None
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while me._RUNNING and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert me._RUNNING == 0
+
+
+def test_only_sizes_set_on_data_nodes_pin_the_input():
+    """Review 2, item 4: a size param pins an input only when it is set
+    explicitly on a node that provides data. A data node's default, or a
+    size on a node that provides none (a grid world's ``size``), leaves an
+    adaptive CNN's side a guess."""
+    layers = _cnn_layers(adaptive=True)
+    defaulted = me.estimate_static(_without_data_hints(_training_graph(
+        layers=layers, extra=[_node("shapes", "SyntheticShapes")])))
+    grid = me.estimate_static(_without_data_hints(_training_graph(
+        layers=layers, extra=[_node("env", "GridWorldEnv", size=16)])))
+    pinned = me.estimate_static(_without_data_hints(_training_graph(
+        layers=layers, extra=[_node("shapes", "SyntheticShapes",
+                                    image_size=16)])))
+    for guessed in (defaulted, grid):
+        assert guessed is not None
+        assert guessed.models[0].shape_guessed is True
+        assert guessed.confidence == me.CONFIDENCE_LOW
+    assert pinned is not None
+    assert pinned.models[0].probe_input == [[1, 16, 16]]
+    assert pinned.confidence == me.CONFIDENCE_MEDIUM
+
+
 def test_a_build_that_fails_on_the_meta_device_is_not_counted(monkeypatch):
     from app.nodes.utility.sequential_node import SequentialModelNode
 
@@ -658,7 +712,9 @@ async def test_the_suggestion_is_the_history_alone():
     # The MPS row is no peak (#788 review 4): left out.
     assert explained.history == [{"run_id": "r1", "peak_bytes": GIB,
                                   "finished_at": "2026-10-18T00:00:00Z"}]
-    assert explained.static is not None
+    # With a measured default no static estimate is built (review 2,
+    # item 1): a slow build must not hold up the history's answer.
+    assert explained.static is None
     assert seen[-1] == (mem.graph_hash({"nodes": []}, {"device": "cuda:0"}),
                         me.HISTORY_ROWS)
     # A digest the caller has is used as is: the graph is not hashed again.

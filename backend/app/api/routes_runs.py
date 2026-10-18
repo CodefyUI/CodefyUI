@@ -203,8 +203,13 @@ def _run_payload(record: RunRecord, *, queue_position: int | None,
                  final_metrics: dict[str, float] | None = None,
                  metric_producers: dict[str, list[str | None]] | None = None,
                  worker_status: dict[str, Any] | None = None,
+                 queued_budget: dict[str, Any] | None = None,
                  ) -> dict[str, Any]:
     payload = asdict(record)
+    # A waiting run's current memory budget (#794): an accepted estimate,
+    # or the measured one it was raised to. ``execution_facts.
+    # memory_budget`` takes over once it starts. None otherwise.
+    payload["queued_budget"] = queued_budget
     # Where an active worker run's worker stands (#783): connected, or
     # disconnected since ``disconnected_at`` (Unix seconds) and waiting for
     # it until ``resume_deadline``. None for every other run.
@@ -425,7 +430,8 @@ async def list_runs(
                          active=service.is_active(record.id),
                          final_metrics=finals.get(record.id),
                          metric_producers=producers.get(record.id),
-                         worker_status=service.worker_status(record.id))
+                         worker_status=service.worker_status(record.id),
+                         queued_budget=service.queued_budget(record.id))
             for record in records
         ],
         "total": total,
@@ -458,6 +464,7 @@ async def get_run(run_id: str, request: Request):
         final_metrics=finals.get(record.id),
         metric_producers=producers.get(record.id),
         worker_status=service.worker_status(run_id),
+        queued_budget=service.queued_budget(run_id),
     )
     # How the run ended on its worker after it had ended here (#783),
     # ``{status, error, worker_id, at}``, or None.

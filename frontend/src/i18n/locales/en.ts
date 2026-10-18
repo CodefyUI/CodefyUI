@@ -68,6 +68,7 @@ const en = {
   'queueRun.memory.estimateFailed': 'Could not look up a suggestion: {error}',
   'queueRun.memory.wait': 'Wait in the queue when it does not fit now',
   'queueRun.memory.noTotal': '{devices} is shared by memory but reports no memory total (an MPS card reports none), so it cannot admit a run by budget and refuses this one. Set it to exclusive in Workers to run here.',
+  'queueRun.memory.awaitingReport': '{devices} has not reported its memory yet (it comes with the worker\'s next heartbeat): the budget is judged against the card once it has.',
   'queueRun.error.memory': 'The memory budget must be a number above 0 and at most 4096.',
   'queueRun.error.noDevice': 'Choose at least one device.',
   'queueRun.submit': 'Queue',

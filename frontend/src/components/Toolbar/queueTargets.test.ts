@@ -12,6 +12,7 @@ import {
   localDeviceChoices,
   parseMemoryGib,
   toggleDevice,
+  sharedAwaitingReport,
   sharedWithoutTotal,
   usesSharedDevice,
   TARGET_ONE_SHOT,
@@ -155,16 +156,21 @@ describe('anyKinds / defaultKind', () => {
     expect(usesSharedDevice('any', null, [], [job], 'cuda')).toBe(false);
   });
 
-  it('names the shared devices that report no memory total, only when none does (#788)', () => {
+  it('names the shared MPS devices that report no memory total, only when none does (#788)', () => {
     const box = worker('box', 'online', [['cuda:0', 'cuda'], ['cuda:1', 'cuda'], ['mps', 'mps']]);
     box.memory_budget = true;
     for (const device of box.devices) device.policy = 'shared';
     box.devices[1].memory = { total_bytes: 8 * 1024 ** 3, free_bytes: null, source: 'nvml' };
-    // cuda:0 alone: no total. With cuda:1 (which has one): admission can judge.
-    expect(sharedWithoutTotal('box', box, ['cuda:0'], [box], 'cuda')).toEqual(['cuda:0']);
+    // MPS: no total ever, so no field. A CUDA card without one yet is only
+    // waiting for its first report (review 2, item 10): the field stays.
+    expect(sharedWithoutTotal('box', box, ['mps'], [box], 'mps')).toEqual(['mps']);
+    expect(sharedWithoutTotal('box', box, ['cuda:0'], [box], 'cuda')).toEqual([]);
+    expect(sharedAwaitingReport('box', box, ['cuda:0'], [box], 'cuda')).toEqual(['cuda:0']);
+    expect(sharedAwaitingReport('box', box, ['mps'], [box], 'mps')).toEqual([]);
+    // With cuda:1 (which has a total): admission can judge.
     expect(sharedWithoutTotal('box', box, ['cuda:0', 'cuda:1'], [box], 'cuda')).toEqual([]);
+    expect(sharedAwaitingReport('box', box, ['cuda:0', 'cuda:1'], [box], 'cuda')).toEqual([]);
     expect(sharedWithoutTotal('any', null, [], [box], 'mps')).toEqual(['mps']);
-    expect(sharedWithoutTotal('any', null, [], [box], 'cuda')).toEqual([]);
     // The ledger's total counts too.
     box.devices[2].admission = {
       by_memory: true, total_bytes: 16 * 1024 ** 3, free_bytes: null, reserved_bytes: 0, running_bytes: 0,

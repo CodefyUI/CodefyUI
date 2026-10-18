@@ -9,7 +9,14 @@ import { useUIStore } from '../../store/uiStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
-import { TARGET_ANY, estimateOptions, parseMemoryGib, sharedWithoutTotal, usesSharedDevice } from './queueTargets';
+import {
+  TARGET_ANY,
+  estimateOptions,
+  parseMemoryGib,
+  sharedAwaitingReport,
+  sharedWithoutTotal,
+  usesSharedDevice,
+} from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
 import { MemoryEstimateHint } from './MemoryEstimateHint';
 import styles from './QueueRunDialog.module.css';
@@ -96,6 +103,10 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     ? sharedWithoutTotal(choice.target, choice.worker, choice.selected, choice.online, choice.kind)
     : [];
   const shared = sharedAt && noTotal.length === 0;
+  // A CUDA card that has not reported its memory yet keeps the field.
+  const awaiting = shared
+    ? sharedAwaitingReport(choice.target, choice.worker, choice.selected, choice.online, choice.kind)
+    : [];
   const [memoryText, setMemoryText] = useState<string | null>(null);
   const [wait, setWait] = useState(false);
   const [estimate, setEstimate] = useState<MemoryEstimate | 'loading' | null>(null);
@@ -261,6 +272,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
                   />
                 </label>
                 <MemoryEstimateHint estimate={estimate} error={estimateError} />
+                {awaiting.length > 0 && (
+                  <p className={styles.hint}>{t('queueRun.memory.awaitingReport', { devices: awaiting.join(', ') })}</p>
+                )}
                 <p className={styles.hint}>{t('queueRun.memory.hint')}</p>
                 {choice.target !== TARGET_ANY && (
                   <label className={styles.check}>
