@@ -35,8 +35,9 @@ when a node is missing from it. Three kinds of rule:
    ``VideoLoad``, ``DocumentLoader`` reading a folder other than the
    bundled sample, ``GraphInput`` of type image).
 
-``record_outputs`` is not read here: a run on a worker cannot ask for it
-(``RunService`` refuses it at submit until #789).
+``record_outputs`` is not read here: a worker run's captures stay on the
+worker, under its own run directory (#789), and are read over its
+connection, so they need no storage.
 
 Deliberately NOT a need: nodes that only download into a cache of their
 own (``Dataset``, ``HuggingFaceDataset``, ``KaggleDataset``,

@@ -11,7 +11,11 @@ Per connection:
 2. if runs survived a previous connection, send ``run_alive``;
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
-4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`.
+4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`, and
+   ``fetch_output`` / ``cancel_fetch`` / ``drop_outputs`` (#789) to
+   :class:`~app.agent.outputs.AgentOutputs`, which handles each in a task
+   of its own, answering a read with ``output_answer`` frames (the body
+   cut into parts).
 
 Runs do not depend on the connection. While it is down, their subprocesses
 keep running and every frame they produce is written to the run's spool
@@ -58,6 +62,7 @@ from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
 from .facts import AgentFacts
 from .one_shot import OneShot
+from .outputs import AgentOutputs
 from .runner import Runner, mark_finished
 from .spool import SpoolStore
 from .trust import ControlPlaneTrust, TrustError, untrusted_message
@@ -227,6 +232,22 @@ class AgentConnection:
         self.worker_id: str | None = None
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
+        #: Recorded outputs (#789): reads of them, answered here.
+        self.outputs = AgentOutputs(runner, self.send_answer)
+
+    async def send_answer(self, request_id: str, status: int, text: str,
+                          final: bool) -> None:
+        """One read's answer as ``output_answer`` frames (#789): the body
+        in parts of at most ``OUTPUT_ANSWER_PART_CHARS``, so no frame
+        outgrows a socket's message limit, each part its own frame so
+        heartbeats and run frames go out in between."""
+        size = wp.OUTPUT_ANSWER_PART_CHARS
+        parts = [text[i:i + size] for i in range(0, len(text), size)] or [""]
+        for number, part in enumerate(parts):
+            if not await self.send_frame(wp.OutputAnswer(
+                    request_id=request_id, status=status, part=number,
+                    parts=len(parts), body=part, final=final)):
+                return  # the connection is gone; the control plane says so
 
     def _http_tls(self) -> ssl.SSLContext | None:
         """The TLS context the transfer backend's HTTP requests use (#785):
@@ -297,7 +318,8 @@ class AgentConnection:
         """``run_alive`` for every run still running or still spooled."""
         last: dict[str, int] = {}
         for handle in list(self.runner.runs.values()):
-            last[handle.run_id] = handle.seq
+            if not handle.reported_early:  # only writing its outputs (#789)
+                last[handle.run_id] = handle.seq
         for spool in self.spools.spools():
             if spool.pending or spool.run_id in last:
                 last[spool.run_id] = max(last.get(spool.run_id, 0),
@@ -377,6 +399,7 @@ class AgentConnection:
                 done_watch.cancel()
                 await asyncio.gather(done_watch, return_exceptions=True)
         await self.runner.shutdown()
+        self.outputs.close()
         return code
 
     async def _loop(self, stop: asyncio.Event, backoff: float) -> int:
@@ -620,6 +643,14 @@ class AgentConnection:
         elif isinstance(frame, wp.Credentials):
             if not self.runner.renew(frame.run_id, frame.s3):
                 logger.info("credentials for unknown run %s", frame.run_id)
+        elif isinstance(frame, wp.FetchOutput):
+            # Tasks of their own: reading a large capture or deleting a
+            # run's files must not hold up the cancels and acks behind it.
+            self.outputs.start(frame)
+        elif isinstance(frame, wp.CancelFetch):
+            self.outputs.cancel(frame.request_id)
+        elif isinstance(frame, wp.DropOutputs):
+            self.outputs.start_drop(frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

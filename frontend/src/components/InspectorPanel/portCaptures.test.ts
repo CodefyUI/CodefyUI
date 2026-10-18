@@ -7,6 +7,7 @@ import {
   listRunOutputs,
   NoValueError,
   RunDataExpiredError,
+  WorkerUnreachableError,
 } from '../../api/executionOutputs';
 import { getRun, type RunInfo, type RunStatus } from '../../api/rest';
 import { useTabStore, type TabState } from '../../store/tabStore';
@@ -216,6 +217,27 @@ describe('usePortFetches', () => {
       }),
     );
     expect(mockOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it("says a worker run's worker is out of reach, and asks again later (#789)", async () => {
+    mockOutput.mockRejectedValue(new WorkerUnreachableError("worker 'box' is not connected"));
+    const { result, rerender } = renderHook(({ ports }) => usePortFetches('run1', ports), {
+      initialProps: { ports: PORTS },
+    });
+    await waitFor(() =>
+      expect(result.current[KEY]).toMatchObject({
+        loading: false,
+        error: null,
+        errorKey: 'inspector.workerUnreachable',
+        data: null,
+      }),
+    );
+    const calls = mockOutput.mock.calls.length;
+    // The worker is back: the next read of the view asks again.
+    mockOutput.mockResolvedValue({ type: 'scalar', value: 1 } as unknown as OutputData);
+    rerender({ ports: [...PORTS, { nodeId: 'other', port: 'out' }] });
+    await waitFor(() => expect(result.current[KEY]?.data).toEqual({ type: 'scalar', value: 1 }));
+    expect(mockOutput.mock.calls.length).toBeGreaterThan(calls);
   });
 
   it('still reads a 404 as expired run data', async () => {

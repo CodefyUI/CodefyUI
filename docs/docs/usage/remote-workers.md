@@ -401,6 +401,7 @@ cdui agent start --one-shot --control https://codefyui.example.com
 ```
 
 - **Which runs reach it.** **Any available** never sends a run to a one-shot worker. A run reaches it when it names the worker (`"target": {"worker": "<name>"}`) or the one-shot pool: **A one-shot worker** in **Queue on...**, or `"target": {"pool": "one-shot"}` in `POST /api/runs` (with `device` set to the kind it needs, such as `cuda`). A pool run is never refused for want of a worker: it waits for a one-shot worker that offers its device, with `queue_reason` saying so, and fails after `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` (24 hours by default, `0` waits forever). Pool runs wait in one line per device kind, oldest first. `--run-id <id>` makes the agent take only that run, wherever it is in its line; the run must be waiting in the pool or name the worker, otherwise the agent is refused when it connects.
+- **No recorded outputs.** A run with **Record node outputs** is refused for the one-shot pool and for a one-shot worker: the agent exits when the run ends, so the Inspector could never read what it recorded.
 - **Exit code.** `0`: the run succeeded and the control plane recorded it. `1`: it failed, was cancelled or ended `interrupted`, or its outcome could not be delivered. `2`: the control plane refused the agent (another version, a name another agent holds, a `--run-id` that does not wait for it) or a flag is wrong. `3`: the agent was stopped (SIGTERM, Ctrl-C, the job's time limit) before a run arrived. `4`: it could not start (enrollment failed, or `--mount` was refused). A refusal after the agent took its run (a reconnect the control plane refused) is `1`: the run's outcome was not recorded.
 - **A dropped connection.** The run keeps going and the agent reconnects, as any agent does ([When the connection drops](#when-the-connection-drops)). It exits only once the control plane has acknowledged the run's end; if that has not happened within `CODEFYUI_WORKER_RESUME_GRACE_S` after the run ended, it exits anyway with `1` and leaves the result spooled for a later agent with the same user-data folder.
 - **Afterwards.** The Workers panel lists it with a **One-shot** badge and **Offline** status, and **One-shot run** links to the run it took (or says it left without one). The next job's agent under the same name takes the next run.
@@ -436,7 +437,7 @@ Submit it with `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sb
 ## Limits {/* #limits */}
 
 - **The canvas runs on the control plane.** **Run** always executes there, with its cache and persistent weights; to send the tab's graph to a worker, use **Queue on...**.
-- **No captured outputs on a worker.** `record_outputs` is refused for a run on a worker ([#789](https://github.com/CodefyUI/CodefyUI/issues/789)); target the control plane to capture outputs for the Inspector. A worker run also starts with fresh weights every time.
+- **Captured outputs stay on the worker.** With **Record node outputs**, a worker run's captures are kept on the worker and the Inspector reads them over its connection, so they are readable only while it is connected ([#789](https://github.com/CodefyUI/CodefyUI/issues/789), [Execution Architecture, Recorded outputs on a worker](/advanced/execution-architecture#recorded-outputs-on-a-worker)). A worker run starts with fresh weights every time.
 - **Memory admission is opt-in per card.** Runs are admitted by count per device slot, as on the control plane, unless the card is set to **Shared by memory** ([Multi-GPU, Sharing a card](/usage/multi-gpu#sharing-a-card)).
 - **One run, one machine.** A run uses the devices of one worker; there is no `DistributedDataParallel` across cards or machines ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
 - **Linux first.** Workers are developed and tested on Linux; macOS works, and Windows is best effort.
@@ -450,6 +451,7 @@ On the control plane:
 | --- | --- | --- |
 | `CODEFYUI_EXTRA_ALLOWED_HOSTS` | *(empty)* | Host names the worker (or a browser) dials, such as `gpu-gw.lan:8000` |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | Seconds a disconnected worker's runs wait for it; `0` ends them at once |
+| `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S` | `60` | Seconds a read of a worker run's recorded outputs waits for the worker before it answers `504` |
 | `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` | `86400` | Seconds a run waits for a one-shot worker before it fails ([One-shot workers](#one-shot-workers)); `0` waits forever |
 | `CODEFYUI_TLS_CERT_FILE` | *(empty)* | The proxy's certificate (PEM, leaf first), so the Add worker dialog can show its fingerprint |
 | `CODEFYUI_MOUNT_LABEL` | `data` | The label of the control plane's data folder |
@@ -471,7 +473,7 @@ On the control plane:
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | Slot numbers for SSH workers: each names a worker's state directory on its remote host (`~/.codefyui-ssh/<id>-<slot>/`, where the tunnel's socket is) and the address its credential is stored under |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | `yes` requires a host already in `known_hosts` |
 
-On the worker, `CODEFYUI_AGENT_TOKEN` supplies the token when `--token` is not given ([CLI Commands, Environment variables](/getting-started/cli-commands#environment-variables)).
+On the worker, `CODEFYUI_RUN_OUTPUT_STORE_MAX_MB` (2048) bounds the recorded outputs it keeps, `CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S` (300) is how long a recorded run's subprocess may take to write them after the run ends (a graceful `cdui agent stop` waits for a write in progress up to that long), and `CODEFYUI_AGENT_TOKEN` supplies the token when `--token` is not given ([CLI Commands, Environment variables](/getting-started/cli-commands#environment-variables)).
 
 ## See also {/* #see-also */}
 

@@ -49,8 +49,9 @@ agent's), its node catalog is compared with this server's (a difference
 makes it ``degraded``), its fingerprint is recorded (on its ``workers``
 row and in ``exec_run_fingerprints``), and it is answered with
 ``welcome`` carrying this server's ``capabilities``; every later
-frame is routed: ``heartbeat`` and ``run_alive`` to the registry, per-run
-frames to their run's inbox (pausing the read while one run's inbox is
+frame is routed: ``heartbeat`` and ``run_alive`` to the registry,
+``output_answer`` (a read of a run's recorded outputs, #789) to the reads in
+flight (``WorkerRegistry.outputs``), per-run frames to their run's inbox (pausing the read while one run's inbox is
 far behind, ``WorkerRegistry.backpressure``). Closing the socket marks the
 worker disconnected; it never cancels a run by itself (the #120/#121 rule
 for ``/ws/execution``). The worker's runs wait ``disconnected`` for it to
@@ -312,6 +313,9 @@ async def websocket_worker(ws: WebSocket) -> None:
         await _record_fingerprint(service, worker)
     if replaced is not None:
         await replaced.close()
+    # Recorded outputs this server stopped retaining while it was away
+    # (#789): it deletes them now.
+    registry.outputs.flush_drops(worker.name)
     try:
         while True:
             raw = await ws.receive_text()
@@ -327,6 +331,9 @@ async def websocket_worker(ws: WebSocket) -> None:
                 registry.heartbeat(worker, frame)
             elif isinstance(frame, wp.RunAlive):
                 registry.run_alive(worker, frame)
+            elif isinstance(frame, wp.OutputAnswer):
+                # A read of a run's recorded outputs (#789): no seq.
+                registry.outputs.deliver(worker.name, frame)
             elif isinstance(frame, wp.Hello):
                 logger.warning("worker %s said hello twice; ignored",
                                worker.name)

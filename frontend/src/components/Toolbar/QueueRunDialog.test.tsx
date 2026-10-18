@@ -307,17 +307,20 @@ describe('QueueRunDialog: workers', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     expect(screen.getByText('cuda:0 -> cuda:0 in this run')).toBeInTheDocument();
 
-    // Outputs cannot be recorded on a worker yet (#789).
+    // A worker records outputs too (#789): they stay on it, as the hint says.
     const record = screen.getByRole('checkbox', { name: 'Record node outputs' });
-    expect(record).toBeDisabled();
-    expect(record).not.toBeChecked();
-    expect(screen.getByText(/cannot record outputs yet/)).toBeInTheDocument();
+    expect(record).toBeEnabled();
+    expect(record).toBeChecked();
+    expect(screen.getByText(/Recorded outputs stay on the worker/)).toBeInTheDocument();
+    fireEvent.click(record);
+    expect(screen.queryByText(/Recorded outputs stay on the worker/)).toBeNull();
+    fireEvent.click(record);
 
     await submit();
     expect(sentRequest().options).toMatchObject({
       target: { worker: 'gpu-box', devices: ['cuda:0', 'cuda:1', 'cuda:2'] },
       device: 'cuda:0',
-      record_outputs: false,
+      record_outputs: true,
     });
   });
 
@@ -383,10 +386,10 @@ describe('QueueRunDialog: any available', () => {
     expect(group.getAllByRole('radio').map((r) => r.closest('label')!.textContent)).toEqual(['CPU', 'CUDA GPU']);
     expect(group.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
     expect(screen.getByText(/first connected worker with a free device/)).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Record node outputs' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: 'Record node outputs' })).toBeEnabled();
     fireEvent.click(group.getByRole('radio', { name: 'CPU' }));
     await submit();
-    expect(sentRequest().options).toMatchObject({ target: { worker: 'any' }, device: 'cpu', record_outputs: false });
+    expect(sentRequest().options).toMatchObject({ target: { worker: 'any' }, device: 'cpu', record_outputs: true });
   });
 });
 
@@ -404,11 +407,32 @@ describe('QueueRunDialog: a one-shot worker (#790)', () => {
     ]);
     expect(group.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
     expect(screen.getByText(/waits for a one-shot worker with a device of this kind/)).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Record node outputs' })).toBeDisabled();
+    // Its agent exits with the run (#789): the box is off and says why.
+    const record = screen.getByRole('checkbox', { name: 'Record node outputs' });
+    expect(record).toBeDisabled();
+    expect(record).not.toBeChecked();
+    expect(screen.getByText(/A one-shot worker exits when its run ends/)).toBeInTheDocument();
+    expect(screen.queryByText(/Recorded outputs stay on the worker/)).toBeNull();
     await submit();
     expect(sentRequest().options).toMatchObject({
       target: { worker: 'any', pool: 'one-shot' }, device: 'cuda', record_outputs: false,
     });
+  });
+
+  it('does not record outputs on a named one-shot worker, and does again elsewhere', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([
+      worker({ name: 'once', one_shot: { run_id: null, took: null } }),
+      worker({ name: 'box' }),
+    ]);
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'once' } });
+    const record = screen.getByRole('checkbox', { name: 'Record node outputs' });
+    expect(record).toBeDisabled();
+    expect(record).not.toBeChecked();
+    fireEvent.change(targetSelect(), { target: { value: 'box' } });
+    expect(record).toBeEnabled();
+    expect(record).toBeChecked();
+    expect(screen.queryByText(/A one-shot worker exits/)).toBeNull();
   });
 
   it('is not offered on a server without workers', async () => {

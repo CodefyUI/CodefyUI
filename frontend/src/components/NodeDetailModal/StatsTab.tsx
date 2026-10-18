@@ -3,6 +3,7 @@ import {
   fetchPortStats,
   NoValueError,
   StatsNotCapturedError,
+  WorkerUnreachableError,
   type PortStats,
   type StatsColumn,
 } from '../../api/executionOutputs';
@@ -201,12 +202,16 @@ export function usePortStats(
             return;
           }
           const captured = e instanceof StatsNotCapturedError;
+          // A worker run's captures are on its worker (#789), out of reach now.
+          const unreachable = e instanceof WorkerUnreachableError;
           setStats((prev) => ({
             ...prev,
             [key]: {
               loading: false,
-              errorKey: captured ? 'nodeDetail.stats.notCaptured' : null,
-              error: captured ? null : (e as Error).message,
+              errorKey: captured
+                ? 'nodeDetail.stats.notCaptured'
+                : unreachable ? 'inspector.workerUnreachable' : null,
+              error: captured || unreachable ? null : (e as Error).message,
               data: null,
             },
           }));

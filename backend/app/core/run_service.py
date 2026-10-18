@@ -111,9 +111,11 @@ passes one), ``options["target"]`` can name a connected worker agent
 WORKER, not this process: its FIFO key is ``<worker>/<device as asked>``
 (``gpu-box/cuda``, ``any/cpu``), a named worker must be one this server has
 seen since it started and offer the device at submit (else
-``RunSubmitError``; one that is away is waited for, #777), and
-``record_outputs`` and
-the interactive lane are refused (the canvas always executes here).
+``RunSubmitError``; one that is away is waited for, #777), and the
+interactive lane is refused (the canvas always executes here).
+``record_outputs`` is honoured on a worker whose agent lists the
+``record_outputs`` capability (#789): its captures stay there and the
+outputs routes read them over its connection.
 :class:`~app.core.scheduling.WorkerScheduler` places it on
 ``(worker, device)`` slots, capped per device like a local slot; ``any``
 tries the connected workers in name order and this process last (a CUDA
@@ -328,6 +330,7 @@ from .secret_params import (
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
 from .worker_handshake import catalog_refusal, graph_node_types
 from .worker_protocol import (
+    CAPABILITY_RECORD_OUTPUTS,
     POOL_ONE_SHOT,
     TARGET_ANY,
     TARGET_LOCAL,
@@ -848,10 +851,24 @@ def worker_not_connected(name: str) -> str:
             "or 'any'")
 
 
-#: Refusals for what a worker run cannot do in this wave.
-WORKER_REFUSES_RECORD_OUTPUTS = (
-    "record_outputs is not supported for runs on a worker yet (#789); "
-    "target 'local' to capture outputs")
+#: The refusal for ``record_outputs`` on a one-shot worker (#789, #790):
+#: its agent exits right after the run, taking the outputs with it.
+ONE_SHOT_REFUSES_RECORD_OUTPUTS = (
+    "record_outputs is not available on one-shot workers: the agent exits "
+    "when its run ends, so the recorded outputs could not be read; queue "
+    "the run without Record outputs, or on a worker started without "
+    "--one-shot")
+
+
+def worker_cannot_record_outputs(name: str) -> str:
+    """The refusal for ``record_outputs`` on a worker whose agent does not
+    list the ``record_outputs`` capability (#789): one from before it."""
+    return (f"worker {name!r} cannot record outputs: its agent does not "
+            "support it; update the agent, or target 'local' to capture "
+            "outputs")
+
+
+#: Refusals for what a worker run cannot do.
 WORKER_REFUSES_INTERACTIVE = (
     "the interactive lane always runs on this server; drop the target or "
     "target 'local'")
@@ -2733,10 +2750,13 @@ class RunService:
         has seen to offer the device (a CUDA set a worker would renumber:
         a worker it has seen, since this server never takes such an
         ``any`` run, see ``WorkerScheduler``). The run must be one a
-        worker can do
-        in this wave (no ``record_outputs``, not the interactive lane).
+        worker can do: not the interactive lane, and ``record_outputs``
+        only on a named worker whose last ``hello`` listed the capability
+        and that is not one-shot, and never for the one-shot pool (#789;
+        one that never connected since this server started is checked when
+        the run starts, ``WorkerExecutor``).
         Only an unknown worker name, a device nobody offers, or one of
-        those two options is refused, so a worker disconnecting halfway
+        those options is refused, so a worker disconnecting halfway
         through a sweep's or a study's submissions does not fail it.
         Storage is checked after this, by :meth:`_check_storage`.
         """
@@ -2745,9 +2765,10 @@ class RunService:
             return _local_queue_key(options.get("device"))
         if options.get("lane") == LANE_INTERACTIVE:
             raise RunSubmitError(WORKER_REFUSES_INTERACTIVE)
-        if options.get("record_outputs"):
-            raise RunSubmitError(WORKER_REFUSES_RECORD_OUTPUTS)
         requested = str(options.get("device") or "cpu")
+        if entry_pool(options) == POOL_ONE_SHOT \
+                and options.get("record_outputs"):
+            raise RunSubmitError(ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         if entry_pool(options) == POOL_ONE_SHOT:
             # Never refused for want of a worker (#790): the run waits for
             # a one-shot worker to appear, up to
@@ -2774,6 +2795,13 @@ class RunService:
         worker = None if self._workers is None else self._workers.get(worker_id)
         if worker is None:
             raise RunSubmitError(worker_not_connected(worker_id))
+        capabilities = getattr(worker, "capabilities", None) or ()
+        if options.get("record_outputs") and capabilities \
+                and CAPABILITY_RECORD_OUTPUTS not in capabilities:
+            raise RunSubmitError(worker_cannot_record_outputs(worker_id))
+        if options.get("record_outputs") and getattr(worker, "one_shot",
+                                                     False):
+            raise RunSubmitError(ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         offered = worker.device_values()
         wanted = devices or []
         missing = [d for d in wanted if not worker.offers(d)]

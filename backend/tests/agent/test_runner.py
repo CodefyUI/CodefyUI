@@ -126,7 +126,6 @@ def test_a_new_runner_marks_leftover_directories(tmp_path):
 
 
 @pytest.mark.parametrize("assign, reason", [
-    (_assign("r1", options={"record_outputs": True}), "record_outputs"),
     (_assign("r1", devices=["cuda:0"], device="cuda:0"), "not offered"),
     (_assign("r1", device="tpu:0"), "unknown device"),
     (_assign("r1", device="cuda:0"), "not offered"),
