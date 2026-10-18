@@ -8,8 +8,8 @@ Per connection:
 
 1. send ``hello``; wait for ``welcome`` (``reject`` ends the agent: a refused
    token or version does not get better by retrying; so does an HTTP 401
-   to the agent's stored worker credential, #840, while a session token
-   or a ``--token`` is retried);
+   whose ``X-CodefyUI-Refusal`` says the credential was revoked, #840,
+   while any other 401 is retried, with advice by the token's kind);
 2. if runs survived a previous connection, send ``run_alive``;
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
@@ -96,6 +96,36 @@ def _http_status(exc: BaseException) -> int | None:
     if status is None:
         status = getattr(exc, "status_code", None)  # legacy client
     return status if isinstance(status, int) else None
+
+
+def _refusal(exc: BaseException) -> str | None:
+    """``X-CodefyUI-Refusal`` of a refused handshake's answer, if any."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get(wp.REFUSAL_HEADER)
+    return value.strip().lower() if isinstance(value, str) else None
+
+
+def _refused_advice(worker_credential: bool, from_file: bool,
+                    url: str) -> str:
+    """What to do about a 401 that is not a revocation, by the kind of the
+    token (#840)."""
+    if worker_credential:
+        return (f"the server at {url} does not know this worker credential: "
+                "another control plane or database answers at this address, "
+                "or a proxy asks for its own login; to join this one, run "
+                f"cdui agent forget {url} and enroll with a new token")
+    if from_file:
+        return ("the session token file was refused: the server at this "
+                "address is not the one that wrote it (another install, or "
+                "another user's); it is read again on each attempt")
+    return ("the token given with --token / $CODEFYUI_AGENT_TOKEN was "
+            "refused: if it is a session token, the server restarted and "
+            "wrote a new one (start the agent again with it, or without "
+            "--token on the server's machine, which reads the token file); "
+            "if it is a worker credential, this server did not issue it")
 
 
 class AgentRejected(RuntimeError):
@@ -201,10 +231,11 @@ class AgentConnection:
         self.backoff_min_s = backoff_min_s
         #: Where the token comes from, for error messages (a file path).
         self.token_source = token_source
-        #: The token is this worker's own credential, stored by an
-        #: enrollment (#780): a 401 to it means it was revoked, and the
-        #: agent stops (#840). Any other token (the session token, one
-        #: given with --token) is retried as before.
+        #: The token is a worker credential stored by an enrollment (#780)
+        #: rather than a session token: it decides the advice on a 401
+        #: (#840). A --token's kind cannot be told (both are 43 URL-safe
+        #: characters), so its advice names both. The agent stops only when the server says the credential
+        #: was revoked (``X-CodefyUI-Refusal``); every other 401 is retried.
         self.worker_credential = worker_credential
         #: Verifies the control plane over ``wss`` (#786); one without a pin
         #: (system CAs) is created at the first ``wss`` dial when none is
@@ -405,28 +436,23 @@ class AgentConnection:
                     logger.error(
                         "the control plane refused the token (HTTP 401); "
                         "token from %s", self.token_source)
-                    if self.worker_credential:
-                        # A worker credential the server no longer knows
-                        # (the worker was removed or re-keyed, or the
-                        # server's database is another one) never comes
-                        # back by retrying (#840).
+                    url = self._resolve(self._control_url)
+                    if _refusal(exc) == wp.REFUSAL_REVOKED:
+                        # The server says it revoked this credential (the
+                        # worker was removed or re-keyed): no retry brings
+                        # it back (#840).
                         logger.error(
                             "stopping: this agent's credential was revoked "
                             "(the worker was removed or re-keyed in the "
-                            "Workers panel) or belongs to another control "
-                            "plane; run cdui agent forget %s and enroll "
-                            "with a new token", self._resolve(
-                                self._control_url))
+                            "Workers panel); run cdui agent forget %s and "
+                            "enroll with a new token", url)
                         code = 2
                         break
-                    if not callable(self._token):
-                        # A token given on the command line: most likely a
-                        # session token from before the server restarted.
-                        logger.error(
-                            "if the server restarted, its session token "
-                            "changed: start the agent again with the new "
-                            "one, or without --token on the server's "
-                            "machine (it reads the token file); retrying")
+                    # Any other 401 may pass (a server restarted, another
+                    # server or database answering at the address for a
+                    # while, a proxy asking for its own login): retried.
+                    logger.error("%s; retrying", _refused_advice(
+                        self.worker_credential, callable(self._token), url))
                 elif status == 403:
                     # Refused for another reason (a Host or Origin check, no
                     # worker registry yet), or by a control plane that

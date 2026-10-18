@@ -212,17 +212,22 @@ COMMAND_NOT_EXECUTABLE_EXIT = 126
 #: retries at once, ``lasting`` once it has lasted :data:`LASTING_GIVE_UP_S`.
 FAILURE_FINAL = "final"
 FAILURE_LASTING = "lasting"
-#: ssh's words for failures a retry does not fix by itself, their kind, and
-#: what to do about each.
-FAILURE_WORDS = (
-    ("host key verification failed", FAILURE_FINAL, "the host key does not "
-     "verify (the host is not in known_hosts, or its key changed)"),
-    ("permission denied (", FAILURE_LASTING, "the host refused the login "
-     "(check the user name and that the key works without a prompt: ssh -o "
-     "BatchMode=yes {target} true)"),
-    ("could not resolve hostname", FAILURE_LASTING, "the host name does not "
-     "resolve (check the target, the Host alias in ~/.ssh/config, or this "
-     "machine's network)"),
+#: ssh's own lines for failures a retry does not fix by itself (each matched
+#: against a whole output line, lower-cased, so a remote program's message
+#: with the same words -- uv's "Permission denied (os error 13)" in the
+#: agent's log -- is not taken for ssh's), their kind, and what to do.
+FAILURE_LINES = (
+    (re.compile(r"host key verification failed\.?"), FAILURE_FINAL,
+     "the host key does not verify (the host is not in known_hosts, or its "
+     "key changed)"),
+    (re.compile(r"(?:\S+: )?permission denied \((?:publickey|password|"
+                r"keyboard-interactive|gssapi|hostbased)[^)]*\)\.?"),
+     FAILURE_LASTING, "the host refused the login (check the user name and "
+     "that the key works without a prompt: ssh -o BatchMode=yes {target} "
+     "true)"),
+    (re.compile(r"ssh: could not resolve hostname .*"), FAILURE_LASTING,
+     "the host name does not resolve (check the target, the Host alias in "
+     "~/.ssh/config, or this machine's network)"),
 )
 #: The agent's words when its stored credential names another worker
 #: (``app.agent.cli.use_stored_credential``; the remote runs in English).
@@ -754,9 +759,8 @@ def classify_failure(code: int | None, lines: list[str], entry: SshWorker,
     (not a one-shot, which never runs ``cdui``), the remote shell cannot
     run ``cdui`` (exit 127 / 126). ``lasting``: a refused login or a host
     name that does not resolve, which can heal by themselves."""
-    lowered = " ".join(lines).lower()
-    for words, kind, reason in FAILURE_WORDS:
-        if words in lowered:
+    for pattern, kind, reason in FAILURE_LINES:
+        if any(pattern.fullmatch(line.strip().lower()) for line in lines):
             return kind, reason.format(target=entry.target)
     if session and code in (COMMAND_NOT_FOUND_EXIT,
                             COMMAND_NOT_EXECUTABLE_EXIT):
@@ -808,6 +812,8 @@ class SshLaunch:
         self._wake = asyncio.Event()
         #: The next tail line starts a new attempt's output (#840).
         self._fresh_tail = False
+        #: The current step's lines (:meth:`_begin_tail`).
+        self._step_lines: list[str] = []
         #: The slot a session last attached on (the remote script printed
         #: the agent pid): an agent may survive there.
         self._attached_port: int | None = None
@@ -828,8 +834,13 @@ class SshLaunch:
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
-            # Retry on an entry still retrying: cut its backoff short.
-            self._wake.set()
+            # Retry on an entry still retrying: give a lasting failure its
+            # full window again, and cut a backoff it is waiting out short.
+            # During an attempt there is nothing to cut short: a wake left
+            # set would skip the backoff after a later drop (#840).
+            self._lasting_since = None
+            if self.retry_at is not None:
+                self._wake.set()
             return
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
@@ -892,6 +903,9 @@ class SshLaunch:
             self.attempts += 1
             self.retry_at = None
             self._retry_soon = False
+            # A Retry pressed during an earlier attempt is spent: it must not
+            # cut short the backoff after a later one (#840).
+            self._wake.clear()
             started = time.monotonic()
             was_up = False
             try:
@@ -941,7 +955,7 @@ class SshLaunch:
         # Each attempt's output only: a host that keeps refusing would
         # otherwise fill the tail with the same line (#840). The last
         # attempt's stays shown until this one writes something.
-        self._fresh_tail = True
+        self._begin_tail()
         remote_dir = await self._prepare(port)
         if remote_dir is None or self._stop.is_set():
             return False
@@ -958,7 +972,7 @@ class SshLaunch:
         self.remote_pid = None
         # The session's output replaces the prepare step's, once it has
         # some: the card never goes blank meanwhile.
-        self._fresh_tail = True
+        self._begin_tail()
         self.state = STATE_CONNECTING
         logger.info("SSH worker %s: ssh %s (slot %d, forward to %s)",
                     self.entry.id, self.entry.target, port, listener)
@@ -1025,7 +1039,9 @@ class SshLaunch:
         if self._stop.is_set():
             return was_up
         code = proc.returncode
-        tail = [line for line in self.tail if line.strip()]
+        # The session's own lines: a session that wrote nothing reports its
+        # exit status, never the prepare step's output still on the card.
+        tail = [line for line in self._step_lines if line.strip()]
         if self._mismatch or self._refused:
             # The agent's stored credential was refused, or names another
             # worker: the next session forgets it first. (The agent now
@@ -1132,13 +1148,20 @@ class SshLaunch:
                 self._refused = True
             logger.debug("ssh %s: %s", self.entry.id, line)
 
+    def _begin_tail(self) -> None:
+        """A step starts (the prepare one-shot, the session): its first line
+        replaces what the card shows, and its own lines are kept apart."""
+        self._fresh_tail = True
+        self._step_lines = []
+
     def _add_tail(self, lines: list[str]) -> None:
-        """Keep *lines*; the first of a new attempt replaces the last
-        attempt's output."""
+        """Keep *lines*; the first of a new step replaces the last step's
+        output (another one-shot, a stop, only adds to it)."""
         if lines and self._fresh_tail:
             self._fresh_tail = False
             self.tail.clear()
         self.tail.extend(lines)
+        self._step_lines.extend(lines)
 
     def _worker_online(self) -> bool:
         worker = self.launcher.registry.get(self.entry.id)

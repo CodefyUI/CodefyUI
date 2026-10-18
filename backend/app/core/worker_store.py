@@ -258,9 +258,8 @@ class WorkerStore:
         token_hash = hash_secret(token.strip())
         worker_token = mint_worker_token()
 
-        old_hash: list[str] = []
-
-        def _enroll(conn: sqlite3.Connection) -> bool:
+        def _enroll(conn: sqlite3.Connection) -> tuple[bool, str | None]:
+            """``(re-keyed, the replaced credential's hash or None)``."""
             with transaction(conn):
                 now = utc_now_iso()
                 row = conn.execute(
@@ -304,7 +303,6 @@ class WorkerStore:
                         (name, name, hash_secret(worker_token), *facts, now,
                          now))
                 else:
-                    old_hash.append(existing["token_hash"])
                     conn.execute(
                         "UPDATE workers SET token_hash = ?, platform = ?, "
                         "mounts_json = ?, devices_json = ?, last_seen_at = ?, "
@@ -314,11 +312,13 @@ class WorkerStore:
                             name, row["id"],
                             " (re-keyed: its old worker token no longer "
                             "works)" if existing is not None else "")
-                return existing is not None
+                if existing is None:
+                    return False, None
+                return True, existing["token_hash"]
 
-        rekeyed = await self.db.run(_enroll)
-        for revoked in old_hash:
-            self._remember_revoked(revoked, name, "rekeyed")
+        rekeyed, old_hash = await self.db.run(_enroll)
+        if old_hash is not None:
+            self._remember_revoked(old_hash, name, "rekeyed")
         return worker_token, rekeyed
 
     # ── workers ───────────────────────────────────────────────────────────

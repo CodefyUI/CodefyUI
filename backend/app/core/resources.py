@@ -2,9 +2,10 @@
 
 :func:`probe_devices` lists the compute devices this machine has, each with
 its total and free memory where something can say. It is display-only: no
-admission decision reads it yet (that is #788), and nothing here is cached,
-so every call is a fresh reading and the caller decides how often to pay
-for one.
+admission decision reads it yet (that is #788), and its memory figures are
+not cached, so every call is a fresh reading and the caller decides how
+often to pay for one. Only the CPU's name (:func:`cpu_name`) is kept: a
+brand found once, and a miss for :data:`CPU_BRAND_RETRY_S`.
 
 Sources, per kind of device:
 
@@ -47,6 +48,7 @@ import logging
 import os
 import platform
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -181,9 +183,14 @@ def _cpu_brand_windows() -> str | None:
     return str(value).strip() or None
 
 
-#: The brand string, once a probe found one; a probe that found nothing is
-#: tried again next time (#840).
+#: A probe that found no brand is not repeated for this long (#840): an
+#: aarch64 host whose /proc/cpuinfo has no name line would otherwise be
+#: parsed again on every device probe, while a passing failure still heals.
+CPU_BRAND_RETRY_S = 600.0
+#: The brand string, once a probe found one.
 _cpu_brand: str | None = None
+#: When (monotonic) a probe last found none, or None.
+_cpu_brand_missed_at: float | None = None
 
 
 def cpu_name() -> str:
@@ -191,16 +198,21 @@ def cpu_name() -> str:
     Processor``), for the device lists (#840); the architecture
     (``platform.processor()``, ``platform.machine()``) when the system does
     not say, which is all ``arm`` / ``x86_64`` told before. Every probe is
-    in-process (no subprocess), so a call on the event loop is cheap."""
-    global _cpu_brand
+    in-process (no subprocess), so a call on the event loop is cheap; a
+    found brand is kept, a miss for :data:`CPU_BRAND_RETRY_S`."""
+    global _cpu_brand, _cpu_brand_missed_at
     if _cpu_brand is not None:
         return _cpu_brand
-    probe = {"darwin": _cpu_brand_darwin, "win32": _cpu_brand_windows}.get(
-        sys.platform, _cpu_brand_linux)
-    brand = probe()
-    if brand:
-        _cpu_brand = brand
-        return brand
+    missed = _cpu_brand_missed_at
+    if missed is None or time.monotonic() - missed >= CPU_BRAND_RETRY_S:
+        probe = {"darwin": _cpu_brand_darwin,
+                 "win32": _cpu_brand_windows}.get(sys.platform,
+                                                  _cpu_brand_linux)
+        brand = probe()
+        if brand:
+            _cpu_brand = brand
+            return brand
+        _cpu_brand_missed_at = time.monotonic()
     return platform.processor() or platform.machine() or "CPU"
 
 

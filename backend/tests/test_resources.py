@@ -189,6 +189,7 @@ def _no_brand(monkeypatch):
                   "_cpu_brand_windows"):
         monkeypatch.setattr(resources, probe, lambda: None)
     monkeypatch.setattr(resources, "_cpu_brand", None)
+    monkeypatch.setattr(resources, "_cpu_brand_missed_at", None)
 
 
 def test_cpu_name_falls_back_when_platform_is_silent(monkeypatch):
@@ -218,9 +219,11 @@ def test_cpu_name_is_the_brand_string(monkeypatch, platform_name, probe):
     assert resources.cpu_name() == "Brand CPU 9000"
 
 
-def test_cpu_name_caches_a_brand_but_not_a_miss(monkeypatch):
-    """#840 review: a probe that found nothing (a transient failure) is
-    tried again; one that found the brand is not repeated."""
+def test_cpu_name_caches_a_brand_and_a_miss_for_a_while(monkeypatch):
+    """#840 review: a probe that found the brand is not repeated; one that
+    found nothing is not repeated for CPU_BRAND_RETRY_S (an aarch64 host
+    without a name line would parse /proc/cpuinfo on every probe), then
+    tried again (a passing failure heals)."""
     _no_brand(monkeypatch)
     monkeypatch.setattr(resources.sys, "platform", "linux")
     monkeypatch.setattr(resources.platform, "processor", lambda: "")
@@ -233,7 +236,12 @@ def test_cpu_name_caches_a_brand_but_not_a_miss(monkeypatch):
         return answers[len(calls) - 1]
 
     monkeypatch.setattr(resources, "_cpu_brand_linux", probe)
+    clock = [1000.0]
+    monkeypatch.setattr(resources.time, "monotonic", lambda: clock[0])
     assert resources.cpu_name() == "aarch64"
+    assert resources.cpu_name() == "aarch64"
+    assert len(calls) == 1
+    clock[0] += resources.CPU_BRAND_RETRY_S
     assert resources.cpu_name() == "Brand CPU 9000"
     assert resources.cpu_name() == "Brand CPU 9000"
     assert len(calls) == 2

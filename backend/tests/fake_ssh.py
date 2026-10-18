@@ -10,6 +10,8 @@ JSON line, to ``$FAKE_SSH_LOG`` and the first stdin line (the token) to
 - ``fail``: print an ssh authentication error and exit 255;
 - ``nohost``: print ssh's "Could not resolve hostname" and exit 255;
 - ``hostkey``: print ssh's "Host key verification failed." and exit 255;
+- ``silent``: answer the prepare command, then end the session at once
+  with status 3 and no output;
 - ``prepare127``: exit 127 from the prepare command (a remote shell that
   lacks a tool the prepare step runs), then hold like ``hold``;
 - ``down``: print ssh's "Connection refused" and exit 255 (a failure
@@ -148,6 +150,8 @@ def main() -> int:
             and "codefyui-ssh: dir" in argv[-1]:
         print("sh: 1: mkdir: not found", file=sys.stderr, flush=True)
         return 127
+    if mode == "silent" and "-R" in argv:
+        return 3
     if mode == "down":
         print("ssh: connect to host gpu-box port 22: Connection refused",
               file=sys.stderr, flush=True)

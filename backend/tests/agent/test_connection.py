@@ -352,26 +352,32 @@ async def test_a_refused_token_is_logged_as_an_error_and_retried(
         await server.wait_closed()
 
 
-async def test_a_refused_worker_credential_stops_the_agent(tmp_path, caplog):
-    """#840: a fixed worker credential refused with HTTP 401 (the worker was
-    removed or re-keyed, or the server is another one) never comes back:
-    the agent says so, once, and exits 2 instead of retrying forever. The
-    "refused the token" line the SSH launcher reads is still logged."""
+def _refusing_server(dials, headers=None):
     from websockets.datastructures import Headers
     from websockets.http11 import Response
 
-    dials = []
-
     def refuse(connection, request):
         dials.append(request.path)
-        return Response(401, "No", Headers(), b"no")
+        return Response(401, "No", Headers(headers or {}), b"no")
 
-    server = await websockets.serve(lambda ws: None, "127.0.0.1", 0,
-                                    process_request=refuse)
+    return websockets.serve(lambda ws: None, "127.0.0.1", 0,
+                            process_request=refuse)
+
+
+@pytest.mark.parametrize("worker_credential", [True, False])
+async def test_a_revoked_credential_stops_the_agent(tmp_path, caplog,
+                                                     worker_credential):
+    """#840: a 401 whose X-CodefyUI-Refusal says the credential was revoked
+    (the worker was removed or re-keyed) never comes back: the agent says
+    so, once, and exits 2. The "refused the token" line the SSH launcher
+    reads is still logged."""
+    dials = []
+    server = await _refusing_server(
+        dials, {wp.REFUSAL_HEADER: wp.REFUSAL_REVOKED})
     try:
         port = server.sockets[0].getsockname()[1]
         agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
-        agent.connection.worker_credential = True
+        agent.connection.worker_credential = worker_credential
         with caplog.at_level("ERROR", logger="app.agent.connection"):
             agent.task = asyncio.create_task(agent.connection.run(agent.stop))
             assert await asyncio.wait_for(agent.task, 10) == 2
@@ -386,41 +392,53 @@ async def test_a_refused_worker_credential_stops_the_agent(tmp_path, caplog):
         await server.wait_closed()
 
 
-async def test_a_refused_explicit_token_is_retried(tmp_path, caplog):
-    """#840 review: a token given with --token / $CODEFYUI_AGENT_TOKEN is
-    most likely a session token from before a server restart: the agent
-    says how to get the new one and keeps retrying, as it did before."""
-    from websockets.datastructures import Headers
-    from websockets.http11 import Response
-
+@pytest.mark.parametrize("worker_credential, from_file, advice", [
+    # A worker credential the server does not know (another control plane
+    # or database at the address, a proxy): retried, with what to do.
+    (True, False, "does not know this worker credential"),
+    # A --token: a session token from before a restart, or a credential.
+    (False, False, "if it is a session token, the server restarted"),
+    # The session token file: read again on each attempt.
+    (False, True, "the session token file was refused"),
+])
+async def test_any_other_401_is_retried_with_advice_by_token_kind(
+        tmp_path, caplog, worker_credential, from_file, advice):
+    """#840 review: only a revocation the server names stops the agent;
+    any other 401 keeps retrying, with advice for the kind of token."""
     dials = []
-
-    def refuse(connection, request):
-        dials.append(request.path)
-        return Response(401, "No", Headers(), b"no")
-
-    server = await websockets.serve(lambda ws: None, "127.0.0.1", 0,
-                                    process_request=refuse)
+    server = await _refusing_server(dials, {"X-Other": "x"})
     try:
         port = server.sockets[0].getsockname()[1]
         agent = Agent(tmp_path, f"http://127.0.0.1:{port}")
-        assert agent.connection.worker_credential is False
-        assert not callable(agent.connection._token)
+        agent.connection.worker_credential = worker_credential
+        if from_file:
+            agent.connection._token = lambda: "from-the-file"
         with caplog.at_level("ERROR", logger="app.agent.connection"):
             async with agent:
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline and len(dials) < 2:
                     await asyncio.sleep(0.05)
-            assert not agent.task.done() or agent.task.result() == 0
         errors = [r.getMessage() for r in caplog.records
                   if r.levelname == "ERROR"]
         assert len(dials) >= 2
         assert "the control plane refused the token" in errors[0]
-        assert "session token changed" in errors[1]
+        assert advice in errors[1] and errors[1].endswith("; retrying")
         assert not any("stopping" in e for e in errors)
     finally:
         server.close()
         await server.wait_closed()
+
+
+def test_the_refusal_header_is_read_from_the_answer():
+    from types import SimpleNamespace
+
+    from app.agent.connection import _refusal
+
+    answer = SimpleNamespace(headers={wp.REFUSAL_HEADER: " Credential_Revoked "})
+    assert _refusal(SimpleNamespace(response=answer)) == wp.REFUSAL_REVOKED
+    assert _refusal(SimpleNamespace(response=SimpleNamespace(headers={}))) is None
+    assert _refusal(SimpleNamespace(response=None)) is None
+    assert _refusal(ValueError("no answer")) is None
 
 
 async def test_no_token_is_logged_and_retried(tmp_path, caplog):

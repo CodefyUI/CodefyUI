@@ -139,6 +139,87 @@ async def test_a_rekeyed_credential_is_listed_when_refused(enrolled,
     assert "replaced by a re-key" in rejection["reason"]
 
 
+async def test_a_revoked_credential_is_noted_once_an_hour(
+        enrolled, remote_peer, monkeypatch, caplog):
+    """#840 review: an agent that keeps dialling with a revoked credential
+    is logged and listed once per hour, not on every attempt."""
+    from app.api import ws_worker
+
+    monkeypatch.setattr(ws_worker, "_revoked_noted", type(
+        ws_worker._revoked_noted)())
+    clock = [5000.0]
+    monkeypatch.setattr(ws_worker.time, "monotonic", lambda: clock[0])
+    _, registry, store, worker_token = enrolled
+    assert await store.delete_worker("gpu-box")
+
+    async def dial():
+        async with _client(token=False) as client:
+            with pytest.raises(WebSocketDisconnect):
+                async with aconnect_ws(_path(worker_token), client):
+                    pass
+
+    with caplog.at_level("WARNING", logger="app.api.ws_worker"):
+        await dial()
+        first = registry.rejections()[0]["at"]
+        await dial()
+        await dial()
+        warnings = [r for r in caplog.records
+                    if "presented a revoked credential" in r.getMessage()]
+        assert len(warnings) == 1
+        assert registry.rejections()[0]["at"] == first
+        clock[0] += ws_worker.REVOKED_NOTE_INTERVAL_S
+        await dial()
+        warnings = [r for r in caplog.records
+                    if "presented a revoked credential" in r.getMessage()]
+        assert len(warnings) == 2
+
+
+def test_the_noted_revocations_are_bounded(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.api import ws_worker
+
+    monkeypatch.setattr(ws_worker, "_revoked_noted", type(
+        ws_worker._revoked_noted)())
+    monkeypatch.setattr(ws_worker, "MAX_REVOKED_NOTED", 2)
+    store = SimpleNamespace(revoked=lambda token: ("box", "removed"))
+    ws = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        worker_store=store)), client=None)
+    for token in ("a", "b", "c"):
+        assert ws_worker._note_revoked(ws, token) is True
+    assert len(ws_worker._revoked_noted) == 2
+    # No store, or a token it did not revoke: not a revocation.
+    ws.app.state.worker_store = None
+    assert ws_worker._note_revoked(ws, "a") is False
+
+
+@pytest.mark.parametrize("revoked, header, detail", [
+    (True, "credential_revoked", "This worker's credential was revoked"),
+    (False, None, "Missing or invalid token"),
+])
+async def test_a_revocation_is_named_in_the_401(revoked, header, detail):
+    """#840 review: the agent stops only on a 401 that says the credential
+    was revoked; any other says nothing more."""
+    import json
+    from types import SimpleNamespace
+
+    from app.api import ws_worker
+    from app.core import worker_protocol as wp
+
+    sent = []
+
+    async def send_denial_response(response):
+        sent.append(response)
+
+    ws = SimpleNamespace(scope={"extensions": {"websocket.http.response": {}}},
+                         send_denial_response=send_denial_response)
+    await ws_worker.refuse_token(ws, revoked=revoked)
+    [response] = sent
+    assert response.status_code == 401
+    assert response.headers.get(wp.REFUSAL_HEADER) == header
+    assert json.loads(response.body)["detail"] == detail
+
+
 def test_the_store_remembers_a_bounded_number_of_revocations(monkeypatch):
     from app.core import worker_store
 

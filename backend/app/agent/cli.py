@@ -649,8 +649,8 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
               trust: Any = None, worker_credential: bool = False) -> int:
     """The agent itself: connect and serve until stopped.
 
-    *worker_credential*: *token* is the credential an enrollment stored, so
-    a 401 to it stops the agent (#840)."""
+    *worker_credential*: *token* is a worker credential (enrolled, stored),
+    not a session token: it decides the advice on a refused token (#840)."""
     from ..config import settings
     from ..core import worker_protocol as wp
     from ..core.version import get_version

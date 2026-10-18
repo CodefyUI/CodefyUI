@@ -364,9 +364,55 @@ async def test_retry_cuts_the_backoff_short(launcher, fake_ssh, monkeypatch):
     await _until(lambda: launcher.describe("gpu-box")["retry_at"],
                  "it never waited to retry")
     assert len(_all_calls(fake_ssh)) == 1
+    launch = launcher.launches["gpu-box"]
+    assert launch._lasting_since is not None
     monkeypatch.setenv("FAKE_SSH_MODE", "hold")
     await launcher.set_enabled("gpu-box", True)
+    # A lasting failure gets its whole window again (#840 review).
+    assert launch._lasting_since is None
     await _until(lambda: _tokens(fake_ssh), "Retry did not try again now")
+
+
+async def test_retry_during_an_attempt_leaves_no_wake_behind(
+        launcher, fake_ssh):
+    """#840 review: a Retry while a session runs has no backoff to cut
+    short; a wake left set would skip the backoff after a later drop."""
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    launch = launcher.launches["gpu-box"]
+    await launcher.set_enabled("gpu-box", True)
+    assert not launch._wake.is_set()
+
+
+async def test_a_silent_session_reports_its_exit_status(
+        launcher, fake_ssh, monkeypatch):
+    """#840 review: a session that wrote nothing says how ssh exited, not
+    the prepare step's line still on the card."""
+    monkeypatch.setenv("FAKE_SSH_MODE", "silent")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["exit_code"] == 3,
+                 "the session never ended")
+    view = launcher.describe("gpu-box")
+    assert view["last_error"] == "ssh exited with status 3"
+    # The card still shows the last output (the prepare step's).
+    assert any("codefyui-ssh: dir" in line for line in view["tail"])
+
+
+def test_only_a_new_step_replaces_the_tail(launcher):
+    """#840 review: the prepare step and the session each start the tail
+    over; another one-shot (a stop) adds to it, never wipes a failure."""
+    launch = ssh_launch.SshLaunch(_entry(), launcher)
+    launch._begin_tail()
+    launch._add_tail(["ssh: connect to host gpu-box port 22: refused"])
+    launch._add_tail(["stopped the remote agent"])
+    assert list(launch.tail) == [
+        "ssh: connect to host gpu-box port 22: refused",
+        "stopped the remote agent"]
+    launch._begin_tail()
+    assert len(launch.tail) == 2
+    launch._add_tail(["new attempt"])
+    assert list(launch.tail) == ["new attempt"]
+    assert launch._step_lines == ["new attempt"]
 
 
 async def test_a_host_key_that_does_not_verify_stops_at_once(
@@ -414,7 +460,7 @@ async def test_a_prepare_step_that_exits_127_is_retried(
 def test_the_failures_a_retry_does_not_fix():
     entry = _entry()
     kind, reason = ssh_launch.classify_failure(
-        255, ["x: Host key verification failed."], entry, session=False)
+        255, ["Host key verification failed."], entry, session=False)
     assert (kind, reason.startswith("the host key")) == (
         ssh_launch.FAILURE_FINAL, True)
     kind, reason = ssh_launch.classify_failure(126, [], entry, session=True)
@@ -426,6 +472,30 @@ def test_the_failures_a_retry_does_not_fix():
     assert ssh_launch.classify_failure(
         255, ["ssh: connect to host x port 22: Connection timed out"],
         entry, session=True) is None
+
+
+
+@pytest.mark.parametrize("line, kind", [
+    ("alice@gpu-box: Permission denied (publickey).", "lasting"),
+    ("Permission denied (publickey,password).", "lasting"),
+    ("bob@10.0.0.7: Permission denied (publickey,gssapi-keyex,"
+     "gssapi-with-mic,keyboard-interactive).", "lasting"),
+    ("ssh: Could not resolve hostname gpu-box: Name or service not known",
+     "lasting"),
+    ("Host key verification failed.", "final"),
+    # A remote program's words are not ssh's (#840 review): uv in the
+    # agent's log, a Python traceback, a shell.
+    ("error: failed to open file `/home/a/.cache/uv/x`: Permission denied "
+     "(os error 13)", None),
+    ("2026-10-18 04:00:00,000 ERROR app.agent: Permission denied "
+     "(publickey) is what ssh said", None),
+    ("PermissionError: [Errno 13] Permission denied: '/data'", None),
+    ("sh: 1: /home/a/cdui: Permission denied", None),
+])
+def test_only_ssh_s_own_lines_are_read_as_its_failures(line, kind):
+    found = ssh_launch.classify_failure(1, ["some other line", line],
+                                        _entry(), session=True)
+    assert (found[0] if found else None) == kind
 
 
 def test_the_backoff_doubles_up_to_a_minute():
