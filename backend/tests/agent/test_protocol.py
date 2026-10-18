@@ -50,6 +50,9 @@ def test_every_frame_type_round_trips():
         wp.FetchOutput(request_id="q1", run_id="r1", op="value",
                        params={"node_id": "a", "port": "out"}),
         wp.DropOutputs(run_id="r1"),
+        wp.FetchOutput(request_id="q2", run_id="r1", op="list",
+                       timeout_s=60),
+        wp.CancelFetch(request_id="q2"),
     ]
     assert {f.type for f in control_frames} == set(wp.CONTROL_FRAME_TYPES)
     for frame in control_frames:

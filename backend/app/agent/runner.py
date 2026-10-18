@@ -60,6 +60,15 @@ subprocess exits is answered from the files (``agent.outputs``). The dumps
 are held to this worker's output budget when each such run retires
 (``agent.outputs.prune_outputs``).
 
+Its subprocess reports ``finished`` with ``saving_outputs`` once its
+captures are copied off its cards, and writes them after. That
+``run_finished`` goes out at once (the control plane frees the run's
+device slot), and the subprocess gets :data:`SAVE_OUTPUTS_S` to finish
+writing and exit, a cancel's grace period notwithstanding: the cancel has
+already stopped the run. While it writes, the run is no longer listed as
+running (``running_ids``). A transfer run (#785) still reports after its
+process is gone, its uploads last.
+
 This module imports neither torch nor the engine: it runs in the agent.
 """
 
@@ -94,6 +103,12 @@ KILL_AFTER_S = 5.0
 EXIT_AFTER_FINISHED_S = 10.0
 #: How often the reader checks a reported child's liveness while draining.
 DRAIN_POLL_S = 0.2
+#: Seconds a recorded run's child gets to write its outputs and exit after
+#: it reported (#789); then it is stopped, and the outputs are lost.
+SAVE_OUTPUTS_S = 300.0
+#: Seconds :meth:`Runner.ask_child` waits unless told: under the control
+#: plane's default wait for an answer (60 s, ``agent.outputs``).
+ASK_CHILD_TIMEOUT_S = 55.0
 #: How much of a crashed child's output ``run_finished`` carries.
 STDERR_TAIL_BYTES = 4096
 #: Per-run output file, under ``<runs_dir>/<run_id>/``.
@@ -391,6 +406,12 @@ class RunHandle:
     #: Reads of the run's outputs waiting for the subprocess's answer, by
     #: request id (#789); answered None when it exits first.
     answers: dict[str, asyncio.Future] = field(default_factory=dict)
+    #: The subprocess reported and is writing its outputs (#789): it gets
+    #: ``save_outputs_s`` to exit.
+    saving: bool = False
+    #: Its ``run_finished`` went out when it began writing (#789), not
+    #: after it exited.
+    reported_early: bool = False
     #: Set once the reader has joined the process (it is gone).
     exited: asyncio.Event = field(default_factory=asyncio.Event)
     #: Set once the run is retired (its ``run_finished`` has been sent).
@@ -420,8 +441,10 @@ class Runner:
         transfer: transfer_module.TransferClient | None = None,
         s3_client: Callable[[Any], Any] | None = None,
         outputs_max_bytes: int | None = None,
+        save_outputs_s: float = SAVE_OUTPUTS_S,
     ) -> None:
         self.runs_dir = runs_dir
+        self.save_outputs_s = save_outputs_s
         #: This worker's budget for recorded outputs (#789): the in-process
         #: store's, ``CODEFYUI_RUN_OUTPUT_STORE_MAX_MB``, unless given.
         if outputs_max_bytes is None:
@@ -470,7 +493,10 @@ class Runner:
     # ── queries ───────────────────────────────────────────────────────────
 
     def running_ids(self) -> list[str]:
-        return list(self.runs)
+        """The runs still running: not one whose subprocess reported and
+        is only writing its outputs (#789)."""
+        return [run_id for run_id, handle in list(self.runs.items())
+                if not handle.reported_early]
 
     def take_refused(self, run_id: str) -> bool:
         """True (once) when *run_id* was refused at assignment."""
@@ -822,17 +848,25 @@ class Runner:
 
     # ── recorded outputs (#789) ───────────────────────────────────────────
 
-    async def ask_child(self, run_id: str, op: str, params: dict[str, Any],
-                        timeout_s: float = 120.0
-                        ) -> tuple[int, str, bool] | None:
-        """``(status, body text, final)`` for one read of *run_id*'s
-        outputs, answered by its run subprocess; None when there is no
-        subprocess to ask (never started, or gone, or it exited before
-        answering): the files answer then."""
+    def _recording(self, run_id: str) -> RunHandle | None:
+        """*run_id*'s handle when its subprocess records outputs and can
+        still be asked (#789), else None."""
         handle = self.runs.get(run_id)
         if handle is None or not handle.record_outputs \
                 or handle.process is None or handle.reaped \
                 or handle.control_out is None:
+            return None
+        return handle
+
+    async def ask_child(self, run_id: str, op: str, params: dict[str, Any],
+                        timeout_s: float = ASK_CHILD_TIMEOUT_S
+                        ) -> tuple[int, str, bool] | None:
+        """``(status, body text, final)`` for one read of *run_id*'s
+        outputs, answered by its run subprocess; None when there is no
+        subprocess to ask (never started, or gone, or it exited before
+        answering): the files answer then. Cancelling it forgets it."""
+        handle = self._recording(run_id)
+        if handle is None:
             return None
         self._asked += 1
         request_id = f"c{self._asked}"
@@ -860,10 +894,8 @@ class Runner:
         """Empty a running recorded run's store (``delete`` /
         ``drop_outputs``, #789); later captures start it again, as in the
         control plane's store. False when no such subprocess runs."""
-        handle = self.runs.get(run_id)
-        if handle is None or not handle.record_outputs \
-                or handle.process is None or handle.reaped \
-                or handle.control_out is None:
+        handle = self._recording(run_id)
+        if handle is None:
             return False
         try:
             handle.control_out.send((child_module.MSG_DROP_OUTPUTS, run_id))
@@ -953,8 +985,18 @@ class Runner:
         """The child reported: give it ``exit_after_finished_s`` to exit.
 
         Runs on the loop (the reader schedules it). An escalation already
-        in flight (a cancel's) is left to finish the job.
+        in flight (a cancel's) is left to finish the job, except for a
+        child writing its outputs (#789): its run has stopped, so it gets
+        ``save_outputs_s`` instead.
         """
+        if handle.saving and not handle.stopping_now:
+            if handle.escalation is not None:
+                handle.escalation.cancel()
+            handle.escalation = asyncio.create_task(
+                self._escalate(handle, self.save_outputs_s,
+                               "is still writing its outputs"),
+                name=f"exit:{handle.run_id}")
+            return
         if handle.escalation is None or handle.escalation.done():
             handle.escalation = asyncio.create_task(
                 self._escalate(handle, self.exit_after_finished_s,
@@ -1091,6 +1133,7 @@ class Runner:
                 if isinstance(message, tuple) and message \
                         and message[0] == child_module.MSG_FINISHED:
                     handle.finished = True
+                    handle.saving = _saving(message)
                     finish_message = message
                     break
                 outbox.put(message)
@@ -1106,9 +1149,15 @@ class Runner:
             if isinstance(frame, wp.RunFinished):
                 # Held until the child has exited: the control plane frees
                 # the run's device slot on run_finished, and the next run
-                # must not start next to this one's CUDA context.
+                # must not start next to this one's CUDA context. Except a
+                # child that has moved its captures off its cards and is
+                # writing them (#789): its report goes now, so the slot is
+                # not held for the disk.
                 handle.finished = True
                 reported = frame
+                if _saving(message):
+                    handle.saving = handle.reported_early = True
+                    self._forward(loop, frame)
                 break
             self._forward(loop, frame)
         if reported is not None or finish_message is not None:
@@ -1155,7 +1204,11 @@ class Runner:
             logger.warning("run %s: dropped %d pipe message(s) the subprocess "
                            "sent after reporting", handle.run_id,
                            handle.discarded)
-        self._forward(loop, reported)
+        if handle.reported_early:
+            # Reported already (#789), when it began writing its outputs.
+            logger.info("run %s: wrote its recorded outputs", handle.run_id)
+        else:
+            self._forward(loop, reported)
         for end in (handle.events_in, handle.control_out):
             try:
                 end.close()
@@ -1368,6 +1421,13 @@ class Runner:
 
             prune_outputs(self.runs_dir, self.outputs_max_bytes,
                           keep=run_dir.name)
+
+
+def _saving(message: Any) -> bool:
+    """A ``finished`` message whose child writes its outputs next (#789)."""
+    return (isinstance(message, tuple) and len(message) > 1
+            and isinstance(message[1], dict)
+            and bool(message[1].get("saving_outputs")))
 
 
 def _numbered(handle: RunHandle, frame: Any) -> Any:

@@ -252,6 +252,20 @@ async def test_welcome_lists_this_servers_capabilities(env):
         assert registry.get("box").capabilities == ("ack", "future")
 
 
+async def test_drops_missed_while_away_are_sent_on_connecting(env):
+    """Recorded outputs this server stopped retaining while the worker
+    was away (#789) are dropped there once it connects."""
+    _, registry = env
+    registry.outputs.drop("r-old", "box")
+    assert registry.outputs.pending_drops("box") == ["r-old"]
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello(capabilities=list(wp.CAPABILITIES), **_catalog())
+        frame = await agent.recv()
+        assert frame == wp.DropOutputs(run_id="r-old")
+        assert registry.outputs.pending_drops("box") == []
+
+
 def test_unknown_fields_are_ignored_not_refused():
     """The additive rule: a newer peer's extra field parses here."""
     frame = wp.decode_agent_frame(

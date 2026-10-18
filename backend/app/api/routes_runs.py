@@ -487,11 +487,21 @@ async def delete_run(run_id: str, request: Request):
         # deleted it in between. Same answer as if we had lost the race by a
         # little more, which is what a 404 already means here.
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    outputs = getattr(request.app.state, "run_output_store", None)
-    if outputs is not None:
-        await outputs.delete_run(run_id)
     from ..core.run_store import WORKER_ANY, WORKER_LOCAL
     from ..core.transfer import remove_run_files
+
+    outputs = getattr(request.app.state, "run_output_store", None)
+    if outputs is not None:
+        # A worker run's captures are on its worker (#789): one this store
+        # retains is dropped there by ``delete_run``; one it does not (after
+        # a restart of this server) is told here.
+        retained = await outputs.remote_holder(run_id) is not None
+        await outputs.delete_run(run_id)
+        registry = getattr(request.app.state, "worker_registry", None)
+        if not retained and registry is not None \
+                and record.worker_id not in (WORKER_LOCAL, WORKER_ANY) \
+                and (record.options or {}).get("record_outputs"):
+            registry.outputs.drop(run_id, record.worker_id)
 
     if record.worker_id not in (WORKER_LOCAL, WORKER_ANY):
         # What a worker uploaded for the run (#785) has no other index.

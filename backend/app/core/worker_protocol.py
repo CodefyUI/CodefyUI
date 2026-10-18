@@ -111,10 +111,15 @@ worker: in the run subprocess's ``RunOutputStore`` while it runs, then in
 files under the run's directory there. The control plane reads them on
 demand, one read of ``/api/execution/outputs/*`` at a time:
 
-- control plane -> ``fetch_output{request_id, run_id, op, params}``: ``op``
-  is the read (``list``, ``value``, ``stats``, ``steps``, ``grads``,
-  ``delete``) and ``params`` its query (``node_id``, ``port``, ``slice``,
-  ``max_elements``, ``preview``, ``inner``);
+- control plane -> ``fetch_output{request_id, run_id, op, params,
+  timeout_s}``: ``op`` is the read (``list``, ``value``, ``stats``,
+  ``steps``, ``grads``, ``delete``), ``params`` its query (``node_id``,
+  ``port``, ``slice``, ``max_elements``, ``preview``, ``inner``), and
+  ``timeout_s`` how long the control plane waits for the answer (the
+  agent gives up a little sooner, so its own limits never outlast it);
+- control plane -> ``cancel_fetch{request_id}`` when it stopped waiting
+  for a read (it timed out, or the browser went away): the agent stops
+  answering it and frees its place;
 - agent -> ``output_answer{request_id, status, part, parts, body, final}``:
   the HTTP status and JSON body text the read answers with, the body cut
   into ``parts`` frames (``part`` 0 first) so no frame outgrows a socket's
@@ -217,11 +222,13 @@ ACK = "ack"
 CREDENTIALS = "credentials"
 FETCH_OUTPUT = "fetch_output"
 DROP_OUTPUTS = "drop_outputs"
+CANCEL_FETCH = "cancel_fetch"
 
 AGENT_FRAME_TYPES = (HELLO, HEARTBEAT, RUN_STARTED, EVENT, METRICS, ARTIFACT,
                      WARNING, RUN_FINISHED, RUN_ALIVE, OUTPUT_ANSWER)
 CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK,
-                       CREDENTIALS, FETCH_OUTPUT, DROP_OUTPUTS)
+                       CREDENTIALS, FETCH_OUTPUT, DROP_OUTPUTS,
+                       CANCEL_FETCH)
 
 #: Seconds between heartbeats unless ``welcome`` says otherwise.
 DEFAULT_HEARTBEAT_S = 10.0
@@ -658,6 +665,18 @@ class FetchOutput(_Frame):
     #: The read's query: ``node_id``, ``port``, ``slice``,
     #: ``max_elements``, ``preview``, ``inner``, as the route got them.
     params: dict[str, Any] = Field(default_factory=dict)
+    #: Seconds the control plane waits for the answer; None: unsaid (the
+    #: agent assumes the default, 60).
+    timeout_s: float | None = Field(default=None, gt=0)
+
+
+class CancelFetch(_Frame):
+    """The control plane no longer waits for the answer to *request_id*
+    (#789): the agent stops working on it. Sent only to an agent listing
+    ``record_outputs``; one for a read already answered is ignored."""
+
+    type: Literal["cancel_fetch"] = CANCEL_FETCH
+    request_id: RequestId
 
 
 class DropOutputs(_Frame):
@@ -688,7 +707,7 @@ AgentFrame = Annotated[
 ]
 ControlFrame = Annotated[
     Union[Welcome, Assign, Cancel, Drain, Reject, Ack, Credentials,
-          FetchOutput, DropOutputs],
+          FetchOutput, DropOutputs, CancelFetch],
     Field(discriminator="type"),
 ]
 

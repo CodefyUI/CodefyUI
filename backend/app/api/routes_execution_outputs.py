@@ -117,17 +117,20 @@ async def _worker_of(request: Request, store: RunOutputStore,
     whether the store retains it; ``(None, False)`` for a run read here.
 
     A run held in this process is never a worker's. One the store retains
-    as a worker's is its worker's. Anything else is looked up once in the
-    run's record: after a restart of this server the store has forgotten
-    every worker run, but a run recorded on a worker with ``record_outputs``
-    still has its captures there (until that worker's own budget drops
-    them).
+    as a worker's is its worker's. One the store evicted is no one's: it
+    answers as any run not held does, and is not found again. Anything
+    else is looked up once in the run's record: after a restart of this
+    server the store has forgotten every worker run, but a run recorded on
+    a worker with ``record_outputs`` still has its captures there (until
+    that worker's own budget drops them).
     """
     if await store.has_run(run_id):
         return None, False
     holder = await store.remote_holder(run_id)
     if holder is not None:
         return holder, True
+    if await store.was_evicted(run_id):
+        return None, False
     service = getattr(request.app.state, "run_service", None)
     run_store = getattr(service, "store", None)
     if run_store is None:

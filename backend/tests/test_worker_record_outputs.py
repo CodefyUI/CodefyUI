@@ -90,6 +90,41 @@ async def test_a_failing_drop_callback_does_not_fail_the_put(caplog):
     assert "could not tell worker box" in caplog.text
 
 
+async def test_an_evicted_worker_run_is_remembered_as_expired(monkeypatch):
+    from app.core import run_output_store as module
+
+    told: list[str] = []
+    store = RunOutputStore(max_runs=1, max_bytes=0)
+    store.on_remote_drop = lambda run, worker: told.append(run)
+    await store.add_remote("w1", "box")
+    await store.add_remote("w2", "box")
+    assert told == ["w1"] and await store.was_evicted("w1")
+    assert not await store.was_evicted("w2")
+    # Retained again (a reconnect's ``_retain_outputs``): no longer expired.
+    await store.add_remote("w1", "box")
+    assert not await store.was_evicted("w1") and await store.was_evicted("w2")
+    # Deleted is not evicted, and the memory is bounded.
+    await store.delete_run("w1")
+    assert not await store.was_evicted("w1")
+    monkeypatch.setattr(module, "EXPIRED_REMEMBERED", 1)
+    await store.add_remote("w3", "box")
+    await store.add_remote("w4", "box")
+    assert await store.was_evicted("w3") and not await store.was_evicted("w2")
+    await store.clear()
+    assert not await store.was_evicted("w3")
+
+
+async def test_deleting_a_worker_run_here_tells_its_worker():
+    told: list[tuple[str, str]] = []
+    store = RunOutputStore(max_runs=5, max_bytes=0)
+    store.on_remote_drop = lambda run, worker: told.append((run, worker))
+    await store.add_remote("w1", "box")
+    assert await store.delete_run("w1") is True
+    assert told == [("w1", "box")]
+    assert await store.list_runs() == [] and not await store.was_evicted("w1")
+    assert await store.delete_run("w1") is False
+
+
 async def test_forget_remote_and_delete_do_not_tell_the_worker():
     told: list[str] = []
     store = RunOutputStore(max_runs=5, max_bytes=0)
@@ -340,6 +375,73 @@ async def test_stray_and_malformed_answers():
         await read
 
 
+async def test_a_fetch_says_its_wait_and_cancels_what_it_gives_up():
+    worker = _FakeWorker()
+    outputs = WorkerOutputs(_FakeRegistry(worker), timeout_s=0.05)
+    with pytest.raises(WorkerTimeout):
+        await outputs.fetch("box", "r1", "list")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    fetch, cancel = worker.sent
+    assert fetch.timeout_s == 0.05
+    assert cancel == wp.CancelFetch(request_id=fetch.request_id)
+    # The browser going away cancels the read on the worker too.
+    worker.sent.clear()
+    read = asyncio.ensure_future(outputs.fetch("box", "r1", "list",
+                                               timeout_s=30))
+    while not worker.sent:
+        await asyncio.sleep(0)
+    read.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await read
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert isinstance(worker.sent[-1], wp.CancelFetch)
+    # An answered read cancels nothing.
+    worker.sent.clear()
+    helper = asyncio.ensure_future(_answer_when_sent(outputs, worker, ["1"]))
+    outputs.timeout_s = 5
+    await outputs.fetch("box", "r1", "list")
+    await helper
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert [type(f) for f in worker.sent] == [wp.FetchOutput]
+
+
+async def test_drops_for_an_absent_worker_wait_for_its_next_connection(
+        monkeypatch):
+    from app.core import worker_outputs as module
+
+    away = _FakeWorker(name="away", online=False)
+    old = _FakeWorker(name="old", capabilities=("ack",), online=False)
+    outputs = WorkerOutputs(_FakeRegistry(away, old))
+    outputs.drop("r1", "away")
+    outputs.drop("r2", "away")
+    outputs.drop("r1", "away")  # once is enough
+    outputs.drop("r9", "nobody")
+    assert outputs.pending_drops("away") == ["r1", "r2"]
+    assert outputs.flush_drops("away") == 0  # still not connected
+    assert outputs.pending_drops("away") == ["r1", "r2"]
+    away.online = True
+    assert outputs.flush_drops("away") == 2
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert [f.run_id for f in away.sent] == ["r1", "r2"]
+    assert outputs.pending_drops("away") == []
+    assert outputs.flush_drops("away") == 0
+    # An agent that cannot serve outputs has nothing to drop.
+    outputs.drop("r3", "old")
+    old.online = True
+    assert outputs.flush_drops("old") == 0 and outputs.pending_drops("old") == []
+    # Bounded: the oldest go first.
+    monkeypatch.setattr(module, "PENDING_DROPS_MAX", 2)
+    away.online = False
+    for run_id in ("a", "b", "c"):
+        outputs.drop(run_id, "away")
+    assert outputs.pending_drops("away") == ["b", "c"]
+    assert outputs.pending_drops("nobody") == ["r9"]
+
+
 async def test_drop_tells_a_connected_worker_only():
     worker = _FakeWorker()
     away = _FakeWorker(name="away", online=False)
@@ -550,6 +652,28 @@ async def test_deleting_a_worker_run_forgets_it_either_way(test_client,
     response = await test_client.delete("/api/execution/outputs/r2")
     assert response.status_code == 503
     assert await worker_app.store.remote_holder("r2") is None
+
+
+async def test_an_evicted_worker_run_is_not_found_again(test_client,
+                                                        worker_app):
+    """Evicted while its worker was away, a run's record still names its
+    worker: a later read answers as for any run not held, and does not
+    retain it again (which would evict another run)."""
+    store = worker_app.store
+    worker_app.records["w0"] = _record()
+    await store.add_remote("w0", "box")
+    for number in range(1, 6):
+        await store.add_remote(f"w{number}", "box")
+    assert await store.was_evicted("w0")
+    worker_app.outputs.answers["list"] = RemoteAnswer(200, [], True)
+    response = await test_client.get("/api/execution/outputs/w0")
+    assert (response.status_code, response.json()) == (
+        404, {"detail": "run 'w0' not found"})
+    response = await test_client.get("/api/execution/outputs/w0/n/p/stats")
+    assert response.status_code == 404
+    assert "Record outputs" in response.json()["detail"]
+    assert worker_app.outputs.calls == []
+    assert await store.list_runs() == [f"w{n}" for n in range(1, 6)]
 
 
 async def test_a_run_held_here_never_asks_a_worker(test_client, worker_app):

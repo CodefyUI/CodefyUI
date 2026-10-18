@@ -18,6 +18,12 @@ A read never hangs on a worker that cannot answer:
 - no answer within ``CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S``:
   :class:`WorkerTimeout`.
 
+The wait rides on ``fetch_output`` (``timeout_s``), so the agent gives up
+first; a read this side stops waiting for (a timeout, or the browser went
+away) is cancelled on the worker with ``cancel_fetch``. A ``drop_outputs``
+for a worker that is not connected waits for its next connection
+(:meth:`WorkerOutputs.flush_drops`).
+
 The routes answer the first with 503 and the second with 504, each with a
 detail naming the worker. Event-loop only.
 """
@@ -37,6 +43,9 @@ logger = logging.getLogger(__name__)
 
 #: Seconds a read waits for its answer unless the caller says otherwise.
 DEFAULT_TIMEOUT_S = 60.0
+#: ``drop_outputs`` kept per worker while it is away; the oldest go first
+#: (its own budget removes those in time).
+PENDING_DROPS_MAX = 1000
 
 
 class WorkerUnreachable(RuntimeError):
@@ -81,6 +90,8 @@ class WorkerOutputs:
         self.timeout_s = timeout_s
         self._pending: dict[str, _Pending] = {}
         self._tasks: set[asyncio.Task] = set()
+        #: Worker name -> run ids to drop there once it is connected.
+        self._drops: dict[str, dict[str, None]] = {}
 
     def _reachable(self, worker_id: str) -> Any:
         worker = self._registry.get(worker_id)
@@ -104,16 +115,18 @@ class WorkerOutputs:
         pending = _Pending(worker=worker_id,
                            future=asyncio.get_running_loop().create_future())
         self._pending[request_id] = pending
+        wait = self.timeout_s if timeout_s is None else timeout_s
+        sent = False
         try:
             try:
                 await worker.send(wp.FetchOutput(
                     request_id=request_id, run_id=run_id, op=op,
-                    params=dict(params or {})))
+                    params=dict(params or {}), timeout_s=wait))
+                sent = True
             except Exception as exc:  # noqa: BLE001 -- a closing socket
                 raise WorkerUnreachable(unreachable_detail(
                     worker_id, f"could not be sent the request ({exc})")) \
                     from None
-            wait = self.timeout_s if timeout_s is None else timeout_s
             try:
                 return await asyncio.wait_for(asyncio.shield(pending.future),
                                               timeout=wait)
@@ -124,7 +137,11 @@ class WorkerOutputs:
         finally:
             self._pending.pop(request_id, None)
             if not pending.future.done():
+                # Nobody waits for it any more: the worker stops answering.
                 pending.future.cancel()
+                if sent:
+                    self._send_soon(worker_id, wp.CancelFetch(
+                        request_id=request_id))
 
     def deliver(self, worker_id: str, frame: wp.OutputAnswer) -> None:
         """One ``output_answer`` part from *worker_id*'s connection."""
@@ -164,26 +181,62 @@ class WorkerOutputs:
     def in_flight(self) -> int:
         return len(self._pending)
 
-    def drop(self, run_id: str, worker_id: str) -> None:
-        """Tell *worker_id* its captures of *run_id* are no longer wanted.
-
-        Fire and forget, for ``RunOutputStore.on_remote_drop``: a worker
-        that is not connected is not told, and its own budget removes the
-        captures in time (``agent.outputs``).
-        """
+    def _capable(self, worker_id: str) -> Any:
         worker = self._registry.get(worker_id)
         if worker is None or not worker.online or \
                 wp.CAPABILITY_RECORD_OUTPUTS not in (worker.capabilities or ()):
-            logger.info("run %s's outputs are no longer retained; worker %s "
-                        "is not connected to be told", run_id, worker_id)
-            return
+            return None
+        return worker
+
+    def _send_soon(self, worker_id: str, frame: Any) -> bool:
+        """Send *frame* to *worker_id* in a task; False when it cannot
+        be (not connected, or no loop)."""
+        worker = self._capable(worker_id)
+        if worker is None:
+            return False
         try:
-            task = asyncio.get_running_loop().create_task(
-                worker.send(wp.DropOutputs(run_id=run_id)))
+            task = asyncio.get_running_loop().create_task(worker.send(frame))
         except RuntimeError:  # no loop: nothing can be sent
-            return
+            return False
         self._tasks.add(task)
         task.add_done_callback(self._sent)
+        return True
+
+    def drop(self, run_id: str, worker_id: str) -> None:
+        """Tell *worker_id* its captures of *run_id* are no longer wanted.
+
+        Fire and forget, for ``RunOutputStore.on_remote_drop``. A worker
+        that is not connected is told when it next connects
+        (:meth:`flush_drops`); its own budget removes the captures in time
+        regardless (``agent.outputs``).
+        """
+        if self._send_soon(worker_id, wp.DropOutputs(run_id=run_id)):
+            return
+        waiting = self._drops.setdefault(worker_id, {})
+        waiting[run_id] = None
+        while len(waiting) > PENDING_DROPS_MAX:
+            del waiting[next(iter(waiting))]
+        logger.info("run %s's outputs are no longer retained; worker %s is "
+                    "told when it connects", run_id, worker_id)
+
+    def pending_drops(self, worker_id: str) -> list[str]:
+        return list(self._drops.get(worker_id, ()))
+
+    def flush_drops(self, worker_id: str) -> int:
+        """*worker_id* connected: send the drops it missed. Returns how
+        many were sent. An agent that cannot serve outputs has none to
+        drop: its list is discarded."""
+        waiting = self._drops.pop(worker_id, None)
+        if not waiting:
+            return 0
+        if self._capable(worker_id) is None:
+            worker = self._registry.get(worker_id)
+            if worker is None or not worker.online:
+                self._drops[worker_id] = waiting  # not connected after all
+            return 0
+        for run_id in waiting:
+            self._send_soon(worker_id, wp.DropOutputs(run_id=run_id))
+        return len(waiting)
 
     def _sent(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)

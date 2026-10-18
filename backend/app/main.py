@@ -96,7 +96,7 @@ from .core.plugin_loader import (
 from .core.plugins.reload import rediscover_now
 from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
-from .core.run_output_store import RunOutputStore
+from .core.run_output_store import MAX_RUNS as RUN_OUTPUT_STORE_MAX_RUNS, RunOutputStore
 from .core.run_service import RunService
 from .core.ssh_launch import SshLauncher
 from .core.worker_store import WorkerStore
@@ -364,7 +364,7 @@ async def _lifespan_body(app: FastAPI):
     # Bounded by runs AND by bytes (#135) — twenty runs of MNIST batches and
     # twenty runs of 4K feature maps are three orders of magnitude apart.
     app.state.run_output_store = RunOutputStore(
-        max_runs=20,
+        max_runs=RUN_OUTPUT_STORE_MAX_RUNS,
         max_bytes=settings.RUN_OUTPUT_STORE_MAX_MB * 1024 * 1024,
     )
 

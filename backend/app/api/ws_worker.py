@@ -306,6 +306,9 @@ async def websocket_worker(ws: WebSocket) -> None:
         await _record_fingerprint(service, worker)
     if replaced is not None:
         await replaced.close()
+    # Recorded outputs this server stopped retaining while it was away
+    # (#789): it deletes them now.
+    registry.outputs.flush_drops(worker.name)
     try:
         while True:
             raw = await ws.receive_text()

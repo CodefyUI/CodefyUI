@@ -21,11 +21,15 @@ and its outputs helper do).
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .run_output_store import CaptureAlias
+
+logger = logging.getLogger(__name__)
 
 
 class OutputQueryError(Exception):
@@ -86,8 +90,10 @@ def portable(value: Any) -> Any:
 
     Tensors are detached, moved to the CPU and stand alone (a view of a
     larger storage would save all of it); lists, tuples and dicts keep
-    their shape; a module and anything else becomes a marked dict that
-    :func:`restore` turns into a stub. Imports torch.
+    their shape; a numpy scalar becomes its Python value; a module and
+    anything else (a subclass of a primitive included: it would be saved
+    as its own class) becomes a marked dict that :func:`restore` turns
+    into a stub. Imports torch.
     """
     import torch
 
@@ -101,8 +107,14 @@ def portable(value: Any) -> Any:
         except (RuntimeError, NotImplementedError):  # sparse, quantized
             pass
         return tensor
-    if isinstance(value, _PRIMITIVES):
+    if type(value) in _PRIMITIVES:
         return value
+    numpy = sys.modules.get("numpy")
+    if numpy is not None and isinstance(value, numpy.generic):
+        # A numpy scalar (``np.float64``, ``np.str_``, ...) subclasses a
+        # primitive but is saved as numpy's own object, which
+        # ``weights_only`` refuses to load: keep its Python value.
+        return portable(value.item())
     if isinstance(value, torch.nn.Module):
         return {_STUB_KEY: "module",
                 "class": value.__class__.__name__,
@@ -114,7 +126,7 @@ def portable(value: Any) -> Any:
         items = [portable(item) for item in value]
         return items if type(value) is list else tuple(items)
     if type(value) is dict and _STUB_KEY not in value \
-            and all(isinstance(key, _PRIMITIVES) for key in value):
+            and all(type(key) in _PRIMITIVES for key in value):
         return {key: portable(item) for key, item in value.items()}
     return {_STUB_KEY: "opaque", "type": type(value).__name__,
             "repr": repr(value)[:4000]}
@@ -385,20 +397,39 @@ def producer_of(nid: str, node_id: str, inner: bool) -> bool:
         nid.startswith(node_id + "/") or nid.startswith(node_id + "__"))
 
 
+#: ``type`` of a listed slot whose value cannot be read (a damaged file on
+#: a worker, #789): the rest of the list still answers.
+UNREADABLE = "unreadable"
+
+
 async def list_outputs(store: Any, run_id: str) -> list[dict[str, Any]]:
     ports = await store.list_ports(run_id)
     if ports is None:
         raise OutputQueryError(404, f"run '{run_id}' not found")
+    describe = getattr(store, "describe", None)
     result = []
     for node_id, port in ports:
-        slot = await read_capture(store, run_id, node_id, port)
-        value = None if slot is None else slot[0]
+        # A dump's index says what each slot holds (#789), so listing a run
+        # with hundreds of step captures loads none of them.
+        described = None if describe is None else describe(node_id, port)
+        if described is not None:
+            label, shape = described
+        else:
+            try:
+                slot = await read_capture(store, run_id, node_id, port)
+            except Exception:  # noqa: BLE001 -- this slot alone fails
+                logger.warning("run %s: the capture of %s.%s cannot be "
+                               "read", run_id, node_id, port, exc_info=True)
+                label, shape = UNREADABLE, None
+            else:
+                value = None if slot is None else slot[0]
+                label, shape = type_label(value), shape_of(value)
         result.append(
             {
                 "node_id": node_id,
                 "port": port,
-                "type": type_label(value),
-                "full_shape": shape_of(value),
+                "type": label,
+                "full_shape": shape,
             }
         )
     return result
@@ -590,6 +621,27 @@ async def dispatch(store: Any, op: str, run_id: str, params: dict[str, Any],
     return 200, body
 
 
+def answer_read(reader: Any, op: str, run_id: str,
+                params: dict[str, Any]) -> tuple[int, str]:
+    """``(status, body text)`` for one read of *reader*, on an event loop
+    of its own: what a worker's run subprocess and its outputs helper
+    answer a ``fetch_output`` with (#789). Never raises. Imports torch."""
+    import asyncio
+
+    from .port_stats import compute_port_stats
+
+    async def compute(value: Any) -> dict[str, Any]:
+        return compute_port_stats(value)
+
+    try:
+        status, body = asyncio.run(dispatch(reader, op, run_id, params,
+                                            compute=compute))
+        return status, "" if body is None else encode_body(body)
+    except BaseException as exc:  # noqa: BLE001 -- answered, not raised
+        return 500, encode_body(
+            {"detail": f"reading the recorded outputs failed: {exc}"})
+
+
 def encode_body(body: Any) -> str:
     """A read's JSON body as text, NaN-free (``json_safe``) and compact."""
     from .run_store import json_safe
@@ -611,44 +663,81 @@ INDEX_FORMAT = 1
 async def dump_run(store: Any, run_id: str, directory: Path) -> dict[str, Any]:
     """Write *run_id*'s captures in *store* to *directory*. Imports torch.
 
-    One ``torch.save`` file per slot (:func:`portable` values), then
-    :data:`INDEX_FILE` naming them, in the store's order, with each slot's
-    write serial and bytes (as the store measured them, so the worker's
-    budget counts what the in-process store counts). Blocking work goes to
-    a thread. Returns the index. A run with no captures still gets an
-    index (an empty one): it ran and stored nothing.
+    :func:`capture_slots` then :func:`write_slots`, the blocking work on a
+    thread. Returns the index.
     """
     import asyncio
 
     slots = await store.snapshot(run_id)
-    return await asyncio.to_thread(_write_dump, run_id, slots, directory)
+    return await asyncio.to_thread(
+        lambda: write_slots(run_id, capture_slots(slots), directory))
 
 
-def _write_dump(run_id: str, slots: list[tuple[str, str, Any, int, int]],
-                directory: Path) -> dict[str, Any]:
-    import os
+def capture_slots(slots: list[tuple[str, str, Any, int, int]]
+                  ) -> list[dict[str, Any]]:
+    """A store's :meth:`~RunOutputStore.snapshot` rows as index entries,
+    each value as its :func:`portable` copy (on the CPU) under ``"value"``,
+    with the ``type`` and ``full_shape`` a list answers, taken from the
+    value as the run held it. Blocking; imports torch.
 
-    import torch
-
-    directory.mkdir(parents=True, exist_ok=True)
+    A worker's run subprocess takes these when its run ends (#789), so the
+    run's captures leave its card before it reports, and reads answer from
+    them (:class:`MemoryRunReader`) while they are written.
+    """
     entries: list[dict[str, Any]] = []
-    total = 0
-    for number, (node_id, port, value, version, nbytes) in enumerate(slots):
+    for node_id, port, value, version, nbytes in slots:
         entry: dict[str, Any] = {"node_id": node_id, "port": port,
                                  "version": int(version), "bytes": int(nbytes)}
         if isinstance(value, CaptureAlias):
             entry["alias"] = [value.node_id, value.port]
         else:
-            name = f"{number:06d}.pt"
-            torch.save(portable(value), directory / name)
-            entry["file"] = name
-        total += int(nbytes)
+            entry["type"] = type_label(value)
+            entry["full_shape"] = shape_of(value)
+            entry["value"] = portable(value)
         entries.append(entry)
+    return entries
+
+
+def write_slots(run_id: str, entries: list[dict[str, Any]], directory: Path,
+                *, abandoned: Callable[[], bool] | None = None
+                ) -> dict[str, Any] | None:
+    """Write :func:`capture_slots` *entries* to *directory*. Blocking.
+
+    One ``torch.save`` file per slot, then :data:`INDEX_FILE` naming them,
+    in the store's order, with each slot's write serial and bytes (as the
+    store measured them, so the worker's budget counts what the in-process
+    store counts). A run with no captures still gets an index (an empty
+    one): it ran and stored nothing. *abandoned* is asked between files:
+    True (the captures were dropped meanwhile) removes what was written
+    and returns None.
+    """
+    import os
+    import shutil
+
+    import torch
+
+    directory.mkdir(parents=True, exist_ok=True)
+    listed: list[dict[str, Any]] = []
+    total = 0
+    for number, entry in enumerate(entries):
+        if abandoned is not None and abandoned():
+            shutil.rmtree(directory, ignore_errors=True)
+            return None
+        row = {key: item for key, item in entry.items() if key != "value"}
+        if "alias" not in entry:
+            name = f"{number:06d}.pt"
+            torch.save(entry.get("value"), directory / name)
+            row["file"] = name
+        total += int(entry.get("bytes") or 0)
+        listed.append(row)
     index = {"format": INDEX_FORMAT, "run_id": run_id, "bytes": total,
-             "slots": entries}
+             "slots": listed}
     temporary = directory / (INDEX_FILE + ".tmp")
     temporary.write_text(json.dumps(index), encoding="utf-8")
     os.replace(temporary, directory / INDEX_FILE)
+    if abandoned is not None and abandoned():
+        shutil.rmtree(directory, ignore_errors=True)
+        return None
     return index
 
 
@@ -663,25 +752,22 @@ def read_index(directory: Path) -> dict[str, Any] | None:
     return index
 
 
-class DiskRunReader:
-    """A store over one run's dump (:func:`dump_run`), for :func:`dispatch`.
+class _IndexedReader:
+    """A store over one run's index entries, for :func:`dispatch`."""
 
-    Values are loaded per read, memory-mapped (``torch.load(mmap=True,
-    weights_only=True)``), so a slice of a large tensor reads only its
-    pages. Imports torch on the first value read.
-    """
-
-    def __init__(self, directory: Path) -> None:
-        self.directory = directory
-        self._index = read_index(directory)
+    def __init__(self, index: dict[str, Any] | None) -> None:
+        self._index = index
         self._slots: dict[tuple[str, str], dict[str, Any]] = {}
-        if self._index is not None:
-            for entry in self._index["slots"]:
+        if index is not None:
+            for entry in index["slots"]:
                 self._slots[(str(entry.get("node_id")),
                              str(entry.get("port")))] = entry
 
     def _holds(self, run_id: str) -> bool:
         return self._index is not None and self._index.get("run_id") == run_id
+
+    async def _value(self, entry: dict[str, Any]) -> Any:
+        raise NotImplementedError
 
     async def has_run(self, run_id: str) -> bool:
         return self._holds(run_id)
@@ -702,14 +788,56 @@ class DiskRunReader:
         alias = entry.get("alias")
         if alias is not None:
             return CaptureAlias(str(alias[0]), str(alias[1])), version
-        import asyncio
-
-        value = await asyncio.to_thread(self._load, str(entry.get("file")))
-        return value, version
+        return await self._value(entry), version
 
     async def get(self, run_id: str, node_id: str, port: str) -> Any | None:
         slot = await self.get_with_version(run_id, node_id, port)
         return None if slot is None else slot[0]
+
+    def describe(self, node_id: str, port: str
+                 ) -> tuple[str, list[int] | None] | None:
+        """``(type, full shape)`` of a slot as its entry records it, an
+        alias followed; None when the entry does not say (a dump written
+        before entries did): the value is loaded then."""
+        entry = self._slots.get((node_id, port))
+        if entry is not None and entry.get("alias") is not None:
+            alias = entry["alias"]
+            entry = self._slots.get((str(alias[0]), str(alias[1])))
+            if entry is None or entry.get("alias") is not None:
+                return type_label(None), None
+        if entry is None or "type" not in entry:
+            return None
+        shape = entry.get("full_shape")
+        return str(entry["type"]), None if shape is None else list(shape)
+
+
+class MemoryRunReader(_IndexedReader):
+    """A store over :func:`capture_slots` entries held in memory: a worker
+    run's captures while its subprocess writes them (#789)."""
+
+    def __init__(self, run_id: str, entries: list[dict[str, Any]]) -> None:
+        super().__init__({"run_id": run_id, "slots": entries})
+
+    async def _value(self, entry: dict[str, Any]) -> Any:
+        return restore(entry.get("value"))
+
+
+class DiskRunReader(_IndexedReader):
+    """A store over one run's dump (:func:`write_slots`).
+
+    Values are loaded per read, memory-mapped (``torch.load(mmap=True,
+    weights_only=True)``), so a slice of a large tensor reads only its
+    pages. Imports torch on the first value read.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        super().__init__(read_index(directory))
+
+    async def _value(self, entry: dict[str, Any]) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(self._load, str(entry.get("file")))
 
     def _load(self, name: str) -> Any:
         import torch

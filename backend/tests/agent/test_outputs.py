@@ -125,27 +125,130 @@ def test_live_outputs_answer_from_the_store_then_from_the_files(tmp_path):
         assert answer[1:3] == ("a1", 200)
         assert json.loads(answer[3])["values"] == [0.0, 1.0]
         assert answer[4] is False
-        looper.run(live.dump())
-        assert live.disk is not None
+        # The run ends: its captures are copied off the store (which is
+        # emptied) and read from the copies, final, before any file exists.
+        looper.run(live.prepare())
+        assert isinstance(live.disk, q.MemoryRunReader) and live.saving
+        assert not looper.run(store.has_run("r1"))
+        assert not (tmp_path / "outputs").exists()
         live.answer("a2", "stats", "r1", {"node_id": "x", "port": "t"})
         answer = _collect(sent, 3)[2]
         assert (answer[2], answer[4]) == (200, True)
         assert json.loads(answer[3])["count"] == 6
+        live.save()
+        assert isinstance(live.disk, q.DiskRunReader) and not live.saving
+        live.answer("a3", "value", "r1", {"node_id": "x", "port": "t",
+                                          "slice": "4:"})
+        answer = _collect(sent, 4)[3]
+        assert json.loads(answer[3])["values"] == [4.0, 5.0]
+        assert answer[4] is True
+    finally:
+        looper.close()
+    # A drop after the run ended: the files are the agent's to delete, and
+    # every read from now on answers 404, not 500 from a deleted directory.
+    live.drop("r1")
+    assert live.disk is None and live.dropped
+    import shutil
+
+    shutil.rmtree(tmp_path / "outputs")
+    live.answer("a4", "list", "r1", {})
+    assert _collect(sent, 5)[4][2] == 404
+    live.save()  # nothing left to write
+
+
+def test_a_drop_while_the_run_goes_empties_its_store(tmp_path):
+    sent: list[tuple] = []
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "outputs"),
+                             sent.append)
+    live.drop("r1")  # not started: nothing to do
+    looper = _Loop()
+    try:
+        live.loop = looper.loop
+        looper.run(store.put("r1", "x", "t", 1))
         live.drop("r1")
         deadline = time.monotonic() + 10
         while looper.run(store.has_run("r1")) and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert not looper.run(store.has_run("r1"))
+        assert not looper.run(store.has_run("r1")) and not live.dropped
     finally:
         looper.close()
     live.drop("r1")  # a closed loop: nothing to do
-    # A closed loop reads as holding nothing, too.
-    live.disk = None
-    live.answer("a3", "list", "r1", {})
-    assert _collect(sent, 4)[3][2] == 404
+    live.answer("a", "list", "r1", {})
+    assert _collect(sent, 1)[0][2] == 404
 
 
-def test_a_dump_that_cannot_be_written_is_a_warning(tmp_path):
+def test_a_drop_while_the_copies_are_written_writes_nothing(tmp_path):
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "outputs"), print)
+
+    async def ended() -> None:
+        await store.put("r1", "x", "t", torch.ones(3))
+        await store.put("r1", "x", "u", torch.ones(3))
+        await live.prepare()
+
+    asyncio.run(ended())
+    calls = {"n": 0}
+
+    def abandoned() -> bool:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            live.drop("r1")
+        return live.dropped
+
+    entries = live._entries
+    assert q.write_slots("r1", entries, tmp_path / "outputs",
+                         abandoned=abandoned) is None
+    assert not (tmp_path / "outputs").exists()
+    # And through save(): a drop already made writes nothing at all.
+    live.save()
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_a_drop_while_the_captures_are_copied_keeps_nothing(tmp_path,
+                                                            monkeypatch):
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "outputs"), print)
+    copy = q.capture_slots
+
+    def dropped_meanwhile(slots: Any) -> Any:
+        live._drops += 1
+        return copy(slots)
+
+    monkeypatch.setattr(q, "capture_slots", dropped_meanwhile)
+
+    async def ended() -> None:
+        await store.put("r1", "x", "t", 1)
+        await live.prepare()
+
+    asyncio.run(ended())
+    assert live.disk is None and not live.saving
+
+
+def test_captures_that_cannot_be_copied_are_a_warning(tmp_path,
+                                                     monkeypatch):
+    sent: list[tuple] = []
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "outputs"),
+                             sent.append)
+
+    def boom(_: Any) -> Any:
+        raise MemoryError("no room")
+
+    monkeypatch.setattr(q, "capture_slots", boom)
+
+    async def go() -> None:
+        await store.put("r1", "x", "t", 1)
+        await live.prepare()
+
+    asyncio.run(go())
+    assert live.disk is None and not live.saving
+    [warning] = [m for m in sent if m[0] == child.MSG_WARNING]
+    assert warning[1]["kind"] == "outputs_not_kept"
+    assert "no room" in warning[1]["detail"]
+
+
+def test_copies_that_cannot_be_written_are_logged(tmp_path):
     sent: list[tuple] = []
     blocker = tmp_path / "file"
     blocker.write_text("not a directory")
@@ -155,21 +258,24 @@ def test_a_dump_that_cannot_be_written_is_a_warning(tmp_path):
 
     async def go() -> None:
         await store.put("r1", "x", "t", 1)
-        await live.dump()
+        await live.prepare()
 
     asyncio.run(go())
-    assert live.disk is None
-    [warning] = [m for m in sent if m[0] == child.MSG_WARNING]
-    assert warning[1]["kind"] == "outputs_not_kept"
+    live.save()  # after finished: logged, never raised
+    assert not live.saving and sent == []
+    # The copies still answer until the process exits.
+    assert isinstance(live.disk, q.MemoryRunReader)
 
 
 def test_nothing_recorded_writes_nothing(tmp_path):
     store = RunOutputStore(max_bytes=0)
     live = child.LiveOutputs(store, "r1", str(tmp_path / "out"), print)
-    asyncio.run(live.dump())
+    asyncio.run(live.prepare())
+    assert not live.saving
+    live.save()
     assert not (tmp_path / "out").exists()
     no_dir = child.LiveOutputs(store, "r1", None, print)
-    asyncio.run(no_dir.dump())
+    asyncio.run(no_dir.prepare())
 
 
 def test_a_crashing_read_is_answered_500(tmp_path, monkeypatch):
@@ -222,9 +328,11 @@ def test_the_listener_routes_reads_and_drops():
     assert context.cancelled == 2  # the cancel, then EOF
 
 
-def test_a_recorded_run_dumps_before_it_reports(tmp_path):
-    """``run_assignment`` with ``record_outputs``: the captures are in the
-    files before ``finished`` (the agent serves them after the exit)."""
+def test_a_recorded_run_reports_before_it_writes(tmp_path):
+    """``run_assignment`` with ``record_outputs``: ``finished`` (with
+    ``saving_outputs``) goes before the files are written, so neither a
+    cancel's grace nor the run's device slot waits for the disk; the files
+    follow before the process ends."""
     directory = tmp_path / "outputs"
     sent: list[tuple] = []
     spec = {"run_id": "rec1", "graph": h.tensor_graph(), "device": "cpu",
@@ -241,8 +349,10 @@ def test_a_recorded_run_dumps_before_it_reports(tmp_path):
                               kwargs={"discover": False})
     thread.start()
     thread.join(60)
-    assert ("index at finish", True) in sent
+    assert ("index at finish", False) in sent
     assert sent[-1][1]["status"] == "succeeded"
+    assert sent[-1][1]["saving_outputs"] is True
+    assert q.read_index(directory) is not None
     reader = q.DiskRunReader(directory)
     status, body = asyncio.run(q.dispatch(
         reader, "value", "rec1", {"node_id": "scale", "port": "tensor"},
@@ -383,7 +493,7 @@ async def test_a_slow_helper_times_out_and_an_idle_one_stops(tmp_path):
 async def test_a_helper_whose_pipe_is_closed_says_so(tmp_path):
     helper = OutputsHelper(entry=h.echo_helper, idle_s=60)
     helper.start()
-    helper._requests.close()
+    helper._current.requests.close()
     status, text, _ = await helper.ask(tmp_path, "r1", "list", {})
     assert status == 500 and "not reachable" in json.loads(text)["detail"]
     helper.close()
@@ -400,7 +510,8 @@ class _Runner:
         self.live = live
         self.dropped: list[str] = []
 
-    async def ask_child(self, run_id: str, op: str, params: Any) -> Any:
+    async def ask_child(self, run_id: str, op: str, params: Any,
+                        **_: Any) -> Any:
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
@@ -416,7 +527,7 @@ class _Helper:
         self.closed = False
 
     async def ask(self, directory: Path, run_id: str, op: str,
-                  params: Any) -> Any:
+                  params: Any, **_: Any) -> Any:
         self.asked.append((directory, run_id, op))
         return 200, "[]", True
 
@@ -582,3 +693,260 @@ async def test_a_helper_that_cannot_start_is_logged(tmp_path, monkeypatch,
         token="t", probe_devices=list)
     connection._recorded_run_retired("r1")
     assert "could not start the outputs helper" in caplog.text
+
+
+# ── review fixes (#853) ──────────────────────────────────────────────────
+
+
+async def test_a_child_writing_its_outputs_reports_now_and_gets_time(
+        tmp_path):
+    """A cancelled recorded run reports as soon as its captures are off
+    its cards: the control plane frees its slot then, and the cancel's
+    grace (0.2 s, then 0.5 s to kill) does not cut the write short."""
+    marker = tmp_path / "written"
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path / "runs", offered_devices={"cpu"},
+                    send=sink, child_entry=h.saving_child,
+                    outputs_max_bytes=0, kill_after_s=0.5,
+                    exit_after_finished_s=0.2, save_outputs_s=60)
+    await runner.assign(wp.Assign(run_id="r1", graph={"nodes": []}, options={
+        "record_outputs": True, "save_s": 4, "marker": str(marker)}))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    handle = runner.runs["r1"]
+    started = time.monotonic()
+    await runner.cancel("r1", grace_s=0.2)
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished),
+                                   timeout=20)
+    assert time.monotonic() - started < 3.5  # before the 4 s write ends
+    assert finished.status == "cancelled"
+    assert handle.reported_early and not marker.exists()
+    # Not running any more, but still answering reads of what it holds.
+    assert runner.running_ids() == [] and "r1" in runner.runs
+    assert await runner.ask_child("r1", "list", {}) == (
+        200, json.dumps({"saving": True}), True)
+    await asyncio.wait_for(handle.done.wait(), 30)
+    assert marker.read_text() == "written"
+    assert len([f for f in sink.frames if isinstance(f, wp.RunFinished)]) == 1
+
+
+async def test_a_write_over_its_time_limit_is_stopped(tmp_path):
+    marker = tmp_path / "written"
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path / "runs", offered_devices={"cpu"},
+                    send=sink, child_entry=h.saving_child,
+                    outputs_max_bytes=0, kill_after_s=0.5,
+                    save_outputs_s=0.3)
+    await runner.assign(wp.Assign(run_id="r1", graph={"nodes": []}, options={
+        "record_outputs": True, "save_s": 60, "marker": str(marker)}))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    handle = runner.runs["r1"]
+    await runner.cancel("r1", grace_s=0.2)
+    await asyncio.wait_for(handle.done.wait(), 30)
+    assert not marker.exists()
+    [finished] = [f for f in sink.frames if isinstance(f, wp.RunFinished)]
+    assert finished.status == "cancelled"  # as reported; not re-reported
+
+
+async def test_a_closed_helper_starts_anew_for_the_next_read(tmp_path):
+    """``close`` then a read at once: a new helper answers it (it used to
+    find the old one's pipe gone, an AttributeError answered 500)."""
+    helper = OutputsHelper(entry=h.echo_helper, idle_s=60)
+    helper.start()
+    helper.close()
+    status, text, _ = await helper.ask(tmp_path, "r1", "list", {})
+    assert status == 200 and json.loads(text)["op"] == "list"
+    helper.close()
+
+
+async def test_an_old_helper_exiting_fails_only_its_own_reads(tmp_path):
+    helper = OutputsHelper(entry=h.echo_helper, idle_s=60, timeout_s=30)
+    old = helper.start()
+    helper.close()  # it exits
+    read = asyncio.create_task(helper.ask(tmp_path, "r1", "slow", {}))
+    deadline = time.monotonic() + 15
+    while old.process.is_alive() and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.5)  # its exit reaches the loop
+    assert not old.process.is_alive() and old.closed
+    assert not read.done()  # the new helper's read is untouched
+    assert helper.running
+    read.cancel()
+    helper.close()
+
+
+def test_the_agent_gives_up_before_the_control_plane():
+    def frame(timeout_s: float | None) -> wp.FetchOutput:
+        return wp.FetchOutput(request_id="q", run_id="r", op="list",
+                              timeout_s=timeout_s)
+
+    assert outputs_module.answer_timeout(frame(None)) == 55.0
+    assert outputs_module.answer_timeout(frame(60)) == 55.0
+    assert outputs_module.answer_timeout(frame(4)) == 2.0
+    from app.agent.runner import ASK_CHILD_TIMEOUT_S
+
+    assert ASK_CHILD_TIMEOUT_S < outputs_module.DEFAULT_FETCH_TIMEOUT_S
+    assert OutputsHelper().timeout_s < outputs_module.DEFAULT_FETCH_TIMEOUT_S
+    assert outputs_module.MAX_RUNS == RunOutputStore().max_runs
+
+
+async def test_the_wait_rides_on_the_frame_and_cancel_frees_the_place(
+        tmp_path):
+    asked: list[float] = []
+    gate = asyncio.Event()
+
+    class Slow(_Runner):
+        async def ask_child(self, run_id: str, op: str, params: Any,
+                            timeout_s: float = 0) -> Any:
+            asked.append(timeout_s)
+            await gate.wait()
+            return 200, "{}", False
+
+    outputs, sent = _agent_outputs(Slow(tmp_path))
+    tasks = [outputs.start(wp.FetchOutput(request_id=f"q{i}", run_id="r1",
+                                          op="list", timeout_s=20))
+             for i in range(outputs_module.MAX_CONCURRENT + 1)]
+    await asyncio.sleep(0.05)
+    assert asked == [15.0] * outputs_module.MAX_CONCURRENT  # one waits
+    assert all(outputs.cancel(f"q{i}") for i in range(len(tasks)))
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert sent == [] and not outputs.cancel("q0")  # done: nothing to cancel
+    # Every place is free again.
+    gate.set()
+    await outputs.start(_fetch("list"))
+    assert sent == [("q1", 200, "{}", False)]
+    outputs.close()
+
+
+async def test_drop_outputs_does_not_hold_up_the_frame_loop(tmp_path,
+                                                            monkeypatch):
+    from app.agent.connection import AgentConnection
+
+    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"},
+                    outputs_max_bytes=0)
+    connection = AgentConnection(
+        runner=runner, name="box", version="t", control_url="http://x",
+        token="t", probe_devices=list)
+    gate = asyncio.Event()
+    dropped: list[str] = []
+
+    async def slow_drop(run_id: str) -> None:
+        await gate.wait()
+        dropped.append(run_id)
+
+    monkeypatch.setattr(connection.outputs, "drop", slow_drop)
+    await asyncio.wait_for(connection._dispatch(wp.DropOutputs(run_id="r1")),
+                           1)
+    assert dropped == []  # still deleting, and the next frame is read
+    cancelled: list[str] = []
+    monkeypatch.setattr(connection.outputs, "cancel", cancelled.append)
+    await connection._dispatch(wp.CancelFetch(request_id="q1"))
+    assert cancelled == ["q1"]
+    gate.set()
+    for _ in range(50):
+        if dropped:
+            break
+        await asyncio.sleep(0.01)
+    assert dropped == ["r1"]
+    connection.outputs.close()
+
+
+def test_numpy_scalars_and_primitive_subclasses_load_back(tmp_path):
+    """``np.float64`` subclasses ``float`` and used to be saved as numpy's
+    object, which ``weights_only`` refuses: every read of the run, the list
+    included, answered 500."""
+    import enum
+
+    import numpy as np
+
+    class Level(enum.IntEnum):
+        HIGH = 2
+
+    store = RunOutputStore(max_bytes=0)
+
+    async def go() -> None:
+        await store.put("r1", "m", "loss", np.float64(0.25))
+        await store.put("r1", "m", "name", np.str_("adam"))
+        await store.put("r1", "m", "flags", {"ok": np.bool_(True),
+                                             "n": [np.int64(3)]})
+        await store.put("r1", "m", "level", Level.HIGH)
+        await store.put("r1", "m", "t", torch.ones(2, 3))
+        await q.dump_run(store, "r1", tmp_path)
+
+    asyncio.run(go())
+    reader = q.DiskRunReader(tmp_path)
+
+    def read(op: str, **params: Any) -> Any:
+        return asyncio.run(q.dispatch(reader, op, "r1", params, compute=None))
+
+    status, listed = read("list")
+    assert status == 200
+    assert {row["port"]: row["type"] for row in listed} == {
+        "loss": "scalar", "name": "string", "flags": "dict",
+        "level": "scalar", "t": "tensor"}
+    assert read("value", node_id="m", port="loss")[1]["value"] == 0.25
+    assert read("value", node_id="m", port="name")[1]["value"] == "adam"
+    assert read("value", node_id="m", port="level")[0] == 200
+    assert type(q.portable(np.float64(0.25))) is float
+    assert q.portable({np.int64(1): 2})["__codefyui_stub__"] == "opaque"
+
+
+def test_one_unreadable_file_fails_only_its_own_slot(tmp_path):
+    store = RunOutputStore(max_bytes=0)
+
+    async def go() -> None:
+        await store.put("r1", "a", "t", torch.ones(2))
+        await store.put("r1", "b", "t", torch.zeros(3))
+        await q.dump_run(store, "r1", tmp_path)
+
+    asyncio.run(go())
+    index = q.read_index(tmp_path)
+    broken = tmp_path / index["slots"][0]["file"]
+    broken.write_bytes(b"not a torch file")
+    # An index without the listed facts (an older dump) loads each slot.
+    for slot in index["slots"]:
+        slot.pop("type"), slot.pop("full_shape")
+    (tmp_path / q.INDEX_FILE).write_text(json.dumps(index))
+    reader = q.DiskRunReader(tmp_path)
+    status, listed = asyncio.run(q.dispatch(reader, "list", "r1", {},
+                                            compute=None))
+    assert status == 200
+    assert listed == [
+        {"node_id": "a", "port": "t", "type": q.UNREADABLE,
+         "full_shape": None},
+        {"node_id": "b", "port": "t", "type": "tensor", "full_shape": [3]}]
+    status, _ = asyncio.run(q.dispatch(
+        reader, "value", "r1", {"node_id": "a", "port": "t"}, compute=None))
+    assert status == 500
+
+
+def test_a_list_reads_the_index_not_the_files(tmp_path, monkeypatch):
+    store = RunOutputStore(max_bytes=0)
+
+    async def go() -> None:
+        for step in range(300):
+            await store.put("r1", "loop", f"__step__{step}__x",
+                            torch.ones(4, step + 1))
+        await store.put("r1", "card", "out", q.CaptureAlias("loop",
+                                                            "__step__0__x"))
+        await store.put("r1", "card", "gone", q.CaptureAlias("nope", "x"))
+        await q.dump_run(store, "r1", tmp_path)
+
+    asyncio.run(go())
+    reader = q.DiskRunReader(tmp_path)
+
+    def no_loads(*_: Any) -> Any:
+        raise AssertionError("a list must not load a value")
+
+    monkeypatch.setattr(reader, "_load", no_loads)
+    status, listed = asyncio.run(q.dispatch(reader, "list", "r1", {},
+                                            compute=None))
+    assert status == 200 and len(listed) == 302
+    assert listed[7] == {"node_id": "loop", "port": "__step__7__x",
+                         "type": "tensor", "full_shape": [4, 8]}
+    assert listed[300]["full_shape"] == [4, 1]  # the alias, followed
+    assert listed[301]["type"] == "NoneType"  # an alias to nothing
+    # The in-memory copies answer the same list.
+    slots = asyncio.run(store.snapshot("r1"))
+    memory = q.MemoryRunReader("r1", q.capture_slots(slots))
+    assert asyncio.run(q.dispatch(memory, "list", "r1", {},
+                                  compute=None)) == (200, listed)

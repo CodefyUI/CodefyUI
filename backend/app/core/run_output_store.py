@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -58,8 +58,18 @@ class CaptureAlias:
     port: str
 
 
+#: Runs the store retains unless told otherwise: the server's store
+#: (``main.py``) and a worker's recorded outputs (``agent.outputs``, #789).
+MAX_RUNS = 20
+#: Worker runs evicted from retention that the store remembers as such
+#: (#789), newest kept: a read of one answers as for any run not held,
+#: instead of finding it again through its run record.
+EXPIRED_REMEMBERED = 1000
+
+
 class RunOutputStore:
-    def __init__(self, max_runs: int = 20, *, max_bytes: int | None = None) -> None:
+    def __init__(self, max_runs: int = MAX_RUNS, *,
+                 max_bytes: int | None = None) -> None:
         self._max_runs = max_runs
         if max_bytes is None:
             from ..config import settings
@@ -85,10 +95,13 @@ class RunOutputStore:
         #: no bytes here, so this store's run-count retention applies to
         #: them by run id; evicting one calls :attr:`on_remote_drop`.
         self._remote: dict[str, str] = {}
-        #: ``(run_id, worker)`` when a worker run is evicted (not deleted):
-        #: its worker is to be told to drop the captures. Synchronous; it
-        #: schedules the message. None: nobody to tell.
+        #: ``(run_id, worker)`` when a worker run is evicted or deleted
+        #: here: its worker is to be told to drop the captures.
+        #: Synchronous; it schedules the message. None: nobody to tell.
         self.on_remote_drop: Callable[[str, str], None] | None = None
+        #: Worker runs evicted by retention, oldest first, at most
+        #: :data:`EXPIRED_REMEMBERED` (#789).
+        self._expired: OrderedDict[str, None] = OrderedDict()
         self._lock = asyncio.Lock()
 
     @property
@@ -141,7 +154,7 @@ class RunOutputStore:
         from the oldest and skips it, rather than stopping at it.
         """
         while len(self._order) > self._max_runs:
-            self._drop(self._order[0], evicted=True)
+            self._drop(self._order[0], tell=True, evicted=True)
         if not self._max_bytes:
             return
         index = 0
@@ -162,14 +175,21 @@ class RunOutputStore:
                 format_bytes(self._total_bytes),
             )
 
-    def _drop(self, run_id: str, *, evicted: bool = False) -> None:
+    def _drop(self, run_id: str, *, tell: bool = False,
+              evicted: bool = False) -> None:
         """Forget one run and everything it captured. Caller holds the lock.
 
-        *evicted*: a retention limit dropped it; a worker's run (#789) then
-        has its worker told (:attr:`on_remote_drop`).
+        For a worker's run (#789): *tell* has its worker told
+        (:attr:`on_remote_drop`); *evicted* (a retention limit dropped it)
+        remembers it as expired (:meth:`was_evicted`).
         """
         worker = self._remote.pop(run_id, None)
-        if worker is not None and evicted and self.on_remote_drop is not None:
+        if worker is not None and evicted:
+            self._expired[run_id] = None
+            self._expired.move_to_end(run_id)
+            while len(self._expired) > EXPIRED_REMEMBERED:
+                self._expired.popitem(last=False)
+        if worker is not None and tell and self.on_remote_drop is not None:
             try:
                 self.on_remote_drop(run_id, worker)
             except Exception:  # noqa: BLE001 -- eviction must not fail a put
@@ -212,10 +232,13 @@ class RunOutputStore:
             return run_id in self._store
 
     async def delete_run(self, run_id: str) -> bool:
+        """Forget *run_id*: its captures here, or, for a worker's run
+        (#789), its retention, telling its worker to drop them. False when
+        neither is held."""
         async with self._lock:
-            if run_id not in self._store:
+            if run_id not in self._store and run_id not in self._remote:
                 return False
-            self._drop(run_id)
+            self._drop(run_id, tell=True)
             return True
 
     # -- worker runs (#789) -------------------------------------------------
@@ -232,6 +255,7 @@ class RunOutputStore:
                 return
             if run_id in self._remote:
                 self._order.remove(run_id)
+            self._expired.pop(run_id, None)
             self._remote[run_id] = worker
             self._order.append(run_id)
             self._evict_locked(keep=run_id)
@@ -240,6 +264,12 @@ class RunOutputStore:
         """The worker holding *run_id*'s captures, or None (#789)."""
         async with self._lock:
             return self._remote.get(run_id)
+
+    async def was_evicted(self, run_id: str) -> bool:
+        """*run_id* is a worker's run this store's retention evicted
+        (#789), and has not been retained since."""
+        async with self._lock:
+            return run_id in self._expired and run_id not in self._remote
 
     async def forget_remote(self, run_id: str) -> bool:
         """Stop retaining a worker's run without telling the worker (its
@@ -297,6 +327,7 @@ class RunOutputStore:
         async with self._lock:
             self._store.clear()
             self._remote.clear()
+            self._expired.clear()
             self._order.clear()
             self._run_bytes.clear()
             self._slot_bytes.clear()

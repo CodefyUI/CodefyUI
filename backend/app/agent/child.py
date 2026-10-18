@@ -21,11 +21,17 @@ worker run is isolated, ``weights_persistent=False``).
 
 Recorded outputs (#789): a run with ``options.record_outputs`` captures
 into a ``RunOutputStore`` of this process's own, exactly as a run on the
-control plane does (:class:`LiveOutputs`). When the run ends, before
-``finished``, the store is written to ``spec["outputs_dir"]``
-(``output_queries.dump_run``), so the agent can serve it after this process
-exits. Until this process exits it answers the agent's reads itself: from
-the store while the run goes, from the files once they are written.
+control plane does (:class:`LiveOutputs`). When the run ends its captures
+are copied off its cards into this process's memory and the store is
+emptied (``output_queries.capture_slots``); then it reports ``finished``
+(with ``saving_outputs``), and only then writes the copies to
+``spec["outputs_dir"]`` (``output_queries.write_slots``), so the agent can
+serve them after this process exits. Reporting first means a cancelled
+run's grace period covers only the copy, and the control plane frees the
+run's device slot without waiting for the disk; the agent gives the write
+its own time limit (``Runner.save_outputs_s``). Until this process exits it
+answers the agent's reads itself: from the store while the run goes, from
+the copies while they are written, from the files after.
 
 Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
 
@@ -40,7 +46,9 @@ Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
   to a ``fetch`` (#789), the read's HTTP status and JSON body text;
   ``final`` once it came from the files.
 - ``("finished", {"status", "error", "peak_memory"})``, last (an
-  ``output_answer`` may still follow it).
+  ``output_answer`` may still follow it); with ``"saving_outputs": True``
+  when the run's captures are written next (#789), so the process lives
+  on until they are.
 - ``("memory_limit", {device: {"budget_bytes", "total_bytes",
   "fraction"}})``, FIRST, for a run with memory budgets (#788,
   ``spec["memory_budgets"]``, as this process numbers its cards): each
@@ -343,7 +351,13 @@ class LiveOutputs:
     """A recorded run's captures in this process, and the reads of them
     (#789). Reads run on a small pool of their own, each on its own event
     loop, so serialising a large tensor never holds up the run's loop:
-    only the store lookups hop to it."""
+    only the store lookups hop to it.
+
+    When the run ends: :meth:`prepare` (on the run's loop, before
+    ``finished``) copies the captures to the CPU and empties the store;
+    :meth:`save` (after ``finished``) writes the copies. A ``drop`` at any
+    point empties what is held and stops a write in progress.
+    """
 
     def __init__(self, store: Any, run_id: str, directory: str | None,
                  send: Send) -> None:
@@ -355,9 +369,17 @@ class LiveOutputs:
         self.send = send
         #: The run's event loop, once it runs.
         self.loop: Any = None
-        #: The dump's reader, once written: reads then come from the files
-        #: (and are ``final``).
+        #: The reader once the run has ended: over the in-memory copies
+        #: (:meth:`prepare`), then over the files (:meth:`save`). Reads of
+        #: it are ``final``.
         self.disk: Any = None
+        #: The copies :meth:`save` writes; None when there is nothing to.
+        self._entries: list[dict[str, Any]] | None = None
+        #: Set by a ``drop`` after the run ended: nothing more is kept.
+        self.dropped = False
+        #: ``drop`` calls so far: one landing while :meth:`prepare` copies
+        #: discards the copy.
+        self._drops = 0
         self._pool = ThreadPoolExecutor(2, thread_name_prefix="outputs")
 
     def answer(self, request_id: str, op: str, run_id: str,
@@ -367,30 +389,27 @@ class LiveOutputs:
 
     def _answer(self, request_id: str, op: str, run_id: str,
                 params: dict[str, Any]) -> None:
-        import asyncio
-
         from ..core import output_queries as q
-        from ..core.port_stats import compute_port_stats
 
-        async def compute(value: Any) -> dict[str, Any]:
-            return compute_port_stats(value)
-
-        disk = self.disk
+        disk = None if self.dropped else self.disk
         reader = disk if disk is not None else _LoopReader(self.store,
                                                            self.loop)
-        try:
-            status, body = asyncio.run(q.dispatch(reader, op, run_id, params,
-                                                  compute=compute))
-            text = "" if body is None else q.encode_body(body)
-        except BaseException as exc:  # noqa: BLE001 -- answered, not raised
-            status, text = 500, q.encode_body(
-                {"detail": f"reading the recorded outputs failed: {exc}"})
+        status, text = q.answer_read(reader, op, run_id, params)
         self.send((MSG_OUTPUT_ANSWER, request_id, status, text,
                    disk is not None))
 
     def drop(self, run_id: str) -> None:
+        """``drop_outputs`` / ``delete`` (agent thread): forget the
+        captures, wherever they are now; a later read answers 404."""
         import asyncio
 
+        self._drops += 1
+        if self.disk is not None:
+            # The run has ended: what is held is the copies or the files
+            # (the agent deletes those), never captured into again.
+            self.dropped = True
+            self.disk, self._entries = None, None
+            return
         loop = self.loop
         if loop is None or loop.is_closed():
             return
@@ -400,33 +419,93 @@ class LiveOutputs:
         except RuntimeError:
             pass
 
-    async def dump(self) -> None:
-        """Write the run's captures to :attr:`directory`, then read from
-        there. A failure is a ``warning`` for the run, never its end."""
+    def _not_kept(self, exc: BaseException) -> None:
+        import logging
+        import traceback
+
+        logging.getLogger(__name__).warning(
+            "the recorded outputs could not be kept: %s", exc)
+        traceback.print_exc()
+
+    async def prepare(self) -> None:
+        """On the run's loop when it has ended: copy the captures to the
+        CPU, empty the store (off the run's cards), and read the copies
+        from now on. A failure is a ``warning`` for the run, never its
+        end."""
         if not self.directory:
             return
-        from pathlib import Path
+        import asyncio
 
         from ..core import output_queries as q
 
         try:
             if not await self.store.has_run(self.run_id):
                 return  # recorded nothing: there is nothing to keep
-            await q.dump_run(self.store, self.run_id, Path(self.directory))
-            self.disk = q.DiskRunReader(Path(self.directory))
+            drops = self._drops
+            slots = await self.store.snapshot(self.run_id)
+            entries = await asyncio.to_thread(q.capture_slots, slots)
+            del slots
+            await self.store.delete_run(self.run_id)
+            _release_cards()
+            if self._drops != drops:
+                return  # dropped while copying: nothing to keep
+            self._entries = entries
+            self.disk = q.MemoryRunReader(self.run_id, entries)
         except Exception as exc:  # noqa: BLE001 -- reported, the run stands
-            import logging
-            import traceback
-
-            logging.getLogger(__name__).warning(
-                "the recorded outputs could not be written: %s", exc)
-            traceback.print_exc()
+            self._not_kept(exc)
             self.send((MSG_WARNING, {
                 "kind": "outputs_not_kept",
                 "detail": (f"the outputs this run recorded could not be "
-                           f"written on the worker, so they cannot be read "
+                           f"kept on the worker, so they cannot be read "
                            f"after it ends: {type(exc).__name__}: {exc}"),
                 "node_id": None}))
+
+    @property
+    def saving(self) -> bool:
+        """:meth:`save` has copies to write."""
+        return self._entries is not None and not self.dropped
+
+    def save(self) -> None:
+        """Write the copies :meth:`prepare` took, then read the files.
+        Blocking; after ``finished``, so a failure is logged (the run's
+        output log) and the reads answer 404 once this process exits."""
+        entries = self._entries
+        if entries is None or self.dropped or not self.directory:
+            return
+        from pathlib import Path
+
+        from ..core import output_queries as q
+
+        directory = Path(self.directory)
+        try:
+            index = q.write_slots(self.run_id, entries, directory,
+                                  abandoned=lambda: self.dropped)
+        except Exception as exc:  # noqa: BLE001 -- logged; nothing to fail
+            self._not_kept(exc)
+            return
+        finally:
+            # Written or not, nothing is left to write; the copies still
+            # answer (until this process exits) unless the files do now.
+            self._entries = None
+        if index is not None and not self.dropped:
+            self.disk = q.DiskRunReader(directory)
+
+
+def _release_cards() -> None:
+    """Give the run's cards back what its caching allocator still holds,
+    once its captures are copied off them (#789). Its CUDA context stays
+    until this process exits."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    try:
+        if torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+        mps = getattr(torch, "mps", None)
+        if mps is not None and torch.backends.mps.is_available():
+            mps.empty_cache()
+    except Exception:  # noqa: BLE001 -- best effort
+        pass
 
 
 def apply_memory_budgets(budgets: dict[str, int]) -> dict[str, Any]:
@@ -482,6 +561,7 @@ def run_assignment(spec: dict[str, Any], send: Send,
     this in a process whose registry is already populated).
     """
     status, error, peak_memory = "failed", None, None
+    outputs: LiveOutputs | None = None
     try:
         import asyncio
 
@@ -535,7 +615,7 @@ def run_assignment(spec: dict[str, Any], send: Send,
             result = await InProcessExecutor(exclusive_process=True).run(
                 request)
             if outputs is not None:
-                await outputs.dump()
+                await outputs.prepare()
             return result
 
         outcome = asyncio.run(execute())
@@ -546,5 +626,11 @@ def run_assignment(spec: dict[str, Any], send: Send,
         import traceback
 
         traceback.print_exc()
-    send((MSG_FINISHED, {"status": status, "error": error,
-                         "peak_memory": peak_memory}))
+    saving = outputs is not None and outputs.saving
+    report: dict[str, Any] = {"status": status, "error": error,
+                              "peak_memory": peak_memory}
+    if saving:
+        report["saving_outputs"] = True
+    send((MSG_FINISHED, report))
+    if saving:
+        outputs.save()

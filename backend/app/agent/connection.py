@@ -12,9 +12,10 @@ Per connection:
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
 4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`, and
-   ``fetch_output`` / ``drop_outputs`` (#789) to :class:`~app.agent.outputs.
-   AgentOutputs`, which answers each read in a task of its own with
-   ``output_answer`` frames (the body cut into parts).
+   ``fetch_output`` / ``cancel_fetch`` / ``drop_outputs`` (#789) to
+   :class:`~app.agent.outputs.AgentOutputs`, which handles each in a task
+   of its own, answering a read with ``output_answer`` frames (the body
+   cut into parts).
 
 Runs do not depend on the connection. While it is down, their subprocesses
 keep running and every frame they produce is written to the run's spool
@@ -234,8 +235,6 @@ class AgentConnection:
         #: Recorded outputs (#789): reads of them, answered here.
         self.outputs = AgentOutputs(runner, self.send_answer)
         runner.on_recorded_run_retired = self._recorded_run_retired
-        #: Reads being answered, kept so they are not collected mid-flight.
-        self._reads: set[asyncio.Task] = set()
 
     async def send_answer(self, request_id: str, status: int, text: str,
                           final: bool) -> None:
@@ -329,7 +328,8 @@ class AgentConnection:
         """``run_alive`` for every run still running or still spooled."""
         last: dict[str, int] = {}
         for handle in list(self.runner.runs.values()):
-            last[handle.run_id] = handle.seq
+            if not handle.reported_early:  # only writing its outputs (#789)
+                last[handle.run_id] = handle.seq
         for spool in self.spools.spools():
             if spool.pending or spool.run_id in last:
                 last[spool.run_id] = max(last.get(spool.run_id, 0),
@@ -654,14 +654,13 @@ class AgentConnection:
             if not self.runner.renew(frame.run_id, frame.s3):
                 logger.info("credentials for unknown run %s", frame.run_id)
         elif isinstance(frame, wp.FetchOutput):
-            # A task of its own: reading a large capture must not hold up
-            # the cancels and acks behind it.
-            task = asyncio.create_task(self.outputs.serve(frame),
-                                       name=f"outputs:{frame.run_id}")
-            self._reads.add(task)
-            task.add_done_callback(self._reads.discard)
+            # Tasks of their own: reading a large capture or deleting a
+            # run's files must not hold up the cancels and acks behind it.
+            self.outputs.start(frame)
+        elif isinstance(frame, wp.CancelFetch):
+            self.outputs.cancel(frame.request_id)
         elif isinstance(frame, wp.DropOutputs):
-            await self.outputs.drop(frame.run_id)
+            self.outputs.start_drop(frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

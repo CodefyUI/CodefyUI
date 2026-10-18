@@ -77,7 +77,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | 方向 | Frame |
 |-----------|--------|
 | agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊與節點型別、capabilities、machine id、裝置、mount、平台；單次 agent 另有 `one_shot`、它的 `one_shot_run_id` 與 `instance_id`）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished`；`output_answer`（request id、HTTP 狀態碼、分段的 body、`final`）回覆 `fetch_output` |
-| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities、選用的 `resume_grace_s`：控制面保留已斷線 worker 之 run 的時間，agent 的上傳重試依此計算）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄）、`credentials`（run id、執行中 `s3` run 的新 S3 憑證，只送給列出 `s3` 的 agent）、`fetch_output`（request id、run id、讀取種類與其查詢參數）與 `drop_outputs`（run id），只送給列出 `record_outputs` 的 agent |
+| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities、選用的 `resume_grace_s`：控制面保留已斷線 worker 之 run 的時間，agent 的上傳重試依此計算）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄）、`credentials`（run id、執行中 `s3` run 的新 S3 憑證，只送給列出 `s3` 的 agent）、`fetch_output`（request id、run id、讀取種類與其查詢參數、控制面等待的時間）、`cancel_fetch`（request id）與 `drop_outputs`（run id），只送給列出 `record_outputs` 的 agent |
 
 ## 排程 {/* #scheduling */}
 
@@ -125,12 +125,12 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 ## Worker 上的錄製輸出 {/* #recorded-outputs-on-a-worker */}
 
-在 worker 上執行、開啟 `record_outputs` 的佇列 run（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）會把擷取的資料存進 run 子程序內的 `RunOutputStore`，與控制面上的 run 相同。子程序回報結束之前，會把擷取資料寫到 agent user-data 目錄的 `agent-runs/<run id>/outputs/`：每個 port 一個 `torch.save` 檔，加上一個 `index.json`。子程序結束後，agent 透過一個輔助子程序提供這些資料，它在 CPU 上以記憶體映射載入檔案；agent 程序本身仍不 import torch。
+在 worker 上執行、開啟 `record_outputs` 的佇列 run（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）會把擷取的資料存進 run 子程序內的 `RunOutputStore`，與控制面上的 run 相同。run 結束時，子程序先把擷取資料複製到自己在 CPU 上的記憶體並清空 store，接著回報結束，然後才把這份複本寫到 agent user-data 目錄的 `agent-runs/<run id>/outputs/`：每個 port 一個 `torch.save` 檔，加上一個 `index.json`，其中也記下每個 port 的型別與形狀，列出 run 時不必載入任何檔案。由於先回報，控制面不必等磁碟寫完就釋放 run 的裝置 slot，被取消的 run 的寬限時間也只需涵蓋複製；之後子程序有 300 秒寫完並結束。結束之前，它從複本回覆讀取。之後 agent 透過一個輔助子程序提供這些檔案，它在 CPU 上以記憶體映射載入；agent 程序本身仍不 import torch。子程序寫檔期間，它的 CUDA context 仍留在卡上（快取的記憶體已釋放），因此在依記憶體共用的卡上，接著啟動的 run 會有幾秒鐘看到略少的可用記憶體。
 
 對這種 run 的每次 `/api/execution/outputs/*` 讀取，都會以 `fetch_output` frame 經由 worker 自己的 `/ws/worker` 連線轉送；agent 以 `output_answer` frame 回覆（JSON body 分段傳送），內容由控制面所用的同一組函式算出，因此回應（包括錯誤訊息）與本機 run 相同。統計數據在 worker 上計算，run 在那裡結束後由控制面快取。這些都不需要 worker 開任何連接埠。
 
-- **容量上限。** worker 對寫出的資料套用與程序內 store 相同的上限：worker 上設定的 `CODEFYUI_RUN_OUTPUT_STORE_MAX_MB`，以及 20 個 run，從最舊的開始刪除，剛寫入的 run 不會被刪。控制面自己的 20 個 run 保留上限也以 run id 計入 worker run；逐出時會送出 `drop_outputs`，agent 隨即刪除檔案。
-- **連線狀態。** 未連線的 worker 會立即回 `503` 並指出是哪個 worker；在 `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S`（60 秒）內沒有回覆則回 `504`。等待中的讀取遇到 worker 連線關閉時以 `503` 結束。只有 worker 連線時才能讀取這些輸出，單次 worker 則只到它退出為止。
+- **容量上限。** worker 對寫出的資料套用與程序內 store 相同的上限：worker 上設定的 `CODEFYUI_RUN_OUTPUT_STORE_MAX_MB`，以及 20 個 run，從最舊的開始刪除，剛寫入的 run 不會被刪。控制面自己的 20 個 run 保留上限也以 run id 計入 worker run；逐出時會送出 `drop_outputs`，agent 隨即刪除檔案。worker 離線期間被逐出的 run 會維持過期狀態（讀取回 `404`，與任何未保留的 run 相同），它錯過的 `drop_outputs` 會在 worker 下次連線時送出。刪除 run（`DELETE /api/runs/{id}`）也會以同樣方式刪除 worker 上的擷取資料。
+- **連線狀態。** 未連線的 worker 會立即回 `503` 並指出是哪個 worker；在 `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S`（60 秒）內沒有回覆則回 `504`。等待中的讀取遇到 worker 連線關閉時以 `503` 結束。`fetch_output` 帶有這個等待時間，agent 會提早 5 秒放棄，讓它自己的 `504` 送到瀏覽器；控制面不再等待的讀取會在 worker 上被取消（`cancel_fetch`），不會佔用 agent 的四個讀取名額。損壞的檔案只會讓讀取它自己那個 port 失敗，列表仍會回覆。只有 worker 連線時才能讀取這些輸出，單次 worker 則只到它退出為止。
 - **重新啟動。** 控制面重新啟動後接手的 run（[#793](https://github.com/CodefyUI/CodefyUI/issues/793)）會再次被保留，輸出仍可讀取。已結束的 worker run 會在第一次讀取時依它的 run 紀錄（worker 與 `record_outputs`）再次找到，只要 worker 仍保有資料。控制面上的 run 的擷取資料在重新啟動後仍會遺失。
 - **較舊的 agent。** `hello` 未列出 `record_outputs` capability 的 agent，被指名時這種 run 會在送出時被拒絕；經由 `any` 被放到它上面的 run 會在開始時失敗並附上說明。
 
