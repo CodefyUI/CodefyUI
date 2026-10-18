@@ -945,6 +945,47 @@ async def test_a_submitted_estimate_below_a_known_peak_is_raised(env):
         await _terminal(service, typed)
 
 
+async def test_an_estimate_queued_for_an_exclusive_card_is_raised_too(env):
+    """Found by the round-2 browser pass: an estimate submitted while its
+    card is still Exclusive (waiting by count) is raised to a known larger
+    peak at submit as well, so it is right when the card is shared."""
+    service, registry = env
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+
+        async def submit(**target: Any) -> str:
+            response = await client.post("/api/runs", json={
+                "graph": _graph(), "options": {
+                    "device": "cuda:0", "target": {"worker": "box",
+                                                   **target}}})
+            assert response.status_code == 200, response.text
+            return response.json()["run_id"]
+
+        first = await submit()
+        measured = await agent.assignment()
+        await agent.send(wp.RunStarted(run_id=first, seq=1, pid=1))
+        await agent.finish(measured, peak=2 * GIB)
+        await _terminal(service, first)
+        holder = await submit()
+        assigned = await agent.assignment()
+        waiting = await submit(memory_gib=1, memory_source="estimate",
+                               wait=True)
+        assert (await client.get(f"/api/runs/{waiting}")).json()[
+            "queued_budget"] == {"bytes": mem.gib_to_bytes(2 * 1.2),
+                                 "source": "history", "from_run": first,
+                                 "raised_from": GIB}
+        assert "memory budget raised from the accepted estimate, 1.0 GiB" \
+            in service.queue_reason(waiting)
+        await agent.send(wp.RunStarted(run_id=holder, seq=1, pid=1))
+        await agent.finish(assigned)
+        placed = await agent.assignment()
+        assert placed.run_id == waiting
+        await agent.send(wp.RunStarted(run_id=waiting, seq=1, pid=1))
+        await agent.finish(placed)
+        await _terminal(service, waiting)
+
+
 def test_the_history_graph_keeps_unknown_params_and_drops_secrets():
     """Review 2, item 3: two graphs that differ only in a param of a node
     type this server does not know (a worker-only plugin) are two

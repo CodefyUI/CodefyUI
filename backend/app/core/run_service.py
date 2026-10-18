@@ -2332,6 +2332,11 @@ class RunService:
         waiting one is (:meth:`_raise_estimates`), whoever submitted it.
         """
         budget = declared_budget(options)
+        if budget is not None and budget.source == mem.SOURCE_ESTIMATE:
+            # Before the shared-card check: a run that waits for an
+            # exclusive card now may land on a shared one later.
+            budget = await self._raise_accepted(budget, graph, options,
+                                                digest)
         wants = getattr(self._scheduler, "wants_budget", None)
         if wants is None or not wants(options):
             return budget
@@ -2340,9 +2345,6 @@ class RunService:
         if budget is None:
             suggestion = await self._suggest(graph, options, digest)
             budget = None if suggestion is None else suggestion.budget
-        elif budget.source == mem.SOURCE_ESTIMATE:
-            budget = await self._raise_accepted(budget, graph, options,
-                                                digest)
         refusal = getattr(self._scheduler, "memory_refusal", None)
         if refusal is not None:
             worker_id, _ = entry_target(options)
