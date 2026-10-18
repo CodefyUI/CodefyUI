@@ -13,9 +13,9 @@ testable without one:
   reason names both); a malformed or reserved name.
 - :func:`identity_refusal`: why this credential may not register under the
   name the ``hello`` uses (#780).
-- :func:`instance_refusal`: why a one-shot instance (#845) may not take
-  the worker id it asks for: a run adopted after a restart under that id
-  belongs to the agent process that took it.
+- :func:`one_shot_refusal`: why a one-shot agent (#790) may not take a
+  name another agent process holds; :func:`same_agent` decides who that
+  is, after a restart of this server too (#845).
 - :func:`check_catalog`: how the worker's node catalog compares with this
   server's (``node_registry.node_catalog``). Equal hashes: ``match``.
   Different: ``mismatch``, with the node types this server has and the
@@ -151,7 +151,9 @@ def identity_refusal(hello: wp.Hello, *, credential: str,
         if base is not None and base.enrolled:
             return (f"worker {name!r} is enrolled; its instances connect "
                     "with its worker token, not the session token")
-    existing = registry.get(hello.name)
+    # The placeholder of runs adopted after a restart counts (#845): its
+    # one-shot run belongs to the agent process that took it.
+    existing = getattr(registry, "holder", registry.get)(hello.name)
     if existing is None:
         return None
     if credential == CREDENTIAL_SESSION and existing.enrolled:
@@ -172,14 +174,13 @@ def one_shot_refusal(hello: wp.Hello, existing: Any) -> str | None:
     would hand one agent's run to another that does not have it, which then
     ends ``interrupted``: two batch jobs started with the same credential.
     So while the name is connected, or still has runs in flight, only the
-    same agent may take it back.
+    same agent (:func:`same_agent`) may take it back.
     """
     if not (hello.one_shot or getattr(existing, "one_shot", False)):
         return None
     if not (existing.online or existing.running):
         return None
-    if hello.instance_id is not None \
-            and hello.instance_id == getattr(existing, "instance_id", None):
+    if same_agent(hello, existing):
         return None
     state = "connected" if existing.online else "its run is in flight"
     return (f"worker {hello.name!r} is busy: another agent holds the name "
@@ -188,24 +189,22 @@ def one_shot_refusal(hello: wp.Hello, existing: Any) -> str | None:
             "with an instance id of its own")
 
 
-def instance_refusal(hello: wp.Hello, adopted_hash: str | None) -> str | None:
-    """Why *hello* may not take an instance's worker id (#845) whose run
-    this server adopted after a restart, or None.
-
-    The run's agent process recorded who it is (``instance_id``, hashed:
-    *adopted_hash*) when the run started. Every instance of a credential
-    holds the same worker token, so the token alone cannot tell them
-    apart: without this, another instance under the same id would be
-    handed the run and end it. *adopted_hash* None: nothing to protect.
-    """
-    if adopted_hash is None:
-        return None
-    presented = instance_id_hash(hello.instance_id)
-    if presented is not None and hmac.compare_digest(presented, adopted_hash):
-        return None
-    return (f"worker {hello.name!r} has a run in flight from before this "
-            "server restarted; only the agent process that runs it may "
-            "take the name")
+def same_agent(hello: wp.Hello, existing: Any) -> bool:
+    """Whether *hello* comes from the agent process that holds *existing*
+    (#790): the same ``instance_id``. After a restart of this server the
+    holder of an adopted one-shot run knows only the id's hash, recorded
+    when the run started (#845, ``Worker.instance_hash``); a known worker
+    loaded from the database, or a placeholder, has no ``instance_id``.
+    Every agent on one credential holds the same worker token, so the
+    token alone cannot tell them apart."""
+    if not hello.instance_id:
+        return False
+    current = getattr(existing, "instance_id", None)
+    if current is not None:
+        return hello.instance_id == current
+    recorded = getattr(existing, "instance_hash", None)
+    return recorded is not None and hmac.compare_digest(
+        instance_id_hash(hello.instance_id) or "", recorded)
 
 
 # ── the node catalog ──────────────────────────────────────────────────────

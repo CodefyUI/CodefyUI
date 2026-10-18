@@ -335,8 +335,8 @@ from .worker_protocol import (
     TARGET_ANY,
     TARGET_LOCAL,
     WORKER_ID_PATTERN,
-    WORKER_NAME_PATTERN,
     canonical_device,
+    instance_parts,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -559,13 +559,23 @@ class QueueLimits:
         Never zero: a cap of 0 would accept runs into a queue that can never
         drain, which is a hang dressed up as a configuration. A user who
         wants that should not submit the run.
+
+        An instance's slot (#845, ``<name>.<instance>``) takes an override
+        of its own id, else its credential's (``<name>/<device>``): each
+        task of a SLURM array gets the cap set for the credential.
         """
         worker_id, device = slot
-        key = (device if worker_id == LOCAL_WORKER_ID
-               else f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}")
-        for override, value in self.overrides:
-            if override == key:
-                return max(1, value)
+        if worker_id == LOCAL_WORKER_ID:
+            keys = [device]
+        else:
+            keys = [f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}"]
+            name, instance = instance_parts(worker_id)
+            if instance is not None:
+                keys.append(f"{name}{WORKER_QUEUE_SEPARATOR}{device}")
+        for key in keys:
+            for override, value in self.overrides:
+                if override == key:
+                    return max(1, value)
         return max(1, self.cpu if device == CPU_QUEUE_KEY else self.gpu)
 
     @classmethod
@@ -646,7 +656,7 @@ def _worker_override_key(entry: str, key: str) -> str | None:
     worker, _, device = key.partition(WORKER_QUEUE_SEPARATOR)
     worker, device = worker.strip(), device.strip()
     if worker != TARGET_LOCAL and (
-            worker == TARGET_ANY or not WORKER_NAME_PATTERN.fullmatch(worker)):
+            worker == TARGET_ANY or not WORKER_ID_PATTERN.fullmatch(worker)):
         logger.warning("ignoring run queue override %r: %r is not a worker "
                        "name", entry, worker)
         return None
@@ -3415,10 +3425,11 @@ class RunService:
                 devices=list(active.placement.devices))
             # What a restarted server needs to adopt the run (#793).
             facts[WORKER_RESUME_KEY] = self._worker_resume(active, 0)
-            if getattr(worker, "instance_of", None) is not None \
-                    and worker.instance_id:
-                # Which agent process may take the run back after a
-                # restart (#845): its instances share one worker token.
+            if getattr(worker, "one_shot", False) and worker.instance_id:
+                # Which agent process may take a one-shot run back after a
+                # restart (#845): a restarted server knows the worker only
+                # from its row, and the instances of one credential share
+                # one worker token.
                 facts[WORKER_RESUME_KEY]["instance"] = instance_id_hash(
                     worker.instance_id)
         else:

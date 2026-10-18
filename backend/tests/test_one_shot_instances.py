@@ -29,19 +29,23 @@ from app.core.auth import TOKEN_HEADER
 from app.core.db import Database
 from app.core.run_service import WORKER_RESUME_KEY, RunService
 from app.core.run_store import RunStore
+from app.core.run_service import QueueLimits, parse_queue_overrides
 from app.core.worker_handshake import (
     identity_refusal,
     instance_id_hash,
-    instance_refusal,
+    one_shot_refusal,
     refusal,
+    same_agent,
 )
 from app.core.worker_store import WorkerStore
 from app.core.workers import (
     CREDENTIAL_SESSION,
     CREDENTIAL_WORKER,
     MAX_LEFT_INSTANCES,
+    STATUS_DISCONNECTED,
     STATUS_OFFLINE,
     WorkerRegistry,
+    policy_owner,
 )
 from app.main import app
 
@@ -132,15 +136,30 @@ async def test_a_credential_opens_instances_under_its_own_name_only():
         await registry.shutdown()
 
 
-def test_an_adopted_instance_id_is_for_the_process_that_took_the_run():
-    assert instance_refusal(_hello("gpu.3", instance="3"), None) is None
+def test_the_same_agent_is_its_instance_id_or_after_a_restart_its_hash():
     taken = instance_id_hash("secret-a")
     assert instance_id_hash(None) is None and taken != "secret-a"
-    assert instance_refusal(_hello("gpu.3", instance="3",
-                                   instance_id="secret-a"), taken) is None
-    for other in ("secret-b", None):
-        assert "only the agent process that runs it" in instance_refusal(
-            _hello("gpu.3", instance="3", instance_id=other), taken)
+    live = SimpleNamespace(instance_id="secret-a", instance_hash=None)
+    # A restarted server knows the process only by the hash it recorded.
+    known = SimpleNamespace(instance_id=None, instance_hash=taken)
+    nothing = SimpleNamespace(instance_id=None, instance_hash=None)
+    for holder in (live, known):
+        assert same_agent(_hello(instance_id="secret-a"), holder)
+        for other in ("secret-b", None):
+            assert not same_agent(_hello(instance_id=other), holder)
+    assert not same_agent(_hello(instance_id="secret-a"), nothing)
+
+
+def test_a_one_shot_run_adopted_on_a_known_worker_is_its_agents():
+    """Review of #855: a known (enrolled) one-shot worker has no
+    ``instance_id`` after a restart; the hash recorded with its run lets
+    its own agent take the run back, and nobody else."""
+    known = SimpleNamespace(one_shot=True, online=False, running={"r1": 1},
+                            instance_id=None,
+                            instance_hash=instance_id_hash("secret-a"))
+    assert one_shot_refusal(_hello(instance_id="secret-a"), known) is None
+    assert "its run is in flight" in one_shot_refusal(
+        _hello(instance_id="secret-b"), known)
 
 
 # ── the registry ──────────────────────────────────────────────────────────
@@ -173,6 +192,94 @@ async def test_instances_are_listed_under_their_credential():
         await registry.shutdown()
 
 
+async def test_instances_that_dropped_mid_run_are_pruned_once_it_ended():
+    """Review of #855: an instance that dropped with its run in flight
+    stays ``disconnected`` after the resume grace ended the run; it left
+    all the same, and is pruned like one that left after its run."""
+    registry = WorkerRegistry(resume_grace_s=60)
+    try:
+        dropped = []
+        for index in range(MAX_LEFT_INSTANCES + 2):
+            worker, _ = registry.connect(
+                _hello(f"gpu.{index}", instance=str(index)),
+                send=_nothing, close=_nothing)
+            registry.open_run(worker, f"r{index}")
+            registry.disconnect(worker)
+            assert worker.status == STATUS_DISCONNECTED and worker.running
+            dropped.append(worker)
+        registry.connect(_hello("gpu.live", instance="live"),
+                         send=_nothing, close=_nothing)
+        # Their runs still wait for them: nothing is pruned.
+        assert len(registry.instances_of("gpu")) == MAX_LEFT_INSTANCES + 3
+        for worker in dropped:
+            for run in list(worker.running.values()):
+                registry._end(worker, run, "grace over")
+        registry.connect(_hello("gpu.next", instance="next"),
+                         send=_nothing, close=_nothing)
+        ids = [w.id for w in registry.instances_of("gpu")]
+        assert len(ids) == MAX_LEFT_INSTANCES + 2
+        assert ids[:2] == ["gpu.2", "gpu.3"]  # the two oldest went
+        assert ids[-2:] == ["gpu.live", "gpu.next"]
+        # The index follows a reconnect (newest last) and a removal.
+        registry.connect(_hello("gpu.2", instance="2"), send=_nothing,
+                         close=_nothing)
+        assert [w.id for w in registry.instances_of("gpu")][-1] == "gpu.2"
+        registry.forget("gpu.2")
+        assert "gpu.2" not in {w.id for w in registry.instances_of("gpu")}
+        registry.forget_instances("gpu", "revoked")
+        assert registry.instances_of("gpu") == [] and not registry._instances
+    finally:
+        await registry.shutdown()
+
+
+async def test_instances_inherit_the_credentials_drain_and_policies():
+    """Review of #855: what is set on the credential applies to its
+    instances: draining, device admission policies, queue caps."""
+    registry = WorkerRegistry()
+    try:
+        registry.load_known([SimpleNamespace(
+            name="gpu", platform={}, mounts={}, devices=[],
+            last_seen_at=None)])
+        a, _ = registry.connect(_hello("gpu.a", instance="a"),
+                                send=_nothing, close=_nothing)
+        registry.drain("gpu")
+        assert a.draining and not a.accepts_runs
+        # One starting while the credential drains starts drained.
+        b, _ = registry.connect(_hello("gpu.b", instance="b"),
+                                send=_nothing, close=_nothing)
+        assert b.draining
+        registry.drain("gpu", False)
+        assert not a.draining and not b.draining
+        # Draining one instance leaves the others alone.
+        registry.drain("gpu.a")
+        assert a.draining and not b.draining
+        assert registry.get("gpu").draining is False
+
+        assert policy_owner("gpu.a") == "gpu" and policy_owner("gpu") == "gpu"
+        registry.set_device_policy("gpu", "cuda:0", "shared")
+        assert registry.device_policy("gpu.b", "cuda:0") == "shared"
+        assert registry._shares_by_memory(b)
+        # Set through an instance, it is the credential's.
+        registry.set_device_policy("gpu.a", "cuda:1", "shared")
+        assert registry.device_policy("gpu", "cuda:1") == "shared"
+        assert registry.device_policy("other", "cuda:0") == "exclusive"
+    finally:
+        await registry.shutdown()
+
+
+def test_an_instance_takes_its_credentials_queue_cap():
+    overrides = parse_queue_overrides(
+        "gpu/cuda:0=3,gpu.b/cuda:0=5,box.x/cpu=4")
+    assert ("gpu.b/cuda:0", 5) in overrides  # an instance's id is accepted
+    limits = QueueLimits(cpu=2, gpu=1, overrides=overrides)
+    assert limits.for_slot(("gpu", "cuda:0")) == 3
+    assert limits.for_slot(("gpu.a", "cuda:0")) == 3  # the credential's
+    assert limits.for_slot(("gpu.b", "cuda:0")) == 5  # its own wins
+    assert limits.for_slot(("gpu.a", "cuda:1")) == 1
+    assert limits.for_slot(("box.x", "cpu")) == 4
+    assert limits.for_slot(("box", "cpu")) == 2
+
+
 async def test_only_the_newest_instances_that_left_stay_listed():
     registry = WorkerRegistry()
     try:
@@ -197,13 +304,16 @@ async def test_a_run_adopted_under_an_instance_waits_for_its_process():
     registry = WorkerRegistry()
     try:
         registry.adopt("gpu.3", "r1", instance_hash="h")
-        assert registry.adopted_instance_hash("gpu.3") == "h"
-        assert registry.adopted_instance_hash("gpu.4") is None
+        placeholder = registry.holder("gpu.3")
+        assert placeholder.instance_hash == "h" and placeholder.one_shot
+        assert registry.get("gpu.3") is None  # unlisted
+        assert registry.holder("gpu.4") is None
         registry.adopt("box", "r2")
-        assert registry.adopted_instance_hash("box") is None
+        assert registry.holder("box").instance_hash is None
+        assert not registry.holder("box").one_shot
         # Revoking the credential ends the adopted run too.
         assert registry.forget_instances("gpu", "revoked") == ["gpu.3"]
-        assert registry.adopted_instance_hash("gpu.3") is None
+        assert registry.holder("gpu.3") is None
         assert registry.run_state("gpu.3", "r1") is None
     finally:
         await registry.shutdown()
@@ -260,9 +370,11 @@ async def test_one_credential_serves_concurrent_instances_of_a_sweep(
             assert by_id["gpu.a"]["credential"] == CREDENTIAL_WORKER
             assert by_id["gpu"]["enrolled"] is True
             assert by_id["gpu"]["instance_of"] is None
-            # The credential's row records that its agents are one-shot.
-            assert (await store.list_workers())[0].one_shot is True
-            assert registry.get("gpu").one_shot
+            # The credential's row is its own agent's: no instance writes
+            # it (review of #855).
+            row = (await store.list_workers())[0]
+            assert row.one_shot is False and row.devices == []
+            assert not registry.get("gpu").one_shot
             await a.finish_run(assign_a)
             await b.finish_run(assign_b)
             for assign in (assign_a, assign_b):
@@ -469,7 +581,7 @@ async def test_an_adopted_instance_run_is_taken_back_by_its_process_only(
                 reject = await FakeAgent(ws).hello(
                     "box", one_shot=True, instance="7", instance_id=other)
                 assert isinstance(reject, wp.Reject)
-                assert "only the agent process that runs it" in reject.reason
+                assert "its run is in flight" in reject.reason
         assert second.service.running_on(run_id) == "box.7"
         final = spooler.frame("finished")
         await spooler.produce(final)
@@ -522,18 +634,153 @@ async def test_an_instance_uploads_for_its_own_run_only(http, monkeypatch):  # n
 
 async def test_the_handshake_checks_an_adopted_id_before_registering(
         env, monkeypatch):  # noqa: F811
-    """``ws_worker`` asks the registry for an adopted instance's hash under
-    the instance's full id (not the credential's name)."""
+    """``ws_worker`` looks up who holds an instance under its full id (not
+    the credential's name)."""
     _, registry = env
     seen: list[str] = []
-    original = registry.adopted_instance_hash
+    original = registry.holder
 
     def spy(worker_id: str) -> Any:
         seen.append(worker_id)
         return original(worker_id)
 
-    monkeypatch.setattr(registry, "adopted_instance_hash", spy)
+    monkeypatch.setattr(registry, "holder", spy)
     async with _client() as client, aconnect_ws(_path(), client) as ws:
         assert isinstance(await FakeAgent(ws).hello(
             "box", one_shot=True, instance="9", instance_id="i"), wp.Welcome)
-    assert seen == ["box.9"]
+    assert seen and set(seen) == {"box.9"}
+
+
+# ── review of #855: a restart with the credential's own agent ────────────
+
+
+@pytest.fixture
+async def enrolled_generations(generations):
+    """``generations`` plus a worker store with ``gpu`` enrolled; each
+    generation knows the enrolled workers, as ``main`` loads them."""
+    database = app.state.db
+    store = WorkerStore(database)
+    app.state.worker_store = store
+    created = await store.create_enrollment()
+    token, _ = await store.enroll(created["token"], name="gpu", platform={},
+                                  mounts={}, devices=[])
+
+    async def start() -> Generation:
+        generation = generations()
+        generation.registry.load_known(await store.list_workers())
+        return generation
+
+    try:
+        yield start, store, token
+    finally:
+        del app.state.worker_store
+
+
+async def test_an_instance_never_costs_the_credentials_own_agent_its_run(
+        enrolled_generations, tmp_path):
+    """Review of #855 (item 1): an instance's hello wrote the credential's
+    row (one-shot, its devices) while the credential's regular agent was
+    connected; after a restart that agent was refused as busy and the run
+    it was running died with it."""
+    start, store, token = enrolled_generations
+    async with _client() as client:
+        first = await start()
+        async with _ws(client, token) as ws:
+            regular = FakeAgent(ws)
+            assert isinstance(await regular.hello(
+                "gpu", devices=("cpu", "cuda:0"), instance_id="regular"),
+                wp.Welcome)
+            run_id = await _submit(client, {"worker": "gpu"})
+            assert isinstance(await regular.recv(), wp.Assign)
+            spooler = SpoolingAgent(tmp_path, run_id)
+            spooler.agent = regular
+            await spooler.produce(spooler.frame("started"))
+            await _until(lambda: first.service.running_on(run_id) == "gpu")
+            async with _ws(client, token) as ws_i:
+                assert isinstance(await FakeAgent(ws_i).hello(
+                    "gpu", one_shot=True, instance="7",
+                    instance_id="secret-7"), wp.Welcome)
+                await _until(lambda: first.registry.get("gpu.7") is not None)
+            row = (await store.list_workers())[0]
+            assert row.one_shot is False
+            assert [d["value"] for d in row.devices] == ["cpu", "cuda:0"]
+            assert not first.registry.get("gpu").one_shot
+        spooler.agent = None
+        await first.crash()
+
+        second = await start()
+        assert not second.registry.get("gpu").one_shot
+        await second.service.recover_interrupted()
+        assert second.service.running_on(run_id) == "gpu"
+        await spooler.produce(spooler.frame("finished"))
+        async with _ws(client, token) as ws:
+            agent = FakeAgent(ws)
+            assert isinstance(await agent.hello(
+                "gpu", devices=("cpu", "cuda:0"), instance_id="regular"),
+                wp.Welcome)
+            await spooler.resume(agent)
+            record = await _terminal(second.service, run_id)
+    assert record.status == "succeeded", record.error
+
+
+async def test_an_enrolled_one_shot_agent_takes_its_run_back_after_a_restart(
+        enrolled_generations, tmp_path):
+    """Review of #855 (item 2): a known one-shot worker loaded from its row
+    has no ``instance_id``; the hash its run recorded lets its own agent,
+    and only that one, take the run back."""
+    start, store, token = enrolled_generations
+    async with _client() as client:
+        first = await start()
+        async with _ws(client, token) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello("gpu", one_shot=True, instance_id="secret-a")
+            run_id = await _submit(client, POOL)
+            assert isinstance(await agent.recv(), wp.Assign)
+            spooler = SpoolingAgent(tmp_path, run_id)
+            spooler.agent = agent
+            await spooler.produce(spooler.frame("started"))
+            await _until(lambda: first.service.running_on(run_id) == "gpu")
+        spooler.agent = None
+        facts = (await first.service.store.get_run(run_id)).execution_facts
+        assert facts[WORKER_RESUME_KEY]["instance"] == instance_id_hash(
+            "secret-a")
+        await first.crash()
+
+        second = await start()
+        known = second.registry.get("gpu")
+        assert known.one_shot and known.instance_id is None
+        await second.service.recover_interrupted()
+        assert known.instance_hash == instance_id_hash("secret-a")
+        async with _ws(client, token) as ws:
+            reject = await FakeAgent(ws).hello("gpu", one_shot=True,
+                                               instance_id="secret-b")
+            assert isinstance(reject, wp.Reject)
+            assert "its run is in flight" in reject.reason
+        await spooler.produce(spooler.frame("finished"))
+        async with _ws(client, token) as ws:
+            agent = FakeAgent(ws)
+            assert isinstance(await agent.hello(
+                "gpu", one_shot=True, instance_id="secret-a",
+                one_shot_run_id=run_id, one_shot_taken=run_id), wp.Welcome)
+            await spooler.resume(agent)
+            record = await _terminal(second.service, run_id)
+    assert record.status == "succeeded", record.error
+
+
+async def test_a_policy_set_on_an_instance_is_its_credentials(enrolled):
+    """Review of #855 (item 7): an instance's card admits as the
+    credential says, so a policy set through it is stored for the
+    credential, and every instance (and the next array) uses it."""
+    _, registry, store, token = enrolled
+    async with _client() as client, _ws(client, token) as ws:
+        await FakeAgent(ws).hello("gpu", devices=("cpu", "cuda:0"),
+                                  one_shot=True, instance="a",
+                                  instance_id="secret-a")
+        response = await client.put(
+            "/api/workers/gpu.a/devices/cuda:0/policy",
+            json={"policy": "shared"})
+        assert response.status_code == 200, response.text
+        assert response.json()["devices"][1]["policy"] == "shared"
+    assert await store.list_device_policies() == [("gpu", "cuda:0",
+                                                   "shared")]
+    assert registry.device_policy("gpu", "cuda:0") == "shared"

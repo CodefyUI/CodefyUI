@@ -45,7 +45,10 @@ flight (``worker_handshake.one_shot_refusal``), and, started with
 ``--instance`` (#845) is registered as ``<name>.<instance>`` under its
 credential's name, and every check above applies to that id; a run that
 instance took before this server restarted can be taken back only by the
-agent process that took it (``worker_handshake.instance_refusal``).
+agent process that took it (``worker_handshake.same_agent``), as for any
+one-shot run. An instance never writes its credential's ``workers`` row:
+the credential's own agent may be connected, and what that row records
+(its devices, its one-shot flag) is that agent's.
 Otherwise the worker is registered
 (replacing an older connection under the same name, but only one that
 authenticated the same way: a session-token agent cannot take over an
@@ -264,9 +267,7 @@ async def websocket_worker(ws: WebSocket) -> None:
     refusal = (refusal
                or handshake.identity_refusal(
                    hello, credential=auth.credential, enrolled_as=enrolled_as,
-                   registry=registry)
-               or handshake.instance_refusal(
-                   hello, registry.adopted_instance_hash(hello.name)))
+                   registry=registry))
     if refusal is None:
         refusal = await _one_shot_run_refusal(ws, registry, hello)
     if refusal is not None:
@@ -291,8 +292,9 @@ async def websocket_worker(ws: WebSocket) -> None:
     # awaited (a run lookup, ``welcome``), and two agents taking one
     # one-shot name at once would both have passed it, the second then
     # replacing the first and moving its run.
-    late = handshake.one_shot_refusal(hello, registry.get(hello.name)) \
-        if registry.get(hello.name) is not None else None
+    holder = registry.holder(hello.name)
+    late = (handshake.one_shot_refusal(hello, holder)
+            if holder is not None else None)
     if late is not None:
         await refuse(hello.name, late)
         return
@@ -309,15 +311,13 @@ async def websocket_worker(ws: WebSocket) -> None:
         # credential is revoked by removing the worker it belongs to.
         enrolled=enrolled_as is not None and hello.instance is None,
         plain_http=plain_from_another_machine(ws))
-    if hello.instance is not None:
-        base = registry.get(worker.instance_of)
-        if base is not None and not base.online:
-            # Its next start after a restart reads the same (migration 016).
-            base.one_shot = True
     store = getattr(ws.app.state, "worker_store", None)
-    if enrolled_as is not None and store is not None:
-        await _touch(store, hello, enrolled_as,
-                     fingerprint_digest=worker.fingerprint)
+    # The credential's row is its own agent's (#845): an instance, which
+    # registered under ``<name>.<instance>``, never writes it.
+    record = (store if enrolled_as is not None and hello.instance is None
+              else None)
+    if record is not None:
+        await _touch(record, hello, fingerprint_digest=worker.fingerprint)
     launcher = getattr(ws.app.state, "ssh_launcher", None)
     if launcher is not None:
         launcher.worker_connected(worker.name)
@@ -352,8 +352,8 @@ async def websocket_worker(ws: WebSocket) -> None:
         pass
     finally:
         registry.disconnect(worker)
-        if enrolled_as is not None and store is not None:
-            await _touch(store, None, enrolled_as)
+        if record is not None:
+            await _touch(record, None, enrolled_as)
 
 
 async def _one_shot_run_refusal(ws: WebSocket, registry: Any,
@@ -368,9 +368,8 @@ async def _one_shot_run_refusal(ws: WebSocket, registry: Any,
         # An agent that already took its run is carrying on with it (a
         # reconnect, perhaps after this server restarted), not asking.
         return None
-    existing = registry.get(hello.name)
-    if existing is not None and hello.instance_id is not None \
-            and existing.instance_id == hello.instance_id:
+    existing = registry.holder(hello.name)
+    if existing is not None and handshake.same_agent(hello, existing):
         return None
     service = getattr(ws.app.state, "run_service", None)
     if service is None:
@@ -397,15 +396,15 @@ async def _touch(store: Any, hello: wp.Hello | None,
                  name: str | None = None, *,
                  fingerprint_digest: str | None = None) -> None:
     # On ``hello`` the digest is always written: None clears a stale one.
-    """Record an enrolled worker *name* as seen (with its facts, on
-    ``hello``; an instance's hello records them on its credential's row,
-    #845). A failed write is logged; it never costs the connection."""
+    """Record an enrolled worker as seen (with its facts and whether it
+    is one-shot, #845, on ``hello``). A failed write is logged; it never
+    costs the connection."""
     try:
         if hello is None:
             await store.touch(name)
         else:
             await store.touch(
-                name or hello.name, platform=dict(hello.platform),
+                hello.name, platform=dict(hello.platform),
                 mounts=dict(hello.mounts),
                 devices=[d.model_dump() for d in hello.devices],
                 machine_id=hello.machine_id,

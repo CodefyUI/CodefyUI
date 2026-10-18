@@ -109,7 +109,7 @@ from ..core.mounts import (
 )
 from ..core.scheduling import LOCAL_WORKER_ID, slot_for
 from ..core.worker_protocol import canonical_device
-from ..core.workers import CREDENTIAL_SESSION
+from ..core.workers import CREDENTIAL_SESSION, policy_owner
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +282,10 @@ async def set_device_policy(request: Request, worker_id: str, device: str,
                                  "a CUDA or MPS device can")
     store = getattr(request.app.state, "worker_store", None)
     if store is not None:
-        await store.set_device_policy(worker_id, value, body.policy)
+        # An instance's card admits as its credential's does (#845): set
+        # on one instance, it is set for the credential and all of them.
+        await store.set_device_policy(policy_owner(worker_id), value,
+                                      body.policy)
     registry.set_device_policy(worker_id, value, body.policy)
     service = _service(request)
     if service is not None and body.policy == mem.POLICY_SHARED:
