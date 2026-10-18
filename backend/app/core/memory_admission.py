@@ -42,10 +42,13 @@ Budgets
 -------
 ``target.memory_gib`` declares one (GiB per device of the run). A run that
 declares none gets one from a :class:`BudgetSource` (the default,
-:class:`HistoryBudgetSource`: the last peak of a succeeded run of the same
-graph, times :data:`HISTORY_MARGIN`; a CUDA peak only: MPS reports what
-the driver holds at the end, which is not a peak); #794 plugs a better
-estimate in at the same seam. A run with neither cannot go to a shared card.
+``memory_estimate.EstimateBudgetSource``: the last peak of a succeeded run
+of the same graph, by its structural hash (#794), times
+:data:`HISTORY_MARGIN`, :func:`history_suggestion`; a CUDA peak only: MPS
+reports what the driver holds at the end, which is not a peak). A static estimate from the graph's parameter counts is
+never a default: the dialog offers it, and a run carries it only as a
+declared ``target.memory_gib`` with ``target.memory_source: "estimate"``.
+A run with no budget cannot go to a shared card.
 
 ``free`` is read every heartbeat (10 s) for the whole card; a run's own
 growth after it started is not visible in it, which the ``total`` term
@@ -57,12 +60,10 @@ Nothing here runs unless a card is ``shared``: with every card exclusive
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ HISTORY_MARGIN = 1.2
 #: ``Budget.source`` values.
 SOURCE_DECLARED = "declared"
 SOURCE_HISTORY = "history"
+#: A static estimate from the graph's parameter counts (#794) the user
+#: accepted (``target.memory_source``), never a measured peak.
+SOURCE_ESTIMATE = "estimate"
 
 SlotKey = tuple[str, str]
 
@@ -131,11 +135,16 @@ class Budget:
     source: str = SOURCE_DECLARED
     #: For a ``history`` budget: the run whose peak it was taken from.
     from_run: str | None = None
+    #: For a ``history`` budget that replaced a smaller accepted estimate
+    #: while the run waited (#794): that estimate, in bytes.
+    raised_from: int | None = None
 
     def describe(self) -> dict[str, Any]:
         entry: dict[str, Any] = {"bytes": self.bytes, "source": self.source}
         if self.from_run:
             entry["from_run"] = self.from_run
+        if self.raised_from:
+            entry["raised_from"] = self.raised_from
         return entry
 
 
@@ -238,33 +247,14 @@ def graph_hash(graph: Mapping[str, Any],
                options: Mapping[str, Any] | None = None) -> str:
     """A digest of what a graph computes, and on what, for "the same run"
     (#788): the key a run's peak is stored under and its default budget is
-    looked up by.
-
-    Node ids, types and params, the edges (by their ends and handles), the
-    presets and subgraphs, and the run's :func:`run_shape` (device kind and
-    count; without *options*, one CPU); not node positions, labels or
-    ``settings`` (the seed does not change how much memory a run needs).
-    #794 replaces the graph part with a structural hash; until then, any
-    params change is a different graph, which errs toward "no history"
-    rather than a wrong one.
+    looked up by. Since #794 the structural hash of the executable graph
+    (``memory_estimate.structural_hash``: node types and the params that
+    shape it, the wiring, no ids, positions, labels or seeds) and the run's
+    :func:`run_shape` (device kind and count; without *options*, one CPU).
     """
-    def canonical(value: Any) -> str:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                          default=str)
+    from .memory_estimate import structural_hash
 
-    nodes = sorted(
-        canonical([node.get("id"), node.get("type"),
-                   (node.get("data") or {}).get("params") or {}])
-        for node in graph.get("nodes") or () if isinstance(node, Mapping))
-    edges = sorted(
-        canonical([edge.get("source"), edge.get("sourceHandle"),
-                   edge.get("target"), edge.get("targetHandle")])
-        for edge in graph.get("edges") or () if isinstance(edge, Mapping))
-    document = {"nodes": nodes, "edges": edges,
-                "presets": graph.get("presets") or [],
-                "subgraphs": graph.get("subgraphs") or [],
-                "shape": run_shape(options)}
-    return hashlib.sha256(canonical(document).encode("utf-8")).hexdigest()
+    return structural_hash(graph, options)
 
 
 def peak_bytes(peak_memory: Any) -> int | None:
@@ -300,40 +290,31 @@ class Suggestion:
 
 
 class BudgetSource(Protocol):
-    """Where a run's default ``memory_gib`` comes from (#788; #794 adds a
-    static estimate). ``suggest`` gets the graph as stored (secrets
-    scrubbed) and the run's normalised options (its target and device), and
-    returns None when it has nothing to say."""
+    """Where a run's default ``memory_gib`` comes from (#788; #794 keys it
+    by the graph's structure). ``suggest`` gets the graph (secrets
+    scrubbed), the run's normalised options (its target and device) and,
+    when the caller has it, the graph's history key *digest*
+    (:func:`graph_hash` of the graph before unknown node types' params were
+    scrubbed), and returns None when it has nothing to say."""
 
     async def suggest(self, graph: Mapping[str, Any],
-                      options: Mapping[str, Any]) -> Suggestion | None: ...
+                      options: Mapping[str, Any], *,
+                      digest: str | None = None) -> Suggestion | None: ...
 
 
-class HistoryBudgetSource:
-    """The last peak of a succeeded run of the same graph, times
-    :data:`HISTORY_MARGIN`. *lookup* is ``RunStore.last_peak_memory``:
-    ``graph hash -> (run_id, peak_memory) | None``."""
-
-    def __init__(self, lookup: Callable[[str], Awaitable[Any]]) -> None:
-        self._lookup = lookup
-
-    async def suggest(self, graph: Mapping[str, Any],
-                      options: Mapping[str, Any]) -> Suggestion | None:
-        try:
-            found = await self._lookup(graph_hash(graph, options))
-        except Exception:  # noqa: BLE001 -- a suggestion, never an error
-            logger.warning("could not look up this graph's memory history",
-                           exc_info=True)
-            return None
-        if not found:
-            return None
-        run_id, peak_memory = found
-        peak = peak_bytes(peak_memory)
-        if peak is None:
-            return None
-        return Suggestion(Budget(int(math.ceil(peak * HISTORY_MARGIN)),
-                                 SOURCE_HISTORY, from_run=run_id),
-                          peak_bytes=peak)
+def history_suggestion(run_id: str | None,
+                       peak_memory: Any) -> Suggestion | None:
+    """The default budget a measured run gives its graph (#788): its CUDA
+    peak (:func:`peak_bytes`) times :data:`HISTORY_MARGIN`, from *run_id*;
+    None for a run with no CUDA peak. The one place the rule lives: the
+    budget source's suggestion, a waiting estimate's raise and a submitted
+    estimate's raise (#794) all go through it."""
+    peak = peak_bytes(peak_memory)
+    if peak is None:
+        return None
+    return Suggestion(Budget(int(math.ceil(peak * HISTORY_MARGIN)),
+                             SOURCE_HISTORY, from_run=run_id),
+                      peak_bytes=peak)
 
 
 # ── messages ──────────────────────────────────────────────────────────────

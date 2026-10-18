@@ -111,7 +111,7 @@
     84px                  /* status chip */
     minmax(70px, 120px)   /* worker (+ why it waits) */
     minmax(70px, 150px)   /* devices + queue position */
-    64px                  /* memory budget (#788) */
+    104px                 /* memory budget (#788); "21.8 GiB est." (#794) */
     68px                  /* started */
     72px                  /* duration */
     80px                  /* final loss */
