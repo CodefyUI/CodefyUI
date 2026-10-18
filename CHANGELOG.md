@@ -88,6 +88,18 @@ received — each links to the release it was published as.
   active one. Rows started by 3.1.0, which recorded no resume point, are
   retired as before.
 
+### Fixed
+
+- **A worker run cancelled while its subprocess is still starting now ends
+  on Windows too.** A spawned run subprocess on Windows takes over its pipe
+  ends only once it has started, so one stopped before that (a cancel with
+  no grace, or one whose grace ran out during the torch import) left the
+  agent waiting for the end of a pipe that never came: the run never
+  reported `run_finished`, its device slot stayed taken, and a one-shot
+  agent whose only run it was never exited. The agent now watches the
+  process as well as its pipe, so such a run ends `interrupted` within
+  seconds on every OS. [#856]
+
 ## [3.1.1] — 2026-10-17
 
 Fixes a data-loss bug in 3.1.0's transfer backend: on a worker without a
@@ -6349,3 +6361,4 @@ Release candidates before 1.0.0 are on the
 [#794]: https://github.com/CodefyUI/CodefyUI/issues/794
 [#838]: https://github.com/CodefyUI/CodefyUI/issues/838
 [#842]: https://github.com/CodefyUI/CodefyUI/issues/842
+[#856]: https://github.com/CodefyUI/CodefyUI/issues/856
