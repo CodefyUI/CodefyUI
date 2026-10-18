@@ -152,6 +152,68 @@ describe('workerMessageText', () => {
   });
 });
 
+describe('workerMessageText: device_fallback (#839)', () => {
+  const run = { code: 'device_fallback_run', params: { requested: 'cuda', device: 'cpu', where: 'server' } };
+  const node = {
+    code: 'device_fallback_node',
+    params: { node: 'train', type: 'TrainingLoop', requested: 'cuda:0', device: 'cpu', where: 'worker' },
+  };
+  const inRun = (cards: unknown) => ({
+    code: 'device_fallback_node_in_run',
+    params: { node: 'train', type: 'TrainingLoop', requested: 'cuda:1', device: 'cuda:0', cards },
+  });
+
+  it('words each code in English exactly as the server does', () => {
+    expect(workerMessageText('x', run, t))
+      .toBe('The run asked for device cuda, which this server does not have; it runs on cpu.');
+    expect(workerMessageText('x', node, t)).toBe(
+      'Node train (TrainingLoop) is set to device cuda:0, which this worker does not have; when it executes, it runs on cpu.',
+    );
+    expect(workerMessageText('x', inRun([['cuda:0', 'cuda:1']]), t)).toBe(
+      "Node train (TrainingLoop) is set to device cuda:1; this run has 1 card (cuda:0 = the worker's cuda:1), so when it executes, it runs on cuda:0.",
+    );
+    expect(workerMessageText('x', inRun([['cuda:0', 'cuda:2'], ['cuda:1', 'cuda:0']]), t)).toBe(
+      "Node train (TrainingLoop) is set to device cuda:1; this run has 2 cards (cuda:0 = the worker's cuda:2, cuda:1 = the worker's cuda:0), so when it executes, it runs on cuda:0.",
+    );
+    expect(workerMessageText('x', inRun([]), t)).toBe(
+      'Node train (TrainingLoop) is set to device cuda:1; this run has no CUDA card, so when it executes, it runs on cuda:0.',
+    );
+  });
+
+  it('words them in zh-TW', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(workerMessageText('x', run, t)).toBe('run 要求的裝置 cuda 本伺服器沒有；改在 cpu 上執行。');
+    expect(workerMessageText('x', node, t))
+      .toBe('節點 train（TrainingLoop）設定為裝置 cuda:0，這個 worker 上沒有這個裝置；執行時會改用 cpu。');
+    expect(workerMessageText('x', inRun([['cuda:0', 'cuda:1'], ['cuda:1', 'cuda:3']]), t))
+      .toBe('節點 train（TrainingLoop）設定為裝置 cuda:1；這個 run 有 2 張卡（cuda:0 即 worker 的 cuda:1、cuda:1 即 worker 的 cuda:3），因此執行時會改用 cuda:0。');
+    expect(workerMessageText('x', inRun([['cuda:0', 'cuda:1']]), t))
+      .toBe('節點 train（TrainingLoop）設定為裝置 cuda:1；這個 run 有 1 張卡（cuda:0 即 worker 的 cuda:1），因此執行時會改用 cuda:0。');
+    expect(workerMessageText('x', inRun([]), t))
+      .toBe('節點 train（TrainingLoop）設定為裝置 cuda:1；這個 run 沒有 CUDA 卡，因此執行時會改用 cuda:0。');
+  });
+
+  it('keeps the server sentence for parameters it cannot read', () => {
+    const message = 'server sentence';
+    const bad = [
+      { code: 'device_fallback_run', params: { requested: 'cuda', device: 'cpu', where: 'moon' } },
+      { code: 'device_fallback_run', params: { device: 'cpu', where: 'server' } },
+      { code: 'device_fallback_run', params: { requested: 'cuda', where: 'server' } },
+      { code: 'device_fallback_node', params: { ...node.params, node: undefined } },
+      { code: 'device_fallback_node', params: { ...node.params, type: undefined } },
+      { code: 'device_fallback_node', params: { ...node.params, where: undefined } },
+      { code: 'device_fallback_node_in_run', params: { ...inRun([]).params, node: undefined } },
+      { code: 'device_fallback_node_in_run', params: { ...inRun([]).params, type: undefined } },
+      inRun('not a list'),
+      inRun([['cuda:0']]),
+      inRun([['cuda:0', 1]]),
+      inRun(['cuda:0']),
+      { code: 'device_fallback_future', params: { requested: 'cuda', device: 'cpu' } },
+    ];
+    for (const coded of bad) expect(workerMessageText(message, coded, t)).toBe(message);
+  });
+});
+
 describe('codedMessage', () => {
   it('reads a code and parameters, and nothing else', () => {
     expect(codedMessage({ code: 'worker_removed', params: { worker: 'box' }, detail: 'x' }))

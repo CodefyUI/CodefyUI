@@ -173,11 +173,54 @@ function fromWorkerCode({ code, params }: CodedMessage, t: Translate): string | 
   }
 }
 
+/** A non-empty list of the run's cards as `cuda:0 = the worker's cuda:1, ...`, or null. */
+function cardsText(value: unknown[], t: Translate): string | null {
+  const pairs = value.map((pair) =>
+    Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string'
+      ? t('runs.deviceFallback.card', { inRun: pair[0], physical: pair[1] })
+      : null,
+  );
+  if (pairs.some((pair) => pair === null)) return null;
+  const map = (pairs as string[]).reduce((a, b) => t('runs.deviceFallback.cardJoin', { a, b }));
+  return value.length === 1
+    ? t('runs.deviceFallback.cardsOne', { map })
+    : t('runs.deviceFallback.cardsMany', { count: value.length, map });
+}
+
+/** A `device_fallback` warning (#839), from its code and parameters. */
+function fromDeviceCode({ code, params }: CodedMessage, t: Translate): string | null {
+  const requested = text(params.requested);
+  const device = text(params.device);
+  if (!requested || !device) return null;
+  const where = params.where === 'worker' ? t('runs.deviceFallback.worker')
+    : params.where === 'server' ? t('runs.deviceFallback.server') : null;
+  const node = text(params.node);
+  const type = text(params.type);
+  switch (code) {
+    case 'device_fallback_run':
+      return where && t('runs.deviceFallback.run', { requested, device, where });
+    case 'device_fallback_node':
+      return where && node && type && t('runs.deviceFallback.node', { node, type, requested, device, where });
+    case 'device_fallback_node_in_run': {
+      if (!node || !type || !Array.isArray(params.cards)) return null;
+      if (params.cards.length === 0) {
+        return t('runs.deviceFallback.nodeNoCard', { node, type, requested, device });
+      }
+      const cards = cardsText(params.cards, t);
+      return cards && t('runs.deviceFallback.nodeInRun', { node, type, requested, device, cards });
+    }
+    default:
+      return null;
+  }
+}
+
 /**
- * A worker run's error or warning in the active language, from its code
- * and parameters; *message* (the server's English) when there is no code,
- * or one this build does not know.
+ * A worker run's error or warning, or a run's `device_fallback` warning, in
+ * the active language, from its code and parameters; *message* (the
+ * server's English) when there is no code, or one this build does not know.
  */
 export function workerMessageText(message: string, coded: CodedMessage | undefined, t: Translate): string {
-  return (coded && fromWorkerCode(coded, t)) || message;
+  if (!coded) return message;
+  return (coded.code.startsWith('device_fallback') ? fromDeviceCode(coded, t) : fromWorkerCode(coded, t))
+    || message;
 }
