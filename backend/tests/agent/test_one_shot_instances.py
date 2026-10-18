@@ -177,13 +177,23 @@ def test_a_starting_instance_retires_what_killed_ones_left(monkeypatch,
     # A spool that still grows is recent, however old its directory.
     growing = leftover("growing", old)
     os.utime(growing / "run1" / "agent.spool", (now, now))
-    (tmp_path / cli.INSTANCES_DIR_NAME / "stray.lock").touch()  # not a dir
+    # Lock files alone: an agent killed before its first run made no
+    # directory (found on Meow). An old one goes, a recent one stays.
+    base = tmp_path / cli.INSTANCES_DIR_NAME
+    (base / "recent.lock").touch()
+    (base / "orphan.lock").touch()
+    os.utime(base / "orphan.lock", (old, old))
+    (base / "notes.txt").touch()  # neither: left alone
+    os.utime(base / "notes.txt", (old, old))
     try:
-        assert cli.retire_left_instances("mine", now=now) == ["dead"]
+        assert cli.retire_left_instances("mine", now=now) == ["dead",
+                                                              "orphan"]
     finally:
         busy.release()
     assert not dead.exists()
-    assert not (dead.parent / "dead.lock").exists()
+    assert not (base / "dead.lock").exists()
+    assert not (base / "orphan.lock").exists()
+    assert (base / "recent.lock").exists() and (base / "notes.txt").exists()
     for kept in (held_dir, fresh, own, growing):
         assert kept.exists()
     # Nothing to look at: nothing retired.

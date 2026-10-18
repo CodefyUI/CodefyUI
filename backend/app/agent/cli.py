@@ -312,18 +312,19 @@ class InstanceLock(FileLock):
 
 
 def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
-    """Delete the runs directories of instances that are gone (#845).
+    """Delete what instances that are gone left (#845).
 
-    An instance's directory goes when its agent exits; one killed
-    (``SIGKILL``, the OOM killer, a node reboot, a SLURM time limit) leaves
-    it, spools and outputs included, and no later agent is that instance.
-    Each starting ``--instance`` agent retires the others' leftovers: a
-    directory whose lock is free (no agent holds the id) and in which
-    nothing changed for :data:`INSTANCE_LEFTOVER_AGE_S` (the margin for a
-    file system whose locks do not reach across machines). The outcome of
-    a leftover's run is already on the control plane: it ended
-    ``interrupted`` when that agent did not come back. Where ``fcntl`` is
-    missing (Windows) nothing is retired. Returns the retired ids."""
+    An instance's directory and lock file go when its agent exits; one
+    killed (``SIGKILL``, the OOM killer, a node reboot, a SLURM time limit)
+    leaves them, spools and outputs included, and no later agent is that
+    instance. Each starting ``--instance`` agent retires the others'
+    leftovers: an id whose lock is free (no agent holds it) and whose
+    directory (else lock file) did not change for
+    :data:`INSTANCE_LEFTOVER_AGE_S`, the margin for a file system whose
+    locks do not reach across machines. The outcome of a leftover's run is
+    already on the control plane: it ended ``interrupted`` when that agent
+    did not come back. Where ``fcntl`` is missing (Windows) nothing is
+    retired. Returns the retired ids."""
     try:
         import fcntl  # noqa: F401
     except ImportError:  # pragma: no cover - Windows
@@ -333,28 +334,43 @@ def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
     now = time.time() if now is None else now
     base = user_data_dir() / INSTANCES_DIR_NAME
     try:
-        candidates = sorted(p for p in base.iterdir() if p.is_dir())
+        entries = list(base.iterdir())
     except OSError:
         return []
+    # An id is its directory, its lock file, or both: an agent killed
+    # before its first run made no directory.
+    ids = sorted({p.name for p in entries if p.is_dir()}
+                 | {p.stem for p in entries
+                    if p.is_file() and p.suffix == ".lock"})
     retired = []
-    for path in candidates:
-        if path.name == own or _last_change(path) > now - \
-                INSTANCE_LEFTOVER_AGE_S:
+    for instance in ids:
+        path = base / instance
+        lock_path = base / f"{instance}.lock"
+        if instance == own:
             continue
-        lock = FileLock(base / f"{path.name}.lock", unlink=True)
+        changed = (_last_change(path) if path.is_dir()
+                   else _mtime(lock_path))
+        if changed > now - INSTANCE_LEFTOVER_AGE_S:
+            continue
+        lock = FileLock(lock_path, unlink=True)
         if not lock.acquire(blocking=False):
             continue  # an agent holds the id
         try:
             shutil.rmtree(path, ignore_errors=True)
         finally:
             lock.release()
-        retired.append(path.name)
+        retired.append(instance)
     if retired:
-        logger.warning("retired %d instance director%s left by agents that "
-                       "are gone: %s", len(retired),
-                       "y" if len(retired) == 1 else "ies",
-                       ", ".join(retired))
+        logger.warning("retired what %d instance(s) left, whose agents are "
+                       "gone: %s", len(retired), ", ".join(retired))
     return retired
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _last_change(path: Path) -> float:
