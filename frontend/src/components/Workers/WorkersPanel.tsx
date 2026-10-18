@@ -355,6 +355,53 @@ function byActivity(instances: readonly WorkerInfo[]): WorkerInfo[] {
   return [...instances].sort((a, b) => Number(AWAY_STATUSES.has(a.status)) - Number(AWAY_STATUSES.has(b.status)));
 }
 
+/** An instance that left (#845): no agent connected, nothing in flight. */
+function hasLeft(worker: WorkerInfo): boolean {
+  return AWAY_STATUSES.has(worker.status) && worker.running.length === 0;
+}
+
+/**
+ * One line for an instance that left (#845): which one, how its run went,
+ * when it was last heard from. A SLURM array leaves many; a full card
+ * each would bury the live ones.
+ */
+function LeftInstanceRow({ worker, now, onRemoved }: {
+  worker: WorkerInfo;
+  now: number;
+  onRemoved: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[worker.id]));
+  const remove = useWorkerStore((s) => s.remove);
+  return (
+    <li className={styles.leftInstance} aria-label={worker.name}>
+      <span className={styles.workerName} title={worker.id}>{worker.instance ?? worker.id}</span>
+      <span className={`${styles.chip} ${styles.chip_offline}`}>{t('workers.instance.left')}</span>
+      {worker.one_shot && <OneShotLine oneShot={worker.one_shot} away />}
+      <span className={styles.muted} title={t('workers.heartbeat')}>
+        {worker.last_heartbeat_at === null
+          ? t('workers.heartbeat.never')
+          : relativeTime(worker.last_heartbeat_at, locale, now) || '-'}
+      </span>
+      <span className={styles.spacer} />
+      <button
+        type="button"
+        className={`${styles.btn} ${styles.danger}`}
+        aria-disabled={busy}
+        title={t('workers.instance.remove.title')}
+        onClick={() => {
+          if (busy) return;
+          void remove(worker.id).then(() => {
+            if (document.activeElement === document.body) onRemoved();
+          });
+        }}
+      >
+        {t('workers.remove')}
+      </button>
+    </li>
+  );
+}
+
 /**
  * The instances of one credential (#845): how many, how many are connected
  * and running, then a card for each. Open by default; a large array can
@@ -691,8 +738,23 @@ function WorkersDialog() {
         {children}
       </WorkerCard>
     );
-    const instanceCards = (group: readonly WorkerInfo[] | undefined) =>
-      group && byActivity(group).map((w) => card(w));
+    // A card for each live instance, one line for each that left.
+    const instanceCards = (group: readonly WorkerInfo[] | undefined) => {
+      if (!group) return undefined;
+      const left = group.filter(hasLeft);
+      return (
+        <>
+          {byActivity(group.filter((w) => !hasLeft(w))).map((w) => card(w))}
+          {left.length > 0 && (
+            <ul className={styles.leftInstances} aria-label={t('workers.instances.left', { count: left.length })}>
+              {left.map((w) => (
+                <LeftInstanceRow key={w.id} worker={w} now={now} onRemoved={() => closeRef.current?.focus()} />
+              ))}
+            </ul>
+          )}
+        </>
+      );
+    };
     const tops = workers.filter((w) => !w.instance_of);
     const topIds = new Set(tops.map((w) => w.id));
     content = (

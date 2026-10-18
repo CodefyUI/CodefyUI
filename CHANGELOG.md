@@ -49,9 +49,14 @@ received — each links to the release it was published as.
   with an enrollment token enroll once. Each instance is a one-shot worker
   of its own, and no instance can take another's name or run (its socket,
   its uploads, and its run after a control-plane restart are bound to the
-  agent process). The Workers panel lists the instances inside the
-  credential's card, **Shared credential**; removing the credential
-  revokes every instance. Regular agents cannot use `--instance`. Also, an
+  agent process). The credential's drain state, device admission policies
+  and `<name>/<device>` queue caps apply to every instance; an instance
+  never changes the credential's own entry, so its regular agent can stay
+  connected beside them. The Workers panel lists the instances inside the
+  credential's card, **Shared credential**: a card for each live one, a
+  line for each that left; removing the credential revokes every
+  instance. The folder a killed instance left is deleted by a later one
+  after 24 hours. Regular agents cannot use `--instance`. Also, an
   enrolled worker whose last agent was one-shot is remembered as one
   (migration 016), so after a restart of the control plane a run naming it
   is timed by `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` before its next

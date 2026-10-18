@@ -1198,6 +1198,8 @@ const en = {
   'workers.instances.summary': 'Instances: {count} ({connected} connected, {running} running)',
   'workers.instances.remove.title': 'Revoke this credential: every instance disconnects, and the runs they are executing end interrupted',
   'workers.instance.remove.title': 'Remove this instance from the list; the credential stays enrolled',
+  'workers.instance.left': 'Left',
+  'workers.instances.left': '{count} instance(s) that left',
   'workers.runLink': 'Show run {id} in the Runs panel',
   'workers.drain': 'Drain',
   'workers.drain.title': 'Send no new runs to this worker; the runs it is executing finish',

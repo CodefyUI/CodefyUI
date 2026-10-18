@@ -195,6 +195,26 @@
   border-left: 2px solid var(--border-base);
 }
 
+/* Instances that left (#845): one line each, under the live ones' cards. */
+.leftInstances {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.leftInstance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+}
+
 .cardHeader {
   display: flex;
   flex-wrap: wrap;

@@ -294,8 +294,18 @@ describe('WorkersPanel', () => {
     expect(ownFacts(credential)).toBeNull();
     expect(within(credential).getByText('Instances: 3 (2 connected, 1 running)')).toBeInTheDocument();
     const cards = within(credential).getAllByRole('article');
-    // Connected ones first; each shows its instance id, the full id as its tooltip.
-    expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual(['gpu.4821-2', 'gpu.4821-3', 'gpu.4821-1']);
+    // A card for each live one, connected first; each shows its instance id,
+    // the full id as its tooltip.
+    expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual(['gpu.4821-2', 'gpu.4821-3']);
+    // One line for each that left: its id, how its run went, when last seen.
+    const leftList = within(credential).getByRole('list', { name: '1 instance(s) that left' });
+    const left = within(within(leftList).getByRole('listitem', { name: 'gpu.4821-1' }));
+    expect(left.getByText('4821-1')).toHaveAttribute('title', 'gpu.4821-1');
+    expect(left.getByText('Left')).toBeInTheDocument();
+    expect(left.getByRole('button', { name: 'run-aaaa' })).toBeInTheDocument();
+    expect(left.getByTitle('Last heartbeat')).toHaveTextContent(/ago|now/);
+    expect(left.getByRole('button', { name: 'Remove' })).toHaveAttribute(
+      'title', 'Remove this instance from the list; the credential stays enrolled');
     const second = within(cards[0]);
     expect(second.getByRole('heading', { name: '4821-2' })).toHaveAttribute('title', 'gpu.4821-2');
     expect(second.getByText('Online')).toBeInTheDocument();
@@ -307,6 +317,8 @@ describe('WorkersPanel', () => {
     act(() => useI18n.setState({ locale: 'zh-TW' }));
     expect(within(credential).getByText('共用憑證')).toBeInTheDocument();
     expect(within(credential).getByText('執行個體：3 個（2 個已連線，1 個執行中）')).toBeInTheDocument();
+    expect(left.getByText('已離開')).toBeInTheDocument();
+    expect(within(credential).getByRole('list', { name: '1 個已離開的執行個體' })).toBeInTheDocument();
     act(() => useI18n.setState({ locale: 'en' }));
     // Removing the credential revokes it for every instance: asked twice while one is connected.
     const revoke = within(credential).getAllByRole('button', { name: 'Remove' })[0];
@@ -337,11 +349,24 @@ describe('WorkersPanel', () => {
     const group = within(dialog).getByRole('article', { name: 'lab' });
     expect(within(group).getByText('Instances')).toHaveAttribute('title', expect.stringMatching(/SLURM array/));
     expect(within(group).getByText('Instances: 2 (1 connected, 0 running)')).toBeInTheDocument();
-    expect(within(group).getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['lab.2', 'lab.1']);
+    expect(within(group).getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['lab.2']);
     // One that left goes at once; the credential's card is not asked about.
-    const left = within(within(group).getByRole('article', { name: 'lab.1' })).getByRole('button', { name: 'Remove' });
+    const left = within(within(group).getByRole('listitem', { name: 'lab.1' })).getByRole('button', { name: 'Remove' });
+    // While its removal is in flight, a second press does nothing.
+    act(() => useWorkerStore.setState({ busy: { 'lab.1': true } }));
+    await act(async () => fireEvent.click(left));
+    expect(removeWorker).not.toHaveBeenCalled();
+    act(() => useWorkerStore.setState({ busy: {} }));
+    // A removal that failed keeps the row, and the focus on its button.
+    vi.mocked(removeWorker).mockRejectedValueOnce(new Error('boom'));
+    left.focus();
     await act(async () => fireEvent.click(left));
     expect(removeWorker).toHaveBeenCalledWith('lab.1');
+    expect(left).toHaveFocus();
+    // Removed, its row goes, and the focus goes back into the dialog.
+    await act(async () => fireEvent.click(left));
+    expect(within(group).queryByRole('listitem', { name: 'lab.1' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
     // A shared credential's own refused handshake still shows in its card.
     const credential = within(dialog).getByRole('article', { name: 'gpu' });
     expect(within(credential).getByText('Shared credential')).toBeInTheDocument();
@@ -351,7 +376,7 @@ describe('WorkersPanel', () => {
   it('shows a connected credential with instances as itself (#845)', async () => {
     const dialog = await openPanel([
       worker('gpu', { enrolled: true }),
-      worker('gpu.1', { instance_of: 'gpu', instance: '1', status: 'offline' }),
+      worker('gpu.1', { instance_of: 'gpu', instance: '1', status: 'offline', last_heartbeat_at: 0 }),
     ]);
     const credential = within(dialog).getByRole('article', { name: 'gpu' });
     expect(within(credential).queryByText('Shared credential')).toBeNull();
@@ -359,12 +384,32 @@ describe('WorkersPanel', () => {
     expect(ownFacts(credential)).toHaveTextContent('Version');
     expect(within(credential).getByText('Instances: 1 (0 connected, 0 running)')).toBeInTheDocument();
     // Only the instance id shows when the server sent none apart.
-    expect(within(credential).getByRole('heading', { name: '1' })).toBeInTheDocument();
+    const left = within(within(credential).getByRole('listitem', { name: 'gpu.1' }));
+    expect(left.getByText('1')).toHaveAttribute('title', 'gpu.1');
+    // Not a one-shot worker as the server reports it: no run line.
+    expect(left.queryByText('left without a run')).toBeNull();
+    expect(left.getByTitle('Last heartbeat')).toHaveTextContent(/^-$/);
+  });
+
+  it('keeps a card for an instance that dropped with its run in flight (#845)', async () => {
+    const dialog = await openPanel([
+      worker('gpu.5', { instance_of: 'gpu', instance: '5', status: 'disconnected', running: ['run-cccccccc'] }),
+    ]);
+    expect(within(dialog).getByRole('article', { name: 'gpu.5' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('listitem', { name: 'gpu.5' })).toBeNull();
   });
 
   it('names an instance by its id when the server sent no instance part (#845)', async () => {
-    const dialog = await openPanel([worker('gpu.7', { instance_of: 'gpu', instance: null })]);
+    const dialog = await openPanel([
+      worker('gpu.7', { instance_of: 'gpu', instance: null }),
+      worker('gpu.8', { instance_of: 'gpu', instance: null, status: 'offline', last_heartbeat_at: null,
+        one_shot: { run_id: null, took: null } }),
+    ]);
     expect(within(dialog).getByRole('heading', { name: 'gpu.7' })).toHaveAttribute('title', 'gpu.7');
+    const left = within(within(dialog).getByRole('listitem', { name: 'gpu.8' }));
+    expect(left.getByText('gpu.8')).toHaveAttribute('title', 'gpu.8');
+    expect(left.getByText('left without a run')).toBeInTheDocument();
+    expect(left.getByTitle('Last heartbeat')).toHaveTextContent('never');
   });
 
   it('shows a status this build does not know as sent, in a neutral chip', async () => {
