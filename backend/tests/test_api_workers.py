@@ -154,9 +154,11 @@ async def test_every_device_carries_its_slots_and_this_server_is_listed(
             # #842: the same-host worker offers this card too.
             {"value": "cuda:0", "kind": "cuda",
              "slots": {"limit": 1, "taken": 1},
-             "same_card": [{"worker": "here", "device": "cuda:0"}]}]}
+             "same_card": [{"worker": "here", "device": "cuda:0",
+                            "policy": "exclusive", "online": True}]}]}
         assert [d["same_card"] for d in here["devices"]] == [
-            [{"worker": "local", "device": "cuda:0"}], []]
+            [{"worker": "local", "device": "cuda:0", "policy": None,
+              "online": True}], []]
         async with _client() as client:
             drained = (await client.post("/api/workers/far/drain")).json()
         assert drained["devices"][1]["slots"] == {"limit": 1, "taken": 1}

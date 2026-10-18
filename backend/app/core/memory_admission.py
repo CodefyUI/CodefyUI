@@ -15,9 +15,9 @@ A worker's card admits runs one of two ways, its **policy**, set per
 The ledger
 ----------
 :class:`MemoryLedger` is the control plane's account of what it promised on
-each slot (``(worker_id, device)``, ``scheduling.slot_for``, so a same-host
-worker's card shares one account with this process's; the slots of one
-physical card that two workers offer are read as one account, #842): the budgets of runs
+each slot (``(worker_id, device)``, ``scheduling.slot_for``; the slots of
+one physical card, a same-host worker's and this process's or two
+workers', are read as one account, #842): the budgets of runs
 assigned but not yet started (**reserved**) and of runs whose subprocess
 reported the cap in place (**running**). The card's **total** and **free**
 bytes come from the worker's heartbeat (NVML, device-wide: other users'

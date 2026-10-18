@@ -29,6 +29,12 @@ export interface WorkerDeviceMemory {
 export interface WorkerDeviceSlots {
   limit: number;
   taken: number;
+  /**
+   * The offerer whose limit a card several workers share takes (the
+   * smallest among the online ones, #842); absent when it is this slot's
+   * own. `worker` is `local` for this server.
+   */
+  limited_by?: { worker: string; device: string };
 }
 
 /** How a worker's card admits runs (#788): by count, or by memory budget. */
@@ -79,6 +85,10 @@ export interface WorkerDevice {
 export interface WorkerCardPeer {
   worker: string;
   device: string;
+  /** How that offerer admits runs; `null` for this server (by count). */
+  policy?: DevicePolicy | null;
+  /** That offerer can take runs now (this server always). */
+  online?: boolean;
 }
 
 /**

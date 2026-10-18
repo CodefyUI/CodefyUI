@@ -265,6 +265,13 @@ async def websocket_worker(ws: WebSocket) -> None:
                        "failed; see the agent's log): its node types are not "
                        "checked", hello.name)
 
+    # This server's devices, listed once in a thread, so the worker's are
+    # matched against them at ``connect`` (#773, #842) and the probe never
+    # runs on the event loop.
+    probe = getattr(registry, "probe_local_devices", None)
+    if probe is not None:
+        await probe()
+
     # ``welcome`` goes out BEFORE the worker is registered (#783): from
     # ``connect`` on, executors send through this socket (a stop that waited
     # for the worker, an ack), and nothing may precede ``welcome``. The

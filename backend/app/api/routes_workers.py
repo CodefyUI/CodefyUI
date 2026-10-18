@@ -41,17 +41,19 @@ device report cannot be parsed. ``same_host: true`` marks a worker on this
 machine (its ``hello.machine_id`` equals this server's). A device of such a
 worker that is physically one of this server's (``cpu``, ``mps:0``, a CUDA
 card with a matching UUID) carries ``shared_with: "local"``, otherwise
-``null``: its ``slots`` ARE this server's slot for that card (the same
-counter, under this server's limit), so a panel adding up usage must count
-it once.
+``null``.
 
-Physical cards (#842): every device entry (the ``local`` ones too) carries
-``same_card``, the other offerers of that physical card, matched by the
-UUID each reports (``[{"worker", "device"}]``, ``worker`` ``local`` for
-this server; ``[]`` for a card nobody else offers, or reported without a
-UUID). Two workers on one host that offer one card share its slots: their
-``slots`` are the card's (the runs on every offerer, under the smallest
-cap), so a panel adding up usage must count the card once. The list's
+Physical devices (#842): every device entry (the ``local`` ones too)
+carries ``same_card``, the other offerers of that physical device
+(``[{"worker", "device", "policy", "online"}]``, ``worker`` ``local`` for
+this server, whose ``policy`` is null; ``[]`` for a device nobody else
+offers): a CUDA card with the same UUID, and a same-host worker's ``cpu``
+and ``mps:0``. Their ``slots`` are the device's: the runs on every
+offerer, under the smallest cap among the online ones, with
+``limited_by: {"worker", "device"}`` when that cap is another offerer's
+(absent otherwise), so a panel adding up usage must count the device
+once. A card some online offerer keeps ``exclusive`` admits by count:
+``admission.by_memory`` is false on the others. The list's
 ``local`` field describes this server the same way
 (``{"id": "local", "devices": [{"value", "kind", "slots"}]}``; ``null``
 without a run service; its ``mounts`` is this server's own label and path,
@@ -224,13 +226,23 @@ def _describe(worker: Any, service: Any,
 
 
 def _same_card(registry: Any, worker_id: str,
-               value: str | None) -> list[dict[str, str]]:
-    """The other offerers of the physical card (#842), as
-    ``[{"worker", "device"}]``; ``worker`` ``local`` is this server."""
+               value: str | None) -> list[dict[str, Any]]:
+    """The other offerers of the physical device (#842), as
+    ``[{"worker", "device", "policy", "online"}]``; ``worker`` ``local``
+    is this server, whose ``policy`` is None (its runs admit by count)."""
     peers = getattr(registry, "card_peers", None)
     if peers is None or value is None:
         return []
-    return [{"worker": w, "device": d} for w, d in peers(worker_id, value)]
+    entries = []
+    for peer_id, device in peers(worker_id, value):
+        local = peer_id == LOCAL_WORKER_ID
+        peer = None if local else registry.get(peer_id)
+        entries.append({
+            "worker": peer_id, "device": device,
+            "policy": None if local else registry.device_policy(peer_id,
+                                                                device),
+            "online": local or (peer is not None and peer.online)})
+    return entries
 
 
 def _describe_local(service: Any,

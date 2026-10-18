@@ -521,36 +521,53 @@ def test_a_worker_override_raises_only_that_workers_card():
     assert scheduler.place(_on("box-b", "cuda:0"), taken) is None
 
 
-def test_a_same_host_worker_shares_this_processs_slots():
+async def test_a_same_host_worker_shares_this_processs_cards():
     """A worker on this machine runs on the same cards: each card it shares
-    has this process's slot, one budget under the local cap, so a local run
-    and a worker run never both get one card under ``gpu=1``. Matched by
-    card identity, so the worker's ``cuda:0`` may be this process's
-    ``cuda:1`` (another ``CUDA_VISIBLE_DEVICES``)."""
-    here = _two_card_worker("here-box", shared={"cuda:0": "cuda:1",
-                                                "cuda:1": "cuda:0"})
-    scheduler = WorkerScheduler(QueueLimits(), _Registry(
-        here, _two_card_worker("far-box")), lambda: ["cpu", "cuda:0", "cuda:1"])
-    local = _Entry("l", "cuda:1", {"device": "cuda:1"})
-    on_worker = _on("here-box", "cuda:0")
-    placed = scheduler.place(on_worker, {})
-    assert placed == Placement("here-box", ("cuda:0",),
-                               (("local", "cuda:1"),))
-    taken: dict = {}
-    _hold(taken, placed)
-    assert scheduler.place(local, taken) is None
-    assert scheduler.place(on_worker, {("local", "cuda:1"): 1}) is None
-    # A worker device set holds the shared slots too.
-    pair = scheduler.place(_on("here-box", "cuda:0", ["cuda:0", "cuda:1"]),
-                           {})
-    assert pair.slots == (("local", "cuda:1"), ("local", "cuda:0"))
-    # A worker on another machine keeps slots of its own.
-    assert scheduler.place(_on("far-box", "cuda:0"), taken).slots == (
-        ("far-box", "cuda:0"),)
-    # The local override is the shared card's cap.
-    raised = WorkerScheduler(
-        QueueLimits(overrides=(("cuda:1", 2),)), _Registry(here), lambda: [])
-    assert raised.place(on_worker, taken) is not None
+    with this process is ONE budget with this process's slot (#773, counted
+    per card since #842), so a local run and a worker run never both get
+    one card under ``gpu=1``. Matched by card identity, so the worker's
+    ``cuda:0`` may be this process's ``cuda:1`` (another
+    ``CUDA_VISIBLE_DEVICES``). Each run holds its own offerer's slot."""
+    registry = WorkerRegistry(local_devices=lambda: [
+        _Fact("cpu"), _Fact("cuda:0", "u0"), _Fact("cuda:1", "u1")])
+    try:
+        registry.connect(_hello("here-box", ("cuda:0", "u1"),
+                                ("cuda:1", "u0")),
+                         send=_noop, close=_noop, same_host=True)
+        registry.connect(_hello("far-box", ("cuda:0", "x0"),
+                                ("cuda:1", "x1")), send=_noop, close=_noop)
+        scheduler = WorkerScheduler(QueueLimits(), registry,
+                                    lambda: ["cpu", "cuda:0", "cuda:1"])
+        local = _Entry("l", "cuda:1", {"device": "cuda:1"})
+        on_worker = _on("here-box", "cuda:0")
+        placed = scheduler.place(on_worker, {})
+        assert placed == Placement("here-box", ("cuda:0",),
+                                   (("here-box", "cuda:0"),))
+        taken: dict = {}
+        _hold(taken, placed)
+        assert scheduler.place(local, taken) is None
+        assert scheduler.place(on_worker, {("local", "cuda:1"): 1}) is None
+        # A worker device set holds its own slots, judged per card.
+        pair = scheduler.place(
+            _on("here-box", "cuda:0", ["cuda:0", "cuda:1"]), {})
+        assert pair.slots == (("here-box", "cuda:0"), ("here-box", "cuda:1"))
+        assert scheduler.place(_on("here-box", "cuda:0",
+                                   ["cuda:0", "cuda:1"]),
+                               {("local", "cuda:0"): 1}) is None
+        # A worker on another machine keeps cards of its own.
+        assert scheduler.place(_on("far-box", "cuda:0"), taken).slots == (
+            ("far-box", "cuda:0"),)
+        # The card's cap is the smallest of its offerers': raising the
+        # local one alone does not raise it ...
+        raised = WorkerScheduler(QueueLimits(overrides=(("cuda:1", 2),)),
+                                 registry, lambda: [])
+        assert raised.place(on_worker, taken) is None
+        # ... raising both does.
+        both = WorkerScheduler(QueueLimits(overrides=(
+            ("cuda:1", 2), ("here-box/cuda:0", 2))), registry, lambda: [])
+        assert both.place(on_worker, taken) is not None
+    finally:
+        await registry.shutdown()
 
 
 class _Fact:
@@ -1498,18 +1515,32 @@ def test_which_runs_reserve():
                                         {"device": "cuda:0"})) is None
 
 
-async def test_an_override_on_a_shared_card_is_reported_once(make_service,
+async def test_an_override_on_a_shared_card_is_reported_once(store,
                                                              caplog):
-    """A same-host worker's shared card uses this server's limit, so a
-    ``<worker>/<device>`` override for it cannot apply: warned, once."""
-    service = make_service(overrides=(("here-box/cuda:0", 3),
-                                      ("here-box/cuda:1", 4)))
-    here = _two_card_worker("here-box", shared={"cuda:0": "cuda:1"})
-    with caplog.at_level("WARNING", logger="app.core.run_service"):
-        service.check_worker_overrides(here)
-        service.check_worker_overrides(here)
-        service.check_worker_overrides(_two_card_worker("here-box"))
-    warnings = [r.getMessage() for r in caplog.records
-                if "is ignored" in r.getMessage()]
-    assert len(warnings) == 1
-    assert "'here-box/cuda:0'" in warnings[0] and "cuda:1" in warnings[0]
+    """A card several offerers share admits under the smallest cap among
+    them (#842), so an override that would raise one offerer alone is
+    lowered: warned once, naming the offerer whose cap applies."""
+    registry = WorkerRegistry(local_devices=lambda: [_Fact("cuda:1", "u")])
+    service = RunService(store, workers=registry, limits=QueueLimits(
+        overrides=(("here-box/cuda:0", 3), ("here-box/cuda:1", 4))))
+    try:
+        here, _ = registry.connect(
+            _hello("here-box", ("cuda:0", "u"), ("cuda:1", "other")),
+            send=_noop, close=_noop, same_host=True)
+        with caplog.at_level("WARNING", logger="app.core.run_service"):
+            service.check_worker_overrides(here)
+            service.check_worker_overrides(here)
+        warnings = [r.getMessage() for r in caplog.records
+                    if "is lowered" in r.getMessage()]
+        assert warnings == [
+            "run queue override 'here-box/cuda:0'=3 is lowered to 1: "
+            "local/cuda:1 is the same physical card, and a card admits "
+            "under the smallest limit among its offerers"]
+        assert service.slot_usage(("here-box", "cuda:0")) == {
+            "limit": 1, "taken": 0,
+            "limited_by": {"worker": "local", "device": "cuda:1"}}
+        assert service.slot_usage(("here-box", "cuda:1")) == {
+            "limit": 4, "taken": 0}
+    finally:
+        await service.shutdown()
+        await registry.shutdown()

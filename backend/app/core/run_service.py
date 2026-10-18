@@ -555,13 +555,26 @@ class QueueLimits:
         drain, which is a hang dressed up as a configuration. A user who
         wants that should not submit the run.
         """
+        override = self.override_for(slot)
+        if override is not None:
+            return max(1, override)
+        return max(1, self.cpu if slot[1] == CPU_QUEUE_KEY else self.gpu)
+
+    @staticmethod
+    def override_key(slot: SlotKey) -> str:
+        """The override key that names *slot*: the bare device for this
+        process, ``<worker>/<device>`` for a worker (#773)."""
         worker_id, device = slot
-        key = (device if worker_id == LOCAL_WORKER_ID
-               else f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}")
+        return (device if worker_id == LOCAL_WORKER_ID
+                else f"{worker_id}{WORKER_QUEUE_SEPARATOR}{device}")
+
+    def override_for(self, slot: SlotKey) -> int | None:
+        """The configured override for *slot*, or None."""
+        key = self.override_key(slot)
         for override, value in self.overrides:
             if override == key:
-                return max(1, value)
-        return max(1, self.cpu if device == CPU_QUEUE_KEY else self.gpu)
+                return value
+        return None
 
     @classmethod
     def from_settings(cls) -> "QueueLimits":
@@ -594,8 +607,9 @@ def parse_queue_overrides(raw: str) -> tuple[tuple[str, int], ...]:
       The worker part must be a valid worker name (not ``any``), the device
       a concrete one (``cpu``, ``cuda:N``, ``mps:N``), which is stored in
       canonical form (``mps`` -> ``mps:0``, ``cuda:01`` -> ``cuda:1``). A
-      card a same-host worker shares with this process has this process's
-      slot and cap, so such an override does not apply to it
+      card several offerers share (a same-host worker's card that is this
+      server's, one card two workers offer) takes the smallest cap among
+      them (#842), so an override that would raise it alone is lowered
       (``RunService.check_worker_overrides`` warns).
 
     Split on the LAST ``=`` so a key may contain one; a key legitimately
@@ -1818,8 +1832,9 @@ class RunService:
         # ``scheduling``'s module docstring). Insertion order is the
         # first-come, first-served order ``_admission_view`` relies on.
         self._reservations: dict[str, tuple[SlotKey, ...]] = {}
-        # ``(worker, device)`` overrides already reported as shadowed.
-        self._shadowed_overrides_logged: set[tuple[str, str]] = set()
+        # ``(slot, limiting slot, cap)`` overrides already reported as
+        # lowered by a shared card's rule (#842).
+        self._shadowed_overrides_logged: set[tuple[Any, ...]] = set()
         # No reproducibility gate here on purpose: ``_drive`` reaches it
         # through ``run_exclusion()``. It is orthogonal to the queue's
         # admission (the queue decides how many runs may be IN FLIGHT, the
@@ -1954,38 +1969,57 @@ class RunService:
         return {key: [entry.run_id for entry in queue]
                 for key, queue in self._pending.items() if queue}
 
-    def slot_usage(self, slot: SlotKey) -> dict[str, int]:
+    def slot_usage(self, slot: SlotKey) -> dict[str, Any]:
         """``{"limit": N, "taken": M}`` for one ``(worker_id, device)`` slot.
 
-        What ``GET /api/workers`` shows per device (#773): the cap
-        :class:`QueueLimits` gives the slot and how many running runs hold
-        it now. Waiting runs are not counted; they hold no slot.
-
-        Per physical card (#842): for a card another worker (or this
-        process) offers too, the runs on every slot of it, under the
-        smallest cap among them, which is what admission decides on.
+        What ``GET /api/workers`` shows per device (#773): the cap and how
+        many running runs hold it now, as admission counts them: per
+        physical device (#842), so for a card several offerers share, the
+        runs on every slot of it under the card's cap (the smallest among
+        its online offerers). ``limited_by: {"worker", "device"}`` names
+        the offerer whose cap that is, when it is not this slot's own.
+        Waiting runs are not counted; they hold no slot.
         """
-        cards = getattr(self._scheduler, "card_slots", None)
-        group = (slot,) if cards is None else cards(slot)
-        return {"limit": min(self._limits.for_slot(s) for s in group),
-                "taken": sum(self._slots.get(s, 0) for s in group)}
+        card_limit = getattr(self._scheduler, "card_limit", None)
+        if card_limit is None:
+            return {"limit": self._limits.for_slot(slot),
+                    "taken": self._slots.get(slot, 0)}
+        cap, by = card_limit(slot, self._slots)
+        usage: dict[str, Any] = {
+            "limit": cap,
+            "taken": self._scheduler.card_held(slot, self._slots)}
+        if by != slot:
+            usage["limited_by"] = {"worker": by[0], "device": by[1]}
+        return usage
 
     def check_worker_overrides(self, worker: Any) -> None:
-        """Warn once per card when a ``<worker>/<device>`` override cannot
-        apply because the card is shared with this process (#773): a
-        shared card has this process's slot, and this process's cap."""
-        for device, local in (getattr(worker, "shared", None) or {}).items():
-            key = f"{worker.id}{WORKER_QUEUE_SEPARATOR}{device}"
-            if not any(k == key for k, _ in self._limits.overrides):
-                continue
-            if (worker.id, device) in self._shadowed_overrides_logged:
-                continue
-            self._shadowed_overrides_logged.add((worker.id, device))
-            logger.warning(
-                "run queue override %r is ignored: worker %s runs on this "
-                "machine and its %s is this server's %s, which uses the "
-                "local limit (%d)", key, worker.id, device, local,
-                self._limits.for_slot((LOCAL_WORKER_ID, local)))
+        """Warn once when a configured override on a device *worker*
+        offers, or on another offerer of the same physical card, is
+        lowered by the card's rule (#842: the smallest cap among its
+        online offerers), naming the offerer whose cap applies. Called
+        when a worker connects, which is when a card gains an offerer."""
+        card_limit = getattr(self._scheduler, "card_limit", None)
+        card_slots = getattr(self._scheduler, "card_slots", None)
+        if card_limit is None or card_slots is None:
+            return
+        for device in worker.device_values():
+            for slot in card_slots((worker.id, device)):
+                override = self._limits.override_for(slot)
+                if override is None:
+                    continue
+                cap, by = card_limit(slot, self._slots)
+                if by == slot or cap >= max(1, override):
+                    continue
+                key = (slot, by, cap)
+                if key in self._shadowed_overrides_logged:
+                    continue
+                self._shadowed_overrides_logged.add(key)
+                logger.warning(
+                    "run queue override %r=%d is lowered to %d: %s/%s is "
+                    "the same physical card, and a card admits under the "
+                    "smallest limit among its offerers",
+                    self._limits.override_key(slot), override, cap,
+                    by[0], by[1])
 
     @staticmethod
     def local_devices() -> list[str]:
@@ -3657,15 +3691,18 @@ class RunService:
                                and self._resume_grace() > 0 else None),
         )
 
-    @staticmethod
-    def _worker_resume(active: _ActiveRun, seq: int) -> dict[str, Any]:
-        """``execution_facts.worker_resume`` (#793): the last frame recorded
-        and the slots the run holds, which a restarted server cannot work
-        out before the worker is back (a same-host card's slot is this
-        process's)."""
+    def _worker_resume(self, active: _ActiveRun, seq: int) -> dict[str, Any]:
+        """``execution_facts.worker_resume`` (#793): the last frame recorded,
+        the slots the run holds, and each slot's physical device identity
+        (``cards``, #842; None where it has none), which a restarted server
+        cannot work out before the worker is back: it groups the adopted
+        run's slots with the card's other offerers meanwhile."""
         slots = active.placement.slots if active.placement else ()
+        identity = getattr(self._workers, "card_identity", None)
         return {"last_seq": int(seq),
-                "slots": [list(slot) for slot in slots]}
+                "slots": [list(slot) for slot in slots],
+                "cards": [None if identity is None else identity(slot)
+                          for slot in slots]}
 
     async def _record_worker_seq(self, active: _ActiveRun, seq: int) -> None:
         """Before a worker run's frames up to *seq* are acknowledged (#793):
@@ -4317,12 +4354,14 @@ class RunService:
         adopts (#793); none without a worker registry or a resume grace.
 
         The placement is rebuilt from the row: its worker and devices, and
-        the slots ``execution_facts.worker_resume`` recorded. A row without
-        that record (started by a server before 3.2, or one that never
-        recorded it) is retired as before: its slots cannot be known (a
-        same-host card's slot is this process's, ``("local", "cuda:0")``),
-        and guessing them would let another run onto its card. So is a
-        row naming no device.
+        the slots ``execution_facts.worker_resume`` recorded, with each
+        slot's device identity (``cards``, #842) handed to the registry so
+        the slots are grouped with the card's other offerers before the
+        worker is back. A row without that record (started by a server
+        before 3.2, or one that never recorded it) is retired as before:
+        its slots cannot be known (one recorded by an earlier build may be
+        this process's, ``("local", "cuda:0")``), and guessing them would
+        let another run onto its card. So is a row naming no device.
         """
         if self._workers is None or self._resume_grace() <= 0:
             return []
@@ -4345,6 +4384,14 @@ class RunService:
                                "can be resumed; it cannot be adopted",
                                record.id, record.worker_id)
                 continue
+            cards = resume.get("cards")
+            if isinstance(cards, list) and len(cards) == len(slots):
+                # Grouped with the card's other offerers while its worker
+                # is away (#842).
+                remember = getattr(self._workers, "remember_cards", None)
+                if remember is not None:
+                    remember({slot: card for slot, card in zip(slots, cards)
+                              if isinstance(card, str) and card})
             adoptable.append((record, _adopted_placement(
                 record.worker_id, tuple(devices), slots, facts), last_seq))
         return adoptable

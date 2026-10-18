@@ -87,9 +87,9 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **裝置集合。** 帶裝置集合的 run 需要集合中每個裝置各一個 slot：全部都有空位才開始，一次全部占用、一次全部釋放。它在 FIFO 最前面等待時，所需的 slot 會被保留，所以其中一張卡上持續的流量無法讓它餓死。保留依先來先到，因此兩個集合 run 不會互相保留而死結。`any` 的集合 run 不保留任何 slot，因為放置之前不知道會在哪台機器。在伺服器本身，集合 run 占用集合中每個 slot，並在第一個裝置上執行；在 worker 上，它的子程序看得到集合中的每個裝置。
 
-**同機共用。** 從 loopback 連入、且 `hello.machine_id` 與伺服器自己相同的 worker（`/etc/machine-id`、macOS 硬體 UUID 或 Windows machine GUID 的 SHA-256 摘要）就在同一台機器上。它的 CPU、`mps:0`，以及 NVML UUID 與伺服器某張卡相符的每張 CUDA 卡，都會對應到伺服器那張卡的 slot，受伺服器的上限約束。因此在上限為 1 時，本機 run 與 worker run 不可能同時拿到同一張實體卡。兩者缺一不可：`ssh -R` 通道會讓遠端 agent 看起來像 loopback，而 machine id 是 agent 自己回報的。
+**同機共用。** 從 loopback 連入、且 `hello.machine_id` 與伺服器自己相同的 worker（`/etc/machine-id`、macOS 硬體 UUID 或 Windows machine GUID 的 SHA-256 摘要）就在同一台機器上。它的 CPU、`mps:0`，以及 NVML UUID 與伺服器某張卡相符的每張 CUDA 卡，都是伺服器的同一個裝置，與伺服器各自的 slot 分在同一組（見下）。因此在上限為 1 時，本機 run 與 worker run 不可能同時拿到同一張實體卡。兩者缺一不可：`ssh -R` 通道會讓遠端 agent 看起來像 loopback，而 machine id 是 agent 自己回報的。
 
-**一張卡、多個 worker。** 每張 CUDA 卡的 slot 也會依各提供者回報的 UUID 分組（`WorkerRegistry.card_slots`），涵蓋伺服器知道的每個 worker 與伺服器自己的卡。同一台 GPU 伺服器上提供同一張卡的兩個 agent（一個 SSH worker 與一個 enroll 的 agent）各自保有 `(worker, device)` slot，但 admission 會把這張卡所有 slot 上的 run 計入其中每一個，套用它們之中最小的上限；依記憶體共用的卡在它們之間只讀一份帳本。沒有回報 UUID 的卡保有自己的 slot。`GET /api/workers` 以 `same_card` 列出每張卡的其他提供者。
+**一個裝置、多個 slot。** 每個 slot 都維持提供者自己的 `(worker, device)`；同一個實體裝置的 slot 會分在同一組（`WorkerRegistry.card_slots`）：CUDA 卡依各提供者回報的 UUID 分組，涵蓋伺服器知道的每個 worker 與伺服器自己的卡；同機 worker 的 CPU 與 `mps:0` 與伺服器的分在一起。因此同一台 GPU 伺服器上提供同一張卡的兩個 agent（一個 SSH worker 與一個 enroll 的 agent）就像一張卡一樣接收 run：這張卡所有 slot 上的 run 都計入其中每一個，套用線上（或仍有 run 在這張卡上）的提供者中最小的上限；依記憶體共用的卡在它們之間只讀一份帳本，且只有在每個提供它的線上 worker 都設為共用時才依記憶體接收 run。重啟後接手的 run 會在 `worker_resume` 記下每個 slot 的裝置識別，所以在它的 worker 重新連上前，它的 slot 就已分組。伺服器在第一個 worker 連上時，於執行緒中列出自己的裝置一次。沒有回報 UUID 的 CUDA 卡保有自己的 slot。`GET /api/workers` 以 `same_card` 列出每個裝置的其他提供者，`slots.limited_by` 指出採用哪個提供者的上限。
 
 **`target` 選項**（[#769](https://github.com/CodefyUI/CodefyUI/issues/769)）是 `{"worker": "local" | "any" | <名稱>, "devices": [...]}`，兩個鍵都可省略。`worker` 是符合 `[a-z0-9][a-z0-9-]{0,62}` 的名稱；`local` 與 `any` 為保留字。`devices` 列出同一種類、不重複的具體裝置（`cpu`、`cuda:N`、`mps:N`），第一項成為 run 的 `device`。排程器這樣放置：
 
@@ -170,7 +170,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 | 2026-10-15 | Interactive 通道留在控制面；worker 憑證透過 enrollment 取得；先支援 Linux worker，Windows 盡力而為；控制面與 worker 版本須相同；DDP 之後再做（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。 |
 | 2026-10-15 | 每個 run 一個 spawn 子程序，裝置集合以 `CUDA_VISIBLE_DEVICES` 傳入（[#771](https://github.com/CodefyUI/CodefyUI/issues/771)）；agent 程序從不 import torch。 |
 | 2026-10-15 | 同機 worker 以 machine id 判定，共用的卡以 NVML UUID 判定，從不依對端位址（[#773](https://github.com/CodefyUI/CodefyUI/issues/773)）。 |
-| 2026-10-18 | 多個 worker 提供的同一張實體卡只有一份額度：slot 依 UUID 分組、取最小上限、一份記憶體帳本（[#842](https://github.com/CodefyUI/CodefyUI/issues/842)）。 |
+| 2026-10-18 | 多個 slot 提供的同一個實體裝置只有一份額度：slot 依 UUID 分組（同機 worker 的 CPU／`mps:0` 與伺服器的分在一起），不再對應到伺服器的 slot；取線上提供者中最小的上限、一份記憶體帳本、較嚴格的政策（[#842](https://github.com/CodefyUI/CodefyUI/issues/842)）。 |
 | 2026-10-15 | enrollment 完成之前，`/ws/worker` 只接受帶 session token 的 loopback 對端（[#772](https://github.com/CodefyUI/CodefyUI/issues/772)）。 |
 | 2026-10-15 | 加入：一次性 token 換成每個 worker 獨立的憑證；session token 仍只限 loopback；身分綁定憑證，已加入的名稱只能透過重新核發 token 易手，同機需要 loopback 對端且 machine id 相符（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）。 |
 | 2026-10-15 | 單一 run、sweep 與 study 共用同一條送出規則：只有啟動以來從未見過的 worker 名稱會被拒絕；目標為已知但離線之 worker 的 run 會等它回來（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。 |

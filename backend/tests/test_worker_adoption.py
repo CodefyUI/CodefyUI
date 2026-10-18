@@ -162,7 +162,8 @@ async def test_a_restarted_control_plane_adopts_the_run_and_it_succeeds(
         first, run_id, spooler = await _start_and_crash(db, tmp_path, client)
         facts = (await first.service.store.get_run(run_id)).execution_facts
         assert facts[WORKER_RESUME_KEY] == {"last_seq": 4,
-                                            "slots": [["box", "cpu"]]}
+                                            "slots": [["box", "cpu"]],
+                                            "cards": [None]}
         # Frames keep coming on the worker while no control plane is up.
         for step in range(3, 6):
             await spooler.produce(spooler.frame("progress", step=step))
