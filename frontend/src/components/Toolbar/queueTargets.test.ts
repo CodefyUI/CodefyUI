@@ -76,8 +76,11 @@ describe('workerDeviceChoices / connectedWorkers', () => {
     // An older server sends no ssh_enabled: the SSH list decides.
     expect(sshManaged(plain, { enabled: true })).toBe(true);
     expect(sshDisabled(plain, { enabled: false })).toBe(true);
-    // The list is newer than the worker when the caller has both.
-    expect(sshDisabled(off, { enabled: true })).toBe(false);
+    // The worker's own ssh_enabled wins over an SSH list that may be an
+    // older read (#840 review).
+    expect(sshDisabled(off, { enabled: true })).toBe(true);
+    expect(sshDisabled(on, { enabled: false })).toBe(false);
+    expect(sshManaged({ ...plain, ssh_enabled: null }, { enabled: true })).toBe(false);
     expect([shownStatus(plain), shownStatus(off), shownStatus(on)]).toEqual(['online', 'disabled', 'online']);
   });
 });

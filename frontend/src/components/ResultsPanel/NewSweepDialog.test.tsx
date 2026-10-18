@@ -12,6 +12,7 @@ import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
 import { useSweepStore, _resetSweepStoreForTesting } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
+import { _resetWorkerStoreForTesting, useWorkerStore } from '../../store/workerStore';
 import { subgraphIdOf } from '../../utils/subgraph';
 import type { NodeDefinition } from '../../types';
 
@@ -767,6 +768,17 @@ describe('NewSweepDialog: target (#777)', () => {
       tabs: state.tabs.map((tab) => (tab.id === state.activeTabId ? { ...tab, graphDevice: device } : tab)),
     }));
   }
+
+  it('opens the Workers panel from the no-worker hint, closing itself (#840 review)', async () => {
+    _resetWorkerStoreForTesting();
+    workersMock.fetchWorkers.mockResolvedValue([]);
+    const onClose = vi.fn();
+    render(<NewSweepDialog onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a worker' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(useWorkerStore.getState().panelOpen).toBe(true);
+    act(() => useWorkerStore.getState().closePanel());
+  });
 
   it('keeps the kind of a device the tab names for Any available', async () => {
     setGraphDevice('cpu');

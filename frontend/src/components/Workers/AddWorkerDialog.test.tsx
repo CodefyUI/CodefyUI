@@ -20,6 +20,7 @@ import {
   AGENT_START_COMMAND,
   AGENT_STOP_COMMAND,
   AddWorkerDialog,
+  ENROLLMENT_LIST_FRESH_MS,
   isHttpsUrl,
   isLoopbackUrl,
   workerNameProblem,
@@ -259,7 +260,8 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     vi.mocked(fetchEnrollments).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     render(<AddWorkerDialog mode="remote" onClose={vi.fn()} />);
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Loading workers...')).toBeInTheDocument();
+    // Says what it is doing, not "Loading workers" (#840 review).
+    expect(within(dialog).getByText('Checking where this server can be reached from...')).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'This machine' }));
     await act(async () => answer(listOf({ listening_on_loopback: true })));
     expect(dialog).toHaveAttribute('data-mode', 'same-host');
@@ -353,8 +355,9 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     expect(deleteEnrollment).toHaveBeenLastCalledWith('abcdef');
     // Revoking the token just shown takes its command away too.
     expect(within(dialog).queryByText(shown)).toBeNull();
-    // The dialog's probe, the form's own read on mount, then one per change.
-    expect(fetchEnrollments).toHaveBeenCalledTimes(5);
+    // The dialog's probe (the form does not read it again right away,
+    // #840 review), then one per change.
+    expect(fetchEnrollments).toHaveBeenCalledTimes(4);
   });
 
   it('keeps the token list current across a switch to another tab and back (#840 review)', async () => {
@@ -365,7 +368,10 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     expect(within(dialog).getByText('new one')).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Over SSH' }));
     await settle();
-    // Back again: the list the form last read, at once, while it reads again.
+    // Back again a while later: the list the form last read, at once, while
+    // it reads again.
+    const later = Date.now() + ENROLLMENT_LIST_FRESH_MS;
+    vi.spyOn(Date, 'now').mockReturnValue(later);
     let answer: (value: EnrollmentList) => void = () => {};
     vi.mocked(fetchEnrollments).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Another machine' }));
@@ -375,6 +381,18 @@ describe('AddWorkerDialog (another machine, #780)', () => {
     await act(async () => answer(listOf()));
     expect(within(dialog).queryByText('new one')).toBeNull();
     expect(within(dialog).getByText('No enrollment tokens.')).toBeInTheDocument();
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('reads the list once on open, and not again on a quick switch back', async () => {
+    const dialog = await renderRemote();
+    // The probe's list fills the form: no second read (#840 review).
+    expect(fetchEnrollments).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Over SSH' }));
+    await settle();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Another machine' }));
+    await settle();
+    expect(fetchEnrollments).toHaveBeenCalledTimes(1);
   });
 
   it('shows what failed', async () => {

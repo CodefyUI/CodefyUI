@@ -63,18 +63,22 @@ export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
 }
 
 /**
- * Whether *worker* is an SSH worker that is disabled (#840): the server
- * says so with the worker (`ssh_enabled`), and the SSH list, when the
- * caller has it, may be newer. The Workers panel and the run target list
- * both read it from here.
+ * Whether *worker* is an SSH worker that is disabled (#840). The worker's
+ * own `ssh_enabled` decides when the server sends it: it comes with the
+ * worker list, while the SSH list may be an older read kept after a failed
+ * one. The SSH list is the fallback for an older server that sends no
+ * `ssh_enabled`. The Workers panel and the run target list both read it
+ * from here.
  */
 export function sshDisabled(worker: WorkerInfo, ssh?: { enabled: boolean }): boolean {
-  return ssh !== undefined ? !ssh.enabled : worker.ssh_enabled === false;
+  if (worker.ssh_enabled != null) return !worker.ssh_enabled;
+  return ssh !== undefined && !ssh.enabled;
 }
 
 /** Whether *worker* is started over ssh by this server (#784). */
 export function sshManaged(worker: WorkerInfo, ssh?: { enabled: boolean }): boolean {
-  return ssh !== undefined || (worker.ssh_enabled ?? null) !== null;
+  if (worker.ssh_enabled !== undefined) return worker.ssh_enabled !== null;
+  return ssh !== undefined;
 }
 
 /** The status to show for *worker*: `disabled` for a disabled SSH worker,

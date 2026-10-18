@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { Suspense, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   SshWorker,
@@ -313,15 +313,22 @@ const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected'
  * SSH worker mints a token for each session itself.
  */
 function canRekey(worker: WorkerInfo, ssh: SshWorker | undefined): boolean {
-  return !sshManaged(worker, ssh) && worker.enrolled === true && worker.credential !== 'session_token';
+  // An older server sends no `enrolled`: Re-key is offered unless the worker
+  // is known to be a same-host agent on the session token or SSH-managed.
+  return !sshManaged(worker, ssh) && worker.enrolled !== false && worker.credential !== 'session_token';
 }
 
-/** What Remove does to *worker*, as the note beside its confirm (#840). */
-function removeNote(worker: WorkerInfo, ssh: SshWorker | undefined) {
+/**
+ * What Remove does to *worker*, as the note beside its confirm (#840). A
+ * worker that is *away* has no connection to end, so its note does not
+ * say it disconnects.
+ */
+function removeNote(worker: WorkerInfo, ssh: SshWorker | undefined, away: boolean) {
   if (sshManaged(worker, ssh)) return 'workers.remove.confirmNoteSsh' as const;
-  return worker.credential === 'session_token'
-    ? 'workers.remove.confirmNoteSession' as const
-    : 'workers.remove.confirmNote' as const;
+  if (worker.credential === 'session_token') {
+    return away ? 'workers.remove.confirmNoteSessionAway' as const : 'workers.remove.confirmNoteSession' as const;
+  }
+  return away ? 'workers.remove.confirmNoteAway' as const : 'workers.remove.confirmNote' as const;
 }
 
 /** Why the worker reads `degraded`, each reason in words (#840). */
@@ -352,6 +359,11 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const remove = useWorkerStore((s) => s.remove);
   const [confirming, setConfirming] = useState(false);
   const actionRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
+  // Whether the focus is in this card. A poll can take Drain or Re-key away
+  // while it has the focus, which then falls to the page, where the
+  // dialog's Escape and Tab trap cannot hear it (#840): the card takes it.
+  const focusInside = useRef(false);
   const mounts = Object.entries(worker.mounts);
   // Without per-device run ids from the server, the worker's runs are
   // listed once, under the worker. With them, a run no device lists is
@@ -370,6 +382,25 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const away = AWAY_STATUSES.has(worker.status);
   // Whatever the status reads (draining, disabled), a reason is shown (#840).
   const reasons = worker.degraded_reasons ?? [];
+  const showDrain = !disabled;
+  const showRekey = canRekey(worker, ssh);
+
+  useLayoutEffect(() => {
+    // The card is mounted whenever this runs (it renders the buttons).
+    if (focusInside.current && document.activeElement === document.body) {
+      (cardRef.current as HTMLElement).focus({ preventScroll: true });
+    }
+  }, [showDrain, showRekey]);
+
+  const onFocus = () => {
+    focusInside.current = true;
+  };
+  // A blur to nowhere (the focused button left the page) keeps the flag: the
+  // effect above needs it.
+  const onBlur = (event: FocusEvent<HTMLElement>) => {
+    const next = event.relatedTarget as Node | null;
+    if (next !== null && !event.currentTarget.contains(next)) focusInside.current = false;
+  };
 
   // One button that changes its word, never disabled: a disabled or swapped
   // button drops the focus to the page, where the dialog's Escape and Tab
@@ -396,7 +427,14 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   };
 
   return (
-    <article className={styles.card} aria-label={worker.name}>
+    <article
+      ref={cardRef}
+      className={styles.card}
+      aria-label={worker.name}
+      tabIndex={-1}
+      onFocus={onFocus}
+      onBlur={onBlur}
+    >
       <header className={styles.cardHeader}>
         <h3 className={styles.workerName}>{worker.name}</h3>
         <span className={`${styles.chip} ${known ? styles[`chip_${status}`] : styles.chip_neutral}`}>
@@ -408,7 +446,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           </span>
         )}
         <span className={styles.spacer} />
-        {!disabled && (
+        {showDrain && (
           <button
             ref={actionRef}
             type="button"
@@ -420,7 +458,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
             {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
           </button>
         )}
-        {canRekey(worker, ssh) && (
+        {showRekey && (
           <button
             type="button"
             className={styles.btn}
@@ -443,7 +481,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
       </header>
       {confirming && (
         <p className={styles.confirmNote} role="alert">
-          {t(removeNote(worker, ssh), { name: worker.name })}
+          {t(removeNote(worker, ssh, away), { name: worker.name })}
           {worker.running.length > 0 && ` ${t('workers.remove.confirmRuns', { count: worker.running.length })}`}
         </p>
       )}

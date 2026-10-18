@@ -7,6 +7,7 @@ import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { flushSubgraphEditing, useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
+import { useWorkerStore } from '../../store/workerStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import {
@@ -322,7 +323,16 @@ export function NewSweepDialog({ onClose }: NewSweepDialogProps) {
               <label>{t('sweeps.new.method')}<select value={method} onChange={(event) => setMethod(event.target.value as SweepMethod)}><option value="grid">{t('sweeps.method.grid')}</option><option value="random">{t('sweeps.method.random')}</option></select></label>
             </div>
             <div className={styles.target}>
-              <TargetSelector choice={target} anyHint="sweeps.new.anyHint" localHint="sweeps.new.localHint" />
+              <TargetSelector
+                choice={target}
+                anyHint="sweeps.new.anyHint"
+                localHint="sweeps.new.localHint"
+                onOpenWorkers={() => {
+                  // As in Queue on... (#840): the panel opens in this one's place.
+                  onClose();
+                  useWorkerStore.getState().openPanel();
+                }}
+              />
             </div>
             <div className={styles.pair}>
               <label>{t('sweeps.new.objective')}<input value={objective} list={`${baseId}-objectives`} onChange={(event) => {

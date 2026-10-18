@@ -170,10 +170,15 @@ function SameHostInstructions() {
  * dial. The tokens already issued are listed (never their secrets) with a
  * revoke button each.
  */
-function RemoteInstructions({ rekey, initialList = null, onList, onUseSsh }: {
+/** A list the dialog read this long ago (ms) is not read again on mount. */
+export const ENROLLMENT_LIST_FRESH_MS = 5000;
+
+function RemoteInstructions({ rekey, initialList = null, initialAt = 0, onList, onUseSsh }: {
   rekey: string | null;
-  /** The last list the dialog saw, so the form starts filled; read again on mount. */
+  /** The last list the dialog saw, so the form starts filled. */
   initialList?: EnrollmentList | null;
+  /** When (Date.now()) *initialList* was read: an older one is read again on mount. */
+  initialAt?: number;
   /** Every list this form reads (after a generate or a revoke too), for the dialog to keep. */
   onList?: (list: EnrollmentList) => void;
   /** Switch the dialog to Over SSH; offered when the server is on loopback. */
@@ -205,8 +210,10 @@ function RemoteInstructions({ rekey, initialList = null, onList, onUseSsh }: {
   };
 
   useEffect(() => {
-    // On every mount, also after a switch back from Over SSH: the seed may
-    // predate a token generated or revoked since (#840).
+    // On mount, unless the dialog's list was just read (its probe on open):
+    // after a switch back from Over SSH the seed may predate a token
+    // generated or revoked since (#840).
+    if (initialList !== null && Date.now() - initialAt < ENROLLMENT_LIST_FRESH_MS) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -526,7 +533,8 @@ export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWor
   // works from there. null while that read is in flight.
   const probing = mode === 'remote' && rekey === null;
   const [current, setCurrent] = useState<AddWorkerMode | null>(probing ? null : mode);
-  const [initialList, setInitialList] = useState<EnrollmentList | null>(null);
+  const [seed, setSeed] = useState<{ list: EnrollmentList; at: number } | null>(null);
+  const keepList = (list: EnrollmentList) => setSeed({ list, at: Date.now() });
 
   useEffect(() => {
     if (!probing) return;
@@ -534,7 +542,7 @@ export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWor
     fetchEnrollments().then(
       (list) => {
         if (!live) return;
-        setInitialList(list);
+        keepList(list);
         setCurrent((now) => now ?? (list.listening_on_loopback ? 'ssh' : 'remote'));
       },
       // The remote form reads it again and shows the error.
@@ -613,12 +621,13 @@ export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWor
                   </button>
                 ))}
               </div>
-              {current === null && <p className={styles.muted}>{t('workers.loading')}</p>}
+              {current === null && <p className={styles.muted}>{t('workers.add.probing')}</p>}
               {current === 'remote' && (
                 <RemoteInstructions
                   rekey={null}
-                  initialList={initialList}
-                  onList={setInitialList}
+                  initialList={seed?.list ?? null}
+                  initialAt={seed?.at}
+                  onList={keepList}
                   onUseSsh={() => setCurrent('ssh')}
                 />
               )}

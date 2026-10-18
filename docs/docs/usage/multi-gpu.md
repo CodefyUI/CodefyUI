@@ -24,7 +24,7 @@ Use **Run** while you build and debug a graph. Queue a run for anything long, an
 
 The caret next to **Run** in the toolbar opens a menu whose **Queue on...** item submits the active tab's graph as a queued run (the same `POST /api/runs` that `cdui run` uses):
 
-- **Target**: **This server**, each connected worker with its status and devices (a draining worker is listed but cannot be chosen), and **Any available** once a worker is connected.
+- **Target**: **This server**, every worker the server knows with its status and devices, and **Any available** once a worker is connected. A run for a worker that is offline or disconnected waits in the queue until it connects; a draining or disabled one is listed but cannot be chosen. With no worker at all, the dialog says so with a link that opens the Workers panel.
 - **Devices**: one device for This server; for a worker, a set of one kind, kept in the order the worker lists its devices, with each CUDA card's in-run name shown as you tick it (`cuda:2 -> cuda:0 in this run`); for Any available, a kind (CPU, CUDA GPU, Apple MPS). Unless the tab names a device, a worker and Any available start on the first accelerator offered, whatever Settings picks for this server; the **New sweep** dialog does the same.
 - **Name**, **Random seed**, **Deterministic algorithms** and **Record node outputs** start from the tab's settings. Record node outputs is disabled for a worker or Any available.
 

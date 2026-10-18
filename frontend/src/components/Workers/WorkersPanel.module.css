@@ -168,6 +168,15 @@
   background: var(--surface-raised);
 }
 
+/* The card holds the focus only when a button it had left (#840). */
+.card:focus {
+  outline: none;
+}
+
+.card:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
 .cardHeader {
   display: flex;
   flex-wrap: wrap;

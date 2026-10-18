@@ -520,6 +520,69 @@ describe('WorkersPanel', () => {
     expect(rekey('tunnelled')).toBeNull();
   });
 
+  it('offers Re-key when an older server does not say whether the worker is enrolled (#840 review)', async () => {
+    const dialog = await openPanel([
+      worker('old-joined', { credential: 'worker_token' }),
+      worker('old-bare'),
+      worker('old-beside', { credential: 'session_token' }),
+      worker('old-tunnelled', { ssh_enabled: true }),
+    ]);
+    const rekey = (name: string) => within(within(dialog).getByRole('article', { name })).queryByRole('button', { name: 'Re-key' });
+    expect(rekey('old-joined')).toBeInTheDocument();
+    expect(rekey('old-bare')).toBeInTheDocument();
+    expect(rekey('old-beside')).toBeNull();
+    expect(rekey('old-tunnelled')).toBeNull();
+  });
+
+  it('gives the focus to the card when a poll takes its focused button away (#840 review)', async () => {
+    const dialog = await openPanel([worker('box', { enrolled: true, credential: 'worker_token' }), worker('other')]);
+    const card = within(dialog).getByRole('article', { name: 'box' });
+    within(card).getByRole('button', { name: 'Drain' }).focus();
+    // Disabled elsewhere: Drain goes. The card keeps the focus in the dialog.
+    act(() => useWorkerStore.setState({
+      workers: [worker('box', { enrolled: true, credential: 'worker_token', ssh_enabled: false }), worker('other')],
+    }));
+    expect(within(card).queryByRole('button', { name: 'Drain' })).toBeNull();
+    expect(card).toHaveFocus();
+    fireEvent.keyDown(card, { key: 'Escape' });
+    expect(useWorkerStore.getState().panelOpen).toBe(false);
+  });
+
+  it('moves the focus from a Re-key that went, and leaves focus that moved elsewhere alone', async () => {
+    const dialog = await openPanel([worker('box', { enrolled: true, credential: 'worker_token' }), worker('other')]);
+    const card = within(dialog).getByRole('article', { name: 'box' });
+    within(card).getByRole('button', { name: 'Re-key' }).focus();
+    act(() => useWorkerStore.setState({ workers: [worker('box', { enrolled: false }), worker('other')] }));
+    expect(card).toHaveFocus();
+    // The focus moved to another card's button: a change here does not take it.
+    const other = within(within(dialog).getByRole('article', { name: 'other' })).getByRole('button', { name: 'Drain' });
+    other.focus();
+    act(() => useWorkerStore.setState({ workers: [worker('box', { enrolled: true, ssh_enabled: false }), worker('other')] }));
+    expect(other).toHaveFocus();
+    // A change that takes no button away moves nothing either.
+    within(card).getByRole('button', { name: 'Remove' }).focus();
+    act(() => useWorkerStore.setState({ workers: [worker('box', { enrolled: true, ssh_enabled: false, version: '3.0.3' }), worker('other')] }));
+    expect(within(card).getByRole('button', { name: 'Remove' })).toHaveFocus();
+  });
+
+  it('does not say Remove disconnects a worker that is away (#840 review)', async () => {
+    const dialog = await openPanel([
+      worker('gone', { status: 'offline', credential: 'worker_token' }),
+      worker('beside-gone', { status: 'disconnected', credential: 'session_token' }),
+    ]);
+    for (const name of ['gone', 'beside-gone']) {
+      const card = within(dialog).getByRole('article', { name });
+      await act(async () => fireEvent.click(within(card).getByRole('button', { name: 'Remove' })));
+      expect(within(card).getByRole('alert')).not.toHaveTextContent(/disconnect/);
+    }
+    expect(within(within(dialog).getByRole('article', { name: 'gone' })).getByRole('alert')).toHaveTextContent(
+      /^Press Confirm remove to revoke gone's credential and drop it from the list;/,
+    );
+    expect(within(within(dialog).getByRole('article', { name: 'beside-gone' })).getByRole('alert')).toHaveTextContent(
+      /^Press Confirm remove to drop beside-gone from the list; .* connects again unless you stop it/,
+    );
+  });
+
   it('knows an SSH worker from the worker itself when the SSH list cannot be read (#840 review)', async () => {
     vi.mocked(fetchSshWorkers).mockRejectedValue(new Error('boom'));
     const dialog = await openPanel([

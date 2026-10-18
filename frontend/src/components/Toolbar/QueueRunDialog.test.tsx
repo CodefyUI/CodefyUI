@@ -409,6 +409,19 @@ describe('QueueRunDialog: any available', () => {
     expect(sentRequest().options).toMatchObject({ target: { worker: 'any' }, device: 'cuda' });
   });
 
+  it('starts on a kind a worker that takes runs offers, not a drained one\'s (#840 review)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([
+      worker({ name: 'busy-box', status: 'draining', draining: true }),
+      worker({ name: 'off-box', ssh_enabled: false }),
+    ]);
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    const group = within(screen.getByRole('group', { name: 'Devices' }));
+    // CUDA is still offered (a choice), but not where the run starts.
+    expect(group.getByRole('radio', { name: 'CUDA GPU' })).not.toBeChecked();
+    expect(group.getByRole('radio', { name: 'CPU' })).toBeChecked();
+  });
+
   it('keeps the kind of a device the tab names', async () => {
     workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     patchTab({ graphDevice: 'cpu' });
