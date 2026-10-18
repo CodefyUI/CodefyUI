@@ -51,6 +51,17 @@ never collides with a background agent's; the exit code says how the run
 went (0 succeeded, 1 failed / cancelled / interrupted, 2 refused, 3 no run
 arrived before the agent was stopped, 4 it could not start: enrollment
 failed or ``--mount`` was refused).
+
+``--one-shot --instance [ID]`` (#845): one of several concurrent one-shot
+agents on ONE stored credential and user data dir, such as the tasks of a
+SLURM array. It registers as ``<name>.<ID>`` (ID: given, else
+``<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>``, ``SLURM_JOB_ID`` or random:
+:func:`derive_instance`), keeps its runs under
+``<user-data>/agent-instances/<ID>`` (deleted when it exits; a second
+agent with the same ID in that user data dir exits 2 before touching it,
+:class:`InstanceLock`), and enrolls
+holding a file lock, so tasks started together with one enrollment token
+enroll once and the rest use the credential the first one stored.
 """
 
 from __future__ import annotations
@@ -86,6 +97,22 @@ DAEMON_FLAG = "--daemonized"
 PIDFILE_NAME = "agent.pid"
 LOGFILE_NAME = "agent.log"
 RUNS_DIR_NAME = "agent-runs"
+#: Each ``--instance`` agent's own runs directory lives under this one
+#: (#845): ``<user-data>/agent-instances/<instance>``. Apart from
+#: :data:`RUNS_DIR_NAME`, whose leftovers a starting agent retires.
+INSTANCES_DIR_NAME = "agent-instances"
+#: ``--instance`` without a value: derived from the batch system.
+INSTANCE_AUTO = "auto"
+#: Held while an ``--instance`` agent looks for, or creates, the stored
+#: credential, so the tasks of an array started together enroll once.
+ENROLL_LOCK_NAME = "enroll.lock"
+#: :class:`InstanceLock` tries this many times, this far apart, before an
+#: instance id counts as held by another agent.
+INSTANCE_LOCK_TRIES = 5
+INSTANCE_LOCK_RETRY_S = 0.2
+#: A left instance directory (:func:`retire_left_instances`) in which
+#: nothing changed for this long is retired once its lock is free.
+INSTANCE_LEFTOVER_AGE_S = 24 * 3600.0
 
 #: How long ``start`` watches a fresh background agent before reporting it.
 START_SETTLE_S = 1.5
@@ -144,6 +171,302 @@ def logfile() -> Path:
 
 def runs_dir() -> Path:
     return user_data_dir() / RUNS_DIR_NAME
+
+
+def instance_runs_dir(instance: str) -> Path:
+    """An ``--instance`` agent's runs directory (#845): its own, so the
+    instances sharing a user data dir never retire each other's spools."""
+    return user_data_dir() / INSTANCES_DIR_NAME / instance
+
+
+def derive_instance(env: Any = None) -> str:
+    """``--instance`` without a value (#845): ``<array job>-<task>`` in a
+    SLURM array task (unique across arrays started on one credential), else
+    ``SLURM_JOB_ID``; inside a job step (``srun``, ``SLURM_STEP_ID``
+    numeric) ``-<step>-<SLURM_PROCID>`` follows, so the tasks of
+    ``srun -n 4`` differ. Outside SLURM: 16 random hex characters (64 bits:
+    agents started by hand on one credential do not collide)."""
+    env = os.environ if env is None else env
+
+    def get(key: str) -> str:
+        return str(env.get(key) or "").strip()
+
+    array_job, task = get("SLURM_ARRAY_JOB_ID"), get("SLURM_ARRAY_TASK_ID")
+    base = (f"{array_job}-{task}" if array_job and task
+            else get("SLURM_JOB_ID"))
+    if not base:
+        import secrets
+
+        return secrets.token_hex(8)
+    step = get("SLURM_STEP_ID")
+    if step.isdigit():
+        # ``batch`` / ``extern`` steps, and the batch script itself, have
+        # one process: the job's id is enough there.
+        base = f"{base}-{step}-{get('SLURM_PROCID') or '0'}"
+    return base
+
+
+def resolve_instance(raw: str, env: Any = None) -> str:
+    """The instance id ``--instance`` *raw* asks for. ``ValueError``
+    (bilingual) when it is not ``[a-z0-9][a-z0-9-]{0,31}``."""
+    value = raw.strip().lower()
+    if value == INSTANCE_AUTO:
+        value = derive_instance(env).lower()
+    if _wp.INSTANCE_PATTERN.fullmatch(value) is None:
+        raise ValueError(t(
+            f"--instance {value!r} 不合法：只能用小寫英數字與 -，最長 32 字",
+            f"invalid --instance {value!r}: lower-case letters, digits and "
+            "'-', at most 32 characters"))
+    return value
+
+
+class InstanceBusy(RuntimeError):
+    """Another agent process holds this instance id in this user data dir."""
+
+
+class FileLock:
+    """An exclusive ``flock`` on *path* (#845), for the locks the agents
+    sharing one user data dir take: :class:`InstanceLock`, and the
+    enrollment lock (:func:`enrollment_lock`, a context manager).
+
+    :meth:`acquire` re-checks after locking that *path* is still the file
+    it locked (same inode), and starts over if not: :meth:`release` with
+    *unlink* removes the file while still holding it, and an agent that
+    opened it just before then would otherwise hold a lock on a file no
+    one else can see, beside one that took the fresh file. Where ``fcntl``
+    is missing (Windows) nothing is locked: :meth:`acquire` returns True
+    and :attr:`held` stays False."""
+
+    def __init__(self, path: Path, *, unlink: bool = False) -> None:
+        self.path = path
+        self.unlink = unlink
+        self._file: Any = None
+
+    @property
+    def held(self) -> bool:
+        return self._file is not None
+
+    def acquire(self, *, blocking: bool) -> bool:
+        """Take the lock. Non-blocking: False if another holds it.
+
+        A file system without ``flock`` (Lustre mounted ``noflock``, some
+        NFS: ``ENOLCK``, ``ENOSYS``, ``EINVAL``, ``EOPNOTSUPP``) is treated
+        as Windows is: True, nothing locked (:attr:`held` stays False),
+        and a warning once per process. Only ``EWOULDBLOCK`` / ``EAGAIN``
+        mean another holds it."""
+        import errno
+
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            handle = open(self.path, "a+b")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (
+                    0 if blocking else fcntl.LOCK_NB))
+            except OSError as exc:
+                handle.close()
+                if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    return False
+                _warn_no_flock(self.path, exc)
+                return True
+            try:
+                same = os.stat(self.path).st_ino == os.fstat(
+                    handle.fileno()).st_ino
+            except FileNotFoundError:
+                same = False
+            if same:
+                self._file = handle
+                return True
+            handle.close()  # unlinked while we waited: lock the new one
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        if self.unlink:
+            # Still held: see :meth:`acquire` for why that is safe.
+            self.path.unlink(missing_ok=True)
+        self._file.close()  # releases the lock
+        self._file = None
+
+    def __enter__(self) -> "FileLock":
+        self.acquire(blocking=True)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.release()
+
+
+_NO_FLOCK_WARNED: list[bool] = []
+
+
+def _warn_no_flock(path: Path, exc: OSError) -> None:
+    if _NO_FLOCK_WARNED:
+        return
+    _NO_FLOCK_WARNED.append(True)
+    logger.warning(
+        "file locks are not supported where %s is (%s); going on without "
+        "them: give every concurrent --instance its own id, and enroll "
+        "once before starting an array", path.parent, exc)
+
+
+class InstanceLock(FileLock):
+    """``<user-data>/agent-instances/<instance>.lock``, held for the agent's
+    whole life (#845).
+
+    The instance's runs directory belongs to the one agent process using
+    the id: a second one started with the same ``--instance`` would retire
+    the first one's spools when its runner starts and delete the directory
+    when it exits, and the first one's run could then not report its end.
+    So the second is refused before it touches anything
+    (:class:`InstanceBusy`). Tried a few times over
+    :data:`INSTANCE_LOCK_TRIES` x :data:`INSTANCE_LOCK_RETRY_S`: another
+    agent retiring this id's leftovers (:func:`retire_left_instances`)
+    holds it for a moment. Removed when released."""
+
+    def __init__(self, instance: str) -> None:
+        super().__init__(
+            user_data_dir() / INSTANCES_DIR_NAME / f"{instance}.lock",
+            unlink=True)
+
+    def acquire(self, *, blocking: bool = False) -> bool:  # type: ignore[override]
+        for attempt in range(INSTANCE_LOCK_TRIES):
+            if super().acquire(blocking=blocking):
+                return True
+            if attempt + 1 < INSTANCE_LOCK_TRIES:
+                time.sleep(INSTANCE_LOCK_RETRY_S)
+        raise InstanceBusy(t(
+            f"另一個 agent 正以執行個體 {self.path.stem!r} 使用這個 user data "
+            "目錄；每個並行的 job 需要不同的 --instance",
+            f"another agent uses instance {self.path.stem!r} in this user "
+            "data dir; give each concurrent job its own --instance"))
+
+
+def retire_left_instances(own: str, *, now: float | None = None) -> list[str]:
+    """Delete what instances that are gone left (#845).
+
+    An instance's directory and lock file go when its agent exits; one
+    killed (``SIGKILL``, the OOM killer, a node reboot, a SLURM time limit)
+    leaves them, spools and outputs included, and no later agent is that
+    instance. Each starting ``--instance`` agent retires the others'
+    leftovers: an id whose lock is free (no agent holds it) and whose
+    directory (else lock file) did not change for
+    :data:`INSTANCE_LEFTOVER_AGE_S`, the margin for a file system whose
+    locks do not reach across machines. The outcome of a leftover's run is
+    already on the control plane: it ended ``interrupted`` when that agent
+    did not come back. Where ``fcntl`` is missing (Windows), or the file
+    system has no locks, nothing is retired: a free lock would prove
+    nothing.
+
+    Under the id's lock the directory is only renamed out of the way
+    (``.trash-<id>-<random>``, fast); the lock is released, then the trash
+    is deleted, so an agent starting with that id is not kept waiting by
+    a long delete. Trash a killed retirement left is deleted too. Returns
+    the retired ids."""
+    try:
+        import fcntl  # noqa: F401
+    except ImportError:  # pragma: no cover - Windows
+        return []
+    import secrets
+    import shutil
+
+    now = time.time() if now is None else now
+    base = user_data_dir() / INSTANCES_DIR_NAME
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return []
+    trash = [p for p in entries if p.name.startswith(_TRASH_PREFIX)]
+    # An id is its directory, its lock file, or both: an agent killed
+    # before its first run made no directory.
+    ids = sorted({p.name for p in entries
+                  if p.is_dir() and not p.name.startswith(".")}
+                 | {p.stem for p in entries
+                    if p.is_file() and p.suffix == ".lock"})
+    retired = []
+    for instance in ids:
+        path = base / instance
+        lock_path = base / f"{instance}.lock"
+        if instance == own:
+            continue
+        changed = (_last_change(path) if path.is_dir()
+                   else _mtime(lock_path))
+        if changed > now - INSTANCE_LEFTOVER_AGE_S:
+            continue
+        lock = FileLock(lock_path, unlink=True)
+        if not lock.acquire(blocking=False):
+            continue  # an agent holds the id
+        if not lock.held:
+            return []  # no locks on this file system: nothing proves it
+        try:
+            if path.is_dir():
+                moved = base / f"{_TRASH_PREFIX}{instance}-{secrets.token_hex(4)}"
+                path.rename(moved)
+                trash.append(moved)
+        except OSError:
+            logger.warning("could not retire %s", path, exc_info=True)
+            continue
+        finally:
+            lock.release()
+        retired.append(instance)
+    for each in trash:
+        shutil.rmtree(each, ignore_errors=True)
+    if retired:
+        logger.warning("retired what %d instance(s) left, whose agents are "
+                       "gone: %s", len(retired), ", ".join(retired))
+    return retired
+
+
+#: A retired instance directory is renamed to this prefix, then deleted
+#: (:func:`retire_left_instances`).
+_TRASH_PREFIX = ".trash-"
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _last_change(path: Path) -> float:
+    """The newest mtime of *path*, its entries and theirs (a run directory
+    and its spool, which grows with every frame)."""
+    newest = 0.0
+    for each in [path, *_entries(path)]:
+        try:
+            newest = max(newest, each.stat().st_mtime)
+        except OSError:
+            continue
+        if each is not path and each.is_dir():
+            for inner in _entries(each):
+                try:
+                    newest = max(newest, inner.stat().st_mtime)
+                except OSError:
+                    continue
+    return newest
+
+
+def _entries(path: Path) -> list[Path]:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
+def enrollment_lock(args: argparse.Namespace) -> Any:
+    """The lock an ``--instance`` agent holds while it looks for (and
+    perhaps creates) its credential, so the tasks of an array started
+    together enroll once; a no-op for every other agent."""
+    import contextlib
+
+    from .enroll import credential_dir
+
+    if getattr(args, "instance", None) is None:
+        return contextlib.nullcontext()
+    return FileLock(credential_dir(user_data_dir()) / ENROLL_LOCK_NAME)
 
 
 def _server_addr_files() -> list[Path]:
@@ -250,6 +573,16 @@ def build_parser() -> argparse.ArgumentParser:
         "worker 名稱送出）",
         "with --one-shot: take only this run (submitted with target.pool "
         "one-shot, or naming this worker)"))
+    start.add_argument("--instance", nargs="?", const=INSTANCE_AUTO,
+                       default=None, metavar="ID", help=t(
+        "搭配 --one-shot：同一張 worker 憑證同時跑多個 agent（SLURM array），"
+        "這個 agent 以 <名稱>.<ID> 登記；不給 ID 時取 SLURM 的 array job 與 "
+        "task id、job id（srun step 中再加 step 與 SLURM_PROCID），否則隨機",
+        "with --one-shot: one of several concurrent agents on one worker "
+        "credential (a SLURM array); this one registers as <name>.<ID>. "
+        "Without ID: SLURM's array job and task id, else its job id (plus "
+        "the step and SLURM_PROCID in an srun step), else "
+        "a random one"))
     start.add_argument(DAEMON_FLAG, action="store_true",
                        help=argparse.SUPPRESS)
     sub.add_parser("stop", help=t("停止背景 agent", "stop the background agent"))
@@ -603,13 +936,31 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
     from .facts import gather as gather_facts
     from .one_shot import OneShot
     from .runner import Runner
+    from .transfer import CACHE_DIRNAME
 
     name = args.name
     wanted = parse_devices(args.devices)
     offered = {report.value for report in devices}
-    runner = Runner(runs_dir=runs_dir(), offered_devices=offered,
-                    mounts=mounts,
-                    keep_last=settings.RUN_RETENTION_KEEP_LAST)
+    instance = getattr(args, "instance", None)
+    instance_lock = None
+    if instance is not None:
+        # Before the runner exists: it retires the spools in its runs dir.
+        instance_lock = InstanceLock(instance)
+        try:
+            instance_lock.acquire()
+        except InstanceBusy as exc:
+            # Refused, like a busy name at the control plane: exit 2.
+            logger.error("%s", exc)
+            return 2
+        # What killed instances left behind, nobody else removes.
+        retire_left_instances(instance)
+    # An instance's runs dir is its own (#845): the agents sharing this user
+    # data dir would otherwise retire each other's in-flight spools.
+    runner = Runner(runs_dir=(runs_dir() if instance is None
+                              else instance_runs_dir(instance)),
+                    offered_devices=offered, mounts=mounts,
+                    keep_last=settings.RUN_RETENTION_KEEP_LAST,
+                    cache_dir=user_data_dir() / CACHE_DIRNAME)
 
     def probe() -> list[wp.DeviceReport]:
         return [_report(fact) for fact in offered_reports(
@@ -648,7 +999,8 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
             trust=trust,
             on_trusted=(fingerprint_recorder(control)
                         if isinstance(control, str) else None),
-            uds=getattr(args, "uds", None), one_shot=one_shot)
+            uds=getattr(args, "uds", None), one_shot=one_shot,
+            instance=instance)
         code = await connection.run(stop)
         return code if one_shot is None else one_shot.exit_code(code)
 
@@ -658,12 +1010,22 @@ def run_agent(args: argparse.Namespace, control: Any, token: Any,
                     (mounts or {}).items())) or "none",
                 "" if one_shot is None else (
                     f"; one-shot, run {one_shot.run_id}" if one_shot.run_id
-                    else "; one-shot"))
+                    else "; one-shot") + (
+                    "" if instance is None
+                    else f"; instance {_wp.instance_worker_id(name, instance)}"))
     try:
         return asyncio.run(serve())
     finally:
         if args.daemonized and _read_pid() == os.getpid():
             pidfile().unlink(missing_ok=True)
+        if instance is not None:
+            # Nothing comes back for an instance's directory (#845): no
+            # later agent is this instance, so its spool would never be
+            # replayed. Its run's outcome is on the control plane.
+            import shutil
+
+            shutil.rmtree(runner.runs_dir, ignore_errors=True)
+            instance_lock.release()
         logger.info("agent stopped")
 
 
@@ -844,7 +1206,8 @@ def enroll_now(args: argparse.Namespace, control: str, token: str,
 
 
 def check_one_shot(args: argparse.Namespace) -> None:
-    """``--run-id`` needs ``--one-shot`` and a run id; ``--one-shot``
+    """``--run-id`` needs ``--one-shot`` and a run id; ``--instance`` needs
+    ``--one-shot`` and becomes the instance id (#845); ``--one-shot``
     implies ``--foreground`` (a batch job waits for the agent's exit code).
     ``ValueError`` (bilingual) for a bad combination."""
     run_id = getattr(args, "run_id", None)
@@ -857,6 +1220,13 @@ def check_one_shot(args: argparse.Namespace) -> None:
             raise ValueError(t(f"--run-id {run_id!r} 不是 run id",
                                f"--run-id {run_id!r} is not a run id"))
         args.run_id = run_id.strip()
+    instance = getattr(args, "instance", None)
+    if instance is not None:
+        if not one_shot:
+            # A regular agent keeps one name per credential (#845).
+            raise ValueError(t("--instance 需要搭配 --one-shot",
+                               "--instance needs --one-shot"))
+        args.instance = resolve_instance(instance)
     if one_shot:
         args.foreground = True
 
@@ -917,50 +1287,54 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
     interactive = _interactive() and not args.daemonized
     control = resolve_control(args.control, interactive=interactive)
-    stored = None
-    if isinstance(control, str):
-        try:
-            stored = use_stored_credential(args, control, explicit_name)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
+    # An --instance agent looks for, and perhaps creates, its credential
+    # holding the enrollment lock (#845): the tasks of an array started
+    # together enroll once, and the others find what the first stored.
+    with enrollment_lock(args):
+        stored = None
+        if isinstance(control, str):
+            try:
+                stored = use_stored_credential(args, control, explicit_name)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+        if pin is not None and not (isinstance(control, str)
+                                    and is_https(control)):
+            _err("--ca-fingerprint 需要 https:// 控制面網址。",
+                 "--ca-fingerprint needs an https:// control URL.")
             return 2
-    if pin is not None and not (isinstance(control, str)
-                                and is_https(control)):
-        _err("--ca-fingerprint 需要 https:// 控制面網址。",
-             "--ca-fingerprint needs an https:// control URL.")
-        return 2
-    if plain_http_to_another_machine(control) and not args.daemonized \
-            and not uds:  # ssh carries the socket across the network
-        warn_plain_http(control)
-    trust = (build_trust(control, pin, stored)
-             if isinstance(control, str) and is_https(control) else None)
-    token_source = None
-    if stored is not None:
-        token: Any = stored.worker_token
-        token_source = (f"the stored credential {stored.path} (cdui agent "
-                        f"forget {control} to enroll again)")
-    else:
-        token = resolve_token(args.token, interactive=interactive)
-    from ..core.worker_store import is_enrollment_token
+        if plain_http_to_another_machine(control) and not args.daemonized \
+                and not uds:  # ssh carries the socket across the network
+            warn_plain_http(control)
+        trust = (build_trust(control, pin, stored)
+                 if isinstance(control, str) and is_https(control) else None)
+        token_source = None
+        if stored is not None:
+            token: Any = stored.worker_token
+            token_source = (f"the stored credential {stored.path} (cdui agent "
+                            f"forget {control} to enroll again)")
+        else:
+            token = resolve_token(args.token, interactive=interactive)
+        from ..core.worker_store import is_enrollment_token
 
-    if isinstance(token, str) and is_enrollment_token(token):
-        if args.daemonized:
-            print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
-                    "cdui agent start。",
-                    "The background agent was given an enrollment token; run "
-                    "cdui agent start again in a terminal."), file=sys.stderr)
-            return 2
-        from .enroll import EnrollError
+        if isinstance(token, str) and is_enrollment_token(token):
+            if args.daemonized:
+                print(t("背景 agent 收到 enrollment token；請在前景重新執行 "
+                        "cdui agent start。",
+                        "The background agent was given an enrollment token; run "
+                        "cdui agent start again in a terminal."), file=sys.stderr)
+                return 2
+            from .enroll import EnrollError
 
-        url = control() if callable(control) else control
-        try:
-            token = enroll_now(args, url, token, facts, trust)
-        except (EnrollError, ValueError) as exc:
-            _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
-            return setup_failed(args)
-        control = url
-        token_source = (f"the stored credential (cdui agent forget {url} to "
-                        "enroll again)")
+            url = control() if callable(control) else control
+            try:
+                token = enroll_now(args, url, token, facts, trust)
+            except (EnrollError, ValueError) as exc:
+                _err(f"加入失敗：{exc}", f"Enrollment failed: {exc}")
+                return setup_failed(args)
+            control = url
+            token_source = (f"the stored credential (cdui agent forget {url} to "
+                            "enroll again)")
     if not args.daemonized:
         try:
             require_token(token)

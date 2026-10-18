@@ -89,6 +89,8 @@ export interface WorkerCardPeer {
   policy?: DevicePolicy | null;
   /** That offerer can take runs now (this server always). */
   online?: boolean;
+  /** Its agent enforces memory budgets (#788); `null` for this server. */
+  memory_budget?: boolean | null;
 }
 
 /**
@@ -158,6 +160,14 @@ export interface WorkerInfo {
    * regular worker.
    */
   one_shot?: WorkerOneShot | null;
+  /**
+   * One of several one-shot agents sharing a credential (#845, `cdui agent
+   * start --one-shot --instance`): the credential's worker name. Its `id`
+   * is `<instance_of>.<instance>`. `null` (or absent) otherwise.
+   */
+  instance_of?: string | null;
+  /** {@link WorkerInfo.instance_of}'s other half: this agent's instance id. */
+  instance?: string | null;
 }
 
 /** {@link WorkerInfo.one_shot}. */

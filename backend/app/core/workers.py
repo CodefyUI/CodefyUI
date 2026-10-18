@@ -95,6 +95,20 @@ old one, those runs move to the new connection and wait for its
 if no ``run_alive`` arrives within a heartbeat interval) ends
 ``interrupted``. Nothing is lost silently: each outcome is logged.
 
+Instances (#845, ``cdui agent start --one-shot --instance``): one
+credential serves several concurrent one-shot agents (a SLURM array's
+tasks). Each registers under a worker id of its own,
+``<name>.<instance>`` (``worker_protocol.instance_worker_id``;
+:attr:`Worker.instance_of` names the credential), and is an ordinary
+one-shot worker from then on: its own slots, its own run, its own row in
+``GET /api/workers``. What is set on the credential applies to each
+instance: its drain state (:meth:`WorkerRegistry.drain`), its device
+admission policies (:func:`policy_owner`) and its ``<worker>/<device>``
+queue caps (``QueueLimits.for_slot``). Revoking the credential removes
+every instance (:meth:`WorkerRegistry.forget_instances`). Instances are
+known in memory only, never in the credential's ``workers`` row; at most
+:data:`MAX_LEFT_INSTANCES` that left are kept per credential.
+
 After a restart of this server (#793), ``RunService.recover_interrupted``
 hands every worker run its previous process left in flight to
 :meth:`WorkerRegistry.adopt`: the run waits, detached, exactly as if its
@@ -148,6 +162,10 @@ INBOX_HIGH_WATER = 10_000
 INBOX_DRAIN_POLL_S = 0.05
 #: Names whose last handshake refusal is remembered; the oldest is dropped.
 MAX_REJECTIONS = 100
+#: Instances of one credential that left (#845) kept listed; the oldest
+#: is dropped. A SLURM array of hundreds of tasks would otherwise list
+#: every finished task until this server restarts.
+MAX_LEFT_INSTANCES = 50
 #: ``degraded_reasons`` entries.
 DEGRADED_NODE_CATALOG = "node_catalog"
 DEGRADED_HEARTBEAT = "heartbeat"
@@ -278,6 +296,17 @@ class Worker:
     one_shot_assigned: bool = False
     #: ``hello.instance_id``: which agent process holds the name (#790).
     instance_id: str | None = None
+    #: The credential's name when this is one of its instances (#845,
+    #: ``<instance_of>.<instance>``), else None.
+    instance_of: str | None = None
+    #: ``hello.instance`` (#845), else None.
+    instance: str | None = None
+    #: On a worker (or placeholder) holding a run adopted after a restart
+    #: (#793, #845): the hashed ``instance_id`` of the agent process that
+    #: ran it (``worker_handshake.instance_id_hash``). Only that process
+    #: may upload the run's files, or take a one-shot id back
+    #: (``worker_handshake.same_agent``).
+    instance_hash: str | None = None
 
     @property
     def online(self) -> bool:
@@ -370,11 +399,22 @@ class Worker:
                 "run_id": self.one_shot_run_id,
                 "took": self.one_shot_claim,
             },
+            # #845: the credential this instance shares, and its own part
+            # of the id; both None for a worker that is not an instance.
+            "instance_of": self.instance_of,
+            "instance": self.instance,
         }
 
 
 def _is_cuda(device: str) -> bool:
     return str(device).strip().lower().startswith("cuda")
+
+
+def policy_owner(worker_id: str) -> str:
+    """Whose device admission policies (#788) *worker_id* uses: its own,
+    or for an instance (#845, ``<name>.<instance>``) its credential's, so
+    every instance of a SLURM array admits as the credential says."""
+    return wp.instance_parts(worker_id)[0]
 
 
 def _canonical_or_none(device: str) -> str | None:
@@ -495,6 +535,10 @@ class WorkerRegistry:
             = None
         self._clock = clock
         self._workers: dict[str, Worker] = {}
+        #: Credential name -> the ids of its instances (#845) this registry
+        #: lists, oldest connection first (a dict as an ordered set), so
+        #: nothing per connection scans every worker.
+        self._instances: dict[str, dict[str, None]] = {}
         #: ``(worker id, canonical device)`` -> ``shared`` (#788); a pair
         #: with no entry is ``exclusive``. Kept by name, apart from the
         #: ``Worker`` objects, so a reconnect (which builds a new one) and a
@@ -756,7 +800,12 @@ class WorkerRegistry:
             # process's devices are not probed for it.
             return index
         members: dict[str, list[SlotKey]] = {}
-        cards = any(i.startswith("gpu:") for i in identity_of.values())
+        # This server's cards are listed only where one could be shared: a
+        # same-host worker, or a run adopted after a restart. Once listed,
+        # every worker is matched against them.
+        cards = any(i.startswith("gpu:") for i in identity_of.values()) and (
+            self._local_devices_cache is not None or bool(self._adopted_cards)
+            or any(w.same_host for w in self._workers.values()))
         for identity, value in self._local_identities(cards=cards).items():
             members[identity] = [(LOCAL_WORKER_ID, value)]
         for slot, identity in identity_of.items():
@@ -881,7 +930,8 @@ class WorkerRegistry:
         canonical = _canonical_or_none(device)
         if canonical is None:
             return POLICY_EXCLUSIVE
-        return self._policies.get((worker_id, canonical), POLICY_EXCLUSIVE)
+        return self._policies.get((policy_owner(worker_id), canonical),
+                                  POLICY_EXCLUSIVE)
 
     def set_device_policy(self, worker_id: str, device: str,
                           policy: str) -> None:
@@ -890,6 +940,7 @@ class WorkerRegistry:
         from .memory_admission import POLICY_EXCLUSIVE
 
         canonical = wp.canonical_device(device)
+        worker_id = policy_owner(worker_id)
         if policy == POLICY_EXCLUSIVE:
             self._policies.pop((worker_id, canonical), None)
         else:
@@ -901,7 +952,8 @@ class WorkerRegistry:
         """Whether one of *worker*'s cards is set to ``shared``."""
         from .memory_admission import POLICY_SHARED
 
-        return any(key[0] == worker.id and policy == POLICY_SHARED
+        owner = policy_owner(worker.id)
+        return any(key[0] == owner and policy == POLICY_SHARED
                    for key, policy in self._policies.items())
 
     def forget_policies(self, worker_id: str) -> None:
@@ -969,6 +1021,10 @@ class WorkerRegistry:
             catalog_checked=self._node_catalog is not None,
             one_shot=hello.one_shot, one_shot_run_id=hello.one_shot_run_id,
             instance_id=hello.instance_id, machine_id=hello.machine_id)
+        if hello.instance is not None:
+            # ``ws_worker`` registered it under ``<name>.<instance>`` (#845).
+            worker.instance_of = wp.instance_parts(hello.name)[0]
+            worker.instance = hello.instance
         if old is not None and old.one_shot and hello.one_shot \
                 and old.instance_id == hello.instance_id:
             # The same one-shot agent reconnecting (#790): the run it took
@@ -984,8 +1040,14 @@ class WorkerRegistry:
         self._rejections.pop(hello.name, None)
         self._check_catalog(worker)
         replaced = None
+        base = (None if worker.instance_of is None
+                else self._workers.get(worker.instance_of))
+        if base is not None:
+            # An instance takes its credential's drain state (#845): draining
+            # the credential drains every instance (:meth:`drain`).
+            worker.draining = base.draining
         if old is not None:
-            worker.draining = old.draining
+            worker.draining = worker.draining or old.draining
             if old.online:
                 replaced = old
                 old.status = STATUS_DISCONNECTED
@@ -1007,6 +1069,11 @@ class WorkerRegistry:
                 logger.warning("worker %s: a new connection replaced the "
                                "old one", hello.name)
         self._workers[hello.name] = worker
+        if worker.instance_of is not None:
+            ids = self._instances.setdefault(worker.instance_of, {})
+            ids.pop(worker.id, None)  # its newest connection goes last
+            ids[worker.id] = None
+            self._prune_left_instances(worker.instance_of)
         self._forget_adopted_cards(worker_id=worker.id)
         self._cards_changed()
         self._ensure_watchdog()
@@ -1014,6 +1081,50 @@ class WorkerRegistry:
                     worker.version, worker.device_values())
         self._changed()
         return worker, replaced
+
+    # ── instances (#845) ──────────────────────────────────────────────────
+
+    def instances_of(self, name: str) -> list[Worker]:
+        """Every instance of *name*'s credential this registry lists,
+        oldest connection first."""
+        return [self._workers[i] for i in self._instances.get(name, ())]
+
+    def _unindex(self, worker: Worker) -> None:
+        if worker.instance_of is None:
+            return
+        ids = self._instances.get(worker.instance_of)
+        if ids is not None:
+            ids.pop(worker.id, None)
+            if not ids:
+                del self._instances[worker.instance_of]
+
+    def _prune_left_instances(self, name: str) -> None:
+        """Keep at most :data:`MAX_LEFT_INSTANCES` instances of *name* that
+        left (not connected and nothing in flight: ``offline`` after its
+        run, or ``disconnected`` once the resume grace ended its run); the
+        oldest connection goes first."""
+        left = [w for w in self.instances_of(name)
+                if not w.online and not w.running]
+        for worker in left[:max(0, len(left) - MAX_LEFT_INSTANCES)]:
+            self._unindex(worker)
+            del self._workers[worker.id]
+
+    def forget_instances(self, name: str, reason: str) -> list[str]:
+        """Drop every instance of *name*'s credential (it was revoked), and
+        the runs adopted after a restart under an instance's id, as
+        :meth:`forget` does for one worker. Returns the dropped ids."""
+        prefix = f"{name}{wp.INSTANCE_SEPARATOR}"
+        ids = sorted(set(self._instances.get(name, ()))
+                     | {i for i in self._adopted if i.startswith(prefix)})
+        for worker_id in ids:
+            self.forget(worker_id, reason)
+        return ids
+
+    def holder(self, worker_id: str) -> Worker | None:
+        """The worker registered as *worker_id*, else the unlisted
+        placeholder of the runs adopted under it after a restart (#793),
+        else None: whom a ``hello`` under that id would take over."""
+        return self._workers.get(worker_id) or self._adopted.get(worker_id)
 
     # ── known workers (#780) ──────────────────────────────────────────────
 
@@ -1046,7 +1157,11 @@ class WorkerRegistry:
                 devices=devices, send=_not_connected, close=_nothing,
                 heartbeat_s=self.heartbeat_s, status=STATUS_OFFLINE,
                 connected_at=seen or 0.0, last_heartbeat_at=seen,
-                enrolled=True)
+                enrolled=True,
+                # Its last agent was one-shot (#845, migration 016): a run
+                # naming it is timed by the one-shot queue rule before that
+                # agent is back.
+                one_shot=bool(getattr(entry, "one_shot", False)))
             self._workers[entry.name] = worker
             added.append(worker)
         if added:
@@ -1075,6 +1190,7 @@ class WorkerRegistry:
             self._spawn(_close_quietly(worker))
         for run in list(worker.running.values()):
             self._end(worker, run, reason)
+        self._unindex(worker)
         del self._workers[worker_id]
         self._cards_changed()
         logger.info("worker %s removed", worker_id)
@@ -1244,10 +1360,15 @@ class WorkerRegistry:
         worker = self._workers.get(worker_id)
         if worker is None:
             return None
-        if worker.draining != draining:
-            worker.draining = draining
-            logger.info("worker %s %s", worker.name,
-                        "draining" if draining else "undrained")
+        # Draining a credential drains its instances too (#845).
+        changed = False
+        for each in [worker, *self.instances_of(worker_id)]:
+            if each.draining != draining:
+                each.draining = draining
+                changed = True
+                logger.info("worker %s %s", each.name,
+                            "draining" if draining else "undrained")
+        if changed:
             self._changed()
         return worker
 
@@ -1289,7 +1410,9 @@ class WorkerRegistry:
         return run
 
     def adopt(self, worker_id: str, run_id: str, *,
-              last_seq: int = 0) -> WorkerRun:
+              last_seq: int = 0,
+              instance_hash: str | None = None,
+              one_shot: bool = False) -> WorkerRun:
         """Take over *run_id*, left in flight on *worker_id* by a previous
         process of this server (#793). STARTUP, before workers connect.
 
@@ -1300,6 +1423,12 @@ class WorkerRegistry:
         it are dropped as duplicates (:meth:`route`). A worker known here
         (an enrolled one, offline) holds it in its ``running``; for one not
         known yet an unlisted placeholder does, until it connects.
+        *instance_hash*: the hashed ``instance_id`` of the agent process
+        that ran it (#845): only that process may upload the run's files
+        (``routes_runs``) and, for a *one_shot* run, take the id back
+        (``worker_handshake.same_agent``). A placeholder of a one-shot run
+        is marked one-shot, so the one-shot rule
+        (``worker_handshake.one_shot_refusal``) applies to it.
         """
         worker = self._workers.get(worker_id)
         if worker is None:
@@ -1310,6 +1439,10 @@ class WorkerRegistry:
                 platform={}, mounts={}, devices=[], send=_not_connected,
                 close=_nothing, heartbeat_s=self.heartbeat_s,
                 status=STATUS_OFFLINE, last_heartbeat_at=None)
+        if instance_hash is not None:
+            worker.instance_hash = instance_hash
+        if one_shot and worker_id in self._adopted:
+            worker.one_shot = True
         run = WorkerRun(run_id=run_id, last_seq=max(0, int(last_seq)),
                         detached_at=self._clock(), detached_wall=time.time(),
                         adopted=True)

@@ -220,8 +220,9 @@ async def test_the_index_is_rebuilt_only_when_devices_change(caplog):
 
 
 async def test_this_processs_devices_are_not_probed_until_a_worker_names_one():
-    """A server whose workers name no device it could share never lists
-    its own devices for this."""
+    """This server lists its own cards only where one could be shared with
+    a worker (review round 2, item 1): a same-host worker (or an adopted
+    run). A remote worker, UUID or not, never makes it probe."""
     calls = []
 
     def local_devices():
@@ -235,10 +236,14 @@ async def test_this_processs_devices_are_not_probed_until_a_worker_names_one():
                      close=_noop)
     assert registry.card_slots(("old", "cuda:0")) == (("old", "cuda:0"),)
     assert calls == []
-    registry.connect(_hello("new", _card("cuda:0", UUID)), send=_noop,
+    registry.connect(_hello("far", _card("cuda:0", UUID)), send=_noop,
                      close=_noop)
-    assert registry.card_slots(("new", "cuda:0")) == (
-        ("local", "cuda:0"), ("new", "cuda:0"))
+    assert registry.card_slots(("far", "cuda:0")) == (("far", "cuda:0"),)
+    assert calls == []
+    registry.connect(_hello("near", _card("cuda:0", UUID)), send=_noop,
+                     close=_noop, same_host=True)
+    assert registry.card_slots(("near", "cuda:0")) == (
+        ("local", "cuda:0"), ("far", "cuda:0"), ("near", "cuda:0"))
     assert calls == [1]
 
 
@@ -365,9 +370,12 @@ async def test_a_card_takes_the_smallest_cap_among_its_online_offerers():
 
 async def test_a_local_run_counts_a_worker_run_on_the_same_card():
     """This process's card and a worker's card with its UUID that was not
-    recognised as same-host: one card for the in-process lane too."""
+    recognised as same-host: one card for the in-process lane too, once
+    this server's cards are known (listed for a same-host worker or an
+    adopted run, or awaited as here)."""
     registry = _registry(_hello("boxed", _card("cuda:0", UUID)),
                          local=[_Fact("cuda:0", UUID)])
+    await registry.probe_local_devices()
     scheduler = WorkerScheduler(QueueLimits(), registry,
                                 lambda: ["cpu", "cuda:0"])
     local = _Entry("l", "cuda:0", {"device": "cuda:0"})
@@ -870,3 +878,86 @@ async def test_this_servers_override_raises_a_card_a_same_host_worker_shares(
                     is not None) is (cap == 2)
         finally:
             await service.shutdown()
+
+
+async def test_instances_of_one_credential_on_one_machine_are_one_card():
+    """#845 x #842: one-shot instances of one credential (``gpu.<id>``) on
+    one node report the same machine id and the same card: they group into
+    one card and one CPU like any other same-machine agents, and one
+    instance's run fills the card for the others."""
+    def instance(index: str) -> wp.Hello:
+        return wp.Hello(
+            name=f"gpu.{index}", version="t", one_shot=True,
+            instance=index, machine_id="m-node",
+            capabilities=list(wp.CAPABILITIES),
+            devices=[_card("cpu", None, None, None), _card("cuda:0", UUID)])
+
+    registry = _registry(instance("a"), instance("b"))
+    assert registry.card_slots(("gpu.a", "cuda:0")) == (
+        ("gpu.a", "cuda:0"), ("gpu.b", "cuda:0"))
+    assert registry.card_slots(("gpu.b", "cpu")) == (
+        ("gpu.a", "cpu"), ("gpu.b", "cpu"))
+    scheduler = WorkerScheduler(QueueLimits(), registry, lambda: [])
+    assert scheduler.place(_on("gpu.b"), {("gpu.a", "cuda:0"): 1}) is None
+    assert scheduler.place(_on("gpu.b"), {}) is not None
+
+
+async def test_the_handshake_probes_only_for_a_same_host_worker_and_briefly(
+        env, monkeypatch):
+    """Item 1: a remote agent's handshake never lists this server's
+    devices; a same-host one waits for the list at most
+    ``SAME_HOST_PROBE_WAIT_S`` (well inside the agent's 10 s wait for
+    ``welcome``), is registered when ``welcome`` arrives, and its cards are
+    matched when a slower list lands."""
+    import threading
+
+    from app.api import ws_worker as module
+
+    _, registry = env
+    calls: list[int] = []
+    release = threading.Event()
+
+    def slow_devices():
+        calls.append(1)
+        release.wait(10)
+        return [_Fact("cpu"), _Fact("cuda:0", UUID)]
+
+    registry._local_devices_source = slow_devices
+    registry._probe_off_loop = True
+    monkeypatch.setattr(module, "machine_identity", lambda: "m-here")
+    monkeypatch.setattr(module, "SAME_HOST_PROBE_WAIT_S", 0.2)
+
+    async def hello(ws, name: str, machine: str) -> Any:
+        agent = _Agent(ws, name)
+        await agent.send(wp.Hello(
+            name=name, version=get_version(), machine_id=machine,
+            capabilities=list(wp.CAPABILITIES),
+            devices=[_card("cpu", None, None, None), _card("cuda:0", UUID)]))
+        return await agent.recv()
+
+    try:
+        async with _client() as client:
+            async with aconnect_ws(WS_PATH, client) as ws:
+                assert isinstance(await hello(ws, "far", "m-far"),
+                                  wp.Welcome)
+                assert registry.get("far") is not None
+                assert calls == []      # a remote agent: no probe
+            started = time.monotonic()
+            async with aconnect_ws(WS_PATH, client) as ws:
+                assert isinstance(await hello(ws, "near", "m-here"),
+                                  wp.Welcome)
+                assert time.monotonic() - started < 5
+                near = registry.get("near")
+                assert near is not None and near.same_host
+                assert calls == [1]
+                assert near.shared == {"cpu": "cpu"}  # the card: not yet
+                release.set()
+                deadline = time.monotonic() + 10
+                while near.shared.get("cuda:0") != "cuda:0":
+                    assert time.monotonic() < deadline
+                    await asyncio.sleep(0.02)
+                assert registry.card_slots(("near", "cuda:0")) == (
+                    ("local", "cuda:0"), ("far", "cuda:0"),
+                    ("near", "cuda:0"))
+    finally:
+        release.set()

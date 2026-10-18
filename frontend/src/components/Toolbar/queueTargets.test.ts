@@ -65,6 +65,15 @@ describe('workerDeviceChoices / connectedWorkers', () => {
     const list = [worker('a', 'online', []), worker('b', 'disconnected', []), worker('d', 'offline', [])];
     expect(targetableWorkers(list).map((w) => w.name)).toEqual(['a', 'd']);
   });
+
+  it('never offers an instance of a shared credential that left (#845)', () => {
+    const list = [
+      { ...worker('gpu.1', 'online', []), instance_of: 'gpu', instance: '1' },
+      { ...worker('gpu.2', 'offline', []), instance_of: 'gpu', instance: '2' },
+      worker('gpu', 'offline', []),
+    ];
+    expect(targetableWorkers(list).map((w) => w.name)).toEqual(['gpu.1', 'gpu']);
+  });
 });
 
 describe('defaultDevices', () => {

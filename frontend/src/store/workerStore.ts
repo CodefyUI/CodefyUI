@@ -223,7 +223,8 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
       await removeWorker(workerId);
       if (claim(seq)) {
         set((s) => ({
-          workers: s.workers.filter((w) => w.id !== workerId),
+          // A revoked credential takes its instances with it (#845).
+          workers: s.workers.filter((w) => w.id !== workerId && w.instance_of !== workerId),
           ssh: s.ssh.filter((e) => e.id !== workerId),
         }));
       }

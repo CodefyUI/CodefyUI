@@ -12,7 +12,9 @@ coordinator (#343); 008 records where each run executes (#769); 009 is
 worker enrollment (#780); 010 says where each artifact's file lives
 (#782); 011 records a worker's environment (#781); 012 the SSH workers
 the control plane launches (#784); 013 is the transfer backend's content
-index (#785); 014 records the S3 bucket of an artifact (#791).
+index (#785); 014 records the S3 bucket of an artifact (#791); 015 the
+per-device admission policies and each run's graph hash (#788); 016
+whether an enrolled worker's own last agent was one-shot (#845).
 """
 
 from __future__ import annotations
@@ -629,12 +631,29 @@ CREATE INDEX idx_exec_runs_graph_hash
   WHERE graph_hash IS NOT NULL;
 """
 
+# ── Migration 016: a one-shot worker known before it reconnects (#845) ────
+#
+# ``workers.one_shot`` is 1 when the credential's own agent (``--name``,
+# no ``--instance``) last said ``hello.one_shot`` (#790), and 0 when it
+# was a regular agent. Instances of the credential (``--instance``) never
+# write it: they are known in memory only, and a credential used only by
+# instances stays 0 (feed an array through the one-shot pool, not by
+# naming the credential). A server that restarted loads it with the row
+# (``WorkerRegistry.load_known``), so a run naming the worker before its
+# next agent dials in is timed by ``CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S``
+# like any run waiting for a one-shot worker. NULL: never reported (every
+# row from before), read as 0.
+MIGRATION_016 = """
+ALTER TABLE workers ADD COLUMN one_shot INTEGER;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
                          MIGRATION_012, MIGRATION_013,
-                         MIGRATION_014, MIGRATION_015]
+                         MIGRATION_014, MIGRATION_015,
+                         MIGRATION_016]
 
 
 def _is_comment_only(statement: str) -> bool:

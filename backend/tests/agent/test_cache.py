@@ -805,13 +805,17 @@ def test_the_connection_gives_the_runner_a_client(tmp_path):
     from app.agent.connection import AgentConnection
 
     runner = Runner(runs_dir=tmp_path / "agent-runs", offered_devices={"cpu"})
-    AgentConnection(runner=runner, name="w", version="0",
-                    control_url=lambda: "http://cp:1", token="t",
-                    probe_devices=lambda: [])
+    connection = AgentConnection(runner=runner, name="w", version="0",
+                                 control_url=lambda: "http://cp:1",
+                                 token="t", probe_devices=lambda: [])
     assert isinstance(runner.transfer, tr.TransferClient)
     assert runner.transfer.cache.root == tmp_path / "agent-cache"
     assert runner.transfer._url("/x") == "http://cp:1/x"
-    assert runner.transfer._headers() == {"X-CodefyUI-Token": "t"}
+    # Every agent says which process it is (#845): the agents of one
+    # credential share its token, and uploads are bound to the run's.
+    assert runner.transfer._headers() == {
+        "X-CodefyUI-Token": "t",
+        "X-CodefyUI-Worker-Instance": connection.instance_id}
 
 
 def test_file_transfers_verify_the_control_plane_like_the_socket(tmp_path):
