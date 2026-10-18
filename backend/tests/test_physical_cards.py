@@ -644,3 +644,48 @@ async def test_a_restart_groups_an_adopted_runs_card_with_its_offerers(
                             send=_noop, close=_noop)
     assert second.service.slot_usage(("meow-join", "cuda:0")) == {
         "limit": 1, "taken": 1}
+
+
+async def test_a_worker_override_raises_a_card_nobody_else_offers(store):
+    """Coordinator report from #794 on Meow: ``meow794/cuda:0=2`` left the
+    card at 1. The override does raise a worker's own card; it stayed at 1
+    there because the agent ran on the server's machine, so the card is
+    also the server's ``cuda:0`` (limit 1), and a card several offerers
+    share takes the smallest limit (3.1.0 ignored the worker override for
+    such a card outright). Raising both raises it."""
+    overrides = parse_queue_overrides("meow794/cuda:0=2")
+    lone = _registry(_hello("meow794", _card("cuda:0", UUID)))
+    service = RunService(store, workers=lone,
+                         limits=QueueLimits(overrides=overrides))
+    try:
+        held = {("meow794", "cuda:0"): 1}
+        assert service._scheduler.place(_on("meow794"), held) is not None
+        assert service.slot_usage(("meow794", "cuda:0")) == {
+            "limit": 2, "taken": 0}
+    finally:
+        await service.shutdown()
+    same_host = _registry(_hello("meow794", _card("cuda:0", UUID)),
+                          local=[_Fact("cuda:0", UUID)],
+                          same_host=("meow794",))
+    for raw, admits in (("meow794/cuda:0=2", False),
+                        ("meow794/cuda:0=2,cuda:0=2", True)):
+        service = RunService(store, workers=same_host, limits=QueueLimits(
+            overrides=parse_queue_overrides(raw)))
+        try:
+            placed = service._scheduler.place(_on("meow794"), held)
+            assert (placed is not None) is admits
+            usage = service.slot_usage(("meow794", "cuda:0"))
+            assert usage["limit"] == (2 if admits else 1)
+            assert ("limited_by" in usage) is (not admits)
+        finally:
+            await service.shutdown()
+
+
+@pytest.fixture
+def store(tmp_path):
+    database = Database(tmp_path / "cards.db")
+    database.connect()
+    try:
+        yield RunStore(database)
+    finally:
+        database.close()
