@@ -190,7 +190,7 @@ async def test_a_refused_run_is_spooled_until_acked(tmp_path):
     async with FakeControlPlane() as cp, Agent(tmp_path, cp.url) as agent:
         await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
         await cp.send(wp.Assign(run_id="no1", graph={"nodes": []},
-                                options={"record_outputs": True}))
+                                device="cuda:7"))
         refused = await cp.wait_for(lambda n, f: isinstance(f, wp.RunFinished))
         assert refused.status == "failed"
         run_dir = tmp_path / "agent-runs" / "no1"

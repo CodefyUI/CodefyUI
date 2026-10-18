@@ -23,6 +23,7 @@ import {
   listRunOutputs,
   NoValueError,
   StatsNotCapturedError,
+  WorkerUnreachableError,
   type PortStats,
 } from '../../api/executionOutputs';
 import { useI18n } from '../../i18n';
@@ -418,6 +419,15 @@ describe('StatsTab', () => {
       ).toHaveLength(2),
     );
     expect(screen.queryByText(/Rec toggle in the toolbar/)).toBeNull();
+  });
+
+  it("says a worker run's worker is out of reach, in the current locale (#789)", async () => {
+    mockStats.mockRejectedValue(new WorkerUnreachableError("worker 'box' is not connected"));
+    render(<StatsTab ctx={ctx()} />);
+    await waitFor(() => expect(screen.getAllByText(/cannot be reached now/)).toHaveLength(2));
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(screen.getAllByText(/目前無法連線/)).toHaveLength(2);
+    act(() => useI18n.setState({ locale: 'en' }));
   });
 
   it('shows the not-captured hint in the locale chosen after the fetch failed', async () => {

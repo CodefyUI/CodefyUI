@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import {
   fetchStepIndex,
   RunDataExpiredError,
+  WorkerUnreachableError,
   type StepIndexEntry,
 } from '../../api/executionOutputs';
 import type { OutputData, TensorOutput } from '../../types';
@@ -134,7 +135,9 @@ export function StepTraceView({ runId, nodeId }: Props) {
         setIndexError(
           e instanceof RunDataExpiredError
             ? t('inspector.dataExpired')
-            : (e as Error).message,
+            : e instanceof WorkerUnreachableError
+              ? t('inspector.workerUnreachable')
+              : (e as Error).message,
         );
       });
     return () => {
@@ -175,7 +178,9 @@ export function StepTraceView({ runId, nodeId }: Props) {
                   error:
                     e instanceof RunDataExpiredError
                       ? t('inspector.tensorExpired')
-                      : (e as Error).message,
+                      : e instanceof WorkerUnreachableError
+                        ? t('inspector.workerUnreachable')
+                        : (e as Error).message,
                   data: null,
                 },
               }));

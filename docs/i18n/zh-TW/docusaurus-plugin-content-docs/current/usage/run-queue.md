@@ -47,7 +47,7 @@ Worker agent（`cdui agent start`，見 [CLI 指令](/getting-started/cli-comman
 
 `"target": {"pool": "one-shot"}`（不指定 `worker`，或 `any`）會把 run 放到單次 worker（`cdui agent start --one-shot`）上，且只放在那裡：`any` 永遠不會使用單次 worker。run 在池中依裝置排隊（`pool:one-shot/<device>`；以 `--run-id` 啟動的 agent 可不依順序取走它的 run），等待提供其裝置的單次 worker，並在 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`（24 小時）後失敗；指名單次 worker 的 run 也以同樣方式等待。見[遠端 worker：單次 worker](/usage/remote-workers#one-shot-workers)。
 
-在 worker 上的 run 不能使用 `record_outputs`，也不能走 interactive lane（畫布一律在這台伺服器執行）；兩者都會在送出時被拒絕。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。
+在 worker 上的 run 不能走 interactive lane（畫布一律在這台伺服器執行），送出時會被拒絕。開啟 `record_outputs` 時，worker run 的擷取資料保存在 worker 上，worker 連線時 Inspector 向它讀取（[執行架構：Worker 上的錄製輸出](/advanced/execution-architecture#recorded-outputs-on-a-worker)）。開始執行後，run 的資料列記錄 `worker_id`、`devices` 與 `<worker>/<device>` 形式的 `queue_key`，事件與本機 run 相同。**停止**會傳到 worker，worker 先以合作方式停止 run，超過寬限時間後強制終止。
 
 Worker 斷線時，它的 run 會在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內繼續執行；會讀寫檔案的 run 需要兩台機器共用的資料夾，或 transfer 後端：見[遠端 Worker：連線中斷時](/usage/remote-workers#when-the-connection-drops)與[遠端 Worker：儲存](/usage/remote-workers#storage)。
 
@@ -213,7 +213,7 @@ run 在排隊時，CLI 會回報它排在第幾位，而不是沒有任何輸出
 
 **`options`** 會原封不動交給每個 variant（device、`record_outputs` 等），但有三種情況會被拒絕：`options.seed`（seed 由 sweep 管理）、`lane: interactive`（sweep 一律排隊），以及 variant 數量超過輸出儲存上限（預設 20）時使用 `record_outputs`，因為最早幾個 variant 的捕獲資料會在 sweep 結束前被逐出。若要為訓練本身設定 seed，請設定 `sweep_spec.seed` 及 `"seed_variants": true`：第 *i* 個 variant 會使用 `seed + i`，超出時折回有效的 seed 範圍。若設定 `seed_variants: true` 卻沒有提供 `sweep_spec.seed`，請求會在建立任何資料列前以 `400` 拒絕。這會讓每個 variant 都成為 seeded run，因此一次只執行一個節點，同一個程序裡也不會有其他 run 同時執行。在這台伺服器上的 seeded sweep 會嚴格依序執行，畫布 run 在整段期間都無法執行；詳見[可重現的執行](./running-graphs#reproducible-runs-seed)。
 
-**`options.target`** 同樣會交給每個 variant（見 [Workers](#workers)）。使用 `"target": {"worker": "any"}` 且不指定 `devices` 時，每個 variant 會在任一已連線的 worker 上（最後才是這台伺服器）取得 sweep 裝置種類的下一個空閒名額；因此在兩個各有一張卡的 agent 上，4 個 variant 的 sweep 會同時執行兩個，哪張卡先空出來就在那張卡上開始下一個。worker 上的 seeded variant 也會並行執行，因為每個都在自己的程序裡。單一 run 會被拒絕的 target（這台伺服器從未見過的 worker、沒有人提供的裝置、在 worker 上使用 `record_outputs`）會讓整個 sweep 在建立任何資料列前以 `400` 拒絕。離線中的 worker 不會讓 sweep 失敗，即使它在 variant 送出途中離線也一樣：它的 variant 會等它重新連線。沒有 target 的 sweep 行為與以往完全相同：每個 variant 都在這台伺服器上該裝置的佇列中等待。
+**`options.target`** 同樣會交給每個 variant（見 [Workers](#workers)）。使用 `"target": {"worker": "any"}` 且不指定 `devices` 時，每個 variant 會在任一已連線的 worker 上（最後才是這台伺服器）取得 sweep 裝置種類的下一個空閒名額；因此在兩個各有一張卡的 agent 上，4 個 variant 的 sweep 會同時執行兩個，哪張卡先空出來就在那張卡上開始下一個。worker 上的 seeded variant 也會並行執行，因為每個都在自己的程序裡。單一 run 會被拒絕的 target（這台伺服器從未見過的 worker、沒有人提供的裝置、在 agent 不支援的 worker 上使用 `record_outputs`）會讓整個 sweep 在建立任何資料列前以 `400` 拒絕。離線中的 worker 不會讓 sweep 失敗，即使它在 variant 送出途中離線也一樣：它的 variant 會等它重新連線。沒有 target 的 sweep 行為與以往完全相同：每個 variant 都在這台伺服器上該裝置的佇列中等待。
 
 **可以掃描什麼：** 已註冊節點上的 int、float、bool、string 與 select 參數。不支援 preset 實例的內部參數、subgraph 實例的參數、`SECRET` 參數（選中的值會以明文存入 sweep 資料列），也不支援在圖中出現兩次的 node id。
 
@@ -343,6 +343,7 @@ study 會跨越重新啟動保留它的計畫，並在繼續（resume）之後�
 | `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` | *(空)* | 個別名額的覆寫。只寫裝置時指這台伺服器（`cuda:0=2,cpu=8`）；`<worker>/<device>` 指該 worker（`gpu-box-1/cuda:0=2`），不影響這台伺服器。優先於上面兩個預設值。 |
 | `CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT` | `2` | 畫布 run 的並行上限 |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | 斷線 worker 的 run 等它重新連線的秒數，逾時以 `interrupted` 結束（見[遠端 Worker：連線中斷時](./remote-workers#when-the-connection-drops)）。`0` 表示立即結束。 |
+| `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S` | `60` | 讀取 worker run 錄製輸出時等待 worker 回覆的秒數，逾時回 `504`。 |
 | `CODEFYUI_MAX_PARALLEL_NODES` | `4` | 單一 run 內同時執行的節點數 |
 | `CODEFYUI_RUN_RETENTION_KEEP_LAST` | `200` | 保留幾筆已結束的 run。`0` 表示完全不保留；負值會停用 retention。 |
 | `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES` | `131072` (128 KB) | 儲存及分送的單一事件 payload 上限；超過上限的輸出項目會換成省略標記，但仍會指出它的 port。`0` 或更小的值會停用上限。 |

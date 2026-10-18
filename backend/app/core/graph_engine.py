@@ -41,6 +41,7 @@ from .device_utils import DEVICE_PARAM_OPTIONS, DEVICE_PATTERN
 from .node_base import BaseNode, ParamType
 from .node_registry import registry
 from .param_defaults import fill_missing_params
+from .run_output_store import CaptureAlias  # noqa: F401 -- defined there (#789), named here
 from .seeding import deterministic_scope, seed_rngs
 from .step_trace import Step
 from .type_system import is_compatible
@@ -2690,30 +2691,6 @@ _CONTAINER_STATUS_RANK: dict[str, int] = {
 _CONTAINER_RANK_STATUS: dict[int, str] = {
     rank: status for status, rank in _CONTAINER_STATUS_RANK.items()
 }
-
-
-@dataclass(frozen=True)
-class CaptureAlias:
-    """What a recorded run keeps under a port no node of its own produced.
-
-    A preset card, a block instance and a bypassed node never run --
-    expansion and bypass resolution replace them -- but the canvas draws
-    their ports, and every reader of ``/api/execution/outputs`` asks for
-    those (#553). This names the port whose capture holds the value, and the
-    route follows it. The value is not stored a second time: the store
-    measures every slot against its byte budget, so a copy would count a
-    tensor twice and evict other runs early. An alias itself measures 0
-    bytes.
-
-    It always names a port that RAN, never another alias, so one step
-    reaches the value, and it is written only after that port's value. The
-    two writes take the store's lock one at a time, so a run dropped between
-    them -- evicted, or deleted mid-run -- comes back holding the alias
-    alone, and reading it answers 404. That is the truth: the value is gone.
-    """
-
-    node_id: str
-    port: str
 
 
 def aliases_by_target(

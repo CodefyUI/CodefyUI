@@ -11,6 +11,17 @@ Every read also has a query form, ``/{run_id}/value|stats|steps|grads`` with
 ``?node_id=&port=`` (#621), for a node id the path cannot carry: a node inside
 a block runs as ``<instance>/<inner>``, and the server decodes ``%2F`` before
 routing, so the path form never reaches a handler for it.
+
+The reads themselves are ``core.output_queries``, over this process's
+``RunOutputStore``. A run that executed on a worker with ``record_outputs``
+(#789) keeps its captures THERE: each read is forwarded to the worker over
+its ``/ws/worker`` connection (``core.worker_outputs``), which answers it
+with the same functions, so the answer is the one a local run would get.
+Which worker holds a run is retained in the store by run id (its retention
+evicts the worker's runs as its own); after a restart of this server, the
+run's record names it. A worker that is not connected answers 503, one that
+does not answer in time 504, each naming the worker. A run held here never
+reaches any of that: its reads are what they were before #789.
 """
 
 from __future__ import annotations
@@ -21,12 +32,13 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from ..config import settings
-from ..core.graph_engine import CaptureAlias
-from ..core.port_stats import PortStatsCache, compute_port_stats
+from ..core import output_queries as q
+from ..core.port_stats import PortStatsCache, compute_port_stats, worker_stats_key
 from ..core.run_output_store import RunOutputStore
-from ..core.run_store import json_safe
+from ..core.worker_outputs import WorkerTimeout, WorkerUnreachable
 
 router = APIRouter(prefix="/api/execution/outputs", tags=["execution-outputs"])
 
@@ -37,6 +49,10 @@ router = APIRouter(prefix="/api/execution/outputs", tags=["execution-outputs"])
 #: ``asyncio.Semaphore`` because executors are not bound to an event loop —
 #: the test transport runs each test on its own.
 _STATS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="port-stats")
+
+# Kept under their old names: tests and callers import them from here.
+_parse_slice = q.parse_slice
+_preview_slice = q.preview_slice
 
 
 def _get_store(request: Request) -> RunOutputStore:
@@ -61,281 +77,160 @@ def _get_stats_cache(request: Request) -> PortStatsCache:
     return cache
 
 
-def _not_captured(what: str) -> str:
-    """404 detail that names the switch the user probably left off."""
-    return (
-        f"{what}. Turn on Record outputs (the Rec toggle in the toolbar) and "
-        "re-run the graph to capture port data."
+async def compute_stats(value: Any) -> dict[str, Any]:
+    """``compute_port_stats`` on :data:`_STATS_EXECUTOR`.
+
+    A 2 GB tensor takes about a second of real CPU work, and doing that on
+    the event loop would stall every open WebSocket — including the run
+    that produced the tensor.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _STATS_EXECUTOR,
+        functools.partial(
+            compute_port_stats,
+            value,
+            sample_threshold=settings.STATS_SAMPLE_THRESHOLD,
+            sample_size=settings.STATS_SAMPLE_SIZE,
+        ),
     )
 
 
-async def _read_capture(
-    store: RunOutputStore, run_id: str, node_id: str, port: str,
-) -> tuple[Any, int] | None:
-    """The captured ``(value, write serial)`` for a port, or None.
+async def _answer(read: Any) -> Any:
+    """Await one ``output_queries`` read and turn its outcome into a
+    response: the payload, an empty 204, or the read's HTTP error."""
+    try:
+        payload = await read
+    except q.OutputQueryError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+    if payload is q.NO_VALUE:
+        return Response(status_code=204)
+    return payload
 
-    A preset card, a block instance and a bypassed node never run, so what a
-    run keeps under their ports is a :class:`CaptureAlias` naming the port
-    that holds the value (#553). Followed here, for every route that reads a
-    port, so all of them answer for the port the canvas draws -- the card's
-    own outputs, and the inputs of whatever it feeds. One step: an alias
-    names a port that ran, and anything else is not a value to serve.
+
+# ── worker runs (#789) ───────────────────────────────────────────────────────
+
+
+async def _worker_of(request: Request, store: RunOutputStore,
+                     run_id: str) -> tuple[str | None, bool]:
+    """``(worker, retained)``: the worker holding *run_id*'s captures, and
+    whether the store retains it; ``(None, False)`` for a run read here.
+
+    A run held in this process is never a worker's. One the store retains
+    as a worker's is its worker's. One the store evicted is no one's: it
+    answers as any run not held does, and is not found again. Anything
+    else is looked up once in the run's record: after a restart of this
+    server the store has forgotten every worker run, but a run recorded on
+    a worker with ``record_outputs`` still has its captures there (until
+    that worker's own budget drops them).
     """
-    slot = await store.get_with_version(run_id, node_id, port)
-    if slot is not None and isinstance(slot[0], CaptureAlias):
-        alias = slot[0]
-        slot = await store.get_with_version(run_id, alias.node_id, alias.port)
-        if slot is not None and isinstance(slot[0], CaptureAlias):
-            return None
-    return slot
-
-
-def _parse_slice(slice_str: str) -> tuple[Any, ...] | None:
-    """Parse a slice string like '0,:,:,0' into an indexing tuple.
-
-    Each comma-separated piece is either an int or a slice (``start:stop:step``).
-    Returns None for empty input. Raises ``ValueError`` on malformed input.
-    """
-    if not slice_str:
-        return None
-    pieces: list[Any] = []
-    for raw in slice_str.split(","):
-        part = raw.strip()
-        if part == ":" or part == "":
-            pieces.append(slice(None))
-            continue
-        if ":" in part:
-            bits = part.split(":")
-            if len(bits) > 3:
-                raise ValueError(f"bad slice piece: {part!r}")
-            conv = [int(b) if b.strip() else None for b in bits]
-            while len(conv) < 3:
-                conv.append(None)
-            pieces.append(slice(conv[0], conv[1], conv[2]))
-            continue
-        try:
-            pieces.append(int(part))
-        except ValueError as e:
-            raise ValueError(f"bad slice piece: {part!r}") from e
-    return tuple(pieces)
-
-
-def _preview_slice(shape: list[int], max_elements: int) -> str:
-    """The leading slice of a tensor of ``shape`` that fits ``max_elements``.
-
-    Walks the dims from the front: a dim whose trailing block alone is still
-    too big is pinned to index 0; the first dim whose trailing block fits
-    keeps as many leading entries as fit (pinned to 0 when that is one). So
-    ``[16,3,224,224]`` previews as ``0,0`` (one 224x224 plane), ``[4,70000]``
-    as ``0,0:65536`` and ``[100000]`` as ``0:65536`` at a limit of 65,536.
-    Called only for a tensor larger than the limit, so the walk always ends
-    on a dim it cuts short.
-    """
-    pieces: list[str] = []
-    for i in range(len(shape)):
-        trailing = 1
-        for d in shape[i + 1:]:
-            trailing *= d
-        if trailing > max_elements:
-            pieces.append("0")
-            continue
-        keep = max_elements // trailing
-        pieces.append("0" if keep == 1 else f"0:{keep}")
-        break
-    return ",".join(pieces)
-
-
-def _serialize_tensor(
-    value: Any, slice_str: str, max_elements: int, preview: bool = False,
-) -> dict[str, Any]:
-    import torch
-
-    tensor: torch.Tensor = value
-    full_shape = list(tensor.shape)
-    dtype = str(tensor.dtype)
-
-    # A bounded preview (#640): the server knows the shape, so it picks the
-    # slice instead of the client guessing one rank-blind. A tensor within the
-    # limit is sent whole, exactly as without ``preview``.
-    truncated = False
-    if preview:
-        if slice_str:
-            raise HTTPException(
-                status_code=400, detail="'preview' and 'slice' cannot be combined",
-            )
-        if tensor.numel() > max_elements:
-            slice_str = _preview_slice(full_shape, max_elements)
-            truncated = True
+    if await store.has_run(run_id):
+        return None, False
+    holder = await store.remote_holder(run_id)
+    if holder is not None:
+        return holder, True
+    if await store.was_evicted(run_id):
+        return None, False
+    service = getattr(request.app.state, "run_service", None)
+    run_store = getattr(service, "store", None)
+    if run_store is None:
+        return None, False
+    from ..core.run_store import WORKER_ANY, WORKER_LOCAL
 
     try:
-        slicer = _parse_slice(slice_str)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"invalid slice: {e}")
-
-    if slicer is not None:
-        try:
-            sliced = tensor[slicer]
-        except (IndexError, TypeError) as e:
-            raise HTTPException(status_code=400, detail=f"slice failed: {e}")
-    else:
-        sliced = tensor
-    # A value a node trains still tracks gradients, and turning one into a
-    # float below makes torch warn (once per process). Detaching shares the
-    # storage.
-    sliced = sliced.detach()
-
-    if sliced.numel() > max_elements:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"output has {sliced.numel()} elements (max {max_elements}); "
-                "supply a narrower 'slice' parameter"
-            ),
-        )
-
-    summary: dict[str, Any] = {
-        "type": "tensor",
-        "full_shape": full_shape,
-        "dtype": dtype,
-        "slice": slice_str or "",
-        "sliced_shape": list(sliced.shape),
-        "values": sliced.cpu().tolist(),
-        "truncated": truncated,
-    }
-    if sliced.numel() > 0 and sliced.is_floating_point():
-        summary["min"] = round(float(sliced.min()), 6)
-        summary["max"] = round(float(sliced.max()), 6)
-        summary["mean"] = round(float(sliced.mean()), 6)
-    elif sliced.numel() > 0 and sliced.dtype != torch.bool:
-        summary["min"] = int(sliced.min())
-        summary["max"] = int(sliced.max())
-    return summary
+        record = await run_store.get_run(run_id)
+    except Exception:  # noqa: BLE001 -- unreadable: answered as not held
+        return None, False
+    if record is None or record.worker_id in (WORKER_LOCAL, WORKER_ANY) \
+            or not record.options.get("record_outputs"):
+        return None, False
+    return record.worker_id, False
 
 
-def _serialize_value(
-    value: Any, slice_str: str, max_elements: int, preview: bool = False,
-) -> dict[str, Any]:
+async def _from_worker(request: Request, store: RunOutputStore, worker: str,
+                       retained: bool, run_id: str, op: str,
+                       params: dict[str, Any]) -> Any:
+    """Forward one read to *worker* and answer with what it says."""
+    registry = getattr(request.app.state, "worker_registry", None)
+    if registry is None:
+        raise HTTPException(status_code=503, detail=(
+            f"the outputs this run recorded are kept on worker {worker!r}, "
+            "and this server has no worker registry"))
+    cache = _get_stats_cache(request) if op == "stats" else None
+    key = worker_stats_key(run_id, params.get("node_id"), params.get("port"))
+    if cache is not None and retained:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
     try:
-        import torch
-
-        if isinstance(value, torch.Tensor):
-            return _serialize_tensor(value, slice_str, max_elements, preview)
-        if isinstance(value, torch.nn.Module):
-            total = sum(p.numel() for p in value.parameters())
-            trainable = sum(p.numel() for p in value.parameters() if p.requires_grad)
-            return {
-                "type": "model",
-                "class": value.__class__.__name__,
-                "params": total,
-                "trainable": trainable,
-                "repr": repr(value)[:4000],
-            }
-    except ImportError:
-        pass
-    if isinstance(value, bool):
-        return {"type": "scalar", "value": value}
-    if isinstance(value, (int, float)):
-        return {"type": "scalar", "value": value}
-    if isinstance(value, str):
-        return {"type": "string", "value": value[:4000]}
-    if isinstance(value, (list, tuple)):
-        out: dict[str, Any] = {
-            "type": "list",
-            "length": len(value),
-            "repr": repr(value)[:4000],
-        }
-        # Include the actual values when the list is small and JSON-friendly so
-        # the Inspector can render token chips, token IDs, and offset pairs
-        # without a separate /list endpoint. Anything else stays repr-only.
-        if len(value) <= 1024:
-            primitive_types = (str, int, float, bool, type(None))
-            if all(isinstance(x, primitive_types) for x in value):
-                out["values"] = list(value)
-            elif all(
-                isinstance(x, (list, tuple))
-                and len(x) == 2
-                and all(isinstance(y, (int, float)) for y in x)
-                for x in value
-            ):
-                out["values"] = [list(x) for x in value]
-        return out
-    return {"type": type(value).__name__, "repr": repr(value)[:4000]}
+        answer = await registry.outputs.fetch(worker, run_id, op, params)
+    except WorkerUnreachable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except WorkerTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc))
+    gone = answer.final and q.run_not_held(run_id, answer.status, answer.body)
+    if retained and gone:
+        # Its worker no longer has it (its own budget dropped it, or it was
+        # deleted there): it gives its place up, and is not asked again.
+        await store.forget_remote(run_id, expire=True)
+    elif not retained and answer.status != 404:
+        # Found on its worker after a restart of this server: retained from
+        # now on, so its eviction tells the worker.
+        await store.add_remote(run_id, worker)
+    if answer.status == 204:
+        return Response(status_code=204)
+    if answer.status >= 400:
+        detail = answer.body.get("detail") if isinstance(answer.body, dict) \
+            else None
+        raise HTTPException(status_code=answer.status,
+                            detail=detail or "the worker refused the read")
+    if cache is not None and answer.final:
+        # Final: the run has ended on the worker, so its captures (and their
+        # stats) cannot change. Dropped with the run's retention.
+        cache.put(key, answer.body)
+    return JSONResponse(answer.body)
 
 
-def _shape_of(value: Any) -> list[int] | None:
-    try:
-        import torch
-
-        if isinstance(value, torch.Tensor):
-            return list(value.shape)
-    except ImportError:
-        pass
-    return None
-
-
-def _type_label(value: Any) -> str:
-    try:
-        import torch
-
-        if isinstance(value, torch.Tensor):
-            return "tensor"
-        if isinstance(value, torch.nn.Module):
-            return "model"
-    except ImportError:
-        pass
-    if isinstance(value, bool):
-        return "scalar"
-    if isinstance(value, (int, float)):
-        return "scalar"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, (list, tuple)):
-        return "list"
-    return type(value).__name__
+# ── routes ───────────────────────────────────────────────────────────────────
 
 
 @router.get("/{run_id}")
 async def list_run_outputs(run_id: str, request: Request):
     store = _get_store(request)
-    ports = await store.list_ports(run_id)
-    if ports is None:
-        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    result = []
-    for node_id, port in ports:
-        slot = await _read_capture(store, run_id, node_id, port)
-        value = None if slot is None else slot[0]
-        result.append(
-            {
-                "node_id": node_id,
-                "port": port,
-                "type": _type_label(value),
-                "full_shape": _shape_of(value),
-            }
-        )
-    return result
+    worker, retained = await _worker_of(request, store, run_id)
+    if worker is not None:
+        return await _from_worker(request, store, worker, retained, run_id,
+                                  "list", {})
+    return await _answer(q.list_outputs(store, run_id))
 
 
 @router.delete("/{run_id}")
 async def delete_run_outputs(run_id: str, request: Request):
     store = _get_store(request)
+    worker, retained = await _worker_of(request, store, run_id)
+    if worker is not None:
+        reached = False
+        try:
+            response = await _from_worker(request, store, worker, retained,
+                                          run_id, "delete", {})
+            reached = True
+            return response
+        except HTTPException as exc:
+            reached = exc.status_code not in (503, 504)
+            raise
+        finally:
+            # Deleted there, or to be: this server stops retaining it and
+            # never takes it back (a later read answers as for a run not
+            # held). A worker that could not be reached is told when it
+            # next connects.
+            await store.forget_remote(run_id, expire=True)
+            registry = getattr(request.app.state, "worker_registry", None)
+            if not reached and registry is not None:
+                registry.outputs.drop(run_id, worker)
     ok = await store.delete_run(run_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
     return {"run_id": run_id, "deleted": True}
-
-
-def _producer_of(nid: str, node_id: str, inner: bool) -> bool:
-    """Whether ``nid``'s captures answer a read of ``node_id`` (#559).
-
-    Its own, always. With ``inner``, also every node a block or preset card
-    ``node_id`` holds: a run names those ``<card>/<node>`` (a block, nested
-    ones deeper) and ``<card>__<node>`` (a preset card). A card never runs,
-    so what it did is what those nodes did.
-    """
-    if nid == node_id:
-        return True
-    return inner and (
-        nid.startswith(node_id + "/") or nid.startswith(node_id + "__"))
 
 
 @router.get("/{run_id}/{node_id}/__steps_index")
@@ -355,30 +250,11 @@ async def get_steps_index(
     the run captured them.
     """
     store = _get_store(request)
-    if not await store.has_run(run_id):
-        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    ports = await store.list_ports(run_id)
-    if ports is None:
-        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    metas: dict[str, dict[int, dict[str, Any]]] = {}
-    for nid, port in ports:
-        if not _producer_of(nid, node_id, inner) or not port.startswith("__step__"):
-            continue
-        if not port.endswith("__meta"):
-            continue
-        # port format: __step__{i}__meta
-        try:
-            idx = int(port[len("__step__"):-len("__meta")])
-        except ValueError:
-            continue
-        meta = await store.get(run_id, nid, port)
-        if isinstance(meta, dict):
-            metas.setdefault(nid, {})[idx] = meta
-    return [
-        {"index": idx, **by_index[idx], **({"node_id": nid} if inner else {})}
-        for nid, by_index in metas.items()
-        for idx in sorted(by_index)
-    ]
+    worker, retained = await _worker_of(request, store, run_id)
+    if worker is not None:
+        return await _from_worker(request, store, worker, retained, run_id,
+                                  "steps", {"node_id": node_id, "inner": inner})
+    return await _answer(q.steps_index(store, run_id, node_id, inner))
 
 
 @router.get("/{run_id}/{node_id}/__grad_index")
@@ -400,43 +276,11 @@ async def get_grad_index(
     its node in ``node_id``.
     """
     store = _get_store(request)
-    if not await store.has_run(run_id):
-        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    ports = await store.list_ports(run_id)
-    if ports is None:
-        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-
-    entries: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for nid, port in ports:
-        if not _producer_of(nid, node_id, inner):
-            continue
-        if port.endswith("__grad__meta") or port.startswith("__weight_grad__") and port.endswith("__meta"):
-            continue
-        producer = {"node_id": nid} if inner else {}
-        if port.endswith("__grad"):
-            forward_port = port[:-len("__grad")]
-            health = await store.get(run_id, nid, port + "__meta")
-            entries.append({
-                "port": forward_port,
-                "kind": "port",
-                "has_grad": True,
-                "health": health if isinstance(health, dict) else None,
-                **producer,
-            })
-            seen.add(port)
-        elif port.startswith("__weight_grad__"):
-            param_name = port[len("__weight_grad__"):]
-            health = await store.get(run_id, nid, port + "__meta")
-            entries.append({
-                "port": param_name,
-                "kind": "weight",
-                "has_grad": True,
-                "health": health if isinstance(health, dict) else None,
-                **producer,
-            })
-            seen.add(port)
-    return entries
+    worker, retained = await _worker_of(request, store, run_id)
+    if worker is not None:
+        return await _from_worker(request, store, worker, retained, run_id,
+                                  "grads", {"node_id": node_id, "inner": inner})
+    return await _answer(q.grad_index(store, run_id, node_id, inner))
 
 
 @router.get("/{run_id}/{node_id}/{port}/stats")
@@ -447,52 +291,24 @@ async def get_output_stats(run_id: str, node_id: str, port: str, request: Reques
     scalars plus a 64-bin histogram (or, for label tensors, up to 64 value
     counts), which is a kilobyte or two whatever the tensor weighs.
 
-    The compute runs on a worker thread. A 2 GB tensor takes about a second of
-    real CPU work, and doing that on the event loop would stall every open
-    WebSocket — including the run that produced the tensor.
+    The compute runs on a worker thread (:func:`compute_stats`). The
+    app-wide cache is keyed on the store's write serial: a node inside a
+    loop overwrites one port several times in a run, and the replacement
+    can land on the freed storage of the value before it — same address,
+    same shape, same dtype — so anything derived from the object itself
+    would happily answer for a tensor that no longer exists.
+
+    A worker run's stats are computed on the worker and cached here once
+    the run has ended there (#789).
     """
     store = _get_store(request)
-    if not await store.has_run(run_id):
-        raise HTTPException(
-            status_code=404,
-            detail=_not_captured(f"run '{run_id}' has no captured outputs"),
-        )
-    slot = await _read_capture(store, run_id, node_id, port)
-    if slot is None:
-        raise HTTPException(
-            status_code=404,
-            detail=_not_captured(
-                f"nothing captured for '{node_id}.{port}' in run '{run_id}'"
-            ),
-        )
-    value, version = slot
-    if value is None:
-        # The node ran and the port produced None: nothing to summarise, and
-        # nothing missing either -- the same empty 204 as ``get_output``.
-        return Response(status_code=204)
-
-    cache = _get_stats_cache(request)
-    # The store's write serial is part of the KEY. A node inside a loop
-    # overwrites one port several times in a run, and the replacement can
-    # land on the freed storage of the value before it — same address, same
-    # shape, same dtype — so anything derived from the object itself would
-    # happily answer for a tensor that no longer exists.
-    key = (run_id, node_id, port, version)
-    payload = cache.get(key)
-    if payload is None:
-        loop = asyncio.get_running_loop()
-        stats = await loop.run_in_executor(
-            _STATS_EXECUTOR,
-            functools.partial(
-                compute_port_stats,
-                value,
-                sample_threshold=settings.STATS_SAMPLE_THRESHOLD,
-                sample_size=settings.STATS_SAMPLE_SIZE,
-            ),
-        )
-        payload = {"run_id": run_id, "node_id": node_id, "port": port, **stats}
-        cache.put(key, payload)
-    return payload
+    worker, retained = await _worker_of(request, store, run_id)
+    if worker is not None:
+        return await _from_worker(request, store, worker, retained, run_id,
+                                  "stats", {"node_id": node_id, "port": port})
+    return await _answer(q.output_stats(
+        store, run_id, node_id, port, compute=compute_stats,
+        cache=_get_stats_cache(request)))
 
 
 @router.get("/{run_id}/{node_id}/{port}")
@@ -506,34 +322,17 @@ async def get_output(
     preview: bool = Query(default=False),
 ):
     store = _get_store(request)
-    if not await store.has_run(run_id):
-        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    slot = await _read_capture(store, run_id, node_id, port)
-    if slot is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"output '{node_id}.{port}' not found in run '{run_id}'",
-        )
-    value = slot[0]
-    if value is None:
-        # The node ran and the port produced None -- TrainingLoop's
-        # grad_scaler_state outside fp16, for one (#602). An empty 204 rather
-        # than the 404 above, which stays for a port with nothing recorded:
-        # the browser logs every 404 as a failed resource, and the Inspector
-        # reads one as an expired run.
-        return Response(status_code=204)
-    payload = _serialize_value(value, slice, max_elements, preview)
-    payload["run_id"] = run_id
-    payload["node_id"] = node_id
-    payload["port"] = port
-    # A diverged tensor's raw values/min/max/mean can be NaN/Inf. Starlette
-    # renders with allow_nan=False, so one leaked value 500s the whole
-    # response -- same hazard as #129, same fix: the run_store.json_safe
-    # convention established there. The /stats route above follows the
-    # same convention but not at this call site -- its sanitisation lives
-    # inside core.port_stats.compute_port_stats (the _num() helper in that
-    # module), not as a wrapping call here.
-    return json_safe(payload)
+    worker, retained = await _worker_of(request, store, run_id)
+    if worker is not None:
+        return await _from_worker(
+            request, store, worker, retained, run_id, "value",
+            {"node_id": node_id, "port": port, "slice": slice,
+             "max_elements": max_elements, "preview": preview})
+    # A port that produced None answers an empty 204 (#602); a diverged
+    # tensor's NaN/Inf leave as null (``json_safe``), see the read.
+    return await _answer(q.output_value(
+        store, run_id, node_id, port, slice_str=slice,
+        max_elements=max_elements, preview=preview))
 
 
 # ── Query form, for ids the path cannot carry (#621) ─────────────────────────

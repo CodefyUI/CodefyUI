@@ -35,6 +35,25 @@ export class InvalidSliceError extends Error {
   }
 }
 
+/**
+ * 503 or 504 from a read of a worker run's recorded outputs (#789): they are
+ * kept on the worker, which is not connected or did not answer in time. The
+ * message is the server's detail, which names the worker.
+ */
+export class WorkerUnreachableError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'WorkerUnreachableError';
+  }
+}
+
+/** Throws {@link WorkerUnreachableError} for a 503 or 504. */
+async function throwIfUnreachable(res: Response): Promise<void> {
+  if (res.status === 503 || res.status === 504) {
+    throw new WorkerUnreachableError(await readDetail(res));
+  }
+}
+
 async function readDetail(res: Response): Promise<string> {
   try {
     const body = await res.json();
@@ -105,6 +124,7 @@ export async function fetchOutput(
   if (res.status === 404) throw new RunDataExpiredError(runId);
   if (res.status === 400) throw new InvalidSliceError(await readDetail(res));
   if (res.status === 413) throw new PayloadTooLargeError(await readDetail(res));
+  await throwIfUnreachable(res);
   if (!res.ok) throw new Error(`fetchOutput failed: ${await readDetail(res)}`);
   return res.json();
 }
@@ -112,6 +132,7 @@ export async function fetchOutput(
 export async function listRunOutputs(runId: string): Promise<RunOutputRef[]> {
   const res = await fetch(`${BASE_URL}/${encodeURIComponent(runId)}`);
   if (res.status === 404) throw new RunDataExpiredError(runId);
+  await throwIfUnreachable(res);
   if (!res.ok) throw new Error(`listRunOutputs failed: ${await readDetail(res)}`);
   return res.json();
 }
@@ -153,6 +174,7 @@ export async function fetchStepIndex(
     // No steps recorded for this node — treat as empty list rather than error.
     return [];
   }
+  await throwIfUnreachable(res);
   if (!res.ok) throw new Error(`fetchStepIndex failed: ${await readDetail(res)}`);
   return res.json();
 }
@@ -183,6 +205,7 @@ export async function fetchGradIndex(
   // A node without gradients in a run the server holds is a 200 with [];
   // 404 is the run itself gone, which the Backward tab reports as expired.
   if (res.status === 404) throw new RunDataExpiredError(runId);
+  await throwIfUnreachable(res);
   if (!res.ok) throw new Error(`fetchGradIndex failed: ${await readDetail(res)}`);
   return res.json();
 }
@@ -278,6 +301,7 @@ export async function fetchPortStats(
   const res = await fetch(url, { signal: opts.signal });
   if (res.status === 204) throw new NoValueError(runId, nodeId, port);
   if (res.status === 404) throw new StatsNotCapturedError(await readDetail(res));
+  await throwIfUnreachable(res);
   if (!res.ok) throw new Error(`fetchPortStats failed: ${await readDetail(res)}`);
   return res.json();
 }

@@ -5,6 +5,7 @@ import {
   NoValueError,
   RunDataExpiredError,
   PayloadTooLargeError,
+  WorkerUnreachableError,
 } from '../../api/executionOutputs';
 import { ACTIVE_RUN_STATUSES, getRun } from '../../api/rest';
 import type { ExecutionStatus, NodeData, OutputData } from '../../types';
@@ -1040,6 +1041,17 @@ export function usePortFetches(
                 noteKey: 'inspector.noValue',
                 data: null,
               },
+            }));
+            return;
+          }
+          // A worker run's captures are on its worker (#789), which cannot
+          // be reached now: said so, and asked again the next time the view
+          // reads (the worker may be back by then).
+          if (e instanceof WorkerUnreachableError) {
+            asked.keys.delete(key);
+            setFetches((prev) => ({
+              ...prev,
+              [key]: { loading: false, error: null, errorKey: 'inspector.workerUnreachable', data: null },
             }));
             return;
           }

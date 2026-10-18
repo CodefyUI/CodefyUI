@@ -268,8 +268,6 @@ async def test_a_named_worker_target_is_inherited_by_every_variant(env):
     ({"target": {"worker": "gpu-box"}}, "has not connected"),
     ({"device": "cuda:3", "target": {"worker": "any"}},
      "neither this server nor a known worker offers cuda:3"),
-    ({"record_outputs": True, "target": {"worker": "any"}},
-     "record_outputs"),
 ])
 async def test_a_target_the_service_would_refuse_is_a_400_with_no_rows(
         env, options, needle):

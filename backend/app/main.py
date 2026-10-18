@@ -96,7 +96,8 @@ from .core.plugin_loader import (
 from .core.plugins.reload import rediscover_now
 from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
-from .core.run_output_store import RunOutputStore
+from .core.port_stats import worker_stats_key
+from .core.run_output_store import MAX_RUNS as RUN_OUTPUT_STORE_MAX_RUNS, RunOutputStore
 from .core.run_service import RunService
 from .core.ssh_launch import SshLauncher
 from .core.worker_store import WorkerStore
@@ -364,7 +365,7 @@ async def _lifespan_body(app: FastAPI):
     # Bounded by runs AND by bytes (#135) — twenty runs of MNIST batches and
     # twenty runs of 4K feature maps are three orders of magnitude apart.
     app.state.run_output_store = RunOutputStore(
-        max_runs=20,
+        max_runs=RUN_OUTPUT_STORE_MAX_RUNS,
         max_bytes=settings.RUN_OUTPUT_STORE_MAX_MB * 1024 * 1024,
     )
 
@@ -410,8 +411,17 @@ async def _lifespan_body(app: FastAPI):
     worker_registry = WorkerRegistry(
         local_devices=_local_device_facts,
         resume_grace_s=settings.WORKER_RESUME_GRACE_S,
-        node_catalog=node_catalog)
+        node_catalog=node_catalog,
+        output_fetch_timeout_s=settings.WORKER_OUTPUT_FETCH_TIMEOUT_S)
     app.state.worker_registry = worker_registry
+    # A worker run's recorded outputs stay on its worker (#789); this
+    # store retains them by run id, and evicting one tells the worker.
+    app.state.run_output_store.on_remote_drop = worker_registry.outputs.drop
+    # Its stats, cached once the run ended there, go when the run does.
+    _stats_cache = app.state.port_stats_cache
+    app.state.run_output_store.on_remote_forget = (
+        lambda run_id: _stats_cache.drop_prefix(
+            worker_stats_key(run_id, None, None)[:2]))
     # Enrolled workers (#780) are known before they dial in, as offline, so
     # a run can target one and wait. None enrolled: nothing changes.
     worker_store = WorkerStore(db)

@@ -829,6 +829,12 @@ def payload_bytes(payload: Any) -> int:
         return 0
 
 
+def worker_stats_key(run_id: str, node_id: Any, port: Any) -> tuple:
+    """The cache key of a worker run's stats for one port (#789); every
+    one of a run's starts with ``worker_stats_key(run_id, ...)[:2]``."""
+    return ("worker", run_id, node_id, port)
+
+
 class PortStatsCache:
     """A bytes-bounded LRU for computed stat payloads.
 
@@ -890,6 +896,17 @@ class PortStatsCache:
         with self._lock:
             self._entries.clear()
             self._total = 0
+
+    def drop_prefix(self, prefix: tuple) -> int:
+        """Forget every entry whose key starts with *prefix* (a worker
+        run's stats once it is no longer retained, #789). Returns how many
+        went."""
+        size = len(prefix)
+        with self._lock:
+            keys = [key for key in self._entries if key[:size] == prefix]
+            for key in keys:
+                self._drop(key)
+        return len(keys)
 
     def _drop(self, key: tuple) -> None:
         """Remove `key` if present. Caller holds the lock."""

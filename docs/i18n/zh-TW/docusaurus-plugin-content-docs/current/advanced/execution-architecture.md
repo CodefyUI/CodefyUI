@@ -57,7 +57,7 @@ Browser / cdui run ── REST, /ws/execution ──► control plane (cdui star
 每個 run 屬於兩條通道之一（[執行佇列：通道](/usage/run-queue#lanes)）：
 
 - **Interactive**（畫布）。它一律在控制面程序內執行，因為它使用存在那裡的狀態：socket 的執行快取、持久化的模組權重，以及 Inspector 的擷取輸出。把 interactive 通道與 worker target 一起送出，會在送出時被拒絕。
-- **Queued**（`POST /api/runs`、`cdui run`、工具列的 **Queue on...** 對話框、sweep、study）。預設在控制面執行。若 `options.target.worker` 設為某個 worker 名稱，或設為 `any` 並被放到某個 worker 上，就在該 worker 的 run 子程序中執行。sweep 或 study 會把它的 `options.target` 傳給每個子 run，因此 `any` 會把子 run 分散到空出的 slot。worker run 在 [#789](https://github.com/CodefyUI/CodefyUI/issues/789) 之前不接受 `record_outputs`；要擷取輸出請以 `local` 為 target。
+- **Queued**（`POST /api/runs`、`cdui run`、工具列的 **Queue on...** 對話框、sweep、study）。預設在控制面執行。若 `options.target.worker` 設為某個 worker 名稱，或設為 `any` 並被放到某個 worker 上，就在該 worker 的 run 子程序中執行。sweep 或 study 會把它的 `options.target` 傳給每個子 run，因此 `any` 會把子 run 分散到空出的 slot。開啟 `record_outputs` 的 worker run 把擷取的資料保存在 worker 上，控制面從那裡讀取（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)，[Worker 上的錄製輸出](#recorded-outputs-on-a-worker)）。
 
 沒有 `target`、或 `"worker": "local"` 的 run 完全不會經過 worker 程式路徑：queue key、`InProcessExecutor` 與事件序列都與 3.0.2 相同，`single-node-parity` CI 工作會拿它與儲存的快照比對。
 
@@ -76,8 +76,8 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 | 方向 | Frame |
 |-----------|--------|
-| agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊與節點型別、capabilities、machine id、裝置、mount、平台；單次 agent 另有 `one_shot`、它的 `one_shot_run_id` 與 `instance_id`）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished` |
-| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities、選用的 `resume_grace_s`：控制面保留已斷線 worker 之 run 的時間，agent 的上傳重試依此計算）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄）、`credentials`（run id、執行中 `s3` run 的新 S3 憑證，只送給列出 `s3` 的 agent） |
+| agent → 控制面 | `hello`（名稱、版本、協定版本、環境指紋、節點目錄雜湊與節點型別、capabilities、machine id、裝置、mount、平台；單次 agent 另有 `one_shot`、它的 `one_shot_run_id` 與 `instance_id`）、`heartbeat`（含可用記憶體的裝置、執行中的 run id）、`run_alive`（重新連線後），以及每個 run 的 `run_started`、`event`、`metrics`、`artifact`、`warning`、`run_finished`；`output_answer`（request id、HTTP 狀態碼、分段的 body、`final`）回覆 `fetch_output` |
+| 控制面 → agent | `welcome`（worker id、`heartbeat_s`、`grace_s`、capabilities、選用的 `resume_grace_s`：控制面保留已斷線 worker 之 run 的時間，agent 的上傳重試依此計算）、`reject`（原因，然後關閉）、`assign`（run id、圖、選項、device、devices、選用的 `grace_s`）、`cancel`（run id、選用的 `grace_s`）、`drain`、`ack`（run id、seq：該 run 到這個 seq 為止的 frame 都已記錄）、`credentials`（run id、執行中 `s3` run 的新 S3 憑證，只送給列出 `s3` 的 agent）、`fetch_output`（request id、run id、讀取種類與其查詢參數、控制面等待的時間）、`cancel_fetch`（request id）與 `drop_outputs`（run id），只送給列出 `record_outputs` 的 agent |
 
 ## 排程 {/* #scheduling */}
 
@@ -95,13 +95,13 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 - **worker 名稱**：放到該 worker，用裝置集合、或要求的裝置、或該 worker 提供的同種類裝置中第一個有空 slot 的。
 - **`any`**：依名稱順序第一個已連線、未 drain、能接下這個 run，且不缺少伺服器有的節點型別的 worker（缺少型別或未回報節點目錄的 worker 會被略過；只多出型別的不會），伺服器排最後。CUDA 裝置集合超過一張卡、或是 `cuda:0` 以外的單張卡時，伺服器永遠不符合資格：worker 的 run 子程序看到的集合會從 `cuda:0` 重新編號（`CUDA_VISIBLE_DEVICES`），伺服器的程序則不會，所以固定在 `cuda:1` 的節點會用到另一張卡。其他集合（`cpu`、`mps`、只有 `cuda:0`）在伺服器擁有集合中每個裝置時符合資格。
 
-**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：既未加入、伺服器啟動以來也從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run（重新編號會改變的 CUDA 集合，則是它見過的所有 worker 都無法服務），worker target 搭配 interactive 通道或 `record_outputs`，或指定的降級 worker 缺少圖（展開 preset 與 subgraph 之後）用到的節點型別。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
+**為什麼有些拒絕是立即的。** 送出若永遠無法照要求執行，就回 `400`：既未加入、伺服器啟動以來也從未連線過的 worker 名稱、worker（依它最後回報的裝置）不提供要求的裝置、伺服器與它見過的所有 worker 都無法服務的 `any` run（重新編號會改變的 CUDA 集合，則是它見過的所有 worker 都無法服務），worker target 搭配 interactive 通道、指名的 worker 其 agent 未列出 `record_outputs` capability 卻要求 `record_outputs`，或指定的降級 worker 缺少圖（展開 preset 與 subgraph 之後）用到的節點型別。把這種 run 停在佇列裡，會留下一筆永遠不會開始的 `queued` 列，客戶端也無法分辨它與單純很慢的佇列。之後能執行的 run 則會等待，包括目標為已知但目前離線之 worker 的 run；若原因不只是 slot 忙碌，run 列上的 `queue_reason` 會說明：`waiting for worker gpu-box to reconnect`、`worker gpu-box is draining`、`waiting for a worker that offers cuda:0, cuda:1`。drain 一個 worker（`POST /api/workers/{id}/drain`）會停止往它放新的 run；它正在執行的 run 繼續。
 
 **Sweep 與 study**（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。`options.target` 會傳到每個子 run。在寫入任何資料列之前，`RunService.check_placeable_batch` 會對每個不同的子 run（子 run 之間只差在圖的 `settings`）套用上面的送出規則，所以 sweep 或 study 要嘛整批被拒絕、要嘛整批被接受；送出子 run 途中有 worker 離線，只會讓它們等待，不會讓整批失敗。只要子 run 還存在，每個 sweep variant 與 study attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。在這台伺服器上帶種子的 run 會占用程序層級的種子閘門而單獨執行；worker run 有自己的隨機狀態，不經過這道閘門，所以在不同 worker 或不同卡上帶種子的子 run 可以同時執行。**新增掃描**對話框提供與 **Queue on...** 相同的目標選擇器，sweep 檢視會顯示每個 variant 的 Worker 與裝置；study 請透過 API 設定 `target`。
 
 ## 隔離 {/* #isolation */}
 
-**每個 run 一個子程序**（[#771](https://github.com/CodefyUI/CodefyUI/issues/771)）。每收到一個 `assign`，worker 就在 `multiprocessing` 的 *spawn* context 中啟動 `child.main`，所以每個 run 都有全新的直譯器與自己的 CUDA context。segfault、記憶體不足被系統終止或強制停止，都只結束那一個 run；agent、控制面與其他 run 照常運作。agent 無法履行的指派會立即被拒絕（回一個狀態為 `failed` 的 `run_finished`）：`record_outputs`、它不提供的裝置、它已在執行的 run 的第二份，或 drain 期間的任何 run。
+**每個 run 一個子程序**（[#771](https://github.com/CodefyUI/CodefyUI/issues/771)）。每收到一個 `assign`，worker 就在 `multiprocessing` 的 *spawn* context 中啟動 `child.main`，所以每個 run 都有全新的直譯器與自己的 CUDA context。segfault、記憶體不足被系統終止或強制停止，都只結束那一個 run；agent、控制面與其他 run 照常運作。agent 無法履行的指派會立即被拒絕（回一個狀態為 `failed` 的 `run_finished`）：它不提供的裝置、它已在執行的 run 的第二份，或 drain 期間的任何 run。
 
 **裝置可見性**（[#774](https://github.com/CodefyUI/CodefyUI/issues/774)）。子程序環境設定 `CUDA_DEVICE_ORDER=PCI_BUS_ID`，讓 agent 透過 NVML 回報的編號就是 torch 使用的編號；並把 `CUDA_VISIBLE_DEVICES` 設為 run 的卡，順序與指派列出的相同。以 `["cuda:2", "cuda:0"]` 為例，run 的 `cuda:0` 就是機器的 `cuda:2`。`cpu` 或 `mps` run 的 `CUDA_VISIBLE_DEVICES` 為空。節點的 `device` 參數從不被改寫，`device_utils.resolve_device` 也不變；重新編號由環境完成。子程序也會移除 `CODEFYUI_DB_PATH`、agent 的 token 與 ROCm 的可見性過濾變數。`run_started` 帶有 `visible_devices` 與 `device_aliases`，控制面會把它們併入 run 的 `execution_facts`。
 
@@ -123,6 +123,19 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 面向使用者的說明，包括拒絕規則與範例，見[遠端 Worker：儲存](/usage/remote-workers#storage)。
 
+## Worker 上的錄製輸出 {/* #recorded-outputs-on-a-worker */}
+
+在 worker 上執行、開啟 `record_outputs` 的佇列 run（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）會把擷取的資料存進 run 子程序內的 `RunOutputStore`，與控制面上的 run 相同。run 結束時，子程序先把擷取資料複製到自己在 CPU 上的記憶體並清空 store，接著回報結束，然後才把這份複本寫到 agent user-data 目錄的 `agent-runs/<run id>/outputs/`：每個 port 一個 `torch.save` 檔，加上一個 `index.json`，其中也記下每個 port 的型別與形狀，列出 run 時不必載入任何檔案。由於先回報，控制面不必等磁碟寫完就釋放 run 的裝置 slot，被取消的 run 的寬限時間也只需涵蓋複製；之後子程序有 `CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S`（300 秒，以 worker 上的設定為準）寫完並結束，agent 正常停止時也最多等待這麼久讓它寫完。結束之前，它從複本回覆讀取。之後 agent 透過一個輔助子程序提供這些檔案，它在 CPU 上以記憶體映射載入；agent 程序本身仍不 import torch。子程序寫檔期間，它的 CUDA context 仍留在卡上（快取的記憶體已釋放），因此在依記憶體共用的卡上，接著啟動的 run 會有幾秒鐘看到略少的可用記憶體。
+
+對這種 run 的每次 `/api/execution/outputs/*` 讀取，都會以 `fetch_output` frame 經由 worker 自己的 `/ws/worker` 連線轉送；agent 以 `output_answer` frame 回覆（JSON body 分段傳送），內容由控制面所用的同一組函式算出，因此回應（包括錯誤訊息）與本機 run 相同。統計數據在 worker 上計算，run 在那裡結束後由控制面快取。這些都不需要 worker 開任何連接埠。
+
+- **容量上限。** worker 對寫出的資料套用與程序內 store 相同的上限：worker 上設定的 `CODEFYUI_RUN_OUTPUT_STORE_MAX_MB`，以及 20 個 run，從最舊的開始刪除，剛寫入的 run 不會被刪。控制面自己的 20 個 run 保留上限也以 run id 計入 worker run；逐出時會送出 `drop_outputs`，agent 隨即刪除檔案。worker 離線期間被逐出的 run 會維持過期狀態（讀取回 `404`，與任何未保留的 run 相同），它錯過的 `drop_outputs` 會在 worker 下次連線時送出。刪除 run（`DELETE /api/runs/{id}`）也會以同樣方式刪除 worker 上的擷取資料。
+- **連線狀態。** 未連線的 worker 會立即回 `503` 並指出是哪個 worker；在 `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S`（60 秒）內沒有回覆則回 `504`。等待中的讀取遇到 worker 連線關閉時以 `503` 結束。`fetch_output` 帶有這個等待時間，agent 會提早 5 秒放棄，讓它自己的 `504` 送到瀏覽器；控制面不再等待的讀取會在 worker 上被取消（`cancel_fetch`），不會佔用 agent 的四個讀取名額。損壞的檔案只會讓讀取它自己那個 port 失敗，列表仍會回覆。只有 worker 連線時才能讀取這些輸出，單次 worker 則只到它退出為止。
+- **重新啟動。** 控制面重新啟動後接手的 run（[#793](https://github.com/CodefyUI/CodefyUI/issues/793)）會再次被保留，輸出仍可讀取。已結束的 worker run 會在第一次讀取時依它的 run 紀錄（worker 與 `record_outputs`）再次找到，只要 worker 仍保有資料。控制面上的 run 的擷取資料在重新啟動後仍會遺失。
+- **保留。** run 在 worker 上開始後（`run_started`）才在控制面的保留順序中占一個位置，因此在那之前就失敗的 run 不會逐出其他 run。已保留的 run 在 worker 上結束後，若 worker 回覆它已不再保有該 run，就會讓出位置；經由 `DELETE /api/execution/outputs/{run}` 刪除的 run 不會再被保留，刪除時無法連線的 worker 會在下次連線時收到 `drop_outputs`。已保留 run 的快取統計數據會隨它一起移除。
+- **單次 worker。** 單次 worker 池與單次 worker 在送出時會拒絕 `record_outputs`：它的 agent 在 run 結束時就會退出，輸出永遠無法讀取。
+- **較舊的 agent。** `hello` 未列出 `record_outputs` capability 的 agent，被指名時這種 run 會在送出時被拒絕；經由 `any` 被放到它上面的 run 會在開始時失敗並附上說明。
+
 ## 安全 {/* #security */}
 
 **誰能連線。** `/ws/worker` 只在以下條件全部成立時接受連線，否則在 `accept` 之前關閉：
@@ -141,7 +154,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **節點目錄與指紋**（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）。agent 永遠不 import torch，所以啟動時由一個短暫的輔助子程序以 run 的方式探索節點，計算節點目錄（`node_registry.node_catalog`：每個節點型別連同 `GET /api/nodes` 提供的定義的 sha256；參數選項採宣告值，不依機器的裝置縮減，所以硬體不影響它）與環境指紋。`hello` 帶著這兩者。節點目錄雜湊與伺服器不同時，worker 會標為 `degraded`，並列出雙方各自缺少的型別；伺服器自己的節點目錄改變時會重新比對。以 worker 為目標的 run，會在送出時於另一個執行緒中計算一次它的節點型別（`worker_handshake.graph_node_types`：準備好的圖，加上 Map 執行的每個已安裝 preset 中的節點）；指定的 worker 若節點目錄不同，就必須擁有全部型別，`WorkerExecutor` 在 `assign` 前也會再檢查一次。指紋文件與 run 的指紋存在同一處（`exec_run_fingerprints`），摘要記在 `workers` 那一列，worker 執行的每個 run 也以它作為 `fingerprint_digest`。
 
-**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack`、`mounts`、`transfer`、`one_shot` 與 `s3`，最後一項只有具備 boto3 的 agent 會列出）；只有雙方清單都列出的功能才會使用，因此只有 `hello` 列出 `transfer` 的 worker 才會收到經 transfer 後端的 run。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；新增的功能改為宣告 capability。
+**協定演進。** 兩端執行相同版本，協定仍以新增的方式演進：每個 frame 都會忽略不認得的欄位，`hello`／`welcome` 列出送出方支援的選用功能（`capabilities`，目前為 `ack`、`mounts`、`transfer`、`memory_budget`、`one_shot`、`s3` 與 `record_outputs`，其中 `s3` 只有具備 boto3 的 agent 會列出）；只有雙方清單都列出的功能才會使用，因此只有 `hello` 列出 `transfer` 的 worker 才會收到經 transfer 後端的 run。只有對方會誤讀的變更才會調升 `PROTOCOL_VERSION`（3：`ack` 隨 2 加入，mount 欄位隨 3 加入）；新增的功能改為宣告 capability。
 
 **TLS。** Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 
