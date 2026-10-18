@@ -239,3 +239,19 @@ def test_children_ignore_ctrl_c():
     finally:
         signal.signal(signal.SIGINT, previous)
 
+
+# ── in-run card names for the device_fallback report (#839) ───────────
+
+
+def test_child_run_cards_read_the_agents_environment():
+    """In-run CUDA name -> the worker's card (#839 review item 1)."""
+    from app.agent.runner import child_environment
+
+    def spec(device, devices):
+        return {"env": child_environment(device, devices)}
+
+    assert child.run_cards(spec("cuda:2", ["cuda:2", "cuda:0"])) == {
+        "cuda:0": "cuda:2", "cuda:1": "cuda:0"}
+    assert child.run_cards(spec("cpu", [])) == {}
+    assert child.run_cards(spec("cuda", [])) is None
+    assert child.run_cards({}) is None
