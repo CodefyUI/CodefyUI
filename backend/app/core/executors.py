@@ -173,6 +173,10 @@ class ExecutionRequest:
     #: An adopted ``s3`` run's ``execution_facts.worker_s3`` (bucket,
     #: prefix, input keys, #791): its worker is issued new credentials.
     resume_s3: dict[str, Any] | None = None
+    #: Where the run's memory budget came from (#794): ``declared``,
+    #: ``history`` or ``estimate`` (``memory_admission.SOURCE_*``), for the
+    #: note an out-of-memory failure under that budget gets. None: no budget.
+    memory_budget_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -632,12 +636,13 @@ class _S3Run:
 
 
 def _with_budget_note(outcome: ExecutionOutcome, placement: Any,
-                      options: Any = None) -> ExecutionOutcome:
+                      source: str | None = None) -> ExecutionOutcome:
     """A failed run that ran out of memory under a budget (#788) says so:
     the cap is the run's own, and raising it is the fix the generic advice
-    does not mention. A run that declared no ``target.memory_gib`` (its
-    *options*) was given a default, from its graph's last peak or a static
-    estimate (#794), and the note says that one is what to declare."""
+    does not mention. The note follows where the budget came from
+    (*source*, #794): a ``history`` budget was given by default from an
+    earlier run's peak, an ``estimate`` one was a static estimate the user
+    accepted; either way a larger ``target.memory_gib`` is the fix."""
     budget = getattr(placement, "memory_budget", None)
     error = outcome.error
     if outcome.status != STATUS_FAILED or not budget or not error \
@@ -646,13 +651,19 @@ def _with_budget_note(outcome: ExecutionOutcome, placement: Any,
     from .memory_admission import format_gib
 
     devices = ", ".join(getattr(placement, "budget_devices", ()) or ())
-    target = options.get("target") if isinstance(options, dict) else None
-    if isinstance(target, dict) and target.get("memory_gib") is None:
+    if source == "history":
         return replace(outcome, error=(
             f"{error}\n\nThis run was capped to the memory budget it was "
-            f"given by default, {format_gib(budget)} on {devices} (from its "
-            "graph's last peak or a static estimate): declare a larger "
+            f"given by default, {format_gib(budget)} on {devices} (its "
+            "graph's last measured peak plus 20%): declare a larger "
             "target.memory_gib, or make the run need less."))
+    if source == "estimate":
+        return replace(outcome, error=(
+            f"{error}\n\nThis run was capped to {format_gib(budget)} on "
+            f"{devices}, a static estimate of its memory (no earlier run of "
+            "its graph had reported a peak): the estimate was too low; "
+            "declare a larger target.memory_gib, or make the run need "
+            "less."))
     return replace(outcome, error=(
         f"{error}\n\nThis run was capped to its memory budget of "
         f"{format_gib(budget)} on {devices} (target.memory_gib): raise the "
@@ -917,8 +928,9 @@ class WorkerExecutor:
                 if outcome is not None:
                     finished = True
                     await acks.flush()
-                    return _with_budget_note(outcome, request.placement,
-                                             request.options)
+                    return _with_budget_note(
+                        outcome, request.placement,
+                        request.memory_budget_source)
                 if acks.recorded - acks.acked >= ACK_EVERY:
                     await acks.flush()
         except asyncio.CancelledError:

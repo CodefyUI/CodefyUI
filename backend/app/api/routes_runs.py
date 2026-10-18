@@ -47,6 +47,7 @@ import csv
 import io
 import json
 import logging
+import math
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..config import settings
 from ..core import memory_admission as mem
+from ..core import memory_estimate
 from ..core.auth import TOKEN_HEADER, constant_time_equals, session_token
 from ..core.run_service import (
     RunService,
@@ -325,22 +327,25 @@ async def estimate_memory(body: EstimateRequest, request: Request
     """The memory budget a run of *graph* would get by default (#788, #794).
 
     - ``suggested_gib``, ``source``, ``peak_bytes``, ``from_run``: the
-      default. ``source: "history"``: the last peak of a succeeded run of
-      the same graph (structural hash) on the same kind and number of
-      devices, times 1.2 (``peak_bytes``, ``from_run``). ``source:
-      "estimate"``: no such run; the static estimate below, when its
-      confidence is ``medium``. All null when there is neither.
+      default the server applies to a run that declares no budget, only
+      ever ``source: "history"``: the last peak of a succeeded run of the
+      same graph (structural hash) on the same kind and number of devices,
+      times 1.2 (``peak_bytes``, ``from_run``). All null when there is no
+      such run.
     - ``confidence``: ``measured`` (history), ``medium`` or ``low`` (the
       static estimate's), or null.
     - ``history``: up to five earlier peaks of the graph, newest first,
       ``{run_id, peak_bytes, finished_at}``.
     - ``static_estimate_bytes`` and ``static``: the estimate from the
       graph's parameter counts and batch size, with its breakdown; null
-      when the graph has no model to count. A ``low`` one is reported and
-      never used as the default.
+      when the graph has no model to count. ``estimate_gib``: that
+      estimate in GiB (rounded up) when its confidence is ``medium``, for
+      the dialog to offer; null otherwise. The server never applies it: a
+      run carries it only when submitted with ``target.memory_gib`` and
+      ``target.memory_source: "estimate"``.
 
-    What the Queue on... dialog offers as ``target.memory_gib`` for a
-    shared card. 400 for a malformed graph.
+    What the Queue on... and New sweep dialogs offer as
+    ``target.memory_gib`` for a shared card. 400 for a malformed graph.
     """
     service = _get_service(request)
     try:
@@ -354,6 +359,11 @@ async def estimate_memory(body: EstimateRequest, request: Request
         "from_run": None, "confidence": estimate.confidence,
         "history": estimate.history,
         "static_estimate_bytes": None if static is None else static.bytes,
+        "estimate_gib": (
+            math.ceil(static.bytes / mem.GIB * 100) / 100
+            if static is not None
+            and static.confidence == memory_estimate.CONFIDENCE_MEDIUM
+            else None),
         "static": None if static is None else static.describe(),
     }
     if suggestion is not None:

@@ -12,6 +12,7 @@ import {
   localDeviceChoices,
   parseMemoryGib,
   toggleDevice,
+  sharedWithoutTotal,
   usesSharedDevice,
   TARGET_ONE_SHOT,
   workerDeviceChoices,
@@ -152,6 +153,25 @@ describe('anyKinds / defaultKind', () => {
     expect(usesSharedDevice(TARGET_ONE_SHOT, null, [], [box], 'cuda')).toBe(false);
     // `any` never lands on a one-shot worker.
     expect(usesSharedDevice('any', null, [], [job], 'cuda')).toBe(false);
+  });
+
+  it('names the shared devices that report no memory total, only when none does (#788)', () => {
+    const box = worker('box', 'online', [['cuda:0', 'cuda'], ['cuda:1', 'cuda'], ['mps', 'mps']]);
+    box.memory_budget = true;
+    for (const device of box.devices) device.policy = 'shared';
+    box.devices[1].memory = { total_bytes: 8 * 1024 ** 3, free_bytes: null, source: 'nvml' };
+    // cuda:0 alone: no total. With cuda:1 (which has one): admission can judge.
+    expect(sharedWithoutTotal('box', box, ['cuda:0'], [box], 'cuda')).toEqual(['cuda:0']);
+    expect(sharedWithoutTotal('box', box, ['cuda:0', 'cuda:1'], [box], 'cuda')).toEqual([]);
+    expect(sharedWithoutTotal('any', null, [], [box], 'mps')).toEqual(['mps']);
+    expect(sharedWithoutTotal('any', null, [], [box], 'cuda')).toEqual([]);
+    // The ledger's total counts too.
+    box.devices[2].admission = {
+      by_memory: true, total_bytes: 16 * 1024 ** 3, free_bytes: null, reserved_bytes: 0, running_bytes: 0,
+      headroom_bytes: null, runs: [],
+    };
+    expect(sharedWithoutTotal('box', box, ['mps'], [box], 'mps')).toEqual([]);
+    expect(sharedWithoutTotal('local', null, [], [box], 'cuda')).toEqual([]);
   });
 
   it('says what the memory history is kept by: device kind and count (#788)', () => {

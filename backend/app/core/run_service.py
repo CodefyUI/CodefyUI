@@ -195,6 +195,7 @@ import asyncio
 import contextlib
 import functools
 import heapq
+import inspect
 import itertools
 import json
 import logging
@@ -204,7 +205,7 @@ import weakref
 from collections import deque
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -756,7 +757,21 @@ ONE_SHOT_QUEUE_PREFIX = f"pool:{POOL_ONE_SHOT}"
 MAX_TARGET_DEVICES = 64
 #: ``options.target``'s keys (#769, #788).
 TARGET_KEYS = frozenset({"worker", "devices", "pool", "memory_gib",
-                         "wait"})
+                         "wait", "memory_source"})
+#: ``target.memory_source`` values (#794): where a declared ``memory_gib``
+#: came from. ``estimate``: the user accepted the Queue on... dialog's static
+#: estimate; the run's budget is recorded as such (the Runs panel marks it).
+MEMORY_SOURCES = (mem.SOURCE_DECLARED, mem.SOURCE_ESTIMATE)
+
+
+def declared_budget(options: Any) -> "mem.Budget | None":
+    """A run's declared memory budget (#788): ``target.memory_gib`` of
+    normalised *options*, with its ``memory_source`` (#794), or None."""
+    target = options.get("target") if isinstance(options, dict) else None
+    if not isinstance(target, dict) or target.get("memory_gib") is None:
+        return None
+    return mem.Budget(mem.gib_to_bytes(target["memory_gib"]),
+                      target.get("memory_source") or mem.SOURCE_DECLARED)
 
 
 def _content_index(store: Any) -> Any:
@@ -969,6 +984,19 @@ def normalize_target(raw: Any) -> dict[str, Any] | None:
                 "a worker's run subprocess, and this server runs its own "
                 "runs in one shared process")
         target["memory_gib"] = float(memory_gib)
+    memory_source = raw.get("memory_source")
+    if memory_source is not None:
+        if memory_source not in MEMORY_SOURCES:
+            raise RunSubmitError(
+                "target.memory_source must be 'declared' or 'estimate'")
+        if memory_gib is None:
+            raise RunSubmitError(
+                "target.memory_source describes target.memory_gib; give "
+                "memory_gib too")
+        # Stored only for an accepted estimate: a plain declared budget
+        # keeps the row it stored before.
+        if memory_source == mem.SOURCE_ESTIMATE:
+            target["memory_source"] = memory_source
     wait = raw.get("wait")
     if wait is not None:
         if not isinstance(wait, bool):
@@ -1508,6 +1536,18 @@ class RunSubscription:
         return dropped
 
 
+def _raised_note(budget: "mem.Budget | None") -> str | None:
+    """What a waiting run's reason adds when its accepted estimate was
+    raised to a measured peak (#794), or None."""
+    if budget is None or not budget.raised_from:
+        return None
+    where = f" (run {budget.from_run})" if budget.from_run else ""
+    return (f"memory budget raised from the accepted estimate, "
+            f"{mem.format_gib(budget.raised_from)}, to "
+            f"{mem.format_gib(budget.bytes)}: an earlier run of its graph"
+            f"{where} peaked above the estimate")
+
+
 def _adopted_budget(facts: Mapping[str, Any]) -> "mem.Budget | None":
     """The memory budget an adopted run (#793) was admitted with (#788):
     ``execution_facts.memory_budget``, or None."""
@@ -1744,12 +1784,11 @@ class RunService:
         self._ledger: mem.MemoryLedger = (
             ledger if isinstance(ledger, mem.MemoryLedger)
             else mem.MemoryLedger())
-        # The default (#794): the graph's history, else a static estimate
-        # from its parameter counts (``memory_estimate``).
+        # The default (#794): the graph's history by its structural hash
+        # (``memory_estimate``). Its static estimate is only offered by the
+        # dialog, never applied here.
         self._budget_source: mem.BudgetSource = (
-            memory_estimate.EstimateBudgetSource(
-                mem.HistoryBudgetSource(self._last_peak_memory),
-                self._peak_history)
+            memory_estimate.EstimateBudgetSource(self._peak_history)
             if budget_source is None else budget_source)
         self._worker_executor: Executor | None = (
             None if workers is None else WorkerExecutor(
@@ -1942,12 +1981,16 @@ class RunService:
         explain = getattr(self._scheduler, "explain", None)
         if entry is None or explain is None:
             return None
+        note = _raised_note(entry.memory_budget)
         try:
-            return explain(entry, self._admission_view(run_id))
+            reason = explain(entry, self._admission_view(run_id))
         except Exception:  # noqa: BLE001 -- a description, never an error
             logger.debug("could not explain run %s's wait", run_id,
                          exc_info=True)
-            return None
+            reason = None
+        if note and reason:
+            return f"{reason}; {note}"
+        return reason or note
 
     def queue_snapshot(self) -> dict[str, list[str]]:
         """``{queue_key: [run_id, ...]}`` in service order. Waiting runs only.
@@ -2133,11 +2176,12 @@ class RunService:
             # A run that targets a worker (#788): its budget, and the
             # refusal of one that cannot fit a shared card. Before the row
             # is written, so a refusal leaves nothing behind.
-            graph_digest = mem.graph_hash(stored_graph, normalized_options)
+            graph_digest = await memory_estimate.structural_hash_async(
+                stored_graph, normalized_options)
             budget = await self._memory_budget(
                 normalized_options, stored_graph,
                 batch_child=sweep_id is not None or study_id is not None,
-                derived=memory_budget)
+                derived=memory_budget, digest=graph_digest)
         record = await self.store.create_run(
             graph_snapshot=stored_graph,
             options=normalized_options,
@@ -2234,6 +2278,7 @@ class RunService:
                              graph: dict[str, Any], *,
                              batch_child: bool = False,
                              derived: "mem.Budget | None" = None,
+                             digest: str | None = None,
                              ) -> "mem.Budget | None":
         """A worker run's memory budget (#788), or ``RunSubmitError``.
 
@@ -2251,17 +2296,14 @@ class RunService:
         sweep's or a study's child (refusing one would leave half a batch
         submitted), wait unless ``target.wait: false``.
         """
-        target = options.get("target") or {}
-        declared = target.get("memory_gib")
-        budget = (None if declared is None
-                  else mem.Budget(mem.gib_to_bytes(declared)))
+        budget = declared_budget(options)
         wants = getattr(self._scheduler, "wants_budget", None)
         if wants is None or not wants(options):
             return budget
         if budget is None:
             budget = derived
         if budget is None:
-            suggestion = await self._budget_source.suggest(graph, options)
+            suggestion = await self._suggest(graph, options, digest)
             budget = None if suggestion is None else suggestion.budget
         refusal = getattr(self._scheduler, "memory_refusal", None)
         if refusal is not None:
@@ -2275,9 +2317,23 @@ class RunService:
                 raise RunSubmitError(message)
         return budget
 
-    async def _last_peak_memory(self, digest: str) -> Any:
-        lookup = getattr(self.store, "last_peak_memory", None)
-        return None if lookup is None else await lookup(digest)
+    async def _suggest(self, graph: Any, options: Any,
+                       digest: str | None = None) -> "mem.Suggestion | None":
+        """The budget source's suggestion, handing it *digest* (the graph's
+        structural hash, when the caller has it) if it takes one, so a
+        graph is hashed once (#794)."""
+        if digest is not None and self._takes_digest():
+            return await self._budget_source.suggest(graph, options,
+                                                     digest=digest)
+        return await self._budget_source.suggest(graph, options)
+
+    def _takes_digest(self) -> bool:
+        try:
+            parameters = inspect.signature(
+                self._budget_source.suggest).parameters
+        except (TypeError, ValueError):
+            return False
+        return "digest" in parameters
 
     async def _peak_history(self, digest: str, limit: int) -> Any:
         lookup = getattr(self.store, "peak_history", None)
@@ -2312,14 +2368,13 @@ class RunService:
             child_options = checked[key]
             if not wants(child_options):
                 continue
-            declared = (child_options.get("target") or {}).get("memory_gib")
+            declared = declared_budget(child_options)
             if declared is not None:
-                budget: int | None = mem.gib_to_bytes(declared)
+                budget: int | None = declared.bytes
             else:
                 stored, _ = split_graph_secrets(
                     normalize_graph(graph), unknown_types_as_secret=True)
-                suggestion = await self._budget_source.suggest(
-                    stored, child_options)
+                suggestion = await self._suggest(stored, child_options)
                 if suggestion is not None:
                     result[index] = suggestion.budget
                 budget = None if suggestion is None else suggestion.budget.bytes
@@ -2346,20 +2401,47 @@ class RunService:
                 and (graph_hash is None or entry.graph_hash == graph_hash)
                 and wants(entry.options)]
 
+    def _raise_estimates(self, active: _ActiveRun) -> None:
+        """A run that succeeded with a CUDA peak raises the budget of each
+        waiting run of its graph whose budget is an accepted static
+        estimate (#794) below that peak's default (#788: the peak times
+        1.2): the estimate was low, and a run capped at it would fail. A
+        budget the user typed is never touched, and a larger estimate never
+        lowered. Synchronous, before the run's slot is given back, so a
+        waiting run cannot start under the low figure in between; its
+        reason says what changed (:func:`_raised_note`)."""
+        peak = mem.peak_bytes(active.peak_memory)
+        if peak is None or not active.graph_hash:
+            return
+        measured = mem.Budget(int(math.ceil(peak * mem.HISTORY_MARGIN)),
+                              mem.SOURCE_HISTORY, from_run=active.run_id)
+        for entry in self._pending_by_id.values():
+            current = entry.memory_budget
+            if entry.graph_hash == active.graph_hash and current is not None \
+                    and current.source == mem.SOURCE_ESTIMATE \
+                    and measured.bytes > current.bytes:
+                entry.memory_budget = replace(measured,
+                                              raised_from=current.bytes)
+
     async def refresh_budgets(self, graph_hash: str | None = None) -> None:
         """Give each waiting run :meth:`_budgetless` finds its default
         budget (#788), then reschedule. Called when a card is set to
         ``shared`` (a run submitted while it was exclusive has none) and when
         a run of *graph_hash* succeeds with a peak (a run submitted before
         its graph had one). One that still has none keeps waiting, and its
-        reason says how to get it going."""
+        reason says how to get it going.
+
+        A run whose budget is an accepted static estimate (#794) gets the
+        measured one instead when that is LARGER (the estimate was low, and
+        a run capped at it would fail): :meth:`_raise_estimates`, when the
+        run finishes."""
         entries = self._budgetless(graph_hash)
         for entry in entries:
             graph = await self.store.get_graph_snapshot(entry.run_id)
             if graph is None or entry.run_id not in self._pending_by_id:
                 continue
-            suggestion = await self._budget_source.suggest(graph,
-                                                           entry.options)
+            suggestion = await self._suggest(graph, entry.options,
+                                             entry.graph_hash)
             if suggestion is not None:
                 entry.memory_budget = suggestion.budget
         if entries:
@@ -3530,6 +3612,9 @@ class RunService:
                 needs=active.needs,
                 resume_seq=active.resume_seq,
                 resume_s3=active.resume_s3,
+                memory_budget_source=(
+                    None if active.memory_budget is None
+                    else active.memory_budget.source),
             ))
         except asyncio.CancelledError:
             raise
@@ -3587,6 +3672,8 @@ class RunService:
         ``_record_peak_memory``).
         """
         active.terminating = True
+        if status == STATUS_SUCCEEDED and active.peak_measured:
+            self._raise_estimates(active)
         self._release_admission(active)
         await self._flush_metrics(active, force=True)
         if active.peak_measured:

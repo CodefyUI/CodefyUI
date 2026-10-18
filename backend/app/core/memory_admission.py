@@ -44,9 +44,12 @@ Budgets
 declares none gets one from a :class:`BudgetSource` (the default,
 :class:`HistoryBudgetSource`: the last peak of a succeeded run of the same
 graph, times :data:`HISTORY_MARGIN`; a CUDA peak only: MPS reports what
-the driver holds at the end, which is not a peak); #794 wraps it in
-``memory_estimate.EstimateBudgetSource``, which falls back to a static
-estimate from the graph's parameter counts. A run with neither cannot go to a shared card.
+the driver holds at the end, which is not a peak); #794's
+``memory_estimate.EstimateBudgetSource`` keeps that rule, keyed by the
+graph's structure. A static estimate from the graph's parameter counts is
+never a default: the dialog offers it, and a run carries it only as a
+declared ``target.memory_gib`` with ``target.memory_source: "estimate"``.
+A run with no budget cannot go to a shared card.
 
 ``free`` is read every heartbeat (10 s) for the whole card; a run's own
 growth after it started is not visible in it, which the ``total`` term
@@ -83,8 +86,8 @@ HISTORY_MARGIN = 1.2
 #: ``Budget.source`` values.
 SOURCE_DECLARED = "declared"
 SOURCE_HISTORY = "history"
-#: A static estimate from the graph's parameter counts (#794), never a
-#: measured peak.
+#: A static estimate from the graph's parameter counts (#794) the user
+#: accepted (``target.memory_source``), never a measured peak.
 SOURCE_ESTIMATE = "estimate"
 
 SlotKey = tuple[str, str]
@@ -133,11 +136,16 @@ class Budget:
     source: str = SOURCE_DECLARED
     #: For a ``history`` budget: the run whose peak it was taken from.
     from_run: str | None = None
+    #: For a ``history`` budget that replaced a smaller accepted estimate
+    #: while the run waited (#794): that estimate, in bytes.
+    raised_from: int | None = None
 
     def describe(self) -> dict[str, Any]:
         entry: dict[str, Any] = {"bytes": self.bytes, "source": self.source}
         if self.from_run:
             entry["from_run"] = self.from_run
+        if self.raised_from:
+            entry["raised_from"] = self.raised_from
         return entry
 
 
@@ -283,8 +291,8 @@ class Suggestion:
 
 
 class BudgetSource(Protocol):
-    """Where a run's default ``memory_gib`` comes from (#788; #794 adds a
-    static estimate). ``suggest`` gets the graph as stored (secrets
+    """Where a run's default ``memory_gib`` comes from (#788; #794 keys it
+    by the graph's structure). ``suggest`` gets the graph as stored (secrets
     scrubbed) and the run's normalised options (its target and device), and
     returns None when it has nothing to say."""
 

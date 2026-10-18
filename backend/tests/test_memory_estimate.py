@@ -121,6 +121,37 @@ def test_the_hash_sees_what_shapes_memory():
             "devices": ["cuda:0", "cuda:1"]}})
 
 
+def test_the_hash_keeps_what_selects_the_data():
+    """``Dataset.name`` picks the data and with it the resolution (MNIST at
+    28 px, STL10 at 96): two graphs that differ only there are two
+    histories."""
+    graph = _training_graph()
+    other = _training_graph()
+    next(n for n in other["nodes"] if n["type"] == "Dataset")["data"][
+        "params"]["name"] = "STL10"
+    assert me.structural_hash(graph) != me.structural_hash(other)
+    assert "name" not in me.IGNORED_PARAMS
+
+
+def _identical_layers(edges: list[tuple[str, str]]) -> dict[str, Any]:
+    nodes = [_node("s", "Start")] + [
+        _node(n, "TensorCreate", shape="4") for n in ("a", "b", "c")]
+    return {"nodes": nodes, "edges": [
+        {"id": f"{u}{v}", "source": u, "target": v, "sourceHandle": "out",
+         "targetHandle": "in"} for u, v in edges]}
+
+
+def test_the_hash_tells_a_chain_from_a_fan_out_of_identical_nodes():
+    """Without node ids, three identical nodes wired a -> b -> c and a -> b,
+    a -> c have the same nodes and the same edge labels; the refinement
+    tells them apart, and a relabelled chain still matches."""
+    chain = _identical_layers([("s", "a"), ("a", "b"), ("b", "c")])
+    fan = _identical_layers([("s", "a"), ("a", "b"), ("a", "c")])
+    assert me.structural_hash(chain) != me.structural_hash(fan)
+    relabelled = _identical_layers([("s", "c"), ("c", "a"), ("a", "b")])
+    assert me.structural_hash(chain) == me.structural_hash(relabelled)
+
+
 def test_the_hash_reads_a_preset_as_it_executes():
     """A preset card hashes as its expanded nodes; one whose params differ
     is a different graph."""
@@ -156,6 +187,24 @@ def test_an_unreadable_graph_is_hashed_as_drawn():
                     "data": {"params": {"n": 2}}}], "edges": []})
 
 
+def test_a_graph_read_as_drawn_hashes_its_subgraph_definitions():
+    """A subgraph card that does not prepare is hashed with the definition
+    it names: two that differ inside the subgraph are two graphs, and the
+    definition's own ids and layout do not count."""
+    def graph(width: int, *, sub_id: str = "n1", x: int = 0):
+        return {"nodes": [{"id": "card", "type": "NoSuchNode",
+                           "data": {"params": {"subgraphId": "sg"}}}],
+                "edges": [],
+                "subgraphs": [{"id": "sg", "name": "block", "nodes": [
+                    {"id": sub_id, "type": "Linear", "position": {"x": x},
+                     "data": {"params": {"out_features": width}}}],
+                    "edges": []}]}
+
+    assert me.structural_hash(graph(4)) != me.structural_hash(graph(8))
+    assert me.structural_hash(graph(4)) == me.structural_hash(
+        graph(4, sub_id="other", x=90))
+
+
 # ── the static estimate ──────────────────────────────────────────────────
 
 
@@ -169,8 +218,15 @@ def _real_count(layers: str) -> int:
 @pytest.mark.parametrize(("optimizer", "states"), [
     ({"type": "Adam"}, 2), ({"type": "AdamW"}, 2),
     ({"type": "Adam", "amsgrad": True}, 3),
+    # A string is read as the node reads it: "false" is False.
+    ({"type": "Adam", "amsgrad": "false"}, 2),
+    ({"type": "Adam", "amsgrad": "true"}, 3),
     ({"type": "SGD", "momentum": 0.9}, 1), ({"type": "SGD"}, 0),
-    ({"type": "RMSprop"}, 1)])
+    ({"type": "SGD", "momentum": "0.9"}, 1),
+    ({"type": "RMSprop"}, 1), ({"type": "RMSprop", "momentum": 0.9}, 2),
+    ({"type": "RMSprop", "momentum": 0.9, "centered": True}, 3),
+    ({"type": "RMSprop", "centered": "true"}, 2),
+    ({"type": "RMSprop", "momentum": "lots", "centered": "maybe"}, 1)])
 def test_the_estimate_counts_weights_gradients_and_optimizer_state(
         optimizer, states):
     estimate = me.estimate_static(_training_graph(optimizer=optimizer))
@@ -459,15 +515,110 @@ def test_a_build_that_fails_on_the_meta_device_is_not_counted(monkeypatch):
     assert estimate.uncounted == ["SequentialModel"]
 
 
+def _seq_layers(first: str = "Linear") -> str:
+    """Linear(16 -> 8) then an LSTM: a sequence model whose first shaped
+    layer is a Linear (its flat input would be a 2-token sequence)."""
+    return json.dumps({"version": 2, "nodes": [
+        {"id": "in", "type": "Input", "ports": [{"id": "p", "name": "x"}]},
+        {"id": "l", "type": first, "params": {
+            "in_features": 16, "out_features": 8}},
+        {"id": "r", "type": "LSTM", "params": {
+            "input_size": 8, "hidden_size": 8}},
+        {"id": "out", "type": "Output", "ports": [{"id": "o", "name": "y"}]},
+    ], "edges": [
+        {"id": "1", "source": "in", "sourceHandle": "p", "target": "l"},
+        {"id": "2", "source": "l", "target": "r"},
+        {"id": "3", "source": "r", "target": "out", "targetHandle": "o"}]})
+
+
+def test_a_sequence_model_needs_the_graph_s_sequence_length():
+    """No flat input for a model with a sequence layer; a length the graph
+    names is pinned (``medium``), a default one is a guess (``low``)."""
+    guessed = me.estimate_static(_training_graph(layers=_seq_layers()))
+    assert guessed is not None
+    model = guessed.models[0]
+    assert model.probe_input is not None and len(model.probe_input[0]) == 2
+    assert model.shape_guessed is True
+    assert guessed.confidence == me.CONFIDENCE_LOW
+    assert any("input size" in note for note in guessed.notes)
+    pinned = me.estimate_static(_training_graph(
+        layers=_seq_layers(), extra=[_node("seq", "SyntheticSequence",
+                                           seq_len=24)]))
+    assert pinned is not None
+    assert pinned.models[0].probe_input == [[24, 16]]
+    assert pinned.models[0].shape_guessed is False
+    assert pinned.confidence == me.CONFIDENCE_MEDIUM
+
+
+def _cnn_layers(adaptive: bool) -> str:
+    middle = ([{"id": "p", "type": "AdaptiveAvgPool2d",
+                "params": {"output_size": 1}}] if adaptive else [])
+    width = 4 if adaptive else 4 * 32 * 32
+    chain = ["c", *(n["id"] for n in middle), "f", "l"]
+    return json.dumps({"version": 2, "nodes": [
+        {"id": "in", "type": "Input", "ports": [{"id": "x", "name": "x"}]},
+        {"id": "c", "type": "Conv2d", "params": {
+            "in_channels": 1, "out_channels": 4, "kernel_size": 3,
+            "padding": 1}},
+        *middle,
+        {"id": "f", "type": "Flatten"},
+        {"id": "l", "type": "Linear", "params": {
+            "in_features": width, "out_features": 2}},
+        {"id": "out", "type": "Output", "ports": [{"id": "o", "name": "y"}]},
+    ], "edges": [
+        {"id": "e0", "source": "in", "sourceHandle": "x", "target": "c"},
+        *({"id": f"e{a}{b}", "source": a, "target": b}
+          for a, b in zip(chain, chain[1:])),
+        {"id": "e9", "source": "l", "target": "out", "targetHandle": "o"}]})
+
+
+def _without_data_hints(graph: dict[str, Any]) -> dict[str, Any]:
+    for node in graph["nodes"]:
+        if node["type"] == "Dataset":
+            node["data"]["params"]["name"] = "ImageFolder"
+    return graph
+
+
+def test_a_cnn_whose_side_the_graph_does_not_give_is_a_guess():
+    """An adaptive-pool CNN runs at any side: without one in the graph the
+    first default fits and so do others, so it is ``low``. A CNN whose
+    Linear fixes the side (32 px, not the first default) is pinned by the
+    model itself: no other default size runs."""
+    adaptive = me.estimate_static(_without_data_hints(
+        _training_graph(layers=_cnn_layers(adaptive=True))))
+    assert adaptive is not None
+    assert adaptive.models[0].shape_guessed is True
+    assert adaptive.confidence == me.CONFIDENCE_LOW
+    hinted = me.estimate_static(_training_graph(
+        layers=_cnn_layers(adaptive=True)))
+    assert hinted is not None
+    assert hinted.models[0].probe_input == [[1, 28, 28]]
+    assert hinted.confidence == me.CONFIDENCE_MEDIUM
+    fixed = me.estimate_static(_without_data_hints(
+        _training_graph(layers=_cnn_layers(adaptive=False))))
+    assert fixed is not None and fixed.models[0].probe_input == [[1, 32, 32]]
+    assert fixed.models[0].shape_guessed is False
+    assert fixed.confidence == me.CONFIDENCE_MEDIUM
+
+
+def test_an_inference_graph_without_a_batch_size_is_low():
+    graph = {"nodes": [_node("model", "SequentialModel", layers=_layers())],
+             "edges": []}
+    estimate = me.estimate_static(graph)
+    assert estimate is not None
+    assert estimate.eval_batch_size == 1
+    assert estimate.batch_assumed is True
+    assert estimate.confidence == me.CONFIDENCE_LOW
+    with_batch = {"nodes": [*graph["nodes"], _node("ev", "Inference",
+                                                   batch_size=16)],
+                  "edges": []}
+    estimate = me.estimate_static(with_batch)
+    assert estimate is not None
+    assert estimate.eval_batch_size == 16
+    assert estimate.batch_assumed is False
+
+
 # ── the budget source ────────────────────────────────────────────────────
-
-
-class _History:
-    def __init__(self, suggestion: mem.Suggestion | None) -> None:
-        self.suggestion = suggestion
-
-    async def suggest(self, graph, options):
-        return self.suggestion
 
 
 def _static(estimate: me.StaticEstimate | None):
@@ -484,61 +635,97 @@ def _estimate(confidence: str, nbytes: int = 3 * GIB) -> me.StaticEstimate:
         weights_bytes=1, activation_bytes=1, workspace_bytes=1)
 
 
-async def test_history_comes_first_then_a_usable_static_estimate():
-    measured = mem.Suggestion(mem.Budget(2 * GIB, mem.SOURCE_HISTORY,
-                                         from_run="r1"), peak_bytes=GIB)
-    rows = [("r1", "2026-10-18T00:00:00Z", {"cuda:0": {
-        "reserved_bytes": GIB}}), ("r0", "2026-10-17T00:00:00Z",
-                                   {"mps": {"held_bytes": 5}})]
+ROWS = [("r1", "2026-10-18T00:00:00Z", {"cuda:0": {"reserved_bytes": GIB}}),
+        ("r0", "2026-10-17T00:00:00Z", {"mps": {"held_bytes": 5}})]
+
+
+async def test_the_suggestion_is_the_history_alone():
     seen: list[tuple[str, int]] = []
 
     async def peaks(digest, limit):
         seen.append((digest, limit))
-        return rows
+        return ROWS[:limit]
 
-    source = me.EstimateBudgetSource(_History(measured), peaks,
+    source = me.EstimateBudgetSource(peaks,
                                      static=_static(_estimate("medium")))
-    assert await source.suggest({}, {}) is measured
+    suggestion = await source.suggest({}, {})
+    assert suggestion == mem.Suggestion(
+        mem.Budget(int(-(-GIB * mem.HISTORY_MARGIN // 1)), mem.SOURCE_HISTORY,
+                   from_run="r1"), peak_bytes=GIB)
     explained = await source.explain({"nodes": []}, {"device": "cuda:0"})
-    assert explained.suggestion is measured
+    assert explained.suggestion == suggestion
     assert explained.confidence == me.CONFIDENCE_MEASURED
     # The MPS row is no peak (#788 review 4): left out.
     assert explained.history == [{"run_id": "r1", "peak_bytes": GIB,
                                   "finished_at": "2026-10-18T00:00:00Z"}]
-    assert seen == [(mem.graph_hash({"nodes": []}, {"device": "cuda:0"}),
-                     me.HISTORY_ROWS)]
-
-    source = me.EstimateBudgetSource(_History(None), None,
-                                     static=_static(_estimate("medium")))
-    suggestion = await source.suggest({}, {})
-    assert suggestion is not None
-    assert suggestion.budget == mem.Budget(3 * GIB, mem.SOURCE_ESTIMATE)
-    assert suggestion.peak_bytes is None
-    explained = await source.explain({}, {})
-    assert explained.confidence == me.CONFIDENCE_MEDIUM
-    assert explained.history == []
-
-
-async def test_a_low_estimate_is_reported_but_never_applied():
-    source = me.EstimateBudgetSource(_History(None), None,
-                                     static=_static(_estimate("low")))
-    assert await source.suggest({}, {}) is None
-    explained = await source.explain({}, {})
-    assert explained.suggestion is None
     assert explained.static is not None
-    assert explained.confidence == me.CONFIDENCE_LOW
-    empty = me.EstimateBudgetSource(_History(None), None,
-                                    static=_static(None))
+    assert seen[-1] == (mem.graph_hash({"nodes": []}, {"device": "cuda:0"}),
+                        me.HISTORY_ROWS)
+    # A digest the caller has is used as is: the graph is not hashed again.
+    seen.clear()
+    await source.suggest({"nodes": "not a graph"}, {}, digest="abc")
+    await source.explain({"nodes": "not a graph"}, {}, digest="abc")
+    assert seen == [("abc", 1), ("abc", me.HISTORY_ROWS)]
+
+
+async def test_a_static_estimate_is_never_a_default():
+    """Medium or low, the static estimate is reported by ``explain`` for the
+    dialog to offer, and ``suggest`` (the server's default) is None
+    without a measured peak; so is a newest peak from MPS."""
+
+    async def none(digest, limit):
+        return []
+
+    for confidence in (me.CONFIDENCE_MEDIUM, me.CONFIDENCE_LOW):
+        source = me.EstimateBudgetSource(
+            none, static=_static(_estimate(confidence)))
+        assert await source.suggest({}, {}) is None
+        explained = await source.explain({}, {})
+        assert explained.suggestion is None
+        assert explained.static is not None
+        assert explained.confidence == confidence
+        assert explained.history == []
+    empty = me.EstimateBudgetSource(none, static=_static(None))
     assert (await empty.explain({}, {})).confidence is None
+
+    async def mps_first(digest, limit):
+        return ROWS[::-1][:limit]
+
+    source = me.EstimateBudgetSource(mps_first, static=_static(None))
+    assert await source.suggest({}, {}) is None
+    assert len((await source.explain({}, {})).history) == 1
+
+
+async def test_explain_reads_the_history_and_the_estimate_together():
+    started: list[str] = []
+    both = asyncio.Event()
+
+    async def peaks(digest, limit):
+        started.append("peaks")
+        if len(started) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 2)
+        return []
+
+    async def static(graph):
+        started.append("static")
+        if len(started) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 2)
+        return None
+
+    source = me.EstimateBudgetSource(peaks, static=static)
+    await source.explain({}, {}, digest="d")
+    assert sorted(started) == ["peaks", "static"]
 
 
 async def test_a_history_read_that_fails_lists_nothing():
     async def broken(digest, limit):
         raise RuntimeError("database is locked")
 
-    source = me.EstimateBudgetSource(_History(None), broken,
-                                     static=_static(None))
+    source = me.EstimateBudgetSource(broken, static=_static(None))
     assert (await source.explain({}, {})).history == []
+    assert await source.suggest({}, {}) is None
 
 
 def test_the_breakdown_is_what_the_api_reports():
@@ -549,5 +736,6 @@ def test_the_breakdown_is_what_the_api_reports():
     assert described["confidence"] == "medium"
     assert described["models"] == [{
         "type": "SequentialModel", "parameters": 212,
-        "activations_known": True, "probe_input": [[8]]}]
+        "activations_known": True, "probe_input": [[8]],
+        "shape_guessed": False}]
     json.dumps(described)

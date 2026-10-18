@@ -12,9 +12,11 @@ interface MemoryEstimateHintProps {
 /**
  * Where the Queue on... dialog's memory suggestion came from (#788, #794),
  * said so that a static estimate never reads as a measured peak: a
- * "Measured" or "Estimate" tag, then how the figure was reached. A rough
- * (low confidence) estimate is shown for reference with why it is not used,
- * and the field stays empty.
+ * "Measured" or "Estimate" tag, then how the figure was reached. The server
+ * applies only a measured one by default; an estimate goes with the run
+ * only when it is submitted, marked as one. A rough (low confidence)
+ * estimate is shown for reference with why it is not offered, and the field
+ * stays empty.
  */
 export function MemoryEstimateHint({ estimate, error }: MemoryEstimateHintProps) {
   const t = useI18n((s) => s.t);
@@ -33,7 +35,7 @@ export function MemoryEstimateHint({ estimate, error }: MemoryEstimateHintProps)
     );
   }
   const statics = estimate?.static ?? null;
-  if (estimate?.source === 'estimate' && statics !== null) {
+  if (estimate?.estimate_gib != null && statics !== null) {
     return (
       <p className={styles.hint} aria-live="polite">
         <span className={`${styles.tag} ${styles.tagEstimate}`}>{t('queueRun.memory.tag.estimate')}</span>{' '}
@@ -65,19 +67,41 @@ function listed(items: string[], t: Translate): string {
   return t(items.length === 2 ? 'queueRun.memory.list.pair' : 'queueRun.memory.list.last', { rest, last });
 }
 
-/** How the estimate adds up, part by part: the weights (and, for a graph
- * that trains, their gradients and optimizer state), the activations of the
- * pass that sets them when there is one, and the libraries' workspace. Each
- * part in the unit that reads best (a small model's weights are kilobytes);
- * the total stays in GiB, the unit the field takes. */
+/** Half-precision copies autocast makes of every weight, per parameter. */
+const AUTOCAST_BYTES = 2;
+
+/** How the estimate adds up, part by part, each the term the server added:
+ * every parameter's float32 weight; for a graph that trains, the trainable
+ * ones' gradients and optimizer state, and under bf16/fp16 autocast the
+ * weights' half-precision copies; the activations of the pass that sets
+ * them when there is one; the libraries' workspace; and the allocator's
+ * reserve on top of the tensors, so the parts sum to the total. Each part in
+ * the unit that reads best (a small model's weights are kilobytes); the
+ * total stays in GiB, the unit the field takes. */
 function breakdown(estimate: StaticMemoryEstimate, t: Translate): string[] {
-  const params = estimate.parameters.toLocaleString('en-US');
-  const weights = formatBytes(estimate.weights_bytes);
+  const count = (n: number) => n.toLocaleString('en-US');
+  const params = count(estimate.parameters);
+  const autocast = estimate.training && estimate.precision !== 'fp32';
+  const copies = autocast ? estimate.parameters * AUTOCAST_BYTES : 0;
+  const perTrainable = (estimate.multiplier - 1) * 4;
+  const state = estimate.training ? estimate.trainable_parameters * perTrainable : 0;
   const parts = [
-    estimate.training
-      ? t('queueRun.memory.part.trainWeights', { params, perParam: String(estimate.multiplier * 4), weights })
-      : t('queueRun.memory.part.weights', { params, weights }),
+    t('queueRun.memory.part.weights', { params, weights: formatBytes(estimate.parameters * 4) }),
   ];
+  if (state > 0) {
+    parts.push(t('queueRun.memory.part.trainState', {
+      trainable: count(estimate.trainable_parameters),
+      perParam: String(perTrainable),
+      bytes: formatBytes(state),
+    }));
+  }
+  if (copies > 0) {
+    parts.push(t('queueRun.memory.part.autocast', {
+      params,
+      precision: estimate.precision,
+      bytes: formatBytes(copies),
+    }));
+  }
   if (estimate.activation_phase === 'training' || estimate.activation_phase === 'evaluation') {
     const evaluation = estimate.activation_phase === 'evaluation';
     parts.push(t(evaluation ? 'queueRun.memory.part.evalActivations' : 'queueRun.memory.part.trainActivations', {
@@ -86,10 +110,12 @@ function breakdown(estimate: StaticMemoryEstimate, t: Translate): string[] {
     }));
   }
   parts.push(t('queueRun.memory.part.workspace', { workspace: formatBytes(estimate.workspace_bytes) }));
+  const reserve = estimate.bytes - estimate.weights_bytes - estimate.activation_bytes - estimate.workspace_bytes;
+  parts.push(t('queueRun.memory.part.reserve', { reserve: formatBytes(reserve) }));
   return parts;
 }
 
-/** Why a static estimate is too rough to be the default, in words. */
+/** Why a static estimate is too rough to offer, in words. */
 function roughReasons(estimate: StaticMemoryEstimate, t: Translate): string[] {
   const reasons: string[] = [];
   if (estimate.uncounted.length > 0) {
@@ -99,8 +125,13 @@ function roughReasons(estimate: StaticMemoryEstimate, t: Translate): string[] {
   if (unshaped.length > 0) {
     reasons.push(t('queueRun.memory.rough.shapes', { nodes: unshaped.map((model) => model.type).join(', ') }));
   }
+  const guessed = estimate.models.filter((model) => model.activations_known && model.shape_guessed === true);
+  if (guessed.length > 0) {
+    reasons.push(t('queueRun.memory.rough.guessed', { nodes: guessed.map((model) => model.type).join(', ') }));
+  }
   if (estimate.batch_assumed) {
-    reasons.push(t('queueRun.memory.rough.batch', { batch: String(estimate.batch_size) }));
+    const batch = estimate.training ? estimate.batch_size : estimate.eval_batch_size;
+    reasons.push(t('queueRun.memory.rough.batch', { batch: String(batch) }));
   }
   return reasons;
 }

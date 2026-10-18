@@ -1000,33 +1000,25 @@ class RunStore:
         """``(run_id, peak_memory)`` of the newest succeeded run whose
         ``graph_hash`` column is *graph_hash* and that reported a peak
         (#788), or None. The default memory budget of a run that declares
-        none (``memory_admission.HistoryBudgetSource``).
-
-        A seek on ``idx_exec_runs_graph_hash``, newest first; only the
-        newest :data:`PEAK_LOOKUP_ROWS` runs of the graph are read, so a
-        graph that never reports a peak (a CPU run) costs a bounded scan."""
-        def _lookup(conn: sqlite3.Connection) -> tuple[str, Any] | None:
-            rows = conn.execute(
-                "SELECT id, json_extract(execution_facts, '$.peak_memory') "
-                "AS peak FROM exec_runs INDEXED BY idx_exec_runs_graph_hash "
-                "WHERE graph_hash = ? AND status = ? "
-                "ORDER BY finished_at DESC LIMIT ?",
-                (graph_hash, STATUS_SUCCEEDED, PEAK_LOOKUP_ROWS)).fetchall()
-            for row in rows:
-                if row["peak"] is not None:
-                    return row["id"], _loads(row["peak"])
+        none (``memory_admission.HistoryBudgetSource``): the first row of
+        :meth:`peak_history`."""
+        rows = await self.peak_history(graph_hash, limit=1)
+        if not rows:
             return None
-
-        return await self.db.run(_lookup)
+        run_id, _, peak = rows[0]
+        return run_id, peak
 
     async def peak_history(
         self, graph_hash: str, limit: int = 5,
     ) -> list[tuple[str, Any, Any]]:
         """``(run_id, finished_at, peak_memory)`` of up to *limit* newest
         succeeded runs whose ``graph_hash`` is *graph_hash* and that
-        reported a peak (#794): the history ``POST /api/runs/estimate``
-        lists. The same indexed seek as :meth:`last_peak_memory`, bounded
-        by :data:`PEAK_LOOKUP_ROWS`."""
+        reported a peak (#788, #794), newest first: the history ``POST
+        /api/runs/estimate`` lists, and (its first row) the default budget.
+
+        A seek on ``idx_exec_runs_graph_hash``, newest first; only the
+        newest :data:`PEAK_LOOKUP_ROWS` runs of the graph are read, so a
+        graph that never reports a peak (a CPU run) costs a bounded scan."""
         def _lookup(conn: sqlite3.Connection) -> list[tuple[str, Any, Any]]:
             rows = conn.execute(
                 "SELECT id, finished_at, json_extract(execution_facts, "

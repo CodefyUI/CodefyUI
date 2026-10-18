@@ -28,6 +28,7 @@ from app.core.run_service import (
     QueueLimits,
     RunService,
     RunSubmitError,
+    declared_budget,
     normalize_options,
 )
 from app.core.run_store import RunStore
@@ -178,8 +179,28 @@ def test_target_memory_gib_and_wait_are_validated_and_kept_only_when_given():
         normalize_options({"target": {"worker": "any", "wait": "no"}})
     with pytest.raises(RunSubmitError, match="needs a worker"):
         normalize_options({"target": {"memory_gib": 2}})
-    with pytest.raises(RunSubmitError, match="'memory_gib', 'pool', 'wait'"):
+    with pytest.raises(RunSubmitError,
+                       match="'memory_gib', 'memory_source', 'pool', 'wait'"):
         normalize_options({"target": {"worker": "box", "budget": 1}})
+    # #794: an accepted static estimate keeps its provenance; "declared" is
+    # the default and is not stored.
+    accepted = normalize_options({"target": {
+        "worker": "box", "memory_gib": 3, "memory_source": "estimate"}})
+    assert accepted["target"]["memory_source"] == "estimate"
+    assert declared_budget(accepted) == mem.Budget(3 * GIB,
+                                                   mem.SOURCE_ESTIMATE)
+    typed = normalize_options({"target": {
+        "worker": "box", "memory_gib": 3, "memory_source": "declared"}})
+    assert "memory_source" not in typed["target"]
+    assert declared_budget(typed) == mem.Budget(3 * GIB)
+    assert declared_budget(plain) is None
+    assert declared_budget(None) is None
+    with pytest.raises(RunSubmitError, match="memory_source must be"):
+        normalize_options({"target": {"worker": "box", "memory_gib": 3,
+                                      "memory_source": "history"}})
+    with pytest.raises(RunSubmitError, match="give memory_gib too"):
+        normalize_options({"target": {"worker": "box",
+                                      "memory_source": "estimate"}})
 
 
 # ── WorkerScheduler ──────────────────────────────────────────────────────
@@ -641,7 +662,8 @@ async def test_two_6_gib_runs_share_a_16_gib_card_and_a_third_is_refused(
                             "from_run": assigns[0].run_id,
                             # #794: a measured peak, and no model to count.
                             "confidence": "measured",
-                            "static_estimate_bytes": None, "static": None}
+                            "static_estimate_bytes": None,
+                            "estimate_gib": None, "static": None}
         assert [row["run_id"] for row in history] == [assigns[0].run_id]
         assert history[0]["peak_bytes"] == 2 * GIB
         # Round 2, item 2: the peak is per card of a one-card run; the same
@@ -748,26 +770,32 @@ def test_the_budget_note_is_added_to_an_out_of_memory_failure_only():
             (ExecutionOutcome("succeeded"), budgeted),
             (ExecutionOutcome("failed", None), budgeted)):
         assert _with_budget_note(outcome, placement) is outcome
-    # #794: a run given its budget by default is told that one is what to
-    # declare; a declared one keeps the #788 wording.
-    defaulted = _with_budget_note(oom, budgeted, {
-        "target": {"worker": "box"}}).error
+    # #794: the note follows where the budget came from, never whether the
+    # options happen to name memory_gib.
+    defaulted = _with_budget_note(oom, budgeted, mem.SOURCE_HISTORY).error
     assert "capped to the memory budget it was given by default, 1.0 GiB " \
-        "on cuda:0 (from its graph's last peak or a static estimate): " \
-        "declare a larger target.memory_gib" in defaulted
-    assert "(target.memory_gib): raise" in _with_budget_note(oom, budgeted, {
-        "target": {"worker": "box", "memory_gib": 1}}).error
+        "on cuda:0 (its graph's last measured peak plus 20%): declare a " \
+        "larger target.memory_gib" in defaulted
+    estimated = _with_budget_note(oom, budgeted, mem.SOURCE_ESTIMATE).error
+    assert "capped to 1.0 GiB on cuda:0, a static estimate of its memory" \
+        in estimated
+    assert "the estimate was too low" in estimated
+    assert "(target.memory_gib): raise" in _with_budget_note(
+        oom, budgeted, mem.SOURCE_DECLARED).error
 
 
-# ── #794: the static estimate as the default ─────────────────────────────
+# ── #794: the static estimate is offered, never applied ──────────────────
 
 
-async def test_a_run_without_history_gets_the_static_estimate(env):
-    """A run of a model graph that no run has measured, on a shared card
-    and with no ``memory_gib``: its budget is the static estimate, recorded
-    as ``source: "estimate"`` (never as a peak), and ``/api/runs/estimate``
-    offers the same figure the run was given. Once a run of the graph
-    reports its peak, the history wins."""
+async def test_a_static_estimate_is_offered_and_applied_only_when_accepted(
+        env):
+    """A run of a model graph that no run has measured, on a shared card:
+    ``/api/runs/estimate`` offers the static estimate (``estimate_gib``)
+    but no default (``suggested_gib`` null), and a run that declares
+    nothing is refused as before #794. Submitted back with
+    ``memory_source: "estimate"`` it runs under that budget, recorded as
+    ``source: "estimate"`` (never as a peak). Once a run of the graph
+    reports its peak, the history is the default."""
     from app.core import memory_estimate as me
     from tests.test_memory_estimate import _training_graph
 
@@ -780,27 +808,38 @@ async def test_a_run_without_history_gets_the_static_estimate(env):
         await agent.hello()
         await client.put("/api/workers/box/devices/cuda:0/policy",
                          json={"policy": "shared"})
-        options = {"device": "cuda:0", "target": {"worker": "box"}}
         estimate = (await client.post("/api/runs/estimate", json={
             "graph": graph, "options": {"device": "cuda:0"}})).json()
-        assert estimate["source"] == "estimate"
+        assert estimate["suggested_gib"] is None
+        assert estimate["source"] is None
         assert estimate["confidence"] == "medium"
         assert estimate["peak_bytes"] is None and estimate["from_run"] is None
         assert estimate["history"] == []
         assert estimate["static_estimate_bytes"] == static.bytes
         assert estimate["static"]["parameters"] == 212
-        assert estimate["suggested_gib"] == round(static.bytes / GIB, 2)
+        accepted = estimate["estimate_gib"]
+        # Rounded up: never below the estimate itself.
+        assert mem.gib_to_bytes(accepted) >= static.bytes
+        assert accepted - static.bytes / GIB < 0.011
+
+        refused = await client.post("/api/runs", json={
+            "graph": graph, "options": {"device": "cuda:0", "target": {
+                "worker": "box"}}})
+        assert refused.status_code == 400
+        assert "has no memory budget" in refused.json()["detail"]
 
         first = await client.post("/api/runs", json={
-            "graph": graph, "options": options})
+            "graph": graph, "options": {"device": "cuda:0", "target": {
+                "worker": "box", "memory_gib": accepted,
+                "memory_source": "estimate"}}})
         assert first.json()["status"] == "running", first.text
         assign = await agent.assignment()
-        assert assign.memory_budgets == {"cuda:0": static.bytes}
+        assert assign.memory_budgets == {"cuda:0": mem.gib_to_bytes(accepted)}
         await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1, pid=1))
         await agent.finish(assign, peak=GIB // 4)
         record = await _terminal(service, assign.run_id)
         assert record.execution_facts["memory_budget"] == {
-            "bytes": static.bytes, "source": "estimate",
+            "bytes": mem.gib_to_bytes(accepted), "source": "estimate",
             "devices": ["cuda:0"]}
 
         # The same graph, a new seed and more epochs: the same structural
@@ -815,6 +854,81 @@ async def test_a_run_without_history_gets_the_static_estimate(env):
             GIB // 4]
         # The static estimate is still reported beside it.
         assert estimate["static_estimate_bytes"] == static.bytes
+
+
+async def test_a_larger_peak_raises_a_waiting_accepted_estimate(env):
+    """Review item 2: runs wait with budgets of 1 GiB (an accepted
+    estimate), 1 GiB (typed) and 4 GiB (an accepted estimate); a run of
+    their graph then succeeds with a 2 GiB peak. Only the low estimate is
+    raised, to the measured 2.4 GiB: a typed budget is never touched and a
+    larger estimate never lowered."""
+    service, registry = env
+    async with _client() as client, aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello()
+
+        async def submit(**target: Any) -> str:
+            response = await client.post("/api/runs", json={
+                "graph": _graph(), "options": {
+                    "device": "cuda:0", "target": {"worker": "box",
+                                                   **target}}})
+            assert response.status_code == 200, response.text
+            return response.json()["run_id"]
+
+        first = await submit()  # exclusive: by count
+        holder = await agent.assignment()
+        low = await submit(memory_gib=1, memory_source="estimate", wait=True)
+        typed = await submit(memory_gib=1, wait=True)
+        high = await submit(memory_gib=4, memory_source="estimate", wait=True)
+        await client.put("/api/workers/box/devices/cuda:0/policy",
+                         json={"policy": "shared"})
+        assert service._pending_by_id[low].memory_budget == mem.Budget(
+            GIB, mem.SOURCE_ESTIMATE)
+        await agent.send(wp.RunStarted(run_id=holder.run_id, seq=1, pid=1))
+        await agent.finish(holder, peak=2 * GIB)
+        assert (await _terminal(service, first)).status == "succeeded"
+        placed = {}
+        for _ in range(3):
+            assign = await agent.assignment()
+            placed[assign.run_id] = assign
+        raised = mem.gib_to_bytes(2 * 1.2)
+        assert placed[low].memory_budgets == {"cuda:0": raised}
+        assert placed[typed].memory_budgets == {"cuda:0": GIB}
+        assert placed[high].memory_budgets == {"cuda:0": 4 * GIB}
+        for assign in placed.values():
+            await agent.send(wp.RunStarted(run_id=assign.run_id, seq=1,
+                                           pid=1))
+            await agent.finish(assign)
+        record = await _terminal(service, low)
+        assert record.execution_facts["memory_budget"] == {
+            "bytes": raised, "source": "history", "from_run": first,
+            "raised_from": GIB, "devices": ["cuda:0"]}
+        assert (await _terminal(service, high)).execution_facts[
+            "memory_budget"]["source"] == "estimate"
+
+
+def test_a_raised_estimate_is_named_in_the_waiting_run_s_reason():
+    service = RunService(None)
+
+    @dataclass
+    class _Pending:
+        run_id: str
+        memory_budget: Any
+
+    explains: list[str | None] = ["waiting for cuda:0 on box", None]
+    service._scheduler.explain = lambda entry, view: explains.pop(0)
+    service._admission_view = lambda run_id: None
+    budget = mem.Budget(mem.gib_to_bytes(2.4), mem.SOURCE_HISTORY,
+                        from_run="r1", raised_from=GIB)
+    service._pending_by_id["w"] = _Pending("w", budget)
+    note = ("memory budget raised from the accepted estimate, 1.0 GiB, to "
+            "2.4 GiB: an earlier run of its graph (run r1) peaked above the "
+            "estimate")
+    assert service.queue_reason("w") == f"waiting for cuda:0 on box; {note}"
+    assert service.queue_reason("w") == note
+    service._pending_by_id["w"] = _Pending("w", mem.Budget(GIB))
+    explains.append(None)
+    assert service.queue_reason("w") is None
 
 
 async def test_a_low_estimate_is_never_a_default_budget(env):

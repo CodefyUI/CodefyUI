@@ -26,10 +26,10 @@ const GIB = 1024 ** 3;
  */
 export function runBudget(run: RunPlacement, t: Translate): { text: string; title: string } | null {
   const admitted = run.execution_facts?.memory_budget as
-    { bytes?: unknown; source?: unknown; from_run?: unknown } | undefined;
+    { bytes?: unknown; source?: unknown; from_run?: unknown; raised_from?: unknown } | undefined;
   if (admitted && typeof admitted.bytes === 'number') {
     if (admitted.source === 'estimate') {
-      // A static estimate (#794), marked as one in the cell itself.
+      // An accepted static estimate (#794), marked as one in the cell itself.
       return {
         text: t('runs.budget.estimateShort', { size: formatGiB(admitted.bytes) }),
         title: t('runs.budget.estimate'),
@@ -38,11 +38,16 @@ export function runBudget(run: RunPlacement, t: Translate): { text: string; titl
     const fromRun = admitted.source === 'history' && typeof admitted.from_run === 'string'
       ? admitted.from_run
       : null;
+    // A measured peak that replaced a lower accepted estimate while the
+    // run waited (#794) says so.
+    const raisedFrom = typeof admitted.raised_from === 'number' ? admitted.raised_from : null;
     return {
       text: formatGiB(admitted.bytes),
       title: fromRun === null
         ? t('runs.budget.declared')
-        : t('runs.budget.history', { run: fromRun.slice(0, 8) }),
+        : raisedFrom === null
+          ? t('runs.budget.history', { run: fromRun.slice(0, 8) })
+          : t('runs.budget.raised', { run: fromRun.slice(0, 8), size: formatGiB(raisedFrom) }),
     };
   }
   const target = run.options?.target as { memory_gib?: unknown } | undefined;

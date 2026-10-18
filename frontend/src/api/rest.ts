@@ -394,6 +394,11 @@ export interface MemoryEstimate {
   /** Earlier peaks of the graph on these devices, newest first. */
   history?: { run_id: string; peak_bytes: number; finished_at: string | null }[];
   static_estimate_bytes?: number | null;
+  /**
+   * The static estimate in GiB (rounded up) when it is usable (`medium`),
+   * for the dialog to offer; the server never applies it on its own (#794).
+   */
+  estimate_gib?: number | null;
   static?: StaticMemoryEstimate | null;
 }
 
@@ -413,7 +418,14 @@ export interface StaticMemoryEstimate {
   weights_bytes: number;
   activation_bytes: number;
   workspace_bytes: number;
-  models: { type: string; parameters: number; activations_known: boolean; probe_input: number[][] | null }[];
+  models: {
+    type: string;
+    parameters: number;
+    activations_known: boolean;
+    probe_input: number[][] | null;
+    /** The graph does not give this model's input size: the probe's is a guess. */
+    shape_guessed?: boolean;
+  }[];
   /** Model node types the estimate could not count. */
   uncounted: string[];
   notes: string[];

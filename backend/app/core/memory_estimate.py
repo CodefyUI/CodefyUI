@@ -1,23 +1,27 @@
-"""Memory estimates for a run's default budget (#794).
+"""Memory estimates for a run's memory budget (#794).
 
 #788 gave a run on a card shared by memory a default budget from the last
 peak of the same graph (``memory_admission.HistoryBudgetSource``). This
 module adds what that needs and what it lacks:
 
 - :func:`structural_hash`, the history key: what the executable graph
-  computes (node types, the params that shape it, the wiring), with node
-  ids, positions, labels, seeds, names and the knobs that only change how
-  long a run takes (``epochs``, ``max_steps``, ``lr``) left out, so a rerun
-  with another seed or more epochs finds its history.
+  computes (node types, the params that shape it, the wiring, by a
+  Weisfeiler-Lehman refinement so the topology counts and node ids do
+  not), with only the params known not to change device memory left out
+  (seeds, display labels, ``epochs``, ``max_steps``, ``lr``, host-side
+  loader workers), so a rerun with another seed or more epochs finds its
+  history.
 - :func:`estimate_static`, for a graph with no history: parameter counts of
   its model nodes, times what training holds per parameter (weights,
   gradients, optimizer state: the usual 4x for Adam), plus a rough
   activation term for its batch size, plus a fixed allowance for the CUDA
-  libraries' workspaces. **An estimate, never a measurement**: the API and
-  the dialog say which one a suggestion is (``source: "estimate"``).
-- :class:`EstimateBudgetSource`, the default ``BudgetSource``: the history
-  first, then the static estimate when it is usable (``confidence:
-  "medium"``).
+  libraries' workspaces. **An estimate, never a measurement**, and never a
+  budget the server applies on its own: it only prefills the Queue on...
+  and New sweep dialogs, labelled as an estimate, and a run carries it only
+  when the user submits it (``target.memory_source: "estimate"``).
+- :class:`EstimateBudgetSource`, the default ``BudgetSource``: ``suggest``
+  is the history alone (#788's rule); ``explain`` adds the earlier peaks
+  and the static estimate for ``POST /api/runs/estimate``.
 
 How the static estimate counts, without building a real model
 --------------------------------------------------------------
@@ -32,8 +36,9 @@ training step keeps for backward. The input's shape comes from the model's
 first layer (``in_features``, ``in_channels``, ...) and the graph's data
 nodes (``image_size``, ``seq_len``, a known dataset's resolution); when no
 shape fits, or the node has no recipe for its inputs, the activation term is
-missing and the estimate is ``low`` confidence (shown, never used as a
-default). A few small built-in models that do not use the mixin (DQN, PPO,
+missing and the estimate is ``low`` confidence (shown, never prefilled).
+So is one whose input size was guessed: a size the graph does not name,
+where other sizes would fit the model just as well. A few small built-in models that do not use the mixin (DQN, PPO,
 RewardModel) are counted by formula. A model node neither path can count
 is listed in ``uncounted`` and makes the estimate ``low`` as well.
 
@@ -61,18 +66,22 @@ logger = logging.getLogger(__name__)
 
 # ── the structural hash ──────────────────────────────────────────────────
 
-#: Params that never change how much device memory a run needs: identity
-#: and display text, seeds, how long it runs, and the host-side loader
-#: workers.
+#: Params known not to change how much device memory a run needs: seeds,
+#: display text, how long it runs and how often it logs, and the host-side
+#: loader workers. Nothing that can select data or a shape: ``name`` stays
+#: (``Dataset.name`` picks CIFAR10 or STL10, another resolution), and so
+#: does every param not listed here.
 IGNORED_PARAMS = frozenset({
-    "seed", "name", "label", "title", "description", "comment", "note",
-    "notes", "tag", "tags", "color", "lr", "learning_rate", "epochs",
-    "episodes", "max_steps", "log_interval", "early_stopping_patience",
-    "patience", "tensorboard", "checkpoint_every", "checkpoint_every_steps",
-    "val_every_steps",
+    "seed", "label", "title", "description", "comment", "note", "notes",
+    "color", "lr", "learning_rate", "epochs", "max_steps", "log_interval",
+    "early_stopping_patience", "patience", "tensorboard", "checkpoint_every",
+    "checkpoint_every_steps", "val_every_steps",
     # How the batches are fed, on the host: the device sees the same ones.
     "num_workers", "persistent_workers", "prefetch_factor", "shuffle",
 })
+#: Weisfeiler-Lehman rounds at most (the refinement stops earlier once the
+#: partition of nodes is stable, which for a DAG of n nodes is within n).
+WL_ROUNDS = 64
 
 
 def _ignored(key: str) -> bool:
@@ -122,27 +131,65 @@ def _node_label(node: Mapping[str, Any], *, layer: bool) -> str:
         [node.get("type"), kept, extra]).encode("utf-8")).hexdigest()
 
 
+def _digest(value: Any) -> str:
+    return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
 def _structure(nodes: list[Any], edges: list[Any], *,
                layer: bool = False) -> dict[str, Any]:
-    """Nodes as the sorted multiset of their labels (type + kept params) and
-    edges as the multiset of ``(source label, handle, target label,
-    handle)``: no node id appears, so a copy-pasted graph with fresh ids
-    hashes the same. Two nodes with one label are interchangeable for
-    memory, which is all the hash has to tell apart."""
+    """A canonical, id-free encoding of a graph's topology.
+
+    Each node starts as its label (type + kept params); then, round by
+    round (Weisfeiler-Lehman refinement), a node's label becomes the digest
+    of its label and the sorted labels and handles of the nodes wired into
+    and out of it, until the partition of nodes into labels stops growing.
+    The result is the sorted multiset of final node labels and of edges
+    ``(source label, handle, target label, handle)``: no node id appears, so
+    a copy-pasted graph with fresh ids hashes the same, while a chain of
+    three identical layers and a fan-out of the same three do not (their
+    nodes' neighbourhoods differ)."""
+    present = [node for node in nodes if isinstance(node, Mapping)]
     labels = {node.get("id"): _node_label(node, layer=layer)
-              for node in nodes if isinstance(node, Mapping)}
-    wires = sorted(
-        _canonical([labels.get(edge.get("source")), edge.get("sourceHandle"),
-                    labels.get(edge.get("target")), edge.get("targetHandle")])
-        for edge in edges if isinstance(edge, Mapping))
-    return {"nodes": sorted(labels.values()), "edges": wires}
+              for node in present}
+    wires = [(edge.get("source"), edge.get("sourceHandle"),
+              edge.get("target"), edge.get("targetHandle"))
+             for edge in edges if isinstance(edge, Mapping)]
+    into: dict[Any, list[tuple[Any, Any, Any]]] = {}
+    out_of: dict[Any, list[tuple[Any, Any, Any]]] = {}
+    for source, source_handle, target, target_handle in wires:
+        out_of.setdefault(source, []).append(
+            (source_handle, target_handle, target))
+        into.setdefault(target, []).append(
+            (source_handle, target_handle, source))
+    classes = len(set(labels.values()))
+    for _ in range(min(len(labels), WL_ROUNDS)):
+        refined = {
+            node_id: _digest([
+                label,
+                sorted(_canonical([a, b, labels.get(other)])
+                       for a, b, other in into.get(node_id, ())),
+                sorted(_canonical([a, b, labels.get(other)])
+                       for a, b, other in out_of.get(node_id, ()))])
+            for node_id, label in labels.items()}
+        grown = len(set(refined.values()))
+        labels = refined
+        if grown == classes:
+            break
+        classes = grown
+    return {"nodes": sorted(labels.values()),
+            "edges": sorted(
+                _canonical([labels.get(source), source_handle,
+                            labels.get(target), target_handle])
+                for source, source_handle, target, target_handle in wires)}
 
 
-def executable(graph: Mapping[str, Any]) -> tuple[list[dict], list[dict]]:
-    """The graph as it executes: presets and subgraphs expanded, bypassed
-    and note nodes gone, params filled with their defaults
-    (``prepare_executable_graph``). A graph that does not validate is read
-    as drawn: a suggestion is never an error."""
+def _prepared(graph: Mapping[str, Any]
+              ) -> tuple[list[dict], list[dict], bool]:
+    """``(nodes, edges, prepared)``: the graph as it executes (presets and
+    subgraphs expanded, bypassed and note nodes gone, params filled with
+    their defaults, ``prepare_executable_graph``), or, when it does not
+    validate, as drawn with ``prepared`` False: a suggestion is never an
+    error."""
     from .graph_engine import build_preset_fallback, prepare_executable_graph
 
     nodes = [node for node in graph.get("nodes") or ()
@@ -157,18 +204,55 @@ def executable(graph: Mapping[str, Any]) -> tuple[list[dict], list[dict]]:
     except Exception:  # noqa: BLE001 -- read it as drawn instead
         logger.debug("memory estimate: the graph does not prepare; "
                      "reading it as drawn", exc_info=True)
-    return list(nodes), list(edges)
+        return list(nodes), list(edges), False
+    return list(nodes), list(edges), True
+
+
+def executable(graph: Mapping[str, Any]) -> tuple[list[dict], list[dict]]:
+    """The graph as it executes, or as drawn (:func:`_prepared`)."""
+    nodes, edges, _ = _prepared(graph)
+    return nodes, edges
+
+
+def _definitions(value: Any) -> Any:
+    """Subgraph and preset definitions as the hash sees them, for a graph
+    read as drawn: each ``{nodes, edges}`` by its structure, the rest
+    (ids, exposed ports) as given."""
+    if isinstance(value, list):
+        return [_definitions(item) for item in value]
+    if isinstance(value, Mapping):
+        if isinstance(value.get("nodes"), list):
+            rest = {key: item for key, item in value.items()
+                    if key not in ("nodes", "edges", "position", "viewport")}
+            return {"structure": _structure(list(value.get("nodes") or ()),
+                                            list(value.get("edges") or ())),
+                    "rest": _definitions(rest)}
+        return {key: _definitions(item) for key, item in value.items()}
+    return value
 
 
 def structural_hash(graph: Mapping[str, Any],
                     options: Mapping[str, Any] | None = None) -> str:
     """The history key of a run of *graph* with *options* (#794 spec 1):
     the structure of the executable graph (:func:`_structure`) and the
-    run's device kind and count (``memory_admission.run_shape``)."""
-    nodes, edges = executable(graph)
-    document = {"graph": _structure(nodes, edges),
-                "shape": mem.run_shape(options)}
-    return hashlib.sha256(_canonical(document).encode("utf-8")).hexdigest()
+    run's device kind and count (``memory_admission.run_shape``). A graph
+    that does not prepare is read as drawn, with its subgraph and preset
+    definitions, which then decide what its cards compute."""
+    nodes, edges, prepared = _prepared(graph)
+    document: dict[str, Any] = {"graph": _structure(nodes, edges),
+                                "shape": mem.run_shape(options)}
+    if not prepared:
+        document["definitions"] = _definitions(
+            [graph.get("subgraphs") or [], graph.get("presets") or []])
+    return _digest(document)
+
+
+async def structural_hash_async(graph: Mapping[str, Any],
+                                options: Mapping[str, Any] | None = None
+                                ) -> str:
+    """:func:`structural_hash` in a thread: preparing a large graph is
+    pure Python but not free, and the event loop serves every request."""
+    return await asyncio.to_thread(structural_hash, graph, options)
 
 
 # ── the static estimate ──────────────────────────────────────────────────
@@ -177,11 +261,12 @@ def structural_hash(graph: Mapping[str, Any],
 #: included: autocast casts per op).
 PARAM_BYTES = 4
 #: Optimizer state tensors per trainable parameter, by ``Optimizer.type``
-#: (lower case). Weights + gradients + these = the multiplier: Adam 4x,
-#: SGD with momentum 3x, plain SGD 2x.
+#: (lower case), before the params that add one (:func:`_optimizer`).
+#: Weights + gradients + these = the multiplier: Adam 4x, SGD with
+#: momentum 3x, plain SGD 2x.
 OPTIMIZER_STATES = {
     "adam": 2, "adamw": 2, "nadam": 2, "radam": 2, "adamax": 2,
-    "sgd": 1, "rmsprop": 1, "adagrad": 1, "adadelta": 2, "lbfgs": 2,
+    "sgd": 0, "rmsprop": 1, "adagrad": 1, "adadelta": 2, "lbfgs": 2,
 }
 #: An optimizer whose type is not in the table.
 DEFAULT_OPTIMIZER_STATES = 2
@@ -262,6 +347,10 @@ class ModelCount:
     output_elements: float = 0.0
     #: The input shape the probe used, for the breakdown (one sample).
     probe_input: list[list[int]] | None = None
+    #: The graph does not pin that shape: it came from the default sizes
+    #: (:data:`IMAGE_SIDES`, :data:`SEQUENCE_LENGTHS`) and another of them
+    #: fits the model too, so its activation term is a guess (``low``).
+    shape_guessed: bool = False
 
 
 @dataclass
@@ -288,7 +377,8 @@ class StaticEstimate:
     #: Why the confidence is low, in words (English, for logs and the
     #: API; the dialog builds its own sentence from the fields).
     notes: list[str] = field(default_factory=list)
-    #: No batch size in the graph: :data:`DEFAULT_BATCH` was assumed.
+    #: No batch size in the graph: :data:`DEFAULT_BATCH` was assumed for
+    #: training, 1 for a graph that only runs its model forward.
     batch_assumed: bool = False
     #: Which pass the activation term is mostly from: ``training`` (at
     #: ``batch_size``), ``evaluation`` (at ``eval_batch_size``), or
@@ -309,7 +399,8 @@ class StaticEstimate:
             "workspace_bytes": self.workspace_bytes,
             "models": [{"type": m.node_type, "parameters": m.parameters,
                         "activations_known": m.activation_elements
-                        is not None, "probe_input": m.probe_input}
+                        is not None, "probe_input": m.probe_input,
+                        "shape_guessed": m.shape_guessed}
                        for m in self.models],
             "uncounted": self.uncounted, "notes": self.notes,
             "batch_assumed": self.batch_assumed,
@@ -393,27 +484,40 @@ def _optimizer(nodes: Iterable[Mapping[str, Any]]) -> tuple[str | None, int]:
     for node in nodes:
         if node.get("type") != "Optimizer":
             continue
-        kind = str(_params(node).get("type") or "Adam")
-        count = OPTIMIZER_STATES.get(kind.lower(), DEFAULT_OPTIMIZER_STATES)
-        if kind.lower() == "sgd" and not (
-                _float(_params(node).get("momentum")) or 0.0) > 0:
-            count = 0
-        if kind.lower() in ("adam", "adamw") and _params(node).get("amsgrad"):
+        params = _params(node)
+        kind = str(params.get("type") or "Adam")
+        lower = kind.lower()
+        count = OPTIMIZER_STATES.get(lower, DEFAULT_OPTIMIZER_STATES)
+        # A momentum buffer (SGD, RMSprop), RMSprop's centred mean, Adam's
+        # amsgrad maximum: one more tensor each. Read as the node reads
+        # them ("false" is False).
+        if lower in ("sgd", "rmsprop") and _number(params, "momentum") > 0:
+            count += 1
+        if lower == "rmsprop" and _flag(params, "centered"):
+            count += 1
+        if lower in ("adam", "adamw") and _flag(params, "amsgrad"):
             count += 1
         if count > states:
             found, states = kind, count
     return found, max(states, 0)
 
 
-def _float(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
+def _number(params: dict[str, Any], name: str) -> float:
+    from .param_values import float_param
+
     try:
-        return float(str(value))
+        return float_param(params, name, node="Optimizer", default=0.0)
     except ValueError:
-        return None
+        return 0.0
+
+
+def _flag(params: dict[str, Any], name: str) -> bool:
+    from .param_values import bool_param
+
+    try:
+        return bool_param(params, name, node="Optimizer", default=False)
+    except ValueError:
+        return False
 
 
 def _precision(nodes: Iterable[Mapping[str, Any]]) -> str:
@@ -518,6 +622,12 @@ def _first_layers(spec: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     return found
 
 
+#: Layer types that take a sequence: a layer graph holding one feeds its
+#: model sequences, so a first ``Linear``'s flat input is not the shape.
+_SEQUENCE_LAYERS = frozenset({
+    "LSTM", "GRU", "RNN", "TransformerEncoder", "TransformerDecoder",
+    "MultiHeadAttention", "PositionalEncoding", "Embedding", "Conv1d",
+})
 #: Layer types whose params say what input they take.
 _SHAPED_LAYERS = frozenset({
     "Linear", "Conv1d", "Conv2d", "ConvTranspose2d", "BatchNorm2d",
@@ -527,12 +637,24 @@ _SHAPED_LAYERS = frozenset({
 })
 
 
+Shape = tuple[str, Any]
+#: A candidate input: one shape per input port, and whether the graph pins
+#: it (its own sizes or the layers' params) rather than a default size.
+Candidate = tuple[list[Shape], bool]
+
+
 def _layer_inputs(layer: Mapping[str, Any], sides: list[int],
-                  lengths: list[int]) -> list[tuple[str, tuple[int, ...]]]:
+                  lengths: list[int], *, sequences: bool
+                  ) -> list[tuple[Shape, bool]]:
     """Candidate one-sample input shapes for a layer-graph input port whose
-    first shaped layer is *layer* (``("float"|"long", shape)``, no batch)."""
+    first shaped layer is *layer* (``("float"|"long", shape)``, no batch),
+    each with whether the graph pins it: a size from *sides* / *lengths*
+    (the graph's hints) or a flat width the layer's params give, against
+    one of the default sizes. *sequences*: the layer graph holds a sequence
+    layer, so a flat input is not offered."""
     kind = layer.get("type")
     params = layer.get("params") or {}
+    hinted_sides, hinted_lengths = set(sides), set(lengths)
 
     def get(*keys: str) -> int | None:
         for key in keys:
@@ -543,33 +665,42 @@ def _layer_inputs(layer: Mapping[str, Any], sides: list[int],
 
     image = list(dict.fromkeys([*sides, *IMAGE_SIDES]))
     seqs = list(dict.fromkeys([*lengths, *SEQUENCE_LENGTHS]))
+
+    def sequence(make: Callable[[int], Shape]) -> list[tuple[Shape, bool]]:
+        return [(make(t), t in hinted_lengths) for t in seqs]
+
+    def flat(width: int) -> list[tuple[Shape, bool]]:
+        return [] if sequences else [(("float", (width,)), True)]
+
     if kind == "Linear":
         width = get("in_features") or 1
-        return [("float", (width,))] + [("float", (t, width)) for t in seqs]
+        return flat(width) + sequence(lambda t: ("float", (t, width)))
     if kind == "Conv1d":
         channels = get("in_channels") or 1
-        return [("float", (channels, t)) for t in seqs]
+        return sequence(lambda t: ("float", (channels, t)))
     if kind in ("Conv2d", "ConvTranspose2d", "BatchNorm2d", "InstanceNorm2d",
                 "GroupNorm"):
         channels = get("in_channels", "num_features", "num_channels") or 1
-        return [("float", (channels, s, s)) for s in image]
+        return [(("float", (channels, s, s)), s in hinted_sides)
+                for s in image]
     if kind == "BatchNorm1d":
         width = get("num_features") or 1
-        return [("float", (width,))] + [("float", (width, t)) for t in seqs]
+        return flat(width) + sequence(lambda t: ("float", (width, t)))
     if kind == "Embedding":
-        return [("long", (t,)) for t in seqs]
+        return sequence(lambda t: ("long", (t,)))
     width = get("normalized_shape", "input_size", "d_model", "embed_dim") or 1
-    shapes = [("float", (t, width)) for t in seqs]
+    shapes = sequence(lambda t: ("float", (t, width)))
     if kind == "LayerNorm":
-        shapes.insert(0, ("float", (width,)))
+        shapes = flat(width) + shapes
     return shapes
 
 
 def _probe_inputs(node_type: str, params: Mapping[str, Any], module: Any,
                   sides: list[int], lengths: list[int]
-                  ) -> list[list[tuple[str, tuple[int, ...]]]] | None:
-    """Candidate argument lists (one sample each) for *module*'s forward, or
-    None when there is no recipe for this node type."""
+                  ) -> list[Candidate] | None:
+    """Candidate argument lists (one sample each) for *module*'s forward,
+    each with whether the graph pins it, or None when there is no recipe
+    for this node type."""
     if node_type == "SequentialModel":
         try:
             spec = json.loads(params.get("layers") or "{}")
@@ -579,29 +710,35 @@ def _probe_inputs(node_type: str, params: Mapping[str, Any], module: Any,
         ports = [name for _, name in getattr(module, "input_ports", ())]
         if not ports or any(port not in firsts for port in ports):
             return None
-        options = [_layer_inputs(firsts[port], sides, lengths)
-                   for port in ports]
-        if len(options) == 1:
-            return [[shape] for shape in options[0]]
+        sequences = any(isinstance(node, Mapping)
+                        and node.get("type") in _SEQUENCE_LAYERS
+                        for node in spec.get("nodes") or ())
+        options = [_layer_inputs(firsts[port], sides, lengths,
+                                 sequences=sequences) for port in ports]
         # Several inputs: try each candidate index across all of them (the
         # same sequence length / side for every input), not the product.
         width = min(len(option) for option in options)
-        return [[option[i] for option in options] for i in range(width)]
+        return [([option[i][0] for option in options],
+                 all(option[i][1] for option in options))
+                for i in range(width)]
     if node_type == "CausalLMModel":
+        # The graph's sequence length, else the model's longest: an upper
+        # bound, so never an under-count.
         longest = int(getattr(module, "max_seq_len", 0) or 1024)
         fitting = [t for t in lengths if t <= longest]
-        return [[("long", (fitting[0] if fitting else longest,))]]
+        return [([("long", (fitting[0] if fitting else longest,))], True)]
     if node_type == "DiffusionUNet":
         channels = _int(params.get("in_channels")) or 3
         image = list(dict.fromkeys([*sides, 32, 16, 64, 28]))
-        return [[("float", (channels, s, s)), ("long", ())] for s in image]
+        return [([("float", (channels, s, s)), ("long", ())], s in sides)
+                for s in image]
     if node_type == "VLAModel":
         side = int(getattr(module, "image_size", 0) or 96)
         text = int(getattr(module, "max_text_len", 0) or 48)
         chunk = int(getattr(module, "chunk", 0) or 8)
         action = int(getattr(module, "action_dim", 0) or 2)
-        return [[("tuple", (("float", (3, side, side)), ("long", (text,)),
-                            ("float", (chunk, action))))]]
+        return [([("tuple", (("float", (3, side, side)), ("long", (text,)),
+                             ("float", (chunk, action))))], True)]
     return None
 
 
@@ -626,11 +763,14 @@ def _numel(value: Any) -> int:
     return 0
 
 
-def _forward_probe(torch: Any, module: Any,
-                   candidates: list[list[tuple[str, Any]]]
-                   ) -> tuple[float, float, list[list[int]]] | None:
-    """One sample's ``(leaf outputs, final output, input shape)`` from the
-    first candidate input *module* accepts, or None."""
+def _forward_probe(torch: Any, module: Any, candidates: list[Candidate]
+                   ) -> tuple[float, float, list[list[int]], bool] | None:
+    """One sample's ``(leaf outputs, final output, input shape, guessed)``
+    from the first candidate input *module* accepts, or None. A first fit
+    the graph does not pin is a guess when a later default size fits too
+    (an adaptive pooling CNN, a recurrent net: any size runs), and pinned
+    when it is the only one that does (a CNN whose ``Linear`` fixes its
+    side)."""
     nn = torch.nn
     totals = {"leaf": 0}
     handles = []
@@ -658,19 +798,33 @@ def _forward_probe(torch: Any, module: Any,
                 True for _ in layer.children()):
             handles.append(layer.register_forward_hook(leaf_hook,
                                                        with_kwargs=True))
+    def runs(candidate: list[Shape]) -> Any:
+        args = [_meta_tensor(torch, spec, PROBE_BATCH) for spec in candidate]
+        with torch.no_grad():
+            return module(*args)
+
     try:
         module.train()
-        for candidate in candidates:
+        for index, (candidate, pinned) in enumerate(candidates):
             totals["leaf"] = 0
             try:
-                args = [_meta_tensor(torch, spec, PROBE_BATCH)
-                        for spec in candidate]
-                with torch.no_grad():
-                    output = module(*args)
+                output = runs(candidate)
             except Exception:  # noqa: BLE001 -- the next shape, then none
                 continue
-            return (totals["leaf"] / PROBE_BATCH,
-                    _numel(output) / PROBE_BATCH, _shapes(candidate))
+            found = (totals["leaf"] / PROBE_BATCH,
+                     _numel(output) / PROBE_BATCH, _shapes(candidate))
+            guessed = False
+            if not pinned:
+                for other, other_pinned in candidates[index + 1:]:
+                    if other_pinned:
+                        continue
+                    try:
+                        runs(other)
+                    except Exception:  # noqa: BLE001 -- does not fit
+                        continue
+                    guessed = True
+                    break
+            return (*found, guessed)
         return None
     finally:
         for handle in handles:
@@ -716,7 +870,7 @@ def _count_module(node_cls: Any, node_type: str, params: dict[str, Any],
             probed = _forward_probe(torch, module, candidates)
             if probed is not None:
                 (count.activation_elements, count.output_elements,
-                 count.probe_input) = probed
+                 count.probe_input, count.shape_guessed) = probed
         result = count
     except Exception:  # noqa: BLE001 -- counted as not counted
         logger.debug("memory estimate: %s did not build on the meta device",
@@ -770,12 +924,20 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
         states = DEFAULT_OPTIMIZER_STATES
     precision = _precision(nodes)
     train_batch, eval_batch = _batch_sizes(nodes, edges)
-    batch_assumed = training and train_batch is None
-    if batch_assumed:
+    probed = any(m.parameters and m.node_type not in FORMULA_TYPES
+                 for m in models)
+    batch_assumed = False
+    if training and train_batch is None:
+        batch_assumed = True
         notes.append(f"no batch size found; assumed {DEFAULT_BATCH}")
         train_batch = DEFAULT_BATCH
     eval_batch = eval_batch or (train_batch if training else None)
     if eval_batch is None:
+        # A graph that only runs its model forward and names no batch: one
+        # sample is a guess too (a batch tensor from elsewhere, a loop).
+        batch_assumed = batch_assumed or (not training and probed)
+        if not training and probed:
+            notes.append("no batch size found; assumed 1")
         eval_batch = 1
     train_batch = train_batch or 0
 
@@ -798,6 +960,9 @@ def estimate_static(graph: Mapping[str, Any]) -> StaticEstimate | None:
             notes.append(f"{model.node_type}: no input shape for an "
                          f"activation estimate")
             continue
+        if model.shape_guessed:
+            notes.append(f"{model.node_type}: the graph does not give its "
+                         f"input size; assumed {model.probe_input}")
         per_sample_train = (model.activation_elements * element
                             * TRAIN_ACTIVATION_FACTOR
                             + model.output_elements * 4 * LOSS_COPIES)
@@ -858,15 +1023,18 @@ async def estimate_static_async(graph: Mapping[str, Any], *,
 class Estimate:
     """Everything ``POST /api/runs/estimate`` reports (#794 spec 2)."""
 
+    #: The default budget the server gives a run that declares none: the
+    #: history's (#788), never the static estimate's.
     suggestion: mem.Suggestion | None
     #: Newest first: ``{run_id, peak_bytes, finished_at}``.
     history: list[dict[str, Any]] = field(default_factory=list)
+    #: The static estimate, for the dialog to offer (``medium``) or show
+    #: (``low``); the server never applies it on its own.
     static: StaticEstimate | None = None
 
     @property
     def confidence(self) -> str | None:
-        if self.suggestion is not None and \
-                self.suggestion.budget.source == mem.SOURCE_HISTORY:
+        if self.suggestion is not None:
             return CONFIDENCE_MEASURED
         if self.static is not None:
             return self.static.confidence
@@ -874,68 +1042,70 @@ class Estimate:
 
 
 class EstimateBudgetSource:
-    """The default budget source from #794: the history of the graph's
-    structural hash (#788's rule, the newest peak x 1.2), else a static
-    estimate of ``medium`` confidence (``source: "estimate"``). A ``low``
-    one is reported by :meth:`explain` but never applied: a run would be
-    capped at a figure that skipped part of its model.
+    """The default budget source from #794. ``suggest`` is #788's rule
+    alone: the newest peak of the graph's structural hash on the run's
+    devices, times ``memory_admission.HISTORY_MARGIN``. A static estimate
+    is never a server-side default, whatever its confidence: it skips what
+    it cannot see, and a run capped at an under-count fails for it.
+    :meth:`explain` adds the earlier peaks and the static estimate, for the
+    dialog to offer.
 
-    *history* is ``HistoryBudgetSource``; *peaks* is
-    ``RunStore.peak_history`` (``hash, limit -> [(run_id, finished_at,
-    peak_memory)]``), optional."""
+    *peaks* is ``RunStore.peak_history`` (``hash, limit -> [(run_id,
+    finished_at, peak_memory)]``, newest first). Both methods take the
+    graph's *digest* when the caller has it, so a submit hashes once."""
 
-    def __init__(self, history: mem.BudgetSource,
-                 peaks: Callable[[str, int], Awaitable[Any]] | None = None,
-                 *, static: Callable[[Mapping[str, Any]],
-                                     Awaitable[StaticEstimate | None]]
+    def __init__(self, peaks: Callable[[str, int], Awaitable[Any]], *,
+                 static: Callable[[Mapping[str, Any]],
+                                  Awaitable[StaticEstimate | None]]
                  = estimate_static_async) -> None:
-        self._history = history
         self._peaks = peaks
         self._static = static
 
     async def suggest(self, graph: Mapping[str, Any],
-                      options: Mapping[str, Any]) -> mem.Suggestion | None:
-        suggestion = await self._history.suggest(graph, options)
-        if suggestion is not None:
-            return suggestion
-        return _from_static(await self._static(graph))
+                      options: Mapping[str, Any], *,
+                      digest: str | None = None) -> mem.Suggestion | None:
+        if digest is None:
+            digest = await structural_hash_async(graph, options)
+        return _from_history(await self._rows(digest, 1))
 
     async def explain(self, graph: Mapping[str, Any],
-                      options: Mapping[str, Any]) -> Estimate:
-        suggestion = await self._history.suggest(graph, options)
-        static = await self._static(graph)
-        if suggestion is None:
-            suggestion = _from_static(static)
-        return Estimate(suggestion=suggestion,
-                        history=await self._history_rows(graph, options),
-                        static=static)
-
-    async def _history_rows(self, graph: Mapping[str, Any],
-                            options: Mapping[str, Any]
-                            ) -> list[dict[str, Any]]:
-        if self._peaks is None:
-            return []
-        try:
-            rows = await self._peaks(mem.graph_hash(graph, options),
-                                     HISTORY_ROWS)
-        except Exception:  # noqa: BLE001 -- a suggestion, never an error
-            logger.warning("could not read this graph's memory history",
-                           exc_info=True)
-            return []
+                      options: Mapping[str, Any], *,
+                      digest: str | None = None) -> Estimate:
+        if digest is None:
+            digest = await structural_hash_async(graph, options)
+        rows, static = await asyncio.gather(
+            self._rows(digest, HISTORY_ROWS), self._static(graph))
         history = []
-        for run_id, finished_at, peak_memory in rows or ():
+        for run_id, finished_at, peak_memory in rows:
             peak = mem.peak_bytes(peak_memory)
             if peak is not None:
                 history.append({"run_id": run_id, "peak_bytes": peak,
                                 "finished_at": finished_at})
-        return history
+        return Estimate(suggestion=_from_history(rows[:1]), history=history,
+                        static=static)
+
+    async def _rows(self, digest: str, limit: int) -> list[Any]:
+        try:
+            return list(await self._peaks(digest, limit) or ())
+        except Exception:  # noqa: BLE001 -- a suggestion, never an error
+            logger.warning("could not read this graph's memory history",
+                           exc_info=True)
+            return []
 
 
 #: How many earlier peaks the estimate lists.
 HISTORY_ROWS = 5
 
 
-def _from_static(static: StaticEstimate | None) -> mem.Suggestion | None:
-    if static is None or static.confidence != CONFIDENCE_MEDIUM:
+def _from_history(rows: list[Any]) -> mem.Suggestion | None:
+    """#788's default from the newest row with a peak: its CUDA peak times
+    the margin, or None (an MPS or CPU peak is no budget)."""
+    if not rows:
         return None
-    return mem.Suggestion(mem.Budget(static.bytes, mem.SOURCE_ESTIMATE))
+    run_id, _, peak_memory = rows[0]
+    peak = mem.peak_bytes(peak_memory)
+    if peak is None:
+        return None
+    return mem.Suggestion(
+        mem.Budget(int(math.ceil(peak * mem.HISTORY_MARGIN)),
+                   mem.SOURCE_HISTORY, from_run=run_id), peak_bytes=peak)

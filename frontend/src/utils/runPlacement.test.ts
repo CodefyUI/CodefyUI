@@ -54,6 +54,15 @@ describe('runPlacement', () => {
     expect(runBudget({ execution_facts: null }, t)).toBeNull();
   });
 
+  it('says a measured budget replaced a lower accepted estimate (#794)', () => {
+    expect(runBudget({
+      execution_facts: { memory_budget: { bytes: 2 * 1024 ** 3, source: 'history', from_run: 'abcdef0123', raised_from: 1024 ** 3 } },
+    }, t)).toEqual({
+      text: '2.0 GiB',
+      title: 'Memory budget per device, from the peak of run abcdef01: raised from the accepted estimate of 1.0 GiB, which was lower',
+    });
+  });
+
   it('marks a budget that came from a static estimate in the cell itself (#794)', () => {
     expect(runBudget({ execution_facts: { memory_budget: { bytes: 1024 ** 3, source: 'estimate' } } }, t)).toEqual({
       text: '1.0 GiB est.',

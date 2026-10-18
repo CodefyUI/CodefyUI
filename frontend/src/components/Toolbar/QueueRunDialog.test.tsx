@@ -57,10 +57,18 @@ function worker(partial: Partial<WorkerInfo> & { name: string }): WorkerInfo {
 
 const NO_ESTIMATE = { suggested_gib: null, source: null, peak_bytes: null, from_run: null };
 
-/** A worker whose cuda:1 is shared by memory (#788). */
-function sharedWorker(name = 'gpu-box'): WorkerInfo {
+const CARD_MEMORY = { total_bytes: 80 * 1024 ** 3, free_bytes: 70 * 1024 ** 3, source: 'nvml' };
+
+/** A worker whose cuda:1 is shared by memory (#788), with a memory total
+ * unless *total* is false (an MPS card reports none). */
+function sharedWorker(name = 'gpu-box', total = true): WorkerInfo {
   const base = worker({ name, memory_budget: true });
-  return { ...base, devices: base.devices.map((d) => (d.value === 'cuda:1' ? { ...d, policy: 'shared' } : d)) };
+  return {
+    ...base,
+    devices: base.devices.map((d) => (d.value === 'cuda:1'
+      ? { ...d, policy: 'shared', memory: total ? CARD_MEMORY : null }
+      : d)),
+  };
 }
 
 const onClose = vi.fn();
@@ -519,10 +527,15 @@ describe('QueueRunDialog: keyboard and closing', () => {
   });
 });
 
+// ResNet-18 at batch 128 under SGD with momentum, in float32: 11,173,962 x
+// 12 bytes of weights, gradients and momentum.
+const STATIC_WEIGHTS = 11173962 * 12;
+const STATIC_ACTIVATIONS = 1.3 * 1024 ** 3;
 const STATIC: StaticMemoryEstimate = {
-  bytes: 1.75 * 1024 ** 3, confidence: 'medium', parameters: 11173962, trainable_parameters: 11173962,
-  training: true, optimizer: 'SGD', multiplier: 3, batch_size: 128, eval_batch_size: 512, precision: 'bf16',
-  weights_bytes: 0.125 * 1024 ** 3, activation_bytes: 1.3 * 1024 ** 3, workspace_bytes: 256 * 1024 ** 2,
+  bytes: Math.ceil((STATIC_WEIGHTS + STATIC_ACTIVATIONS) * 1.2 + 128 * 1024 ** 2),
+  confidence: 'medium', parameters: 11173962, trainable_parameters: 11173962,
+  training: true, optimizer: 'SGD', multiplier: 3, batch_size: 128, eval_batch_size: 512, precision: 'fp32',
+  weights_bytes: STATIC_WEIGHTS, activation_bytes: STATIC_ACTIVATIONS, workspace_bytes: 128 * 1024 ** 2,
   models: [{ type: 'SequentialModel', parameters: 11173962, activations_known: true, probe_input: [[3, 32, 32]] }],
   uncounted: [], notes: [], batch_assumed: false, activation_phase: 'training',
 };
@@ -618,29 +631,80 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 6 });
   });
 
-  it('tags a static estimate as one and leaves it to the server unchanged (#794)', async () => {
+  it('offers a static estimate as one and sends it marked as one when accepted (#794)', async () => {
     workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
     api.estimateMemory.mockResolvedValue({
-      suggested_gib: 1.75, source: 'estimate', peak_bytes: null, from_run: null, confidence: 'medium',
-      history: [], static_estimate_bytes: 1.75 * 1024 ** 3, static: STATIC,
+      suggested_gib: null, source: null, peak_bytes: null, from_run: null, confidence: 'medium',
+      history: [], static_estimate_bytes: STATIC.bytes, estimate_gib: 1.86, static: STATIC,
     });
     patchTab({ graphDevice: 'cuda:1' });
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
     await settle();
-    expect(memoryField()).toHaveValue('1.75');
+    expect(memoryField()).toHaveValue('1.86');
     expect(screen.getByText('Estimate')).toBeInTheDocument();
     expect(screen.queryByText('Measured')).toBeNull();
     expect(screen.getByText(/^Not a measured peak/)).toHaveTextContent(
       'Not a measured peak: no earlier run of this graph on these devices reported one. Estimated from the model: '
-      + '11,173,962 parameters x 12 bytes (weights, gradients, optimizer state) = 128.0 MB, activations of a training step at batch 128 '
-      + 'about 1.3 GB, and 256.0 MB of library workspace. Lower it if you know better; the next run of this graph is measured.', { normalizeWhitespace: true },
+      + '11,173,962 parameters x 4 bytes (weights) = 42.6 MB, 11,173,962 trainable parameters x 8 bytes (gradients, '
+      + 'optimizer state) = 85.3 MB, activations of a training step at batch 128 about 1.3 GB, 128.0 MB of library '
+      + 'workspace, and 291.8 MB of allocator reserve (20%). Queued as it is, the run is capped to this estimate '
+      + '(marked est. in Runs); change it if you know better. The next run of this graph is measured.',
+      { normalizeWhitespace: true },
     );
+    await submit();
+    // The server never applies an estimate on its own: accepted, it goes
+    // with the run as a declared budget that says where it came from.
+    expect(sentRequest().options.target).toEqual({
+      worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 1.86, memory_source: 'estimate',
+    });
+  });
+
+  it('sends an edited estimate as a plain declared budget (#794)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    api.estimateMemory.mockResolvedValue({
+      ...NO_ESTIMATE, confidence: 'medium', static_estimate_bytes: STATIC.bytes, estimate_gib: 1.86, static: STATIC,
+    });
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    fireEvent.change(memoryField(), { target: { value: '3' } });
+    await submit();
+    expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'], memory_gib: 3 });
+  });
+
+  it('sends nothing for an accepted estimate cleared to blank (#794)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
+    api.estimateMemory.mockResolvedValue({
+      ...NO_ESTIMATE, confidence: 'medium', static_estimate_bytes: STATIC.bytes, estimate_gib: 1.86, static: STATIC,
+    });
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    await settle();
+    fireEvent.change(memoryField(), { target: { value: '' } });
     await submit();
     expect(sentRequest().options.target).toEqual({ worker: 'gpu-box', devices: ['cuda:1'] });
   });
 
-  it('shows a rough estimate with why it is not used, and leaves the field empty (#794)', async () => {
+  it('explains a shared device with no memory total instead of asking for a budget (#788)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([sharedWorker('mac', false)]);
+    patchTab({ graphDevice: 'cuda:1' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'mac' } });
+    await settle();
+    expect(screen.queryByRole('textbox', { name: /Memory budget/ })).toBeNull();
+    expect(api.estimateMemory).not.toHaveBeenCalled();
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'cuda:1 is shared by memory but reports no memory total (an MPS card reports none), so it cannot admit a run '
+      + 'by budget and refuses this one. Set it to exclusive in Workers to run here.',
+    );
+    await submit();
+    expect(sentRequest().options.target).toEqual({ worker: 'mac', devices: ['cuda:1'] });
+  });
+
+  it('shows a rough estimate with why it is not offered, and leaves the field empty (#794)', async () => {
     workersMock.fetchWorkers.mockResolvedValue([sharedWorker()]);
     api.estimateMemory.mockResolvedValue({
       suggested_gib: null, source: null, peak_bytes: null, from_run: null, confidence: 'low',
@@ -661,7 +725,7 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     expect(memoryField()).toHaveValue('');
     expect(screen.getByText('Rough estimate')).toBeInTheDocument();
     expect(screen.getByText(/^About 3.0 GiB/)).toHaveTextContent(
-      'About 3.0 GiB, too rough to use: could not count BradleyTerryTrain, no input shape for the activations of '
+      'About 3.0 GiB, too rough to offer: could not count BradleyTerryTrain, no input shape for the activations of '
       + 'VLAModel, and no batch size in the graph (assumed 32). Declare a budget.',
     );
   });
