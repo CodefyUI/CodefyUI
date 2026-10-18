@@ -11,6 +11,7 @@ import { useToastStore } from '../../store/toastStore';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
 import {
   TARGET_ANY,
+  TARGET_ONE_SHOT,
   estimateOptions,
   parseMemoryGib,
   sharedAwaitingReport,
@@ -91,6 +92,10 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
 
   const choice = useRunTargetChoice(graphDevice);
   const isWorker = choice.isWorker;
+  // A one-shot agent exits when its run ends, so nothing it recorded could
+  // be read (#789): the server refuses it, and the box is off here.
+  const oneShot = choice.target === TARGET_ONE_SHOT || Boolean(choice.worker?.one_shot);
+  const records = recordOutputs && !oneShot;
 
   // Memory admission (#788): a budget matters only where the run may land
   // on a device shared by memory. The suggestion is looked up when that is
@@ -201,7 +206,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     const options = {
       target,
       device: resolved.device,
-      record_outputs: !isWorker && recordOutputs,
+      record_outputs: records,
       verbose: active.verboseMode,
       graph_id: active.graphId,
       weights_persistent: active.weightsPersistent,
@@ -317,13 +322,14 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
             <label className={styles.check}>
               <input
                 type="checkbox"
-                checked={!isWorker && recordOutputs}
-                disabled={isWorker}
+                checked={records}
+                disabled={oneShot}
                 onChange={(event) => setRecordOutputs(event.target.checked)}
               />
               {t('queueRun.recordOutputs')}
             </label>
-            {isWorker && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
+            {oneShot && <p className={styles.hint}>{t('queueRun.recordOutputsOneShot')}</p>}
+            {isWorker && records && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
             {error !== null && <div className={styles.error} role="alert">{error}</div>}
           </div>
 

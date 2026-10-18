@@ -459,9 +459,9 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
             max_domain=settings.MAX_SWEEP_DOMAIN)
         # Every variant inherits options.target (#777), so a target the
         # service would refuse (a worker it has never seen, a device nobody
-        # offers, record_outputs on a worker) is refused HERE, as a 400 with
-        # no rows, rather than at the first child as a 500 and a `failed`
-        # sweep. The service checks each distinct `settings` once; the
+        # offers, record_outputs on an agent too old for it) is refused HERE,
+        # as a 400 with no rows, rather than at the first child as a 500 and
+        # a `failed` sweep. The service checks each distinct `settings` once; the
         # variants of one sweep share the base graph's. Each variant's
         # storage needs (#782) come back in order and go to its submit.
         variant_graphs = [variant.graph for variant in compiled.variants]

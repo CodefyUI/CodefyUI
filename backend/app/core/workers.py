@@ -138,6 +138,7 @@ from .worker_handshake import (
     check_catalog,
     verified_fingerprint,
 )
+from .worker_outputs import DEFAULT_TIMEOUT_S, WorkerOutputs
 
 logger = logging.getLogger(__name__)
 
@@ -434,8 +435,11 @@ class WorkerRegistry:
                  clock: Callable[[], float] = time.monotonic,
                  local_devices: Callable[[], list[Any]] | None = None,
                  resume_grace_s: float = DEFAULT_RESUME_GRACE_S,
-                 node_catalog: Callable[[], Any] | None = None) -> None:
+                 node_catalog: Callable[[], Any] | None = None,
+                 output_fetch_timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
         self._local_devices_source = local_devices
+        #: Reads of worker runs' recorded outputs in flight (#789).
+        self.outputs = WorkerOutputs(self, timeout_s=output_fetch_timeout_s)
         #: This server's ``node_registry.node_catalog`` (#781); without it
         #: no worker's catalog is compared (every one reads ``unknown``).
         self._node_catalog = node_catalog
@@ -779,6 +783,9 @@ class WorkerRegistry:
             if old.online:
                 replaced = old
                 old.status = STATUS_DISCONNECTED
+                # Its socket closes: nothing it was asked will be answered.
+                self.outputs.worker_gone(hello.name, "a new connection "
+                                                     "replaced it")
             # A replaced connection's runs, or a disconnected worker's runs
             # still inside their resume grace (#783), move to this one.
             if old.running:
@@ -955,6 +962,7 @@ class WorkerRegistry:
             return
         if worker.status == STATUS_DISCONNECTED:
             return
+        self.outputs.worker_gone(worker.name, reason)
         if worker.one_shot and not worker.running:
             # A one-shot agent leaving with nothing in flight (#790): it
             # reported its run and exited, or was stopped before one came.

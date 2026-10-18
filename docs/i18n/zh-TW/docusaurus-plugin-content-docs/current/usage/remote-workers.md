@@ -401,6 +401,7 @@ cdui agent start --one-shot --control https://codefyui.example.com
 ```
 
 - **哪些 run 會送到它。** **任一可用** 不會把 run 送到單次 worker。只有指名該 worker（`"target": {"worker": "<名稱>"}`）或單次 worker 池的 run 會送到它：**Queue on...** 中的 **單次 worker**，或在 `POST /api/runs` 中使用 `"target": {"pool": "one-shot"}`（並以 `device` 指定需要的裝置類型，例如 `cuda`）。池中的 run 不會因為沒有 worker 而被拒絕：它會等待提供該裝置的單次 worker，`queue_reason` 會說明，並在 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`（預設 24 小時，`0` 表示一直等）後失敗。池中的 run 依裝置類型各排一列，先送出的先處理。`--run-id <id>` 讓 agent 只接該 run，不論它在佇列中的哪個位置；該 run 必須在池中等待或指名此 worker，否則 agent 連線時就會被拒絕。
+- **不錄製輸出。** 開啟 **錄製節點輸出** 的 run 送往單次 worker 池或單次 worker 時會被拒絕：agent 在 run 結束時就會退出，檢視器永遠無法讀取它錄製的資料。
 - **結束碼。** `0`：run 成功且控制面已記錄。`1`：run 失敗、被取消或以 `interrupted` 結束，或結果無法送達。`2`：控制面拒絕這個 agent（版本不同、名稱被另一個 agent 占用、`--run-id` 指的 run 不是在等它），或參數錯誤。`3`：agent 在 run 送達前被停止（SIGTERM、Ctrl-C、job 的時間上限）。`4`：無法啟動（加入失敗，或 `--mount` 被拒）。agent 接了 run 之後才被拒絕（控制面拒絕它重新連線）為 `1`：run 的結果沒有被記錄。
 - **連線中斷。** run 會繼續執行，agent 會像一般 agent 一樣重新連線（[連線中斷時](#when-the-connection-drops)）。它要等控制面確認收到 run 的結束才會退出；若 run 結束後 `CODEFYUI_WORKER_RESUME_GRACE_S` 內仍未確認，它仍會以 `1` 退出，並把結果留在暫存檔，交給之後使用同一個 user-data 資料夾的 agent 補送。
 - **結束之後。** Workers 面板以 **單次** 標記並顯示 **離線**，**單次 run** 連到它接的 run（或說明它未接 run 就結束）。下一個 job 以同一名稱啟動的 agent 會接下一個 run。控制面會記下該 worker 自己的上一個 agent 是單次 agent，所以控制面重新啟動後，指名它的 run 立即依 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` 計時，不必等它的下一個 agent 連線。執行個體（見下方）不會寫入這項紀錄：請透過單次池（`target.pool: "one-shot"`）把 run 交給 array，不要用指名憑證的 run。指名執行個體（`<名稱>.<ID>`）的 run 一律依此計時。
@@ -436,7 +437,7 @@ CONTROL=https://codefyui.example.com
 ## 限制 {/* #limits */}
 
 - **畫布在控制面執行。** **Run** 一律在那裡執行，連同它的快取與持久化權重；要把分頁的圖送到 worker，請使用**排入佇列...**。
-- **Worker 上不擷取輸出。** 目標為 worker 的 run 不接受 `record_outputs`（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）；要為 Inspector 擷取輸出，請以控制面為目標。Worker run 每次也都從新的權重開始。
+- **擷取的輸出保存在 worker 上。** 開啟**錄製節點輸出**時，worker run 的擷取資料保存在 worker 上，Inspector 經由它的連線讀取，因此只有 worker 連線時才能讀取（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)，[執行架構：Worker 上的錄製輸出](/advanced/execution-architecture#recorded-outputs-on-a-worker)）。Worker run 每次都從新的權重開始。
 - **依記憶體准入需逐卡開啟。** Run 與在控制面上一樣，以每個裝置名額的數量准入，除非該卡設為 **依記憶體共用**（[多 GPU：共用一張卡](/usage/multi-gpu#sharing-a-card)）。
 - **一個 run，一台機器。** Run 只使用一個 worker 的裝置；沒有跨卡或跨機器的 `DistributedDataParallel`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
 - **以 Linux 為主。** Worker 在 Linux 上開發與測試；macOS 可用，Windows 盡力支援。
@@ -450,6 +451,7 @@ CONTROL=https://codefyui.example.com
 | --- | --- | --- |
 | `CODEFYUI_EXTRA_ALLOWED_HOSTS` | *（空）* | Worker（或瀏覽器）連線用的主機名稱，例如 `gpu-gw.lan:8000` |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | 斷線 worker 的 run 等待它的秒數；`0` 立即結束 |
+| `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S` | `60` | 讀取 worker run 錄製輸出時等待 worker 回覆的秒數，逾時回 `504` |
 | `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` | `86400` | run 等待單次 worker 的秒數，逾時即失敗（[單次 worker](#one-shot-workers)）；`0` 表示一直等 |
 | `CODEFYUI_TLS_CERT_FILE` | *（空）* | Proxy 的憑證（PEM，leaf 在前），讓新增 worker 對話框顯示它的指紋 |
 | `CODEFYUI_MOUNT_LABEL` | `data` | 控制面資料夾的 label |
@@ -471,7 +473,7 @@ CONTROL=https://codefyui.example.com
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | SSH worker 的槽位編號：決定 worker 在遠端主機上的狀態資料夾（`~/.codefyui-ssh/<id>-<槽位>/`，通道的 socket 就在裡面），也是它存放憑證所用的位址 |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | 設為 `yes` 時要求主機已在 `known_hosts` 中 |
 
-在 worker 上，未給 `--token` 時由 `CODEFYUI_AGENT_TOKEN` 提供 token（[CLI 指令：環境變數](/getting-started/cli-commands#environment-variables)）。
+在 worker 上，`CODEFYUI_RUN_OUTPUT_STORE_MAX_MB`（2048）限制它保留的錄製輸出，`CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S`（300）是 run 結束後其子程序寫出錄製輸出的時間上限（正常的 `cdui agent stop` 最多等待這麼久讓寫入完成）；未給 `--token` 時由 `CODEFYUI_AGENT_TOKEN` 提供 token（[CLI 指令：環境變數](/getting-started/cli-commands#environment-variables)）。
 
 ## 另請參閱 {/* #see-also */}
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   fetchGradIndex,
   RunDataExpiredError,
+  WorkerUnreachableError,
   type GradIndexEntry,
 } from '../../api/executionOutputs';
 import type { OutputData, TensorOutput } from '../../types';
@@ -160,7 +161,9 @@ export function BackwardView({ runId, nodeId }: Props) {
         setIndexError(
           e instanceof RunDataExpiredError
             ? t('inspector.dataExpiredBackward')
-            : (e as Error).message,
+            : e instanceof WorkerUnreachableError
+              ? t('inspector.workerUnreachable')
+              : (e as Error).message,
         );
       });
     return () => {
@@ -192,7 +195,9 @@ export function BackwardView({ runId, nodeId }: Props) {
               error:
                 err instanceof RunDataExpiredError
                   ? t('inspector.tensorExpired')
-                  : (err as Error).message,
+                  : err instanceof WorkerUnreachableError
+                    ? t('inspector.workerUnreachable')
+                    : (err as Error).message,
               data: null,
             },
           }));

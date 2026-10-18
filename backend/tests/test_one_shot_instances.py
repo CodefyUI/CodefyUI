@@ -514,6 +514,43 @@ async def test_removing_a_session_token_worker_leaves_its_instances(env):  # noq
         assert (await service.store.get_run(queued)).status == "queued"
 
 
+async def test_record_outputs_is_refused_on_an_instance(enrolled):
+    """#789 refuses record_outputs on one-shot workers; an instance
+    (#845) is one: refused at submit, named or through the pool, and at
+    start (``WorkerExecutor``) on the instance's ``one_shot``."""
+    from app.core.executors import ExecutionRequest, WorkerExecutor
+    from app.core.run_output_store import RunOutputStore
+    from app.core.run_service import ONE_SHOT_REFUSES_RECORD_OUTPUTS
+    from app.core.scheduling import Placement
+
+    _, registry, _, token = enrolled
+    async with _client() as client, _ws(client, token) as ws:
+        await FakeAgent(ws).hello("gpu", one_shot=True, instance="a",
+                                  instance_id="secret-a",
+                                  capabilities=list(wp.CAPABILITIES))
+        for target in ({"worker": "gpu.a"}, POOL):
+            response = await client.post("/api/runs", json={
+                "graph": _graph(), "options": {
+                    "device": "cpu", "target": target,
+                    "record_outputs": True}})
+            assert response.status_code == 400, response.text
+            assert "not available on one-shot workers" in response.text
+        executor = WorkerExecutor(registry)
+        outcome = await executor.run(ExecutionRequest(
+            run_id="r1", graph={"nodes": []}, options={},
+            context=SimpleNamespace(should_stop=lambda: False),
+            session=None, output_store=RunOutputStore(max_runs=1,
+                                                      max_bytes=0),
+            record_outputs=True,
+            sinks=SimpleNamespace(warn=lambda *_: None,
+                                  emit=lambda *_: None),
+            explicit_metric_nodes=set(),
+            placement=Placement(worker_id="gpu.a", devices=("cpu",),
+                                slots=())))
+        assert outcome.status == "failed"
+        assert outcome.error == ONE_SHOT_REFUSES_RECORD_OUTPUTS
+
+
 def test_a_run_naming_an_instance_is_timed_listed_or_not():
     """Second review of #855: an instance is known in memory only; a run
     naming one is timed by the one-shot rule even when the registry no

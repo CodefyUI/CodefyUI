@@ -16,7 +16,7 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 | 在哪裡執行 | 一律在伺服器程序內 | 伺服器程序內，或 `target` 指定的 worker |
 | 是否等待空出的卡 | 否：立即開始（最多兩個，每個分頁一個） | 是：加入其裝置的佇列 |
 | 裝置 | 一個：圖的裝置，否則為 Settings 的裝置 | 一個裝置，或 worker 上的一組裝置集合 |
-| 在多次點擊間保留權重與快取、為 Inspector 擷取輸出 | 是 | 否（只有 `record_outputs` 才擷取輸出，且只限伺服器本身） |
+| 在多次點擊間保留權重與快取、為 Inspector 擷取輸出 | 是 | 否（只有 `record_outputs` 才擷取輸出；worker 會保存它們，Inspector 向 worker 讀取） |
 
 建構與除錯圖時用 **Run**。耗時長的工作、想放在特定卡上的工作，以及需要不只一張卡的工作，請排入佇列。
 
@@ -26,7 +26,7 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 
 - **目標**：**本伺服器**、每個已連線的 worker 及其狀態與裝置（排空中的 worker 會列出但不能選），以及有 worker 連線後出現的**任一可用**。
 - **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。
-- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。目標為 worker 或任一可用時，錄製節點輸出會停用。
+- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。在 worker 上，錄製的輸出保存在 worker 上，對話框會加以說明。
 
 **排入佇列**會送出 run、關閉對話框，並在 Runs 分頁開啟它。伺服器拒絕時，訊息會顯示在對話框內。
 
@@ -136,7 +136,7 @@ run 結束後，詳細資訊標題會顯示 CUDA 的**峰值記憶體**（配置
 - **只有 worker 有依記憶體的准入。** 這台伺服器上的卡以每個 slot 的數量准入：不會因為卡上記憶體不足而拒絕 run，塞太滿的卡會以記憶體不足錯誤失敗。worker 的卡可以[依記憶體共用](#sharing-a-card)。請參閱[訓練記憶體](/advanced/training-memory)。
 - **帳本計算的是預算，不是 run 實際用量。** 執行中的 run 以它的預算計算，可用記憶體則來自 worker 的心跳（每 10 秒一次），針對整張卡：其他使用者的工作在兩次心跳之間占用的記憶體，要到下一次心跳才看得到，也不會量測每個 run 的用量。
 - **機器之間是明文 HTTP。** 遠端 worker 以控制面提供的協定加入與連線；沒有 TLS proxy 或 SSH 通道時，它的 token 與 run 的輸入會以明文經過網路（[遠端 Worker：信任](/usage/remote-workers#trust-between-agent-and-control-plane)）。
-- **worker 上不擷取輸出**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)），也不保留權重：每個 worker run 都從頭開始。
+- **擷取的輸出保存在 worker 上**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）：只有 worker 連線時 Inspector 才能讀取。不保留權重：每個 worker run 都從頭開始。
 - **長時間斷線會結束 run。** 失去連線的 worker 會在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內繼續它的 run；超過後它們以 `interrupted` 結束（[遠端 Worker：連線中斷時](/usage/remote-workers#when-the-connection-drops)）。
 
 ## 另請參閱 {/* #see-also */}

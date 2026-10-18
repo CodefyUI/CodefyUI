@@ -255,10 +255,12 @@ def test_submit_keys_and_refusals():
         key(_options(worker="box", devices=["cuda:1"]))
     with pytest.raises(RunSubmitError, match="does not offer mps"):
         key(_options(worker="box", device="mps"))
-    with pytest.raises(RunSubmitError, match="record_outputs"):
-        key({**_options(worker="box"), "record_outputs": True})
-    with pytest.raises(RunSubmitError, match="record_outputs"):
-        key({**_options(worker="any"), "record_outputs": True})
+    # #789: a worker run may record outputs. ``box`` never said hello (no
+    # capabilities known), so it is checked when the run starts instead.
+    assert key({**_options(worker="box"), "record_outputs": True}) == \
+        "box/cpu"
+    assert key({**_options(worker="any"), "record_outputs": True}) == \
+        "any/cpu"
     with pytest.raises(RunSubmitError, match="interactive"):
         key({**_options(worker="box"), "lane": "interactive"})
     assert worker_not_connected("nobody") in str(
@@ -473,9 +475,50 @@ def test_cheap_refusals_come_before_the_graph_is_read(data_label,
     graph = {"nodes": [{"id": "s", "type": "Start", "data": {"params": {}}}]}
     with pytest.raises(RunSubmitError, match="has not connected"):
         service._prepare(graph, {"target": {"worker": "nobody"}})
-    with pytest.raises(RunSubmitError, match="record_outputs"):
+    service._workers.get("gpu-box-1").capabilities = ("ack", "mounts")
+    with pytest.raises(RunSubmitError, match="cannot record outputs"):
         service._prepare(graph, {"target": {"worker": "gpu-box-1"},
                                  "record_outputs": True})
+
+
+def test_record_outputs_needs_the_capability_on_a_named_worker():
+    """#789: refused at submit only for an agent that said hello without
+    ``record_outputs`` (an older one); allowed with it."""
+    from app.core.run_service import worker_cannot_record_outputs
+
+    old = _worker("old", "cpu")
+    old.capabilities = ("ack", "mounts", "transfer")
+    new = _worker("new", "cpu")
+    new.capabilities = tuple(wp.CAPABILITIES)
+    service = _service(_registry_with(old, new))
+    key = service._submit_queue_key
+    with pytest.raises(RunSubmitError) as refused:
+        key({**_options(worker="old"), "record_outputs": True})
+    assert str(refused.value) == worker_cannot_record_outputs("old")
+    assert key({**_options(worker="old")}) == "old/cpu"
+    assert key({**_options(worker="new"), "record_outputs": True}) == \
+        "new/cpu"
+
+
+def test_record_outputs_is_refused_for_one_shot_workers():
+    """#789 x #790: a one-shot agent exits when its run ends, so what the
+    run recorded could never be read: refused at submit, for the pool and
+    for a named one-shot worker, with a message saying why."""
+    from app.core.run_service import ONE_SHOT_REFUSES_RECORD_OUTPUTS
+
+    once = _worker("once", "cpu")
+    once.capabilities = tuple(wp.CAPABILITIES)
+    once.one_shot = True
+    service = _service(_registry_with(once))
+    key = service._submit_queue_key
+    for options in ({"target": {"worker": "any", "pool": "one-shot"}, "device": "cpu"},
+                    _options(worker="once")):
+        with pytest.raises(RunSubmitError) as refused:
+            key({**options, "record_outputs": True})
+        assert str(refused.value) == ONE_SHOT_REFUSES_RECORD_OUTPUTS
+        assert "one-shot" in str(refused.value)
+    assert key({"target": {"worker": "any", "pool": "one-shot"}, "device": "cpu"}) == \
+        "pool:one-shot/cpu"
 
 
 def test_a_batch_check_returns_each_childs_needs(data_label):

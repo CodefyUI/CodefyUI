@@ -10,6 +10,7 @@ import {
   listRunOutputs,
   PayloadTooLargeError,
   RunDataExpiredError,
+  WorkerUnreachableError,
   type GradIndexEntry,
 } from '../../api/executionOutputs';
 import {
@@ -199,6 +200,17 @@ describe('BackwardView', () => {
     mockOutput.mockRejectedValue(new Error('fetch failed'));
     render(<BackwardView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('fetch failed')).toBeInTheDocument());
+  });
+
+  it("says a worker run's worker is out of reach, for the index and a tensor (#789)", async () => {
+    mockGradIndex.mockRejectedValue(new WorkerUnreachableError('gone'));
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText(/cannot be reached now/)).toBeInTheDocument());
+    cleanup();
+    mockGradIndex.mockResolvedValue([portEntry('g')]);
+    mockOutput.mockRejectedValue(new WorkerUnreachableError('gone'));
+    render(<BackwardView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText(/cannot be reached now/)).toBeInTheDocument());
   });
 
   it("shows 'Expired' on a per-tensor RunDataExpiredError", async () => {

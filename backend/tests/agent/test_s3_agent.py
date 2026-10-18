@@ -316,7 +316,7 @@ def test_hello_lists_s3_only_with_a_client():
     assert "s3" in wp.agent_capabilities(True)
     assert wp.agent_capabilities(False) == ["ack", "mounts", "transfer",
                                            "memory_budget", "one_shot",
-                                           "instances"]
+                                           "record_outputs", "instances"]
 
 
 async def test_the_connection_hands_credentials_to_the_runner(tmp_path):
