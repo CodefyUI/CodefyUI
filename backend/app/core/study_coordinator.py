@@ -188,8 +188,9 @@ class StudyCoordinator:
         #: ``(study id, variant index)``; a child submitted without one (a
         #: study resumed after a restart) has them computed at submit.
         self._needs: dict[tuple[str, int], Any] = {}
-        #: Each child's default memory budget, as ``check_batch_budgets``
-        #: derived it at creation (#788), in memory like ``_needs``.
+        #: Each child's default memory budget and history key, as
+        #: ``check_batch_budgets`` derived them at creation (#788, #794), in
+        #: memory like ``_needs``.
         self._budgets: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -312,9 +313,9 @@ class StudyCoordinator:
                     self._secrets[(study.id, index)] = vault
             for index, needs in enumerate(variant_needs):
                 self._needs[(study.id, index)] = needs
-            for index, budget in enumerate(variant_budgets):
-                if budget is not None:
-                    self._budgets[(study.id, index)] = budget
+            for index, child in enumerate(variant_budgets):
+                if child.budget is not None or child.digest is not None:
+                    self._budgets[(study.id, index)] = child
             self._notify(study.id)
             study = await self.tick(study.id) or study
         return study, created
@@ -462,6 +463,7 @@ class StudyCoordinator:
             return True
         self._notify(study.id)
         options = {**study.options, "seed": attempt.seed}
+        child = self._budgets.get((study.id, attempt.variant_index))
         try:
             result = await self.service.submit(
                 graph, options=options,
@@ -470,8 +472,8 @@ class StudyCoordinator:
                 study_attempt_id=attempt.id,
                 needs=self._needs.get((study.id, attempt.variant_index),
                                       NEEDS_UNKNOWN),
-                memory_budget=self._budgets.get(
-                    (study.id, attempt.variant_index)))
+                memory_budget=getattr(child, "budget", None),
+                graph_digest=getattr(child, "digest", None))
         except RunSubmitError as exc:
             await self.store.mark_lost(
                 attempt.id, f"the run service refused the child: {exc}")

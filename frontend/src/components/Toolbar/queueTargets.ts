@@ -136,11 +136,31 @@ function sharedByMemory(worker: WorkerInfo, device: WorkerDevice): boolean {
 }
 
 /**
+ * The devices shared by memory (#788) a run sent where the picker points
+ * could land on: the chosen worker's chosen devices; for `any`, the devices
+ * of the chosen kind on connected workers that are not one-shot; for the
+ * one-shot pool (#790), those on connected one-shot workers.
+ */
+function sharedCandidates(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): WorkerDevice[] {
+  if (target === TARGET_ANY || target === TARGET_ONE_SHOT) {
+    const pool = target === TARGET_ONE_SHOT;
+    return online
+      .filter((w) => Boolean(w.one_shot) === pool)
+      .flatMap((w) => w.devices.filter((d) => deviceKind(d.value) === kind && sharedByMemory(w, d)));
+  }
+  if (worker === null) return [];
+  return worker.devices.filter((d) => selected.includes(d.value) && sharedByMemory(worker, d));
+}
+
+/**
  * Whether a run sent where the picker points could land on a device shared
- * by memory (#788), so its memory budget matters: one of the chosen
- * worker's chosen devices; for `any`, a device of the chosen kind on a
- * connected worker that is not one-shot; for the one-shot pool (#790), one
- * on a connected one-shot worker.
+ * by memory (#788), so its memory budget matters.
  */
 export function usesSharedDevice(
   target: string,
@@ -149,15 +169,50 @@ export function usesSharedDevice(
   online: readonly WorkerInfo[],
   kind: string,
 ): boolean {
-  if (target === TARGET_ANY || target === TARGET_ONE_SHOT) {
-    const pool = target === TARGET_ONE_SHOT;
-    return online.some(
-      (w) => Boolean(w.one_shot) === pool
-        && w.devices.some((d) => deviceKind(d.value) === kind && sharedByMemory(w, d)),
-    );
-  }
-  if (worker === null) return false;
-  return worker.devices.some((d) => selected.includes(d.value) && sharedByMemory(worker, d));
+  return sharedCandidates(target, worker, selected, online, kind).length > 0;
+}
+
+/** A device's memory total as the server last reported it, or null. */
+function memoryTotal(device: WorkerDevice): number | null {
+  return device.admission?.total_bytes ?? device.memory?.total_bytes ?? null;
+}
+
+/**
+ * The shared MPS devices the run could land on when none of the devices it
+ * could land on reports a memory total: an MPS card reports none, so
+ * admission by budget can never judge a budget against it and the server
+ * refuses such a run whatever its budget; the dialog says so instead of
+ * offering the field. Empty when one of them reports a total, or when one
+ * is not MPS ({@link sharedAwaitingReport}).
+ */
+export function sharedWithoutTotal(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): string[] {
+  const devices = sharedCandidates(target, worker, selected, online, kind);
+  if (devices.some((d) => memoryTotal(d) !== null)) return [];
+  return devices.length > 0 && devices.every((d) => deviceKind(d.value) === 'mps') ? devices.map((d) => d.value) : [];
+}
+
+/**
+ * The shared devices other than MPS the run could land on that have not
+ * reported a memory total yet (a CUDA card before its worker's first
+ * memory heartbeat), when none of the candidates has: the field stays, and
+ * the dialog says the budget is judged once the report arrives.
+ */
+export function sharedAwaitingReport(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): string[] {
+  const devices = sharedCandidates(target, worker, selected, online, kind);
+  if (devices.some((d) => memoryTotal(d) !== null)) return [];
+  return devices.filter((d) => deviceKind(d.value) !== 'mps').map((d) => d.value);
 }
 
 /**

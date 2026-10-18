@@ -8,10 +8,17 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
-import { formatGiB } from '../../utils/formatGiB';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
-import { TARGET_ANY, estimateOptions, parseMemoryGib, usesSharedDevice } from './queueTargets';
+import {
+  TARGET_ANY,
+  estimateOptions,
+  parseMemoryGib,
+  sharedAwaitingReport,
+  sharedWithoutTotal,
+  usesSharedDevice,
+} from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
+import { MemoryEstimateHint } from './MemoryEstimateHint';
 import styles from './QueueRunDialog.module.css';
 
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -88,8 +95,18 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   // Memory admission (#788): a budget matters only where the run may land
   // on a device shared by memory. The suggestion is looked up when that is
   // so, again whenever the device kind or count changes (the history is
-  // kept per both), and fills the field until the user types in it.
-  const shared = usesSharedDevice(choice.target, choice.worker, choice.selected, choice.online, choice.kind);
+  // kept per both), and fills the field until the user types in it. A
+  // shared device with no memory total (MPS) cannot take a budget at all:
+  // the dialog says so instead.
+  const sharedAt = usesSharedDevice(choice.target, choice.worker, choice.selected, choice.online, choice.kind);
+  const noTotal = sharedAt
+    ? sharedWithoutTotal(choice.target, choice.worker, choice.selected, choice.online, choice.kind)
+    : [];
+  const shared = sharedAt && noTotal.length === 0;
+  // A CUDA card that has not reported its memory yet keeps the field.
+  const awaiting = shared
+    ? sharedAwaitingReport(choice.target, choice.worker, choice.selected, choice.online, choice.kind)
+    : [];
   const [memoryText, setMemoryText] = useState<string | null>(null);
   const [wait, setWait] = useState(false);
   const [estimate, setEstimate] = useState<MemoryEstimate | 'loading' | null>(null);
@@ -122,7 +139,12 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     );
   }, [shared, shapeKey, shapeJson, estimatedFor]);
   const suggested = estimate !== null && estimate !== 'loading' ? estimate : null;
-  const memoryValue = memoryText ?? (suggested?.suggested_gib == null ? '' : String(suggested.suggested_gib));
+  // The measured default (#788) first; else a usable static estimate
+  // (#794), which the server never applies on its own: it goes with the run
+  // only as a declared budget marked as an estimate.
+  const offered = suggested?.suggested_gib ?? suggested?.estimate_gib ?? null;
+  const offersEstimate = suggested?.suggested_gib == null && suggested?.estimate_gib != null;
+  const memoryValue = memoryText ?? (offered === null ? '' : String(offered));
 
   const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -160,12 +182,15 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     // No device: the picker says so beside the devices.
     const resolved = choice.resolve();
     if (resolved === null) return;
-    // The suggestion left as it is goes unsaid: the server derives the same
-    // default and keeps where it came from (the run it was measured on).
-    const declared = memoryText !== null ? memoryGib : null;
+    // A measured suggestion left as it is goes unsaid: the server derives
+    // the same default and keeps where it came from (the run it was
+    // measured on). An estimate left as it is is sent, marked as one.
+    const acceptedEstimate = memoryText === null && offersEstimate && memoryGib !== null;
+    const declared = memoryText !== null || acceptedEstimate ? memoryGib : null;
     const target = {
       ...resolved.target,
       ...(declared !== null ? { memory_gib: declared } : {}),
+      ...(acceptedEstimate ? { memory_source: 'estimate' } : {}),
       ...(shared && wait && choice.target !== TARGET_ANY ? { wait: true } : {}),
     };
     const store = useTabStore.getState();
@@ -246,15 +271,10 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
                     onChange={(event) => setMemoryText(event.target.value)}
                   />
                 </label>
-                <p className={styles.hint} aria-live="polite">
-                  {estimate === 'loading'
-                    ? t('queueRun.memory.loading')
-                    : estimateError !== null
-                      ? t('queueRun.memory.estimateFailed', { error: estimateError })
-                      : suggested?.peak_bytes != null
-                        ? t('queueRun.memory.suggested', { peak: formatGiB(suggested.peak_bytes) })
-                        : t('queueRun.memory.none')}
-                </p>
+                <MemoryEstimateHint estimate={estimate} error={estimateError} />
+                {awaiting.length > 0 && (
+                  <p className={styles.hint}>{t('queueRun.memory.awaitingReport', { devices: awaiting.join(', ') })}</p>
+                )}
                 <p className={styles.hint}>{t('queueRun.memory.hint')}</p>
                 {choice.target !== TARGET_ANY && (
                   <label className={styles.check}>
@@ -263,6 +283,11 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
                   </label>
                 )}
               </div>
+            )}
+            {noTotal.length > 0 && (
+              <p className={styles.hint} role="note">
+                {t('queueRun.memory.noTotal', { devices: noTotal.join(', ') })}
+              </p>
             )}
 
             <div className={styles.pair}>

@@ -92,6 +92,26 @@
   color: var(--status-error);
 }
 
+/* Where the memory suggestion came from (#794): a measured peak or an
+   estimate, tagged so the one never reads as the other. */
+.tag {
+  display: inline-block;
+  padding: 0 var(--sp-1);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+}
+
+.tagMeasured {
+  color: var(--status-success);
+}
+
+.tagEstimate {
+  color: var(--status-warning);
+}
+
 /* The memory budget block (#788): shown only for a device shared by memory. */
 .memory {
   display: flex;
