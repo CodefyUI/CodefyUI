@@ -32,6 +32,13 @@ from app.core.worker_outputs import (
 from app.main import app
 
 
+async def _write(store: RunOutputStore, run_id: str, directory: Any) -> Any:
+    """A run's captures written as a worker's run subprocess writes them:
+    ``capture_slots`` then ``write_slots`` (#789)."""
+    slots = await store.snapshot(run_id)
+    return q.write_slots(run_id, q.capture_slots(slots), directory)
+
+
 # ── the store retains a worker's runs by id ──────────────────────────────
 
 
@@ -100,16 +107,24 @@ async def test_an_evicted_worker_run_is_remembered_as_expired(monkeypatch):
     await store.add_remote("w2", "box")
     assert told == ["w1"] and await store.was_evicted("w1")
     assert not await store.was_evicted("w2")
-    # Retained again (a reconnect's ``_retain_outputs``): no longer expired.
+    # Never taken back: it would evict another run for captures that are
+    # gone.
     await store.add_remote("w1", "box")
-    assert not await store.was_evicted("w1") and await store.was_evicted("w2")
-    # Deleted is not evicted, and the memory is bounded.
-    await store.delete_run("w1")
-    assert not await store.was_evicted("w1")
+    assert await store.remote_holder("w1") is None
+    assert await store.list_runs() == ["w2"] and told == ["w1"]
+    # Deleting a retained run is not an eviction; forgetting one with
+    # ``expire`` (the outputs route's delete) marks it too.
+    await store.delete_run("w2")
+    assert not await store.was_evicted("w2")
+    await store.add_remote("w5", "box")
+    assert await store.forget_remote("w5", expire=True)
+    assert await store.was_evicted("w5")
+    assert not await store.forget_remote("w6", expire=True)
+    assert await store.was_evicted("w6")  # not retained, still marked
     monkeypatch.setattr(module, "EXPIRED_REMEMBERED", 1)
     await store.add_remote("w3", "box")
     await store.add_remote("w4", "box")
-    assert await store.was_evicted("w3") and not await store.was_evicted("w2")
+    assert await store.was_evicted("w3") and not await store.was_evicted("w1")
     await store.clear()
     assert not await store.was_evicted("w3")
 
@@ -196,7 +211,7 @@ async def test_a_dump_reads_back_like_the_store(tmp_path):
     await store.put("r", "card", "tensor", CaptureAlias("x", "tensor"))
     await store.put("r", "bad", "alias", CaptureAlias("card", "tensor"))
     await store.put("r", "s", "__step__0__meta", {"name": "a"})
-    index = await q.dump_run(store, "r", tmp_path / "outputs")
+    index = await _write(store, "r", tmp_path / "outputs")
     measured = sum(row[4] for row in await store.snapshot("r"))
     assert index["run_id"] == "r" and index["bytes"] == measured > 0
     disk = q.DiskRunReader(tmp_path / "outputs")
@@ -500,6 +515,10 @@ class _FakeOutputs:
     def __init__(self, answers: dict[str, Any]) -> None:
         self.answers = answers
         self.calls: list[tuple[str, str, str, dict[str, Any]]] = []
+        self.drops: list[tuple[str, str]] = []
+
+    def drop(self, run_id: str, worker: str) -> None:
+        self.drops.append((run_id, worker))
 
     async def fetch(self, worker: str, run_id: str, op: str,
                     params: dict[str, Any]) -> RemoteAnswer:
@@ -647,11 +666,92 @@ async def test_deleting_a_worker_run_forgets_it_either_way(test_client,
     response = await test_client.delete("/api/execution/outputs/r1")
     assert response.json() == {"run_id": "r1", "deleted": True}
     assert await worker_app.store.remote_holder("r1") is None
+    assert worker_app.outputs.drops == []  # deleted there already
     await worker_app.store.add_remote("r2", "box")
     worker_app.outputs.answers["delete"] = WorkerUnreachable("gone")
     response = await test_client.delete("/api/execution/outputs/r2")
     assert response.status_code == 503
     assert await worker_app.store.remote_holder("r2") is None
+    # Not reachable: the drop waits for it to connect.
+    assert worker_app.outputs.drops == [("r2", "box")]
+
+
+async def test_a_deleted_worker_run_is_never_taken_back(test_client,
+                                                        worker_app):
+    """Deleted (here, or after a restart through its record), a run reads
+    as not held from then on: a later read does not ask its worker and
+    does not retain it again, which would evict another run."""
+    store = worker_app.store
+    worker_app.records["r1"] = _record()
+    worker_app.outputs.answers["delete"] = RemoteAnswer(
+        200, {"run_id": "r1", "deleted": True}, True)
+    response = await test_client.delete("/api/execution/outputs/r1")
+    assert response.status_code == 200  # found through its record
+    assert await store.was_evicted("r1")
+    worker_app.outputs.answers["list"] = RemoteAnswer(200, [], True)
+    calls = len(worker_app.outputs.calls)
+    response = await test_client.get("/api/execution/outputs/r1")
+    assert (response.status_code, response.json()) == (
+        404, {"detail": "run 'r1' not found"})
+    assert len(worker_app.outputs.calls) == calls
+    assert await store.list_runs() == []
+
+
+@pytest.mark.parametrize("op, url, detail", [
+    ("list", "", "run 'r1' not found"),
+    ("stats", "/n/out/stats", q.stats_run_not_found("r1"))])
+async def test_a_retained_run_its_worker_no_longer_has_is_released(
+        test_client, worker_app, op, url, detail):
+    store = worker_app.store
+    await store.add_remote("r1", "box")
+    await store.add_remote("r2", "box")
+    # Live (not final): the run may simply have captured nothing yet.
+    worker_app.outputs.answers[op] = RemoteAnswer(404, {"detail": detail},
+                                                  False)
+    await test_client.get(f"/api/execution/outputs/r1{url}")
+    assert await store.remote_holder("r1") == "box"
+    # A port that is not there is not the run being gone.
+    worker_app.outputs.answers[op] = RemoteAnswer(
+        404, {"detail": "output 'n.out' not found in run 'r1'"}, True)
+    await test_client.get(f"/api/execution/outputs/r1{url}")
+    assert await store.remote_holder("r1") == "box"
+    worker_app.outputs.answers[op] = RemoteAnswer(404, {"detail": detail},
+                                                  True)
+    response = await test_client.get(f"/api/execution/outputs/r1{url}")
+    assert response.status_code == 404
+    assert await store.remote_holder("r1") is None
+    assert await store.was_evicted("r1")
+    assert await store.list_runs() == ["r2"]
+
+
+async def test_a_worker_run_s_stats_go_with_it():
+    from app.core.port_stats import worker_stats_key
+
+    cache = PortStatsCache(max_bytes=1 << 20)
+    store = RunOutputStore(max_runs=2, max_bytes=0)
+    store.on_remote_forget = lambda run_id: cache.drop_prefix(
+        worker_stats_key(run_id, None, None)[:2])
+    for run_id in ("r1", "r2", "r3", "r4"):
+        cache.put(worker_stats_key(run_id, "n", "a"), {"k": 1})
+        cache.put(worker_stats_key(run_id, "n", "b"), {"k": 2})
+    cache.put(("r1", "n", "a", 7), {"local": True})
+    await store.add_remote("r1", "box")
+    await store.add_remote("r2", "box")
+    await store.add_remote("r3", "box")  # evicts r1
+    assert cache.get(worker_stats_key("r1", "n", "a")) is None
+    assert cache.get(("r1", "n", "a", 7)) == {"local": True}
+    await store.delete_run("r2")
+    await store.forget_remote("r3")
+    assert cache.get(worker_stats_key("r2", "n", "b")) is None
+    assert cache.get(worker_stats_key("r3", "n", "a")) is None
+    assert cache.get(worker_stats_key("r4", "n", "a")) == {"k": 1}
+
+    def broken(run_id: str) -> None:
+        raise RuntimeError("nope")
+
+    store.on_remote_forget = broken
+    await store.add_remote("r5", "box")
+    await store.forget_remote("r5")  # logged, never raised
 
 
 async def test_an_evicted_worker_run_is_not_found_again(test_client,
@@ -721,9 +821,57 @@ async def test_the_executor_retains_a_recorded_run_and_refuses_old_agents():
     assert outcome.status == "failed"
     assert "cannot record outputs" in outcome.error
     assert await store.remote_holder("r1") is None
-    # An adopted run (#793) is retained again before it waits.
+    # An adopted run (#793) its worker no longer has is not retained.
     outcome = await executor.run(request(resume_seq=3))
+    assert outcome.status != "succeeded"
+    assert await store.remote_holder("r1") is None
+    # A one-shot worker exits after its run: refused, nothing retained.
+    old.capabilities = tuple(wp.CAPABILITIES)
+    old.one_shot = True
+    outcome = await executor.run(request())
+    assert outcome.status == "failed" and "one-shot" in outcome.error
+    assert await store.remote_holder("r1") is None
+    # Retained once it has started there, not before.
+    await executor._deliver(request(), wp.RunStarted(run_id="r1", seq=1),
+                            ["cpu"])
     assert await store.remote_holder("r1") == "old"
+
+
+async def test_a_worker_run_that_fails_before_it_starts_is_not_retained(
+        monkeypatch):
+    from app.core import executors
+    from app.core.executors import ExecutionRequest, WorkerExecutor
+    from app.core.scheduling import Placement
+
+    async def refused(*_: Any) -> Any:
+        raise RuntimeError("no room for the inputs")
+
+    monkeypatch.setattr(executors, "storage_backend",
+                        lambda worker, needs: "transfer")
+    monkeypatch.setattr(executors, "transfer_storage", refused)
+
+    store = RunOutputStore(max_runs=1, max_bytes=0)
+    await store.put("local", "n", "p", 1)
+    worker = SimpleNamespace(online=True, capabilities=tuple(wp.CAPABILITIES),
+                             node_types=None, one_shot=False, mounts={})
+
+    class Registry:
+        def get(self, name: str) -> Any:
+            return worker
+
+    executor = WorkerExecutor(Registry())
+    executor._catalog_refusal = _no_refusal  # type: ignore[method-assign]
+    # Its input files cannot be sent: it fails before any assign.
+    outcome = await executor.run(ExecutionRequest(
+        run_id="r1", graph={"nodes": []}, options={},
+        context=SimpleNamespace(should_stop=lambda: False),
+        session=None, output_store=store, record_outputs=True,
+        sinks=SimpleNamespace(warn=_ignore, emit=_ignore),
+        explicit_metric_nodes=set(),
+        placement=Placement(worker_id="box", devices=("cpu",), slots=())))
+    assert outcome.status == "failed" and "no room" in outcome.error
+    assert await store.remote_holder("r1") is None
+    assert await store.has_run("local")  # its place was never taken
 
 
 async def _no_refusal(*_: Any) -> None:

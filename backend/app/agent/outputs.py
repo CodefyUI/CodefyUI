@@ -17,8 +17,9 @@ The control plane reads them on demand: ``fetch_output`` frames, one per
 - after that, from the files, through :class:`OutputsHelper`: a
   subprocess of its own that loads them (memory-mapped) and answers.
   The agent process never imports torch; the helper does, with no CUDA
-  card visible. It starts on the first read (or when a recorded run
-  ends) and exits after :data:`HELPER_IDLE_S` without one.
+  card visible. It starts on the first read of a run's files and exits
+  after :data:`HELPER_IDLE_S` without one; it keeps a reader per run
+  directory while that run's index is unchanged.
 
 Every wait here ends before the control plane's (``fetch_output``'s
 ``timeout_s`` less :data:`ANSWER_MARGIN_S`), and a ``cancel_fetch`` ends
@@ -52,7 +53,12 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from ..core import worker_protocol as wp
-from ..core.output_queries import INDEX_FILE, OUTPUTS_DIRNAME, not_captured
+from ..core.output_queries import (
+    INDEX_FILE,
+    OUTPUTS_DIRNAME,
+    run_not_found,
+    stats_run_not_found,
+)
 from ..core.run_output_store import MAX_RUNS as STORE_MAX_RUNS
 
 logger = logging.getLogger(__name__)
@@ -157,10 +163,11 @@ def helper_main(requests: Any, answers: Any) -> None:
     from ..core import output_queries as q
 
     lock = threading.Lock()
+    readers = _ReaderCache(q.DiskRunReader)
 
     def answer(request_id: str, directory: str, op: str, run_id: str,
                params: dict[str, Any]) -> None:
-        status, text = q.answer_read(q.DiskRunReader(Path(directory)), op,
+        status, text = q.answer_read(readers.get(Path(directory)), op,
                                      run_id, params)
         with lock:
             try:
@@ -178,6 +185,44 @@ def helper_main(requests: Any, answers: Any) -> None:
             if isinstance(message, tuple) and len(message) == 6 \
                     and message[0] == MSG_FETCH:
                 pool.submit(answer, *message[1:])
+
+
+class _ReaderCache:
+    """The helper's readers, one per run directory, kept while its
+    index is unchanged (same mtime and size), so a read does not parse
+    ``index.json`` again; at most :data:`MAX_RUNS`, least recent first
+    out. Thread-safe."""
+
+    def __init__(self, make: Callable[[Path], Any],
+                 size: int = MAX_RUNS) -> None:
+        from collections import OrderedDict
+
+        self._make = make
+        self._size = max(1, size)
+        self._readers: OrderedDict[Path, tuple[Any, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, directory: Path) -> Any:
+        try:
+            info = (directory / INDEX_FILE).stat()
+            stamp: Any = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            stamp = None  # no index (yet, or any more): not cached
+        with self._lock:
+            held = self._readers.get(directory)
+            if held is not None and stamp is not None and held[0] == stamp:
+                self._readers.move_to_end(directory)
+                return held[1]
+        reader = self._make(directory)
+        with self._lock:
+            if stamp is None:
+                self._readers.pop(directory, None)
+            else:
+                self._readers[directory] = (stamp, reader)
+                self._readers.move_to_end(directory)
+                while len(self._readers) > self._size:
+                    self._readers.popitem(last=False)
+        return reader
 
 
 class _Instance:
@@ -429,10 +474,12 @@ class AgentOutputs:
     async def _answer(self, frame: wp.FetchOutput) -> Answer:
         if frame.op == "delete":
             return await self._delete(frame.run_id)
-        timeout_s = answer_timeout(frame)
+        # One deadline for the whole read: the subprocess, then the files.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + answer_timeout(frame)
         answer = await self.runner.ask_child(frame.run_id, frame.op,
                                              dict(frame.params),
-                                             timeout_s=timeout_s)
+                                             timeout_s=answer_timeout(frame))
         if answer is not None:
             return answer
         directory = outputs_dir(self.runner.runs_dir, frame.run_id)
@@ -440,18 +487,19 @@ class AgentOutputs:
             # Nothing on disk (never recorded, evicted, or deleted): the
             # answer the reads give for a run they do not hold, without
             # starting the helper for it.
-            return _error(404, f"run '{frame.run_id}' not found"
-                          if frame.op != "stats" else not_captured(
-                              f"run '{frame.run_id}' has no captured "
-                              "outputs"))
+            return _error(404, run_not_found(frame.run_id)
+                          if frame.op != "stats"
+                          else stats_run_not_found(frame.run_id))
         return await self.helper.ask(directory, frame.run_id, frame.op,
-                                     dict(frame.params), timeout_s=timeout_s)
+                                     dict(frame.params),
+                                     timeout_s=max(deadline - loop.time(),
+                                                   0.1))
 
     async def _delete(self, run_id: str) -> Answer:
         live = self.runner.child_drop(run_id)
         removed = await asyncio.to_thread(self._remove, run_id)
         if not (live or removed):
-            return _error(404, f"run '{run_id}' not found")
+            return _error(404, run_not_found(run_id))
         return 200, json.dumps({"run_id": run_id, "deleted": True}), True
 
     def _remove(self, run_id: str) -> bool:

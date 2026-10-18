@@ -311,27 +311,44 @@ def _listen_for_cancel(control_in: Any, context: Any,
             outputs.drop(message[1])
 
 
+#: Seconds a read waits for the run's loop to look its store up (#789):
+#: a loop that is going away never runs the lookup.
+LOOP_CALL_TIMEOUT_S = 10.0
+
+
 class _LoopReader:
     """The live store, read from another thread: each call runs on the
     run's event loop (the store's lock lives there). With no loop (before
-    the run starts, or after it ends) it holds nothing."""
+    the run starts), or once the run has ended (*outputs*' ``closing``,
+    set before its loop shuts down), it holds nothing. A lookup the loop
+    does not run within :data:`LOOP_CALL_TIMEOUT_S` fails the read, so a
+    reading thread never outlives the run waiting on it."""
 
-    def __init__(self, store: Any, loop: Any) -> None:
+    def __init__(self, store: Any, loop: Any,
+                 outputs: "LiveOutputs | None" = None) -> None:
         self._store = store
         self._loop = loop
+        self._outputs = outputs
 
     async def _call(self, name: str, *args: Any) -> Any:
         import asyncio
 
         loop = self._loop
-        if loop is None or loop.is_closed():
+        if loop is None or loop.is_closed() or (
+                self._outputs is not None and self._outputs.closing):
             return None
         try:
             future = asyncio.run_coroutine_threadsafe(
                 getattr(self._store, name)(*args), loop)
         except RuntimeError:  # the loop closed in between
             return None
-        return await asyncio.wrap_future(future)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future),
+                                          LOOP_CALL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            future.cancel()
+            raise TimeoutError("the run's event loop did not answer") \
+                from None
 
     async def has_run(self, run_id: str) -> bool:
         return bool(await self._call("has_run", run_id))
@@ -377,6 +394,9 @@ class LiveOutputs:
         self._entries: list[dict[str, Any]] | None = None
         #: Set by a ``drop`` after the run ended: nothing more is kept.
         self.dropped = False
+        #: Set once the run has ended, before its loop shuts down: the
+        #: live store is no longer read (#789).
+        self.closing = False
         #: ``drop`` calls so far: one landing while :meth:`prepare` copies
         #: discards the copy.
         self._drops = 0
@@ -393,7 +413,7 @@ class LiveOutputs:
 
         disk = None if self.dropped else self.disk
         reader = disk if disk is not None else _LoopReader(self.store,
-                                                           self.loop)
+                                                           self.loop, self)
         status, text = q.answer_read(reader, op, run_id, params)
         self.send((MSG_OUTPUT_ANSWER, request_id, status, text,
                    disk is not None))
@@ -445,12 +465,13 @@ class LiveOutputs:
             slots = await self.store.snapshot(self.run_id)
             entries = await asyncio.to_thread(q.capture_slots, slots)
             del slots
+            if self._drops == drops:
+                # The copies answer before the store is emptied, so no read
+                # in between finds nothing (a 404 reads as expired).
+                self._entries = entries
+                self.disk = q.MemoryRunReader(self.run_id, entries)
             await self.store.delete_run(self.run_id)
             _release_cards()
-            if self._drops != drops:
-                return  # dropped while copying: nothing to keep
-            self._entries = entries
-            self.disk = q.MemoryRunReader(self.run_id, entries)
         except Exception as exc:  # noqa: BLE001 -- reported, the run stands
             self._not_kept(exc)
             self.send((MSG_WARNING, {
@@ -612,10 +633,15 @@ def run_assignment(spec: dict[str, Any], send: Send,
                 outputs.loop = asyncio.get_running_loop()
             # This process runs this one run and nothing else, so its peak
             # memory figures are exact (#770).
-            result = await InProcessExecutor(exclusive_process=True).run(
-                request)
-            if outputs is not None:
-                await outputs.prepare()
+            try:
+                result = await InProcessExecutor(exclusive_process=True).run(
+                    request)
+                if outputs is not None:
+                    await outputs.prepare()
+            finally:
+                if outputs is not None:
+                    # Before the loop shuts down: reads stop asking it.
+                    outputs.closing = True
             return result
 
         outcome = asyncio.run(execute())

@@ -800,6 +800,15 @@ def worker_not_connected(name: str) -> str:
             "or 'any'")
 
 
+#: The refusal for ``record_outputs`` on a one-shot worker (#789, #790):
+#: its agent exits right after the run, taking the outputs with it.
+ONE_SHOT_REFUSES_RECORD_OUTPUTS = (
+    "record_outputs is not available on one-shot workers: the agent exits "
+    "when its run ends, so the recorded outputs could not be read; queue "
+    "the run without Record outputs, or on a worker started without "
+    "--one-shot")
+
+
 def worker_cannot_record_outputs(name: str) -> str:
     """The refusal for ``record_outputs`` on a worker whose agent does not
     list the ``record_outputs`` capability (#789): one from before it."""
@@ -2491,8 +2500,9 @@ class RunService:
         ``any`` run, see ``WorkerScheduler``). The run must be one a
         worker can do: not the interactive lane, and ``record_outputs``
         only on a named worker whose last ``hello`` listed the capability
-        (#789; one that never connected since this server started is
-        checked when the run starts, ``WorkerExecutor``).
+        and that is not one-shot, and never for the one-shot pool (#789;
+        one that never connected since this server started is checked when
+        the run starts, ``WorkerExecutor``).
         Only an unknown worker name, a device nobody offers, or one of
         those options is refused, so a worker disconnecting halfway
         through a sweep's or a study's submissions does not fail it.
@@ -2504,6 +2514,9 @@ class RunService:
         if options.get("lane") == LANE_INTERACTIVE:
             raise RunSubmitError(WORKER_REFUSES_INTERACTIVE)
         requested = str(options.get("device") or "cpu")
+        if entry_pool(options) == POOL_ONE_SHOT \
+                and options.get("record_outputs"):
+            raise RunSubmitError(ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         if entry_pool(options) == POOL_ONE_SHOT:
             # Never refused for want of a worker (#790): the run waits for
             # a one-shot worker to appear, up to
@@ -2534,6 +2547,9 @@ class RunService:
         if options.get("record_outputs") and capabilities \
                 and CAPABILITY_RECORD_OUTPUTS not in capabilities:
             raise RunSubmitError(worker_cannot_record_outputs(worker_id))
+        if options.get("record_outputs") and getattr(worker, "one_shot",
+                                                     False):
+            raise RunSubmitError(ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         offered = worker.device_values()
         wanted = devices or []
         missing = [d for d in wanted if not worker.offers(d)]

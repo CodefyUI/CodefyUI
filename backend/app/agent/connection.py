@@ -234,7 +234,6 @@ class AgentConnection:
         self._send_lock = asyncio.Lock()
         #: Recorded outputs (#789): reads of them, answered here.
         self.outputs = AgentOutputs(runner, self.send_answer)
-        runner.on_recorded_run_retired = self._recorded_run_retired
 
     async def send_answer(self, request_id: str, status: int, text: str,
                           final: bool) -> None:
@@ -249,15 +248,6 @@ class AgentConnection:
                     request_id=request_id, status=status, part=number,
                     parts=len(parts), body=part, final=final)):
                 return  # the connection is gone; the control plane says so
-
-    def _recorded_run_retired(self, run_id: str) -> None:
-        """A recorded run ended (#789): reads of it come from its files
-        now, so the helper that reads them is started before the first."""
-        try:
-            self.outputs.helper.start()
-        except Exception:  # noqa: BLE001 -- the first read starts it again
-            logger.warning("could not start the outputs helper",
-                           exc_info=True)
 
     def _http_tls(self) -> ssl.SSLContext | None:
         """The TLS context the transfer backend's HTTP requests use (#785):

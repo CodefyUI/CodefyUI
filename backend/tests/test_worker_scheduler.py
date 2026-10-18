@@ -500,6 +500,27 @@ def test_record_outputs_needs_the_capability_on_a_named_worker():
         "new/cpu"
 
 
+def test_record_outputs_is_refused_for_one_shot_workers():
+    """#789 x #790: a one-shot agent exits when its run ends, so what the
+    run recorded could never be read: refused at submit, for the pool and
+    for a named one-shot worker, with a message saying why."""
+    from app.core.run_service import ONE_SHOT_REFUSES_RECORD_OUTPUTS
+
+    once = _worker("once", "cpu")
+    once.capabilities = tuple(wp.CAPABILITIES)
+    once.one_shot = True
+    service = _service(_registry_with(once))
+    key = service._submit_queue_key
+    for options in ({"target": {"worker": "any", "pool": "one-shot"}, "device": "cpu"},
+                    _options(worker="once")):
+        with pytest.raises(RunSubmitError) as refused:
+            key({**options, "record_outputs": True})
+        assert str(refused.value) == ONE_SHOT_REFUSES_RECORD_OUTPUTS
+        assert "one-shot" in str(refused.value)
+    assert key({"target": {"worker": "any", "pool": "one-shot"}, "device": "cpu"}) == \
+        "pool:one-shot/cpu"
+
+
 def test_a_batch_check_returns_each_childs_needs(data_label):
     """Needs depend on the whole graph, so every child is read once and
     its needs handed back for submit; settings-only checks stay per

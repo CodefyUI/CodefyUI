@@ -10,7 +10,7 @@ import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
 import { formatGiB } from '../../utils/formatGiB';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
-import { TARGET_ANY, estimateOptions, parseMemoryGib, usesSharedDevice } from './queueTargets';
+import { TARGET_ANY, TARGET_ONE_SHOT, estimateOptions, parseMemoryGib, usesSharedDevice } from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
 import styles from './QueueRunDialog.module.css';
 
@@ -84,6 +84,10 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
 
   const choice = useRunTargetChoice(graphDevice);
   const isWorker = choice.isWorker;
+  // A one-shot agent exits when its run ends, so nothing it recorded could
+  // be read (#789): the server refuses it, and the box is off here.
+  const oneShot = choice.target === TARGET_ONE_SHOT || Boolean(choice.worker?.one_shot);
+  const records = recordOutputs && !oneShot;
 
   // Memory admission (#788): a budget matters only where the run may land
   // on a device shared by memory. The suggestion is looked up when that is
@@ -176,7 +180,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
     const options = {
       target,
       device: resolved.device,
-      record_outputs: recordOutputs,
+      record_outputs: records,
       verbose: active.verboseMode,
       graph_id: active.graphId,
       weights_persistent: active.weightsPersistent,
@@ -292,12 +296,14 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
             <label className={styles.check}>
               <input
                 type="checkbox"
-                checked={recordOutputs}
+                checked={records}
+                disabled={oneShot}
                 onChange={(event) => setRecordOutputs(event.target.checked)}
               />
               {t('queueRun.recordOutputs')}
             </label>
-            {isWorker && recordOutputs && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
+            {oneShot && <p className={styles.hint}>{t('queueRun.recordOutputsOneShot')}</p>}
+            {isWorker && records && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
             {error !== null && <div className={styles.error} role="alert">{error}</div>}
           </div>
 

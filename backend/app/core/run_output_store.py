@@ -99,9 +99,12 @@ class RunOutputStore:
         #: here: its worker is to be told to drop the captures.
         #: Synchronous; it schedules the message. None: nobody to tell.
         self.on_remote_drop: Callable[[str, str], None] | None = None
-        #: Worker runs evicted by retention, oldest first, at most
-        #: :data:`EXPIRED_REMEMBERED` (#789).
+        #: Worker runs evicted by retention or deleted, oldest first, at
+        #: most :data:`EXPIRED_REMEMBERED` (#789): never retained again.
         self._expired: OrderedDict[str, None] = OrderedDict()
+        #: Called with the run id whenever a worker run stops being
+        #: retained, for any reason (#789): its cached stats go with it.
+        self.on_remote_forget: Callable[[str], None] | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -185,10 +188,13 @@ class RunOutputStore:
         """
         worker = self._remote.pop(run_id, None)
         if worker is not None and evicted:
-            self._expired[run_id] = None
-            self._expired.move_to_end(run_id)
-            while len(self._expired) > EXPIRED_REMEMBERED:
-                self._expired.popitem(last=False)
+            self._expire(run_id)
+        if worker is not None and self.on_remote_forget is not None:
+            try:
+                self.on_remote_forget(run_id)
+            except Exception:  # noqa: BLE001 -- a cache, not a duty
+                logger.warning("could not forget the cached stats of run %s",
+                               run_id, exc_info=True)
         if worker is not None and tell and self.on_remote_drop is not None:
             try:
                 self.on_remote_drop(run_id, worker)
@@ -205,6 +211,14 @@ class RunOutputStore:
             self._order.remove(run_id)
         except ValueError:
             pass
+
+    def _expire(self, run_id: str) -> None:
+        """Remember *run_id* as a worker run never to retain again.
+        Caller holds the lock."""
+        self._expired[run_id] = None
+        self._expired.move_to_end(run_id)
+        while len(self._expired) > EXPIRED_REMEMBERED:
+            self._expired.popitem(last=False)
 
     async def get(self, run_id: str, node_id: str, port: str) -> Any | None:
         async with self._lock:
@@ -248,14 +262,15 @@ class RunOutputStore:
 
         Newest in the retention order, as a run that starts writing here
         would be, evicting older runs past ``max_runs`` (and telling their
-        workers) as :meth:`put` does. A run held here is left as it is.
+        workers) as :meth:`put` does. A run held here, and one evicted or
+        deleted before (:meth:`was_evicted`), are left as they are: taking
+        one back would evict another run for captures that are gone.
         """
         async with self._lock:
-            if run_id in self._store:
+            if run_id in self._store or run_id in self._expired:
                 return
             if run_id in self._remote:
                 self._order.remove(run_id)
-            self._expired.pop(run_id, None)
             self._remote[run_id] = worker
             self._order.append(run_id)
             self._evict_locked(keep=run_id)
@@ -266,15 +281,20 @@ class RunOutputStore:
             return self._remote.get(run_id)
 
     async def was_evicted(self, run_id: str) -> bool:
-        """*run_id* is a worker's run this store's retention evicted
-        (#789), and has not been retained since."""
+        """*run_id* is a worker's run this store evicted or deleted
+        (#789): its reads answer as for a run not held."""
         async with self._lock:
-            return run_id in self._expired and run_id not in self._remote
+            return run_id in self._expired
 
-    async def forget_remote(self, run_id: str) -> bool:
+    async def forget_remote(self, run_id: str, *,
+                            expire: bool = False) -> bool:
         """Stop retaining a worker's run without telling the worker (its
-        captures are deleted there already). False when not retained."""
+        captures are deleted there, or gone). *expire* also remembers it
+        as never to retain again, retained now or not. False when it was
+        not retained."""
         async with self._lock:
+            if expire and run_id not in self._store:
+                self._expire(run_id)
             if run_id not in self._remote:
                 return False
             self._drop(run_id)

@@ -36,6 +36,7 @@ const zhTW: Record<TranslationKey, string> = {
   'queueRun.deterministic': '決定性演算法',
   'queueRun.recordOutputs': '錄製節點輸出',
   'queueRun.recordOutputsWorker': '錄製的輸出保存在 worker 上；worker 連線時，Inspector 會向它讀取。',
+  'queueRun.recordOutputsOneShot': '單次 worker 在 run 結束時就會退出，因此無法錄製它的輸出。',
   'queueRun.error.seed': '種子必須是 0 以上的整數。',
   'queueRun.memory': '記憶體預算（每個裝置，GiB）',
   'queueRun.memory.hint': '依記憶體共用的裝置在預算加上 CUDA context 放得下時接收此 run；worker 會把 run 限制在預算內，超出預算的 run 只會讓自己記憶體不足。',

@@ -180,6 +180,12 @@ class Settings(BaseSettings):
     # answer before it is answered 504. The worker reads its own disk and
     # computes stats there; a minute covers a 2 GiB tensor's on a slow one.
     WORKER_OUTPUT_FETCH_TIMEOUT_S: float = 60.0
+    # Seconds a worker's run subprocess gets to write a recorded run's
+    # outputs to the worker's disk after it reported the run's end (#789).
+    # Read by the worker's agent; a write still going then is stopped and
+    # its outputs are lost. A graceful agent stop waits for writes in
+    # progress up to this long.
+    WORKER_OUTPUTS_WRITE_TIMEOUT_S: float = 300.0
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real

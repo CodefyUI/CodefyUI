@@ -237,17 +237,23 @@ def test_a_worker_runs_outputs_read_like_a_local_runs(live_server,  # noqa: F811
             _read(client, remote, "scale/tensor", {"preview": "true"})),
             what="the budget to drop the older run")
         assert gone[1]["detail"] == "run '<run>' not found"
+        # Its worker no longer has it: it gave its place up here.
+        assert asyncio.run_coroutine_threadsafe(
+            store.remote_holder(remote), loop).result(10) is None
 
         # DELETE removes them on the worker.
         deleted = client.delete(f"/api/execution/outputs/{second}")
         assert deleted.status_code == 200, deleted.text
         assert deleted.json() == {"run_id": second, "deleted": True}
         assert _read(client, second, "scale/tensor", {})[0] == 404
+        # A run still retained, for the worker that is about to go.
+        asyncio.run_coroutine_threadsafe(store.add_remote(
+            "kept-run", "rec-box"), loop).result(10)
     finally:
         _stop_agent(client, agent, "rec-box")
     # A worker that is gone: 503 at once, naming it.
     started = time.monotonic()
-    response = client.get(f"/api/execution/outputs/{remote}/scale/tensor")
+    response = client.get("/api/execution/outputs/kept-run/scale/tensor")
     assert response.status_code == 503, response.text
     assert "rec-box" in response.json()["detail"]
     assert time.monotonic() - started < 5

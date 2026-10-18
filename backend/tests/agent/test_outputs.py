@@ -36,6 +36,12 @@ from . import _helpers as h
 from .test_connection import Agent, FakeControlPlane
 
 
+async def _write(store: RunOutputStore, run_id: str, directory: Any) -> Any:
+    """A run's captures written as its run subprocess writes them (#789)."""
+    slots = await store.snapshot(run_id)
+    return q.write_slots(run_id, q.capture_slots(slots), directory)
+
+
 def _dump(runs: Path, run_id: str, nbytes: int, age: float) -> Path:
     directory = outputs_dir(runs, run_id)
     directory.mkdir(parents=True)
@@ -453,7 +459,7 @@ def test_retiring_a_recorded_run_applies_the_budget(tmp_path):
 async def test_the_real_helper_reads_a_dump(tmp_path):
     store = RunOutputStore(max_bytes=0)
     await store.put("r1", "x", "t", torch.arange(4.0))
-    await q.dump_run(store, "r1", tmp_path / "outputs")
+    await _write(store, "r1", tmp_path / "outputs")
     helper = OutputsHelper(idle_s=60)
     try:
         status, text, final = await helper.ask(
@@ -617,8 +623,9 @@ async def test_a_failing_read_is_answered_500_and_a_lost_send_is_quiet(
 async def test_the_connection_answers_fetch_output_in_parts(tmp_path,
                                                             monkeypatch):
     monkeypatch.setattr(wp, "OUTPUT_ANSWER_PART_CHARS", 16)
+    started: list[bool] = []
     monkeypatch.setattr(outputs_module.OutputsHelper, "start",
-                        lambda self: None)
+                        lambda self: started.append(True))
     async with FakeControlPlane() as cp, Agent(
             tmp_path, cp.url, child_entry=h.answering_child) as agent:
         await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
@@ -641,10 +648,13 @@ async def test_the_connection_answers_fetch_output_in_parts(tmp_path,
         await cp.send(wp.DropOutputs(run_id="r1"))
         await cp.wait_for(lambda n, f: isinstance(f, wp.Event)
                           and f.event_type == "dropped")
+        handle = agent.runner.runs["r1"]
         await cp.send(wp.Cancel(run_id="r1"))
         await cp.wait_for(lambda n, f: isinstance(f, wp.RunFinished))
-        # The run ended: the helper is warmed for the reads that follow.
-        assert agent.runner.on_recorded_run_retired is not None
+        await asyncio.wait_for(handle.done.wait(), 30)
+        # A recorded run ending starts nothing: the torch-importing helper
+        # waits for a read of the files (it starts on the first).
+        assert started == []
 
 
 async def test_an_empty_answer_is_one_part_and_a_closed_socket_stops(
@@ -673,26 +683,26 @@ async def test_an_empty_answer_is_one_part_and_a_closed_socket_stops(
     await connection.send_answer("q1", 204, "", True)
     [line] = connection._ws.sent
     assert json.loads(line)["parts"] == 1 and json.loads(line)["body"] == ""
-    connection._recorded_run_retired("r1")
-    assert started == [True]
+    assert started == []
     connection.outputs.close()
 
 
-async def test_a_helper_that_cannot_start_is_logged(tmp_path, monkeypatch,
-                                                    caplog):
-    from app.agent.connection import AgentConnection
-
+async def test_a_helper_that_cannot_start_answers_500(tmp_path, monkeypatch,
+                                                      caplog):
     def broken(self: Any) -> None:
         raise OSError("no spawn")
 
     monkeypatch.setattr(outputs_module.OutputsHelper, "start", broken)
-    runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"},
-                    outputs_max_bytes=0)
-    connection = AgentConnection(
-        runner=runner, name="box", version="t", control_url="http://x",
-        token="t", probe_devices=list)
-    connection._recorded_run_retired("r1")
-    assert "could not start the outputs helper" in caplog.text
+    _dump(tmp_path, "r1", 1, 0)
+    sent: list[tuple] = []
+
+    async def send(*args: Any) -> None:
+        sent.append(args)
+
+    outputs = AgentOutputs(_Runner(tmp_path), send)
+    await outputs.serve(_fetch("list"))
+    assert sent[-1][1] == 500 and "no spawn" in json.loads(sent[-1][2])[
+        "detail"]
 
 
 # ── review fixes (#853) ──────────────────────────────────────────────────
@@ -870,7 +880,7 @@ def test_numpy_scalars_and_primitive_subclasses_load_back(tmp_path):
                                              "n": [np.int64(3)]})
         await store.put("r1", "m", "level", Level.HIGH)
         await store.put("r1", "m", "t", torch.ones(2, 3))
-        await q.dump_run(store, "r1", tmp_path)
+        await _write(store, "r1", tmp_path)
 
     asyncio.run(go())
     reader = q.DiskRunReader(tmp_path)
@@ -896,7 +906,7 @@ def test_one_unreadable_file_fails_only_its_own_slot(tmp_path):
     async def go() -> None:
         await store.put("r1", "a", "t", torch.ones(2))
         await store.put("r1", "b", "t", torch.zeros(3))
-        await q.dump_run(store, "r1", tmp_path)
+        await _write(store, "r1", tmp_path)
 
     asyncio.run(go())
     index = q.read_index(tmp_path)
@@ -929,7 +939,7 @@ def test_a_list_reads_the_index_not_the_files(tmp_path, monkeypatch):
         await store.put("r1", "card", "out", q.CaptureAlias("loop",
                                                             "__step__0__x"))
         await store.put("r1", "card", "gone", q.CaptureAlias("nope", "x"))
-        await q.dump_run(store, "r1", tmp_path)
+        await _write(store, "r1", tmp_path)
 
     asyncio.run(go())
     reader = q.DiskRunReader(tmp_path)
@@ -950,3 +960,157 @@ def test_a_list_reads_the_index_not_the_files(tmp_path, monkeypatch):
     memory = q.MemoryRunReader("r1", q.capture_slots(slots))
     assert asyncio.run(q.dispatch(memory, "list", "r1", {},
                                   compute=None)) == (200, listed)
+
+
+# ── second review (#853) ─────────────────────────────────────────────────
+
+
+def test_the_copies_answer_before_the_store_is_emptied(tmp_path):
+    """No read between the store being emptied and the copies being
+    published may find nothing (a 404 the Inspector shows as expired)."""
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", str(tmp_path / "outputs"), print)
+    seen: list[Any] = []
+    delete = store.delete_run
+
+    async def watched(run_id: str) -> bool:
+        seen.append(live.disk)
+        return await delete(run_id)
+
+    store.delete_run = watched  # type: ignore[method-assign]
+
+    async def go() -> None:
+        await store.put("r1", "x", "t", torch.ones(2))
+        await live.prepare()
+
+    asyncio.run(go())
+    assert isinstance(seen[0], q.MemoryRunReader)
+    assert not asyncio.run(store.has_run("r1"))
+
+
+def test_a_read_after_the_run_ended_does_not_wait_on_its_loop(
+        tmp_path, monkeypatch):
+    sent: list[tuple] = []
+    store = RunOutputStore(max_bytes=0)
+    live = child.LiveOutputs(store, "r1", None, sent.append)
+    # A loop that exists but never runs anything (one shutting down).
+    stalled = asyncio.new_event_loop()
+    try:
+        live.loop = stalled
+        monkeypatch.setattr(child, "LOOP_CALL_TIMEOUT_S", 0.2)
+        started = time.monotonic()
+        live.answer("a1", "list", "r1", {})
+        answer = _collect(sent, 1)[0]
+        assert answer[2] == 500 and time.monotonic() - started < 10
+        assert "did not answer" in json.loads(answer[3])["detail"]
+        # Once the run has ended it is not asked at all.
+        live.closing = True
+        live.answer("a2", "list", "r1", {})
+        assert _collect(sent, 2)[1][2] == 404
+    finally:
+        stalled.close()
+
+
+def test_run_assignment_closes_reads_before_its_loop_ends(tmp_path):
+    spec = {"run_id": "r0", "graph": h.tensor_graph(), "device": "cpu",
+            "options": {**h.TENSOR_OPTIONS, "record_outputs": True},
+            "outputs_dir": None}
+    made: list[Any] = []
+    original = child.LiveOutputs
+
+    def recording(*args: Any, **kw: Any) -> Any:
+        made.append(original(*args, **kw))
+        return made[-1]
+
+    child.LiveOutputs = recording  # type: ignore[misc]
+    try:
+        child.run_assignment(spec, lambda message: None, discover=False)
+    finally:
+        child.LiveOutputs = original  # type: ignore[misc]
+    assert made[0].closing
+
+
+async def test_one_deadline_covers_the_whole_read(tmp_path):
+    _dump(tmp_path, "r1", 1, 0)
+    waits: list[float] = []
+
+    class Late(_Runner):
+        async def ask_child(self, *_: Any, timeout_s: float = 0) -> Any:
+            waits.append(timeout_s)
+            await asyncio.sleep(1.0)
+            return None  # it exited meanwhile: the files answer
+
+    class Helper(_Helper):
+        async def ask(self, *args: Any, timeout_s: float = 0) -> Any:
+            waits.append(timeout_s)
+            return 200, "[]", True
+
+    sent: list[tuple] = []
+
+    async def send(*args: Any) -> None:
+        sent.append(args)
+
+    outputs = AgentOutputs(Late(tmp_path), send, helper=Helper())
+    await outputs.serve(wp.FetchOutput(request_id="q", run_id="r1",
+                                       op="list", timeout_s=10))
+    assert waits[0] == 5.0
+    assert 3.5 < waits[1] <= 4.05  # what is left of the same 5 s
+    assert sent == [("q", 200, "[]", True)]
+
+
+def test_the_helper_keeps_a_reader_while_the_index_is_unchanged(tmp_path):
+    made: list[Path] = []
+
+    def make(directory: Path) -> Any:
+        made.append(directory)
+        return object()
+
+    cache = outputs_module._ReaderCache(make, size=2)
+    one = _dump(tmp_path, "r1", 1, 30)
+    first = cache.get(one)
+    assert cache.get(one) is first and made == [one]
+    # Rewritten (a new size and time): read again.
+    (one / q.INDEX_FILE).write_text(json.dumps({"run_id": "r1", "bytes": 22,
+                                                "slots": []}))
+    assert cache.get(one) is not first and made == [one, one]
+    # No index: never kept.
+    missing = tmp_path / "nothing"
+    cache.get(missing)
+    cache.get(missing)
+    assert made.count(missing) == 2
+    # Bounded, least recently used first out.
+    two = _dump(tmp_path, "r2", 1, 20)
+    three = _dump(tmp_path, "r3", 1, 10)
+    cache.get(two)
+    cache.get(three)
+    cache.get(one)
+    assert made.count(one) == 3
+
+
+def test_the_write_limit_comes_from_the_setting(tmp_path, monkeypatch):
+    from app.config import settings
+
+    assert settings.WORKER_OUTPUTS_WRITE_TIMEOUT_S == 300.0
+    monkeypatch.setattr(settings, "WORKER_OUTPUTS_WRITE_TIMEOUT_S", 7.5)
+    assert Runner(runs_dir=tmp_path, offered_devices={"cpu"}
+                  ).save_outputs_s == 7.5
+    assert Runner(runs_dir=tmp_path, offered_devices={"cpu"},
+                  save_outputs_s=2).save_outputs_s == 2
+
+
+async def test_a_graceful_stop_waits_for_a_write_in_progress(tmp_path):
+    marker = tmp_path / "written"
+    sink = h.FrameSink()
+    runner = Runner(runs_dir=tmp_path / "runs", offered_devices={"cpu"},
+                    send=sink, child_entry=h.saving_child,
+                    outputs_max_bytes=0, kill_after_s=0.5,
+                    save_outputs_s=60)
+    await runner.assign(wp.Assign(run_id="r1", graph={"nodes": []}, options={
+        "record_outputs": True, "save_s": 3, "marker": str(marker)}))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
+    await runner.cancel("r1", grace_s=0.2)
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished), timeout=20)
+    assert not marker.exists()
+    await asyncio.wait_for(runner.shutdown(grace_s=0.2), 30)
+    assert marker.read_text() == "written"
+    assert runner.runs == {}

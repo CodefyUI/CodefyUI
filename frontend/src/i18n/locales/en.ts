@@ -38,6 +38,7 @@ const en = {
   'queueRun.deterministic': 'Deterministic algorithms',
   'queueRun.recordOutputs': 'Record node outputs',
   'queueRun.recordOutputsWorker': 'Recorded outputs stay on the worker. The Inspector reads them from it while it is connected.',
+  'queueRun.recordOutputsOneShot': 'A one-shot worker exits when its run ends, so its outputs cannot be recorded.',
   'queueRun.error.seed': 'The seed must be a whole number, 0 or more.',
   // Memory admission on a shared card (#788).
   'queueRun.memory': 'Memory budget (GiB per device)',

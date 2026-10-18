@@ -44,16 +44,29 @@ class OutputQueryError(Exception):
 #: Returned by a read whose port produced ``None``: answered 204, no body.
 NO_VALUE = object()
 
-#: The operations a ``fetch_output`` frame names (one per read route).
-OPS = ("list", "value", "stats", "steps", "grads")
-
-
 def not_captured(what: str) -> str:
     """404 detail that names the switch the user probably left off."""
     return (
         f"{what}. Turn on Record outputs (the Rec toggle in the toolbar) and "
         "re-run the graph to capture port data."
     )
+
+
+def run_not_found(run_id: str) -> str:
+    """The 404 detail of every read but stats for a run not held."""
+    return f"run '{run_id}' not found"
+
+
+def stats_run_not_found(run_id: str) -> str:
+    """The stats read's 404 detail for a run not held."""
+    return not_captured(f"run '{run_id}' has no captured outputs")
+
+
+def run_not_held(run_id: str, status: int, body: Any) -> bool:
+    """Whether an answer says the RUN is not held (#789), not one of its
+    ports: a 404 with one of the two run-level details."""
+    return status == 404 and isinstance(body, dict) and body.get(
+        "detail") in (run_not_found(run_id), stats_run_not_found(run_id))
 
 
 # -- what stands in for a value the disk cannot hold ------------------------
@@ -658,19 +671,6 @@ OUTPUTS_DIRNAME = "outputs"
 #: without it holds no complete dump and is read as holding nothing.
 INDEX_FILE = "index.json"
 INDEX_FORMAT = 1
-
-
-async def dump_run(store: Any, run_id: str, directory: Path) -> dict[str, Any]:
-    """Write *run_id*'s captures in *store* to *directory*. Imports torch.
-
-    :func:`capture_slots` then :func:`write_slots`, the blocking work on a
-    thread. Returns the index.
-    """
-    import asyncio
-
-    slots = await store.snapshot(run_id)
-    return await asyncio.to_thread(
-        lambda: write_slots(run_id, capture_slots(slots), directory))
 
 
 def capture_slots(slots: list[tuple[str, str, Any, int, int]]

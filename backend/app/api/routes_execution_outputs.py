@@ -36,7 +36,7 @@ from fastapi.responses import JSONResponse
 
 from ..config import settings
 from ..core import output_queries as q
-from ..core.port_stats import PortStatsCache, compute_port_stats
+from ..core.port_stats import PortStatsCache, compute_port_stats, worker_stats_key
 from ..core.run_output_store import RunOutputStore
 from ..core.worker_outputs import WorkerTimeout, WorkerUnreachable
 
@@ -157,7 +157,7 @@ async def _from_worker(request: Request, store: RunOutputStore, worker: str,
             f"the outputs this run recorded are kept on worker {worker!r}, "
             "and this server has no worker registry"))
     cache = _get_stats_cache(request) if op == "stats" else None
-    key = ("worker", run_id, params.get("node_id"), params.get("port"))
+    key = worker_stats_key(run_id, params.get("node_id"), params.get("port"))
     if cache is not None and retained:
         cached = cache.get(key)
         if cached is not None:
@@ -168,7 +168,12 @@ async def _from_worker(request: Request, store: RunOutputStore, worker: str,
         raise HTTPException(status_code=503, detail=str(exc))
     except WorkerTimeout as exc:
         raise HTTPException(status_code=504, detail=str(exc))
-    if not retained and answer.status != 404:
+    gone = answer.final and q.run_not_held(run_id, answer.status, answer.body)
+    if retained and gone:
+        # Its worker no longer has it (its own budget dropped it, or it was
+        # deleted there): it gives its place up, and is not asked again.
+        await store.forget_remote(run_id, expire=True)
+    elif not retained and answer.status != 404:
         # Found on its worker after a restart of this server: retained from
         # now on, so its eviction tells the worker.
         await store.add_remote(run_id, worker)
@@ -204,13 +209,24 @@ async def delete_run_outputs(run_id: str, request: Request):
     store = _get_store(request)
     worker, retained = await _worker_of(request, store, run_id)
     if worker is not None:
+        reached = False
         try:
-            return await _from_worker(request, store, worker, retained,
-                                      run_id, "delete", {})
+            response = await _from_worker(request, store, worker, retained,
+                                          run_id, "delete", {})
+            reached = True
+            return response
+        except HTTPException as exc:
+            reached = exc.status_code not in (503, 504)
+            raise
         finally:
-            # Deleted there, or not reachable to delete: either way this
-            # server stops retaining it (the worker's budget does the rest).
-            await store.forget_remote(run_id)
+            # Deleted there, or to be: this server stops retaining it and
+            # never takes it back (a later read answers as for a run not
+            # held). A worker that could not be reached is told when it
+            # next connects.
+            await store.forget_remote(run_id, expire=True)
+            registry = getattr(request.app.state, "worker_registry", None)
+            if not reached and registry is not None:
+                registry.outputs.drop(run_id, worker)
     ok = await store.delete_run(run_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")

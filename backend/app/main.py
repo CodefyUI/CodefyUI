@@ -96,6 +96,7 @@ from .core.plugin_loader import (
 from .core.plugins.reload import rediscover_now
 from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
+from .core.port_stats import worker_stats_key
 from .core.run_output_store import MAX_RUNS as RUN_OUTPUT_STORE_MAX_RUNS, RunOutputStore
 from .core.run_service import RunService
 from .core.ssh_launch import SshLauncher
@@ -416,6 +417,11 @@ async def _lifespan_body(app: FastAPI):
     # A worker run's recorded outputs stay on its worker (#789); this
     # store retains them by run id, and evicting one tells the worker.
     app.state.run_output_store.on_remote_drop = worker_registry.outputs.drop
+    # Its stats, cached once the run ended there, go when the run does.
+    _stats_cache = app.state.port_stats_cache
+    app.state.run_output_store.on_remote_forget = (
+        lambda run_id: _stats_cache.drop_prefix(
+            worker_stats_key(run_id, None, None)[:2]))
     # Enrolled workers (#780) are known before they dial in, as offline, so
     # a run can target one and wait. None enrolled: nothing changes.
     worker_store = WorkerStore(db)

@@ -772,7 +772,11 @@ class WorkerExecutor:
                 f"worker {worker_id} cannot record outputs: its agent does "
                 f"not support it; update the agent, or queue the run without "
                 f"Record outputs or on this server"))
-        await _retain_outputs(request, worker_id)
+        if request.record_outputs and getattr(worker, "one_shot", False):
+            from .run_service import ONE_SHOT_REFUSES_RECORD_OUTPUTS
+
+            return ExecutionOutcome(STATUS_FAILED,
+                                    ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         devices = list(placement.devices)
         storage = assignment_storage(worker)
         backend = storage_backend(worker, request.needs)
@@ -827,15 +831,16 @@ class WorkerExecutor:
         """A run adopted after a restart of this server (#793).
 
         Its recorded outputs, if any, are still recording on its worker:
-        retained here again from now on (#789).
+        retained here again from now on (#789), once its worker still has
+        it.
         """
-        await _retain_outputs(request, worker_id)
         run = self._registry.claim_adopted(request.run_id)
         if run is None:
             detail = (f"this server restarted and worker {worker_id} no "
                       "longer has the run")
             await _worker_gone_warning(request, detail)
             return self._gone(request, detail)
+        await _retain_outputs(request, worker_id)
         grace = getattr(self._registry, "resume_grace_s", 0)
         await _warning(request, WARNING_WORKER_DISCONNECTED, (
             f"this server restarted while the run was executing on worker "
@@ -1125,6 +1130,10 @@ class WorkerExecutor:
         if isinstance(frame, wp.RunStarted):
             if self._on_started is not None:
                 self._on_started(request.run_id)
+            if request.placement is not None:
+                # Started there: only now does a recorded run hold outputs
+                # on its worker to retain (#789).
+                await _retain_outputs(request, request.placement.worker_id)
             if frame.execution_facts and sinks.record_execution_facts:
                 try:
                     await sinks.record_execution_facts(frame.execution_facts)
@@ -1276,7 +1285,9 @@ async def transfer_storage(label: str, needs: Mapping[str, Any],
 async def _retain_outputs(request: ExecutionRequest, worker_id: str) -> None:
     """A recorded worker run's captures are on *worker_id* (#789): the
     output store retains the run by id, so the outputs routes ask that
-    worker and the store's retention evicts the run as its own."""
+    worker and the store's retention evicts the run as its own. Called
+    once the run has started there (``run_started``, or an adopted run
+    its worker still has), never for one that failed before."""
     if request.record_outputs and request.output_store is not None:
         await request.output_store.add_remote(request.run_id, worker_id)
 

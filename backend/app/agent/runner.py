@@ -104,7 +104,8 @@ EXIT_AFTER_FINISHED_S = 10.0
 #: How often the reader checks a reported child's liveness while draining.
 DRAIN_POLL_S = 0.2
 #: Seconds a recorded run's child gets to write its outputs and exit after
-#: it reported (#789); then it is stopped, and the outputs are lost.
+#: it reported (#789), unless ``CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S``
+#: says otherwise; then it is stopped, and the outputs are lost.
 SAVE_OUTPUTS_S = 300.0
 #: Seconds :meth:`Runner.ask_child` waits unless told: under the control
 #: plane's default wait for an answer (60 s, ``agent.outputs``).
@@ -441,10 +442,15 @@ class Runner:
         transfer: transfer_module.TransferClient | None = None,
         s3_client: Callable[[Any], Any] | None = None,
         outputs_max_bytes: int | None = None,
-        save_outputs_s: float = SAVE_OUTPUTS_S,
+        save_outputs_s: float | None = None,
     ) -> None:
         self.runs_dir = runs_dir
-        self.save_outputs_s = save_outputs_s
+        if save_outputs_s is None:
+            from ..config import settings
+
+            save_outputs_s = float(getattr(
+                settings, "WORKER_OUTPUTS_WRITE_TIMEOUT_S", SAVE_OUTPUTS_S))
+        self.save_outputs_s = max(0.0, float(save_outputs_s))
         #: This worker's budget for recorded outputs (#789): the in-process
         #: store's, ``CODEFYUI_RUN_OUTPUT_STORE_MAX_MB``, unless given.
         if outputs_max_bytes is None:
@@ -453,9 +459,6 @@ class Runner:
             outputs_max_bytes = int(settings.RUN_OUTPUT_STORE_MAX_MB) \
                 * 1024 * 1024
         self.outputs_max_bytes = max(0, int(outputs_max_bytes))
-        #: Called on the loop when a recorded run has retired (#789); the
-        #: connection's ``AgentOutputs`` starts its helper on it.
-        self.on_recorded_run_retired: Callable[[str], None] | None = None
         self._asked = 0
         #: Fetches inputs and uploads outputs for ``transfer`` runs (#785);
         #: ``AgentConnection`` provides one when none is given.
@@ -1036,12 +1039,20 @@ class Runner:
         handle.process.kill()
 
     async def shutdown(self, grace_s: float | None = None) -> None:
-        """Stop every run (cooperatively, then by force) and wait for them."""
+        """Stop every run (cooperatively, then by force) and wait for them.
+
+        A child writing a recorded run's outputs (#789) is not stopped: its
+        run has ended, and it gets the rest of ``save_outputs_s`` to finish
+        (``_watch_exit``), so a graceful stop waits up to that long. A run
+        stopped here that then writes its outputs gets the same.
+        """
         if grace_s is None:
             grace_s = self.shutdown_grace_s
         self.draining = True
         handles = list(self.runs.values())
         for handle in handles:
+            if handle.saving and handle.finished:
+                continue
             await self.cancel(handle.run_id, grace_s)
         for handle in handles:
             await handle.done.wait()
@@ -1405,11 +1416,6 @@ class Runner:
             handle.record_outputs))
         self._housekeeping.add(task)
         task.add_done_callback(self._housekeeping.discard)
-        if handle.record_outputs and self.on_recorded_run_retired is not None:
-            try:
-                self.on_recorded_run_retired(handle.run_id)
-            except Exception:  # noqa: BLE001 -- a convenience, not a duty
-                logger.debug("on_recorded_run_retired failed", exc_info=True)
 
     def _retire_files(self, run_dir: Path, recorded: bool = False) -> None:
         """Mark *run_dir* finished and apply retention, and for a recorded

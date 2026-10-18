@@ -399,11 +399,32 @@ describe('QueueRunDialog: a one-shot worker (#790)', () => {
     ]);
     expect(group.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
     expect(screen.getByText(/waits for a one-shot worker with a device of this kind/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Record node outputs' }));
+    // Its agent exits with the run (#789): the box is off and says why.
+    const record = screen.getByRole('checkbox', { name: 'Record node outputs' });
+    expect(record).toBeDisabled();
+    expect(record).not.toBeChecked();
+    expect(screen.getByText(/A one-shot worker exits when its run ends/)).toBeInTheDocument();
+    expect(screen.queryByText(/Recorded outputs stay on the worker/)).toBeNull();
     await submit();
     expect(sentRequest().options).toMatchObject({
       target: { worker: 'any', pool: 'one-shot' }, device: 'cuda', record_outputs: false,
     });
+  });
+
+  it('does not record outputs on a named one-shot worker, and does again elsewhere', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([
+      worker({ name: 'once', one_shot: { run_id: null, took: null } }),
+      worker({ name: 'box' }),
+    ]);
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'once' } });
+    const record = screen.getByRole('checkbox', { name: 'Record node outputs' });
+    expect(record).toBeDisabled();
+    expect(record).not.toBeChecked();
+    fireEvent.change(targetSelect(), { target: { value: 'box' } });
+    expect(record).toBeEnabled();
+    expect(record).toBeChecked();
+    expect(screen.queryByText(/A one-shot worker exits/)).toBeNull();
   });
 
   it('is not offered on a server without workers', async () => {
