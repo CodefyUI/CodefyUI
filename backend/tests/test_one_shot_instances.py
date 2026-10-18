@@ -491,6 +491,13 @@ async def test_a_run_naming_a_one_shot_worker_is_timed_after_a_restart(
         async with _client() as client:
             run_id = await _submit(client, {"worker": "slurm"})
             assert run_id in service._one_shot_timers
+            # An instance is known in memory only: after a restart a run
+            # naming one is refused at once instead of waiting.
+            refused = await client.post("/api/runs", json={
+                "graph": _graph(), "options": {
+                    "device": "cpu", "target": {"worker": "slurm.9000-3"}}})
+            assert refused.status_code == 400
+            assert "has not connected" in refused.text
             record = await _terminal(service, run_id)
         assert record.status == "failed"
         assert "no one-shot worker took this run within 0.3 s" in \
