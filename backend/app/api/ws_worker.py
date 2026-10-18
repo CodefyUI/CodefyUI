@@ -89,6 +89,11 @@ router = APIRouter()
 #: Seconds a fresh connection has to say ``hello``.
 HELLO_TIMEOUT_S = 10.0
 
+#: Seconds a same-host worker's handshake waits for this server's device
+#: list (#842) before it is registered anyway: well inside the agent's
+#: 10 s wait for ``welcome`` (``agent.connection.WELCOME_TIMEOUT_S``).
+SAME_HOST_PROBE_WAIT_S = 4.0
+
 
 def _peer_is_loopback(ws: WebSocket) -> bool:
     return is_loopback_peer(ws.client.host if ws.client is not None else None)
@@ -266,12 +271,28 @@ async def websocket_worker(ws: WebSocket) -> None:
                        "failed; see the agent's log): its node types are not "
                        "checked", hello.name)
 
-    # This server's devices, listed once in a thread, so the worker's are
-    # matched against them at ``connect`` (#773, #842) and the probe never
-    # runs on the event loop.
+    # Same machine needs both (#773, #780): the machine id alone is
+    # self-reported, so a remote agent could copy ours; the loopback peer
+    # alone is not enough either, since an ``ssh -R`` tunnel or a local
+    # proxy makes a remote agent look like loopback.
+    same_host = (_peer_is_loopback(ws)
+                 and same_machine(hello.machine_id, machine_identity()))
     probe = getattr(registry, "probe_local_devices", None)
-    if probe is not None:
-        await probe()
+    if same_host and probe is not None:
+        # Its cards may be this server's: list ours (once, in a thread) so
+        # they are matched at ``connect`` (#773, #842). Bounded well inside
+        # the agent's wait for ``welcome``; a slower probe goes on in the
+        # background and the index is redone when it lands. Here, not
+        # between ``welcome`` and ``connect``: an agent that has its
+        # ``welcome`` is registered.
+        try:
+            await asyncio.wait_for(asyncio.shield(probe()),
+                                   SAME_HOST_PROBE_WAIT_S)
+        except asyncio.TimeoutError:
+            logger.warning("listing this server's devices takes longer than "
+                           "%.0f s; worker %s is registered meanwhile and its "
+                           "cards are matched when the list lands",
+                           SAME_HOST_PROBE_WAIT_S, hello.name)
 
     # ``welcome`` goes out BEFORE the worker is registered (#783): from
     # ``connect`` on, executors send through this socket (a stop that waited
@@ -291,14 +312,8 @@ async def websocket_worker(ws: WebSocket) -> None:
     if late is not None:
         await refuse(hello.name, late)
         return
-    # Same machine needs both (#773, #780): the machine id alone is
-    # self-reported, so a remote agent could copy ours; the loopback peer
-    # alone is not enough either, since an ``ssh -R`` tunnel or a local
-    # proxy makes a remote agent look like loopback.
     worker, replaced = registry.connect(
-        hello, send=send, close=close,
-        same_host=_peer_is_loopback(ws)
-        and same_machine(hello.machine_id, machine_identity()),
+        hello, send=send, close=close, same_host=same_host,
         credential=auth.credential, enrolled=enrolled_as is not None,
         plain_http=plain_from_another_machine(ws))
     store = getattr(ws.app.state, "worker_store", None)

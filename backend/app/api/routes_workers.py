@@ -45,10 +45,12 @@ card with a matching UUID) carries ``shared_with: "local"``, otherwise
 
 Physical devices (#842): every device entry (the ``local`` ones too)
 carries ``same_card``, the other offerers of that physical device
-(``[{"worker", "device", "policy", "online"}]``, ``worker`` ``local`` for
-this server, whose ``policy`` is null; ``[]`` for a device nobody else
-offers): a CUDA card with the same UUID, and a same-host worker's ``cpu``
-and ``mps:0``. Their ``slots`` are the device's: the runs on every
+(``[{"worker", "device", "policy", "online", "memory_budget"}]``,
+``worker`` ``local`` for this server, whose ``policy`` and
+``memory_budget`` are null; ``[]`` for a device nobody else
+offers): a CUDA card with the same UUID, and the ``cpu`` and ``mps:0`` of
+one machine (a same-host worker's and this server's, or two agents that
+report the same machine id). Their ``slots`` are the device's: the runs on every
 offerer, under the smallest cap among the online ones, with
 ``limited_by: {"worker", "device"}`` when that cap is another offerer's
 (absent otherwise), so a panel adding up usage must count the device
@@ -241,7 +243,12 @@ def _same_card(registry: Any, worker_id: str,
             "worker": peer_id, "device": device,
             "policy": None if local else registry.device_policy(peer_id,
                                                                 device),
-            "online": local or (peer is not None and peer.online)})
+            "online": registry.slot_online((peer_id, device)),
+            # Whether its agent enforces memory budgets (#788); None for
+            # this server. A peer without it makes the card admit by count.
+            "memory_budget": None if local else (
+                peer is not None and wp.CAPABILITY_MEMORY_BUDGET
+                in (getattr(peer, "capabilities", None) or ()))})
     return entries
 
 

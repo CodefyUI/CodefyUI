@@ -1627,6 +1627,18 @@ def _adopted_budget(facts: Mapping[str, Any]) -> "mem.Budget | None":
                       and not isinstance(raised_from, bool) else None)
 
 
+def _resume_cards(facts: Mapping[str, Any],
+                  slots: tuple[SlotKey, ...]) -> dict[SlotKey, str]:
+    """``{slot: device identity}`` an adopted run's ``worker_resume``
+    recorded (#842), for the slots it lists in the same order."""
+    resume = facts.get(WORKER_RESUME_KEY)
+    cards = resume.get("cards") if isinstance(resume, dict) else None
+    if not isinstance(cards, list) or len(cards) != len(slots):
+        return {}
+    return {slot: card for slot, card in zip(slots, cards)
+            if isinstance(card, str) and card}
+
+
 def _adopted_placement(worker_id: str, devices: tuple[str, ...],
                        slots: tuple[SlotKey, ...],
                        facts: Mapping[str, Any]) -> Placement:
@@ -4568,6 +4580,12 @@ class RunService:
             logger.warning(
                 "marked %d run(s) interrupted (they did not survive a "
                 "restart)", count)
+        probe = getattr(self._workers, "probe_local_devices", None)
+        if adoptable and probe is not None:
+            # This server's devices before any adopted run is grouped with
+            # them (#842): an adopted same-host run's card must be full for
+            # in-process runs from the first pump.
+            await probe()
         for record, placement, last_seq in adoptable:
             try:
                 # Before anything can read it: the row says the worker is
@@ -4629,14 +4647,6 @@ class RunService:
                                "can be resumed; it cannot be adopted",
                                record.id, record.worker_id)
                 continue
-            cards = resume.get("cards")
-            if isinstance(cards, list) and len(cards) == len(slots):
-                # Grouped with the card's other offerers while its worker
-                # is away (#842).
-                remember = getattr(self._workers, "remember_cards", None)
-                if remember is not None:
-                    remember({slot: card for slot, card in zip(slots, cards)
-                              if isinstance(card, str) and card})
             adoptable.append((record, _adopted_placement(
                 record.worker_id, tuple(devices), slots, facts), last_seq))
         return adoptable
@@ -4660,6 +4670,11 @@ class RunService:
                  if isinstance(record.execution_facts, dict) else {})
         self._workers.adopt(placement.worker_id, record.id,
                             last_seq=last_seq)
+        remember = getattr(self._workers, "remember_cards", None)
+        if remember is not None:
+            # Grouped with the device's other offerers while its worker is
+            # away (#842); dropped when the run ends or the worker is back.
+            remember(record.id, _resume_cards(facts, placement.slots))
         try:
             self._start(record.id, {}, options,
                         queue_key=record.queue_key or placement.devices[0],

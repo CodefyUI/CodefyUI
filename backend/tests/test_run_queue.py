@@ -557,15 +557,16 @@ async def test_a_same_host_worker_shares_this_processs_cards():
         # A worker on another machine keeps cards of its own.
         assert scheduler.place(_on("far-box", "cuda:0"), taken).slots == (
             ("far-box", "cuda:0"),)
-        # The card's cap is the smallest of its offerers': raising the
-        # local one alone does not raise it ...
+        # This server's override raises the card: the same-host worker's
+        # slot, with no override of its own, takes this server's cap for
+        # the device (it IS that device), as before #842 ...
         raised = WorkerScheduler(QueueLimits(overrides=(("cuda:1", 2),)),
                                  registry, lambda: [])
-        assert raised.place(on_worker, taken) is None
-        # ... raising both does.
-        both = WorkerScheduler(QueueLimits(overrides=(
-            ("cuda:1", 2), ("here-box/cuda:0", 2))), registry, lambda: [])
-        assert both.place(on_worker, taken) is not None
+        assert raised.place(on_worker, taken) is not None
+        # ... and only an explicit override on the worker lowers it.
+        lowered = WorkerScheduler(QueueLimits(overrides=(
+            ("cuda:1", 2), ("here-box/cuda:0", 1))), registry, lambda: [])
+        assert lowered.place(on_worker, taken) is None
     finally:
         await registry.shutdown()
 

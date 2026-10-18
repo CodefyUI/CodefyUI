@@ -69,6 +69,7 @@ without a cycle.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -87,6 +88,8 @@ from .worker_protocol import (
     TARGET_LOCAL,
     canonical_device,
 )
+
+logger = logging.getLogger(__name__)
 
 #: ``(worker_id, device)``, e.g. ``("local", "cuda:0")``.
 SlotKey = tuple[str, str]
@@ -265,46 +268,80 @@ class CardBudget(SlotBudget):
     """Count admission per physical device (#773, #842).
 
     A slot's device is every slot ``registry.card_slots`` groups with it.
-    What it holds is the runs on all of them; its cap is the smallest
-    ``limits.for_slot`` among the slot asked about and the others whose
-    offerer is online (``registry.slot_online``) or holds a run there, so
-    an offerer that went away does not keep the card's cap down. A
-    registry that does not group (or fails to) leaves every slot its own.
+    What it holds is the runs on all of them; its cap is the smallest cap
+    among the slot asked about and the others whose offerer is online
+    (``registry.slot_online``) or holds a run there, so an offerer that
+    went away does not keep the card's cap down. A same-host worker's slot
+    without an override of its own takes this server's cap for the device
+    (:meth:`slot_cap`), so ``cuda:0=2`` raises a card a same-host worker
+    shares, as before #842. A registry that does not group leaves every
+    slot its own; one whose grouping FAILS makes the slot read busy
+    (logged once), never free.
     """
 
     def __init__(self, limits: SlotLimits, registry: Any) -> None:
         super().__init__(limits)
         self._registry = registry
+        #: The last grouping failure logged, so a broken index is logged
+        #: once per distinct error rather than on every placement.
+        self._failure: str | None = None
 
-    def card(self, slot: SlotKey) -> tuple[SlotKey, ...]:
-        """Every slot on *slot*'s device, *slot* included."""
+    def _group(self, slot: SlotKey) -> tuple[SlotKey, ...] | None:
+        """Every slot on *slot*'s device, or None when grouping failed."""
         cards = getattr(self._registry, "card_slots", None)
         if cards is None:
             return (slot,)
         try:
-            return tuple(cards(slot)) or (slot,)
-        except Exception:  # noqa: BLE001 -- grouping degrades, never fails
-            return (slot,)
+            group = tuple(cards(slot)) or (slot,)
+        except Exception as exc:  # noqa: BLE001 -- fail safe, see held()
+            failure = f"{type(exc).__name__}: {exc}"
+            if failure != self._failure:
+                self._failure = failure
+                logger.exception("could not group slot %s/%s with the other "
+                                 "offerers of its device; it reads busy "
+                                 "until the grouping works", *slot)
+            return None
+        self._failure = None
+        return group
 
-    def _online(self, slot: SlotKey) -> bool:
+    def card(self, slot: SlotKey) -> tuple[SlotKey, ...]:
+        """Every slot on *slot*'s device, *slot* included (just *slot*
+        when the grouping fails: for descriptions, never for admission)."""
+        return self._group(slot) or (slot,)
+
+    def online(self, slot: SlotKey) -> bool:
+        """Whether *slot*'s offerer can take a run now
+        (``registry.slot_online``; every slot without a registry)."""
         online = getattr(self._registry, "slot_online", None)
         return True if online is None else bool(online(slot))
 
     def held(self, slot: SlotKey, taken: Mapping[SlotKey, int]) -> int:
-        return sum(taken.get(s, 0) for s in self.card(slot))
+        group = self._group(slot)
+        if group is None:
+            return RESERVED_SLOT  # unknown: busy, never free
+        return sum(taken.get(s, 0) for s in group)
+
+    def slot_cap(self, slot: SlotKey) -> int:
+        """*slot*'s own cap: ``limits.for_slot``, except that a same-host
+        worker's device with no ``<worker>/<device>`` override takes this
+        server's cap for the same device (it IS that device)."""
+        override_for = getattr(self.limits, "override_for", None)
+        if slot[0] != LOCAL_WORKER_ID and override_for is not None \
+                and override_for(slot) is None:
+            get = getattr(self._registry, "get", None)
+            worker = None if get is None else get(slot[0])
+            local = (getattr(worker, "shared", None) or {}).get(slot[1])
+            if local is not None:
+                return self.limits.for_slot((LOCAL_WORKER_ID, local))
+        return self.limits.for_slot(slot)
 
     def limit(self, slot: SlotKey, taken: Mapping[SlotKey, int]
               ) -> tuple[int, SlotKey]:
-        card = self.card(slot)
-        if len(card) == 1:
-            return self.limits.for_slot(slot), slot
-        counted = [s for s in card if s == slot or taken.get(s, 0) > 0
-                   or self._online(s)]
-        # *slot* first, so a tie names the slot asked about.
-        counted.sort(key=lambda s: s != slot)
-        cap, by = min(((self.limits.for_slot(s), s) for s in counted),
-                      key=lambda pair: pair[0])
-        return cap, by
+        counted = [s for s in self.card(slot) if s == slot
+                   or taken.get(s, 0) > 0 or self.online(s)]
+        # The smallest cap; on a tie, the slot asked about.
+        by = min(counted, key=lambda s: (self.slot_cap(s), s != slot))
+        return self.slot_cap(by), by
 
 
 class Scheduler(Protocol):
@@ -708,9 +745,10 @@ class WorkerScheduler:
         for peer_id, peer_device in self._budget.card((worker.id, device)):
             if peer_id in (LOCAL_WORKER_ID, worker.id):
                 continue
+            if not self._budget.online((peer_id, peer_device)):
+                continue
             peer = self._registry.get(peer_id)
-            if peer is not None and peer.online \
-                    and not self._by_memory(peer, peer_device):
+            if peer is not None and not self._by_memory(peer, peer_device):
                 return False
         return True
 

@@ -260,9 +260,10 @@ async def test_the_server_probes_its_devices_in_a_thread_never_on_the_loop():
     registry.add_listener(lambda: changed.append(1))
     near, _ = registry.connect(_hello("near", _card("cuda:0", UUID)),
                                send=_noop, close=_noop, same_host=True)
-    # Not probed yet: nothing of this process's is matched, and the
-    # lookup started the probe instead of running it here.
-    assert near.shared == {}
+    # Not probed yet: no card of this process's is matched (its CPU is,
+    # without a probe), and the lookup started the probe instead of
+    # running it here.
+    assert near.shared == {"cpu": "cpu"}
     assert registry.card_slots(("near", "cuda:0")) == (("near", "cuda:0"),)
     await registry.probe_local_devices()
     await registry.probe_local_devices()  # once
@@ -279,7 +280,8 @@ async def test_the_server_probes_its_devices_in_a_thread_never_on_the_loop():
     failing = WorkerRegistry(local_devices=broken, probe_off_loop=True)
     _MADE.append(failing)
     await failing.probe_local_devices()
-    assert failing._local_identities() == {}
+    assert failing._local_identities() == {"host:local:cpu": "cpu",
+                                           "host:local:mps:0": "mps:0"}
     # Without a running loop the lookup cannot start a probe: nothing.
     idle = WorkerRegistry(local_devices=local_devices, probe_off_loop=True)
     _MADE.append(idle)
@@ -294,10 +296,10 @@ async def test_an_adopted_runs_slots_are_grouped_before_its_worker_is_back():
     registry = _registry(_hello("meow-join", _card("cuda:0", UUID)))
     assert registry.card_slots(("meow-join", "cuda:0")) == (
         ("meow-join", "cuda:0"),)
-    registry.remember_cards({("meow-e2e", "cuda:0"): f"gpu:{UUID}"})
-    registry.remember_cards({})
+    registry.remember_cards("r1", {("meow-e2e", "cuda:0"): f"gpu:{UUID}"})
+    registry.remember_cards("r2", {})
     assert registry.card_slots(("meow-join", "cuda:0")) == (
-        ("meow-join", "cuda:0"), ("meow-e2e", "cuda:0"))
+        ("meow-e2e", "cuda:0"), ("meow-join", "cuda:0"))
     scheduler = WorkerScheduler(QueueLimits(), registry, lambda: [])
     assert scheduler.place(_on("meow-join"),
                            {("meow-e2e", "cuda:0"): 1}) is None
@@ -569,10 +571,12 @@ async def test_two_agents_on_one_card_run_any_cuda_runs_one_at_a_time(env):
         listing = (await client.get("/api/workers")).json()
         assert _device(listing, "meow-e2e")["same_card"] == [
             {"worker": "meow-join", "device": "cuda:0",
-             "policy": "exclusive", "online": True}]
+             "policy": "exclusive", "online": True,
+             "memory_budget": True}]
         assert _device(listing, "meow-join")["same_card"] == [
             {"worker": "meow-e2e", "device": "cuda:0",
-             "policy": "exclusive", "online": True}]
+             "policy": "exclusive", "online": True,
+             "memory_budget": True}]
         assert _device(listing, "meow-e2e", "cpu")["same_card"] == []
 
         def submit():
@@ -689,3 +693,180 @@ def store(tmp_path):
         yield RunStore(database)
     finally:
         database.close()
+
+
+
+# ── review round 2 ────────────────────────────────────────────────────────
+
+
+async def test_an_adopted_runs_cards_go_when_the_run_ends_or_its_worker_reports():
+    """Item 2: an adopted run's recorded identities are dropped when the
+    run ends, when its worker connects with its own report (which wins,
+    slot by slot), and when the worker is stopped; never merged with a
+    live report for the same slot."""
+    registry = _registry(_hello("meow-join", _card("cuda:0", UUID)))
+    registry.remember_cards("r1", {("meow-e2e", "cuda:0"): f"gpu:{UUID}"})
+    assert len(registry.card_slots(("meow-join", "cuda:0"))) == 2
+    registry.close_run("meow-e2e", "r1")
+    assert registry.card_slots(("meow-join", "cuda:0")) == (
+        ("meow-join", "cuda:0"),)
+    # The worker comes back reporting ANOTHER card as its cuda:0: its
+    # report replaces the recorded identity, the slot is in one group only.
+    registry.remember_cards("r2", {("meow-e2e", "cuda:0"): f"gpu:{UUID}"})
+    registry.connect(_hello("meow-e2e", _card("cuda:0", "other")),
+                     send=_noop, close=_noop)
+    assert registry.card_slots(("meow-join", "cuda:0")) == (
+        ("meow-join", "cuda:0"),)
+    assert registry.card_identity(("meow-e2e", "cuda:0")) == "gpu:other"
+    assert registry._adopted_cards == {}
+    registry.remember_cards("r3", {("gone", "cuda:0"): f"gpu:{UUID}"})
+    registry.stopped("gone", "disabled")
+    assert registry._adopted_cards == {}
+
+
+async def test_an_offline_known_workers_stored_report_does_not_hide_a_recorded_card():
+    """An enrolled worker known only from the table (not connected since
+    the restart) keeps the identity its adopted run recorded, even when
+    its stored report gives none (it is not known to be on this machine
+    until it connects)."""
+    registry = _registry()
+
+    @dataclass
+    class _Known:
+        name: str
+        devices: list
+        platform: dict = field(default_factory=dict)
+        mounts: dict = field(default_factory=dict)
+        last_seen_at: str | None = None
+
+    registry.load_known([_Known("near", [{"value": "cpu", "kind": "cpu"}])])
+    registry.remember_cards("r1", {("near", "cpu"): "host:local:cpu"})
+    assert registry.card_slots(("near", "cpu")) == (
+        ("local", "cpu"), ("near", "cpu"))
+
+
+async def test_adoption_lists_this_servers_devices_before_the_queue_moves(
+        db):  # noqa: F811
+    """Item 3: after a restart, an adopted same-host run's card is full for
+    in-process runs from the first pump: ``recover_interrupted`` awaits
+    this server's device list before adopting (the probe runs in a
+    thread)."""
+    from app.core.run_service import WORKER_RESUME_KEY
+
+    first = db()
+    store = first.service.store
+    await store.create_run(run_id="r1", graph_snapshot=_graph(), options={},
+                           worker_id="near")
+    await store.mark_running(
+        "r1", queue_key="near/cuda:0", worker_id="near", devices=["cuda:0"],
+        execution_facts={WORKER_RESUME_KEY: {
+            "last_seq": 0, "slots": [["near", "cuda:0"]],
+            "cards": [f"gpu:{UUID}"]}})
+    await first.close()
+    second = db()
+    registry = second.registry
+    registry._local_devices_source = lambda: [_Fact("cuda:0", UUID)]
+    registry._probe_off_loop = True
+    await second.service.recover_interrupted()
+    assert registry._local_devices_cache is not None
+    assert second.service.slot_usage(("local", "cuda:0")) == {
+        "limit": 1, "taken": 1}
+    local = _Entry("l", "cuda:0", {"device": "cuda:0"})
+    assert second.service._scheduler.place(
+        local, second.service._slots) is None
+
+
+async def test_a_same_host_workers_cpu_is_shared_without_the_probe(caplog):
+    """Item 4: the CPU (and Apple GPU) of this machine are shared with a
+    same-host worker whatever the probe says, and a failed probe logs no
+    CUDA-style warning about them."""
+
+    def broken():
+        raise RuntimeError("no NVML")
+
+    registry = WorkerRegistry(local_devices=broken)
+    _MADE.append(registry)
+    with caplog.at_level("WARNING", logger="app.core.workers"):
+        near, _ = registry.connect(
+            _hello("near", _card("mps:0", None, None, None)),
+            send=_noop, close=_noop, same_host=True)
+    assert near.shared == {"cpu": "cpu", "mps:0": "mps:0"}
+    assert registry.card_slots(("near", "cpu")) == (
+        ("local", "cpu"), ("near", "cpu"))
+    assert not [r for r in caplog.records
+                if "matches no card" in r.getMessage()]
+
+
+async def test_a_grouping_that_fails_makes_the_slot_busy_and_is_logged_once(
+        caplog):
+    """Item 5: never free on a broken index."""
+    registry = _registry(_hello("a", _card("cuda:0", UUID)))
+    budget = CardBudget(QueueLimits(), registry)
+
+    def broken(_slot):
+        raise RuntimeError("boom")
+
+    registry.card_slots = broken
+    with caplog.at_level("ERROR", logger="app.core.scheduling"):
+        assert budget.held(("a", "cuda:0"), {}) >= RESERVED_SLOT
+        assert not budget.free(("a", "cuda:0"), {})
+        assert budget.held(("a", "cuda:1"), {}) >= RESERVED_SLOT
+    assert len([r for r in caplog.records
+                if "could not group" in r.getMessage()]) == 1
+    scheduler = WorkerScheduler(QueueLimits(), registry, lambda: [])
+    assert scheduler.place(_on("a"), {}) is None
+    assert scheduler.card_slots(("a", "cuda:0")) == (("a", "cuda:0"),)
+
+
+async def test_two_agents_on_one_remote_machine_share_its_cpu():
+    """Item 8: CPU and Apple GPU identities are keyed on the machine id a
+    worker reports, so two agents on one remote machine share them; an
+    agent elsewhere that claims this server's machine id joins nothing of
+    this server's (only a same-host worker is "local")."""
+    def hello(name: str, machine: str) -> wp.Hello:
+        return _hello(name, _card("mps:0", None, None, None)).model_copy(
+            update={"machine_id": machine})
+
+    registry = _registry(hello("a", "m-remote"), hello("b", "m-remote"),
+                         hello("c", "m-other"), hello("liar", "m-server"),
+                         local=[_Fact("cpu")])
+    assert registry.card_slots(("a", "cpu")) == (("a", "cpu"), ("b", "cpu"))
+    assert registry.card_slots(("b", "mps:0")) == (
+        ("a", "mps:0"), ("b", "mps:0"))
+    assert registry.card_slots(("c", "cpu")) == (("c", "cpu"),)
+    assert registry.card_slots(("local", "cpu")) == (("local", "cpu"),)
+    assert registry.card_slots(("liar", "cpu")) == (("liar", "cpu"),)
+
+
+async def test_a_tie_names_the_slot_asked_about():
+    """Item 10: equal caps name the slot asked about, whatever order."""
+    scheduler = _two_on_one_card()
+    assert scheduler.card_limit(("meow-join", "cuda:0"), {}) == (
+        1, ("meow-join", "cuda:0"))
+    assert scheduler.card_limit(("meow-e2e", "cuda:0"), {}) == (
+        1, ("meow-e2e", "cuda:0"))
+
+
+async def test_this_servers_override_raises_a_card_a_same_host_worker_shares(
+        store):
+    """Coordinator decision: ``cuda:0=2`` keeps raising a card a same-host
+    worker shares (its slot without an override of its own takes this
+    server's cap for the device); only an explicit ``<worker>/<device>``
+    override on a peer lowers it."""
+    registry = _registry(_hello("near", _card("cuda:0", UUID)),
+                         local=[_Fact("cuda:0", UUID)], same_host=("near",))
+    for raw, cap, by in (("cuda:0=2", 2, ("near", "cuda:0")),
+                         ("cuda:0=2,near/cuda:0=1", 1, ("near", "cuda:0")),
+                         ("", 1, ("near", "cuda:0"))):
+        service = RunService(store, workers=registry, limits=QueueLimits(
+            overrides=parse_queue_overrides(raw)))
+        try:
+            assert service._scheduler.card_limit(("near", "cuda:0"), {}) \
+                == (cap, by)
+            usage = service.slot_usage(("local", "cuda:0"))
+            assert usage["limit"] == cap
+            held = {("local", "cuda:0"): 1}
+            assert (service._scheduler.place(_on("near"), held)
+                    is not None) is (cap == 2)
+        finally:
+            await service.shutdown()
