@@ -67,6 +67,12 @@ describe('runPlacement', () => {
       text: '2.4 GiB',
       title: 'Memory budget per device, from the peak of run abcdef01: raised from the accepted estimate of 1.0 GiB, which was lower',
     });
+    expect(runBudget({
+      ...waiting,
+      queued_budget: { bytes: 60397978, source: 'history', from_run: '376a2c0ac3c7', raised_from: 10737419 },
+    }, t)?.title).toBe(
+      'Memory budget per device, from the peak of run 376a2c0a: raised from the accepted estimate of 10.2 MB, which was lower',
+    );
     expect(runBudget({ ...waiting, queued_budget: null }, t)?.title).toBe(
       'Memory budget asked for; used only on a device shared by memory',
     );

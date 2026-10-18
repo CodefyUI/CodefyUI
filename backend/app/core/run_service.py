@@ -1557,16 +1557,24 @@ class RunSubscription:
         return dropped
 
 
+def _size(nbytes: int) -> str:
+    """A budget in a raise's wording: GiB from 1 GiB up, MiB below, where
+    ``format_gib``'s one decimal would show 10 MiB and 58 MiB both as
+    0.1 GiB (found by the round-2 browser pass)."""
+    if nbytes >= mem.GIB:
+        return mem.format_gib(nbytes)
+    return f"{max(1, round(nbytes / 1024 ** 2))} MiB"
+
+
 def _raised_note(budget: "mem.Budget | None") -> str | None:
     """What a waiting run's reason adds when its accepted estimate was
     raised to a measured peak (#794), or None."""
     if budget is None or not budget.raised_from:
         return None
-    where = f" (run {budget.from_run})" if budget.from_run else ""
+    where = f" (run {budget.from_run[:8]})" if budget.from_run else ""
     return (f"memory budget raised from the accepted estimate, "
-            f"{mem.format_gib(budget.raised_from)}, to "
-            f"{mem.format_gib(budget.bytes)}: an earlier run of its graph"
-            f"{where} peaked above the estimate")
+            f"{_size(budget.raised_from)}, to {_size(budget.bytes)}: an "
+            f"earlier run of its graph{where} peaked above the estimate")
 
 
 def _adopted_budget(facts: Mapping[str, Any]) -> "mem.Budget | None":
@@ -2482,8 +2490,8 @@ class RunService:
             if message is not None:
                 self._fail_unfittable(entry, (
                     f"its accepted memory estimate, "
-                    f"{mem.format_gib(current.bytes)}, was raised to "
-                    f"{mem.format_gib(measured.bytes)} (run "
+                    f"{_size(current.bytes)}, was raised to "
+                    f"{_size(measured.bytes)} (run "
                     f"{active.run_id[:8]} of the same graph peaked above "
                     f"it), which no card it may use can hold: {message}"))
 

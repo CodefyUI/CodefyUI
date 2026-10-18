@@ -5,6 +5,7 @@
  */
 import type { useI18n } from '../i18n';
 import { aliasForDevice } from './deviceAliases';
+import { formatBytes } from './formatBytes';
 import { formatGiB } from './formatGiB';
 
 /** The placement fields of a run row or a sweep variant. */
@@ -62,7 +63,11 @@ function describedBudget(value: unknown, t: Translate): { text: string; title: s
       ? t('runs.budget.declared')
       : raisedFrom === null
         ? t('runs.budget.history', { run: fromRun.slice(0, 8) })
-        : t('runs.budget.raised', { run: fromRun.slice(0, 8), size: formatGiB(raisedFrom) }),
+        : t('runs.budget.raised', {
+          run: fromRun.slice(0, 8),
+          // Below a GiB in finer units: 0.1 GiB would hide the raise.
+          size: raisedFrom < GIB ? formatBytes(raisedFrom) : formatGiB(raisedFrom),
+        }),
   };
 }
 

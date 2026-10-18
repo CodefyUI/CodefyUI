@@ -1095,6 +1095,16 @@ def test_a_raised_estimate_is_named_in_the_waiting_run_s_reason():
     service._pending_by_id["w"] = _Pending("w", mem.Budget(GIB))
     explains.append(None)
     assert service.queue_reason("w") is None
+    # Below a GiB the note counts MiB (0.1 GiB would hide the raise), and a
+    # run id is cut to eight characters.
+    service._pending_by_id["w"] = _Pending("w", mem.Budget(
+        60397978, mem.SOURCE_HISTORY, from_run="376a2c0ac3c74e2fbd04",
+        raised_from=10737419))
+    explains.append(None)
+    assert service.queue_reason("w") == (
+        "memory budget raised from the accepted estimate, 10 MiB, to "
+        "58 MiB: an earlier run of its graph (run 376a2c0a) peaked above "
+        "the estimate")
 
 
 async def test_a_low_estimate_is_never_a_default_budget(env):
