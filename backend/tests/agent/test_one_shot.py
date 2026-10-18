@@ -219,6 +219,22 @@ async def test_a_cancelled_run_exits_1(tmp_path):
     assert one.status == "interrupted"
 
 
+async def test_a_run_cancelled_while_it_starts_exits_1(tmp_path):
+    """The one run is cancelled before its subprocess said anything
+    (#856): it is still reported, so the agent exits, with 1."""
+    one = OneShot()
+    async with OneShotControlPlane() as cp:
+        connection, stop = _agent(tmp_path, cp.url, one,
+                                  child_entry=h.deaf_child, kill_after_s=1.0)
+        task = asyncio.create_task(_run(connection, stop, one, timeout=90))
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        await cp.send(wp.Assign(run_id="run1", graph={"nodes": []}))
+        await cp.wait_for(lambda n, f: isinstance(f, wp.RunStarted))
+        await cp.send(wp.Cancel(run_id="run1", grace_s=0))
+        assert await asyncio.wait_for(task, 90) == EXIT_RUN_FAILED
+    assert one.status == "interrupted"
+
+
 async def test_a_dropped_connection_mid_run_is_ridden_out(tmp_path):
     one = OneShot()
     async with OneShotControlPlane() as cp:
