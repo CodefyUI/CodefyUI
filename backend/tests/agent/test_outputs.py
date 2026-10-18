@@ -293,24 +293,30 @@ async def test_a_read_the_subprocess_leaves_unanswered_goes_to_the_files(
 async def test_a_run_without_record_outputs_is_never_asked(tmp_path):
     sink = h.FrameSink()
     runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"}, send=sink,
-                    child_entry=h.answering_child, outputs_max_bytes=0)
+                    child_entry=h.answering_child, outputs_max_bytes=0,
+                    kill_after_s=2.0)
     await runner.assign(_assign("r1", record=False))
+    # Stop the child only once it runs: a Windows child killed while it
+    # still starts up never reports (the runner tests wait the same way).
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
     assert await runner.ask_child("r1", "list", {}) is None
     assert runner.child_drop("r1") is False
-    await runner.cancel("r1", grace_s=0)
-    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    await runner.cancel("r1", grace_s=0.5)
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished), timeout=20)
 
 
 async def test_a_subprocess_that_does_not_answer_in_time(tmp_path):
     sink = h.FrameSink()
     runner = Runner(runs_dir=tmp_path, offered_devices={"cpu"}, send=sink,
-                    child_entry=h.deaf_child, outputs_max_bytes=0)
+                    child_entry=h.deaf_child, outputs_max_bytes=0,
+                    kill_after_s=2.0)
     await runner.assign(_assign("r1"))
+    await sink.wait_for(lambda f: isinstance(f, wp.Event))
     status, text, final = await runner.ask_child("r1", "list", {},
                                                  timeout_s=0.1)
     assert status == 504 and "did not answer" in json.loads(text)["detail"]
-    await runner.cancel("r1", grace_s=0)
-    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    await runner.cancel("r1", grace_s=0.5)
+    await sink.wait_for(lambda f: isinstance(f, wp.RunFinished), timeout=20)
 
 
 def test_the_runner_budget_comes_from_the_setting(tmp_path, monkeypatch):
