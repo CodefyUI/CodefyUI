@@ -132,6 +132,10 @@ received — each links to the release it was published as.
   process as well as its pipe, so such a run ends `interrupted` within
   seconds on every OS. [#856]
 
+### Internal
+
+- **The Linux pytest jobs get 30 minutes instead of 20** ([#764]). The suite runs 13-20 minutes on `ubuntu-latest` depending on the runner, and the Wave D and studies tests added about a minute, so green runs were being cancelled at the cap with no failing test.
+
 ## [3.1.1] — 2026-10-17
 
 Fixes a data-loss bug in 3.1.0's transfer backend: on a worker without a
