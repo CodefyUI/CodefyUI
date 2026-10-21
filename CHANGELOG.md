@@ -144,7 +144,7 @@ received — each links to the release it was published as.
 
 ### Internal
 
-- **The Linux pytest jobs get 30 minutes** ([#764]). The suite grew to about 12,000 tests once Wave D's worker tests joined `main`'s, and the 20-minute cap cancelled jobs at 99 % that `main` alone already ran in 17-19 minutes.
+- **The Linux pytest jobs get 30 minutes instead of 20** ([#764]). The suite runs 13-20 minutes on `ubuntu-latest` depending on the runner, and the Wave D and studies tests added about a minute, so green runs were being cancelled at the cap with no failing test.
 
 ## [3.1.1] — 2026-10-17
 
