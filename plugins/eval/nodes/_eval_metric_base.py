@@ -115,8 +115,12 @@ class EvalMetricNode(BaseNode):
 
     def score(
         self, rows: list[dict[str, Any]], params: dict[str, Any]
-    ) -> tuple[float, int]:
-        """(value, counted) over the scorable rows."""
+    ) -> tuple[float, int] | tuple[float, int, dict[str, Any]]:
+        """(value, counted) over the scorable rows, optionally with details.
+
+        Details (BLEU's signature and n-gram counts, say) are recorded in the
+        ``metrics`` table's ``meta.metric.details``.
+        """
         raise NotImplementedError
 
     def execute(
@@ -142,7 +146,7 @@ class EvalMetricNode(BaseNode):
                 f"{node}: no row is both ok and labelled, so there is nothing to "
                 f"score ({len(records)} row(s) in the table)."
             )
-        value, counted = self.score(scorable, params)
+        value, counted, *rest = self.score(scorable, params)
         skipped = len(records) - counted
         metric = self.metric_name(params)
         series = str(params.get("metric_name", "") or "").strip() or metric
@@ -152,5 +156,5 @@ class EvalMetricNode(BaseNode):
         used = {k: params.get(k) for k in [p.name for p in self.define_params()]}
         return metric_result(
             node=node, metric=metric, value=value, counted=counted,
-            skipped=skipped, table=table, params=used,
+            skipped=skipped, table=table, params=used, details=rest[0] if rest else None,
         )
