@@ -280,18 +280,19 @@ function exportFailureText(t: Translate, err: unknown): string {
 const LISTED_PATHS = 3;
 
 /**
- * One `absolute_path` warning as `Block ▸ Preset ▸ Node (path)`, or null for
- * any other code and for an entry without that shape. A node inside a block
- * is found by opening each level, outermost first, as the breadcrumb does.
+ * Where one warning of *code* points, as `Block ▸ Preset ▸ Node`, with its
+ * `value`; null for any other code and for an entry without that shape. A
+ * node inside a block is found by opening each level, outermost first, as
+ * the breadcrumb does.
  *
  * Read as untrusted: the script has downloaded by the time this runs, and an
  * entry that cannot be read is dropped rather than allowed to throw.
  */
-function absolutePathEntry(warning: unknown): string | null {
+function warningPlace(warning: unknown, wanted: string): { where: string; value: string } | null {
   if (typeof warning !== 'object' || warning === null) return null;
   const { code, label, value, containers } =
     warning as Partial<Record<keyof ExportWarning, unknown>>;
-  if (code !== 'absolute_path' || typeof label !== 'string' || typeof value !== 'string') {
+  if (code !== wanted || typeof label !== 'string' || typeof value !== 'string') {
     return null;
   }
   if (!Array.isArray(containers)) return null;
@@ -302,20 +303,32 @@ function absolutePathEntry(warning: unknown): string | null {
     if (typeof levelLabel !== 'string') return null;
     where.push(levelLabel);
   }
-  return `${[...where, label].join(' ▸ ')} (${value})`;
+  return { where: [...where, label].join(' ▸ '), value };
+}
+
+/** One `absolute_path` warning as `Block ▸ Preset ▸ Node (path)`, or null. */
+function absolutePathEntry(warning: unknown): string | null {
+  const place = warningPlace(warning, 'absolute_path');
+  return place === null ? null : `${place.where} (${place.value})`;
+}
+
+/** One `ddp_strategy` warning (#792) as `Block ▸ Node`, or null. */
+function ddpStrategyEntry(warning: unknown): string | null {
+  return warningPlace(warning, 'ddp_strategy')?.where ?? null;
 }
 
 /**
- * The warning for file params whose absolute path ties the exported script to
- * this computer, or null when there are none. Two instances of one block
- * reading the same file are one entry.
+ * The readable entries of *warnings*, each once, the first three named and
+ * the rest counted; null when there are none.
  */
-function absolutePathWarning(t: Translate, warnings: unknown): string | null {
+function listedEntries(
+  t: Translate,
+  warnings: unknown,
+  entry: (warning: unknown) => string | null,
+): string | null {
   if (!Array.isArray(warnings)) return null;
   const entries = [
-    ...new Set(
-      warnings.map(absolutePathEntry).filter((entry): entry is string => entry !== null),
-    ),
+    ...new Set(warnings.map(entry).filter((item): item is string => item !== null)),
   ];
   if (entries.length === 0) return null;
   const listed = entries.slice(0, LISTED_PATHS);
@@ -324,7 +337,23 @@ function absolutePathWarning(t: Translate, warnings: unknown): string | null {
       t('toolbar.exportPython.absolutePath.more', { count: entries.length - LISTED_PATHS }),
     );
   }
-  return t('toolbar.exportPython.absolutePath', { nodes: listed.join(', ') });
+  return listed.join(', ');
+}
+
+/**
+ * The warnings the export answered beside the script, as one sentence each,
+ * or null when there are none: file params whose absolute path ties the
+ * script to this computer (two instances of one block reading the same file
+ * are one entry), and TrainingLoops set to strategy=ddp, which the script
+ * trains in one process (#792).
+ */
+function exportWarningText(t: Translate, warnings: unknown): string | null {
+  const paths = listedEntries(t, warnings, absolutePathEntry);
+  const ddp = listedEntries(t, warnings, ddpStrategyEntry);
+  const sentences: string[] = [];
+  if (paths !== null) sentences.push(t('toolbar.exportPython.absolutePath', { nodes: paths }));
+  if (ddp !== null) sentences.push(t('toolbar.exportPython.ddpStrategy', { nodes: ddp }));
+  return sentences.length === 0 ? null : sentences.join(' ');
 }
 
 /**
@@ -719,7 +748,7 @@ export function Toolbar() {
     // leave one; and it is not raised once another tab is in front.
     if (useTabStore.getState().activeTabId !== tabId) return;
     dismissPathWarning();
-    const warning = absolutePathWarning(t, result.warnings);
+    const warning = exportWarningText(t, result.warnings);
     if (warning !== null) {
       pathWarningToast = addToast(warning, 'warning', { sticky: true });
     }

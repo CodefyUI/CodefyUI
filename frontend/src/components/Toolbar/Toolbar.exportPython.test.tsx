@@ -386,6 +386,52 @@ describe('Toolbar Export as Python: absolute file paths', () => {
     expect(useToastStore.getState().toasts).toEqual([]);
   });
 
+  // #792: a TrainingLoop set to strategy=ddp exports with a sentence saying
+  // the script trains it in one process.
+  const ddpLoop = (overrides: Partial<rest.ExportWarning> = {}): rest.ExportWarning => ({
+    code: 'ddp_strategy',
+    node_id: 'train',
+    label: 'TrainingLoop',
+    param: 'strategy',
+    value: 'ddp',
+    containers: [],
+    ...overrides,
+  });
+
+  it('says that the script trains a ddp TrainingLoop in one process', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({
+      script: 'print(1)',
+      warnings: [ddpLoop(), ddpLoop({ node_id: 'blk/t', containers: [{ node_id: 'blk', label: 'Stage' }] })],
+    });
+    render(<Toolbar />);
+
+    await exportPython();
+
+    expect(downloads).toEqual(['Exam.py']);
+    await waitFor(() => expect(warningToasts()).toHaveLength(1));
+    expect(warningToasts()[0].message).toBe(
+      'strategy=ddp trains across GPUs only in a run on a worker with two or more cards; '
+        + 'the exported script trains TrainingLoop, Stage ▸ TrainingLoop in one process.',
+    );
+  });
+
+  it('puts the path and the ddp sentences in one warning, in either language', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockedRest.exportGraph.mockResolvedValueOnce({
+      script: 'print(1)',
+      warnings: [ddpLoop({ label: '訓練迴圈' }), absolutePath()],
+    });
+    render(<Toolbar />);
+
+    await exportPython('匯出', '匯出為 Python');
+
+    await waitFor(() => expect(warningToasts()).toHaveLength(1));
+    expect(warningToasts()[0].message).toBe(
+      `絕對路徑只在這台電腦有效：CSVReader (${WINDOWS_PATH})。請只用檔名。 `
+        + 'strategy=ddp 只在指派兩張以上 GPU 的 worker 上跨卡訓練；匯出的腳本會以單一程序執行 訓練迴圈。',
+    );
+  });
+
   it('names the readable entries beside a malformed one', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({
       script: 'print(1)',
