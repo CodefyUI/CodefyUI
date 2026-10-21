@@ -191,6 +191,36 @@ def test_a_single_loop_reports_no_strategy_at_all():
     assert "strategy" not in config and "strategy_requested" not in config
 
 
+def test_a_loader_ddp_cannot_split_is_refused_with_a_reason():
+    import torch
+    from torch.utils.data import (
+        DataLoader,
+        IterableDataset,
+        SubsetRandomSampler,
+        TensorDataset,
+    )
+
+    parallel = distributed.DataParallel(distributed.RankState(
+        rank=0, world_size=2, device="cpu", backend="gloo",
+        loop_ids=frozenset({"train"})))
+
+    class Stream(IterableDataset):
+        def __iter__(self):
+            return iter(range(4))
+
+    data = TensorDataset(torch.zeros(4, 1))
+    with pytest.raises(ValueError, match="needs a DataLoader"):
+        parallel.shard([1, 2], "dataloader")
+    with pytest.raises(ValueError, match="iterable dataset"):
+        parallel.shard(DataLoader(Stream(), batch_size=2), "dataloader")
+    with pytest.raises(ValueError, match="custom sampler"):
+        parallel.shard(DataLoader(data, batch_size=2,
+                                  sampler=SubsetRandomSampler([0, 1])),
+                       "val_dataloader")
+    with pytest.raises(ValueError, match="custom sampler"):
+        parallel.shard(DataLoader(data, batch_size=None), "dataloader")
+
+
 # ── the launcher, with stand-in ranks ─────────────────────────────────────
 
 
@@ -553,43 +583,72 @@ def _reference(tmp_path: Path, graph: dict[str, Any], monkeypatch: Any
     return sent, models
 
 
+def _study_graph(batch_size: int, strategy: str) -> dict[str, Any]:
+    """Classification with a validation loader and periodic checkpoints,
+    then a second loop that trains the first one's model with its
+    optimizer, then ModelSaver."""
+    graph = _ddp.training_graph(batch_size=batch_size, epochs=2,
+                                strategy=strategy, classify=True,
+                                save_as=None,
+                                train_params={"checkpoint_every": 1})
+    graph["nodes"] += [
+        h.node("vdl", "DataLoader", batch_size=batch_size, shuffle=False,
+               num_workers=0),
+        h.node("train2", "TrainingLoop", epochs=2, device="auto",
+               strategy=strategy),
+        h.node("save", "ModelSaver", path="trained.pt"),
+    ]
+    graph["edges"] += [h.wire("ds", "dataset", "vdl", "dataset"),
+                       h.wire("vdl", "dataloader", "train", "val_dataloader"),
+                       h.wire("train", "model", "train2", "model"),
+                       h.wire("train", "optimizer", "train2", "optimizer"),
+                       h.wire("dl", "dataloader", "train2", "dataloader"),
+                       h.wire("loss", "loss_fn", "train2", "loss_fn"),
+                       h.wire("train2", "model", "save", "model")]
+    return graph
+
+
+def _series(messages: list[tuple], name: str) -> list[float]:
+    return [point["value"] for message in messages
+            if message[0] == child.MSG_METRICS
+            for point in message[1] if point["name"] == name]
+
+
 def test_two_ranks_train_like_one_process_on_the_doubled_batch(
         tmp_path, monkeypatch):
     """Gradients are synchronised: two ranks at batch 4, each on its half
     of every batch of 8, end on the weights one process reaches at batch
-    8, and report the same losses. A rank that trained on its half alone
-    would not."""
+    8, through two loops in sequence, and report the same losses and
+    accuracy. A rank that trained on its half alone would not."""
     import torch
 
-    epochs = 3
-    run = ChildRun(tmp_path, _ddp.training_graph(
-        batch_size=4, epochs=epochs, train_params={"checkpoint_every": 1}))
+    run = ChildRun(tmp_path, _study_graph(4, "ddp"))
     finished = run.finish()
     assert finished["status"] == "succeeded", run.tail()
     sent, reference_models = _reference(
-        tmp_path, _ddp.training_graph(batch_size=8, epochs=epochs,
-                                      strategy="single"), monkeypatch)
+        tmp_path, _study_graph(8, "single"), monkeypatch)
 
     trained = torch.load(run.data / "models" / "trained.pt")
     expected = torch.load(reference_models / "trained.pt")
     assert trained.keys() == expected.keys()
     for key in expected:
         assert torch.allclose(trained[key], expected[key], atol=1e-5), key
-
-    reference_losses = [point["value"] for message in sent
-                        if message[0] == child.MSG_METRICS
-                        for point in message[1]
-                        if point["name"] == "train_loss"]
-    assert run.metric("train_loss") == pytest.approx(reference_losses,
-                                                     rel=1e-5)
+    # Losses and accuracy over every rank's batches: what one process
+    # reports at the doubled batch. Two loops, two epochs each.
+    assert len(run.metric("train_loss")) == 4
+    assert run.metric("train_loss") == pytest.approx(
+        _series(sent, "train_loss"), rel=1e-5)
+    assert run.metric("val_loss") == pytest.approx(
+        _series(sent, "val_loss"), rel=1e-5)
+    assert run.metric("val_accuracy") == pytest.approx(
+        _series(sent, "val_accuracy"), rel=1e-9)
     # One copy of everything: rank 0's.
-    assert len(run.metric("train_loss")) == epochs
     checkpoints = [m[1] for m in run.of(child.MSG_ARTIFACT)
                    if m[1]["kind"] == "checkpoint"]
-    assert len(checkpoints) == epochs
+    assert len(checkpoints) == 2
     periodic = sorted(p.name for p in
                       (run.data / "models" / "periodic").iterdir())
-    assert periodic == [f"g1-train-e{e}.pt" for e in range(1, epochs + 1)]
+    assert periodic == ["g1-train-e1.pt", "g1-train-e2.pt"]
     finished_nodes = [m[2]["node_id"] for m in run.of(child.MSG_EVENT)
                       if m[2].get("status") == "completed"]
     assert finished_nodes.count("save") == 1
@@ -599,89 +658,11 @@ def test_two_ranks_train_like_one_process_on_the_doubled_batch(
     assert config["strategy"] == "ddp" and config["world_size"] == 2
     assert config["backend"] == "gloo"
     assert config["batch_size"] == 4 and config["effective_batch_size"] == 8
-    # Each rank ran the loop; only rank 0 ran what follows it.
+    # Each rank ran the loops; only rank 0 ran what follows them.
     log = run.tail()
     assert "rank 0" in log and "rank 1" in log
     assert not [m for m in run.of(child.MSG_WARNING)
                 if m[1]["kind"] == distributed.FALLBACK_WARNING_KIND]
-
-
-def test_validation_and_accuracy_are_summed_over_the_ranks(
-        tmp_path, monkeypatch):
-    graph = _ddp.training_graph(batch_size=4, epochs=2, classify=True,
-                                bad=None, save_as=None)
-    graph = _with_validation(graph)
-    run = ChildRun(tmp_path, graph)
-    assert run.finish()["status"] == "succeeded", run.tail()
-    reference = _ddp.training_graph(batch_size=8, epochs=2, classify=True,
-                                    save_as=None, strategy="single")
-    sent, _ = _reference(tmp_path, _with_validation(reference), monkeypatch)
-
-    def series(messages: list[tuple], name: str) -> list[float]:
-        return [p["value"] for m in messages if m[0] == child.MSG_METRICS
-                for p in m[1] if p["name"] == name]
-
-    assert run.metric("val_loss") == pytest.approx(series(sent, "val_loss"),
-                                                   rel=1e-5)
-    assert run.metric("val_accuracy") == pytest.approx(
-        series(sent, "val_accuracy"), rel=1e-9)
-
-
-def _with_validation(graph: dict[str, Any]) -> dict[str, Any]:
-    graph["nodes"].append(h.node("vdl", "DataLoader", batch_size=next(
-        n for n in graph["nodes"] if n["id"] == "dl")["data"]["params"][
-            "batch_size"], shuffle=False, num_workers=0))
-    graph["edges"].append(h.wire("ds", "dataset", "vdl", "dataset"))
-    graph["edges"].append(h.wire("vdl", "dataloader", "train",
-                                 "val_dataloader"))
-    return graph
-
-
-def _chained(batch_size: int, strategy: str) -> dict[str, Any]:
-    """Two loops in sequence: the second trains the first one's model with
-    the first one's optimizer, and saves it."""
-    graph = _ddp.training_graph(batch_size=batch_size, epochs=2,
-                                strategy=strategy, save_as=None)
-    graph["nodes"].append(h.node("train2", "TrainingLoop", epochs=2,
-                                 device="auto", strategy=strategy))
-    graph["nodes"].append(h.node("save", "ModelSaver", path="trained.pt"))
-    graph["edges"] += [h.wire("train", "model", "train2", "model"),
-                       h.wire("train", "optimizer", "train2", "optimizer"),
-                       h.wire("dl", "dataloader", "train2", "dataloader"),
-                       h.wire("loss", "loss_fn", "train2", "loss_fn"),
-                       h.wire("train2", "model", "save", "model")]
-    return graph
-
-
-def test_two_ddp_loops_in_sequence_train_like_one_process(
-        tmp_path, monkeypatch):
-    import torch
-
-    run = ChildRun(tmp_path, _chained(4, "ddp"))
-    assert run.finish()["status"] == "succeeded", run.tail()
-    _, reference = _reference(tmp_path, _chained(8, "single"), monkeypatch)
-    trained = torch.load(run.data / "models" / "trained.pt")
-    expected = torch.load(reference / "trained.pt")
-    for key in expected:
-        assert torch.allclose(trained[key], expected[key], atol=1e-5), key
-    assert len(run.metric("train_loss")) == 4
-
-
-def test_a_cancel_stops_every_rank_and_rank_zero_writes_one_checkpoint(
-        tmp_path):
-    run = ChildRun(tmp_path, _ddp.training_graph(
-        batch_size=2, epochs=100000, n=64, lr=0.001))
-    run.wait_for(lambda m: m[0] == child.MSG_METRICS)
-    run.track()
-    run.control.send((child.MSG_CANCEL,))
-    finished = run.finish()
-    assert finished["status"] == "cancelled", run.tail()
-    checkpoints = [m[1] for m in run.of(child.MSG_ARTIFACT)
-                   if m[1]["kind"] == "checkpoint"]
-    assert len(checkpoints) == 1
-    assert checkpoints[0]["meta"]["reason"] == "interrupted"
-    assert len(list((run.data / "models" / "interrupted").iterdir())) == 1
-    run.assert_no_process_left()
 
 
 def test_a_failing_rank_fails_the_run_with_its_error(tmp_path):
@@ -727,26 +708,15 @@ def test_a_killed_launcher_leaves_no_rank_behind(tmp_path):
 # ── through the agent's Runner ────────────────────────────────────────────
 
 
-async def test_the_agent_runs_a_ddp_run_like_any_other(tmp_path):
-    sink = h.FrameSink()
-    runner = Runner(runs_dir=tmp_path / "agent-runs", send=sink,
-                    offered_devices={"cpu"}, child_entry=_ddp.cpu_ddp_child)
-    graph = _ddp.training_graph(batch_size=4, epochs=2, save_as=None)
-    await runner.assign(wp.Assign(run_id="a1", graph=graph,
-                                  options={"seed": 0}))
-    finished = await sink.wait_for(
-        lambda f: isinstance(f, wp.RunFinished), timeout=180)
-    frames = sink.of("a1")
-    assert finished.status == "succeeded", finished
-    assert isinstance(frames[0], wp.RunStarted)
-    assert [f.seq for f in frames] == list(range(1, len(frames) + 1))
-    assert len([f for f in frames if isinstance(f, wp.Metrics)
-                for p in f.points if p.name == "train_loss"]) == 2
-    handle = runner.runs.get("a1")
-    assert handle is None or handle.finished
-
-
-async def test_the_agent_cancels_a_ddp_run(tmp_path):
+async def test_the_agent_cancels_a_ddp_run(tmp_path, monkeypatch):
+    """Through the agent's Runner: frames numbered as for any run, a cancel
+    stops every rank at one batch, rank 0 writes the one interrupt
+    checkpoint, and no process of the run is left."""
+    data = tmp_path / "data"
+    env_set, _ = data_root_env(data)
+    for name, value in env_set.items():
+        # The run subprocess inherits this process's environment.
+        monkeypatch.setenv(name, value)
     sink = h.FrameSink()
     runner = Runner(runs_dir=tmp_path / "agent-runs", send=sink,
                     offered_devices={"cpu"}, child_entry=_ddp.cpu_ddp_child)
@@ -763,6 +733,14 @@ async def test_the_agent_cancels_a_ddp_run(tmp_path):
     finished = await sink.wait_for(
         lambda f: isinstance(f, wp.RunFinished), timeout=90)
     assert finished.status == "cancelled", finished
+    frames = sink.of("a2")
+    assert isinstance(frames[0], wp.RunStarted)
+    assert [f.seq for f in frames] == list(range(1, len(frames) + 1))
+    checkpoints = [f for f in frames if isinstance(f, wp.Artifact)
+                   and f.kind == "checkpoint"]
+    assert len(checkpoints) == 1
+    assert checkpoints[0].meta["reason"] == "interrupted"
+    assert len(list((data / "models" / "interrupted").iterdir())) == 1
     # Every process the run started is gone with it.
     left = set()
     for pid in started:
