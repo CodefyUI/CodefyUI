@@ -213,7 +213,7 @@ def test_uds_reaches_the_enrollment_and_the_agent(user_data, sock_dir,
     started: list[Any] = []
 
     def fake_run_agent(args, control, token, facts, token_source=None,
-                       mounts=None, trust=None):
+                       mounts=None, trust=None, worker_credential=False):
         started.append((args.uds, control, token))
         return 0
 

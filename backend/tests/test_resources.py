@@ -184,10 +184,177 @@ def test_broken_psutil_degrades_to_null_memory(monkeypatch):
     assert cpu.memory() is None
 
 
+def _no_brand(monkeypatch):
+    for probe in ("_cpu_brand_darwin", "_cpu_brand_linux",
+                  "_cpu_brand_windows"):
+        monkeypatch.setattr(resources, probe, lambda: None)
+    monkeypatch.setattr(resources, "_cpu_brand", None)
+    monkeypatch.setattr(resources, "_cpu_brand_missed_at", None)
+
+
 def test_cpu_name_falls_back_when_platform_is_silent(monkeypatch):
+    _no_brand(monkeypatch)
     monkeypatch.setattr(resources.platform, "processor", lambda: "")
     monkeypatch.setattr(resources.platform, "machine", lambda: "")
     assert probe_devices()[0].name == "CPU"
+
+
+def test_cpu_name_falls_back_to_the_architecture(monkeypatch):
+    _no_brand(monkeypatch)
+    monkeypatch.setattr(resources.platform, "processor", lambda: "")
+    monkeypatch.setattr(resources.platform, "machine", lambda: "x86_64")
+    assert resources.cpu_name() == "x86_64"
+
+
+@pytest.mark.parametrize("platform_name, probe", [
+    ("darwin", "_cpu_brand_darwin"),
+    ("linux", "_cpu_brand_linux"),
+    ("win32", "_cpu_brand_windows"),
+])
+def test_cpu_name_is_the_brand_string(monkeypatch, platform_name, probe):
+    """#840: the brand (``Apple M3``), not ``arm`` / ``x86_64``."""
+    _no_brand(monkeypatch)
+    monkeypatch.setattr(resources.sys, "platform", platform_name)
+    monkeypatch.setattr(resources, probe, lambda: "Brand CPU 9000")
+    assert resources.cpu_name() == "Brand CPU 9000"
+
+
+def test_cpu_name_caches_a_brand_and_a_miss_for_a_while(monkeypatch):
+    """#840 review: a probe that found the brand is not repeated; one that
+    found nothing is not repeated for CPU_BRAND_RETRY_S (an aarch64 host
+    without a name line would parse /proc/cpuinfo on every probe), then
+    tried again (a passing failure heals)."""
+    _no_brand(monkeypatch)
+    monkeypatch.setattr(resources.sys, "platform", "linux")
+    monkeypatch.setattr(resources.platform, "processor", lambda: "")
+    monkeypatch.setattr(resources.platform, "machine", lambda: "aarch64")
+    answers = [None, "Brand CPU 9000"]
+    calls = []
+
+    def probe():
+        calls.append(1)
+        return answers[len(calls) - 1]
+
+    monkeypatch.setattr(resources, "_cpu_brand_linux", probe)
+    clock = [1000.0]
+    monkeypatch.setattr(resources.time, "monotonic", lambda: clock[0])
+    assert resources.cpu_name() == "aarch64"
+    assert resources.cpu_name() == "aarch64"
+    assert len(calls) == 1
+    clock[0] += resources.CPU_BRAND_RETRY_S
+    assert resources.cpu_name() == "Brand CPU 9000"
+    assert resources.cpu_name() == "Brand CPU 9000"
+    assert len(calls) == 2
+
+
+def _with_cpuinfo(monkeypatch, tmp_path, text):
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(text)
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda path, *a, **k: real_open(
+        cpuinfo if path == "/proc/cpuinfo" else path, *a, **k))
+    return cpuinfo
+
+
+@pytest.mark.parametrize("text, brand", [
+    # x86: the numeric "model" line comes first and is skipped.
+    ("processor\t: 0\nmodel\t\t: 183\n"
+     "model name\t: AMD Ryzen 9 9950X 16-Core Processor\n",
+     "AMD Ryzen 9 9950X 16-Core Processor"),
+    # POWER: "cpu", not the "machine" or "model" lines.
+    ("processor\t: 0\ncpu\t\t: POWER9 (raw), altivec supported\n"
+     "model\t\t: 9006-22P\nmachine\t\t: PowerNV 9006-22P\n",
+     "POWER9 (raw), altivec supported"),
+    # Raspberry Pi: the SoC, never the "Model" board line.
+    ("processor\t: 0\nBogoMIPS\t: 108.00\nHardware\t: BCM2835\n"
+     "Model\t\t: Raspberry Pi 4 Model B Rev 1.4\n", "BCM2835"),
+    # Old ARM kernels: "Processor" names the core.
+    ("Processor\t: ARMv7 Processor rev 4 (v7l)\nprocessor\t: 0\n",
+     "ARMv7 Processor rev 4 (v7l)"),
+    # "model name" wins wherever it appears.
+    ("Hardware\t: BCM2835\nmodel name\t: ARMv7 Processor rev 3 (v7l)\n",
+     "ARMv7 Processor rev 3 (v7l)"),
+    ("processor\t: 0\nBogoMIPS\t: 48.00\nModel\t: Some Board\n", None),
+])
+def test_the_linux_brand_reads_proc_cpuinfo(monkeypatch, tmp_path, text,
+                                            brand):
+    _with_cpuinfo(monkeypatch, tmp_path, text)
+    assert resources._cpu_brand_linux() == brand
+
+
+def test_the_linux_brand_without_proc_cpuinfo(monkeypatch, tmp_path):
+    _with_cpuinfo(monkeypatch, tmp_path, "").unlink()
+    assert resources._cpu_brand_linux() is None
+
+
+class _FakeLibc:
+    """``sysctlbyname`` as libc has it: size first, then the bytes."""
+
+    def __init__(self, value: bytes | None, fail_second: bool = False):
+        self.value = value
+        self.fail_second = fail_second
+
+    def sysctlbyname(self, key, buf, size_ref, _new, _newlen):
+        assert key == b"machdep.cpu.brand_string"
+        if self.value is None:
+            return -1
+        size = size_ref._obj
+        if buf is None:
+            size.value = len(self.value) + 1 if self.value else 0
+            return 0
+        if self.fail_second:
+            return -1
+        buf.value = self.value
+        return 0
+
+
+@pytest.mark.parametrize("libc, brand", [
+    (_FakeLibc(b"Apple M3"), "Apple M3"),
+    (_FakeLibc(b""), None),
+    (_FakeLibc(None), None),
+    (_FakeLibc(b"Apple M3", fail_second=True), None),
+])
+def test_the_darwin_brand_asks_sysctlbyname(monkeypatch, libc, brand):
+    """In process, through ``sysctlbyname`` (#840 review: no subprocess
+    when the probe runs on the event loop)."""
+    import ctypes
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *_a, **_k: libc)
+    assert resources._cpu_brand_darwin() == brand
+
+
+def test_the_darwin_brand_without_libc(monkeypatch):
+    import ctypes
+
+    def fail(*_a, **_k):
+        raise OSError("no libc")
+
+    monkeypatch.setattr(ctypes, "CDLL", fail)
+    assert resources._cpu_brand_darwin() is None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
+def test_the_darwin_brand_on_this_mac():
+    assert resources._cpu_brand_darwin()
+
+
+def test_the_windows_brand_reads_the_registry(monkeypatch):
+    import types
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=0, OpenKey=lambda *_a: Key(),
+        QueryValueEx=lambda *_a: ("  Intel(R) Core(TM) i9  ", 1))
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    assert resources._cpu_brand_windows() == "Intel(R) Core(TM) i9"
+    monkeypatch.setitem(sys.modules, "winreg", None)
+    assert resources._cpu_brand_windows() is None
 
 
 # ── torch-free: NVML alone ───────────────────────────────────────────

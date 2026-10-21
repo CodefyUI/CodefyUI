@@ -1290,7 +1290,7 @@ const en = {
   'workers.ssh.remotePid': 'remote agent pid {pid}',
   'workers.ssh.remotePidReattached': 'remote agent pid {pid}, re-attached after a dropped session',
   'workers.ssh.retry': 'Retry',
-  'workers.ssh.retry.title': 'Start the ssh session again; it stopped retrying',
+  'workers.ssh.retry.title': 'Try the ssh session again now, also after it stopped retrying',
   'workers.ssh.readFailed': 'Could not read the SSH workers: {error}',
 
   // Runs panel (#124) — the Run Service made visible: every run the server

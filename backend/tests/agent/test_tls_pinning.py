@@ -385,7 +385,7 @@ def started(monkeypatch):
     calls: list[dict[str, Any]] = []
 
     def fake_run_agent(args, control, token, facts, token_source=None,
-                       mounts=None, trust=None):
+                       mounts=None, trust=None, worker_credential=False):
         calls.append({"control": control, "token": token, "trust": trust})
         return 0
 
