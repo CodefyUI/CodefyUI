@@ -1470,19 +1470,25 @@ class SshLauncher:
 
     async def set_enabled(self, name: str,
                           enabled: bool) -> dict[str, Any] | None:
-        """Enable (undrain, start; also restarts one that gave up) or
+        """Enable (undrain a disabled one, start; also restarts one that
+        gave up, and on one still retrying tries again now: Retry) or
         disable (drain, then end the ssh session) *name*. None when there
         is no such row, also when it was deleted while this waited."""
         async with self._lock(name):
             entry = self.entries.get(name)
             if entry is None:
                 return None
-            if entry.enabled != enabled:
+            changed = entry.enabled != enabled
+            if changed:
                 await self.store.update_ssh_worker(name, enabled=enabled)
                 entry = replace(entry, enabled=enabled)
                 self.entries[name] = entry
             if enabled:
-                self.registry.drain(name, False)
+                # Undrain only what Disable drained: Retry (Enable on an
+                # entry that is enabled already) keeps a Drain the user
+                # set on the worker (#840).
+                if changed:
+                    self.registry.drain(name, False)
                 self._launch(entry)
             else:
                 # Drain first, so nothing new is placed on it while it goes.

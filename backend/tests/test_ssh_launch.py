@@ -373,6 +373,16 @@ async def test_retry_cuts_the_backoff_short(launcher, fake_ssh, monkeypatch):
     await _until(lambda: _tokens(fake_ssh), "Retry did not try again now")
 
 
+async def test_retry_keeps_a_drain_the_user_set(launcher, fake_ssh):
+    """#840 review: Retry (Enable on an entry that is enabled already) does
+    not undrain the worker; only Enable after Disable does."""
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    launcher.registry.drained.clear()
+    await launcher.set_enabled("gpu-box", True)
+    assert launcher.registry.drained == {}
+
+
 async def test_retry_during_an_attempt_leaves_no_wake_behind(
         launcher, fake_ssh):
     """#840 review: a Retry while a session runs has no backoff to cut

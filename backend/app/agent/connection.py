@@ -234,8 +234,9 @@ class AgentConnection:
         #: The token is a worker credential stored by an enrollment (#780)
         #: rather than a session token: it decides the advice on a 401
         #: (#840). A --token's kind cannot be told (both are 43 URL-safe
-        #: characters), so its advice names both. The agent stops only when the server says the credential
-        #: was revoked (``X-CodefyUI-Refusal``); every other 401 is retried.
+        #: characters), so its advice names both. The agent stops only when
+        #: the server says the credential was revoked
+        #: (``X-CodefyUI-Refusal``); every other 401 is retried.
         self.worker_credential = worker_credential
         #: Verifies the control plane over ``wss`` (#786); one without a pin
         #: (system CAs) is created at the first ``wss`` dial when none is
