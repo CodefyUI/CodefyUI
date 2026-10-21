@@ -315,6 +315,51 @@ def test_a_save_leaves_no_scratch_file_behind(tmp_path):
     assert VectorIndex.load(path).metric == "dot"
 
 
+def test_every_save_gets_its_own_scratch_file(tmp_path, monkeypatch):
+    """Two saves of one process -- two threads -- must not share a scratch
+    name, so it comes from mkstemp, not from the pid."""
+    import app.nodes.llm._vector_index as module
+
+    path = tmp_path / "corpus.npz"
+    real_replace = module.os.replace
+    sources = []
+
+    def spy(src, dst):
+        sources.append(str(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", spy)
+    _small_index().save(path)
+    _small_index().save(path)
+    assert len(set(sources)) == 2
+    for source in sources:
+        name = source.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        assert name.startswith("corpus.npz.") and name.endswith(".part")
+
+
+def test_saves_from_two_threads_leave_one_whole_index(tmp_path):
+    import threading
+
+    path = tmp_path / "corpus.npz"
+    errors = []
+
+    def save(metric):
+        try:
+            for _ in range(5):
+                _small_index(metric, metric == "cosine").save(path)
+        except BaseException as exc:  # noqa: BLE001 - collected for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save, args=(m,)) for m in ("cosine", "dot")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert VectorIndex.load(path).metric in ("cosine", "dot")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["corpus.npz"]
+
+
 def test_an_interrupted_save_keeps_the_old_index_whole(tmp_path, monkeypatch):
     """#139 (from #380): writing straight into the path truncated the old
     index the moment a save began, so a save that died halfway left neither

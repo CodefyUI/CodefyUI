@@ -60,11 +60,11 @@ Connect the model to an **Eval-HFProcessorLoader** and leave its `model_id` and 
 
 ## 4. Run batched inference {/* #run-batched-inference */}
 
-**Eval-BatchInference** takes the model, the processor and the dataset, and produces a **prediction table**: one row per item with `id`, `input`, `input_hash`, `raw_answer`, the normalised `answer`, `label`, `status` and `error`. Classification and VQA rows add `score` and `topk`; VQA rows also record `image` and `image_sha256`, and their `input_hash` covers the image as well as the question.
+**Eval-BatchInference** takes the model, the processor and the dataset, and produces a **prediction table**: one row per item with `id`, `input`, `input_hash`, `raw_answer`, the normalised `answer`, `label`, `status` and `error`. Classification and VQA rows add `score` and `topk`; VQA rows also record `image` and `image_sha256`, and their `input_hash` covers the image as well as the question. For VQA, `max_length` is capped at the model's text length (`config.max_position_embeddings`, 40 for ViLT), so a longer question is truncated.
 
 - `normalize` (default `strip_lower`) is applied to answers and labels before any comparison. `label_map` renames raw answers first, for a model whose config has no label names: `LABEL_0=negative, LABEL_1=positive`.
 - **Status.** A finished batch's items are `ok` and stay `ok`. A batch that raises is retried one item at a time, so one bad input (an unreadable image, say) is one `error` row. Press Stop and the run ends between batches: the items not yet started are `cancelled`, the table still holds every item, and the metrics skip the unfinished rows and say how many.
-- **Generation settings.** By default generation is greedy and uses this node's parameters (`do_sample`, `temperature`, `top_p`, `repetition_penalty`, `seed`). Set `generation_config` to `model` to take `do_sample`, `temperature`, `top_p`, `top_k` and `repetition_penalty` from the model's own `generation_config.json`, the settings `model.generate` would use. Either way the table records the settings that ran and, beside them, the ones the model suggests. Sampling draws from a generator seeded per item from `seed` and the item's id, so an item's answer does not depend on the batch size or the item order.
+- **Generation settings.** By default generation is greedy and uses this node's parameters (`do_sample`, `temperature`, `top_p`, `repetition_penalty`, `seed`). Set `generation_config` to `model` to take `do_sample`, `temperature`, `top_p`, `top_k` and `repetition_penalty` from the model's `generation_config`, the settings `model.generate` would use: transformers reads it from the checkpoint's `generation_config.json`, or derives it from `config.json` when the checkpoint has none. Either way the table records the settings that ran and, beside them, the ones the model suggests. Sampling draws from a generator seeded per item from `seed` and the item's id, so an item's answer does not depend on the batch size or the item order.
 
 ## 5. Score it {/* #score-it */}
 
@@ -80,7 +80,7 @@ Connect the prediction table to one or more metric nodes. Each scores the rows t
 
 The pack computes BLEU and ROUGE-L itself, so it installs no extra packages for them, and its tests compare every value with the reference implementation. Two settings matter for non-English text:
 
-- **Eval-BLEU** `tokenize` is sacrebleu's `13a` by default; use `zh` (Chinese characters split) or `char` for Chinese. The metrics table records sacrebleu's signature, such as `nrefs:1|case:mixed|eff:no|tok:13a|smooth:exp`.
+- **Eval-BLEU** `tokenize` is sacrebleu's `13a` by default; use `zh` (Chinese characters split) or `char` for Chinese. BLEU scores the normalised answers and labels, and Eval-BatchInference's default `normalize = strip_lower` lowercases both, so by default the score is case-insensitive; `normalize = strip` or `none` keeps the case. The metrics table records sacrebleu's signature to match, such as `nrefs:1|case:lc|eff:no|tok:13a|smooth:exp` for the default and `case:mixed` otherwise.
 - **Eval-ROUGE-L** `tokenize` `rouge` is rouge-score's tokenizer, which keeps only `a-z` and `0-9`: a Chinese answer has no tokens and scores 0. Use `char` for such text.
 
 Give each run's metric its own `metric_name` (`exact_match_a`, `exact_match_b`), so a sweep or the run history can tell them apart.

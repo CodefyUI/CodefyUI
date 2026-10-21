@@ -157,6 +157,9 @@ with its tokenizer; `tokenizer` is refused for one.
   five ranked label names for `Eval-TopKAccuracy`, `score` the top probability.
 * **vqa** -- the same over the model's answer vocabulary, for an image and a
   question: the processor gets `images=` and `text=` together, as ViLT's does.
+  `max_length` is capped at the model's `config.max_position_embeddings` when
+  it has one (40 for ViLT), so a long question is truncated to what the model
+  can read instead of failing; `meta.inference.max_length` records the cap.
   The dataset needs `image_field`. Each item's image is opened when its batch
   runs, so one unreadable image is one `error` row. Rows add `image` and
   `image_sha256`.
@@ -168,7 +171,9 @@ with its tokenizer; `tokenizer` is refused for one.
   every graph saved before the option ran) uses this node's `do_sample`,
   `temperature`, `top_p` and `repetition_penalty`, with no top-k filter.
   `generation_config = model` takes `do_sample`, `temperature`, `top_p`,
-  `top_k` and `repetition_penalty` from the model's `generation_config`, the
+  `top_k` and `repetition_penalty` from the model's `generation_config`
+  (transformers reads it from `generation_config.json`, or derives it from
+  `config.json` when the checkpoint has none), the
   settings `model.generate` would use, filling a field the checkpoint leaves
   unset with transformers' default; a model without a generation config is
   refused. `repetition_penalty` is transformers' rule: every token already in
@@ -217,11 +222,14 @@ generation, where an answer is free text.
 * **`Eval-BLEU`** is corpus BLEU on a 0 to 100 scale, exactly
   `sacrebleu.corpus_bleu(answers, [labels], tokenize=..., smooth_method=...)`
   with sacrebleu's other defaults (case-sensitive, n-grams up to 4, no
-  effective order). The answer and label are the normalised ones, so
-  `normalize = strip_lower` on BatchInference makes it case-insensitive. Use
-  `zh` or `char` for Chinese. `details` records sacrebleu's signature without
-  its version field (`nrefs:1|case:mixed|eff:no|tok:13a|smooth:exp`), the four
-  precisions, the brevity penalty and the n-gram counts.
+  effective order). The answer and label are the normalised ones, and
+  BatchInference's default `normalize = strip_lower` lowercases both, so by
+  default the score is case-insensitive (sacrebleu's `case:lc`);
+  `normalize = strip` or `none` keeps the case (`case:mixed`). The node reads
+  the normalisation from the prediction table's `meta.producer`. Use `zh` or
+  `char` for Chinese. `details` records `normalize`, sacrebleu's signature
+  without its version field (`nrefs:1|case:lc|eff:no|tok:13a|smooth:exp` by
+  default), the four precisions, the brevity penalty and the n-gram counts.
 * **`Eval-ROUGE-L`** is the mean over the counted rows of
   `rouge_score.rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False).score(label, answer)`
   (0 to 1). `tokenize = rouge` is rouge-score's tokenizer, which lowercases and

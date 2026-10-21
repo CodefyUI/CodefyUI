@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,6 +70,21 @@ import torch
 #: tries -- the values ``_glove._save_npz`` uses for the same Windows case.
 _REPLACE_ATTEMPTS = 5
 _REPLACE_PAUSE_S = 0.25
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a rename in *directory* to disk (POSIX; a no-op on Windows).
+
+    Windows cannot open a directory for ``fsync`` and does not need it for
+    ``os.replace`` to be durable, so it is skipped there.
+    """
+    if os.name != "posix":
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 METRICS = ("cosine", "dot")
 
@@ -222,9 +238,11 @@ class VectorIndex:
         they were told about. The same trap ``_glove._save_npz`` documents.
 
         The write is whole or not at all (#139, folded in from #380): the
-        archive goes to a scratch file named after this process's pid, in the
-        same directory, and ``os.replace`` puts it at *path* once it is
-        complete. Writing into *path* directly truncated the old index the
+        archive goes to a scratch file in the same directory, created by
+        ``tempfile.mkstemp`` so two saves -- two threads of one process as
+        much as two processes -- never share one, and ``os.replace`` puts it
+        at *path* once it is complete and fsynced. On POSIX the directory is
+        fsynced too, so the rename itself survives a power cut. Writing into *path* directly truncated the old index the
         moment a save began, so an interrupted save left neither the old
         index nor the new one. A failed save removes its scratch file and
         leaves whatever was at *path* untouched. On Windows the replace is
@@ -237,9 +255,11 @@ class VectorIndex:
             {"chunks": self.chunks, "metadata": self.metadata},
             ensure_ascii=False,
         ).encode("utf-8")
-        part_path = path.with_name(f"{path.name}.{os.getpid()}.part")
+        fd, part_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.",
+                                         suffix=".part")
+        part_path = Path(part_name)
         try:
-            with open(part_path, "wb") as handle:
+            with os.fdopen(fd, "wb") as handle:
                 np.savez(
                     handle,
                     **{
@@ -259,6 +279,7 @@ class VectorIndex:
                     if attempt == _REPLACE_ATTEMPTS:
                         raise
                     time.sleep(_REPLACE_PAUSE_S)
+            _fsync_directory(path.parent)
         except BaseException:
             try:
                 part_path.unlink()

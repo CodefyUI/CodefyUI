@@ -243,6 +243,14 @@ class VQAPredictor(ClassificationPredictor):
     def __init__(self, model: Any, processor: Any, *, max_length: int, top_k: int):
         super().__init__(model, processor, max_length=max_length, top_k=top_k)
         self.dtype = _model_dtype(model)
+        # ViLT reads at most config.max_position_embeddings text tokens (40);
+        # padding or truncating to more makes every batch fail. Cap it.
+        try:
+            limit = int(model.config.max_position_embeddings)
+        except (AttributeError, TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            self.max_length = min(self.max_length, limit)
 
     def _encode(self, items: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         missing = [item.get("id") for item in items if not item.get("image_path")]

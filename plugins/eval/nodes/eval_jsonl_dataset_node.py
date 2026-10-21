@@ -282,6 +282,16 @@ def _read_image(node: str, value: Any, *, field: str, base: str, lineno: int) ->
             "the JSONL file's folder, without '..'."
         )
     path = join(base, *parts)
+    # The string check above cannot see a symlink: `link/hosts` with
+    # `link -> /etc` passes it. So containment is checked again on the
+    # resolved paths, with the rule the API routes use (#483).
+    from app.core.data_paths import resolve_under
+
+    if resolve_under(base, "/".join(parts)) is None:
+        raise ValueError(
+            f"{node}: line {lineno}: image {value!r} resolves outside the JSONL "
+            "file's folder (through a symbolic link)."
+        )
     try:
         with open(path, "rb") as handle:
             data = handle.read()

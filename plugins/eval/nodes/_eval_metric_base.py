@@ -123,6 +123,12 @@ class EvalMetricNode(BaseNode):
         """
         raise NotImplementedError
 
+    def score_table(
+        self, rows: list[dict[str, Any]], params: dict[str, Any], meta: dict[str, Any]
+    ) -> tuple[float, int] | tuple[float, int, dict[str, Any]]:
+        """:meth:`score`, for a metric that also needs the table's meta."""
+        return self.score(rows, params)
+
     def execute(
         self,
         inputs: dict[str, Any],
@@ -146,7 +152,7 @@ class EvalMetricNode(BaseNode):
                 f"{node}: no row is both ok and labelled, so there is nothing to "
                 f"score ({len(records)} row(s) in the table)."
             )
-        value, counted, *rest = self.score(scorable, params)
+        value, counted, *rest = self.score_table(scorable, params, table.get("meta") or {})
         skipped = len(records) - counted
         metric = self.metric_name(params)
         series = str(params.get("metric_name", "") or "").strip() or metric

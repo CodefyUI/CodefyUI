@@ -60,11 +60,11 @@ cdui plugin install stats   # 選用：顯示結果的圖表與表格
 
 ## 4. 分批推論 {/* #run-batched-inference */}
 
-**Eval-BatchInference** 接收模型、processor 與資料集，產生一張**預測表**：每個項目一列，含 `id`、`input`、`input_hash`、`raw_answer`、正規化後的 `answer`、`label`、`status` 與 `error`。分類與 VQA 的列另有 `score` 與 `topk`；VQA 的列還會記錄 `image` 與 `image_sha256`，其 `input_hash` 同時涵蓋問題與影像。
+**Eval-BatchInference** 接收模型、processor 與資料集，產生一張**預測表**：每個項目一列，含 `id`、`input`、`input_hash`、`raw_answer`、正規化後的 `answer`、`label`、`status` 與 `error`。分類與 VQA 的列另有 `score` 與 `topk`；VQA 的列還會記錄 `image` 與 `image_sha256`，其 `input_hash` 同時涵蓋問題與影像。VQA 的 `max_length` 上限是模型可讀的文字長度（`config.max_position_embeddings`，ViLT 為 40），較長的問題會被截斷。
 
 - `normalize`（預設 `strip_lower`）在任何比較之前套用到答案與標籤。`label_map` 先改名原始答案，用於設定中沒有標籤名稱的模型：`LABEL_0=negative, LABEL_1=positive`。
 - **狀態。** 已完成批次的項目是 `ok`，之後也維持 `ok`。出錯的批次會逐筆重試，所以一個有問題的輸入（例如無法讀取的影像）只會產生一列 `error`。按下停止後，執行會在批次之間結束：尚未開始的項目標成 `cancelled`，表格仍包含每個項目，指標會略過未完成的列並說明略過了幾列。
-- **生成設定。** 預設以貪婪解碼生成，並使用此節點的參數（`do_sample`、`temperature`、`top_p`、`repetition_penalty`、`seed`）。把 `generation_config` 設為 `model`，就會改從模型自己的 `generation_config.json` 取得 `do_sample`、`temperature`、`top_p`、`top_k` 與 `repetition_penalty`，也就是 `model.generate` 會使用的設定。不論哪一種，表格都會記錄實際使用的設定，並在旁邊記錄模型建議的設定。抽樣使用的亂數產生器以 `seed` 與項目的 id 為每個項目各自設定種子，所以一個項目的答案不受批次大小或項目順序影響。
+- **生成設定。** 預設以貪婪解碼生成，並使用此節點的參數（`do_sample`、`temperature`、`top_p`、`repetition_penalty`、`seed`）。把 `generation_config` 設為 `model`，就會改從模型的 `generation_config` 取得 `do_sample`、`temperature`、`top_p`、`top_k` 與 `repetition_penalty`，也就是 `model.generate` 會使用的設定：transformers 從 checkpoint 的 `generation_config.json` 讀取它，checkpoint 沒有這個檔案時則由 `config.json` 推導。不論哪一種，表格都會記錄實際使用的設定，並在旁邊記錄模型建議的設定。抽樣使用的亂數產生器以 `seed` 與項目的 id 為每個項目各自設定種子，所以一個項目的答案不受批次大小或項目順序影響。
 
 ## 5. 評分 {/* #score-it */}
 
@@ -80,7 +80,7 @@ cdui plugin install stats   # 選用：顯示結果的圖表與表格
 
 BLEU 與 ROUGE-L 由外掛自行計算，因此不必為它們額外安裝套件；外掛的測試會把每個數值與參考實作比對。處理非英文文字時有兩個設定要注意：
 
-- **Eval-BLEU** 的 `tokenize` 預設為 sacrebleu 的 `13a`；中文請用 `zh`（逐字切開中文字）或 `char`。metrics 表格會記錄 sacrebleu 的 signature，例如 `nrefs:1|case:mixed|eff:no|tok:13a|smooth:exp`。
+- **Eval-BLEU** 的 `tokenize` 預設為 sacrebleu 的 `13a`；中文請用 `zh`（逐字切開中文字）或 `char`。BLEU 計算的是正規化後的答案與標籤，而 Eval-BatchInference 的預設 `normalize = strip_lower` 會把兩者轉成小寫，所以預設的分數不分大小寫；`normalize = strip` 或 `none` 則保留大小寫。metrics 表格會記錄相應的 sacrebleu signature，預設為 `nrefs:1|case:lc|eff:no|tok:13a|smooth:exp`，其他情況為 `case:mixed`。
 - **Eval-ROUGE-L** 的 `tokenize` 為 `rouge` 時使用 rouge-score 的 tokenizer，只保留 `a-z` 與 `0-9`：中文答案沒有任何 token，得分為 0。這類文字請用 `char`。
 
 為每次執行的指標取不同的 `metric_name`（`exact_match_a`、`exact_match_b`），參數掃描與執行紀錄才分得出來。

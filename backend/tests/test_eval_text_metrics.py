@@ -191,6 +191,34 @@ def test_the_bleu_node_scores_the_ok_labelled_rows_as_sacrebleu(tokenize):
     assert len(details["precisions"]) == 4
 
 
+@pytest.mark.parametrize(("normalize", "case"), [("strip_lower", "lc"), ("strip", "mixed"),
+                                                  ("none", "mixed")])
+def test_the_bleu_signature_follows_the_tables_normalisation(normalize, case):
+    """BatchInference's default strip_lower lowercases answers and labels, so
+    the default BLEU is sacrebleu's case:lc, and its signature says so."""
+    rows, ok = _generation_rows(seed=2)
+    table = _table(rows)
+    table["meta"]["producer"]["normalize"] = normalize
+    out = EvalBLEUNode().execute({"predictions": table}, {})
+    details = out["metrics"]["meta"]["metric"]["details"]
+    assert details["normalize"] == normalize
+    assert details["signature"] == f"nrefs:1|case:{case}|eff:no|tok:13a|smooth:exp"
+    metric = sacrebleu.BLEU(lowercase=case == "lc")
+    hypotheses = [r["answer"] for r in ok]
+    references = [r["label"] for r in ok]
+    if case == "lc":  # what strip_lower hands the node
+        hypotheses = [h.lower() for h in hypotheses]
+        references = [r.lower() for r in references]
+        table = _table([{**r, "answer": r["answer"] and r["answer"].lower(),
+                         "label": r["label"] and r["label"].lower()} for r in rows])
+        table["meta"]["producer"]["normalize"] = normalize
+        out = EvalBLEUNode().execute({"predictions": table}, {})
+    score = metric.corpus_score(hypotheses, [references])
+    assert out["value"] == pytest.approx(score.score, abs=1e-9)
+    theirs = str(metric.get_signature()).rsplit("|version:", 1)[0]
+    assert details["signature"] == theirs
+
+
 def test_the_bleu_node_refuses_an_unknown_tokenizer():
     rows, _ = _generation_rows()
     with pytest.raises(ValueError, match="unknown tokenize"):

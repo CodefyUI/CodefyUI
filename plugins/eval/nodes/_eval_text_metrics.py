@@ -133,13 +133,19 @@ def _ngrams(line: str, max_order: int) -> tuple[Counter, int]:
     return Counter(grams), len(tokens)
 
 
-def bleu_signature(tokenize: str, smooth_method: str) -> str:
-    """sacrebleu's signature for these settings, without its version field."""
+def bleu_signature(tokenize: str, smooth_method: str, lowercase: bool = False) -> str:
+    """sacrebleu's signature for these settings, without its version field.
+
+    *lowercase* is whether the text was lowercased before scoring: BLEU on
+    lowercased text is what sacrebleu calls ``case:lc``, whoever did the
+    lowercasing.
+    """
     smooth = smooth_method
     default = SMOOTH_DEFAULTS[smooth_method]
     if default is not None:
         smooth += f"[{default:.2f}]"
-    return f"nrefs:1|case:mixed|eff:no|tok:{tokenize}|smooth:{smooth}"
+    case = "lc" if lowercase else "mixed"
+    return f"nrefs:1|case:{case}|eff:no|tok:{tokenize}|smooth:{smooth}"
 
 
 def corpus_bleu(

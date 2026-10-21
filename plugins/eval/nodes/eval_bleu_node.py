@@ -28,8 +28,10 @@ class EvalBLEUNode(EvalMetricNode):
         "Corpus-level BLEU on a 0 to 100 scale, as sacrebleu's corpus_bleu "
         "computes it with one reference per item: n-grams up to 4 pooled over "
         "every counted row, a brevity penalty, and the chosen smoothing. The "
-        "answer and label are the normalised ones from Eval-BatchInference, so "
-        "normalize=strip_lower there gives case-insensitive BLEU. tokenize 13a "
+        "answer and label are the normalised ones from Eval-BatchInference, "
+        "whose default normalize=strip_lower lowercases both, so by default "
+        "this is case-insensitive BLEU (sacrebleu's case:lc); normalize=strip "
+        "or none keeps the case (case:mixed). tokenize 13a "
         "is sacrebleu's default; use zh or char for Chinese text. Skips error, "
         "cancelled and unlabelled rows. The metrics table's meta records the "
         "sacrebleu signature and the n-gram counts."
@@ -65,6 +67,15 @@ class EvalBLEUNode(EvalMetricNode):
         return value
 
     def score(self, rows: list[dict[str, Any]], params: dict[str, Any]):
+        return self.score_table(rows, params, {})
+
+    def score_table(self, rows: list[dict[str, Any]], params: dict[str, Any],
+                    meta: dict[str, Any]):
+        # The answers and labels were normalised by Eval-BatchInference;
+        # strip_lower (its default) lowercased both, which is sacrebleu's
+        # case:lc whoever did it. A table that does not say is mixed case.
+        normalize = (meta.get("producer") or {}).get("normalize")
+        lowercase = normalize == "strip_lower"
         tokenize = self._choice(params, "tokenize", "13a", BLEU_TOKENIZERS)
         smooth = self._choice(params, "smooth_method", "exp", BLEU_SMOOTHING)
         result = corpus_bleu(
@@ -72,7 +83,8 @@ class EvalBLEUNode(EvalMetricNode):
             tokenize=tokenize, smooth_method=smooth,
         )
         details = {
-            "signature": bleu_signature(tokenize, smooth),
+            "signature": bleu_signature(tokenize, smooth, lowercase),
+            "normalize": normalize,
             "compatible_with": "sacrebleu.corpus_bleu",
             "precisions": result["precisions"],
             "bp": result["bp"],

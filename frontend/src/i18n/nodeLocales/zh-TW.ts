@@ -2212,7 +2212,7 @@ const zhTW: NodeTranslations = {
       top_p: 'nucleus 抽樣的機率總量（generation 且開啟 do_sample）。',
       repetition_penalty: '對已出現在提示或答案中的 token 施加懲罰，算法與 transformers 相同；1.0 為關閉（generation，貪婪或抽樣皆適用）。',
       seed: '抽樣用的種子；每筆資料有自己的產生器。',
-      max_length: '輸入截斷到這麼多個 token（classification、vqa）。',
+      max_length: '輸入截斷到這麼多個 token（classification、vqa；vqa 的上限為模型的 max_position_embeddings）。',
       top_k: '每列保留幾個排序後的標籤，供 Eval-TopKAccuracy 使用（classification、vqa）。',
     },
     inputs: {
@@ -2230,8 +2230,9 @@ const zhTW: NodeTranslations = {
     description: '答案對標籤的語料層級 BLEU',
     details:
       '0 到 100 的語料層級 BLEU，算法與 sacrebleu 的 corpus_bleu 相同，每筆一個參考答案：所有計入列的 1 到 4-gram ' +
-      '合併計算，再乘上長度懲罰並套用所選的平滑方法。答案與標籤是 Eval-BatchInference 正規化後的版本，因此那裡用 ' +
-      'normalize=strip_lower 就是不分大小寫的 BLEU。tokenize 的 13a 是 sacrebleu 的預設；中文請用 zh 或 char。' +
+      '合併計算，再乘上長度懲罰並套用所選的平滑方法。答案與標籤是 Eval-BatchInference 正規化後的版本；它的預設 ' +
+      'normalize=strip_lower 會把兩者轉成小寫，所以預設是不分大小寫的 BLEU（sacrebleu 的 case:lc），' +
+      'normalize=strip 或 none 則保留大小寫（case:mixed）。tokenize 的 13a 是 sacrebleu 的預設；中文請用 zh 或 char。' +
       '略過 error、cancelled 與沒有標籤的列。metrics 表格的 meta 記錄 sacrebleu 的 signature 與 n-gram 計數。',
     params: {
       tokenize: '13a：sacrebleu 的預設。zh：把中文字逐字切開。char：每個字元一個 token。none：只依空白切分。',

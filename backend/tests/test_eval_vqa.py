@@ -205,6 +205,57 @@ def test_an_image_outside_the_jsonl_folder_is_refused(tmp_path, image):
         _load(path)
 
 
+def test_a_symlink_out_of_the_jsonl_folder_is_refused(tmp_path):
+    """`link/secret.png` passes the string check; `link` points outside."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    Image.new("RGB", (4, 4)).save(outside / "secret.png")
+    folder = tmp_path / "set"
+    folder.mkdir()
+    try:
+        (folder / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform cannot create a symbolic link here")
+    path = folder / "set.jsonl"
+    path.write_text(json.dumps({"id": "1", "question": "q?", "answer": "a",
+                                "image": "link/secret.png"}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line 1: .* resolves outside"):
+        _load(path)
+    # A link that stays inside the folder is fine.
+    (folder / "img").mkdir()
+    Image.new("RGB", (4, 4)).save(folder / "img" / "ok.png")
+    (folder / "alias").symlink_to(folder / "img", target_is_directory=True)
+    path.write_text(json.dumps({"id": "1", "question": "q?", "answer": "a",
+                                "image": "alias/ok.png"}) + "\n", encoding="utf-8")
+    assert _load(path)["dataset"]["items"][0]["image"] == "alias/ok.png"
+
+
+def test_vqa_caps_max_length_at_the_models_text_length():
+    """ViLT reads at most 40 text tokens; the default max_length (256) used
+    to make every batch fail on a long question."""
+    dataset = _load("eval:samples/shapes-vqa-12.jsonl")["dataset"]
+    questions = [item["input"] for item in dataset["items"]]
+    seen: list[int] = []
+
+    class Recording(ColourProcessor):
+        def __call__(self, *args, max_length=None, **kwargs):
+            seen.append(max_length)
+            return super().__call__(*args, **kwargs)
+
+    model = ColourVQA()
+    model.config.max_position_embeddings = 40
+    model, processor = _stamped(model, Recording(questions))
+    out = EvalBatchInferenceNode().execute(
+        {"model": model, "processor": processor, "dataset": dataset},
+        {"task": "auto", "batch_size": 4})
+    assert set(seen) == {40}
+    assert out["predictions"]["meta"]["inference"]["max_length"] == 40
+    out = EvalBatchInferenceNode().execute(
+        {"model": model, "processor": processor, "dataset": dataset},
+        {"task": "auto", "batch_size": 4, "max_length": 16})
+    assert out["predictions"]["meta"]["inference"]["max_length"] == 16
+
+
 def test_a_missing_image_is_refused_with_its_line(tmp_path):
     path = tmp_path / "set.jsonl"
     path.write_text(
@@ -236,11 +287,14 @@ def test_vqa_rows_record_the_image_and_fold_it_into_the_input_hash():
 def test_one_question_about_two_pictures_has_two_identities():
     rows = {r["id"]: r for r in table_records(
         _infer(_load("eval:samples/shapes-vqa-12.jsonl")["dataset"])["predictions"])}
-    # q07 and q12 ask about circles in different pictures.
-    assert rows["q01"]["input"] != rows["q07"]["input"]
-    same_question = [r for r in rows.values() if r["input"] == "How many balls are there?"]
-    assert len(same_question) == 2
-    assert same_question[0]["input_hash"] != same_question[1]["input_hash"]
+    # q02 and q03 ask "How many balls are there?" about two different pictures
+    # (one red ball, two red balls): same text, two identities.
+    assert rows["q02"]["input"] == rows["q03"]["input"] == "How many balls are there?"
+    assert rows["q02"]["image"] != rows["q03"]["image"]
+    assert rows["q02"]["input_hash"] != rows["q03"]["input_hash"]
+    # And one picture asked two questions gives two identities too.
+    assert rows["q01"]["image"] == rows["q02"]["image"]
+    assert rows["q01"]["input_hash"] != rows["q02"]["input_hash"]
 
 
 def test_compare_runs_refuses_two_runs_over_different_pictures(tmp_path):

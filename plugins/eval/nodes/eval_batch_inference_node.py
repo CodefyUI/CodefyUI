@@ -226,7 +226,10 @@ class EvalBatchInferenceNode(BaseNode):
                 default=256,
                 min_value=8,
                 max_value=8192,
-                description="Inputs are truncated to this many tokens (classification, vqa).",
+                description=(
+                    "Inputs are truncated to this many tokens (classification, vqa; "
+                    "vqa caps it at the model's max_position_embeddings)."
+                ),
                 advanced=True,
             ),
             ParamDefinition(
