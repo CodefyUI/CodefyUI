@@ -67,6 +67,12 @@ paths (an upload's bare name, ``models/x.pt``) resolve unchanged and the
 graph is never rewritten; out, every artifact path goes through
 :func:`artifact_location`, the one place a path becomes relative.
 
+A run whose graph has a top-level ``TrainingLoop`` with ``strategy: ddp``
+and whose device set has two or more CUDA cards (#792) is executed by
+``agent.ddp`` instead: this process starts one rank process per card and
+relays rank 0's messages, so the agent sees the same messages in the same
+order as for any other run (:func:`run_spec`).
+
 Agent -> child: ``("cancel",)``; for a recorded run (#789) also
 ``("fetch", request_id, op, run_id, params)`` (a read of its outputs, see
 ``core.output_queries.dispatch``) and ``("drop_outputs", run_id)``. The
@@ -106,7 +112,7 @@ def main(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    run_assignment(spec, _safe_sender(events_out), control_in)
+    run_spec(spec, _safe_sender(events_out), control_in)
     try:
         events_out.close()
     except OSError:
@@ -575,11 +581,19 @@ def _normalised_graph(graph: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_assignment(spec: dict[str, Any], send: Send,
-                   control_in: Any = None, *, discover: bool = True) -> None:
+                   control_in: Any = None, *, discover: bool = True,
+                   listener: Callable[..., None] | None = None,
+                   prepare: Callable[[Any], None] | None = None) -> None:
     """Discover nodes, execute the run, send ``finished``. Never raises.
 
     ``discover=False`` keeps the node registry as it is (tests that run
     this in a process whose registry is already populated).
+
+    Rank 0 of a ``ddp`` run (``agent.ddp``, #792) passes the other two:
+    *listener* replaces :func:`_listen_for_cancel` as the body of the
+    thread that reads *control_in* (same arguments), and *prepare* is
+    called with the run's context before the graph executes (it joins the
+    process group); an exception from it fails the run.
     """
     status, error, peak_memory = "failed", None, None
     outputs: LiveOutputs | None = None
@@ -613,9 +627,11 @@ def run_assignment(spec: dict[str, Any], send: Send,
             outputs = LiveOutputs(RunOutputStore(max_bytes=0), run_id,
                                   spec.get("outputs_dir"), send)
         if control_in is not None:
-            threading.Thread(target=_listen_for_cancel,
+            threading.Thread(target=listener or _listen_for_cancel,
                              args=(control_in, context, outputs),
                              name="cancel-listener", daemon=True).start()
+        if prepare is not None:
+            prepare(context)
         request = ExecutionRequest(
             run_id=run_id,
             graph=_normalised_graph(spec["graph"]),
@@ -660,3 +676,20 @@ def run_assignment(spec: dict[str, Any], send: Send,
     send((MSG_FINISHED, report))
     if saving:
         outputs.save()
+
+
+def run_spec(spec: dict[str, Any], send: Send, control_in: Any) -> None:
+    """Execute *spec*: across several processes when its ``ddp`` loops can
+    use the run's cards (``agent.ddp.plan_for``, #792), else here."""
+    from . import ddp
+
+    try:
+        plan = ddp.plan_for(spec)
+    except ValueError as exc:
+        send((MSG_FINISHED, {"status": "failed", "error": str(exc),
+                             "peak_memory": None}))
+        return
+    if plan is None:
+        run_assignment(spec, send, control_in)
+    else:
+        ddp.launch(spec, plan, send, control_in)

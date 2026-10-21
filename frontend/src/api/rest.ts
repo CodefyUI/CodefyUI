@@ -1156,9 +1156,10 @@ export async function renameGraph(from: string, to: string) {
 
 /**
  * Advice the export route sends beside the script (#557); the script is the
- * same with or without it. `absolute_path` is the only code so far: a file
- * param whose absolute path ties the script to this computer. A client skips
- * any code it does not know.
+ * same with or without it. `absolute_path`: a file param whose absolute path
+ * ties the script to this computer. `ddp_strategy` (#792): a TrainingLoop
+ * with strategy=ddp, which the script trains in one process (`param` is
+ * `strategy`, `value` is `ddp`). A client skips any code it does not know.
  */
 export interface ExportWarning {
   code: string;

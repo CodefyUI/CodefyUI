@@ -805,14 +805,74 @@ def _absolute_path_warnings(
     return warnings
 
 
+def _drop_default_strategy(nodes: list[dict], subgraphs: list[dict]) -> None:
+    """Remove ``strategy: single`` from every TrainingLoop's params, at the
+    top level and inside block definitions, before the script is generated
+    (#792). The editor fills a graph's params with the node's defaults
+    (#556), so a graph opened in the browser carries ``strategy: single``
+    whether or not anyone set it; the generator writes every param a graph
+    carries, and the exported script of a graph that never asked for
+    ``ddp`` must stay what it was before the param existed."""
+    from ..core.distributed import STRATEGY_PARAM, STRATEGY_SINGLE, TRAINING_LOOP
+
+    def visit(node: object) -> None:
+        if not isinstance(node, dict) or node.get("type") != TRAINING_LOOP:
+            return
+        data = node.get("data")
+        params = data.get("params") if isinstance(data, dict) else None
+        if not isinstance(params, dict):
+            return
+        value = params.get(STRATEGY_PARAM)
+        if value is None or str(value).strip().lower() == STRATEGY_SINGLE:
+            params.pop(STRATEGY_PARAM, None)
+
+    for node in nodes:
+        visit(node)
+    for definition in subgraphs:
+        if isinstance(definition, dict):
+            for node in definition.get("nodes") or []:
+                visit(node)
+
+
+def _ddp_strategy_warnings(
+    executable_nodes: list[dict],
+    containers: dict[str, str],
+    canvas_nodes: list[dict],
+    subgraphs: list[dict],
+    preset_fallback: dict,
+) -> list[dict]:
+    """One ``ddp_strategy`` warning per TrainingLoop the script runs with
+    ``strategy: ddp`` (#792). The script trains it in one process: ddp runs
+    only in a worker run with two or more cards. Read from the graph the
+    script RUNS, like :func:`_absolute_path_warnings`."""
+    from ..core.distributed import STRATEGY_DDP, STRATEGY_PARAM, is_ddp_loop
+
+    canvas_by_id = {node.get("id"): node for node in canvas_nodes}
+    subgraph_index = build_subgraph_index(subgraphs)
+    return [{
+        "code": "ddp_strategy",
+        "node_id": node["id"],
+        "label": _shown_label(node),
+        "param": STRATEGY_PARAM,
+        "value": STRATEGY_DDP,
+        "containers": _enclosing_containers(
+            node["id"], containers, canvas_by_id, subgraph_index,
+            preset_fallback),
+    } for node in executable_nodes if is_ddp_loop(node)]
+
+
 @router.post("/export")
 async def export_graph(graph: GraphExportRequest):
     """Export a graph as a single-file, headless CodefyUI Python runner.
 
     Answers ``{"script", "warnings"}``. ``warnings`` is advice the script
-    does not depend on: today, one ``absolute_path`` entry per file param
-    whose absolute path ties the script to this machine (#557). A client
-    that knows no warnings, or not a given ``code``, ignores them.
+    does not depend on: one ``absolute_path`` entry per file param whose
+    absolute path ties the script to this machine (#557), and one
+    ``ddp_strategy`` entry per TrainingLoop with ``strategy: ddp``, which
+    the script trains in one process (#792). A client that knows no
+    warnings, or not a given ``code``, ignores them. A TrainingLoop's
+    ``strategy: single`` (the default the editor fills in) is dropped
+    before generation, so such a graph's script is unchanged by the param.
     """
     from ..core.codegen import generate_python
     from ..core.graph_engine import prepare_executable_graph
@@ -846,6 +906,7 @@ async def export_graph(graph: GraphExportRequest):
     scrub_subgraph_definition_secrets(
         subgraphs, preset_fallback=preset_fallback
     )
+    _drop_default_strategy(nodes, subgraphs)
 
     try:
         executable_nodes, _, containers = prepare_executable_graph(
@@ -887,6 +948,8 @@ async def export_graph(graph: GraphExportRequest):
     # must not turn it into a 500: a warning is never a refusal.
     try:
         warnings = _absolute_path_warnings(
+            executable_nodes, containers, nodes, subgraphs, preset_fallback)
+        warnings += _ddp_strategy_warnings(
             executable_nodes, containers, nodes, subgraphs, preset_fallback)
     except Exception:
         logger.exception("Export warnings failed; exporting without them")

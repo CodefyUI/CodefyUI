@@ -5,6 +5,7 @@ from typing import Any
 from ...core.advisories import emit_advisory, join_notes
 from ...core.amp import PRECISIONS
 from ...core.device_utils import DEVICE_PARAM_DESCRIPTION, DEVICE_PARAM_OPTIONS
+from ...core.distributed import STRATEGIES, STRATEGY_SINGLE, data_parallel_for
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 from .evaluate_model_node import count_correct
 
@@ -1798,6 +1799,21 @@ class TrainingLoopNode(BaseNode):
                 ),
                 advanced=True,
             ),
+            ParamDefinition(
+                name="strategy",
+                param_type=ParamType.SELECT,
+                default=STRATEGY_SINGLE,
+                options=list(STRATEGIES),
+                description=(
+                    "single: train in one process (the default). ddp: train "
+                    "one model across the GPUs of a run queued on a worker "
+                    "with two or more cards, one process per card "
+                    "(DistributedDataParallel); batch_size is per card. "
+                    "Anywhere else (the canvas, this server, one card, an "
+                    "exported script) ddp trains in one process and says so."
+                ),
+                advanced=True,
+            ),
         ]
 
     def execute(
@@ -1850,9 +1866,15 @@ class TrainingLoopNode(BaseNode):
         tb_writer = (open_run_writer(context)
                      if bool(params.get("tensorboard", False)) else None)
         try:
+            # #792: (None, None) for strategy=single, so that path is the
+            # loop as it always was. A rank other than 0 records no
+            # artifacts, so its TensorBoard writer above is already None.
+            parallel, strategy_note = data_parallel_for(
+                params, context, log=logger)
             result = self._run_training(
                 inputs, params, progress_callback,
                 context=context, tb_writer=tb_writer,
+                parallel=parallel, strategy_note=strategy_note,
             )
         finally:
             # Total by contract (see close_and_register): raising in here
@@ -1872,6 +1894,8 @@ class TrainingLoopNode(BaseNode):
         *,
         context: Any = None,
         tb_writer: Any = None,
+        parallel: Any = None,
+        strategy_note: str | None = None,
     ) -> dict[str, Any]:
         import torch
         import torch.nn as nn
@@ -1923,6 +1947,15 @@ class TrainingLoopNode(BaseNode):
 
         epochs = params.get("epochs", 5)
         device = resolve_node_device(params.get("device"), context)
+        if parallel is not None:
+            # #792: each rank trains on its own card, whatever the param
+            # names; the other ranks are waiting for rank 0 to get here.
+            if device != parallel.device:
+                logger.info("strategy=ddp: rank %d trains on %s (device "
+                            "param resolves to %s)", parallel.state.rank,
+                            parallel.device, device)
+            device = parallel.device
+            parallel.enter()
         patience = params.get("early_stopping_patience", 0)
         monitor = params.get("monitor", "val_loss")
         checkpoint_every = int(params.get("checkpoint_every", 0) or 0)
@@ -1974,6 +2007,18 @@ class TrainingLoopNode(BaseNode):
                 tb_writer.add_scalar(name, value, step)
 
         should_stop = stop_checker(context)
+        if parallel is not None:
+            # One answer on every rank, so a Stop ends them all at the same
+            # batch; and each rank reads its own shard of each loader.
+            should_stop = parallel.stop_checker(should_stop)
+            dataloader = parallel.shard(dataloader, "dataloader")
+            if val_dataloader is not None:
+                val_dataloader = parallel.shard(val_dataloader,
+                                                "val_dataloader")
+                # The shard is padded to the length of the others with
+                # repeated samples; those are cut out of validation below
+                # so val_loss and val_accuracy count each sample once.
+                val_real_samples = parallel.real_samples(val_dataloader)
         throttle = ProgressThrottle(progress_callback)
         total_batches = loader_length(dataloader)
         total_val_batches = loader_length(val_dataloader)
@@ -1984,6 +2029,11 @@ class TrainingLoopNode(BaseNode):
         # #118: keep the incoming optimizer (and therefore its state) whenever
         # it is usable for this model -- see _prepare_optimizer for the rule.
         optimizer, optimizer_mode = _prepare_optimizer(optimizer, model)
+        # The training forward pass. Under ddp it goes through the DDP
+        # wrapper, whose backward all-reduces the gradients; ``model`` stays
+        # the plain module for everything else (validation, state_dict,
+        # checkpoints, the output port).
+        forward = model if parallel is None else parallel.wrap(model)
         # ``resume_note`` (#149) fires only on a resumed run whose schedule
         # could not be put back where it was -- see _prepare_scheduler.
         #
@@ -2079,6 +2129,19 @@ class TrainingLoopNode(BaseNode):
         batch_size = getattr(dataloader, "batch_size", None)
         if accumulate_steps > 1 and isinstance(batch_size, int):
             training_config["effective_batch_size"] = batch_size * accumulate_steps
+        # #792: only a graph that asked for ddp gets these keys, so a
+        # strategy=single run's config frame is what it always was.
+        strategy_facts: dict[str, Any] = {}
+        if parallel is not None:
+            strategy_facts = parallel.config()
+            if isinstance(batch_size, int):
+                # batch_size is per rank: one optimizer step averages the
+                # gradients of every rank's batch.
+                training_config["effective_batch_size"] = (
+                    batch_size * accumulate_steps * parallel.state.world_size)
+        elif strategy_note is not None:
+            strategy_facts = {"strategy": "single", "strategy_requested": "ddp"}
+        training_config.update(strategy_facts)
         if policy.fell_back:
             logger.warning(
                 "precision=%s was requested but %s runs this in %s; the run "
@@ -2323,6 +2386,7 @@ class TrainingLoopNode(BaseNode):
                 # device from the first batch on and is read back once.
                 step_val_sum: Any = 0.0
                 step_val_batches = 0
+                step_val_seen = 0
                 with torch.no_grad(), torch.random.fork_rng(devices=[]):
                     for step_batch in val_dataloader:
                         if should_stop():
@@ -2336,6 +2400,13 @@ class TrainingLoopNode(BaseNode):
                                 to_device(step_batch, device)
                                 if hasattr(step_batch, "to") else step_batch)
                             step_targets = None
+                        if parallel is not None:
+                            step_data, step_targets, kept = parallel.trim(
+                                step_data, step_targets,
+                                val_real_samples - step_val_seen)
+                            step_val_seen += kept
+                            if kept == 0:
+                                continue  # the shard's padding
                         with policy.autocast():
                             step_out = _class_dim_first(
                                 loss_fn, model(step_data), step_targets)
@@ -2344,6 +2415,10 @@ class TrainingLoopNode(BaseNode):
                                 elementwise=check_loss_shapes)
                         step_val_sum = step_val_sum + step_loss.detach().float()
                         step_val_batches += 1
+                if parallel is not None:
+                    # Every rank's shard: the sums over all of them.
+                    step_val_sum, step_val_batches = parallel.sums(
+                        step_val_sum, step_val_batches)
                 if step_val_batches:
                     record_metric(
                         "val_loss_step",
@@ -2386,6 +2461,8 @@ class TrainingLoopNode(BaseNode):
         for epoch in range(start_epoch, epochs):
             # ── Training phase ──
             model.train()
+            if parallel is not None:
+                parallel.set_epoch(dataloader, epoch)
             # The LR this epoch trains with, read before any step. With
             # ``scheduler_step=optimizer_step`` the scheduler moves the LR
             # inside the epoch, so a read at the end would record the NEXT
@@ -2429,7 +2506,7 @@ class TrainingLoopNode(BaseNode):
                 # is what makes reductions that need float32 (softmax,
                 # cross-entropy) run in float32 rather than in bf16.
                 with policy.autocast():
-                    outputs = _class_dim_first(loss_fn, model(data), targets)
+                    outputs = _class_dim_first(loss_fn, forward(data), targets)
                     if not nll_checked:
                         _check_nll_input(loss_fn, outputs)
                         nll_checked = True
@@ -2487,7 +2564,9 @@ class TrainingLoopNode(BaseNode):
                     # points. Keying off ``global_batch`` rather than
                     # ``batch_index`` keeps the spacing even across an epoch
                     # boundary whose batch count is not a multiple of it.
-                    record_metric("train_loss_batch", float(batch_loss_t),
+                    record_metric("train_loss_batch",
+                                  float(batch_loss_t) if parallel is None
+                                  else parallel.mean(batch_loss_t),
                                   global_batch)
                 # A factory, so the read-back happens only for the ~2
                 # frames a second the throttle lets through.
@@ -2552,7 +2631,14 @@ class TrainingLoopNode(BaseNode):
                 break
 
             # The epoch's single read-back of the training loss.
-            avg_train_loss = float(running_loss) / max(batch_count, 1)
+            if parallel is None:
+                avg_train_loss = float(running_loss) / max(batch_count, 1)
+            else:
+                # The mean of every rank's batch losses: what one process
+                # would report over the whole epoch.
+                total_loss, total_count = parallel.sums(running_loss,
+                                                        batch_count)
+                avg_train_loss = total_loss / max(total_count, 1)
             epoch_losses.append(avg_train_loss)
 
             lr_history.append(current_lr)
@@ -2570,6 +2656,7 @@ class TrainingLoopNode(BaseNode):
                 # A device tensor once a batch masks ignore_index tokens,
                 # read back once below.
                 val_total: Any = 0
+                val_seen = 0
 
                 with torch.no_grad():
                     for batch_index, batch_data in enumerate(val_dataloader):
@@ -2584,6 +2671,12 @@ class TrainingLoopNode(BaseNode):
                         else:
                             data = to_device(batch_data, device) if hasattr(batch_data, "to") else batch_data
                             targets = None
+                        if parallel is not None:
+                            data, targets, kept = parallel.trim(
+                                data, targets, val_real_samples - val_seen)
+                            val_seen += kept
+                            if kept == 0:
+                                continue  # the shard's padding
 
                         # Validation runs under the SAME autocast as
                         # training. Two reasons, and the second is the one
@@ -2653,6 +2746,12 @@ class TrainingLoopNode(BaseNode):
                     # resume point is therefore the next epoch.
                     break
 
+                if parallel is not None:
+                    # Each rank validated its own shard: sum them all.
+                    (val_running_loss, val_batch_count, val_correct,
+                     val_total) = parallel.sums(
+                        val_running_loss, val_batch_count, val_correct,
+                        val_total)
                 avg_val_loss = float(val_running_loss) / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
                 val_total = int(val_total)
@@ -2910,6 +3009,7 @@ class TrainingLoopNode(BaseNode):
         }
         if policy.fell_back:
             metrics["precision_requested"] = policy.requested
+        metrics.update(strategy_facts)
         if patience > 0:
             # Only meaningful when early stopping actually ran -- with
             # patience=0, monitor is not consulted at all, so reporting it
@@ -2959,7 +3059,7 @@ class TrainingLoopNode(BaseNode):
         # notes can fire in one run (a resumed run whose schedule could not
         # be repositioned AND whose length disagrees with epochs), so they
         # are stacked rather than one overwriting the other.
-        combined_note = join_notes(resume_note, schedule_note)
+        combined_note = join_notes(resume_note, schedule_note, strategy_note)
         if combined_note is not None:
             result["__log__"] = combined_note
         if stopped_at is not None:
