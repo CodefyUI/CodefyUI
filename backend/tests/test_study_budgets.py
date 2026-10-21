@@ -114,6 +114,13 @@ def test_budget_usage_counts_runs_and_seconds_and_names_the_exhausted_one():
                         now=now)["exhausted"] == "max_active_seconds"
     assert budget_usage({"max_runs": 3}, attempts,
                         now=now)["exhausted"] == "max_runs"
+    # Every run submitted, one repetition interrupted: a resume would need
+    # one more run, so max_runs is what stops it (the panel's budget form
+    # and the resume 409 agree on that).
+    interrupted = [_timed(0, 0, "succeeded", t0, t10),
+                   _timed(0, 1, "interrupted", t0, t10)]
+    assert budget_usage({"max_runs": 2}, interrupted,
+                        now=now)["exhausted"] == "max_runs"
     # Nothing left to run: a used-up budget halts nothing.
     done = [_timed(0, 0, "succeeded", t0, t10)]
     assert budget_usage({"max_runs": 1, "max_active_seconds": 1}, done,

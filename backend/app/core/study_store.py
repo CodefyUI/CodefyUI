@@ -625,6 +625,7 @@ def budget_usage(budget: Mapping[str, Any], attempts: Sequence[AttemptRecord],
       ``max_run_seconds`` (a per-child limit; it never halts the study).
 
     ``exhausted`` is ``max_runs`` when attempts are still to be submitted
+    (pending, or cancelled / interrupted / lost ones a resume retries)
     and none may be, ``max_active_seconds`` when the summed time reached
     its limit while repetitions are unfinished, else None. Pure: the same
     evidence and clock give the same answer, before and after a restart.
@@ -632,7 +633,10 @@ def budget_usage(budget: Mapping[str, Any], attempts: Sequence[AttemptRecord],
     current = current_attempts(attempts)
     used_runs = sum(1 for a in attempts if a.status != ATTEMPT_PENDING)
     active = [a for a in current.values() if a.status in ATTEMPT_ACTIVE]
-    pending = sum(1 for a in current.values() if a.status == ATTEMPT_PENDING)
+    # A repetition still to run: pending, or one a resume would retry.
+    pending = sum(1 for a in current.values()
+                  if a.status == ATTEMPT_PENDING
+                  or a.status in ATTEMPT_RETRYABLE)
     unfinished = sum(1 for a in current.values()
                      if a.status not in ATTEMPT_FINAL)
     seconds = math.fsum(attempt_seconds(a, now) for a in attempts)

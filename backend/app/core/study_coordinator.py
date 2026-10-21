@@ -114,7 +114,6 @@ from .study_store import (
     ATTEMPT_LOST,
     ATTEMPT_PENDING,
     ATTEMPT_QUEUED,
-    ATTEMPT_RETRYABLE,
     ATTEMPT_RUNNING,
     ATTEMPT_SUBMITTING,
     RESUME_AUTO,
@@ -815,7 +814,9 @@ class StudyCoordinator:
         most every ``_STOP_RESEND_S``: a cancel that failed, or that reached
         a process that restarted since, is never left unsent."""
         for attempt in current.values():
-            if attempt.status in ATTEMPT_ACTIVE and attempt.stop_reason \
+            if attempt.status not in ATTEMPT_ACTIVE:
+                self._stops_sent.pop(attempt.id, None)
+            elif attempt.stop_reason \
                     and attempt.run_id is not None \
                     and now - self._stops_sent.get(attempt.id, -1e18) \
                     >= _STOP_RESEND_S:
@@ -1007,15 +1008,7 @@ class StudyCoordinator:
             usage = budget_usage(study.budget, attempts, now=self._clock())
             exhausted = usage["exhausted"]
             if exhausted is None:
-                # Only a pending-free study can be refused without an
-                # exhausted budget here; it waits for a resume as it is.
-                current = current_attempts(attempts)
-                if not any(a.status in ATTEMPT_RETRYABLE
-                           for a in current.values()):
-                    return
-                # Retryable repetitions and runs used up: the next attempt
-                # would exceed max_runs.
-                exhausted = "max_runs"
+                return     # refused for another reason: it waits as it is
             key = "runs" if exhausted == "max_runs" else "active_seconds"
             await self.store.transition(
                 study.id, to=STUDY_HALTED, expected=(STUDY_INTERRUPTED,),
