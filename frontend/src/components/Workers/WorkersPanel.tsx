@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { Suspense, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   SshWorker,
@@ -13,7 +13,8 @@ import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
 import { friendlyError } from '../../utils/errorMessages';
-import { formatBytes } from '../../utils/formatBytes';
+import { gibFigure } from '../../utils/formatBytes';
+import { shownStatus, sshDisabled, sshManaged } from '../Toolbar/queueTargets';
 import { relativeTime } from '../SourceControl/scm';
 import { trapTab } from '../shared/focusTrap';
 import { lazyRetry } from '../shared/lazyRetry';
@@ -31,6 +32,9 @@ const RUN_ID_SHORT_LENGTH = 8;
 const KNOWN_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>([
   'online', 'degraded', 'disconnected', 'draining', 'offline',
 ]);
+
+/** The `degraded_reasons` this build has words for; another is shown as sent. */
+const DEGRADED_REASONS: ReadonlySet<string> = new Set(['heartbeat', 'node_catalog']);
 
 function RunLinks({ runIds }: { runIds: string[] }) {
   const { t } = useI18n();
@@ -56,7 +60,11 @@ function RunLinks({ runIds }: { runIds: string[] }) {
   );
 }
 
-function DeviceRow({ device }: { device: WorkerDevice }) {
+/**
+ * One device of a worker. *stale*: the worker is away, so its memory
+ * figures are the last ones it reported, not current.
+ */
+function DeviceRow({ device, stale }: { device: WorkerDevice; stale: boolean }) {
   const { t } = useI18n();
   const memory = device.memory;
   const hasMemory = memory != null && memory.free_bytes !== null && memory.total_bytes !== null;
@@ -74,10 +82,10 @@ function DeviceRow({ device }: { device: WorkerDevice }) {
         </span>
       )}
       {hasMemory && (
-        <span className={styles.fact} title={memory.source}>
-          {t('workers.device.memory', {
-            free: formatBytes(memory.free_bytes as number),
-            total: formatBytes(memory.total_bytes as number),
+        <span className={stale ? styles.muted : styles.fact} title={memory.source}>
+          {t(stale ? 'workers.device.memoryStale' : 'workers.device.memory', {
+            free: gibFigure(memory.free_bytes as number),
+            total: gibFigure(memory.total_bytes as number),
           })}
         </span>
       )}
@@ -155,14 +163,39 @@ const TUNNEL_STATES: ReadonlySet<string> = new Set<TunnelState>(['connecting', '
  * An SSH worker's tunnel (#784): its state, where it goes, Enable /
  * Disable, and while it is not up, the last lines ssh or the remote agent
  * wrote (the reason it failed: a refused key, an unknown host, no cdui).
+ *
+ * Disable stops the runs still on the worker, so with *running* runs on it
+ * it takes a second press, with the consequence said beside it (#840).
  */
-function TunnelLine({ entry }: { entry: SshWorker }) {
+function TunnelLine({ entry, running = 0 }: { entry: SshWorker; running?: number }) {
   const { t } = useI18n();
   const busy = useWorkerStore((s) => Boolean(s.busy[entry.id]));
   const setSshEnabled = useWorkerStore((s) => s.setSshEnabled);
+  const [confirming, setConfirming] = useState(false);
+  // A confirm armed for one state never applies to another (#840): when the
+  // entry is disabled elsewhere, or its last run ends, the press starts over.
+  const armedFor = `${entry.enabled}:${running > 0}`;
+  const [armed, setArmed] = useState(armedFor);
+  if (armed !== armedFor) {
+    setArmed(armedFor);
+    setConfirming(false);
+  }
   const where = entry.port === 22 ? entry.target : `${entry.target}:${entry.port}`;
   const showError = entry.state !== 'up' && entry.last_error;
   const known = TUNNEL_STATES.has(entry.state);
+
+  const toggle = () => {
+    if (busy) return;
+    if (entry.enabled && running > 0 && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    setConfirming(false);
+    void setSshEnabled(entry.id, !entry.enabled);
+  };
+
+  let label = t(entry.enabled ? 'workers.ssh.disable' : 'workers.ssh.enable');
+  if (confirming) label = t('workers.ssh.disable.confirm');
   return (
     <span className={styles.tunnel}>
       <span className={`${styles.chip} ${known ? styles[`chip_${entry.state}`] : styles.chip_neutral}`}>
@@ -179,14 +212,13 @@ function TunnelLine({ entry }: { entry: SshWorker }) {
       )}
       <button
         type="button"
-        className={styles.btn}
+        className={confirming ? `${styles.btn} ${styles.danger}` : styles.btn}
         aria-disabled={busy}
         title={t(entry.enabled ? 'workers.ssh.disable.title' : 'workers.ssh.enable.title')}
-        onClick={() => {
-          if (!busy) void setSshEnabled(entry.id, !entry.enabled);
-        }}
+        onClick={toggle}
+        onBlur={() => setConfirming(false)}
       >
-        {t(entry.enabled ? 'workers.ssh.disable' : 'workers.ssh.enable')}
+        {label}
       </button>
       {entry.enabled && entry.gave_up && (
         <button
@@ -200,6 +232,11 @@ function TunnelLine({ entry }: { entry: SshWorker }) {
         >
           {t('workers.ssh.retry')}
         </button>
+      )}
+      {confirming && (
+        <span className={styles.confirmNote} role="alert">
+          {t('workers.ssh.disable.confirmNote', { count: running })}
+        </span>
       )}
       {showError && (
         <pre className={styles.tunnelError} role="status">
@@ -216,29 +253,49 @@ function TunnelLine({ entry }: { entry: SshWorker }) {
   );
 }
 
-/** An SSH worker whose agent has not connected yet (no worker entry). */
+/**
+ * An SSH worker whose agent has not connected yet (no worker entry).
+ * Delete also cleans up on its host, so it takes a second press, with what
+ * it does said beside it (#840).
+ */
 function SshOnlyCard({ entry }: { entry: SshWorker }) {
   const { t } = useI18n();
   const busy = useWorkerStore((s) => Boolean(s.busy[entry.id]));
   const deleteSsh = useWorkerStore((s) => s.deleteSsh);
+  const [confirming, setConfirming] = useState(false);
+  const remove = () => {
+    if (busy) return;
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    setConfirming(false);
+    void deleteSsh(entry.id);
+  };
   return (
     <article className={styles.card} aria-label={entry.id}>
       <header className={styles.cardHeader}>
         <h3 className={styles.workerName}>{entry.id}</h3>
-        <span className={`${styles.chip} ${styles.chip_offline}`}>{t('workers.ssh.notYet')}</span>
+        <span className={`${styles.chip} ${styles.chip_offline}`}>
+          {t(entry.enabled ? 'workers.ssh.notYet' : 'workers.status.disabled')}
+        </span>
         <span className={styles.spacer} />
         <button
           type="button"
           className={`${styles.btn} ${styles.danger}`}
           aria-disabled={busy}
           title={t('workers.ssh.delete.title')}
-          onClick={() => {
-            if (!busy) void deleteSsh(entry.id);
-          }}
+          onClick={remove}
+          onBlur={() => setConfirming(false)}
         >
-          {t('workers.ssh.delete')}
+          {t(confirming ? 'workers.ssh.delete.confirm' : 'workers.ssh.delete')}
         </button>
       </header>
+      {confirming && (
+        <p className={styles.confirmNote} role="alert">
+          {t('workers.ssh.delete.confirmNote', { name: entry.id, target: entry.target })}
+        </p>
+      )}
       <dl className={styles.facts}>
         <dt>{t('workers.ssh.tunnel')}</dt>
         <dd><TunnelLine entry={entry} /></dd>
@@ -247,8 +304,41 @@ function SshOnlyCard({ entry }: { entry: SshWorker }) {
   );
 }
 
-/** Statuses whose worker has no live connection: removing one ends nothing. */
+/** Statuses whose worker has no live connection: its memory figures are stale. */
 const AWAY_STATUSES: ReadonlySet<string> = new Set<WorkerStatus>(['disconnected', 'offline']);
+
+/**
+ * Whether Re-key applies (#840): a worker holding an enrolled credential of
+ * its own. A same-host agent uses the session token, and the launcher of an
+ * SSH worker mints a token for each session itself.
+ */
+function canRekey(worker: WorkerInfo, ssh: SshWorker | undefined): boolean {
+  // An older server sends no `enrolled`: Re-key is offered unless the worker
+  // is known to be a same-host agent on the session token or SSH-managed.
+  return !sshManaged(worker, ssh) && worker.enrolled !== false && worker.credential !== 'session_token';
+}
+
+/**
+ * What Remove does to *worker*, as the note beside its confirm (#840). A
+ * worker that is *away* has no connection to end, so its note does not
+ * say it disconnects.
+ */
+function removeNote(worker: WorkerInfo, ssh: SshWorker | undefined, away: boolean) {
+  if (sshManaged(worker, ssh)) return 'workers.remove.confirmNoteSsh' as const;
+  if (worker.credential === 'session_token') {
+    return away ? 'workers.remove.confirmNoteSessionAway' as const : 'workers.remove.confirmNoteSession' as const;
+  }
+  return away ? 'workers.remove.confirmNoteAway' as const : 'workers.remove.confirmNote' as const;
+}
+
+/** Why the worker reads `degraded`, each reason in words (#840). */
+function DegradedLine({ reasons }: { reasons: string[] }) {
+  const { t } = useI18n();
+  const words = reasons.map((reason) => (DEGRADED_REASONS.has(reason)
+    ? t(`workers.degraded.${reason}` as 'workers.degraded.heartbeat')
+    : reason));
+  return <span className={styles.warn}>{words.join('; ')}</span>;
+}
 
 function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey }: {
   worker: WorkerInfo;
@@ -269,6 +359,11 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const remove = useWorkerStore((s) => s.remove);
   const [confirming, setConfirming] = useState(false);
   const actionRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
+  // Whether the focus is in this card. A poll can take Drain or Re-key away
+  // while it has the focus, which then falls to the page, where the
+  // dialog's Escape and Tab trap cannot hear it (#840): the card takes it.
+  const focusInside = useRef(false);
   const mounts = Object.entries(worker.mounts);
   // Without per-device run ids from the server, the worker's runs are
   // listed once, under the worker. With them, a run no device lists is
@@ -277,7 +372,35 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const onDevices = new Set(worker.devices.flatMap((d) => d.running ?? []));
   const workerRuns = worker.running.filter((id) => !onDevices.has(id));
   const digest = worker.fingerprint_digest;
-  const known = KNOWN_STATUSES.has(worker.status);
+  // A disabled SSH worker says so whatever its connection reads (#840):
+  // Enable brings it back, so Drain / Undrain are not offered meanwhile.
+  // From the worker itself too (`ssh_enabled`), so it holds while the SSH
+  // list cannot be read.
+  const disabled = sshDisabled(worker, ssh);
+  const status = shownStatus(worker, ssh);
+  const known = disabled || KNOWN_STATUSES.has(worker.status);
+  const away = AWAY_STATUSES.has(worker.status);
+  // Whatever the status reads (draining, disabled), a reason is shown (#840).
+  const reasons = worker.degraded_reasons ?? [];
+  const showDrain = !disabled;
+  const showRekey = canRekey(worker, ssh);
+
+  useLayoutEffect(() => {
+    // The card is mounted whenever this runs (it renders the buttons).
+    if (focusInside.current && document.activeElement === document.body) {
+      (cardRef.current as HTMLElement).focus({ preventScroll: true });
+    }
+  }, [showDrain, showRekey]);
+
+  const onFocus = () => {
+    focusInside.current = true;
+  };
+  // A blur to nowhere (the focused button left the page) keeps the flag: the
+  // effect above needs it.
+  const onBlur = (event: FocusEvent<HTMLElement>) => {
+    const next = event.relatedTarget as Node | null;
+    if (next !== null && !event.currentTarget.contains(next)) focusInside.current = false;
+  };
 
   // One button that changes its word, never disabled: a disabled or swapped
   // button drops the focus to the page, where the dialog's Escape and Tab
@@ -289,24 +412,33 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
     if (button !== null && document.activeElement === document.body) button.focus();
   };
 
-  // Removing a connected worker disconnects it and interrupts its runs, so
-  // that takes a second press; one that is away goes at once.
+  // Remove revokes the credential (and for an SSH worker deletes the entry
+  // and cleans up on its host), so it always takes a second press, with
+  // what it does said beside it (#840).
   const removeWorker = async () => {
     if (busy) return;
-    if (!AWAY_STATUSES.has(worker.status) && !confirming) {
+    if (!confirming) {
       setConfirming(true);
       return;
     }
+    setConfirming(false);
     await remove(worker.id);
     if (document.activeElement === document.body) onRemoved();
   };
 
   return (
-    <article className={styles.card} aria-label={worker.name}>
+    <article
+      ref={cardRef}
+      className={styles.card}
+      aria-label={worker.name}
+      tabIndex={-1}
+      onFocus={onFocus}
+      onBlur={onBlur}
+    >
       <header className={styles.cardHeader}>
         <h3 className={styles.workerName}>{worker.name}</h3>
-        <span className={`${styles.chip} ${known ? styles[`chip_${worker.status}`] : styles.chip_neutral}`}>
-          {known ? t(`workers.status.${worker.status}`) : worker.status}
+        <span className={`${styles.chip} ${known ? styles[`chip_${status}`] : styles.chip_neutral}`}>
+          {known ? t(`workers.status.${status}` as 'workers.status.online') : status}
         </span>
         {worker.plain_http && (
           <span className={`${styles.chip} ${styles.chip_degraded}`} title={t('workers.plainHttp.title')}>
@@ -314,40 +446,56 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           </span>
         )}
         <span className={styles.spacer} />
-        <button
-          ref={actionRef}
-          type="button"
-          className={styles.btn}
-          aria-disabled={busy}
-          title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
-          onClick={() => void toggleDrain()}
-        >
-          {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
-        </button>
-        <button
-          type="button"
-          className={styles.btn}
-          title={t('workers.rekey.title')}
-          onClick={() => onRekey(worker.id)}
-        >
-          {t('workers.rekey')}
-        </button>
+        {showDrain && (
+          <button
+            ref={actionRef}
+            type="button"
+            className={styles.btn}
+            aria-disabled={busy}
+            title={t(worker.draining ? 'workers.undrain.title' : 'workers.drain.title')}
+            onClick={() => void toggleDrain()}
+          >
+            {t(worker.draining ? 'workers.undrain' : 'workers.drain')}
+          </button>
+        )}
+        {showRekey && (
+          <button
+            type="button"
+            className={styles.btn}
+            title={t('workers.rekey.title')}
+            onClick={() => onRekey(worker.id)}
+          >
+            {t('workers.rekey')}
+          </button>
+        )}
         <button
           type="button"
           className={`${styles.btn} ${styles.danger}`}
           aria-disabled={busy}
-          title={t(confirming ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
+          title={t(confirming && !away ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
           onClick={() => void removeWorker()}
           onBlur={() => setConfirming(false)}
         >
           {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
         </button>
       </header>
+      {confirming && (
+        <p className={styles.confirmNote} role="alert">
+          {t(removeNote(worker, ssh, away), { name: worker.name })}
+          {worker.running.length > 0 && ` ${t('workers.remove.confirmRuns', { count: worker.running.length })}`}
+        </p>
+      )}
       <dl className={styles.facts}>
         {ssh && (
           <>
             <dt>{t('workers.ssh.tunnel')}</dt>
-            <dd><TunnelLine entry={ssh} /></dd>
+            <dd><TunnelLine entry={ssh} running={worker.running.length} /></dd>
+          </>
+        )}
+        {reasons.length > 0 && (
+          <>
+            <dt>{t('workers.degraded')}</dt>
+            <dd><DegradedLine reasons={reasons} /></dd>
           </>
         )}
         <dt>{t('workers.version')}</dt>
@@ -389,7 +537,7 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
       </dl>
       <ul className={styles.devices}>
         {worker.devices.map((device) => (
-          <DeviceRow key={device.value} device={device} />
+          <DeviceRow key={device.value} device={device} stale={away} />
         ))}
       </ul>
     </article>

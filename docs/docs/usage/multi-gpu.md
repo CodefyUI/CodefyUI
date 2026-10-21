@@ -24,8 +24,8 @@ Use **Run** while you build and debug a graph. Queue a run for anything long, an
 
 The caret next to **Run** in the toolbar opens a menu whose **Queue on...** item submits the active tab's graph as a queued run (the same `POST /api/runs` that `cdui run` uses):
 
-- **Target**: **This server**, each connected worker with its status and devices (a draining worker is listed but cannot be chosen), and **Any available** once a worker is connected.
-- **Devices**: one device for This server; for a worker, a set of one kind, kept in the order the worker lists its devices, with each CUDA card's in-run name shown as you tick it (`cuda:2 -> cuda:0 in this run`); for Any available, a kind (CPU, CUDA GPU, Apple MPS).
+- **Target**: **This server**, every worker the server knows with its status and devices, and **Any available** once a worker is connected. A run for a worker that is offline or disconnected waits in the queue until it connects; a draining or disabled one is listed but cannot be chosen. With no worker at all, the dialog says so with a link that opens the Workers panel.
+- **Devices**: one device for This server; for a worker, a set of one kind, kept in the order the worker lists its devices, with each CUDA card's in-run name shown as you tick it (`cuda:2 -> cuda:0 in this run`); for Any available, a kind (CPU, CUDA GPU, Apple MPS). Unless the tab names a device, a worker and Any available start on the first accelerator offered, whatever Settings picks for this server; the **New sweep** dialog does the same.
 - **Name**, **Random seed**, **Deterministic algorithms** and **Record node outputs** start from the tab's settings. Record node outputs is disabled for a worker or Any available.
 
 **Queue** submits the run, closes the dialog and opens it in the Runs tab. A refusal from the server is shown in the dialog.
@@ -90,13 +90,13 @@ A worker on the same machine shares this server's slot for every card that is ph
 
 Open it with **Workers** in the Runs panel header, or from **Settings → Execution → Workers → Manage**. It refreshes every 5 seconds while open and shows, for each worker:
 
-- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, **Draining**, **Disconnected**), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Remote Workers, Storage](/usage/remote-workers#storage)) and the age of its last heartbeat;
-- each device with its free and total memory from the latest heartbeat and its slots taken / limit;
+- its status (**Online**, **Degraded** when a heartbeat is late or its node types differ from the server's, with the reason beside it, **Draining**, **Disconnected**, and **Disabled** for an SSH worker you disabled), its version and whether it matches the server's, its environment digest, whether its node types match the server's (and which differ), the reason its last connection was refused, mount labels (see [Remote Workers, Storage](/usage/remote-workers#storage)) and the age of its last heartbeat;
+- each device with its free and total memory (GiB) from the latest heartbeat, marked "when last seen" while the worker is away, and its slots taken / limit;
 - the runs it is executing, each a link to the run in the Runs panel.
 
 Agents the server refused (another version, for example) and that have no card are listed under **Refused connections** with the reason ([Remote Workers, Keeping workers in sync](/usage/remote-workers#keeping-workers-in-sync)).
 
-**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why on a line under the run, for an `any` run too when the only workers that offer its device are draining. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options. **Re-key** gives a worker a new credential, and **Remove** revokes it, disconnects the worker and fails the runs queued for it ([Remote Workers](/usage/remote-workers)).
+**Drain** stops new runs from being placed on a worker while its running runs finish; **Undrain** reverses it. A queued run whose worker is draining or away waits, and the Runs panel shows why on a line under the run, for an `any` run too when the only workers that offer its device are draining. **Add worker** generates an enrollment command for another machine, or shows the same-host command above with its options; on a server that listens on `127.0.0.1` only, which no other machine can reach, it opens on **Over SSH**. **Re-key** gives an enrolled worker a new credential (a same-host agent on the session token and an SSH worker have none to replace, so they do not offer it), and **Remove** revokes it, disconnects the worker and fails the runs queued for it; for an SSH worker it also ends the ssh session and deletes the entry and what it keeps on the remote host ([Remote Workers](/usage/remote-workers)). Removing a worker, deleting an SSH worker and disabling an SSH worker that has runs on it each take a second press, and the card says what that press does first. A disabled SSH worker reads **Disabled** here and in **Queue on...**, where it cannot be chosen.
 
 ## What the canvas does {/* #the-canvas */}
 

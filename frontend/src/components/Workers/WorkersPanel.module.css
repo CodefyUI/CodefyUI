@@ -168,6 +168,15 @@
   background: var(--surface-raised);
 }
 
+/* The card holds the focus only when a button it had left (#840). */
+.card:focus {
+  outline: none;
+}
+
+.card:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
 .cardHeader {
   display: flex;
   flex-wrap: wrap;
@@ -275,6 +284,7 @@
 }
 
 .chip_offline,
+.chip_disabled,
 .chip_neutral {
   color: var(--text-muted);
   border-color: var(--border-base);
@@ -360,6 +370,18 @@
   border-color: var(--status-error);
 }
 
+/* What a second press of Remove / Delete / Disable does (#840). */
+.confirmNote {
+  flex-basis: 100%;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--status-warning);
+  background: var(--warning-wash);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
 /* ── Add worker: another machine (#780) ── */
 
 .modeSwitch {
@@ -405,6 +427,11 @@
 
 .inputUses {
   width: 5em;
+}
+
+/* "Connect over SSH instead" under the loopback note (#840). */
+.useSsh {
+  margin-top: var(--sp-2);
 }
 
 .suggestions {
