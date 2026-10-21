@@ -181,6 +181,10 @@ const en = {
   'toolbar.exportPython.absolutePath':
     'Absolute paths work only on this computer: {nodes}. Use just the file name instead.',
   'toolbar.exportPython.absolutePath.more': 'and {count} more',
+  // #792: a TrainingLoop with strategy=ddp. The exported script trains it in
+  // one process. `{nodes}` names up to three as `Block ▸ Node`.
+  'toolbar.exportPython.ddpStrategy':
+    'strategy=ddp trains across GPUs only in a run on a worker with two or more cards; the exported script trains {nodes} in one process.',
   // Asked before Export as JSON / Python downloads a tab that is not saved
   // yet; a saved graph exports under its own file's name. `{ext}`: py, json.
   'toolbar.exportName.prompt': 'File name for the .{ext} file',
