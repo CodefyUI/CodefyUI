@@ -162,6 +162,9 @@ function SameHostInstructions() {
   );
 }
 
+/** A list the dialog read this long ago (ms) is not read again on mount. */
+export const ENROLLMENT_LIST_FRESH_MS = 5000;
+
 /**
  * Another machine (#780): pick a lifetime and a number of uses, generate an
  * enrollment token, copy the command. The server address in the command is
@@ -170,9 +173,6 @@ function SameHostInstructions() {
  * dial. The tokens already issued are listed (never their secrets) with a
  * revoke button each.
  */
-/** A list the dialog read this long ago (ms) is not read again on mount. */
-export const ENROLLMENT_LIST_FRESH_MS = 5000;
-
 function RemoteInstructions({ rekey, initialList = null, initialAt = 0, onList, onUseSsh }: {
   rekey: string | null;
   /** The last list the dialog saw, so the form starts filled. */
