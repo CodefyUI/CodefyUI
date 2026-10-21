@@ -5,7 +5,11 @@
     GET    /api/studies/{id}            status, attempts, aggregates, rankings
     GET    /api/studies/{id}/events     audit log after a cursor, optional long poll
     POST   /api/studies/{id}/cancel     stop scheduling, cancel active children
-    POST   /api/studies/{id}/resume     re-run what did not complete
+    POST   /api/studies/{id}/resume     re-run what did not complete (optionally
+                                        with a raised budget)
+
+Plugins reach the same studies through ``routes_plugin_jobs`` (``/api/
+plugins/{plugin_id}/jobs``), which reuses the helpers below.
 
 Conventions are ``routes_sweeps.py``'s: plain ``dict`` returns, request
 models with ``extra="forbid"``, every error a ``{"detail": ...}``, a 503 when
@@ -24,7 +28,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -50,14 +54,18 @@ from ..core.run_store import RunRecord
 from ..core.study_coordinator import StudyCoordinator, StudySpec
 from ..core.study_store import (
     ATTEMPT_STATUSES,
+    PLUGIN_KEY_PREFIX,
     RESUME_EXPLICIT,
     STUDY_STATUSES,
     AttemptRecord,
     IdempotencyConflict,
     StudyRecord,
     StudyStateError,
+    budget_usage,
     current_attempts,
     rank_study,
+    scoped_idempotency_key,
+    unscoped_idempotency_key,
 )
 from ..core.sweep_compiler import SweepCompileError, compile_sweep
 
@@ -68,6 +76,13 @@ router = APIRouter(prefix="/api/studies", tags=["studies"])
 MAX_STUDY_REPETITIONS = 32
 #: Upper bound on ``budget.max_parallel_runs``.
 MAX_STUDY_PARALLEL_RUNS = 32
+#: Upper bound on ``budget.max_run_seconds`` and ``max_active_seconds``
+#: (30 days): a bound against typos, well past any real study.
+MAX_STUDY_BUDGET_SECONDS = 30 * 24 * 3600.0
+#: Budget keys added after the first release of studies. Left out of the
+#: idempotency identity when unset, so a retry of a request from before
+#: them still matches its study.
+_LATER_BUDGET_KEYS = ("max_run_seconds", "max_active_seconds")
 MAX_LABEL_LENGTH = 64
 MAX_IDEMPOTENCY_KEY_LENGTH = 200
 IDEMPOTENCY_HEADER = "Idempotency-Key"
@@ -145,14 +160,48 @@ class StudyVariantModel(BaseModel):
 
 
 class StudyBudgetModel(BaseModel):
-    """Server-enforced limits. ``max_runs`` counts every SUBMITTED attempt,
-    retries included; ``max_parallel_runs`` caps the children in flight."""
+    """Server-enforced limits (``core.study_coordinator``, Budgets).
+
+    ``max_runs`` counts every SUBMITTED attempt, retries included;
+    ``max_parallel_runs`` caps the children in flight; ``max_run_seconds``
+    stops one child that executes longer (it ends ``timed_out``);
+    ``max_active_seconds`` caps the summed execution time of all children.
+    Running out of ``max_runs`` or ``max_active_seconds`` halts the study.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     max_runs: int | None = Field(default=None, strict=True, ge=1)
     max_parallel_runs: int = Field(default=1, strict=True, ge=1,
                                    le=MAX_STUDY_PARALLEL_RUNS)
+    max_run_seconds: StrictInt | StrictFloat | None = Field(
+        default=None, gt=0, le=MAX_STUDY_BUDGET_SECONDS)
+    max_active_seconds: StrictInt | StrictFloat | None = Field(
+        default=None, gt=0, le=MAX_STUDY_BUDGET_SECONDS)
+
+    def stored(self) -> dict[str, Any]:
+        """The budget as the study row keeps it (seconds as floats)."""
+        out = self.model_dump()
+        for key in _LATER_BUDGET_KEYS:
+            if out[key] is not None:
+                out[key] = float(out[key])
+        return out
+
+
+class CancelStudyRequest(BaseModel):
+    """Optional body of a cancel. ``expected_revision`` turns a race with
+    another client into a 409 instead of a silent second transition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int | None = Field(default=None, strict=True, ge=0)
+
+
+class ResumeStudyRequest(CancelStudyRequest):
+    """Optional body of a resume: a replacement ``budget`` (all of it; the
+    keys left out take their defaults), as a halted study needs."""
+
+    budget: StudyBudgetModel | None = None
 
 
 class CreateStudyRequest(BaseModel):
@@ -208,8 +257,8 @@ def _resolve_variant(index: int, variant: StudyVariantModel,
     return compiled.variants[0].graph
 
 
-def _build_spec(body: CreateStudyRequest,
-                idempotency_key: str | None) -> StudySpec:
+def _build_spec(body: CreateStudyRequest, idempotency_key: str | None,
+                owner: str | None = None) -> StudySpec:
     if len(body.variants) > settings.MAX_SWEEP_RUNS:
         raise HTTPException(
             status_code=400,
@@ -257,15 +306,21 @@ def _build_spec(body: CreateStudyRequest,
     identity = body.model_dump(exclude={"idempotency_key", "base_graph"})
     for entry in identity["variants"]:
         entry.pop("graph", None)
+    for key in _LATER_BUDGET_KEYS:
+        if identity["budget"].get(key) is None:
+            identity["budget"].pop(key, None)
+    if owner is not None:
+        identity["owner"] = owner
     return StudySpec(
         name=name,
         objective=body.objective.model_dump(),
         repetitions=body.repetitions,
         seed=seed,
         options=raw_options,
-        budget=body.budget.model_dump(),
+        budget=body.budget.stored(),
         resume_policy=body.resume_policy,
-        idempotency_key=idempotency_key,
+        idempotency_key=scoped_idempotency_key(owner, idempotency_key),
+        owner=owner,
         variants=[(variant.label,
                    None if variant.ops is None
                    else [op.model_dump() for op in variant.ops],
@@ -284,7 +339,10 @@ def _study_summary(study: StudyRecord) -> dict[str, Any]:
         "revision": study.revision, "objective": study.objective,
         "repetitions": study.repetitions, "seed": study.seed,
         "budget": study.budget, "resume_policy": study.resume_policy,
-        "idempotency_key": study.idempotency_key, "error": study.error,
+        "idempotency_key": unscoped_idempotency_key(study.owner,
+                                                    study.idempotency_key),
+        "error": study.error, "halt": study.halt, "owner": study.owner,
+        "request_digest": study.request_digest,
         "created_at": study.created_at, "updated_at": study.updated_at,
         "finished_at": study.finished_at,
     }
@@ -351,9 +409,12 @@ async def _study_detail(coordinator: StudyCoordinator,
         })
     ranked = sorted((row for row in variant_rows if row["rank"] is not None),
                     key=lambda row: (row["rank"], row["index"]))
+    usage = budget_usage(study.budget, attempts,
+                         now=coordinator._clock())
     return {
         **_study_summary(study),
         "options": study.options,
+        "budget_usage": usage,
         "counts": _counts(current),
         "attempts_submitted": sum(1 for a in attempts
                                   if a.status != "pending"),
@@ -405,6 +466,11 @@ async def create_study(
             detail=f"the {IDEMPOTENCY_HEADER} header and the body's "
                    "idempotency_key differ; send one, or the same value")
     key = header_key or body.idempotency_key
+    if key is not None and key.startswith(PLUGIN_KEY_PREFIX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"idempotency keys starting with {PLUGIN_KEY_PREFIX!r} "
+                   "are reserved for plugin jobs")
     spec = _build_spec(body, key)
     try:
         study, created = await coordinator.create_study(spec)
@@ -490,14 +556,18 @@ async def get_study_events(
 
 
 @router.post("/{study_id}/cancel")
-async def cancel_study(study_id: str, request: Request):
+async def cancel_study(study_id: str, request: Request,
+                       body: CancelStudyRequest | None = Body(default=None)):
     """Stop scheduling and cancel the active children. Completed attempts
     are kept; a study reads ``cancel_requested`` until every child it asked
     to stop has stopped, then ``cancelled``. Cancelling a cancelled study is
-    a 200 no-op; a succeeded one is a 409."""
+    a 200 no-op; a succeeded one is a 409, and so is an
+    ``expected_revision`` the study has moved past."""
     coordinator = _get_coordinator(request)
     try:
-        study, delivered = await coordinator.cancel(study_id)
+        study, delivered = await coordinator.cancel(
+            study_id, expected_revision=(
+                None if body is None else body.expected_revision))
     except KeyError as exc:
         raise _not_found(study_id) from exc
     except StudyStateError as exc:
@@ -507,15 +577,42 @@ async def cancel_study(study_id: str, request: Request):
 
 
 @router.post("/{study_id}/resume")
-async def resume_study(study_id: str, request: Request):
-    """Continue an interrupted, cancelled or failed study. Completed
-    repetitions are skipped; a cancelled, interrupted or lost one gets a new
-    attempt. Any other status is a 409."""
+async def resume_study(study_id: str, request: Request,
+                       body: ResumeStudyRequest | None = Body(default=None)):
+    """Continue an interrupted, cancelled, failed or halted study, with
+    ``budget`` replacing its budget when given. Completed repetitions are
+    skipped; a cancelled, interrupted or lost one gets a new attempt. Any
+    other status, a budget that is already used up, and an
+    ``expected_revision`` the study has moved past are a 409."""
     coordinator = _get_coordinator(request)
     try:
-        study = await coordinator.resume(study_id)
+        study = await coordinator.resume(
+            study_id,
+            budget=(None if body is None or body.budget is None
+                    else body.budget.stored()),
+            expected_revision=(None if body is None
+                               else body.expected_revision))
     except KeyError as exc:
         raise _not_found(study_id) from exc
     except StudyStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _study_detail(coordinator, study)
+
+
+@router.get("/{study_id}/variants/{index}/graph")
+async def get_study_variant_graph(study_id: str, index: int,
+                                  request: Request):
+    """The graph one variant ran, as stored (``SECRET`` values blank), so a
+    client can open the winner as a tab."""
+    coordinator = _get_coordinator(request)
+    graph = await coordinator.store.get_variant_graph(study_id, index)
+    if graph is None:
+        if await coordinator.store.get_study(study_id) is None:
+            raise _not_found(study_id)
+        raise HTTPException(status_code=404,
+                            detail=f"study '{study_id}' has no variant "
+                                   f"{index}")
+    variants = await coordinator.store.list_variants(study_id)
+    label = next((v.label for v in variants if v.index == index), None)
+    return {"study_id": study_id, "variant_index": index, "label": label,
+            "graph": graph}

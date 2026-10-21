@@ -25,6 +25,7 @@ import logging
 import math
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
 
@@ -44,12 +45,13 @@ logger = logging.getLogger(__name__)
 #
 #   queued -> running -> succeeded            every scheduled repetition ended
 #                     -> failed               the coordinator could not finish
-#                                             the schedule (a submit refused,
-#                                             the run budget exhausted)
+#                                             the schedule (a submit refused)
+#                     -> halted               a server-enforced budget ran out
+#                                             (max_runs, max_active_seconds)
 #                     -> cancel_requested -> cancelled
 #                     -> interrupted          a server restart, or a child
 #                                             stopped outside the study
-#   interrupted | cancelled | failed -> running   explicit resume
+#   interrupted | cancelled | failed | halted -> running   explicit resume
 #
 # ``succeeded`` is about the SCHEDULE, not the training: a study whose
 # repetitions all ran is ``succeeded`` even if some of them failed, and the
@@ -62,11 +64,15 @@ STUDY_SUCCEEDED = "succeeded"
 STUDY_FAILED = "failed"
 STUDY_CANCELLED = "cancelled"
 STUDY_INTERRUPTED = "interrupted"
+#: A budget ran out (#343 increment 4). Every result so far is kept, the
+#: ``halt`` column says which budget and by how much, and a resume (with a
+#: raised budget) continues the study.
+STUDY_HALTED = "halted"
 
 STUDY_ACTIVE: frozenset[str] = frozenset({
     STUDY_QUEUED, STUDY_RUNNING, STUDY_CANCEL_REQUESTED})
 STUDY_RESUMABLE: frozenset[str] = frozenset({
-    STUDY_INTERRUPTED, STUDY_CANCELLED, STUDY_FAILED})
+    STUDY_INTERRUPTED, STUDY_CANCELLED, STUDY_FAILED, STUDY_HALTED})
 STUDY_STATUSES: frozenset[str] = STUDY_ACTIVE | STUDY_RESUMABLE | {
     STUDY_SUCCEEDED}
 
@@ -75,6 +81,7 @@ STUDY_STATUSES: frozenset[str] = STUDY_ACTIVE | STUDY_RESUMABLE | {
 #   pending -> submitting -> queued -> running -> succeeded | failed
 #                                              -> cancelled | interrupted
 #           submitting -> lost       the submission never created a run
+#                         running -> timed_out   ran past budget.max_run_seconds
 #
 # ``submitting`` is written WITH the run id the coordinator is about to use,
 # before the child is submitted: the linkage exists before the child does.
@@ -87,12 +94,16 @@ ATTEMPT_FAILED = "failed"
 ATTEMPT_CANCELLED = "cancelled"
 ATTEMPT_INTERRUPTED = "interrupted"
 ATTEMPT_LOST = "lost"
+#: The child ran past ``budget.max_run_seconds`` and the coordinator stopped
+#: it. A result like ``failed``: the repetition is done and is not re-run.
+ATTEMPT_TIMED_OUT = "timed_out"
 
 #: A child exists or may exist and is not finished.
 ATTEMPT_ACTIVE: frozenset[str] = frozenset({
     ATTEMPT_SUBMITTING, ATTEMPT_QUEUED, ATTEMPT_RUNNING})
 #: The repetition is DONE: its outcome is evidence and it is never re-run.
-ATTEMPT_FINAL: frozenset[str] = frozenset({ATTEMPT_SUCCEEDED, ATTEMPT_FAILED})
+ATTEMPT_FINAL: frozenset[str] = frozenset({
+    ATTEMPT_SUCCEEDED, ATTEMPT_FAILED, ATTEMPT_TIMED_OUT})
 #: The repetition did not complete; a resume gives it a new attempt.
 ATTEMPT_RETRYABLE: frozenset[str] = frozenset({
     ATTEMPT_CANCELLED, ATTEMPT_INTERRUPTED, ATTEMPT_LOST})
@@ -106,14 +117,43 @@ RESUME_POLICIES: frozenset[str] = frozenset({RESUME_EXPLICIT, RESUME_AUTO})
 DIRECTION_MINIMIZE = "minimize"
 DIRECTION_MAXIMIZE = "maximize"
 
+#: ``study_attempts.stop_reason`` values: the budget a child was stopped for.
+STOP_MAX_RUN_SECONDS = "max_run_seconds"
+STOP_MAX_ACTIVE_SECONDS = "max_active_seconds"
+#: ``studies.halt.budget`` values.
+BUDGET_MAX_RUNS = "max_runs"
+BUDGET_MAX_ACTIVE_SECONDS = "max_active_seconds"
+
+#: The prefix a plugin's idempotency key is stored under (``owner`` scoping).
+PLUGIN_KEY_PREFIX = "plugin:"
+
+
+def scoped_idempotency_key(owner: str | None, key: str | None) -> str | None:
+    """The stored form of *key*: as given for ``/api/studies``, and
+    ``plugin:<owner>:<key>`` for a plugin's job, so keys never collide
+    across plugins (``idempotency_key`` is UNIQUE over the whole table)."""
+    if key is None or owner is None:
+        return key
+    return f"{PLUGIN_KEY_PREFIX}{owner}:{key}"
+
+
+def unscoped_idempotency_key(owner: str | None,
+                             stored: str | None) -> str | None:
+    """The key as its submitter sent it (inverse of the function above)."""
+    if stored is None or owner is None:
+        return stored
+    prefix = f"{PLUGIN_KEY_PREFIX}{owner}:"
+    return stored[len(prefix):] if stored.startswith(prefix) else stored
+
 _STUDY_COLUMNS = (
     "id, name, status, revision, objective, repetitions, seed, options, "
     "budget, resume_policy, idempotency_key, request_digest, error, "
-    "created_at, updated_at, finished_at")
+    "created_at, updated_at, finished_at, owner, halt")
 _ATTEMPT_COLUMNS = (
     "id, study_id, variant_index, repetition, attempt, seed, run_id, status, "
     "error, created_at, submitted_at, started_at, finished_at, "
-    "objective_value, final_metrics, fingerprint_digest, harvested_at")
+    "objective_value, final_metrics, fingerprint_digest, harvested_at, "
+    "stop_reason")
 _EVENT_COLUMNS = "study_id, cursor, type, payload, ts"
 
 
@@ -130,6 +170,18 @@ class IdempotencyConflict(ValueError):
 
 class StudyStateError(ValueError):
     """A transition the study's current status does not allow. -> 409."""
+
+
+class RevisionConflict(StudyStateError):
+    """``expected_revision`` did not match: someone else moved the study
+    first. -> 409, like every state race."""
+
+    def __init__(self, study_id: str, expected: int, actual: int) -> None:
+        super().__init__(
+            f"study {study_id} is at revision {actual}, not the expected "
+            f"{expected}; read it again and retry")
+        self.expected = expected
+        self.actual = actual
 
 
 def _dumps(value: Any) -> str:
@@ -169,6 +221,10 @@ class StudyRecord:
     created_at: str
     updated_at: str
     finished_at: str | None
+    #: The plugin that submitted it through its jobs routes; None = core.
+    owner: str | None = None
+    #: Which budget halted it, for a ``halted`` study; None otherwise.
+    halt: dict[str, Any] | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "StudyRecord":
@@ -181,7 +237,8 @@ class StudyRecord:
             idempotency_key=row["idempotency_key"],
             request_digest=row["request_digest"], error=row["error"],
             created_at=row["created_at"], updated_at=row["updated_at"],
-            finished_at=row["finished_at"])
+            finished_at=row["finished_at"], owner=row["owner"],
+            halt=_loads(row["halt"]))
 
 
 @dataclass(frozen=True)
@@ -211,6 +268,8 @@ class AttemptRecord:
     final_metrics: dict[str, float] | None
     fingerprint_digest: str | None
     harvested_at: str | None
+    #: The budget the coordinator stopped this attempt's child for.
+    stop_reason: str | None = None
 
     @property
     def slot(self) -> tuple[int, int]:
@@ -229,7 +288,8 @@ class AttemptRecord:
             objective_value=row["objective_value"],
             final_metrics=_loads(row["final_metrics"]),
             fingerprint_digest=row["fingerprint_digest"],
-            harvested_at=row["harvested_at"])
+            harvested_at=row["harvested_at"],
+            stop_reason=row["stop_reason"])
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -243,6 +303,7 @@ class AttemptRecord:
             "final_metrics": self.final_metrics,
             "fingerprint_digest": self.fingerprint_digest,
             "harvested_at": self.harvested_at,
+            "stop_reason": self.stop_reason,
         }
 
 
@@ -345,19 +406,36 @@ def _harvest_one(conn: sqlite3.Connection, attempt: sqlite3.Row,
              if isinstance(metric, str) and isinstance(node_id, str)
              else None)
     metrics = last_metric_values(conn, run["id"])
+    status = attempt_outcome(run["status"], attempt["stop_reason"])
     conn.execute(
         "UPDATE study_attempts SET run_id = ?, status = ?, error = ?, "
         "started_at = ?, finished_at = ?, objective_value = ?, "
         "final_metrics = ?, fingerprint_digest = ?, harvested_at = ? "
         "WHERE id = ? AND harvested_at IS NULL",
-        (run["id"], run["status"], run["error"], run["started_at"],
+        (run["id"], status, run["error"], run["started_at"],
          run["finished_at"], _finite(value), _dumps(metrics),
          run["fingerprint_digest"], stamp, attempt["id"]))
     _event(conn, attempt["study_id"], "attempt_finished", {
         **_attempt_ref(attempt), "run_id": run["id"],
-        "status": run["status"], "objective_value": _finite(value),
-        "error": run["error"]}, stamp)
+        "status": status, "run_status": run["status"],
+        "objective_value": _finite(value), "error": run["error"],
+        **({"stop_reason": attempt["stop_reason"]}
+           if attempt["stop_reason"] else {})}, stamp)
     return True
+
+
+def attempt_outcome(run_status: str, stop_reason: str | None) -> str:
+    """The attempt status a terminal child yields.
+
+    A child the coordinator stopped for ``max_run_seconds`` that did not
+    finish on its own (succeeded or failed) is ``timed_out``: a result, not
+    a retry. Every other child gives its own status, so a child stopped for
+    ``max_active_seconds`` reads ``cancelled`` and a resume re-runs it.
+    """
+    if stop_reason == STOP_MAX_RUN_SECONDS \
+            and run_status not in (ATTEMPT_SUCCEEDED, ATTEMPT_FAILED):
+        return ATTEMPT_TIMED_OUT
+    return run_status
 
 
 _HARVEST_RUN_COLUMNS = (
@@ -505,6 +583,79 @@ def rank_study(
     return rows
 
 
+# ── budget accounting ─────────────────────────────────────────────────────
+
+
+def parse_stamp(stamp: str | None) -> float | None:
+    """A stored ``utc_now_iso`` stamp as epoch seconds; None for None."""
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def attempt_seconds(attempt: AttemptRecord, now: float) -> float:
+    """How long *attempt*'s child has executed: start to finish, or start to
+    *now* while it is still active. 0 before it started (queued time is not
+    counted: it is the queue's, not the study's)."""
+    started = parse_stamp(attempt.started_at)
+    if started is None:
+        return 0.0
+    finished = parse_stamp(attempt.finished_at)
+    if finished is None:
+        if attempt.status not in ATTEMPT_ACTIVE:
+            return 0.0
+        finished = now
+    return max(0.0, finished - started)
+
+
+def budget_usage(budget: Mapping[str, Any], attempts: Sequence[AttemptRecord],
+                 *, now: float) -> dict[str, Any]:
+    """What the study has used of each budget, and which one (if any) now
+    stops it from scheduling.
+
+    - ``runs``: attempts ever submitted (every status but ``pending``),
+      retries and lost submissions included, against ``max_runs``.
+    - ``parallel``: current attempts in flight against ``max_parallel_runs``.
+    - ``active_seconds``: the summed execution time of every attempt's
+      child, retries included, against ``max_active_seconds``.
+    - ``run_seconds``: the longest-running active child against
+      ``max_run_seconds`` (a per-child limit; it never halts the study).
+
+    ``exhausted`` is ``max_runs`` when attempts are still to be submitted
+    and none may be, ``max_active_seconds`` when the summed time reached
+    its limit while repetitions are unfinished, else None. Pure: the same
+    evidence and clock give the same answer, before and after a restart.
+    """
+    current = current_attempts(attempts)
+    used_runs = sum(1 for a in attempts if a.status != ATTEMPT_PENDING)
+    active = [a for a in current.values() if a.status in ATTEMPT_ACTIVE]
+    pending = sum(1 for a in current.values() if a.status == ATTEMPT_PENDING)
+    unfinished = sum(1 for a in current.values()
+                     if a.status not in ATTEMPT_FINAL)
+    seconds = math.fsum(attempt_seconds(a, now) for a in attempts)
+    longest = max((attempt_seconds(a, now) for a in active), default=0.0)
+    max_runs = budget.get("max_runs")
+    max_active = budget.get("max_active_seconds")
+    exhausted = None
+    if max_active is not None and unfinished and seconds >= max_active:
+        exhausted = BUDGET_MAX_ACTIVE_SECONDS
+    elif max_runs is not None and pending and used_runs >= max_runs:
+        exhausted = BUDGET_MAX_RUNS
+    return {
+        "runs": {"used": used_runs, "limit": max_runs},
+        "parallel": {"active": len(active),
+                     "limit": int(budget.get("max_parallel_runs") or 1)},
+        "active_seconds": {"used": round(seconds, 3), "limit": max_active},
+        "run_seconds": {"longest_active": round(longest, 3),
+                        "limit": budget.get("max_run_seconds")},
+        "unfinished_repetitions": unfinished,
+        "exhausted": exhausted,
+    }
+
+
 def _select_by_idempotency_key(conn: sqlite3.Connection,
                                key: str) -> StudyRecord | None:
     """The study created with idempotency *key*, or None. Shared by the
@@ -531,6 +682,7 @@ class StudyStore:
         budget: dict[str, Any], resume_policy: str,
         idempotency_key: str | None, request_digest: str,
         variants: Sequence[NewVariant], repetition_seeds: Sequence[int],
+        owner: str | None = None,
     ) -> tuple[StudyRecord, bool]:
         """Insert a study with every variant and N x R pending attempts, in
         ONE transaction; returns ``(study, created)``.
@@ -558,12 +710,12 @@ class StudyStore:
                     "INSERT INTO studies (id, name, status, revision, "
                     "objective, repetitions, seed, options, budget, "
                     "resume_policy, idempotency_key, request_digest, "
-                    "created_at, updated_at) VALUES "
-                    "(?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "created_at, updated_at, owner) VALUES "
+                    "(?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (study_id, name, STUDY_QUEUED, _dumps(objective),
                      repetitions, seed, _dumps(options), _dumps(budget),
                      resume_policy, idempotency_key, request_digest, stamp,
-                     stamp))
+                     stamp, owner))
                 for index, variant in enumerate(variants):
                     conn.execute(
                         "INSERT INTO study_variants (study_id, "
@@ -587,7 +739,10 @@ class StudyStore:
                     "repetitions": repetitions,
                     "attempts": len(variants) * repetitions,
                     "repetition_seeds": list(repetition_seeds),
-                    "idempotency_key": idempotency_key}, stamp)
+                    "idempotency_key": unscoped_idempotency_key(
+                        owner, idempotency_key),
+                    "budget": budget,
+                    **({"owner": owner} if owner else {})}, stamp)
                 study = _select_study(conn, study_id)
                 assert study is not None
                 return study, True
@@ -606,10 +761,12 @@ class StudyStore:
 
     async def list_studies(
         self, *, status: Sequence[str] | None = None, limit: int = 50,
-        offset: int = 0,
+        offset: int = 0, owner: str | None = None,
     ) -> tuple[list[StudyRecord], int]:
-        """Newest first, plus the total matching count."""
-        where, params = "", []
+        """Newest first, plus the total matching count. *owner* keeps only
+        the studies that plugin submitted."""
+        clauses: list[str] = []
+        params: list[Any] = []
         if status is not None:
             unknown = sorted(set(status) - STUDY_STATUSES)
             if unknown:
@@ -617,8 +774,12 @@ class StudyStore:
                                  f"one of {sorted(STUDY_STATUSES)}")
             if not status:
                 return [], 0
-            where = f" WHERE status IN ({','.join('?' * len(status))})"
-            params = list(status)
+            clauses.append(f"status IN ({','.join('?' * len(status))})")
+            params += list(status)
+        if owner is not None:
+            clauses.append("owner = ?")
+            params.append(owner)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
 
         def _select(conn: sqlite3.Connection
                     ) -> tuple[list[StudyRecord], int]:
@@ -726,13 +887,15 @@ class StudyStore:
     async def transition(
         self, study_id: str, *, to: str, expected: Iterable[str],
         event_type: str, payload: dict[str, Any] | None = None,
-        error: str | None = None,
+        error: str | None = None, halt: dict[str, Any] | None = None,
     ) -> StudyRecord | None:
         """Move the study to *to* when its status is in *expected*.
 
         Returns the new row, or None when the guard refused (the study is
         gone or already moved on). ``finished_at`` is stamped when *to* is
-        not an active status and cleared when it is (a resume).
+        not an active status and cleared when it is (a resume). ``halt`` is
+        written as given (None clears it), so only a ``halted`` study has
+        one.
         """
         if to not in STUDY_STATUSES:
             raise ValueError(f"unknown study status {to!r}")
@@ -747,24 +910,31 @@ class StudyStore:
                     return None
                 conn.execute(
                     "UPDATE studies SET status = ?, error = ?, "
-                    "finished_at = ? WHERE id = ?",
-                    (to, error, finished, study_id))
+                    "finished_at = ?, halt = ? WHERE id = ?",
+                    (to, error, finished,
+                     None if halt is None else _dumps(halt), study_id))
                 _event(conn, study_id, event_type, {
                     **(payload or {}), "from": study.status, "to": to,
-                    **({"error": error} if error else {})}, stamp)
+                    **({"error": error} if error else {}),
+                    **({"halt": halt} if halt else {})}, stamp)
                 return _select_study(conn, study_id)
 
         return await self.db.run(_update)
 
     async def resume(
         self, study_id: str, *, reason: str,
+        budget: dict[str, Any] | None = None,
+        expected_revision: int | None = None,
     ) -> tuple[StudyRecord, list[AttemptRecord]]:
         """Reopen a resumable study: every repetition whose current attempt
         is cancelled, interrupted or lost gets a NEW pending attempt
         (attempt + 1, same seed); completed repetitions are left alone.
+        *budget*, when given, replaces the study's budget in the same
+        transaction (and the event records the old and new one).
 
-        Raises ``StudyStateError`` when the study cannot be resumed, and
-        ``KeyError`` when it does not exist.
+        Raises ``StudyStateError`` when the study cannot be resumed (or its
+        revision is not *expected_revision*), and ``KeyError`` when it does
+        not exist.
         """
         stamp = utc_now_iso()
 
@@ -774,6 +944,10 @@ class StudyStore:
                 study = _select_study(conn, study_id)
                 if study is None:
                     raise KeyError(study_id)
+                if expected_revision is not None \
+                        and study.revision != expected_revision:
+                    raise RevisionConflict(study_id, expected_revision,
+                                           study.revision)
                 if study.status not in STUDY_RESUMABLE:
                     raise StudyStateError(
                         f"study {study_id} is {study.status}; only "
@@ -796,8 +970,11 @@ class StudyStore:
                     created.append(new_id)
                 conn.execute(
                     "UPDATE studies SET status = ?, error = NULL, "
-                    "finished_at = NULL WHERE id = ?",
-                    (STUDY_RUNNING, study_id))
+                    "finished_at = NULL, halt = NULL, budget = ? "
+                    "WHERE id = ?",
+                    (STUDY_RUNNING,
+                     _dumps(study.budget if budget is None else budget),
+                     study_id))
                 fresh = {a.id: a for a in _select_attempts(conn, study_id)}
                 new_attempts = [fresh[attempt_id] for attempt_id in created]
                 completed = sum(1 for a in current.values()
@@ -806,7 +983,11 @@ class StudyStore:
                     "from": study.status, "to": STUDY_RUNNING,
                     "reason": reason,
                     "new_attempts": [_attempt_ref(a) for a in new_attempts],
-                    "completed_repetitions_kept": completed}, stamp)
+                    "completed_repetitions_kept": completed,
+                    **({"halt": study.halt} if study.halt else {}),
+                    **({"budget_from": study.budget, "budget_to": budget}
+                       if budget is not None and budget != study.budget
+                       else {})}, stamp)
                 record = _select_study(conn, study_id)
                 assert record is not None
                 return record, new_attempts
@@ -885,11 +1066,42 @@ class StudyStore:
 
     async def mark_started(self, attempt_id: str,
                            started_at: str | None) -> AttemptRecord | None:
+        """``queued -> running`` with the child's start time; also fills in
+        the start time of an attempt confirmed as ``running`` at submit
+        (a child that started at once), which the time budgets need."""
         return await self._attempt_update(
-            attempt_id, expected=(ATTEMPT_QUEUED,),
+            attempt_id, expected=(ATTEMPT_QUEUED, ATTEMPT_RUNNING),
             sets="status = ?, started_at = ?",
             values=(ATTEMPT_RUNNING, started_at),
             event_type="attempt_started", payload={})
+
+    async def request_stop(self, attempt_id: str,
+                           reason: str) -> AttemptRecord | None:
+        """Record that the coordinator is stopping this attempt's child for
+        the budget *reason*, BEFORE the cancel is sent: the harvest reads it
+        to tell the study's own stop from someone else's. None when the
+        attempt is no longer active or already has a reason."""
+        stamp = utc_now_iso()
+
+        def _update(conn: sqlite3.Connection) -> AttemptRecord | None:
+            with transaction(conn):
+                row = conn.execute(
+                    f"SELECT {_ATTEMPT_COLUMNS} FROM study_attempts "
+                    "WHERE id = ?", (attempt_id,)).fetchone()
+                if row is None or row["status"] not in ATTEMPT_ACTIVE \
+                        or row["stop_reason"] is not None:
+                    return None
+                conn.execute("UPDATE study_attempts SET stop_reason = ? "
+                             "WHERE id = ?", (reason, attempt_id))
+                fresh = AttemptRecord.from_row(conn.execute(
+                    f"SELECT {_ATTEMPT_COLUMNS} FROM study_attempts "
+                    "WHERE id = ?", (attempt_id,)).fetchone())
+                _event(conn, fresh.study_id, "attempt_stop_requested", {
+                    **_attempt_ref(fresh), "run_id": fresh.run_id,
+                    "status": fresh.status, "reason": reason}, stamp)
+                return fresh
+
+        return await self.db.run(_update)
 
     async def add_attempt(self, previous: AttemptRecord,
                           reason: str) -> AttemptRecord | None:

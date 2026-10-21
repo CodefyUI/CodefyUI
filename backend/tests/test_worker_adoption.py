@@ -564,5 +564,78 @@ async def test_a_study_with_an_adopted_child_carries_on_with_it(
     statuses = sorted(a.status for a in attempts)
     if outcome == "succeeded":
         assert statuses == ["succeeded", "succeeded"]
+        # The adopted child counted as repetition 1: two runs in all.
+        assert len({a.run_id for a in attempts}) == 2
     else:
         assert statuses == ["interrupted", "pending"]
+
+
+async def test_resuming_after_an_adopted_child_expired_reruns_it_once(
+        db, tmp_path):
+    """#343 with #793: the adopted child of a study on a worker ends
+    ``interrupted`` (its worker never came back). A resume runs THAT
+    repetition again once, on the same target and with the same seed, then
+    the next one; every child carries the study's target, and no
+    repetition executes twice."""
+    clock = [1000.0]
+    first = db(studies=True)
+    async with _client() as client:
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            response = await client.post("/api/studies", json=_study())
+            study_id = response.json()["study_id"]
+            assign = await agent.recv()
+            assert isinstance(assign, wp.Assign)
+            spooler = SpoolingAgent(tmp_path, assign.run_id)
+            spooler.agent = agent
+            await spooler.produce(spooler.frame("started"))
+            await _drain_acks(spooler, 1)
+        spooler.agent = None
+        await _until(lambda: first.registry.get("box").status
+                     == "disconnected")
+        await first.crash()
+
+        second = db(studies=True, clock=lambda: clock[0])
+        await second.service.recover_interrupted()
+        await second.coordinator.recover()
+        clock[0] += 301
+        second.registry.check()
+        await _terminal(second.service, assign.run_id)
+        for _ in range(250):
+            if await _study_status(second.coordinator,
+                                   study_id) == "interrupted":
+                break
+            await asyncio.sleep(0.02)
+        assert await _study_status(second.coordinator,
+                                   study_id) == "interrupted"
+
+        async with aconnect_ws(_path(), client) as ws:
+            agent = FakeAgent(ws)
+            await agent.hello()
+            response = await client.post(f"/api/studies/{study_id}/resume")
+            assert response.status_code == 200, response.text
+            seeds = []
+            for _ in range(2):
+                nxt = await agent.recv()
+                while not isinstance(nxt, wp.Assign):
+                    nxt = await agent.recv()
+                assert nxt.options["target"]["worker"] == "box"
+                assert nxt.run_id != assign.run_id
+                seeds.append(nxt.options["seed"])
+                await agent.finish_run(nxt)
+                await _terminal(second.service, nxt.run_id)
+            for _ in range(250):
+                if await _study_status(second.coordinator,
+                                       study_id) == "succeeded":
+                    break
+                await asyncio.sleep(0.02)
+    assert seeds == [11, 12]        # repetition 1 again, then repetition 2
+    assert await _study_status(second.coordinator, study_id) == "succeeded"
+    attempts = await second.coordinator.store.list_attempts(study_id)
+    assert sorted((a.repetition, a.attempt, a.status) for a in attempts) == [
+        (0, 1, "interrupted"), (0, 2, "succeeded"), (1, 1, "succeeded")]
+    rows =await second.service.store.db.run(lambda conn: conn.execute(
+        "SELECT COUNT(*) FROM exec_runs WHERE study_id = ?",
+        (study_id,)).fetchone()[0])
+    assert rows == 3
