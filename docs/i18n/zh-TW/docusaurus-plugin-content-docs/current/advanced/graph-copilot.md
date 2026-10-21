@@ -83,6 +83,10 @@ AI 會先回傳計畫，再套用操作。每次工具呼叫會在回覆下方�
 
 AI 每套用一批操作就是一個復原快照。按一次 **Ctrl+Z**（macOS 上為 Cmd+Z）即可復原最後一批。AI 在同一則回覆中自我修正時會套用不只一批操作，每一批都需要各按一次 Ctrl+Z。
 
+## 伺服器端的研究 {/* #server-side-studies */}
+
+Lab 在啟動研究的頁面中執行研究，因此關閉該分頁會停止研究。CodefyUI 另外提供[伺服器端的 study](/usage/studies)：分頁關閉後仍會繼續執行、伺服器重新啟動後依然存在、會強制執行預算，並列在 Studies 面板中。外掛透過外掛 job route（以 `kind: "study"` 呼叫 `POST /api/plugins/graph-copilot/jobs`，列在 [API 參考](/advanced/api-reference#plugin-jobs)）把研究交給伺服器。外掛的對話仍負責規劃實驗並請你核准；伺服器負責執行核准的計畫。讓 Lab 改用這些 route 是外掛自己儲存庫中的變更，在外掛發佈這項變更之前，Lab 仍如上所述在頁面中執行。
+
 ## 使用技巧 {/* #tips */}
 
 - 提供你正在建構的內容背景：「我正在建構一個採用 ResNet 骨幹網路的視覺分類器」有助於 AI 做出更好的選擇。

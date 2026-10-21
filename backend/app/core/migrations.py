@@ -647,13 +647,45 @@ MIGRATION_016 = """
 ALTER TABLE workers ADD COLUMN one_shot INTEGER;
 """
 
+# ── Migration 017: reserved (#344) ────────────────────────────────────────
+#
+# The number belongs to the run-fingerprint / provenance work of #344, which
+# lands in its own pull request. Until it does, the slot is empty so 018
+# keeps its number; whichever of the two merges second puts #344's
+# statements here (no released build has applied this placeholder).
+MIGRATION_017 = ""
+
+# ── Migration 018: study budgets and plugin-owned studies (#343) ──────────
+#
+# - ``studies.owner``: the plugin that submitted the study through
+#   ``/api/plugins/{plugin_id}/jobs`` (``routes_plugin_jobs``), or NULL for
+#   a study submitted to ``/api/studies``. A plugin lists and controls only
+#   its own studies there; ``/api/studies`` shows every study. A plugin's
+#   idempotency keys are stored as ``plugin:<id>:<key>`` so two plugins
+#   cannot collide on a key.
+# - ``studies.halt``: JSON ``{budget, limit, used, unfinished_repetitions,
+#   at}`` for a study that a server-enforced budget stopped (status
+#   ``halted``); NULL otherwise, and cleared by a resume.
+# - ``study_attempts.stop_reason``: the budget the coordinator stopped the
+#   attempt's child for (``max_run_seconds`` or ``max_active_seconds``),
+#   written BEFORE the cancel is sent, so the harvest of the child knows a
+#   cancelled child was the study's own decision. NULL otherwise.
+MIGRATION_018 = """
+ALTER TABLE studies ADD COLUMN owner TEXT;
+ALTER TABLE studies ADD COLUMN halt TEXT;
+ALTER TABLE study_attempts ADD COLUMN stop_reason TEXT;
+CREATE INDEX idx_studies_owner ON studies(owner, created_at)
+  WHERE owner IS NOT NULL;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
                          MIGRATION_012, MIGRATION_013,
                          MIGRATION_014, MIGRATION_015,
-                         MIGRATION_016]
+                         MIGRATION_016, MIGRATION_017,
+                         MIGRATION_018]
 
 
 def _is_comment_only(statement: str) -> bool:

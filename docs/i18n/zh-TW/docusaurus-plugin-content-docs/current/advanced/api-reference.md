@@ -95,16 +95,17 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/sweeps/{sweep_id}/cancel` | POST | token | 取消每一個排隊中或執行中的變體：`{sweep_id, state, cancelled, already_finished, variants[]}`，依變體索引順序每個一筆。 |
 | `/api/studies` | POST | token | 送出一個 study：以單一明確目標，將各變體各重複數次，作為排隊的 child run。回傳 `201` 與該 study；帶有 `Idempotency-Key` header（或 `idempotency_key`）時，重送相同請求會回傳 `200` 與同一個 study，且不建立任何東西；同一個 key 用於不同請求則回傳 `409`。 |
 | `/api/studies` | GET | open | 由新到舊的清單，附上目前 attempt 依狀態分類的 `counts`；`?status=` 可指定一個狀態，或以 `\|` 分隔的多個狀態，另有 `?limit=`（最多 500）與 `?offset=`。 |
-| `/api/studies/{study_id}` | GET | open | study 的 `status`、`revision`、每個 attempt 及其 `run_id` 與已複製的證據、各變體的 `aggregate`（`count`、`mean`、`std`、`values`）、是否具排名資格、標示完全相同平手的 `rankings`，以及 `last_cursor`。 |
+| `/api/studies/{study_id}` | GET | open | study 的 `status`、`revision`、`owner`（送出它的外掛，或 `null`）、`halt`（讓它暫停的預算，或 `null`）、`budget_usage`（每項預算的用量，以及哪一項已用完）、每個 attempt 及其 `run_id`、`stop_reason` 與已複製的證據、各變體的 `aggregate`（`count`、`mean`、`std`、`values`）、是否具排名資格、標示完全相同平手的 `rankings`，以及 `last_cursor`。 |
 | `/api/studies/{study_id}/events` | GET | open | `?cursor=` 之後的 study 稽核紀錄；study 仍在進行時，`?wait=` 最多長輪詢 60 秒。回傳 `{study_id, status, revision, events[{cursor, type, payload, ts}], cursor}`。 |
-| `/api/studies/{study_id}/cancel` | POST | token | 停止排程並取消進行中的 child；已完成的 attempt 會保留。已 succeeded 的 study 回傳 `409`。 |
-| `/api/studies/{study_id}/resume` | POST | token | 繼續一個 interrupted、cancelled 或 failed 的 study：已完成的重複會略過，被取消、中斷或遺失的重複會得到新的 attempt。其他狀態回傳 `409`。 |
+| `/api/studies/{study_id}/cancel` | POST | token | 停止排程並取消進行中的 child；已完成的 attempt 會保留。body 可選填 `{expected_revision}`。已 succeeded 的 study，以及 study 已超過 `expected_revision` 時，回傳 `409`。 |
+| `/api/studies/{study_id}/resume` | POST | token | 繼續一個 interrupted、cancelled、failed 或 halted 的 study：已完成的重複會略過，被取消、中斷或遺失的重複會得到新的 attempt。body 可選填 `{budget, expected_revision}`：`budget` 會取代 study 的預算。其他狀態、仍已用完的預算，以及過期的 `expected_revision` 回傳 `409`。 |
+| `/api/studies/{study_id}/variants/{index}/graph` | GET | open | 某個變體執行的圖（`SECRET` 值為空白）：`{study_id, variant_index, label, graph}`。 |
 
 **Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，引擎錯誤政策 `error_mode`、`max_retries`，以及 `target`。有提供 `options.target.devices` 時 run 的裝置是它的第一個，否則有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。`target` 是 `{"worker", "devices"}`：`worker` 為 `local`（預設）、已連線 worker agent 的名稱，或 `any`；`devices` 是同一種類的具體裝置集合。伺服器啟動以來從未連線過的 worker 名稱、不提供這些裝置的 worker、這台伺服器與它見過的 worker 都無法服務的 `any` run，worker target 搭配 interactive lane，以及在 agent 不支援的指名 worker 上使用 `record_outputs`，都回傳 400；已知但目前離線的 worker 會讓 run 排隊等它重新連線。在這台伺服器上，集合 run 占用每個裝置的 slot，並在第一個裝置上執行；在 worker 上則全部使用（參閱[執行佇列：Workers](/usage/run-queue#workers) 與[執行架構](./execution-architecture#scheduling)）。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
 
 **Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`、`direction` 為 `minimize` 或 `maximize`，以及可省略、用來指定以哪個節點的 series 排名的 `node_id`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
 
-**Studies。** `POST /api/studies` 接受 `name`、必要的 `objective`（`node_id`、`metric` 與 `direction` 三者皆必填）、`base_graph`、`variants[{label, graph | ops[{node_id, param, value}]}]`、`repetitions`（1 到 32）、`seed`、`options`（與 sweep 相同，但不可含 `seed`，也不可使用 interactive lane）、`budget`（`max_runs`、`max_parallel_runs`）、`resume_policy`（`explicit` 或 `auto`）以及 `idempotency_key`。study 的 `status` 只會是 `queued`、`running`、`cancel_requested`、`succeeded`、`failed`、`cancelled` 或 `interrupted`；attempt 的狀態則是 `pending`、`submitting`、`queued`、`running`、`succeeded`、`failed`、`cancelled`、`interrupted` 或 `lost`。只有所有排定重複都成功並記錄到目標值的變體才會排名。sweep 表格會以失敗的 run 記錄到的值為它排名；在 study 中，這樣的 run 會讓所屬變體失去排名資格。每個 child 都是一般的 `/api/runs` 列，帶有 `study_id` 與 `study_attempt_id`。種子、排名、取消、繼續與重新啟動政策請見[執行佇列——Studies](/usage/run-queue#studies)。
+**Studies。** `POST /api/studies` 接受 `name`、必要的 `objective`（`node_id`、`metric` 與 `direction` 三者皆必填）、`base_graph`、`variants[{label, graph | ops[{node_id, param, value}]}]`、`repetitions`（1 到 32）、`seed`、`options`（與 sweep 相同，但不可含 `seed`，也不可使用 interactive lane）、`budget`（`max_runs`、`max_parallel_runs`、`max_run_seconds`、`max_active_seconds`）、`resume_policy`（`explicit` 或 `auto`）以及 `idempotency_key`（以 `plugin:` 開頭的 key 會被拒絕：這個前綴用於區隔[外掛 job](#plugin-jobs)）。study 的 `status` 只會是 `queued`、`running`、`cancel_requested`、`succeeded`、`failed`、`cancelled`、`interrupted` 或 `halted`（預算用完）；attempt 的狀態則是 `pending`、`submitting`、`queued`、`running`、`succeeded`、`failed`、`cancelled`、`interrupted`、`lost` 或 `timed_out`（因 `max_run_seconds` 被停止）。預算由伺服器強制執行，請見[實驗研究：預算](/usage/studies#budgets)。只有所有排定重複都成功並記錄到目標值的變體才會排名。sweep 表格會以失敗的 run 記錄到的值為它排名；在 study 中，這樣的 run 會讓所屬變體失去排名資格。每個 child 都是一般的 `/api/runs` 列，帶有 `study_id` 與 `study_attempt_id`。種子、排名、取消、繼續與重新啟動政策請見[執行佇列——Studies](/usage/run-queue#studies)。
 
 ### 執行環境 {/* #run-environment */}
 
@@ -198,6 +199,23 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 :::note 安裝外掛需要綁定回送位址的伺服器
 `inspect`、`install`、job `cancel`、`update` 與 `DELETE` 需要上述回送位址閘門。這些操作可以下載、安裝或移除第三方程式碼，檢查來源時也會依呼叫端提供的內容連線 GitHub。`reload`、`enable` 與 `disable` 只處理伺服器上已有的程式碼，因此只需要 token。這些 route 的拒絕回應使用 `busy`、`already_installed`、`consent_required` 等可供機器判讀的 `code`；請參閱[外掛中心](/advanced/plugins#plugin-center)下的表格。job 事件帶有英文的步驟 `label`，以及英文的失敗 `message` 與 `hint`。client 應以步驟 id（`resolve`、`download`、`extract`、`verify`、`deps`、`stage`、`lock`、`reload`）判斷：編輯器會翻譯這些 id，只有遇到不認得的 id 時才顯示英文 label。失敗訊息維持英文。
 :::
+
+## 外掛 job {/* #plugin-jobs */}
+
+外掛可以用自己的 id，把持久化的工作交給伺服器，做法依循 Graph Copilot 外掛的 backend agent contract（#343）。`study` 類型（`spec_version` 1）的 job 就是一個 [study](/usage/studies)，其 `owner` 為該外掛：它的 `spec` 是一個 `POST /api/studies` 的 body，下列 route 與 `/api/studies` 一一對應。每個 job 也會出現在 `GET /api/studies` 與 Studies 面板中。伺服器不載入外掛提供的伺服器端程式碼（`AgentJobHandler`）；`study` 是唯一的類型。
+
+| Endpoint | Method | Auth | 說明 |
+|----------|--------|------|------|
+| `/api/plugins/{plugin_id}/jobs/kinds` | GET | open | `{plugin_id, api_version, kinds[{kind, spec_version, description}]}`。沒有外掛 job 功能的伺服器回傳 `404`，外掛可以在這裡檢查功能是否存在，否則繼續使用頁面內的引擎。 |
+| `/api/plugins/{plugin_id}/jobs` | POST | token | 送出 `{kind, spec_version, spec, idempotency_key?}`。idempotency key 為必填（`Idempotency-Key` header、body 的 `idempotency_key` 或 spec 的 `idempotency_key`；三者必須一致），並以外掛為範圍。回傳 `202` 與 job（study 詳細資料，加上 `job_id`、`plugin_id`、`kind`、`spec_version`、`api_version`、`created: true` 與 `request_digest`）；以同一個 key 重送回傳 `200` 與同一個 job；同一個 key 用於其他請求回傳 `409`。外掛未安裝回傳 `404`，已停用回傳 `409`，未知的 `kind` 或 `spec_version` 回傳 `400`，`spec` 不符合 study schema 回傳 `422`。 |
+| `/api/plugins/{plugin_id}/jobs` | GET | open | 該外掛的 job，由新到舊，附上 `counts`；`?status=`、`?limit=` 與 `?offset=` 與 study 相同。 |
+| `/api/plugins/{plugin_id}/jobs/{job_id}` | GET | open | 一個 job，內容與 `GET /api/studies/{id}` 相同。其他外掛的 job，或送到 `/api/studies` 的 study，回傳 `404`。 |
+| `/api/plugins/{plugin_id}/jobs/{job_id}/events` | GET | open | `?after=`（或 `?cursor=`）之後的 job 稽核紀錄；每個事件另帶有 `sequence`（即它的 cursor）。`?wait=` 最多長輪詢 60 秒。 |
+| `/api/plugins/{plugin_id}/jobs/{job_id}/cancel` | POST | token | 與 study 的 cancel 相同，可選填 `{expected_revision}`。外掛停用時仍可使用。 |
+| `/api/plugins/{plugin_id}/jobs/{job_id}/resume` | POST | token | 與 study 的 resume 相同，可選填 `{budget, expected_revision}`。外掛必須為啟用狀態。 |
+| `/api/plugins/{plugin_id}/jobs/{job_id}/variants/{index}/graph` | GET | open | 某個變體執行的圖，用來把選定的變體開成分頁。 |
+
+**Graph Copilot。** 使用者在對話中核准實驗計畫後，外掛可以把執行交給伺服器：以 `GET .../jobs/kinds` 確認功能存在；以 `POST /api/plugins/graph-copilot/jobs` 送出 `kind: "study"`，並以計畫作為 study spec（變體為套用在目前圖上的 `ops`、目標為明確的 `node_id` + `metric`、重複次數、種子與 `budget`），idempotency key 由核准的計畫產生，確保重送時不會啟動第二次；接著以 `GET .../jobs/{job_id}/events?after=` 或 `GET .../jobs/{job_id}` 從任何分頁追蹤，並以 `GET .../variants/{index}/graph` 套用勝出的變體。分頁關閉後 job 仍會繼續執行。模型對話與核准仍在外掛的頁面中進行；伺服器不執行任何模型。
 
 ## 選用套件包 {/* #optional-packs */}
 

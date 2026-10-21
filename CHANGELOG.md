@@ -87,6 +87,39 @@ received — each links to the release it was published as.
   in `execution_facts.worker_s3`), and a study keeps an adopted child as an
   active one. Rows started by 3.1.0, which recorded no resume point, are
   retired as before.
+- **Studies enforce their budgets on the server and halt, with every result
+  kept, when one runs out** ([#343]). `budget.max_run_seconds` stops a child
+  that executes longer (its repetition ends `timed_out`, a result like
+  `failed`) and `budget.max_active_seconds` caps the summed execution time
+  of all children; both are enforced by a timer with nobody watching. A
+  study that uses up `max_runs` or `max_active_seconds` becomes `halted`
+  (before, a used-up `max_runs` ended `failed`): `halt` names the budget,
+  its limit and what was used, `budget_usage` reports every budget, and
+  `POST /api/studies/{id}/resume` takes a raised `budget` (a resume whose
+  budget is still used up is a `409`). Cancel and resume accept
+  `expected_revision`, and `GET /api/studies/{id}/variants/{index}/graph`
+  returns a variant's graph. Migration 018 (017 is reserved for #344).
+- **A Studies panel lists every study and follows one from any browser**
+  ([#343]). **Studies** in the Runs panel opens it: status, owner, progress,
+  the budget and what it has used, rankings with exact ties labelled, each
+  repetition's attempts with a link to its run, the event log, Cancel and
+  Resume, and a budget form that resumes a halted study.
+- **Plugins can submit durable studies under their own id:
+  `/api/plugins/{plugin_id}/jobs`** ([#343]). A job of kind `study` is a
+  study owned by the plugin, submitted with a required idempotency key
+  scoped to the plugin, listed and controlled only through that plugin's
+  routes (and in `/api/studies` and the Studies panel). Graph Copilot can
+  delegate its experiments to it; that change belongs to the plugin's
+  repository.
+
+### Changed
+
+- **A study that uses up `budget.max_runs` now ends `halted`, not `failed`**
+  ([#343]). It keeps every completed repetition and its ranking so far, and
+  `POST /api/studies/{id}/resume` with a raised `max_runs` continues it; a
+  `failed` study still means the study itself could not go on.
+- **The remote-workers guide shows `CODEFYUI_RELEASE_TAG=<version>` instead of a pinned 3.0.2** ([#841]).
+- **The queue reasons and worker messages of memory admission, one-shot workers, S3 storage and adoption after a restart carry codes too** ([#841], [#788], [#790], [#791], [#793], [#794]). A run waiting for memory on a shared card (`memory_wait`, with each card's reason coded), for a budget (`memory_no_budget`), for a one-shot worker (`one_shot_start`, `one_shot_taken`, `one_shot_run_id`, `one_shot_pool`) or with a raised estimate (`budget_raised`, or `params.raised` beside another reason) gets a `queue_reason_code`; an adopted run's warnings (`worker_adopted`, `worker_lost_after_restart`, the reason `no_reconnect_after_restart`), a shutdown while a run waits for its worker (`shutdown_not_connected`), an S3 upload failure (`worker_s3_transfer_failed`) and the S3 fallback warning (`worker_storage_fallback`) carry `code` / `params`. The Runs panel words them in English and zh-TW; the English texts are unchanged.
 
 ### Fixed
 
@@ -108,11 +141,6 @@ received — each links to the release it was published as.
 - **The Runs panel words queue reasons and worker run errors in the panel's language, and lays the table out without cutting them** ([#841]). Every `GET /api/runs` row adds `queue_reason_code` and `queue_reason_params` beside the English `queue_reason`, which the API and the CLI keep; the panel words the code in English or Traditional Chinese. A worker run's warnings and error ("worker X went away: ...", "worker X disconnected (...)", a removed, deleted, stopped or re-keyed worker) keep their English text and add `code` and `params` the same way: on the `run_warning` and `execution_error` payloads of worker runs, and on the row as `execution_facts.error_reason` (a queued run that never started keeps it on its `execution_error` event only, so a missing facts document still means "not recorded"). The error of a run whose reconnected worker no longer reports it reads `after reconnecting it did not report this run as still running` instead of naming the `run_alive` frame. The reason sits on a line of its own under the row instead of being cut to a dozen characters in the Worker cell, the Status column fits DISCONNECTED, a queued run's place reads `Any queue #N` for an `any` run (a run naming a worker and an `any` run wait in different lines), with the queue on hover, a final loss below 0.001 is shown in scientific notation, the metric legend and the event log show whole node ids, and the event log says it is loading until its first page arrives (and why it is empty when that page fails). The memory tooltip of a worker run no longer says it shares the server process. The zh-TW Remove tooltip spells the status as the chip does.
 - **The New sweep dialog keeps its layout and tells two branches' parameters apart** ([#841]). The target picker renders as it does in Queue on... (the dialog's own field styles no longer reach it; the device radios and checkboxes had stretched to the dialog's width), the header and the Start button stay in view while the body scrolls, and each parameter is named with its node's id (`Optimizer (opt-plain) · lr`), as the Objective node list already was; sweep table columns add the id when two would read the same.
 - **The canvas toolbar no longer wraps to a second row at 1440 px when a run completes** ([#841]). The status label is at least as wide as `Completed`, and the device list is 1 rem narrower. A queued run's label (its place and device) is shown whole: on a window wide enough for a one-row toolbar the device list narrows while the run waits in a device queue. A canvas run waiting for another run reads `Queued (waiting for a run)`, which is what it does (a run with a fixed seed never runs alongside another), instead of `Queued (waiting for a seeded run)`.
-
-### Changed
-
-- **The remote-workers guide shows `CODEFYUI_RELEASE_TAG=<version>` instead of a pinned 3.0.2** ([#841]).
-- **The queue reasons and worker messages of memory admission, one-shot workers, S3 storage and adoption after a restart carry codes too** ([#841], [#788], [#790], [#791], [#793], [#794]). A run waiting for memory on a shared card (`memory_wait`, with each card's reason coded), for a budget (`memory_no_budget`), for a one-shot worker (`one_shot_start`, `one_shot_taken`, `one_shot_run_id`, `one_shot_pool`) or with a raised estimate (`budget_raised`, or `params.raised` beside another reason) gets a `queue_reason_code`; an adopted run's warnings (`worker_adopted`, `worker_lost_after_restart`, the reason `no_reconnect_after_restart`), a shutdown while a run waits for its worker (`shutdown_not_connected`), an S3 upload failure (`worker_s3_transfer_failed`) and the S3 fallback warning (`worker_storage_fallback`) carry `code` / `params`. The Runs panel words them in English and zh-TW; the English texts are unchanged.
 
 ### Internal
 

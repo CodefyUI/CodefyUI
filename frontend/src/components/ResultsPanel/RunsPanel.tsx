@@ -13,6 +13,7 @@ import {
   type RunLogLine,
   type RunStatusFilter,
 } from '../../store/runStore';
+import { useStudyStore } from '../../store/studyStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
@@ -831,6 +832,14 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               onClick={() => useWorkerStore.getState().openPanel()}
             >
               {t('workers.open')}
+            </button>
+            <button
+              type="button"
+              className={styles.rowBtn}
+              title={t('studies.openTitle')}
+              onClick={() => useStudyStore.getState().openPanel()}
+            >
+              {t('studies.open')}
             </button>
             <span className={styles.countText}>
               {t('runs.showing', { shown: runs.length, total })}

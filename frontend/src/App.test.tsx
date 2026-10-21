@@ -5,6 +5,7 @@ import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useProjectStore } from './store/projectStore';
 import { useWorkerStore } from './store/workerStore';
+import { useStudyStore } from './store/studyStore';
 import { fetchHealth } from './api/rest';
 import { startWorkspaceLock, _resetWorkspaceLockForTests } from './utils/workspaceLock';
 
@@ -69,6 +70,9 @@ vi.mock('./components/shared/Toast', () => ({
 }));
 vi.mock('./components/Workers/WorkersPanel', () => ({
   WorkersPanel: () => <div data-testid="workers-panel" />,
+}));
+vi.mock('./components/Studies/StudiesPanel', () => ({
+  StudiesPanel: () => <div data-testid="studies-panel" />,
 }));
 vi.mock('./components/shared/ShortcutsModal', () => ({
   ShortcutsModal: () => <div data-testid="shortcuts-modal" />,
@@ -238,6 +242,16 @@ describe('App', () => {
     expect(await screen.findByTestId('workers-panel')).toBeInTheDocument();
     act(() => useWorkerStore.setState({ panelOpen: false }));
     expect(screen.queryByTestId('workers-panel')).toBeNull();
+  });
+
+  it('loads the Studies panel only once it opens (#343, a lazy chunk)', async () => {
+    useStudyStore.setState({ panelOpen: false });
+    render(<App />);
+    expect(screen.queryByTestId('studies-panel')).toBeNull();
+    act(() => useStudyStore.setState({ panelOpen: true }));
+    expect(await screen.findByTestId('studies-panel')).toBeInTheDocument();
+    act(() => useStudyStore.setState({ panelOpen: false }));
+    expect(screen.queryByTestId('studies-panel')).toBeNull();
   });
 
   // ── RightColumn conditional rendering ───────────────────────────────────────
