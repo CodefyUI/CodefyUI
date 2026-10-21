@@ -82,17 +82,18 @@ cdui run train.json --target any --device cuda
 cdui run train.json --target gpu-box --devices cuda:0,cuda:1
 ```
 
-run 子程序會為每張卡啟動一個程序，稱為 **rank**：rank *k* 在 run 的 `cuda:k` 上訓練。各 rank 在 worker 的 loopback 介面上一個空的連接埠會合，以 NCCL 溝通（PyTorch 沒有 NCCL 時改用 `gloo`）。run 的其他部分都不變：在 Runs 面板中它仍是一個 run，只有一份事件紀錄、一組指標與一個結果。
+run 子程序會為每張卡啟動一個程序，稱為 **rank**：rank *k* 在 run 的 `cuda:k` 上訓練。各 rank 透過 worker 上 run 目錄裡的一個檔案找到彼此，並只經由 loopback 介面以 NCCL 溝通（PyTorch 沒有 NCCL 時改用 `gloo`）：worker 不會開啟任何其他機器能連到的連接埠（除非 agent 的環境已設定，否則各 rank 的 `GLOO_SOCKET_IFNAME` 與 `NCCL_SOCKET_IFNAME` 會設為 `lo`，`OMP_NUM_THREADS` 設為 1）。run 的其他部分都不變：在 Runs 面板中它仍是一個 run，只有一份事件紀錄、一組指標與一個結果。
 
-- **資料。** 每個 rank 從訓練迴圈收到的每個 DataLoader（`dataloader` 與 `val_dataloader`）讀取自己的那一份：透過 `DistributedSampler` 取資料集的 *N* 分之一，批次大小是 DataLoader 的 `batch_size`。因此 `batch_size` 以每張卡計算，一次優化器更新會平均 *N* 個批次的梯度：兩張卡、`batch_size` 32 的訓練等同一張卡、`batch_size` 64。訓練迴圈的 Config 面板會顯示 `effective_batch_size`。開啟 `shuffle` 時，順序每個 epoch 都會改變，且每個 rank 都相同；有設定種子的 run，每次執行的順序也相同。資料集大小不是 *N* 的倍數時，最後一份會重複幾筆樣本，讓每個 rank 跑相同數量的批次。資料集必須是 map-style（可以用索引存取），DataLoader 也必須使用它自己的 sampler；iterable 資料集或自訂 sampler 會讓 run 失敗並附上說明。
+- **資料。** 每個 rank 從訓練迴圈收到的每個 DataLoader（`dataloader` 與 `val_dataloader`）讀取自己的那一份：透過 `DistributedSampler` 取資料集的 *N* 分之一，批次大小是 DataLoader 的 `batch_size`。因此 `batch_size` 以每張卡計算，一次優化器更新會平均 *N* 個批次的梯度：兩張卡、`batch_size` 32 的訓練等同一張卡、`batch_size` 64。訓練迴圈的 Config 面板會顯示 `effective_batch_size`。開啟 `shuffle` 時，順序每個 epoch 都會改變，且每個 rank 都相同；有設定種子的 run，每次執行的順序也相同。資料集大小不是 *N* 的倍數時，最後一份會重複幾筆樣本，讓每個 rank 跑相同數量的批次；驗證時這些重複的樣本不會計入 `val_loss`、`val_accuracy` 與 `val_loss_step`，所以每筆驗證樣本只算一次。資料集必須是 map-style（可以用索引存取），DataLoader 也必須使用它自己的 sampler；iterable 資料集或自訂 sampler 會讓 run 失敗並附上說明。
+- **隨機性。** 有設定種子的 run，rank *k* 以 run 的種子加 *k* 來初始化它的亂數產生器，所以 dropout 遮罩與資料增強在各 rank 之間不同，就像同一個程序裡不同批次之間不同一樣；rank 0 的種子與單一程序的 run 完全相同。唯一的例外是打亂順序：使用 rank 0 的順序，並分享給每個 rank。
 - **權重。** 每個 rank 都從 rank 0 的權重開始，每次反向傳播都會在各 rank 之間平均梯度，所以每一步之後所有 rank 的權重都相同。`accumulate_steps`、`grad_clip_norm`、`precision`、`max_steps` 與學習率排程器的行為都和單卡相同。
 - **回報的內容。** `train_loss` 是所有 rank 批次損失的平均；`val_loss` 與 `val_accuracy` 以所有 rank 各自那一份驗證集計算；`train_loss_batch` 與 `val_loss_step` 也是各 rank 的平均。即時進度條顯示 rank 0 最新的批次。Config 面板與 `metrics` 輸出會多出 `strategy: ddp`、`world_size` 與 `backend`。**峰值記憶體**會列出每一張卡。
-- **rank 0 就是這個 run。** rank 0 執行整張圖，只有它的事件、指標與檔案會送到伺服器：檢查點（`checkpoint_every`、`checkpoint_every_steps` 與中斷檢查點）以及 TensorBoard 檔案只由 rank 0 寫一次，在單卡上也能載入。其他 rank 只執行訓練迴圈和餵資料給它的節點，並在 rank 0 到達訓練迴圈後才開始，所以第一次使用才下載的資料集只會下載一次。訓練迴圈之後的節點（評估、`ModelSaver`）只在 rank 0 上以訓練好的模型執行。
+- **rank 0 就是這個 run。** rank 0 執行整張圖，只有它的事件、指標與檔案會送到伺服器：檢查點（`checkpoint_every`、`checkpoint_every_steps` 與中斷檢查點）以及 TensorBoard 檔案只由 rank 0 寫一次，在單卡上也能載入。其他 rank 只執行訓練迴圈和餵資料給它的節點，並在 rank 0 到達訓練迴圈後才開始，所以第一次使用才下載的資料集只會下載一次。但這些節點仍會在每個 rank 上執行：在記憶體中建立或前處理的資料集會被建立 *N* 次，用掉 *N* 倍的主記憶體；而且每個 rank 必須在 rank 0 之後 30 分鐘內（rank 在訓練迴圈第一個集體通訊中等待的時間）到達訓練迴圈，否則 run 會因集體通訊逾時而失敗。訓練迴圈之後的節點（評估、`ModelSaver`）只在 rank 0 上以訓練好的模型執行。每個 rank 在 worker 上各有自己的輸出紀錄：run 的紀錄就是 rank 0 的，rank *k* 的則是旁邊的 `output-rank<k>.log`。
 - **停止。** **Stop** 會送到每個 rank。各 rank 在每個批次之後一起決定是否停止，因此會停在同一個批次，並由 rank 0 寫入中斷檢查點。
 - **失敗。** 任何一個 rank 失敗或結束，run 就以 `failed` 結束並附上該 rank 的錯誤，例如 `DDP rank 1 of 2 failed: ...`，其他 rank 會被停止。run 要等每個 rank 都結束後才回報，所以回報時它的卡都已經釋放。
-- **記憶體預算。** 在[依記憶體共用](#sharing-a-card)的卡上，每個 rank 都受它自己那張卡的預算限制。
+- **記憶體預算。** 在[依記憶體共用](#sharing-a-card)的卡上，每個 rank 都受它自己那張卡的預算限制，在集合中其他有預算的卡上則完全不能配置：用 `device` 參數固定到集合中另一張卡的節點，會在第一次配置記憶體時失敗，而不會在另一個 rank 受限的卡上用掉預算之外的記憶體。**峰值記憶體**回報的是每張卡上任一 rank 用到的最大值。
 
-`ddp` 無法套用時，訓練迴圈會在自己的裝置上以單一程序訓練，與 `single` 完全相同，並在 Runs 面板（種類為 `ddp_not_available` 的警告）與節點的紀錄中說明：畫布上的 **Run**、在這台伺服器上的 run（即使帶裝置集合）、在 worker 上只用一張卡或 CPU 的 run、位於 block 或 preset 內的 `TrainingLoop`，以及匯出的 Python 腳本（**匯出為 Python** 會對這種訓練迴圈發出警告）。同一張圖中的兩個 `ddp` 訓練迴圈必須依序執行，也就是一個迴圈的模型接到下一個；位於不同分支的兩個會讓 run 在開始前就失敗。
+`ddp` 無法套用時，訓練迴圈會在自己的裝置上以單一程序訓練，與 `single` 完全相同，並在 Runs 面板（種類為 `ddp_not_available` 的警告）與節點的紀錄中說明：畫布上的 **Run**、在這台伺服器上的 run（即使帶裝置集合）、在 worker 上只用一張卡或 CPU 的 run、位於 block 或 preset 內的 `TrainingLoop`，以及匯出的 Python 腳本（**匯出為 Python** 會對這種訓練迴圈發出警告）。同一張圖中的兩個 `ddp` 訓練迴圈必須依序執行，也就是一個迴圈的模型接到下一個；在以 `ddp` 訓練的 run 中，位於不同分支的兩個會讓 run 在開始前就失敗。
 
 ## Slot 與上限 {/* #slots-and-limits */}
 

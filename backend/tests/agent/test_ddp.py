@@ -103,7 +103,6 @@ def test_bypassed_and_nested_loops_are_not_ddp_loops():
     nested = {"nodes": [], "edges": [], "subgraphs": [
         {"id": "blk", "nodes": [h.node("t", "TrainingLoop", strategy="ddp")]}]}
     assert distributed.ddp_loop_ids(nested) == []
-    assert distributed.nested_ddp_loops(nested) == ["blk/t"]
 
 
 def test_the_other_ranks_run_only_the_loops_and_what_feeds_them():
@@ -115,14 +114,67 @@ def test_the_other_ranks_run_only_the_loops_and_what_feeds_them():
     assert all(edge["target"] != "save" for edge in pruned["edges"])
 
 
-def test_each_rank_caps_only_its_own_card():
-    spec = _spec(_ddp.training_graph(batch_size=4), ["cuda:0", "cuda:1"],
-                 memory_budgets={"cuda:0": 5, "cuda:1": 7})
+def test_each_rank_caps_its_own_card_to_its_budget_and_the_others_to_nothing():
+    spec = _spec(_ddp.training_graph(batch_size=4),
+                 ["cuda:0", "cuda:1", "cuda:2"],
+                 memory_budgets={"cuda:0": 5, "cuda:1": 7, "mps": 3},
+                 log_path="/runs/r1/output.log")
     plan = ddp.plan_for(spec)
-    spec["ddp"] = {"rank_devices": ["cuda:0", "cuda:1"]}
-    assert ddp.rank_spec(spec, plan, 1)["memory_budgets"] == {"cuda:1": 7}
-    assert ddp.rank_spec(spec, plan, 1)["device"] == "cuda:1"
+    spec["ddp"] = {"rank_devices": ["cuda:0", "cuda:1", "cuda:2"]}
+    own = ddp.rank_spec(spec, plan, 1)
+    assert own["memory_budgets"] == {"cuda:1": 7}
+    assert own["device"] == "cuda:1"
+    assert own["log_path"] == "/runs/r1/output-rank1.log"
     assert "ddp" not in ddp.rank_spec(spec, plan, 0)
+    assert ddp.rank_spec(spec, plan, 0)["log_path"] == "/runs/r1/output.log"
+    # The other budgeted CUDA cards: a node pinned to one of them fails at
+    # its first allocation there instead of using memory the budget does
+    # not cover. A card without a budget, and the MPS entry, are left.
+    assert ddp.stray_caps(spec, plan, 1) == {"cuda:0": 0.0}
+    assert ddp.stray_caps(spec, plan, 0) == {"cuda:1": 0.0}
+    assert ddp.stray_caps(spec, plan, 2) == {"cuda:0": 0.0, "cuda:1": 0.0}
+    ddp.apply_stray_caps({})  # nothing to cap: torch is not even imported
+
+
+def test_the_runs_peak_memory_is_the_maximum_per_card_over_the_ranks():
+    assert ddp._peak_max(
+        {"allocated_bytes": 10, "reserved_bytes": 30, "exact": True},
+        {"allocated_bytes": 20, "reserved_bytes": 25, "exact": True,
+         "shared": True},
+    ) == {"allocated_bytes": 20, "reserved_bytes": 30, "exact": True,
+          "shared": True}
+    assert ddp._peak_max(None, {"allocated_bytes": 1}) == {
+        "allocated_bytes": 1}
+    assert ddp._peak_max({"exact": True}, {"exact": False})["exact"] is False
+
+
+def test_each_rank_has_its_own_seed_log_and_loopback_environment(monkeypatch):
+    assert ddp.rank_seed(None, 1) is None
+    assert ddp.rank_seed(7, 0) == 7 and ddp.rank_seed(7, 3) == 10
+    assert ddp.rank_log_path({}, 1) is None
+    assert ddp.rank_log_path({"log_path": "a/out.log"}, 2) == "a/out-rank2.log"
+    for name in ("OMP_NUM_THREADS", "GLOO_SOCKET_IFNAME",
+                 "NCCL_SOCKET_IFNAME"):
+        monkeypatch.delenv(name, raising=False)
+    env = ddp.rank_environment()
+    assert env["OMP_NUM_THREADS"] == "1"
+    if ddp.loopback_interface() is not None:
+        assert env["GLOO_SOCKET_IFNAME"] == env["NCCL_SOCKET_IFNAME"] \
+            == ddp.loopback_interface()
+    else:
+        assert "GLOO_SOCKET_IFNAME" not in env
+    # The environment's own settings win.
+    monkeypatch.setenv("OMP_NUM_THREADS", "4")
+    assert "OMP_NUM_THREADS" not in ddp.rank_environment()
+
+
+def test_the_ranks_meet_in_the_runs_directory_or_a_private_one(tmp_path):
+    assert ddp.rendezvous_path({"log_path": str(tmp_path / "output.log")}) \
+        == str(tmp_path / ddp.RENDEZVOUS_FILE)
+    private = ddp.rendezvous_path({})
+    assert Path(private).parent.is_dir() and Path(private).parent != tmp_path
+    ddp._remove_rendezvous({}, private)
+    assert not Path(private).parent.exists()
 
 
 def test_a_graph_the_ranks_cannot_share_fails_before_anything_starts():
@@ -221,6 +273,34 @@ def test_a_loader_ddp_cannot_split_is_refused_with_a_reason():
         parallel.shard(DataLoader(data, batch_size=None), "dataloader")
 
 
+def test_a_shards_padding_is_cut_out_of_validation():
+    """29 samples over 2 ranks: the sampler pads to 30 and rank 1's last
+    sample repeats one. ``real_samples`` counts each rank's own, and
+    ``trim`` cuts a batch to the samples left."""
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    def rank(index: int) -> distributed.DataParallel:
+        return distributed.DataParallel(distributed.RankState(
+            rank=index, world_size=2, device="cpu", backend="gloo",
+            loop_ids=frozenset({"train"})))
+
+    loader = DataLoader(TensorDataset(torch.zeros(29, 1)), batch_size=4)
+    assert rank(0).real_samples(loader) == 15
+    assert rank(1).real_samples(loader) == 14
+    data, targets = torch.arange(3), torch.arange(30, 33)
+    assert rank(0).trim(data, targets, 5) == (data, targets, 3)
+    cut_data, cut_targets, kept = rank(1).trim(
+        [data, {"mask": data}], (targets,), 2)
+    assert kept == 2
+    assert cut_data[0].tolist() == [0, 1] and cut_data[1]["mask"].tolist() == [0, 1]
+    assert cut_targets[0].tolist() == [30, 31]
+    assert rank(1).trim(data, None, 0)[2] == 0
+    # A batch with no tensor in it is counted as one sample and never cut.
+    assert rank(1).trim("text", None, 3) == ("text", None, 1)
+    assert rank(1).trim("text", None, 0) == ("text", None, 0)
+
+
 # ── the launcher, with stand-in ranks ─────────────────────────────────────
 
 
@@ -274,7 +354,8 @@ def test_rank_zeros_messages_are_the_runs_and_the_others_are_dropped():
     sent, _ = _launch({
         "0": {"messages": [event, metric, warning],
               "finish": {"status": "succeeded", "error": None,
-                         "peak_memory": {"cuda:0": {"allocated_bytes": 1}}}},
+                         "peak_memory": {"cuda:0": {"allocated_bytes": 1},
+                                         "cuda:1": {"allocated_bytes": 9}}}},
         "1": {"messages": [event, metric, warning, warning],
               "finish": {"status": "succeeded", "error": None,
                          "peak_memory": {"cuda:1": {"allocated_bytes": 2}}}},
@@ -285,8 +366,10 @@ def test_rank_zeros_messages_are_the_runs_and_the_others_are_dropped():
     assert len([m for m in sent if m[0] == "warning"]) == 1
     finished = _finished(sent)
     assert finished["status"] == "succeeded"
+    # Per card, the most any rank used: rank 0's node that pinned cuda:1
+    # used more of it than rank 1's own training.
     assert finished["peak_memory"] == {"cuda:0": {"allocated_bytes": 1},
-                                       "cuda:1": {"allocated_bytes": 2}}
+                                       "cuda:1": {"allocated_bytes": 9}}
     assert sent[-1][0] == child.MSG_FINISHED
 
 
@@ -658,11 +741,57 @@ def test_two_ranks_train_like_one_process_on_the_doubled_batch(
     assert config["strategy"] == "ddp" and config["world_size"] == 2
     assert config["backend"] == "gloo"
     assert config["batch_size"] == 4 and config["effective_batch_size"] == 8
-    # Each rank ran the loops; only rank 0 ran what follows them.
-    log = run.tail()
-    assert "rank 0" in log and "rank 1" in log
+    # Each rank ran the loops, in a log of its own; the run's log is rank
+    # 0's. The rendezvous file is gone with the run.
+    assert "rank 0" in run.tail() and "rank 1" not in run.tail()
+    rank1_log = run.log.with_name("output-rank1.log").read_text("utf-8")
+    assert "rank 1" in rank1_log and "rank 0 " not in rank1_log
+    assert not run.log.with_name(ddp.RENDEZVOUS_FILE).exists()
     assert not [m for m in run.of(child.MSG_WARNING)
                 if m[1]["kind"] == distributed.FALLBACK_WARNING_KIND]
+
+
+def test_validation_counts_each_sample_once_and_a_warning_once(tmp_path):
+    """29 validation samples over two ranks: the sampler pads rank 1's
+    shard with a repeat, which must not count. ``val_accuracy`` and
+    ``val_loss`` of the last epoch are what the saved weights give on the
+    29 samples, batch by batch as the ranks saw them. The scheduler's
+    length warning, which both ranks raise, reaches the run once."""
+    import torch
+
+    graph = _ddp.with_step_scheduler(_ddp.with_validation(
+        _ddp.training_graph(batch_size=4, epochs=2, classify=True, n=29),
+        batch_size=4), step_size=5)
+    run = ChildRun(tmp_path, graph)
+    finished = run.finish()
+    assert finished["status"] == "succeeded", run.tail()
+    warnings = [m[1] for m in run.of(child.MSG_WARNING)]
+    assert [w["kind"] for w in warnings] == ["lr_schedule_mismatch"]
+    assert "StepLR drops the learning rate" in run.log.with_name(
+        "output-rank1.log").read_text("utf-8")
+
+    namespace: dict[str, Any] = {}
+    exec(_ddp.BAD_LABEL_CODE, namespace)  # noqa: S102 -- the test's own code
+    outputs = namespace["run"](None, {"n": 29})
+    x, y = outputs["out1"], outputs["out2"]
+    state = torch.load(run.data / "models" / "trained.pt")
+    weight = next(v for v in state.values() if v.shape == (2, 3))
+    bias = next(v for v in state.values() if v.shape == (2,))
+    logits = x @ weight.T + bias
+    expected_accuracy = int((logits.argmax(1) == y).sum()) / 29
+    # Rank 0 saw samples 0, 2, ..., 28 (15), rank 1 saw 1, 3, ..., 27
+    # (14, plus the padding sample 0, cut), each in batches of 4.
+    batch_losses = []
+    for first in (0, 1):
+        own = list(range(first, 29, 2))
+        for start in range(0, len(own), 4):
+            index = torch.tensor(own[start:start + 4])
+            batch_losses.append(float(torch.nn.functional.cross_entropy(
+                logits[index], y[index])))
+    expected_loss = sum(batch_losses) / len(batch_losses)
+    assert run.metric("val_accuracy")[-1] == pytest.approx(expected_accuracy,
+                                                           rel=1e-9)
+    assert run.metric("val_loss")[-1] == pytest.approx(expected_loss, rel=1e-5)
 
 
 def test_a_failing_rank_fails_the_run_with_its_error(tmp_path):

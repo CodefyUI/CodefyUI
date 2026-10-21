@@ -49,13 +49,29 @@ async def test_a_graph_without_ddp_exports_as_before(test_client):
     plain = await _export(test_client, _graph(None))
     assert plain["warnings"] == []
     assert "strategy" not in plain["script"]
+    # The editor fills every param with its default (#556), so a graph
+    # opened in the browser carries ``strategy: single``: the script must
+    # not change for it.
     single = await _export(test_client, _graph("single"))
     assert single["warnings"] == []
+    assert "strategy" not in single["script"]
+    assert single["script"] == plain["script"]
 
 
-async def test_a_ddp_loop_inside_a_block_is_named_by_its_block(test_client):
-    inner = _ddp.training_graph(batch_size=8, epochs=1, save_as=None)
-    graph = {
+async def test_strategy_single_inside_a_block_exports_as_before(test_client):
+    graph = _block_graph(_ddp.training_graph(batch_size=8, epochs=1,
+                                             save_as=None, strategy=None))
+    plain = await _export(test_client, graph)
+    assert "strategy" not in plain["script"]
+    filled = _block_graph(_ddp.training_graph(batch_size=8, epochs=1,
+                                              save_as=None, strategy="single"))
+    assert (await _export(test_client, filled))["script"] == plain["script"]
+
+
+def _block_graph(inner: dict) -> dict:
+    """*inner* (a training graph) as the definition of one block, with a
+    Start node triggering the block."""
+    return {
         "name": "ddp-in-block",
         "nodes": [
             {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
@@ -74,6 +90,11 @@ async def test_a_ddp_loop_inside_a_block_is_named_by_its_block(test_client):
                           "triggerTargets": ["gen", "model", "loss"]},
         }],
     }
+
+
+async def test_a_ddp_loop_inside_a_block_is_named_by_its_block(test_client):
+    graph = _block_graph(_ddp.training_graph(batch_size=8, epochs=1,
+                                             save_as=None))
     body = await _export(test_client, graph)
     (warning,) = [w for w in body["warnings"] if w["code"] == "ddp_strategy"]
     assert warning["node_id"] == "blk/train"

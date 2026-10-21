@@ -2015,6 +2015,10 @@ class TrainingLoopNode(BaseNode):
             if val_dataloader is not None:
                 val_dataloader = parallel.shard(val_dataloader,
                                                 "val_dataloader")
+                # The shard is padded to the length of the others with
+                # repeated samples; those are cut out of validation below
+                # so val_loss and val_accuracy count each sample once.
+                val_real_samples = parallel.real_samples(val_dataloader)
         throttle = ProgressThrottle(progress_callback)
         total_batches = loader_length(dataloader)
         total_val_batches = loader_length(val_dataloader)
@@ -2382,6 +2386,7 @@ class TrainingLoopNode(BaseNode):
                 # device from the first batch on and is read back once.
                 step_val_sum: Any = 0.0
                 step_val_batches = 0
+                step_val_seen = 0
                 with torch.no_grad(), torch.random.fork_rng(devices=[]):
                     for step_batch in val_dataloader:
                         if should_stop():
@@ -2395,6 +2400,13 @@ class TrainingLoopNode(BaseNode):
                                 to_device(step_batch, device)
                                 if hasattr(step_batch, "to") else step_batch)
                             step_targets = None
+                        if parallel is not None:
+                            step_data, step_targets, kept = parallel.trim(
+                                step_data, step_targets,
+                                val_real_samples - step_val_seen)
+                            step_val_seen += kept
+                            if kept == 0:
+                                continue  # the shard's padding
                         with policy.autocast():
                             step_out = _class_dim_first(
                                 loss_fn, model(step_data), step_targets)
@@ -2644,6 +2656,7 @@ class TrainingLoopNode(BaseNode):
                 # A device tensor once a batch masks ignore_index tokens,
                 # read back once below.
                 val_total: Any = 0
+                val_seen = 0
 
                 with torch.no_grad():
                     for batch_index, batch_data in enumerate(val_dataloader):
@@ -2658,6 +2671,12 @@ class TrainingLoopNode(BaseNode):
                         else:
                             data = to_device(batch_data, device) if hasattr(batch_data, "to") else batch_data
                             targets = None
+                        if parallel is not None:
+                            data, targets, kept = parallel.trim(
+                                data, targets, val_real_samples - val_seen)
+                            val_seen += kept
+                            if kept == 0:
+                                continue  # the shard's padding
 
                         # Validation runs under the SAME autocast as
                         # training. Two reasons, and the second is the one

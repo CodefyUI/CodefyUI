@@ -23,10 +23,11 @@ the only rank whose events, metrics and artifacts reach the control plane.
 The other ranks execute only what the ``ddp`` loops need (their ancestors and
 the loops themselves), with no signal consumer, so the checkpoint and
 TensorBoard writers, which ask ``context.can_record_artifacts()`` first, write
-nothing there. They wait to start until rank 0 reaches its first ``ddp``
-loop (:meth:`DataParallel.enter`), so a dataset that downloads on first use
-is downloaded once, by rank 0. Nodes downstream of a loop run on rank 0
-alone, on the trained model it returns.
+nothing there; their warnings do reach the run, once each. They wait to
+start until rank 0 reaches its first ``ddp`` loop (:meth:`DataParallel.enter`),
+so a dataset that downloads on first use is downloaded once, by rank 0.
+Nodes downstream of a loop run on rank 0 alone, on the trained model it
+returns.
 """
 
 from __future__ import annotations
@@ -96,19 +97,6 @@ def ddp_loop_ids(graph: dict[str, Any]) -> list[str]:
     return [str(node.get("id")) for node in graph.get("nodes") or []
             if isinstance(node, dict) and is_ddp_loop(node)
             and not _bypassed(node)]
-
-
-def nested_ddp_loops(graph: dict[str, Any]) -> list[str]:
-    """``<block id>/<node id>`` of every ``ddp`` loop inside a block
-    definition of *graph* (the export warning names them too)."""
-    found: list[str] = []
-    for definition in graph.get("subgraphs") or []:
-        if not isinstance(definition, dict):
-            continue
-        for node in definition.get("nodes") or []:
-            if isinstance(node, dict) and is_ddp_loop(node):
-                found.append(f"{definition.get('id')}/{node.get('id')}")
-    return found
 
 
 def _edges(graph: dict[str, Any]) -> list[dict[str, Any]]:
@@ -311,7 +299,10 @@ class DataParallel:
         generator when it has one, so a seeded run shuffles the same way
         every time). ``drop_last`` stays off on the sampler: it pads the
         last shard with repeated samples so every rank runs the same number
-        of batches, which their collectives need.
+        of batches, which their collectives need (the stop flag is agreed
+        once per batch, in validation too). :meth:`real_samples` says how
+        many of a rank's samples are its own, and :meth:`trim` cuts the
+        repeated ones out of a validation batch so they count nowhere.
         """
         import torch
         from torch.utils.data import (
@@ -363,6 +354,56 @@ class DataParallel:
             kwargs["prefetch_factor"] = loader.prefetch_factor
         return DataLoader(loader.dataset, **kwargs)
 
+    def real_samples(self, loader: Any) -> int:
+        """How many samples of this rank's shard of *loader* (from
+        :meth:`shard`) are the dataset's own, the rest being the padding
+        ``DistributedSampler`` repeats at the end of the shard.
+
+        The sampler lays the (shuffled) indices out in order, pads them to
+        a multiple of the world size, and gives rank *r* every *N*-th one
+        from position *r*; a position at or past the dataset's length is
+        padding, and those are the last ones of each shard.
+        """
+        size = len(loader.dataset)
+        rank, world = self.state.rank, self.state.world_size
+        return max(0, -(-(size - rank) // world))
+
+    @staticmethod
+    def trim(data: Any, targets: Any, remaining: int) -> tuple[Any, Any, int]:
+        """*data* and *targets* (a batch, on any device) cut to their first
+        *remaining* samples, and how many samples the cut batch holds.
+
+        The batch size is the first dimension of the first tensor found in
+        *data* (then *targets*); tensors, and tensors inside lists, tuples
+        and dicts, are cut along it. A batch with no tensor in it cannot be
+        cut: it is returned whole and counted as one sample, so it is only
+        ever skipped when the shard is exhausted at one sample per batch.
+        """
+        import torch
+
+        size = _batch_size(data)
+        if size is None:
+            size = _batch_size(targets)
+        if size is None:
+            return data, targets, 1 if remaining > 0 else 0
+        if remaining >= size:
+            return data, targets, size
+        keep = max(0, remaining)
+
+        def cut(value: Any) -> Any:
+            if isinstance(value, torch.Tensor) and value.dim() > 0 \
+                    and value.shape[0] == size:
+                return value[:keep]
+            if isinstance(value, list):
+                return [cut(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(cut(item) for item in value)
+            if isinstance(value, dict):
+                return {key: cut(item) for key, item in value.items()}
+            return value
+
+        return cut(data), cut(targets), keep
+
     @staticmethod
     def set_epoch(loader: Any, epoch: int) -> None:
         """A new shuffle for *epoch*, the same on every rank."""
@@ -401,3 +442,22 @@ class DataParallel:
         """*value* averaged over the ranks."""
         (total,) = self.sums(value)
         return total / self.state.world_size
+
+
+def _batch_size(value: Any) -> int | None:
+    """The first dimension of the first tensor in *value*, or None."""
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        return int(value.shape[0]) if value.dim() > 0 else None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            size = _batch_size(item)
+            if size is not None:
+                return size
+    elif isinstance(value, dict):
+        for item in value.values():
+            size = _batch_size(item)
+            if size is not None:
+                return size
+    return None

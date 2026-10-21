@@ -92,7 +92,7 @@ What it does to memory:
 
 - **Every card holds the whole model**, its gradients and its optimizer state, plus the activations of one batch at the DataLoader's `batch_size`, which is per card. DDP adds cards; it does not split a model that does not fit on one. A model too large for one card needs the levers above (`bf16`, a smaller batch with `accumulate_steps`), and there is no sharded (FSDP) or model-parallel strategy.
 - **The effective batch grows with the cards.** Each optimizer step averages the gradients of every card's batch, so two cards at `batch_size` 32 step like one card at 64, and `accumulate_steps` multiplies on top. The config frame reports `effective_batch_size` = `batch_size` × `accumulate_steps` × cards.
-- **A memory budget applies per card.** On a card shared by memory, each process is capped to its own card's budget.
+- **A memory budget applies per card.** On a card shared by memory, each process is capped to its own card's budget, and to nothing on the other budgeted cards of the set, so a node pinned to another card fails at its first allocation there instead of taking memory outside the budget. Peak memory reports the most any process used of each card.
 
 There is no multi-node training: the cards are those of one worker.
 

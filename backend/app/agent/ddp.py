@@ -4,10 +4,17 @@ When a run's graph has a top-level ``TrainingLoop`` with ``strategy: ddp``
 and its device set has two or more CUDA cards, the run subprocess
 (``child.main``) does not execute the graph itself. It becomes the
 *launcher*: :func:`launch` starts one *rank* process per card, in the
-``spawn`` context, gives them a rendezvous on a free loopback port, and
-relays what they report to the agent over its one pipe. No rank talks to
-the agent.
+``spawn`` context, gives them a rendezvous through a file in the run's
+directory, and relays what they report to the agent over its one pipe. No
+rank talks to the agent.
 
+- The ranks meet on a ``torch.distributed.FileStore`` (no TCP listener,
+  no port to race for) and, once joined, talk to each other over the
+  loopback interface only: ``GLOO_SOCKET_IFNAME`` and ``NCCL_SOCKET_IFNAME``
+  are set to it (``lo``, ``lo0`` on macOS) unless the environment sets
+  them. The sockets gloo and NCCL open between the ranks are bound to the
+  loopback address; the worker opens nothing another machine could reach.
+  ``OMP_NUM_THREADS`` is set to 1 per rank unless set, as ``torchrun`` does.
 - Every rank sees all of the run's cards (the launcher's
   ``CUDA_VISIBLE_DEVICES``) and trains on its own, ``cuda:<rank>``
   (``torch.cuda.set_device``), so NCCL can use peer-to-peer copies.
@@ -15,13 +22,20 @@ the agent.
   as a single-process run does, so its events, metrics, artifacts and
   recorded outputs are the run's. The launcher forwards them unchanged.
 - A rank other than 0 executes only what the ``ddp`` loops need
-  (``core.distributed.rank_graph``), with no signal consumer: it records no
-  artifact and so writes no checkpoint and no TensorBoard file. It starts
-  its graph once rank 0 enters its first ``ddp`` loop (rank 0 sends
-  ``ddp_ready``, the launcher answers the others with ``go``), so what runs
-  upstream of the loop, a dataset download say, runs on rank 0 first.
-  Its events and metrics are dropped; its warnings are forwarded once
-  each; its ``finished`` decides only whether the run failed.
+  (``core.distributed.rank_graph``). Its signal consumer forwards warnings
+  only, and the run executes with ``record_artifacts=False``, so it writes
+  no checkpoint and no TensorBoard file. It starts its graph once rank 0
+  enters its first ``ddp`` loop (rank 0 sends ``ddp_ready``, the launcher
+  answers the others with ``go``), so what runs upstream of the loop, a
+  dataset download say, runs on rank 0 first. Its events and metrics are
+  dropped; a warning is forwarded once, whichever rank gives it first; its
+  ``finished`` decides only whether the run failed.
+- A seeded run seeds rank *r* with ``seed + r`` (:func:`rank_seed`), so
+  the ranks draw different dropout masks and augmentations; the shuffle
+  order is rank 0's, broadcast (``DataParallel.shard``). Rank 0 is seeded
+  as a single-process run is.
+- Each rank writes its own output log: rank 0 the run's (what the agent
+  tails), rank *r* ``<log>-rank<r>.log`` beside it (:func:`rank_log_path`).
 - A cancel from the agent goes to every rank. The ``ddp`` loops agree on
   the stop flag every batch (``DataParallel.stop_checker``), so every rank
   stops at the same batch and rank 0 writes the interrupt checkpoint.
@@ -35,9 +49,14 @@ the agent.
   gone (its control pipe closes) cancels its run and exits within
   :data:`ORPHAN_EXIT_S`, so a killed launcher leaves no rank behind.
 
-With memory budgets (#788) each rank caps its own card and reports it; the
-launcher sends one ``memory_limit`` with all of them, before anything
-else, and holds rank 0's other messages until then.
+With memory budgets (#788) each rank caps its own card to its budget and
+reports it; the launcher sends one ``memory_limit`` with all of them,
+before anything else, and holds rank 0's other messages until then. Every
+other budgeted card is capped to nothing in that rank
+(:func:`stray_caps`): a node pinned to another card by its ``device``
+param fails there at its first allocation instead of taking memory that
+is not in the run's budget. The run's ``peak_memory`` is the maximum over
+the ranks for each card.
 
 This module imports nothing heavy at module level: the launcher never
 imports torch.
@@ -47,7 +66,7 @@ from __future__ import annotations
 
 import logging
 import os
-import socket
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -84,6 +103,14 @@ TAIL_BYTES = 2048
 
 #: Seconds between two checks of the launcher's loop.
 POLL_S = 0.2
+
+#: The rendezvous file, in the run's directory (beside its output log).
+RENDEZVOUS_FILE = "ddp-rendezvous"
+#: The allocator fraction a rank sets on a budgeted card that is not its
+#: own: the first allocation there fails.
+STRAY_CAP_FRACTION = 0.0
+#: What the rank processes get when the environment leaves them unset.
+RANK_ENVIRONMENT_DEFAULTS = {"OMP_NUM_THREADS": "1"}
 
 
 # ── the plan ──────────────────────────────────────────────────────────────
@@ -133,20 +160,68 @@ def plan_for(spec: dict[str, Any]) -> dict[str, Any] | None:
             "backend": str(backend), "loop_ids": loop_ids}
 
 
-def free_port() -> int:
-    """A free TCP port on the loopback interface, for the rendezvous."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+def rendezvous_path(spec: dict[str, Any]) -> str:
+    """Where the ranks of *spec* meet: :data:`RENDEZVOUS_FILE` beside the
+    run's output log, or in a directory of its own when the spec names no
+    log (the tests). The launcher removes it afterwards."""
+    log_path = spec.get("log_path")
+    if log_path:
+        return os.path.join(os.path.dirname(os.path.abspath(str(log_path))),
+                            RENDEZVOUS_FILE)
+    import tempfile
+
+    return os.path.join(tempfile.mkdtemp(prefix="codefyui-ddp-"),
+                        RENDEZVOUS_FILE)
+
+
+def loopback_interface() -> str | None:
+    """The loopback interface's name, for ``*_SOCKET_IFNAME``: ``lo0`` on
+    macOS, ``lo`` on Linux; None on Windows, where gloo picks its
+    interface by host name."""
+    if sys.platform.startswith("win"):
+        return None
+    return "lo0" if sys.platform == "darwin" else "lo"
+
+
+def rank_environment() -> dict[str, str]:
+    """What a rank sets in its environment before it imports torch, where
+    the environment does not set it already."""
+    env = dict(RANK_ENVIRONMENT_DEFAULTS)
+    interface = loopback_interface()
+    if interface is not None:
+        env["GLOO_SOCKET_IFNAME"] = interface
+        env["NCCL_SOCKET_IFNAME"] = interface
+    return {name: value for name, value in env.items()
+            if not os.environ.get(name)}
+
+
+def rank_log_path(spec: dict[str, Any], rank: int) -> str | None:
+    """Rank *rank*'s output log: the run's for rank 0, ``<stem>-rank<r>``
+    beside it for the others; None when the run has none."""
+    log_path = spec.get("log_path")
+    if not log_path or rank == 0:
+        return log_path
+    stem, ext = os.path.splitext(str(log_path))
+    return f"{stem}-rank{rank}{ext}"
+
+
+def rank_seed(seed: Any, rank: int) -> Any:
+    """What rank *rank* seeds its RNGs with: *seed* + *rank* (None stays
+    None). Rank 0 keeps the run's seed."""
+    if seed is None:
+        return None
+    return int(seed) + rank
 
 
 def rank_spec(spec: dict[str, Any], plan: dict[str, Any],
               rank: int) -> dict[str, Any]:
-    """*spec* as rank *rank* executes it: its own device, and the memory
-    budget of that device only (each rank caps the card it trains on)."""
+    """*spec* as rank *rank* executes it: its own device, its own log, and
+    the memory budget of that device only (each rank caps the card it
+    trains on; the other budgeted cards get :func:`stray_caps`)."""
     device = plan["rank_devices"][rank]
     out = dict(spec)
     out["device"] = device
+    out["log_path"] = rank_log_path(spec, rank)
     budgets = spec.get("memory_budgets") or {}
     out["memory_budgets"] = {name: value for name, value in budgets.items()
                              if name == device}
@@ -154,12 +229,44 @@ def rank_spec(spec: dict[str, Any], plan: dict[str, Any],
     return out
 
 
+def stray_caps(spec: dict[str, Any], plan: dict[str, Any],
+               rank: int) -> dict[str, float]:
+    """The budgeted CUDA cards rank *rank* does not train on, each with
+    :data:`STRAY_CAP_FRACTION`: what it caps them to so that a node that
+    pins one of them fails at its first allocation rather than use memory
+    outside the run's budget on a card another rank is capped to."""
+    own = plan["rank_devices"][rank]
+    return {device: STRAY_CAP_FRACTION
+            for device in (spec.get("memory_budgets") or {})
+            if device != own and _cuda_index(device) is not None}
+
+
+def apply_stray_caps(caps: dict[str, float]) -> None:
+    """Set the allocator fraction of each card in *caps*. Imports torch.
+    Raises ``RuntimeError`` when a cap cannot be set, as
+    ``child.apply_memory_budgets`` does: the rank must not run with a
+    budgeted card uncapped."""
+    if not caps:
+        return
+    import torch
+
+    for device, fraction in caps.items():
+        try:
+            torch.cuda.set_per_process_memory_fraction(
+                float(fraction), _cuda_index(device))
+        except Exception as exc:  # noqa: BLE001 -- re-raised with context
+            raise RuntimeError(
+                f"could not cap {device}, which this rank does not train "
+                f"on: {type(exc).__name__}: {exc}") from exc
+
+
 # ── a rank ────────────────────────────────────────────────────────────────
 
 
-def init_process_group(plan: dict[str, Any], rank: int, port: int,
+def init_process_group(plan: dict[str, Any], rank: int, rendezvous: str,
                        device: str) -> tuple[str, Any]:
-    """Join the run's process group; ``(backend, gloo group or None)``."""
+    """Join the run's process group through the ``FileStore`` at
+    *rendezvous*; ``(backend, gloo group or None)``."""
     import torch
     import torch.distributed as dist
 
@@ -170,9 +277,10 @@ def init_process_group(plan: dict[str, Any], rank: int, port: int,
         backend = "gloo"
     if _cuda_index(device) is not None:
         torch.cuda.set_device(torch.device(device))
+    world_size = int(plan["world_size"])
     dist.init_process_group(
-        backend, init_method=f"tcp://127.0.0.1:{port}", rank=rank,
-        world_size=int(plan["world_size"]),
+        backend, store=dist.FileStore(rendezvous, world_size), rank=rank,
+        world_size=world_size,
         timeout=timedelta(seconds=COLLECTIVE_TIMEOUT_S))
     # The stop flag and the metric sums are a few CPU numbers: a gloo
     # group carries them without a device round trip.
@@ -234,20 +342,28 @@ def rank_listener(control_in: Any, context: Any, outputs: Any = None,
 
 
 def rank_main(spec: dict[str, Any], plan: dict[str, Any], rank: int,
-              port: int, events_out: Any, control_in: Any) -> None:
+              rendezvous: str, events_out: Any, control_in: Any) -> None:
     """``Process`` target of one rank. The launcher's environment (the
-    run's ``CUDA_VISIBLE_DEVICES`` and data settings) is inherited."""
+    run's ``CUDA_VISIBLE_DEVICES`` and data settings) is inherited;
+    :func:`rank_environment` is applied before torch is imported."""
     child.ignore_interrupts()
-    child._redirect_output(spec.get("log_path"))
+    os.environ.update(rank_environment())
+    child._redirect_output(rank_log_path(spec, rank))
     logging.basicConfig(
         level=logging.INFO, force=True,
         format=f"%(asctime)s rank {rank} %(levelname)s %(name)s: %(message)s")
     send = child._safe_sender(events_out)
     try:
+        try:
+            apply_stray_caps(stray_caps(spec, plan, rank))
+        except RuntimeError as exc:
+            send((child.MSG_FINISHED, {"status": "failed", "error": str(exc),
+                                       "peak_memory": None}))
+            return
         if rank == 0:
-            run_rank_zero(spec, plan, port, send, control_in)
+            run_rank_zero(spec, plan, rendezvous, send, control_in)
         else:
-            run_rank(spec, plan, rank, port, send, control_in)
+            run_rank(spec, plan, rank, rendezvous, send, control_in)
     finally:
         _leave_process_group()
         try:
@@ -256,15 +372,15 @@ def rank_main(spec: dict[str, Any], plan: dict[str, Any], rank: int,
             pass
 
 
-def run_rank_zero(spec: dict[str, Any], plan: dict[str, Any], port: int,
-                  send: child.Send, control_in: Any, *,
+def run_rank_zero(spec: dict[str, Any], plan: dict[str, Any],
+                  rendezvous: str, send: child.Send, control_in: Any, *,
                   discover: bool = True) -> None:
     """Rank 0: the run as ``child.run_assignment`` executes it, inside the
     process group. Never raises."""
     device = plan["rank_devices"][0]
 
     def prepare(context: Any) -> None:
-        backend, group = init_process_group(plan, 0, port, device)
+        backend, group = init_process_group(plan, 0, rendezvous, device)
         distributed.install(distributed.RankState(
             rank=0, world_size=int(plan["world_size"]), device=device,
             backend=backend, loop_ids=frozenset(plan["loop_ids"]),
@@ -276,7 +392,7 @@ def run_rank_zero(spec: dict[str, Any], plan: dict[str, Any], port: int,
 
 
 def run_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
-             port: int, send: child.Send, control_in: Any, *,
+             rendezvous: str, send: child.Send, control_in: Any, *,
              discover: bool = True) -> None:
     """A rank other than 0: join the group, wait for ``go``, execute the
     ``ddp`` loops and their ancestors, send ``finished``. Never raises."""
@@ -301,7 +417,7 @@ def run_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
             threading.Thread(target=rank_listener,
                              args=(control_in, context, None, go),
                              name="rank-listener", daemon=True).start()
-        backend, group = init_process_group(plan, rank, port, device)
+        backend, group = init_process_group(plan, rank, rendezvous, device)
         distributed.install(distributed.RankState(
             rank=rank, world_size=int(plan["world_size"]), device=device,
             backend=backend, loop_ids=frozenset(plan["loop_ids"]),
@@ -314,18 +430,30 @@ def run_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
                 child._normalised_graph(spec["graph"]), plan["loop_ids"])
 
             async def execute() -> tuple[str, str | None, Any]:
-                from ..core.execution_context import CancellationError
+                from ..core.execution_context import (
+                    CancellationError,
+                    WarningSignal,
+                )
                 from ..core.graph_engine import (
                     build_preset_fallback,
                     execute_graph,
                 )
                 from ..core.seeding import seed_rngs
 
+                async def on_signal(signal: Any) -> None:
+                    # Warnings only (forwarded once by the launcher); the
+                    # metrics and artifacts repeat rank 0's.
+                    if isinstance(signal, WarningSignal):
+                        send((child.MSG_WARNING, {
+                            "kind": signal.kind, "detail": signal.detail,
+                            "node_id": signal.node_id}))
+
                 scope = PeakMemoryScope(device, exclusive=True).open()
                 try:
-                    seed_rngs(options.get("seed"))
-                    # No on_signal: nothing this rank logs is recorded, so
-                    # nothing it would write as an artifact is written.
+                    seed_rngs(rank_seed(options.get("seed"), rank))
+                    # record_artifacts=False: nothing this rank logs as an
+                    # artifact lands anywhere, so no checkpoint or
+                    # TensorBoard file is written here.
                     # fail_fast whatever the run's error mode: a node that
                     # failed here must end this rank, or rank 0 would wait
                     # in the loop for a rank that never arrives.
@@ -334,7 +462,8 @@ def run_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
                         error_mode="fail_fast", run_id=spec["run_id"],
                         preset_fallback=build_preset_fallback(
                             graph["presets"]),
-                        subgraphs=graph["subgraphs"])
+                        subgraphs=graph["subgraphs"], on_signal=on_signal,
+                        record_artifacts=False)
                     outcome: tuple[str, str | None] = ("succeeded", None)
                 except CancellationError:
                     outcome = ("cancelled", None)
@@ -365,6 +494,8 @@ class _Rank:
     process: Any
     events_in: Any
     control_out: Any
+    #: Its output log (:func:`rank_log_path`), tailed when it crashes.
+    log_path: str | None = None
     #: Its ``finished`` payload, once received.
     report: dict[str, Any] | None = None
     #: Its pipe reached EOF.
@@ -385,7 +516,6 @@ class _Launch:
     ranks: list[_Rank]
     send: child.Send
     world_size: int
-    log_path: str | None = None
     cancel_requested: bool = False
     agent_gone: bool = False
     #: The outcome went to the agent: only ``output_answer`` follows.
@@ -428,13 +558,16 @@ class _Launch:
             self.send(message)
 
     def _merged_peak(self) -> dict[str, Any] | None:
+        """Every rank's ``peak_memory``, the maximum per card: each rank
+        reads the cards it holds memory on, and a card another rank's node
+        touched is counted by whichever rank used the most of it."""
         merged: dict[str, Any] = {}
         reports = [self.rank0_report] + [r.report for r in self.ranks[1:]]
         for report in reports:
             peak = (report or {}).get("peak_memory")
             if isinstance(peak, dict):
                 for device, value in peak.items():
-                    merged.setdefault(device, value)
+                    merged[device] = _peak_max(merged.get(device), value)
         return merged or None
 
     def report(self, payload: dict[str, Any]) -> None:
@@ -554,9 +687,9 @@ class _Launch:
         code = getattr(rank.process, "exitcode", None)
         error = (f"DDP rank {rank.index} of {self.world_size} exited "
                  f"(exit code {code}) without reporting")
-        tail = _tail(self.log_path)
+        tail = _tail(rank.log_path)
         if tail:
-            error = f"{error}\n--- output tail ---\n{tail}"
+            error = f"{error}\n--- rank {rank.index} output tail ---\n{tail}"
         if rank.index == 0:
             self.fail(error)
         else:
@@ -621,6 +754,26 @@ def _stop(process: Any, *, kill: bool) -> None:
         pass
 
 
+def _peak_max(current: Any, value: Any) -> Any:
+    """The larger of two ``peak_memory`` entries for one card: field by
+    field for the byte counts; ``exact`` only when both are, ``shared``
+    when either is."""
+    if not isinstance(current, dict) or not isinstance(value, dict):
+        return value if current is None else current
+    merged = dict(current)
+    for key, item in value.items():
+        mine = merged.get(key)
+        if key == "exact":
+            merged[key] = bool(mine) and bool(item)
+        elif key == "shared":
+            merged[key] = bool(mine) or bool(item)
+        elif isinstance(item, (int, float)) and isinstance(mine, (int, float)):
+            merged[key] = max(mine, item)
+        elif mine is None:
+            merged[key] = item
+    return merged
+
+
 def _tail(path: str | None) -> str:
     if not path:
         return ""
@@ -645,8 +798,10 @@ def launch(spec: dict[str, Any], plan: dict[str, Any], send: child.Send,
 
     ctx = context or multiprocessing.get_context("spawn")
     ranks: list[_Rank] = []
+    rendezvous: str | None = None
     try:
-        port = free_port()
+        rendezvous = rendezvous_path(spec)
+        _remove(rendezvous)  # a FileStore must start from an empty file
         for index in range(int(plan["world_size"])):
             events_in, events_out = ctx.Pipe(duplex=False)
             control_in_r, control_out = ctx.Pipe(duplex=False)
@@ -654,14 +809,16 @@ def launch(spec: dict[str, Any], plan: dict[str, Any], send: child.Send,
             # and a DataLoader with num_workers does.
             process = ctx.Process(
                 target=entry,
-                args=(spec, plan, index, port, events_out, control_in_r),
+                args=(spec, plan, index, rendezvous, events_out,
+                      control_in_r),
                 name=f"codefyui-run-{spec.get('run_id')}-rank{index}",
                 daemon=False)
             process.start()
             events_out.close()
             control_in_r.close()
             ranks.append(_Rank(index=index, process=process,
-                               events_in=events_in, control_out=control_out))
+                               events_in=events_in, control_out=control_out,
+                               log_path=rank_log_path(spec, index)))
     except BaseException as exc:  # noqa: BLE001 -- reported, then we exit
         for rank in ranks:
             _stop(rank.process, kill=True)
@@ -671,12 +828,12 @@ def launch(spec: dict[str, Any], plan: dict[str, Any], send: child.Send,
                      f"{type(exc).__name__}: {exc}"}))
         for rank in ranks:
             rank.process.join(KILL_AFTER_S)
+        _remove_rendezvous(spec, rendezvous)
         return
-    logger.info("run %s: %d DDP ranks (%s) on %s, rendezvous on port %d",
+    logger.info("run %s: %d DDP ranks (%s) on %s, rendezvous at %s",
                 spec.get("run_id"), len(ranks), plan["backend"],
-                ", ".join(plan["rank_devices"]), port)
-    state = _Launch(ranks=ranks, send=send, world_size=len(ranks),
-                    log_path=spec.get("log_path"))
+                ", ".join(plan["rank_devices"]), rendezvous)
+    state = _Launch(ranks=ranks, send=send, world_size=len(ranks))
     budgets = spec.get("memory_budgets") or {}
     state.limits_expected = {
         index for index, device in enumerate(plan["rank_devices"])
@@ -698,9 +855,31 @@ def launch(spec: dict[str, Any], plan: dict[str, Any], send: child.Send,
                 end.close()
             except OSError:
                 pass
+    _remove_rendezvous(spec, rendezvous)
     if not state.reported:
         # Every rank exited and none said how the run went.
         state.fail("the DDP ranks exited without reporting")
+
+
+def _remove(path: str | None) -> None:
+    if path:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.debug("could not remove %s", path, exc_info=True)
+
+
+def _remove_rendezvous(spec: dict[str, Any], rendezvous: str | None) -> None:
+    """Remove the rendezvous file and, when it was in a directory of its
+    own (no run log), that directory."""
+    _remove(rendezvous)
+    if rendezvous and not spec.get("log_path"):
+        try:
+            os.rmdir(os.path.dirname(rendezvous))
+        except OSError:
+            pass
 
 
 def _on_sigterm(state: _Launch) -> None:

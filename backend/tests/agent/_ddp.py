@@ -115,6 +115,27 @@ def training_graph(*, batch_size: int, epochs: int = 3,
     return {"nodes": nodes, "edges": edges}
 
 
+def with_validation(graph: dict[str, Any], *, batch_size: int) -> dict[str, Any]:
+    """*graph* with a second DataLoader over the same dataset wired to the
+    loop's ``val_dataloader``."""
+    graph["nodes"].append(node("vdl", "DataLoader", batch_size=batch_size,
+                               shuffle=False, num_workers=0))
+    graph["edges"] += [wire("ds", "dataset", "vdl", "dataset"),
+                       wire("vdl", "dataloader", "train", "val_dataloader")]
+    return graph
+
+
+def with_step_scheduler(graph: dict[str, Any], *, step_size: int
+                        ) -> dict[str, Any]:
+    """*graph* with a StepLR scheduler on the loop. A ``step_size`` past
+    the loop's epochs makes the loop warn (``lr_schedule_mismatch``)."""
+    graph["nodes"].append(node("sched", "LRScheduler", type="StepLR",
+                               step_size=step_size, gamma=0.5))
+    graph["edges"] += [wire("opt", "optimizer", "sched", "optimizer"),
+                       wire("sched", "scheduler", "train", "lr_scheduler")]
+    return graph
+
+
 def cpu_ddp_child(spec: dict[str, Any], events_out: Any,
                   control_in: Any) -> None:
     """``child.main`` for a ``ddp`` run on two gloo CPU ranks: what the
@@ -132,7 +153,7 @@ def _behaviour(spec: dict[str, Any], rank: int) -> dict[str, Any]:
 
 
 def fake_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
-              port: int, events_out: Any, control_in: Any) -> None:
+              rendezvous: str, events_out: Any, control_in: Any) -> None:
     """A rank that follows ``spec["fake_ranks"][str(rank)]``:
 
     - ``limit``: a ``memory_limit`` payload to send first;
