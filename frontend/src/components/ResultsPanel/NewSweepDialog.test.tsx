@@ -12,6 +12,7 @@ import { useNodeDefStore } from '../../store/nodeDefStore';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
 import { useSweepStore, _resetSweepStoreForTesting } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
+import { _resetWorkerStoreForTesting, useWorkerStore } from '../../store/workerStore';
 import { subgraphIdOf } from '../../utils/subgraph';
 import type { NodeDefinition } from '../../types';
 
@@ -703,7 +704,10 @@ describe('NewSweepDialog: target (#777)', () => {
   it('sends target any with the chosen device kind to every variant', async () => {
     const onClose = await openSettled();
     fireEvent.change(target(), { target: { value: 'any' } });
-    expect(screen.getByRole('radio', { name: 'CUDA GPU' })).not.toBeChecked();
+    // The tab only follows Settings (cpu, this server's): Any available
+    // starts on an accelerator, as in Queue on... (#840).
+    expect(screen.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'CPU' }));
     fireEvent.click(screen.getByRole('radio', { name: 'CUDA GPU' }));
     const options = await start(onClose);
     expect(options).toMatchObject({ target: { worker: 'any' }, device: 'cuda' });
@@ -764,6 +768,24 @@ describe('NewSweepDialog: target (#777)', () => {
       tabs: state.tabs.map((tab) => (tab.id === state.activeTabId ? { ...tab, graphDevice: device } : tab)),
     }));
   }
+
+  it('opens the Workers panel from the no-worker hint, closing itself (#840 review)', async () => {
+    _resetWorkerStoreForTesting();
+    workersMock.fetchWorkers.mockResolvedValue([]);
+    const onClose = vi.fn();
+    render(<NewSweepDialog onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a worker' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(useWorkerStore.getState().panelOpen).toBe(true);
+    act(() => useWorkerStore.getState().closePanel());
+  });
+
+  it('keeps the kind of a device the tab names for Any available', async () => {
+    setGraphDevice('cpu');
+    await openSettled();
+    fireEvent.change(target(), { target: { value: 'any' } });
+    expect(screen.getByRole('radio', { name: 'CPU' })).toBeChecked();
+  });
 
   it('starts on the device it sends: auto, which the server resolves, with no target', async () => {
     setGraphDevice('auto');

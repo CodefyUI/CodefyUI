@@ -36,3 +36,14 @@ export function formatBytes(bytes: number): string {
   // byte count the backend sends is an integer.
   return unit === 0 ? `${Math.round(value)} B` : `${value.toFixed(1)} ${UNITS[unit]}`;
 }
+
+const GIB = 1024 ** 3;
+
+/**
+ * Bytes as a GiB figure with one decimal and no unit ("10.2"), for the
+ * device lists' memory strings, whose locale text carries the unit: the
+ * toolbar's device menu and the Workers panel print the same number (#840).
+ */
+export function gibFigure(bytes: number): string {
+  return (bytes / GIB).toFixed(1);
+}

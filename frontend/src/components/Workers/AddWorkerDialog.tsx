@@ -43,6 +43,26 @@ export const TTL_CHOICES = [
 const DEFAULT_TTL_S = 86400;
 const MAX_USES = 100;
 
+/**
+ * A worker name, as the server checks it (`WORKER_NAME_PATTERN`). This and
+ * the reserved names are pinned to the server's by
+ * `backend/tests/test_api_workers.py`.
+ */
+const WORKER_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** Names the server keeps for itself (`RESERVED_WORKER_NAMES`). */
+const RESERVED_NAMES: ReadonlySet<string> = new Set(['local', 'any', 'enroll', 'enrollments']);
+
+/**
+ * Why *typed* cannot be a worker name, as a message key, or null when it
+ * can. The server lower-cases the name, so case is not a fault (#840).
+ */
+export function workerNameProblem(typed: string): 'workers.add.ssh.badName' | 'workers.add.ssh.reservedName' | null {
+  const name = typed.trim().toLowerCase();
+  if (name === '') return null;
+  if (!WORKER_NAME.test(name)) return 'workers.add.ssh.badName';
+  return RESERVED_NAMES.has(name) ? 'workers.add.ssh.reservedName' : null;
+}
+
 interface AddWorkerDialogProps {
   mode: AddWorkerMode;
   /** Re-key this enrolled worker: the token is bound to it (#780). */
@@ -142,6 +162,9 @@ function SameHostInstructions() {
   );
 }
 
+/** A list the dialog read this long ago (ms) is not read again on mount. */
+export const ENROLLMENT_LIST_FRESH_MS = 5000;
+
 /**
  * Another machine (#780): pick a lifetime and a number of uses, generate an
  * enrollment token, copy the command. The server address in the command is
@@ -150,11 +173,21 @@ function SameHostInstructions() {
  * dial. The tokens already issued are listed (never their secrets) with a
  * revoke button each.
  */
-function RemoteInstructions({ rekey }: { rekey: string | null }) {
+function RemoteInstructions({ rekey, initialList = null, initialAt = 0, onList, onUseSsh }: {
+  rekey: string | null;
+  /** The last list the dialog saw, so the form starts filled. */
+  initialList?: EnrollmentList | null;
+  /** When (Date.now()) *initialList* was read: an older one is read again on mount. */
+  initialAt?: number;
+  /** Every list this form reads (after a generate or a revoke too), for the dialog to keep. */
+  onList?: (list: EnrollmentList) => void;
+  /** Switch the dialog to Over SSH; offered when the server is on loopback. */
+  onUseSsh?: () => void;
+}) {
   const { t, locale } = useI18n();
-  const [list, setList] = useState<EnrollmentList | null>(null);
+  const [list, setList] = useState<EnrollmentList | null>(initialList);
   const [error, setError] = useState<string | null>(null);
-  const [url, setUrl] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(initialList?.control_url ?? null);
   const [ttl, setTtl] = useState(DEFAULT_TTL_S);
   const [uses, setUses] = useState(1);
   const [created, setCreated] = useState<CreatedEnrollment | null>(null);
@@ -168,6 +201,7 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
     try {
       const next = await fetchEnrollments();
       setList(next);
+      onList?.(next);
       setUrl((current) => current ?? next.control_url);
       setError(null);
     } catch (err) {
@@ -176,7 +210,12 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
   };
 
   useEffect(() => {
+    // On mount, unless the dialog's list was just read (its probe on open):
+    // after a switch back from Over SSH the seed may predate a token
+    // generated or revoked since (#840).
+    if (initialList !== null && Date.now() - initialAt < ENROLLMENT_LIST_FRESH_MS) return;
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const generate = async () => {
@@ -232,7 +271,14 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
       <p>{rekey ? t('workers.add.rekey.intro', { name: rekey }) : t('workers.add.remote.intro')}</p>
       {error !== null && <div className={styles.error} role="alert">{friendlyError(error)}</div>}
       {list?.listening_on_loopback && (
-        <p className={styles.warn} role="note">{t('workers.add.remote.loopbackServer')}</p>
+        <div className={styles.warn} role="note">
+          <p>{t('workers.add.remote.loopbackServer')}</p>
+          {onUseSsh && (
+            <button type="button" className={`${styles.btn} ${styles.useSsh}`} onClick={onUseSsh}>
+              {t('workers.add.remote.useSsh')}
+            </button>
+          )}
+        </div>
       )}
       <label className={styles.field}>
         {t('workers.add.remote.url')}
@@ -244,19 +290,20 @@ function RemoteInstructions({ rekey }: { rekey: string | null }) {
         />
         <span className={styles.muted}>{t('workers.add.remote.urlHint')}</span>
       </label>
-      {isLoopbackUrl(address) && (
+      {isLoopbackUrl(address) && others.length > 0 && (
         <>
           <p className={styles.warn}>{t('workers.add.remote.loopbackUrl', { url: address })}</p>
-          {others.length > 0 && (
-            <div className={styles.suggestions}>
-              {others.map((other) => (
-                <button key={other} type="button" className={styles.btn} onClick={() => setUrl(other)}>
-                  {other}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className={styles.suggestions}>
+            {others.map((other) => (
+              <button key={other} type="button" className={styles.btn} onClick={() => setUrl(other)}>
+                {other}
+              </button>
+            ))}
+          </div>
         </>
+      )}
+      {isLoopbackUrl(address) && others.length === 0 && (
+        <p className={styles.warn}>{t('workers.add.remote.loopbackUrlNone', { url: address })}</p>
       )}
       <TrustNote address={target} list={list} />
       <div className={styles.fieldRow}>
@@ -361,6 +408,11 @@ function SshInstructions({ onAdded, onClose }: { onAdded?: () => void; onClose: 
       setError(t('workers.add.ssh.needTarget'));
       return;
     }
+    const problem = workerNameProblem(name);
+    if (problem !== null) {
+      setError(t(problem, { name: name.trim() }));
+      return;
+    }
     const body: NewSshWorker = { target: target.trim(), port: Number(port) || 22 };
     if (identity.trim()) body.identity = identity.trim();
     if (remoteCdui.trim()) body.remote_cdui = remoteCdui.trim();
@@ -458,13 +510,50 @@ function SshInstructions({ onAdded, onClose }: { onAdded?: () => void; onClose: 
   );
 }
 
-/** The Workers panel's "Add worker" dialog, over the panel. */
+/** The mode switch's buttons, in order. */
+const MODES = [
+  ['remote', 'workers.add.mode.remote'],
+  ['ssh', 'workers.add.mode.ssh'],
+  ['same-host', 'workers.add.mode.sameHost'],
+] as const;
+
+/**
+ * The Workers panel's "Add worker" dialog, over the panel.
+ *
+ * A re-key (#780) is the remote form alone, under its own title (#840):
+ * a token bound to one worker has nothing to do with the other modes.
+ */
 export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWorkerDialogProps) {
   const { t } = useI18n();
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const [current, setCurrent] = useState<AddWorkerMode>(mode);
+  // Another machine cannot reach a server on loopback (#840): the dialog
+  // reads the enrollment facts first and then opens on Over SSH, which
+  // works from there. null while that read is in flight.
+  const probing = mode === 'remote' && rekey === null;
+  const [current, setCurrent] = useState<AddWorkerMode | null>(probing ? null : mode);
+  const [seed, setSeed] = useState<{ list: EnrollmentList; at: number } | null>(null);
+  const keepList = (list: EnrollmentList) => setSeed({ list, at: Date.now() });
+
+  useEffect(() => {
+    if (!probing) return;
+    let live = true;
+    fetchEnrollments().then(
+      (list) => {
+        if (!live) return;
+        keepList(list);
+        setCurrent((now) => now ?? (list.listening_on_loopback ? 'ssh' : 'remote'));
+      },
+      // The remote form reads it again and shows the error.
+      () => {
+        if (live) setCurrent((now) => now ?? 'remote');
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [probing]);
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -505,7 +594,7 @@ export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWor
         data-mode={current}
       >
         <header className={styles.header}>
-          <h2 id={titleId}>{t('workers.add.title')}</h2>
+          <h2 id={titleId}>{rekey ? t('workers.rekey.dialogTitle', { name: rekey }) : t('workers.add.title')}</h2>
           <button
             ref={closeRef}
             type="button"
@@ -517,35 +606,35 @@ export function AddWorkerDialog({ mode, rekey = null, onClose, onAdded }: AddWor
           </button>
         </header>
         <div className={`${styles.body} ${styles.prose}`}>
-          <div className={styles.modeSwitch} role="group" aria-label={t('workers.add.mode')}>
-            <button
-              type="button"
-              className={styles.btn}
-              aria-pressed={current === 'remote'}
-              onClick={() => setCurrent('remote')}
-            >
-              {t('workers.add.mode.remote')}
-            </button>
-            <button
-              type="button"
-              className={styles.btn}
-              aria-pressed={current === 'ssh'}
-              onClick={() => setCurrent('ssh')}
-            >
-              {t('workers.add.mode.ssh')}
-            </button>
-            <button
-              type="button"
-              className={styles.btn}
-              aria-pressed={current === 'same-host'}
-              onClick={() => setCurrent('same-host')}
-            >
-              {t('workers.add.mode.sameHost')}
-            </button>
-          </div>
-          {current === 'remote' && <RemoteInstructions rekey={rekey} />}
-          {current === 'ssh' && <SshInstructions onAdded={onAdded} onClose={onClose} />}
-          {current === 'same-host' && <SameHostInstructions />}
+          {rekey !== null ? <RemoteInstructions rekey={rekey} /> : (
+            <>
+              <div className={styles.modeSwitch} role="group" aria-label={t('workers.add.mode')}>
+                {MODES.map(([value, key]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={styles.btn}
+                    aria-pressed={current === value}
+                    onClick={() => setCurrent(value)}
+                  >
+                    {t(key)}
+                  </button>
+                ))}
+              </div>
+              {current === null && <p className={styles.muted}>{t('workers.add.probing')}</p>}
+              {current === 'remote' && (
+                <RemoteInstructions
+                  rekey={null}
+                  initialList={seed?.list ?? null}
+                  initialAt={seed?.at}
+                  onList={keepList}
+                  onUseSsh={() => setCurrent('ssh')}
+                />
+              )}
+              {current === 'ssh' && <SshInstructions onAdded={onAdded} onClose={onClose} />}
+              {current === 'same-host' && <SameHostInstructions />}
+            </>
+          )}
         </div>
       </div>
     </div>,
