@@ -88,6 +88,37 @@ received — each links to the release it was published as.
   in `execution_facts.worker_s3`), and a study keeps an adopted child as an
   active one. Rows started by 3.1.0, which recorded no resume point, are
   retired as before.
+- **Studies enforce their budgets on the server and halt, with every result
+  kept, when one runs out** ([#343]). `budget.max_run_seconds` stops a child
+  that executes longer (its repetition ends `timed_out`, a result like
+  `failed`) and `budget.max_active_seconds` caps the summed execution time
+  of all children; both are enforced by a timer with nobody watching. A
+  study that uses up `max_runs` or `max_active_seconds` becomes `halted`
+  (before, a used-up `max_runs` ended `failed`): `halt` names the budget,
+  its limit and what was used, `budget_usage` reports every budget, and
+  `POST /api/studies/{id}/resume` takes a raised `budget` (a resume whose
+  budget is still used up is a `409`). Cancel and resume accept
+  `expected_revision`, and `GET /api/studies/{id}/variants/{index}/graph`
+  returns a variant's graph. Migration 018 (017 is reserved for #344).
+- **A Studies panel lists every study and follows one from any browser**
+  ([#343]). **Studies** in the Runs panel opens it: status, owner, progress,
+  the budget and what it has used, rankings with exact ties labelled, each
+  repetition's attempts with a link to its run, the event log, Cancel and
+  Resume, and a budget form that resumes a halted study.
+- **Plugins can submit durable studies under their own id:
+  `/api/plugins/{plugin_id}/jobs`** ([#343]). A job of kind `study` is a
+  study owned by the plugin, submitted with a required idempotency key
+  scoped to the plugin, listed and controlled only through that plugin's
+  routes (and in `/api/studies` and the Studies panel). Graph Copilot can
+  delegate its experiments to it; that change belongs to the plugin's
+  repository.
+
+### Changed
+
+- **A study that uses up `budget.max_runs` now ends `halted`, not `failed`**
+  ([#343]). It keeps every completed repetition and its ranking so far, and
+  `POST /api/studies/{id}/resume` with a raised `max_runs` continues it; a
+  `failed` study still means the study itself could not go on.
 
 ### Fixed
 
@@ -101,6 +132,10 @@ received — each links to the release it was published as.
   agent whose only run it was never exited. The agent now watches the
   process as well as its pipe, so such a run ends `interrupted` within
   seconds on every OS. [#856]
+
+### Internal
+
+- **The Linux pytest jobs get 30 minutes instead of 20** ([#764]). The suite runs 13-20 minutes on `ubuntu-latest` depending on the runner, and the Wave D and studies tests added about a minute, so green runs were being cancelled at the cap with no failing test.
 
 ## [3.1.1] — 2026-10-17
 

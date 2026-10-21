@@ -24,6 +24,7 @@ import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useWorkerStore } from '../../store/workerStore';
+import { useStudyStore } from '../../store/studyStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import type { NodeDefinition } from '../../types';
@@ -1316,6 +1317,16 @@ describe('RunsPanel — sweeps', () => {
     fireEvent.click(button);
     expect(useWorkerStore.getState().panelOpen).toBe(true);
     useWorkerStore.setState({ panelOpen: false });
+  });
+
+  it('opens the Studies panel from its header button (#343)', async () => {
+    useStudyStore.setState({ panelOpen: false });
+    await renderPanel([]);
+    const button = screen.getByRole('button', { name: 'Studies' });
+    expect(button).toHaveAttribute('title', expect.stringContaining('durable studies'));
+    fireEvent.click(button);
+    expect(useStudyStore.getState().panelOpen).toBe(true);
+    useStudyStore.setState({ panelOpen: false });
   });
 
   it('opens a compact New Sweep dialog and restores focus when it closes', async () => {
