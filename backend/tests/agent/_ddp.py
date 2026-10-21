@@ -142,6 +142,7 @@ def fake_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
     - ``finish``: the ``finished`` payload, sent after the rest; without
       it the rank waits for a cancel, then reports ``cancelled``
       (unless ``ignore_cancel``, then it sleeps until killed);
+    - ``delay_s``: sleep this long before finishing or crashing;
     - ``crash``: exit with this code instead of finishing;
     - ``pid_file``: write the pid there first.
     """
@@ -177,6 +178,8 @@ def fake_rank(spec: dict[str, Any], plan: dict[str, Any], rank: int,
             "node_id": None}))
     for message in do.get("messages") or []:
         events_out.send(tuple(message))
+    if do.get("delay_s"):
+        time.sleep(float(do["delay_s"]))
     if do.get("crash") is not None:
         os._exit(int(do["crash"]))
     if do.get("finish") is not None:

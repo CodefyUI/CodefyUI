@@ -374,6 +374,10 @@ class _Rank:
     #: When it was terminated (monotonic), None if never.
     terminated_at: float | None = None
     killed: bool = False
+    #: Why it failed (it reported ``failed``, or exited without reporting),
+    #: when that came after rank 0's report: the likelier cause of a
+    #: failure rank 0 reports (a peer gone breaks its collective).
+    failure: str | None = None
 
 
 @dataclass
@@ -397,7 +401,10 @@ class _Launch:
     limit_sent: bool = False
     #: Rank 0's messages that arrived before every cap did.
     held: list[tuple] = field(default_factory=list)
-    warnings_seen: set[tuple] = field(default_factory=set)
+    #: Warnings rank 0 gave, and those another rank gave first: each is
+    #: forwarded once, whichever rank says it first.
+    rank0_warnings: set[tuple] = field(default_factory=set)
+    other_warnings: set[tuple] = field(default_factory=set)
 
     # ── to the agent ──
 
@@ -507,9 +514,9 @@ class _Launch:
                     self.rank0_at = time.monotonic()
                     if self.decided_at is None:
                         self.decided_at = self.rank0_at
-            elif payload.get("status") == "failed" \
-                    and self.rank0_report is None:
-                self.fail(f"DDP rank {rank.index} of {self.world_size} "
+            elif payload.get("status") == "failed":
+                self._rank_failed(
+                    rank, f"DDP rank {rank.index} of {self.world_size} "
                           f"failed: {payload.get('error') or 'no error'}")
             return
         key = None
@@ -521,14 +528,26 @@ class _Launch:
             if self.reported and kind != child.MSG_OUTPUT_ANSWER:
                 return
             if key is not None:
-                self.warnings_seen.add(key)
+                self.rank0_warnings.add(key)
+                if key in self.other_warnings:
+                    self.other_warnings.discard(key)
+                    return  # already forwarded, from another rank
             self._out(message)
             return
-        if key is not None and key not in self.warnings_seen \
-                and not self.reported:
-            self.warnings_seen.add(key)
+        if key is not None and not self.reported \
+                and key not in self.rank0_warnings \
+                and key not in self.other_warnings:
+            self.other_warnings.add(key)
             self._out(message)
         # Events, metrics and artifacts of the other ranks repeat rank 0's.
+
+    def _rank_failed(self, rank: _Rank, error: str) -> None:
+        """A rank other than 0 failed: that ends the run, unless rank 0
+        reported already (then it may explain rank 0's failure)."""
+        if self.rank0_report is None:
+            self.fail(error)
+        else:
+            rank.failure = error
 
     def crashed(self, rank: _Rank) -> None:
         """*rank* exited without reporting."""
@@ -538,7 +557,10 @@ class _Launch:
         tail = _tail(self.log_path)
         if tail:
             error = f"{error}\n--- output tail ---\n{tail}"
-        self.fail(error)
+        if rank.index == 0:
+            self.fail(error)
+        else:
+            self._rank_failed(rank, error)
 
     # ── housekeeping ──
 
@@ -554,6 +576,13 @@ class _Launch:
                 if self.cancel_requested and payload.get("status") == "failed":
                     # A rank that stopped first broke rank 0's collective.
                     payload.update(status="cancelled", error=None)
+                elif payload.get("status") == "failed":
+                    # A rank that failed or died first is why rank 0's
+                    # collective failed: name that one.
+                    cause = next((r.failure for r in self.ranks[1:]
+                                  if r.failure), None)
+                    if cause is not None:
+                        payload["error"] = cause
                 payload["peak_memory"] = self._merged_peak()
                 self.report(payload)
         if self.agent_gone and self.decided_at is None:
@@ -738,10 +767,11 @@ def _relay(state: _Launch, control_in: Any, wait: Callable[..., list]) -> None:
             if rank is not None:
                 drain(rank)
                 rank.exited = True
-                rank.process.join(0)
+                # The sentinel can fire a moment before the process can be
+                # reaped (its exit code read).
+                rank.process.join(1.0)
                 rank.closed = True
                 if rank.report is None and not state.reported \
-                        and rank.terminated_at is None \
-                        and state.rank0_report is None:
+                        and rank.terminated_at is None:
                     state.crashed(rank)
         state.settle(time.monotonic())

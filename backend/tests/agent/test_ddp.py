@@ -292,6 +292,30 @@ def test_a_rank_that_dies_without_reporting_fails_the_run(tmp_path):
         in finished["error"]
 
 
+def test_a_peer_that_died_first_is_named_over_rank_zeros_error():
+    """A rank killed mid-collective breaks rank 0's collective, and rank 0
+    may report that before the launcher sees the rank exit. The run names
+    the rank that died."""
+    sent, _ = _launch({
+        "0": {"finish": {"status": "failed", "peak_memory": None,
+                         "error": "gloo: Connection reset by peer"}},
+        "1": {"delay_s": 0.3, "crash": 9},
+    })
+    finished = _finished(sent)
+    assert finished["status"] == "failed"
+    assert finished["error"].startswith(
+        "DDP rank 1 of 2 exited (exit code 9) without reporting")
+
+
+def test_a_rank_that_dies_after_rank_zero_succeeded_changes_nothing():
+    sent, _ = _launch({
+        "0": {"finish": {"status": "succeeded", "error": None,
+                         "peak_memory": None}},
+        "1": {"delay_s": 0.3, "crash": 9},
+    })
+    assert _finished(sent)["status"] == "succeeded"
+
+
 def test_a_cancel_reaches_every_rank():
     sent, _ = _launch({"0": {}, "1": {}},
                       agent=[(1.0, (child.MSG_CANCEL,))])
@@ -656,8 +680,7 @@ def test_a_rank_killed_mid_training_fails_the_run_and_leaves_nothing(
     ranks[1].kill()
     finished = run.finish()
     assert finished["status"] == "failed", run.tail()
-    assert "of 2 exited" in finished["error"] \
-        or "of 2 failed" in finished["error"]
+    assert finished["error"].startswith("DDP rank 1 of 2 exited (exit code ")
     run.assert_no_process_left()
 
 
