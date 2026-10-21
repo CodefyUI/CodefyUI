@@ -50,7 +50,9 @@ jobs:
   test:
     name: pytest (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite runs 18-21 minutes on ubuntu-latest since Wave D's worker
+    # tests joined main's (#764): 20 minutes cancelled runs at 99%.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -327,7 +329,7 @@ jobs:
   test-with-frontend:
     name: pytest (built frontend, Python 3.11)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 

@@ -114,6 +114,10 @@ received — each links to the release it was published as.
 - **The remote-workers guide shows `CODEFYUI_RELEASE_TAG=<version>` instead of a pinned 3.0.2** ([#841]).
 - **The queue reasons and worker messages of memory admission, one-shot workers, S3 storage and adoption after a restart carry codes too** ([#841], [#788], [#790], [#791], [#793], [#794]). A run waiting for memory on a shared card (`memory_wait`, with each card's reason coded), for a budget (`memory_no_budget`), for a one-shot worker (`one_shot_start`, `one_shot_taken`, `one_shot_run_id`, `one_shot_pool`) or with a raised estimate (`budget_raised`, or `params.raised` beside another reason) gets a `queue_reason_code`; an adopted run's warnings (`worker_adopted`, `worker_lost_after_restart`, the reason `no_reconnect_after_restart`), a shutdown while a run waits for its worker (`shutdown_not_connected`), an S3 upload failure (`worker_s3_transfer_failed`) and the S3 fallback warning (`worker_storage_fallback`) carry `code` / `params`. The Runs panel words them in English and zh-TW; the English texts are unchanged.
 
+### Internal
+
+- **The Linux pytest jobs get 30 minutes** ([#764]). The suite grew to about 12,000 tests once Wave D's worker tests joined `main`'s, and the 20-minute cap cancelled jobs at 99 % that `main` alone already ran in 17-19 minutes.
+
 ## [3.1.1] — 2026-10-17
 
 Fixes a data-loss bug in 3.1.0's transfer backend: on a worker without a
