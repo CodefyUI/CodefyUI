@@ -741,6 +741,21 @@ describe('useGraphExecution - lifecycle events', () => {
     expect(tab.logs.some((l: any) => l.message === 'Execution error: kaboom')).toBe(true);
   });
 
+  it("words a worker's coded execution_error in the UI language, as the Runs panel does (#848 review)", () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    try {
+      const ws = tabById('t1').ws as FakeWs;
+      renderHook(() => useGraphExecution());
+      act(() => ws.emit('execution_error', {
+        error: 'worker box is not connected', code: 'worker_not_connected', params: { worker: 'box' },
+      }));
+      const messages = tabById('t1').logs.map((l: any) => l.message);
+      expect(messages).toContain(useI18n.getState().t('runLog.error', { error: 'worker box 未連線' }));
+    } finally {
+      useI18n.setState({ locale: 'en' });
+    }
+  });
+
   // #123: a REFUSED submit is not a run outcome. The server turned a click
   // down without starting anything, and the run this tab is already
   // following is still executing — so falling through to `error` would

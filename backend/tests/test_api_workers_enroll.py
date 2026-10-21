@@ -235,6 +235,21 @@ async def test_bad_enrollments_are_refused(env, token, name, status):
     assert response.status_code == status
 
 
+@pytest.mark.parametrize("name, message", [
+    ("Bad_Name", "worker name 'Bad_Name' may use only letters, digits and "
+                 "'-' (stored in lower case)"),
+    ("Local", "worker name 'Local' is reserved"),
+])
+async def test_a_bad_name_is_quoted_as_typed(env, name, message):
+    """#840 review: /enroll words a bad name as the SSH form does, quoted
+    as typed."""
+    response = await _enroll("abcdef.0123456789abcdef", name)
+    assert response.status_code == 400
+    assert response.json()["detail"] == message + (
+        ", starting with a letter or digit, at most 63 characters"
+        if "may use" in message else "")
+
+
 async def test_an_enrolled_name_needs_a_rekey_token(env):
     store, registry, database = env
     async with _client() as client:
@@ -573,7 +588,13 @@ async def test_a_restart_knows_enrolled_workers_and_runs_queue_for_them(
         assert (row["status"], row["error"]) == (
             "failed", "worker gpu-box was removed")
         assert events[-1]["type"] == "execution_error"
-        assert events[-1]["payload"] == {"error": "worker gpu-box was removed"}
+        # The text stays; a code and parameters word it (#841).
+        assert events[-1]["payload"] == {
+            "error": "worker gpu-box was removed", "code": "worker_removed",
+            "params": {"worker": "gpu-box"}}
+        # It never started: no facts document is made for the code, which
+        # the event above carries (#848 review).
+        assert row["execution_facts"] is None
     finally:
         await service.shutdown()
         await registry.shutdown()

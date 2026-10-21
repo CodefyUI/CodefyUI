@@ -267,6 +267,14 @@ export interface RunSummary {
    */
   queued_budget?: { bytes: number; source: string; from_run?: string; raised_from?: number } | null;
   /**
+   * `queue_reason` as a code and its parameters (#841), which the Runs list
+   * words in the active language; `null` when there is no reason. Optional:
+   * a server before #841 does not send them, and the English sentence is
+   * shown then.
+   */
+  queue_reason_code?: string | null;
+  queue_reason_params?: Record<string, unknown> | null;
+  /**
    * An active worker run's connection to its worker (#783); `null` for
    * every other run. Optional: a server before #783 does not send it.
    */
@@ -559,6 +567,15 @@ export interface SweepVariant {
   rank?: number | null;
   run_exists?: boolean;
   final_metrics?: Record<string, number>;
+  /**
+   * The node whose values `final_metrics` prefer (#841): every series the
+   * run logged, with this node's own last value for each name it logged
+   * (the objective's node). `null` for the plain run-wide summary, where a
+   * name several nodes log shows the last one written (an unharvested
+   * name-only variant, a run-level or an ambiguous objective). Absent with
+   * `final_metrics`, and from a server before #841.
+   */
+  final_metrics_node_id?: string | null;
   /**
    * Where the variant's run is placed (#777), while that run exists:
    * `local`, a worker's name, or `any` until an `any` variant starts; its

@@ -214,6 +214,17 @@ describe('ParamField — select branch', () => {
     );
     expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('y');
   });
+
+  it('with neither a value nor a default, shows the first option', () => {
+    render(
+      <ParamField
+        param={mkParam({ name: 'mode', param_type: 'select', options: ['x', 'y'], default: null })}
+        value={null}
+        onChange={() => {}}
+      />,
+    );
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('x');
+  });
 });
 
 describe('ParamField — int / float numeric branch', () => {

@@ -57,7 +57,7 @@ import math
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from uuid import uuid4
 
 from ..config import settings
@@ -258,6 +258,72 @@ def producer_last_value(
         row = conn.execute(_PRODUCER_LAST_SQL,
                            (run_id, name, node_id)).fetchone()
     return None if row is None else row["value"]
+
+
+#: :data:`_LATEST_METRICS_SQL` with one node's own last point in place of
+#: the run-wide one, for every name that node logged (#841): the overlay
+#: :func:`objective_metric_values` returns, in ONE statement per run.
+#: ``own_id`` is the node's last point by a descending seek on
+#: ``idx_exec_run_metrics_producer`` (``id`` is the rowid, so that seek is
+#: covering), and its value is then read by rowid. The point's presence,
+#: not its value, decides: a node whose last point is non-finite (NULL)
+#: still wins, so its series is left out rather than filled from a sibling.
+_OBJECTIVE_METRICS_SQL = """
+WITH RECURSIVE series(name) AS (
+    SELECT (SELECT MIN(name) FROM exec_run_metrics WHERE run_id = ?1)
+  UNION ALL
+    SELECT (SELECT MIN(name) FROM exec_run_metrics
+             WHERE run_id = ?1 AND name > series.name)
+      FROM series WHERE series.name IS NOT NULL
+),
+lasts(name, value, own_id) AS (
+    SELECT series.name,
+           (SELECT value FROM exec_run_metrics
+             WHERE run_id = ?1 AND name = series.name
+             ORDER BY step DESC, id DESC LIMIT 1),
+           (SELECT id FROM exec_run_metrics
+             WHERE run_id = ?1 AND name = series.name AND node_id = ?2
+             ORDER BY step DESC, id DESC LIMIT 1)
+      FROM series WHERE series.name IS NOT NULL
+)
+SELECT name,
+       CASE WHEN own_id IS NULL THEN value
+            ELSE (SELECT value FROM exec_run_metrics WHERE id = own_id)
+       END AS value
+  FROM lasts
+"""
+
+
+def objective_metric_values(
+    conn: sqlite3.Connection, run_id: str, node_id: str,
+) -> dict[str, float]:
+    """``{series name: last value}`` of ONE run, with *node_id*'s own last
+    values in place of the run-wide ones for every series it logged (#841).
+
+    The summary a sweep variant or a study attempt shows beside an
+    objective read from *node_id*. :func:`last_metric_values` collapses a
+    name several nodes log (two training branches each logging ``lr`` and
+    ``train_loss``) into whichever was written last, so a variant ranked by
+    one branch could show the OTHER branch's numbers. Overlaying that
+    node's values settles every such collision in its favour and keeps the
+    series only other nodes logged (an Evaluate node's ``val_acc``).
+
+    A series whose last point on *node_id* is non-finite is left out even
+    when another node has a finite one: the objective's branch diverged,
+    and a sibling's number is not its value. Everything else follows
+    :func:`last_metric_values`.
+
+    One statement (:data:`_OBJECTIVE_METRICS_SQL`): the series leapfrog
+    with a producer seek per name, so the cost tracks the number of series
+    and never the number of points. Asking the producer index for the
+    node's names directly (``DISTINCT name WHERE node_id = ?``) cannot
+    seek: ``node_id`` follows ``name`` in it, so sqlite walks every point
+    of the run (measured: ~1M VDBE steps against ~240 for this at 200k
+    points).
+    """
+    return {row["name"]: row["value"]
+            for row in conn.execute(_OBJECTIVE_METRICS_SQL, (run_id, node_id))
+            if row["value"] is not None}
 
 
 def _json_safe(value: Any) -> Any:
@@ -1106,6 +1172,7 @@ class RunStore:
         *,
         error: str | None = None,
         expected: Sequence[str] = tuple(sorted(ACTIVE_STATUSES)),
+        error_reason: Mapping[str, Any] | None = None,
     ) -> bool:
         """Move an ACTIVE run to a terminal status and stamp ``finished_at``.
 
@@ -1126,6 +1193,16 @@ class RunStore:
         *error* is written as given, including None — the finishing caller
         holds the authoritative outcome. ``started_at`` is left alone, so a
         queued run cancelled before it ever ran keeps a NULL there.
+
+        *error_reason* (``{code, params}``, #841) is what *error* says, in
+        a form the Runs panel words in the viewer's language. It goes into
+        ``execution_facts.error_reason`` in the same transaction, but only
+        when the run HAS a facts document: a NULL column means "not
+        recorded" (the run never started), and a document holding only the
+        reason would read as a recorded environment with every field
+        missing (see :meth:`update_execution_facts`). A run that never
+        started (a queued run whose worker was removed) keeps the code on
+        its ``execution_error`` event instead, which the Runs panel reads.
         """
         if status not in TERMINAL_STATUSES:
             raise ValueError(
@@ -1141,12 +1218,38 @@ class RunStore:
                 f"{sorted(RUN_STATUSES)}")
         stamp = utc_now_iso()
 
+        guard = f"WHERE id = ? AND status IN ({','.join('?' * len(allowed))})"
+        reason = None if error_reason is None else {
+            "code": error_reason.get("code"),
+            "params": dict(error_reason.get("params") or {})}
+
         def _update(conn: sqlite3.Connection) -> int:
-            return conn.execute(
-                "UPDATE exec_runs SET status = ?, error = ?, finished_at = ? "
-                f"WHERE id = ? AND status IN ({','.join('?' * len(allowed))})",
-                (status, error, stamp, run_id, *allowed),
-            ).rowcount
+            if reason is None:
+                return conn.execute(
+                    "UPDATE exec_runs SET status = ?, error = ?, "
+                    f"finished_at = ? {guard}",
+                    (status, error, stamp, run_id, *allowed),
+                ).rowcount
+            with transaction(conn):
+                row = conn.execute(
+                    f"SELECT execution_facts FROM exec_runs {guard}",
+                    (run_id, *allowed)).fetchone()
+                if row is None:
+                    return 0
+                facts = (_loads(row["execution_facts"])
+                         if row["execution_facts"] is not None else None)
+                if not isinstance(facts, dict):
+                    return conn.execute(
+                        "UPDATE exec_runs SET status = ?, error = ?, "
+                        f"finished_at = ? {guard}",
+                        (status, error, stamp, run_id, *allowed),
+                    ).rowcount
+                facts["error_reason"] = reason
+                return conn.execute(
+                    "UPDATE exec_runs SET status = ?, error = ?, "
+                    f"finished_at = ?, execution_facts = ? {guard}",
+                    (status, error, stamp, _dumps(facts), run_id, *allowed),
+                ).rowcount
 
         return await self.db.run(_update) > 0
 
@@ -1523,7 +1626,8 @@ class RunStore:
         return [MetricRecord.from_row(r) for r in await self.db.run(_select)]
 
     async def latest_metrics(
-        self, run_ids: Sequence[str],
+        self, run_ids: Sequence[str], *,
+        producers: Mapping[str, str] | None = None,
     ) -> dict[str, dict[str, float]]:
         """``{run_id: {series name: last value}}`` for a PAGE of runs (#124).
 
@@ -1568,13 +1672,23 @@ class RunStore:
         more. A sweep objective does NOT read this summary: it reads one
         producer's series, so the collapse above cannot choose its value
         (#641, ``sweep_store.read_objective``).
+
+        *producers* (``{run_id: node_id}``) gives a run's summary that
+        node's own values for the series it logged
+        (:func:`objective_metric_values`, #841): what a sweep variant shows
+        beside an objective read from that node. A run not in it gets the
+        plain run-wide summary.
         """
         ids = list(run_ids)
         if not ids:
             return {}
+        scoped = dict(producers or {})
 
         def _select(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
-            return {run_id: last_metric_values(conn, run_id)
+            return {run_id: (objective_metric_values(conn, run_id,
+                                                     scoped[run_id])
+                             if run_id in scoped
+                             else last_metric_values(conn, run_id))
                     for run_id in ids}
 
         return {run_id: values

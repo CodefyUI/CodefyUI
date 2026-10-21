@@ -94,9 +94,10 @@ def started(monkeypatch):
     calls: list[dict[str, Any]] = []
 
     def fake_run_agent(args, control, token, facts, token_source=None,
-                       mounts=None, trust=None):
+                       mounts=None, trust=None, worker_credential=False):
         calls.append({"control": control, "token": token, "name": args.name,
-                      "token_source": token_source, "trust": trust})
+                      "token_source": token_source, "trust": trust,
+                      "worker_credential": worker_credential})
         return 0
 
     monkeypatch.setattr(cli, "run_agent", fake_run_agent)
@@ -194,6 +195,8 @@ def test_start_enrolls_once_then_reuses_the_stored_credential(
     assert started[-1]["token"] == "w" * 43
     assert started[-1]["name"] == "gpu-box"
     assert "cdui agent forget" in started[-1]["token_source"]
+    # #840 review: a 401 to the enrolled credential stops the agent.
+    assert started[-1]["worker_credential"] is True
     stored = agent_enroll.load_credential(user_data, cp.url)
     assert stored is not None and stored.worker_token == "w" * 43
 
@@ -202,6 +205,7 @@ def test_start_enrolls_once_then_reuses_the_stored_credential(
     assert len(cp.requests) == 1
     assert started[-1]["token"] == "w" * 43
     assert "stored" in started[-1]["token_source"]
+    assert started[-1]["worker_credential"] is True
 
     # The same command again: the stored credential wins, and says so.
     capsys.readouterr()
@@ -246,6 +250,8 @@ def test_a_session_token_is_never_sent_to_enroll(cp, user_data, started):
     assert _start("--control", cp.url, "--token", "session-token") == 0
     assert cp.requests == []
     assert started[-1]["token"] == "session-token"
+    # #840 review: a --token (a session token) is retried on a 401.
+    assert started[-1]["worker_credential"] is False
 
 
 def test_the_background_agent_never_enrolls(cp, user_data, started, capsys):

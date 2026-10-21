@@ -144,6 +144,11 @@ export interface WorkerInfo {
   /** How its connection authenticated: `worker_token` or `session_token`. */
   credential?: string | null;
   /**
+   * Whether this server's SSH worker of this name is enabled; null when the
+   * worker is not an SSH worker (#840). Absent from an older server.
+   */
+  ssh_enabled?: boolean | null;
+  /**
    * Its connection is plain `ws://` from another machine: its token and the
    * secrets in its runs cross the network unencrypted (#786).
    */

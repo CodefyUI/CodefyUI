@@ -2,9 +2,10 @@
 
 :func:`probe_devices` lists the compute devices this machine has, each with
 its total and free memory where something can say. It is display-only: no
-admission decision reads it yet (that is #788), and nothing here is cached,
-so every call is a fresh reading and the caller decides how often to pay
-for one.
+admission decision reads it yet (that is #788), and its memory figures are
+not cached, so every call is a fresh reading and the caller decides how
+often to pay for one. Only the CPU's name (:func:`cpu_name`) is kept: a
+brand found once, and a miss for :data:`CPU_BRAND_RETRY_S`.
 
 Sources, per kind of device:
 
@@ -46,6 +47,8 @@ import dataclasses
 import logging
 import os
 import platform
+import sys
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -122,8 +125,99 @@ def _available_ram() -> int | None:
         return None
 
 
+def _cpu_brand_darwin() -> str | None:
+    """``machdep.cpu.brand_string`` through ``sysctlbyname``: an in-process
+    call, so the probe never waits on a subprocess (it may run on the event
+    loop, #840)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.dylib",
+                           use_errno=True)
+        key = b"machdep.cpu.brand_string"
+        size = ctypes.c_size_t(0)
+        if libc.sysctlbyname(key, None, ctypes.byref(size), None, 0) != 0 \
+                or size.value == 0:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctlbyname(key, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+    except (OSError, AttributeError):
+        return None
+    return buf.value.decode("utf-8", "replace").strip() or None
+
+
+#: /proc/cpuinfo keys that name the processor, best first: x86 and most ARM
+#: kernels say ``model name``, POWER says ``cpu``, older ARM kernels
+#: ``Hardware`` (the SoC) or ``Processor``. ``Model`` is never used: on a
+#: Raspberry Pi it names the board.
+_CPUINFO_KEYS = ("model name", "cpu", "hardware", "processor")
+
+
+def _cpu_brand_linux() -> str | None:
+    found: dict[str, str] = {}
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                key, _, value = line.partition(":")
+                key, value = key.strip().lower(), value.strip()
+                # "processor : 0" is the core index on x86 and ARM.
+                if key in _CPUINFO_KEYS and value and not value.isdigit():
+                    found.setdefault(key, value)
+    except OSError:
+        return None
+    return next((found[key] for key in _CPUINFO_KEYS if key in found), None)
+
+
+def _cpu_brand_windows() -> str | None:
+    try:
+        import winreg  # type: ignore[import-not-found]
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"HARDWARE\DESCRIPTION\System\CentralProcessor"
+                            r"\0") as key:
+            value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+    except (ImportError, OSError):
+        return None
+    return str(value).strip() or None
+
+
+#: A probe that found no brand is not repeated for this long (#840): an
+#: aarch64 host whose /proc/cpuinfo has no name line would otherwise be
+#: parsed again on every device probe, while a passing failure still heals.
+CPU_BRAND_RETRY_S = 600.0
+#: The brand string, once a probe found one.
+_cpu_brand: str | None = None
+#: When (monotonic) a probe last found none, or None.
+_cpu_brand_missed_at: float | None = None
+
+
+def cpu_name() -> str:
+    """The CPU's brand string (``Apple M3``, ``AMD EPYC 7763 64-Core
+    Processor``), for the device lists (#840); the architecture
+    (``platform.processor()``, ``platform.machine()``) when the system does
+    not say, which is all ``arm`` / ``x86_64`` told before. Every probe is
+    in-process (no subprocess), so a call on the event loop is cheap; a
+    found brand is kept, a miss for :data:`CPU_BRAND_RETRY_S`."""
+    global _cpu_brand, _cpu_brand_missed_at
+    if _cpu_brand is not None:
+        return _cpu_brand
+    missed = _cpu_brand_missed_at
+    if missed is None or time.monotonic() - missed >= CPU_BRAND_RETRY_S:
+        probe = {"darwin": _cpu_brand_darwin,
+                 "win32": _cpu_brand_windows}.get(sys.platform,
+                                                  _cpu_brand_linux)
+        brand = probe()
+        if brand:
+            _cpu_brand = brand
+            return brand
+        _cpu_brand_missed_at = time.monotonic()
+    return platform.processor() or platform.machine() or "CPU"
+
+
 def _cpu_fact() -> DeviceFact:
-    name = platform.processor() or platform.machine() or "CPU"
+    name = cpu_name()
     try:
         import psutil
 

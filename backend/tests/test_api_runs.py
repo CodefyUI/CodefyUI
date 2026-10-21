@@ -374,6 +374,53 @@ async def test_a_local_target_with_devices_runs_on_the_first_device(client):
     assert record["devices"] == ["cpu"]
 
 
+@pytest.mark.parametrize("worker", ["local", None])
+async def test_a_local_device_set_this_server_lacks_is_refused(
+        client, monkeypatch, worker):
+    """#839: ``local`` + ``cuda:0`` on a server without CUDA was a 200 and
+    a CPU run whose row named ``cuda:0``. Now a 400, as a worker's is."""
+    from app.core import run_service as run_service_module
+
+    monkeypatch.setattr(run_service_module, "_local_device_values",
+                        lambda: ["cpu", "mps:0"])
+    target: dict[str, Any] = {"devices": ["cuda:0"]}
+    if worker:
+        target["worker"] = worker
+    response = await client.post("/api/runs", json={
+        "graph": _graph(), "options": {"target": target}})
+    assert response.status_code == 400, response.text
+    assert "this server does not offer cuda:0 (it offers cpu, mps:0)" \
+        in response.text
+    assert (await client.get("/api/runs")).json()["runs"] == []
+
+
+async def test_a_run_without_a_device_set_keeps_its_fallback(
+        client, monkeypatch):
+    """Invariant: only an explicit ``target.devices`` is checked. A run
+    asking for ``cuda`` with no set still falls back, as in 3.1.0, and
+    says so in its event log (#839)."""
+    from app.core import run_service as run_service_module
+
+    monkeypatch.setattr(run_service_module, "resolve_device",
+                        lambda requested: "cpu")
+    response = await client.post("/api/runs", json={
+        "graph": _graph(), "options": {"device": "cuda"}})
+    assert response.status_code == 200, response.text
+    run_id = response.json()["run_id"]
+    record = await _poll_until_terminal(client, run_id)
+    assert record["status"] == "succeeded"
+    assert record["queue_key"] == "cpu"
+    events = (await client.get(f"/api/runs/{run_id}/events")).json()
+    warnings = [e["payload"] for e in events["events"]
+                if e["type"] == "run_warning"]
+    assert [w["kind"] for w in warnings] == ["device_fallback"]
+    assert "asked for device cuda" in warnings[0]["detail"]
+    # Coded, so the Runs panel words it in its language (#841's mechanism).
+    assert warnings[0]["code"] == "device_fallback_run"
+    assert warnings[0]["params"] == {"requested": "cuda", "device": "cpu",
+                                     "where": "server"}
+
+
 async def test_a_target_without_worker_or_devices_is_local(client):
     response = await client.post("/api/runs", json={
         "graph": _graph(), "options": {"device": "cpu", "target": {}}})

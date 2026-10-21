@@ -574,6 +574,24 @@ def _normalised_graph(graph: dict[str, Any]) -> dict[str, Any]:
     return graph
 
 
+def run_cards(spec: dict[str, Any]) -> dict[str, str] | None:
+    """In-run CUDA name -> the worker's card, for this run (#839).
+
+    Read off the environment the agent chose (``runner.child_environment``):
+    the run sees its set's cards as ``cuda:0..N-1`` in set order. ``{}``
+    when it sees no card (a CPU or MPS run); None when the agent left the
+    inherited visibility in place (a bare ``cuda`` with no set), where the
+    numbering is not this run's to state.
+    """
+    from .runner import device_aliases
+
+    env = spec.get("env") or {}
+    if "CUDA_VISIBLE_DEVICES" not in (env.get("set") or {}):
+        return None
+    aliases = device_aliases(list(env.get("devices") or []))
+    return {in_run: physical for physical, in_run in aliases.items()}
+
+
 def run_assignment(spec: dict[str, Any], send: Send,
                    control_in: Any = None, *, discover: bool = True) -> None:
     """Discover nodes, execute the run, send ``finished``. Never raises.
@@ -634,8 +652,9 @@ def run_assignment(spec: dict[str, Any], send: Send,
             # This process runs this one run and nothing else, so its peak
             # memory figures are exact (#770).
             try:
-                result = await InProcessExecutor(exclusive_process=True).run(
-                    request)
+                result = await InProcessExecutor(
+                    exclusive_process=True, worker_run=True,
+                    run_cards=run_cards(spec)).run(request)
                 if outputs is not None:
                     await outputs.prepare()
             finally:

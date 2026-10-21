@@ -88,22 +88,40 @@ export function eligibleSweepParams(
 }
 
 /**
+ * A node as a sweep names it: its label with its id after it, or the id
+ * alone when they are the same (#841). Two Optimizers in two branches both
+ * read "Optimizer"; the id is what tells them apart, as the Objective node
+ * select already showed it.
+ */
+export function nodeWithId(label: string, nodeId: string): string {
+  return label && label !== nodeId ? `${label} (${nodeId})` : nodeId;
+}
+
+/** A parameter the New sweep dialog offers: `Optimizer (opt-plain) · lr`. */
+export function sweepParamLabel(entry: EligibleSweepParam): string {
+  return `${nodeWithId(entry.nodeLabel, entry.nodeId)} · ${entry.param.name}`;
+}
+
+/**
  * A column title for one swept address: the node's label (else its type) and
- * the param. Null unless the open graph has exactly one node with that id and
- * its type has that param -- a sweep may come from another graph, whose ids
- * say nothing about this one.
+ * the param, with the node's id after the label when *withId* (two columns
+ * would otherwise read the same, #841). Null unless the open graph has
+ * exactly one node with that id and its type has that param -- a sweep may
+ * come from another graph, whose ids say nothing about this one.
  */
 export function sweepParamTitle(
   address: { node_id: string; param: string },
   definitions: readonly NodeDefinition[],
   nodes: readonly Pick<AppNode, 'id' | 'data'>[],
+  withId = false,
 ): string | null {
   const matches = nodes.filter((node) => node.id === address.node_id);
   if (matches.length !== 1) return null;
   const { data } = matches[0];
   const definition = definitions.find((candidate) => candidate.node_name === data.type);
   if (!definition?.params.some((param) => param.name === address.param)) return null;
-  return `${data.label || data.type} · ${address.param}`;
+  const name = data.label || data.type;
+  return `${withId ? nodeWithId(name, address.node_id) : name} · ${address.param}`;
 }
 
 function tokens(text: string): string[] {
@@ -273,7 +291,10 @@ export function previewSweepVariants(
   });
   let variantCount = totalCombinations;
   if (method === 'random') {
+    // `?? 0` never sees null: Number.isInteger(null) is false and short-circuits first.
+    /* v8 ignore start */
     if (!Number.isInteger(samples) || (samples ?? 0) < 1) throw new SweepInputError('samples');
+    /* v8 ignore stop */
     if (totalCombinations !== null && (samples as number) > totalCombinations) {
       throw new SweepInputError('samplesExceedSpace', { samples: samples as number, total: totalCombinations });
     }

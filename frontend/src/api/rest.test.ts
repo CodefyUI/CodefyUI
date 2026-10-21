@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   exportGraph,
   fetchNodeDefinitions,
+  fetchNodeDefinition,
+  validateScript,
+  listDataFiles,
+  uploadDataFile,
+  deleteDataFile,
+  downloadDataFile,
   fetchPresetDefinitions,
   fetchDevices,
   fetchHealth,
@@ -2320,5 +2326,290 @@ describe('plugin center endpoints', () => {
       mockFetch(404, { detail: "job 'j1' not found" });
       expect((await apiErr(cancelPluginJob('j1'))).status).toBe(404);
     });
+  });
+});
+
+// ── Remaining branches: node docs, script gate, data files, sweep refusals ──
+
+describe('fetchNodeDefinition', () => {
+  it('GETs the url-encoded node name', async () => {
+    const fetchMock = mockFetch(200, { node_name: 'Conv 2D' });
+    expect(await fetchNodeDefinition('Conv 2D')).toEqual({ node_name: 'Conv 2D' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/nodes/Conv%202D');
+  });
+
+  it('throws on failure so the Docs tab keeps its local copy', async () => {
+    mockFetch(404, {});
+    await expect(fetchNodeDefinition('Gone')).rejects.toThrow(/Failed to fetch node definition/);
+  });
+});
+
+describe('getRun success', () => {
+  it('returns the run body on 200', async () => {
+    mockFetch(200, { run_id: 'r1', status: 'running' });
+    expect(await getRun('r1')).toEqual({ run_id: 'r1', status: 'running' });
+  });
+});
+
+describe('validateScript', () => {
+  it('POSTs the code with the session token and returns the verdict', async () => {
+    const fetchMock = mockFetch(200, { ok: false, errors: ['import os'] });
+    expect(await validateScript('import os')).toEqual({ ok: false, errors: ['import os'] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/nodes/script/validate');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ code: 'import os' });
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('throws only on a transport failure', async () => {
+    mockFetch(500, {});
+    await expect(validateScript('x = 1')).rejects.toThrow(/Script validation failed/);
+  });
+});
+
+describe('sweep refusals (detailError)', () => {
+  async function refusal(call: Promise<unknown>): Promise<ApiError> {
+    const err = await call.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    return err as ApiError;
+  }
+
+  it('falls back to the status text when the body is not JSON', async () => {
+    mockFetchJsonThrows(502);
+    const err = await refusal(createSweep({} as never));
+    expect(err.status).toBe(502);
+    expect(err.message).toBe('Failed to create sweep: mock');
+    expect(err.body).toBeNull();
+  });
+
+  it('treats a non-object JSON body as no body', async () => {
+    mockFetch(500, 'boom');
+    const err = await refusal(getSweep('s1'));
+    expect(err.message).toBe('Failed to fetch sweep: mock');
+    expect(err.body).toBeNull();
+  });
+
+  it('reads 422 entries with and without a loc or a msg', async () => {
+    mockFetch(422, {
+      detail: [
+        { loc: ['body', 'axes', 0], msg: 'bad axis' },
+        { loc: ['body'], msg: 'whole body' },
+        { msg: 'no loc' },
+        { loc: ['query', 'x'], code: 7 },
+        null,
+      ],
+    });
+    const err = await refusal(createSweep({} as never));
+    expect(err.message).toBe(
+      'axes.0: bad axis; whole body; no loc; query.x: {"loc":["query","x"],"code":7}; null',
+    );
+  });
+
+  it('keeps the fallback for an empty detail list', async () => {
+    mockFetch(422, { detail: [] });
+    const err = await refusal(createSweep({} as never));
+    expect(err.message).toBe('Failed to create sweep: mock');
+  });
+
+  it('cancelSweep reports a refusal', async () => {
+    mockFetch(404, { detail: 'sweep not found' });
+    const err = await refusal(cancelSweep('s1'));
+    expect(err.status).toBe(404);
+    expect(err.message).toBe('sweep not found');
+  });
+
+  it('downloadSweepCsv reports a refusal before reading any CSV', async () => {
+    mockFetch(404, { detail: 'sweep not found' });
+    const err = await refusal(downloadSweepCsv('s1'));
+    expect(err.message).toBe('sweep not found');
+  });
+});
+
+describe('saveGraph taken-name without a title', () => {
+  it('uses the stem as the name when the server sends none', async () => {
+    mockFetch(409, { detail: { error: 'graph_exists', file: 'mnist' } });
+    const err = await saveGraph({} as never).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(GraphExistsError);
+    expect((err as GraphExistsError).file).toBe('mnist');
+    expect((err as GraphExistsError).name).toBe('mnist');
+  });
+});
+
+describe('exportGraph string detail', () => {
+  it('surfaces a plain-string refusal', async () => {
+    mockFetch(400, { detail: 'graph has a cycle' });
+    await expect(exportGraph([], [])).rejects.toThrow('Export failed: graph has a cycle');
+  });
+});
+
+describe('Codex login refusals', () => {
+  it('startCodexLogin throws on failure', async () => {
+    mockFetch(500, {});
+    await expect(startCodexLogin()).rejects.toThrow(/Codex login failed/);
+  });
+
+  it('logoutCodex throws on failure', async () => {
+    mockFetch(500, {});
+    await expect(logoutCodex()).rejects.toThrow(/Codex logout failed/);
+  });
+});
+
+describe('data files', () => {
+  it('listDataFiles returns the listing', async () => {
+    const fetchMock = mockFetch(200, [{ filename: 'a.csv', size: 3 }]);
+    expect(await listDataFiles()).toEqual([{ filename: 'a.csv', size: 3 }]);
+    expect(fetchMock).toHaveBeenCalledWith('/api/files');
+  });
+
+  it('listDataFiles throws on failure', async () => {
+    mockFetch(500, {});
+    await expect(listDataFiles()).rejects.toThrow(/Failed to list data files/);
+  });
+
+  it('uploadDataFile POSTs a form with the file', async () => {
+    const fetchMock = mockFetch(200, { filename: 'a.csv', size: 3 });
+    const file = new File(['x,y'], 'a.csv');
+    expect(await uploadDataFile(file)).toEqual({ filename: 'a.csv', size: 3 });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/files/upload');
+    expect(init.method).toBe('POST');
+    expect((init.body as FormData).get('file')).toBeInstanceOf(File);
+  });
+
+  it('uploadDataFile surfaces the backend detail', async () => {
+    mockFetch(400, { detail: 'too big' });
+    await expect(uploadDataFile(new File([''], 'a.csv'))).rejects.toThrow('too big');
+  });
+
+  it('uploadDataFile falls back to the status text without a detail', async () => {
+    mockFetch(400, {});
+    await expect(uploadDataFile(new File([''], 'a.csv'))).rejects.toThrow('Upload failed: mock');
+  });
+
+  it('uploadDataFile falls back to the status text when the body is not JSON', async () => {
+    mockFetchJsonThrows(502);
+    await expect(uploadDataFile(new File([''], 'a.csv'))).rejects.toThrow('Upload failed: mock');
+  });
+
+  it('deleteDataFile DELETEs the url-encoded name', async () => {
+    const fetchMock = mockFetch(200, { deleted: true });
+    expect(await deleteDataFile('a b.csv')).toEqual({ deleted: true });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/files/a%20b.csv');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('deleteDataFile throws on failure', async () => {
+    mockFetch(500, {});
+    await expect(deleteDataFile('a.csv')).rejects.toThrow(/Delete failed/);
+  });
+
+  describe('downloadDataFile', () => {
+    let clickSpy: ReturnType<typeof vi.spyOn>;
+    const createObjectURL = vi.fn();
+    const revokeObjectURL = vi.fn();
+
+    beforeEach(() => {
+      createObjectURL.mockReset().mockReturnValue('blob:data-url');
+      revokeObjectURL.mockReset();
+      (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
+      (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = revokeObjectURL;
+      clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      clickSpy.mockRestore();
+      delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+      delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+    });
+
+    function mockBlob(status: number, body: unknown) {
+      const response = {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: 'mock',
+        json: async () => body,
+        blob: async () => new Blob(['a,b']),
+      } as unknown as Response;
+      g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+      return g.fetch as unknown as ReturnType<typeof vi.fn>;
+    }
+
+    it('encodes each path segment and downloads under the basename', async () => {
+      const fetchMock = mockBlob(200, null);
+      await downloadDataFile('sets/my data.csv');
+      expect(fetchMock).toHaveBeenCalledWith('/api/files/download/sets/my%20data.csv');
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      const anchor = clickSpy.mock.instances[0] as unknown as HTMLAnchorElement;
+      expect(anchor.download).toBe('my data.csv');
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:data-url');
+    });
+
+    it('surfaces the backend detail', async () => {
+      mockBlob(404, { detail: 'gone' });
+      await expect(downloadDataFile('a.csv')).rejects.toThrow('gone');
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the status text without a detail', async () => {
+      mockBlob(404, {});
+      await expect(downloadDataFile('a.csv')).rejects.toThrow('Download failed: mock');
+    });
+
+    it('falls back to the status text when the body is not JSON', async () => {
+      mockFetchJsonThrows(502);
+      await expect(downloadDataFile('a.csv')).rejects.toThrow('Download failed: mock');
+    });
+  });
+});
+
+describe('pack and plugin normalisation fallbacks', () => {
+  it('listPacks reads an absent pack list as empty', async () => {
+    mockFetch(200, {});
+    expect((await listPacks()).packs).toEqual([]);
+  });
+
+  it('listPluginCatalog reads an absent entry list as empty', async () => {
+    mockFetch(200, {});
+    expect((await listPluginCatalog()).entries).toEqual([]);
+  });
+
+  it('a catalog entry with no id or status reads as an available, unnamed row', async () => {
+    mockFetch(200, { entries: [{}] });
+    const [entry] = (await listPluginCatalog()).entries;
+    expect(entry.id).toBe('');
+    expect(entry.status).toBe('available');
+  });
+
+  it('a sparse inspection keeps a builtin kind and a known installed source_kind', async () => {
+    mockFetch(200, { kind: 'builtin', installed: { source_kind: 'local' } });
+    const out = await inspectPluginSource('c1');
+    expect(out.inspection_id).toBe('');
+    expect(out.plugin_id).toBe('');
+    expect(out.kind).toBe('builtin');
+    expect(out.installed).toEqual({
+      sha: null,
+      version: '',
+      capabilities: [],
+      trusted_modules: [],
+      enabled: true,
+      source_kind: 'local',
+    });
+  });
+
+  it('an installed record with no source_kind reads as null', async () => {
+    mockFetch(200, { installed: { sha: 'abc', version: '1' } });
+    expect((await inspectPluginSource('c1')).installed?.source_kind).toBeNull();
+  });
+
+  it('updatePlugin reports a refusal', async () => {
+    mockFetch(409, { detail: 'busy' });
+    await expect(updatePlugin('c1')).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('setPluginEnabled reports a refusal', async () => {
+    mockFetch(404, { detail: 'no such plugin' });
+    await expect(setPluginEnabled('c1', true)).rejects.toBeInstanceOf(ApiError);
   });
 });

@@ -88,6 +88,7 @@ from ..core.sweep_store import (
     SweepRecord,
     SweepStore,
     SweepVariant,
+    objective_selector,
     rank_variants,
     variant_is_terminal,
 )
@@ -613,7 +614,8 @@ async def create_sweep(body: CreateSweepRequest, request: Request):
 
 
 async def _harvested_sweep(
-    service: RunService, store: SweepStore, sweep_id: str,
+    service: RunService, store: SweepStore, sweep_id: str, *,
+    with_metrics: bool = True,
 ) -> tuple[SweepRecord, dict[str, RunRecord], dict[str, dict[str, float]]]:
     """Seam A: harvest, then hand back everything a read needs.
 
@@ -626,10 +628,21 @@ async def _harvested_sweep(
     and never chooses the objective, because it collapses a name several
     nodes log into one number (#641).
 
+    That summary prefers the objective's node whenever one is known
+    (:func:`_final_metrics_node`, #841): on a graph with two training
+    branches the run-wide value of a shared name is whichever branch wrote
+    last, so a variant ranked by one branch would show the other's ``lr``
+    and loss. The node's own values replace those; series only other nodes
+    logged stay. It is read after the harvest, which is what names the
+    producer of a name-only objective.
+
     A variant is harvested when it has not been harvested before, its child
     row still exists, and that row is terminal. Writing rather than merely
     computing is RULING 4: retention deletes finished runs, and a value
     computed for one response is gone with it.
+
+    *with_metrics* False skips the summary read (an empty map comes back):
+    a cancel and the CSV export show no ``final_metrics``.
     """
     sweep = await store.get_sweep(sweep_id)
     if sweep is None:
@@ -637,7 +650,6 @@ async def _harvested_sweep(
                             detail=f"sweep '{sweep_id}' not found")
     children = {record.id: record
                 for record in await service.store.list_runs_by_sweep(sweep_id)}
-    metrics = await service.store.latest_metrics(list(children))
 
     terminal: dict[int, tuple[str, str]] = {}
     for variant in sweep.variants:
@@ -679,14 +691,40 @@ async def _harvested_sweep(
                                       finished=finished)
         if updated is not None:
             sweep = updated
+    if not with_metrics:
+        return sweep, children, {}
+    scopes = {variant.run_id: node
+              for variant in sweep.variants
+              if variant.run_id in children
+              and (node := _final_metrics_node(sweep, variant)) is not None}
+    metrics = await service.store.latest_metrics(list(children),
+                                                 producers=scopes)
     return sweep, children, metrics
+
+
+def _final_metrics_node(sweep: SweepRecord,
+                        variant: SweepVariant) -> str | None:
+    """The node whose values a variant's ``final_metrics`` prefer, or None
+    for the plain run-wide summary (#841).
+
+    ``final_metrics`` is always the run-wide summary; this node's own last
+    values replace the run-wide ones for the series it logged, so a name
+    two branches log shows the objective's branch. The node is the one the
+    sweep names, else the one the harvest found as the only producer of a
+    name-only objective. None while a name-only variant is unharvested,
+    when its objective is the run-level series, and when several nodes
+    logged it (that variant is unranked).
+    """
+    _metric, node_id = objective_selector(sweep.objective)
+    return node_id if node_id is not None else variant.objective_node_id
 
 
 _COUNT_KEYS = ("queued", "running", "disconnected", "succeeded", "failed",
                "cancelled", "interrupted", _STATUS_MISSING)
 
 
-def _variant_payload(variant: SweepVariant, rank: int | None,
+def _variant_payload(sweep: SweepRecord, variant: SweepVariant,
+                     rank: int | None,
                      children: dict[str, RunRecord],
                      metrics: dict[str, dict[str, float]]) -> dict[str, Any]:
     child = children.get(variant.run_id) if variant.run_id else None
@@ -717,6 +755,10 @@ def _variant_payload(variant: SweepVariant, rank: int | None,
         # as "this run recorded nothing" rather than "this run is no longer
         # here".
         payload["final_metrics"] = metrics.get(variant.run_id, {})
+        # The node whose values win where several nodes logged a name
+        # (#841): the objective's, or None when the summary is plain
+        # run-wide (such a name then shows whichever node wrote last).
+        payload["final_metrics_node_id"] = _final_metrics_node(sweep, variant)
         # Where the variant was placed (#777), read off the child row like
         # the Runs list: `worker_id` is `any` and `queue_key` `any/<device>`
         # until a `target: any` variant starts, then the worker it got and
@@ -749,8 +791,10 @@ def _ambiguous_producers(payloads: list[dict[str, Any]]) -> list[str | None]:
     return sorted(found, key=lambda node: (node is not None, node or ""))
 
 
-def _objective_warning(sweep: SweepRecord,
-                       payloads: list[dict[str, Any]]) -> str | None:
+def _objective_warning(
+    sweep: SweepRecord, payloads: list[dict[str, Any]],
+    producers: dict[str, dict[str, list[str | None]]] | None = None,
+) -> str | None:
     """Why some or all of the table is unranked, or None.
 
     An AMBIGUOUS name-only objective comes first and is reported even when
@@ -761,8 +805,13 @@ def _objective_warning(sweep: SweepRecord,
     single most likely user error — asking for ``val_loss`` from a graph
     with no validation loader — into a message that names the fix, instead
     of a table of empty cells. The series list is the union of
-    ``final_metrics`` keys across the children that still exist, sorted so
+    ``final_metrics`` keys across the children that still exist (each one
+    the run-wide summary, so every series any node logged), sorted so
     the message is the same twice, and omitted when none of them do.
+
+    When the objective names a node that never logged the metric while
+    other nodes did, *producers* (``RunStore.metric_producers_by_run`` of
+    the children) names those nodes (#841), which is usually the fix.
     """
     metric = sweep.objective.get("metric")
     ambiguous = _ambiguous_producers(payloads)
@@ -780,6 +829,20 @@ def _objective_warning(sweep: SweepRecord,
     warning = f"no variant recorded a metric named '{metric}'"
     if node_id:
         warning += f" from node '{node_id}'"
+        logged = {node for series in (producers or {}).values()
+                  for node in series.get(metric, [])}
+        if node_id in logged:
+            # It logged the series, yet nothing ranked: its last point
+            # was non-finite (a diverged loss), which is the thing to fix,
+            # not the choice of node.
+            warning += (f"; '{node_id}' logged '{metric}', but its last "
+                        "value was not finite (NaN or infinite)")
+        others = sorted(logged - {node_id},
+                        key=lambda node: (node is not None, node or ""))
+        if others:
+            also = " also" if node_id in logged else ""
+            warning += (f"; '{metric}' was{also} recorded by "
+                        + ", ".join(_producer_label(node) for node in others))
     if names:
         warning += ("; the series recorded across this sweep were: "
                     + ", ".join(names))
@@ -875,12 +938,12 @@ async def get_sweep(
     """
     service = _get_service(request)
     store = _get_sweep_store(request)
-    sweep, children, metrics = await _harvested_sweep(service, store,
-                                                      sweep_id)
+    sweep, children, metrics = await _harvested_sweep(
+        service, store, sweep_id, with_metrics=format != "csv")
     ranked = rank_variants(
         sweep.variants,
         direction=sweep.objective.get("direction", "minimize"))
-    payloads = [_variant_payload(variant, rank, children, metrics)
+    payloads = [_variant_payload(sweep, variant, rank, children, metrics)
                 for variant, rank in ranked]
 
     if format == "csv":
@@ -904,7 +967,14 @@ async def get_sweep(
             "index": best["index"], "run_id": best["run_id"],
             "objective": best["objective"]},
     }
-    warning = _objective_warning(sweep, payloads)
+    # Who logged what, only when a named node ranked nothing: the one
+    # case the warning names other producers in.
+    producers = None
+    if sweep.objective.get("node_id") \
+            and not any(payload["rank"] is not None for payload in payloads):
+        producers = await service.store.metric_producers_by_run(
+            list(children))
+    warning = _objective_warning(sweep, payloads, producers)
     if warning is not None:
         body["objective_warning"] = warning
     return body
@@ -995,8 +1065,8 @@ async def cancel_sweep(sweep_id: str, request: Request):
     # already terminal. It is also what keeps a cancel from LOSING results:
     # whatever a stopped child had logged is copied onto the sweep row here
     # rather than waiting for a read that may never come.
-    sweep, _children, _metrics = await _harvested_sweep(service, store,
-                                                        sweep_id)
+    sweep, _children, _metrics = await _harvested_sweep(
+        service, store, sweep_id, with_metrics=False)
     return {"sweep_id": sweep.id, "state": sweep.state,
             "cancelled": cancelled, "already_finished": already_finished,
             "variants": results}
