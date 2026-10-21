@@ -68,7 +68,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 |----------|--------|------|-------------|
 | `/api/runs` | POST | token | 將 run 送進佇列並立即回傳：`{run_id, status: "running" \| "queued"}`。`options.target`（`{worker, devices}`）指定在哪裡執行：`local`、已連線的 worker，或 `any`（[Run 佇列，Worker](/usage/run-queue#workers)）。指定的 worker 名稱在這台伺服器啟動後從未出現過、該 worker 不提供該裝置，或降級的 worker 缺少圖用到的節點型別（訊息會列出這些型別）時回 `400`；已知但目前離線的 worker 會讓 run 排入佇列，等它重新連線。 |
 | `/api/runs` | GET | open | 由新到舊列出；`?status=` 可重複，`?limit=` 上限為 500，`?offset=` 指定起始列。每列都包含 `queue_position`、`queue_reason`（排隊中的 run 除了排隊順序之外為何還不能開始，例如 `waiting for worker gpu-box to reconnect`，否則為 `null`）、`active`、`final_metrics`、`fingerprint_digest`、`execution_facts`、`worker_id`（`local`、worker 名稱，或 `any` run 尚未放置前的 `any`）、`devices`（要求的裝置集合或 `null`；在 worker 上的 run 則是它取得的裝置）`metric_producers`（`{名稱: [節點 id]}`，run 層級的 series 為 `null`）與 `worker_status`（在 worker 上執行中的 run 為 `{worker_id, state, disconnected_at, resume_deadline}`，`state` 是 `connected` 或 `disconnected`，斷線期間兩個時間為 Unix 秒數；其他 run 為 `null`）；`GET /api/runs/{id}` 另有 `late_result`（run 在這裡結束後 worker 才回報其結束方式時為 `{status, error, worker_id, at}`，否則為 `null`）；response 也包含未分頁的 `total`。 |
-| `/api/runs/{run_id}` | GET | open | 回傳單一 run（欄位與列表的每列相同，包含 `worker_id` 與 `devices`）與 `last_cursor`（client 從這個位置開始輪詢事件），以及 `fingerprint`：其 `fingerprint_digest` 所指的環境文件（run 開始前為 `null`）。 |
+| `/api/runs/{run_id}` | GET | open | 回傳單一 run（欄位與列表的每列相同，包含 `worker_id` 與 `devices`）與 `last_cursor`（client 從這個位置開始輪詢事件），以及 `fingerprint`：其 `fingerprint_digest` 所指的環境文件（run 開始前為 `null`），與 `provenance`：依記錄順序排列的節點來源紀錄（沒有 `provenance` 選項的 run 為 `[]`；參閱[節點來源](#node-provenance)）。 |
 | `/api/workers` | GET | open | 所有已加入的 worker agent，以及這台伺服器啟動以來見過的其他 agent：`{workers: [{id, name, status, draining, same_host, version, fingerprint_digest, platform, mounts, devices[{value, kind, index, name, memory, slots, shared_with}], running, connected_at, last_heartbeat_at, enrolled, credential, plain_http, node_catalog, degraded_reasons}], local, rejections}`。`status` 為 `online`、`degraded`（心跳延遲，或節點目錄與這台伺服器不同；`degraded_reasons` 列出 `heartbeat` 和／或 `node_catalog`）、`draining`（已連線但不接新的 run；另有布林欄位 `draining`）、`disconnected`，或 `offline`（已加入，但伺服器啟動後尚未連線；`connected_at` 為 `null`，從未出現過的 worker `last_heartbeat_at` 也為 `null`）；`enrolled` 表示該 worker 持有可撤銷的憑證，`credential` 表示它的連線如何驗證（`worker_token`、`session_token` 或 `null`）；`same_host` 為 `true` 表示 agent 在這台機器上；`plain_http` 為 `true` 表示它的連線是從另一台機器來的未加密 `ws://`（即「未加密 HTTP」標記：uvicorn 回報的 scheme 不是 `wss`，且對端不是 loopback，例如同一台機器的 agent 或 SSH 通道的本機端；見 [遠端 Worker，信任](/usage/remote-workers#trust-between-agent-and-control-plane)）；`memory` 是最近一次心跳的 `{total_bytes, free_bytes, source}`，或 `null`；`slots` 是該 `(worker, device)` slot 的 `{limit, taken}`，或 `null`；裝置實體上就是這台伺服器的某個裝置時，`shared_with` 為 `"local"`，此時它共用伺服器的 slot（加總時只算一次），否則為 `null`。`local` 以 `{id: "local", devices[{value, kind, slots}]}` 列出這台伺服器自己的裝置，沒有 run service 時為 `null`。`mounts` 是 worker 宣告的各個儲存 label 與它那邊的路徑；在這台機器上的 worker 另會以這台伺服器的路徑顯示伺服器的 label，`local.mounts` 是這台伺服器自己的 label 與路徑（[儲存：共用檔案系統](/usage/remote-workers#storage-shared-filesystem)）。`fingerprint_digest` 是該 worker 的環境指紋摘要，可用 `GET /api/system/fingerprints/{digest}` 查詢（上次連線未回報時為 `null`）。`node_catalog` 為 `{status, hash, missing, extra}`：`match`、`mismatch`（附上這台伺服器有而 worker 缺少的節點型別，以及反過來的型別），或 `unknown`（worker 未回報）（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。`rejections` 是未能連上的 agent 依名稱最近一次被拒的握手，新的在前，`[{name, reason, at, peer}]`（`at` 為 epoch 秒，`peer` 為用戶端位址；只存在記憶體中，該名稱連線成功後清除）；試圖搶用已連線 worker 名稱而被拒的嘗試只列在這裡，不會顯示在該 worker 的卡片上。worker registry 無法使用時回 503。 |
 | `/api/workers/{id}/drain` | POST | token | 不再把新的 run 放到該 worker；它正在執行的 run 會繼續。回傳該 worker 的資料；未知的 worker 回 404。 |
 | `/api/workers/{id}/undrain` | POST | token | 恢復把 run 放到該 worker。回傳該 worker 的資料；未知的 worker 回 404。 |
@@ -100,7 +100,7 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/studies/{study_id}/cancel` | POST | token | 停止排程並取消進行中的 child；已完成的 attempt 會保留。已 succeeded 的 study 回傳 `409`。 |
 | `/api/studies/{study_id}/resume` | POST | token | 繼續一個 interrupted、cancelled 或 failed 的 study：已完成的重複會略過，被取消、中斷或遺失的重複會得到新的 attempt。其他狀態回傳 `409`。 |
 
-**Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，引擎錯誤政策 `error_mode`、`max_retries`，以及 `target`。有提供 `options.target.devices` 時 run 的裝置是它的第一個，否則有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。`target` 是 `{"worker", "devices"}`：`worker` 為 `local`（預設）、已連線 worker agent 的名稱，或 `any`；`devices` 是同一種類的具體裝置集合。伺服器啟動以來從未連線過的 worker 名稱、不提供這些裝置的 worker、這台伺服器與它見過的 worker 都無法服務的 `any` run，worker target 搭配 interactive lane，以及在 agent 不支援的指名 worker 上使用 `record_outputs`，都回傳 400；已知但目前離線的 worker 會讓 run 排隊等它重新連線。在這台伺服器上，集合 run 占用每個裝置的 slot，並在第一個裝置上執行；在 worker 上則全部使用（參閱[執行佇列：Workers](/usage/run-queue#workers) 與[執行架構](./execution-architecture#scheduling)）。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
+**Runs API。** `POST /api/runs` 接受 `{"graph": {...}, "options": {...}, "name": "..."}`。graph 使用已儲存圖的 JSON 格式（`nodes`、`edges`，以及選用的 `presets`、`subgraphs` 與 `settings`）。body 不是 JSON 或沒有 `graph` 物件時回傳 422；graph 無效（例如 `nodes` 為空或 `settings.device` 無效）或選項無效時回傳 400；run service 無法使用，或 `interactive` lane 的送出數超過上限時，回傳 503。選項 key 是封閉集合：`device`、`seed`、`deterministic`、`record_outputs`、`lane`、畫布旗標 `verbose`、`graph_id`、`weights_persistent`、`backward_mode`、`auto_backward`，引擎錯誤政策 `error_mode`、`max_retries`、`target`，以及 `provenance`（`"identity"` 或 `"content"`，參閱[節點來源](#node-provenance)；`"off"` 或不提供則不記錄，也不儲存此鍵）。有提供 `options.target.devices` 時 run 的裝置是它的第一個，否則有提供 `options.device` 時就是它，否則為 graph 的 `settings.device`（參閱[圖的 settings 物件](/advanced/device-backends#the-graph-settings-object)），再否則為 `cpu`。`target` 是 `{"worker", "devices"}`：`worker` 為 `local`（預設）、已連線 worker agent 的名稱，或 `any`；`devices` 是同一種類的具體裝置集合。伺服器啟動以來從未連線過的 worker 名稱、不提供這些裝置的 worker、這台伺服器與它見過的 worker 都無法服務的 `any` run，worker target 搭配 interactive lane，以及在 agent 不支援的指名 worker 上使用 `record_outputs`，都回傳 400；已知但目前離線的 worker 會讓 run 排隊等它重新連線。在這台伺服器上，集合 run 占用每個裝置的 slot，並在第一個裝置上執行；在 worker 上則全部使用（參閱[執行佇列：Workers](/usage/run-queue#workers) 與[執行架構](./execution-architecture#scheduling)）。run 的 `status` 只會是 `queued`、`running`、`succeeded`、`failed`、`cancelled` 或 `interrupted`。`/events` 有兩個上限：單一 payload 超過 `CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`（128 KB）時，輸出會以省略標記取代後再儲存；response 超過 `CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`（4 MB）時會結束。佇列順序、lane、保留政策與 `cdui run` 請見[執行佇列](/usage/run-queue)。
 
 **Sweeps。** `POST /api/sweeps` 接受 `base_graph`、一份 `sweep_spec`（`method` 為 `grid` 或 `random`、`seed`、`samples`，以及 `params[{node_id, param, values | range}]`）、必要的 `objective`（`metric`、`direction` 為 `minimize` 或 `maximize`，以及可省略、用來指定以哪個節點的 series 排名的 `node_id`）、同一組 `options`、`name` 與 `seed_variants`。最多建立 `CODEFYUI_MAX_SWEEP_RUNS`（32）個變體。每個變體都是一般的 `/api/runs` 列，可分別追蹤其 `/events` 端點。spec、驗證錯誤與取消行為請見[執行佇列——Sweeps](/usage/run-queue#sweeps)。
 
@@ -111,9 +111,9 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際執行時的資訊。
 
 - **送出時：**`options`（裝置、種子、決定性等，請求未指定的部分由圖的 `settings` 補上），以及 `git_commit`、`git_dirty` 與 `plugin_pins`（使用者專案的 commit 與 lockfile 中啟用的外掛）。這些描述的是請求與專案，不是執行它的 CodefyUI 程式碼。
-- **開始執行時：**`fingerprint_digest` 與 `execution_facts`，在 run 離開佇列、開始執行時寫入。因此在佇列中等待期間伺服器更新過的 run，記錄的是實際執行它的環境，而送出時的欄位維持原值。在 worker 上執行的 run，`fingerprint_digest` 是該 worker 的環境，即它的 agent 連線時回報的指紋（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)），`execution_facts.worker_id` 則指出是哪個 worker。
+- **開始執行時：**`fingerprint_digest` 與 `execution_facts`，在 run 離開佇列、開始執行時寫入。因此在佇列中等待期間伺服器更新過的 run，記錄的是實際執行它的環境，而送出時的欄位維持原值。在 worker 上執行的 run，`fingerprint_digest` 描述的是該 worker。run 開始時，它是 worker 的 agent 連線時回報的指紋（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）；接著 run 子行程在載入 run 所用的程式碼、外掛與自訂節點後回報自己的指紋並取而代之，`execution_facts.fingerprint_source` 指出摘要是兩者中的哪一個。子行程的裝置資訊（`accelerators`、`devices`、`CUDA_VISIBLE_DEVICES` 與 `HIP_VISIBLE_DEVICES`）取自 agent 的文件，因為 agent 會把每個 run 限制在它自己的卡上；所以 agent 啟動後機器沒有任何變更時，兩個摘要相同。`execution_facts.worker_id` 指出是哪個 worker，run 自己的卡記錄在 `execution_facts.visible_devices` 與 `device_aliases`。
 
-`GET /api/system/fingerprint` 回傳伺服器目前的指紋文件，`schema_version` 為 1。每份文件都包含所有鍵，無法讀取的資訊為 `null`：
+`GET /api/system/fingerprint` 回傳伺服器目前的指紋文件，`schema_version` 為 2。每份文件都包含所有鍵，無法讀取的資訊為 `null`：
 
 | 鍵 | 內容 |
 | --- | --- |
@@ -121,17 +121,61 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 | `python`、`platform` | Python 版本與實作；作業系統、核心版本、機器架構與 macOS 版本。 |
 | `libraries`、`torch_build` | 已安裝的 `torch`、`torchvision`、`numpy` 與 `mlx` 版本；torch 的建置 commit，以及 CUDA、HIP 與 cuDNN 版本。 |
 | `accelerators`、`devices` | CUDA、ROCm、MPS 與 MLX 是否可用、每張 CUDA 卡的名稱與 compute capability、`pynvml` 能讀到時的 NVIDIA 驅動程式版本；伺服器的預設裝置與提供的裝置清單。 |
-| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision` 與 `revision_kind`。從儲存庫安裝的套件記錄其 commit（`git-sha`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`。連結的本機套件沒有不可變的 revision，兩者皆為 `null`，路徑也不會記錄。 |
+| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision`、`revision_kind`、`immutable` 與 `content_sha256`。從儲存庫安裝的套件記錄其 commit（`git-sha`，`immutable: true`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`；只有 checkout 乾淨（`codefyui.dirty` 為 `false`）時才是 `immutable`。連結的本機套件沒有不可變的 revision：它的 `revision` 是收集指紋時其檔案的摘要（`content-sha256`，`immutable: false`），能識別檔案但無法還原檔案，路徑也不會記錄。`content_sha256` 是每個可讀取目錄之套件的這份摘要（依排序後的相對路徑合併每個檔案位元組的 sha256，略過 `__pycache__`、版本控制目錄與 `.pyc` 檔），所以安裝後被原地修改的套件會改變摘要；目錄無法讀取時為 `null`。 |
 | `custom_nodes`、`optional_packages` | 每個啟用的自訂節點檔案的 sha256；每個 Package Center pip 套件的已安裝版本（未安裝為 `null`）。 |
 | `env` | 一份固定清單中、會影響數值或裝置選擇的環境變數值，例如 `CUBLAS_WORKSPACE_CONFIG`、`CUDA_VISIBLE_DEVICES` 與 `ONEDNN_MAX_CPU_ISA`。不讀取其他環境變數。 |
 
 文件中不含主機名稱、使用者名稱、家目錄路徑或機密。`digest` 是文件正規化 JSON（鍵排序、無空白、UTF-8）的 sha256，涵蓋所有鍵：相同環境得到相同摘要，任何一項記錄的資訊改變都會得到不同摘要。每份不同的文件只儲存一次；保留策略與 `DELETE /api/runs/{run_id}` 都不會刪除它，因此 run 刪除後，`/api/system/fingerprints/{digest}` 仍能查到該摘要。
 
-`execution_facts` 把請求與實際結果並列。`requested` 包含儲存的選項中的 `device`、`seed` 與 `deterministic`，以及圖中的 `graph_settings_device` 與 `graph_settings_seed`。`resolved` 包含排程器解析出的裝置（例如 `auto` 會變成 `mps:0`）、交給引擎的種子與決定性旗標，以及 `numerics`：run 開始時 torch 的預設 dtype、float32 矩陣乘法精度、TF32 與 cuDNN benchmark 開關，以及執行緒數。目前沒有 run 層級的精度選項；混合精度是訓練節點的參數，記錄在圖快照中。具有自己 `device` 參數的節點可以為該節點覆寫 run 的裝置。
+儲存的文件保留寫入時的 `schema_version`。版本 1（CodefyUI 3.1）的 `plugins` 項目沒有 `immutable` 與 `content_sha256`，連結的本機套件 `revision` 為 `null`；版本 2 加入這兩個鍵與內容 revision。即使是同一台機器，版本 1 與版本 2 的文件也不會有相同摘要。
+
+`execution_facts` 把請求與實際結果並列。`requested` 包含儲存的選項中的 `device`、`seed` 與 `deterministic`，以及圖中的 `graph_settings_device` 與 `graph_settings_seed`。`resolved` 包含排程器解析出的裝置（例如 `auto` 會變成 `mps:0`）、交給引擎的種子與決定性旗標，以及 `numerics`：run 開始時 torch 的預設 dtype、float32 矩陣乘法精度、TF32 與 cuDNN benchmark 開關，以及執行緒數。目前沒有 run 層級的精度選項；混合精度是訓練節點的參數，記錄在圖快照中。具有自己 `device` 參數的節點可以為該節點覆寫 run 的裝置。`fingerprint_source` 指出 `fingerprint_digest` 描述的是哪個行程：`process`（執行此 run 的這台伺服器）、`worker-hello`（連線時的 worker agent；run 子行程尚未回報，或無法回報）、`worker-run`（worker 的 run 子行程，它也會填入 `resolved.numerics`），或沒有記錄指紋時為 `null`。worker 上的 run 在子行程回報之前沒有 `resolved.numerics`。`execution_facts` 的 `schema_version` 為 3；在此之前寫入的列沒有 `fingerprint_source`。
 
 已執行的 run 結束時，無論結果為何，`execution_facts` 都會加上 `peak_memory`。CUDA run 會為伺服器行程佔用記憶體的每張卡各記錄一筆，run 自己的卡排在最前面，所以釘選到其他卡的節點也會算進去：`{"cuda:0": {"allocated_bytes": N, "reserved_bytes": M, "exact": false}}`，是 run 期間配置器的最高水位（`max_memory_allocated`、`max_memory_reserved`）。MPS run 記錄 `{"mps": {"held_bytes": N, "exact": false}}`：run 結束時 Metal 驅動程式為伺服器行程佔用的記憶體，包含快取。MPS 沒有峰值計數器，所以這不是峰值。CPU run 也用同樣方式量測，所以節點釘選到的 CUDA 卡會出現在對應表中。沒有任何卡被使用的 run（單純的 CPU run），或伺服器沒有載入 torch、從未初始化 CUDA 時的 run，記錄 `null`。在 run 開始時重設過計數器的卡上，run 期間沒有配置的保留記憶體不列入，因為那是先前的 run 留下的快取。在執行前就停止的 run，或執行器失敗且沒有回報的 run，不記錄（沒有這個鍵）。在伺服器行程內執行的 run，`exact` 一律為 `false`，因為這些 run 共用同一個 CUDA context。在 worker 上執行的 run 由只執行這一個 run 的子行程執行，所以它的 CUDA 項目為 `exact: true`，且不會標 `shared`；MPS 的數字因為包含驅動程式的快取，在任何地方都維持 `exact: false`。峰值計數器屬於整個行程，所以 run 只有在該卡上沒有其他行程內的 run 時才會在開始時重設計數器；否則不重設，以免抹掉另一個 run 的峰值，並把該卡標為 `"shared": true`，表示數字也包含另一個 run。Runs 面板的詳細資訊標題列以「峰值記憶體」顯示最大的 CUDA 值，MPS 則以「結束時佔用記憶體」顯示，滑鼠移上去會列出每個裝置。
 
 摘要與種子相同，並不保證數值完全相同。非決定性的 kernel 與執行緒排程仍可能改變結果，相同種子在不同硬體或函式庫版本上也可能得到不同數值。摘要只回答兩個環境是否相同。
+
+### 節點來源 {/* #node-provenance */}
+
+指紋說明的是哪份程式碼執行了 run，並不說明圖讀取了哪些資料或權重。使用 run 選項 `provenance` 時，讀取資料集或載入模型的節點也會記錄這些資訊，每個節點一筆（[#344](https://github.com/CodefyUI/CodefyUI/issues/344)）。**Queue on...** 對話框中的對應選項是「資料與模型來源」。
+
+- `"identity"`：檔案的位置、數量、大小、最後修改時間，以及**識別雜湊**：每個檔案的路徑、大小與修改時間合併後的雜湊（`content.method: "stat"`）。不讀取檔案內容，成本約等於列出檔案。
+- `"content"`：同上，再加上**內容雜湊**（`content.method: "sha256"`）：每個檔案位元組的 sha256，依排序後的相對路徑合併。單一檔案的摘要就是 `sha256sum` 印出的值。雜湊是增量的：每個檔案的雜湊依其路徑、大小、修改時間與 inode 保存在 `<user data>/cache/content-hashes/`，這些值未變的檔案不會再讀一次，因此大型資料集只有第一次 run 會完整讀取。快取不會放在資料集裡，遺失快取只代表要重新讀取檔案。依同一規則，原地改寫但大小、修改時間與 inode 都不變的檔案，會沿用先前的雜湊。
+
+識別雜湊不是內容雜湊：保持大小不變、且落在同一個時間戳刻度內的修改，或會重設修改時間的複製，都可能讓它與內容不一致。只在兩筆紀錄的 `content.method` 相同時比較 `content.digest`。
+
+不使用此選項時不記錄任何東西，儲存的 `options` 不含 `provenance` 鍵，run 的事件與結果也不變。紀錄在每個節點完成後，依它的參數與輸出收集，不改變節點的行為。在 worker 上由 run 子行程收集，再由控制面儲存。
+
+會記錄來源的節點型別：
+
+| 節點 | `kind` | 記錄內容 |
+| --- | --- | --- |
+| `CSVReader` | dataset | 該檔案；`rows` 是節點輸出 tensor 的列數。 |
+| `Dataset` | dataset | torchvision 資料集名稱與 split，以及 `data_dir` 下該資料集自己的目錄（`MNIST/`、`cifar-10-batches-py/`）；`rows` 是資料集長度。torchvision 資料集沒有版本。 |
+| `ImageFolderDataset` | dataset | 該 split 的資料夾；`rows` 是影像數。 |
+| `HuggingFaceDataset` | dataset | 儲存庫 id、subset 與 split。`revision.resolved` 是快取檔案來源的資料集儲存庫 commit（`hf-commit`，從 `datasets` 快取路徑讀取，否則讀本機 hub 快取的 `refs/main`），內容識別涵蓋 Arrow 快取檔，`rows` 是資料集長度。此節點不固定版本，因此 `revision.requested` 為 `null`（預設分支）。 |
+| `KaggleDataset` | dataset | 資料集 slug。`revision.resolved` 是 `kagglehub` 下載的版本（`kaggle-version`），`revision.requested` 是 slug 固定的版本（若有）；`rows` 是影像數。 |
+| `ModelLoader`、`CheckpointLoader` | model | 權重檔。本機 checkpoint 沒有版本，因此以內容識別作為它的識別。 |
+| `HFTextGenerate` | model | 模型儲存庫。`revision.requested` 是 Package Center 目錄固定的版本，`revision.resolved` 是已下載 snapshot 的 commit（`hf-commit`），內容識別涵蓋 snapshot 的檔案。 |
+
+每筆紀錄（`schema_version` 1）都包含下列所有鍵；未知的資訊為 `null`，原因不明顯時 `notes` 會說明：
+
+```json
+{
+  "schema_version": 1, "node_id": "csv", "node_type": "CSVReader",
+  "kind": "dataset", "mode": "content",
+  "source": {"type": "file", "name": null, "location": "files",
+             "path": "iris.csv", "subset": null},
+  "split": null,
+  "revision": {"requested": null, "resolved": null, "kind": null},
+  "content": {"method": "sha256", "digest": "e036f888...", "exists": true,
+              "files": 1, "bytes": 4551, "latest_mtime": "2026-10-21T11:46:52Z",
+              "truncated": false, "unreadable": 0, "reused": 1, "hashed": 0},
+  "rows": 150, "notes": ["rows counts the rows the node kept"]
+}
+```
+
+`source.path` 一定不是絕對路徑，而是相對於找到檔案的 CodefyUI 目錄，該目錄由 `source.location` 指出（`models`、`files`、`data`、`project`、`working-dir`、`hf-cache`、`packs`）；不在這些目錄下的檔案只記錄檔名，`location` 為 `"external"`。節點未指定檔案時 `content` 為 `null`。檔案不存在或無法讀取（`unreadable` 計數），或走訪在 200,000 個檔案處停止（`truncated`）時，`content.digest` 為 `null`。`reused` 與 `hashed`（僅內容模式）分別計算雜湊來自快取的檔案數，以及這次 run 讀取的檔案數。`GET /api/runs/{run_id}` 以 `provenance` 回傳這些紀錄，Runs 面板在 run 詳細資訊的「資料與模型」下顯示，紀錄會隨 run 一起刪除。
 
 ## 執行輸出與狀態 {/* #execution-outputs-and-state */}
 

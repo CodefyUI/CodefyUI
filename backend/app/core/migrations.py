@@ -647,13 +647,35 @@ MIGRATION_016 = """
 ALTER TABLE workers ADD COLUMN one_shot INTEGER;
 """
 
+# ── Migration 017: node provenance (#344, hook 4) ────────────────────────
+#
+# What data and which weights a run read, one row per node that read them,
+# for a run submitted with the ``provenance`` option
+# (``core.node_provenance``). ``provenance`` is the node's record as JSON
+# (source, revision, content identity, row count; unknown facts are
+# explicit nulls). The primary key keeps one row per node: a replayed
+# worker frame rewrites the row it already wrote. Deleted with its run
+# (CASCADE), like the run's metrics and artifacts; the run's environment
+# fingerprint is the part that outlives it.
+MIGRATION_017 = """
+CREATE TABLE exec_run_provenance (
+  run_id      TEXT NOT NULL REFERENCES exec_runs(id) ON DELETE CASCADE,
+  node_id     TEXT NOT NULL,
+  node_type   TEXT NOT NULL,
+  kind        TEXT NOT NULL,                -- 'dataset' | 'model'
+  provenance  TEXT NOT NULL,                -- JSON, node_provenance's record
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, node_id)
+);
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
                          MIGRATION_012, MIGRATION_013,
                          MIGRATION_014, MIGRATION_015,
-                         MIGRATION_016]
+                         MIGRATION_016, MIGRATION_017]
 
 
 def _is_comment_only(statement: str) -> bool:

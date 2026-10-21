@@ -18,6 +18,7 @@ import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
 import { deviceAliasLines, runBudget, runDevice, runDevices, runWorkerLabel } from '../../utils/runPlacement';
 import { LossChart } from './LossChart';
+import { RunProvenance } from './RunProvenance';
 import { SweepDetail } from './SweepDetail';
 import { lazyRetry } from '../shared/lazyRetry';
 import styles from './RunsPanel.module.css';
@@ -538,6 +539,9 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
           </div>
         )}
       </div>
+
+      {/* The detail's own copy: list rows do not carry the records. */}
+      <RunProvenance records={detail.row?.provenance} />
 
       <div className={styles.detailSection}>
         <div className={styles.sectionHeader}>{t('runs.detail.log')}</div>

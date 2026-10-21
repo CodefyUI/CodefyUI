@@ -33,6 +33,10 @@ def test_every_frame_type_round_trips():
         wp.RunAlive(runs=[wp.RunAliveEntry(run_id="r1", last_seq=6)]),
         wp.OutputAnswer(request_id="q1", status=200, part=0, parts=2,
                         body='{"a":', final=True),
+        wp.RunFacts(run_id="r1", seq=7, numerics={"num_threads": 4},
+                    fingerprint=wp.FingerprintReport(
+                        document={"schema_version": 2}, digest="d" * 64),
+                    provenance={"node_id": "n1"}),
     ]
     assert {f.type for f in agent_frames} == set(wp.AGENT_FRAME_TYPES)
     for frame in agent_frames:

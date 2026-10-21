@@ -55,7 +55,7 @@ TOP_LEVEL_KEYS = {
 def test_every_documented_key_is_present_with_the_schema_version():
     fingerprint = fpmod.collect_fingerprint()
     assert set(fingerprint) == TOP_LEVEL_KEYS
-    assert fingerprint["schema_version"] == fpmod.SCHEMA_VERSION == 1
+    assert fingerprint["schema_version"] == fpmod.SCHEMA_VERSION == 2
     assert set(fingerprint["codefyui"]) == {
         "version", "commit", "dirty", "commit_source"}
     assert set(fingerprint["libraries"]) == {
@@ -133,7 +133,9 @@ def test_plugin_identities_are_honest_about_what_has_a_revision(monkeypatch):
     assert "off" not in plugins                      # disabled: not loaded
     assert plugins["remote-pack"] == {
         "source_kind": "github_url", "source": "o/remote", "ref": "v1",
-        "version": "1.0.0", "revision": "a" * 40, "revision_kind": "git-sha"}
+        "version": "1.0.0", "revision": "a" * 40, "revision_kind": "git-sha",
+        # Not installed in this test, so its files cannot be read.
+        "immutable": True, "content_sha256": None}
     # A builtin pack ships inside the checkout: its revision IS the
     # checkout's commit, and its source a repo-relative path.
     deep = plugins["deep"]
@@ -141,10 +143,15 @@ def test_plugin_identities_are_honest_about_what_has_a_revision(monkeypatch):
     assert deep["revision"] == fingerprint["codefyui"]["commit"]
     assert deep["revision_kind"] == (
         "codefyui-commit" if deep["revision"] else None)
+    assert deep["immutable"] is (bool(deep["revision"])
+                                 and fingerprint["codefyui"]["dirty"] is False)
     # A linked pack has no immutable revision, and its path is withheld.
+    # Its directory does not exist here, so nothing identifies its code.
     assert plugins["linked"]["source"] is None
     assert plugins["linked"]["revision"] is None
     assert plugins["linked"]["revision_kind"] is None
+    assert plugins["linked"]["immutable"] is False
+    assert plugins["linked"]["content_sha256"] is None
     assert str(Path.home()) not in json.dumps(fingerprint)
 
 

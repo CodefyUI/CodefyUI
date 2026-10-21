@@ -571,6 +571,10 @@ class AgentConnection:
         shared = wp.shared_capabilities(
             wp.agent_capabilities(self.runner.speaks_s3()),
             welcome.capabilities)
+        # Runs started from now on report their own facts (#344) only to a
+        # control plane that reads them.
+        self.runner.run_facts = wp.CAPABILITY_RUN_FACTS in shared
+        self.runner.host_fingerprint = self.facts.fingerprint
         logger.info("connected as %s (worker id %s; capabilities %s)",
                     self.name, welcome.worker_id, ", ".join(shared) or "none")
         tasks = [

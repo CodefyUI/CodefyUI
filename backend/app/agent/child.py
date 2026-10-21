@@ -49,6 +49,15 @@ Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
   ``output_answer`` may still follow it); with ``"saving_outputs": True``
   when the run's captures are written next (#789), so the process lives
   on until they are.
+- ``("environment", {"fingerprint", "digest", "numerics"})``, once,
+  after discovery and before the graph runs, when ``spec["run_facts"]``
+  (#344): this process's own fingerprint (``env_fingerprint``, with the
+  device facts of ``spec["host_fingerprint"]``, the agent's) and its torch
+  numerics switches. ``fingerprint`` / ``digest`` are None when it could
+  not be collected.
+- ``("provenance", record)``: one node's provenance record (#344,
+  ``core.node_provenance``), for a run with the ``provenance`` option and
+  ``spec["run_facts"]``.
 - ``("memory_limit", {device: {"budget_bytes", "total_bytes",
   "fraction"}})``, FIRST, for a run with memory budgets (#788,
   ``spec["memory_budgets"]``, as this process numbers its cards): each
@@ -91,6 +100,8 @@ MSG_CANCEL = "cancel"
 MSG_FETCH = "fetch"
 MSG_DROP_OUTPUTS = "drop_outputs"
 MSG_OUTPUT_ANSWER = "output_answer"
+MSG_ENVIRONMENT = "environment"
+MSG_PROVENANCE = "provenance"
 
 Send = Callable[[tuple], None]
 
@@ -236,9 +247,11 @@ def artifact_location(path: str, mount: dict[str, Any] | None
 
 
 def _pipe_sinks(send: Send, cap_bytes: int | None = None,
-                mount: dict[str, Any] | None = None) -> Any:
+                mount: dict[str, Any] | None = None, *,
+                provenance: bool = False) -> Any:
     """A ``RunSinks`` whose callables write pipe messages. *mount* is the
-    run's ``{"label", "root"}`` (#782), or None."""
+    run's ``{"label", "root"}`` (#782), or None. *provenance*: node
+    provenance records go to the pipe too (#344); else none is collected."""
     import logging
 
     from ..config import settings
@@ -285,8 +298,49 @@ def _pipe_sinks(send: Send, cap_bytes: int | None = None,
         send((MSG_WARNING, {"kind": signal.kind, "detail": signal.detail,
                             "node_id": signal.node_id}))
 
+    async def record_provenance(record: dict[str, Any]) -> None:
+        try:
+            wired = wire_payload(record, 0)  # 0: no cap; a row, not an event
+        except (TypeError, ValueError, RecursionError) as exc:
+            log.warning("a provenance record could not be encoded: %s", exc)
+            return
+        send((MSG_PROVENANCE, wired))
+
     return RunSinks(emit=emit, record_metrics=record_metrics,
-                    record_artifact=record_artifact, warn=warn)
+                    record_artifact=record_artifact, warn=warn,
+                    record_provenance=record_provenance if provenance
+                    else None)
+
+
+def report_environment(spec: dict[str, Any], send: Send) -> None:
+    """Send this process's fingerprint and numerics (#344). Never raises.
+
+    After discovery, so the plugins and custom nodes in the document are
+    the ones this run loaded, and before the graph runs, so the numerics
+    are the ones it starts with (a node can change them, as on the control
+    plane).
+    """
+    document = digest = numerics = None
+    try:
+        from ..core.env_fingerprint import (
+            collect_fingerprint,
+            fingerprint_digest,
+            numerics_settings,
+        )
+
+        numerics = numerics_settings()
+        document = collect_fingerprint(host=spec.get("host_fingerprint"))
+        digest = fingerprint_digest(document)
+    except Exception:  # noqa: BLE001 -- a fact, never a failure
+        import logging
+        import traceback
+
+        logging.getLogger(__name__).warning(
+            "could not collect this run's environment fingerprint")
+        traceback.print_exc()
+        document = digest = None
+    send((MSG_ENVIRONMENT, {"fingerprint": document, "digest": digest,
+                            "numerics": numerics}))
 
 
 def _listen_for_cancel(control_in: Any, context: Any,
@@ -600,6 +654,9 @@ def run_assignment(spec: dict[str, Any], send: Send,
         # detection), so a worker must see the node set the server sees.
         if discover:
             initialize_runtime()
+        run_facts = bool(spec.get("run_facts"))
+        if run_facts:
+            report_environment(spec, send)
         run_id = spec["run_id"]
         options = dict(spec.get("options") or {})
         context = build_context(run_id, options, spec.get("device") or "cpu")
@@ -624,7 +681,8 @@ def run_assignment(spec: dict[str, Any], send: Send,
             session=None,
             output_store=None if outputs is None else outputs.store,
             record_outputs=outputs is not None,
-            sinks=_pipe_sinks(send, mount=spec.get("mount")),
+            sinks=_pipe_sinks(send, mount=spec.get("mount"),
+                              provenance=run_facts),
             explicit_metric_nodes=set(),
         )
 

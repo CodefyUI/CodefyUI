@@ -212,6 +212,12 @@ export interface RunSummary {
    */
   execution_facts?: Record<string, unknown> | null;
   /**
+   * The run's node provenance records (#344), on `GET /api/runs/{id}`
+   * only: list rows do not carry them. `[]` for a run without the
+   * `provenance` option; absent from an older server.
+   */
+  provenance?: NodeProvenance[];
+  /**
    * 1-based place in this run's OWN device queue (#123).
    *
    * `null` is a real answer, not zero: the run is not queued, or the queue
@@ -271,6 +277,42 @@ export interface RunSummary {
    * every other run. Optional: a server before #783 does not send it.
    */
   worker_status?: RunWorkerStatus | null;
+}
+
+/**
+ * One node's record of the data or weights it read (#344), for a run
+ * submitted with the `provenance` option. Every key is always present; a
+ * fact that is not known is `null`. `content.method` says what the digest
+ * is: `sha256` is the content, `stat` is path, size and modified time
+ * hashed together.
+ */
+export interface NodeProvenance {
+  schema_version: number;
+  node_id: string;
+  node_type: string;
+  kind: 'dataset' | 'model';
+  mode: 'identity' | 'content';
+  source: {
+    type: string | null;
+    name: string | null;
+    location: string | null;
+    path: string | null;
+    subset: string | null;
+  };
+  split: string | null;
+  revision: { requested: string | null; resolved: string | null; kind: string | null };
+  content: {
+    method: 'stat' | 'sha256';
+    digest: string | null;
+    exists: boolean;
+    files: number;
+    bytes: number;
+    latest_mtime: string | null;
+    truncated: boolean;
+    unreadable: number;
+  } | null;
+  rows: number | null;
+  notes: string[];
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */

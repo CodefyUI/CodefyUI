@@ -1082,6 +1082,96 @@ class RunStore:
         return await self.db.run(lambda conn: _insert_fingerprint(
             conn, fingerprint, digest, utc_now_iso()))
 
+    async def record_run_environment(
+        self, run_id: str, *, fingerprint: dict[str, Any] | None,
+        digest: str | None, numerics: dict[str, Any] | None,
+        source: str,
+    ) -> bool:
+        """The environment a run's executing process reported (#344).
+
+        For a worker run: its run subprocess's own fingerprint, which
+        replaces the one the worker's ``hello`` described at ``_begin``
+        (the subprocess loaded the code and plugins on disk when it
+        started, which may be newer than the agent's). One transaction:
+        the document goes into ``exec_run_fingerprints``, the row points
+        at it, and ``execution_facts`` gets ``fingerprint_source`` =
+        *source* and, when given, ``resolved.numerics``.
+
+        False, and nothing written, when the run is gone or has no facts
+        document (the same rule as :meth:`update_execution_facts`).
+        """
+        stamp = utc_now_iso()
+
+        def _write(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                row = conn.execute(
+                    "SELECT execution_facts FROM exec_runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None or row["execution_facts"] is None:
+                    return 0
+                facts = _loads(row["execution_facts"])
+                if not isinstance(facts, dict):
+                    return 0
+                stored_digest = None
+                if fingerprint is not None:
+                    stored_digest = _insert_fingerprint(conn, fingerprint,
+                                                        digest, stamp)
+                    facts["fingerprint_source"] = source
+                if numerics is not None:
+                    resolved = facts.get("resolved")
+                    if not isinstance(resolved, dict):
+                        resolved = {}
+                    resolved["numerics"] = numerics
+                    facts["resolved"] = resolved
+                return conn.execute(
+                    "UPDATE exec_runs SET execution_facts = ?, "
+                    "fingerprint_digest = COALESCE(?, fingerprint_digest) "
+                    "WHERE id = ?",
+                    (_dumps(facts), stored_digest, run_id),
+                ).rowcount
+
+        return await self.db.run(_write) > 0
+
+    async def record_provenance(self, run_id: str,
+                                record: dict[str, Any]) -> bool:
+        """Store one node's provenance record (#344, ``node_provenance``).
+
+        Keyed by ``(run_id, node_id)``: a second record for the same node
+        (a replayed worker frame) replaces the first. False when the run
+        does not exist or the record names no node.
+        """
+        node_id = record.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            return False
+        node_type = str(record.get("node_type") or "")
+        kind = str(record.get("kind") or "")
+        stamp = utc_now_iso()
+
+        def _write(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                if conn.execute("SELECT 1 FROM exec_runs WHERE id = ?",
+                                (run_id,)).fetchone() is None:
+                    return 0
+                return conn.execute(
+                    "INSERT OR REPLACE INTO exec_run_provenance "
+                    "(run_id, node_id, node_type, kind, provenance, "
+                    "recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (run_id, node_id, node_type, kind,
+                     _dumps(json_safe(record)), stamp),
+                ).rowcount
+
+        return await self.db.run(_write) > 0
+
+    async def list_provenance(self, run_id: str) -> list[dict[str, Any]]:
+        """A run's provenance records, in the order they were recorded."""
+        def _select(conn: sqlite3.Connection) -> list[str]:
+            return [row["provenance"] for row in conn.execute(
+                "SELECT provenance FROM exec_run_provenance WHERE run_id = ? "
+                "ORDER BY recorded_at, rowid", (run_id,))]
+
+        return [_loads(raw) for raw in await self.db.run(_select)]
+
     async def get_fingerprint(self, digest: str) -> dict[str, Any] | None:
         """The environment document a ``fingerprint_digest`` names, or None.
 

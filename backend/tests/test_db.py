@@ -26,7 +26,7 @@ def test_connect_migrates_empty_file(tmp_path):
     db.connect()
     try:
         assert db._conn.execute("PRAGMA user_version").fetchone()[0] \
-            == len(MIGRATIONS) == 16
+            == len(MIGRATIONS) == 17
         names = {
             r[0] for r in db._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -42,6 +42,8 @@ def test_connect_migrates_empty_file(tmp_path):
         assert {"workers", "worker_enrollments", "ssh_workers"} <= names
         assert {"exec_runs", "exec_run_metrics", "exec_run_events",
                 "exec_run_artifacts", "sweeps"} <= names
+        # Node provenance (017, #344).
+        assert "exec_run_provenance" in names
     finally:
         db.close()
 

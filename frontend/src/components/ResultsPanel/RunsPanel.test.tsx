@@ -737,6 +737,26 @@ describe('RunsPanel — detail view', () => {
     expect(detail.getByText(t('runs.log.stopped', { reason: '' }))).toBeInTheDocument();
   });
 
+  // #344: the detail's own records (list rows carry none).
+  it('lists the data and models the run read from its detail', async () => {
+    api.getRun.mockResolvedValue({
+      ...liveRun,
+      last_cursor: 4,
+      provenance: [{
+        schema_version: 1, node_id: 'csv', node_type: 'CSVReader', kind: 'dataset',
+        mode: 'identity',
+        source: { type: 'file', name: null, location: 'files', path: 'iris.csv', subset: null },
+        split: null, revision: { requested: null, resolved: null, kind: null },
+        content: null, rows: 3, notes: [],
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const section = within(await screen.findByTestId('run-provenance'));
+    expect(section.getByText('files:iris.csv')).toBeInTheDocument();
+    expect(section.getByText(t('runs.detail.provenance.rows', { rows: 3 }))).toBeInTheDocument();
+  });
+
   it('shows no peak memory for a CPU run (null) or one that recorded none', async () => {
     const cpu = { ...liveRun, execution_facts: { peak_memory: null } };
     api.getRun.mockResolvedValue({ ...cpu, last_cursor: 4 });

@@ -33,7 +33,9 @@ class FakeControlPlane:
 
     def __init__(self, *, reject: str | None = None,
                  heartbeat_s: float = 0.2, grace_s: float = 5.0,
-                 resume_grace_s: float | None = None) -> None:
+                 resume_grace_s: float | None = None,
+                 capabilities: list[str] | None = None) -> None:
+        self.capabilities = list(capabilities or [])
         self.reject = reject
         self.heartbeat_s = heartbeat_s
         self.grace_s = grace_s
@@ -76,7 +78,8 @@ class FakeControlPlane:
                 return
             await ws.send(wp.encode_frame(wp.Welcome(
                 worker_id=f"w-{number}", heartbeat_s=self.heartbeat_s,
-                grace_s=self.grace_s, resume_grace_s=self.resume_grace_s)))
+                grace_s=self.grace_s, resume_grace_s=self.resume_grace_s,
+                capabilities=self.capabilities)))
             async for raw in ws:
                 self._record(number, wp.decode_agent_frame(raw))
         except websockets.exceptions.ConnectionClosed:
@@ -382,6 +385,27 @@ async def test_cancel_grace_falls_back_to_assign_then_welcome(tmp_path):
             timeout=10)
         assert finished.status == "interrupted"
 
+
+
+async def test_runs_report_their_facts_only_to_a_plane_that_reads_them(
+        tmp_path):
+    """``run_facts`` (#344): the runner's run subprocesses report their own
+    fingerprint and provenance only when ``welcome`` lists the capability,
+    with the agent's fingerprint as the host whose device facts they use."""
+    facts = AgentFacts(fingerprint={"accelerators": {}}, fingerprint_digest="d")
+    async with FakeControlPlane() as cp, \
+            Agent(tmp_path, cp.url, facts=facts) as agent:
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        await asyncio.sleep(0.1)
+        assert agent.runner.run_facts is False
+    async with FakeControlPlane(capabilities=["ack", "run_facts"]) as cp, \
+            Agent(tmp_path, cp.url, facts=facts) as agent:
+        await cp.wait_for(lambda n, f: isinstance(f, wp.Hello))
+        deadline = time.monotonic() + 5
+        while not agent.runner.run_facts:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.02)
+        assert agent.runner.host_fingerprint == {"accelerators": {}}
 
 
 async def test_uploads_retry_for_the_control_planes_resume_grace(tmp_path):
