@@ -147,6 +147,12 @@ dev = [
     # which the runtime never imports: the agent hashes a certificate's
     # SubjectPublicKeyInfo with its own small DER reader.
     "trustme>=1.1",
+    # TEST-ONLY (#139): the reference implementations the eval pack's BLEU
+    # and ROUGE-L nodes are checked against. The pack computes both itself,
+    # so installing it costs no nltk/lxml; these are what the parity tests
+    # compare its numbers with.
+    "sacrebleu>=2.4,<3",
+    "rouge-score>=0.1.2",
 ]
 llm-sentence = [
     "sentence-transformers>=3.0,<6",

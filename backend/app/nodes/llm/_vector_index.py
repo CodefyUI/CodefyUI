@@ -56,12 +56,35 @@ round-trips CJK exactly and lets the archive load with ``allow_pickle=False``
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+
+#: How often a refused ``os.replace`` is retried, and the pause between
+#: tries -- the values ``_glove._save_npz`` uses for the same Windows case.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_PAUSE_S = 0.25
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a rename in *directory* to disk (POSIX; a no-op on Windows).
+
+    Windows cannot open a directory for ``fsync`` and does not need it for
+    ``os.replace`` to be durable, so it is skipped there.
+    """
+    if os.name != "posix":
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 METRICS = ("cosine", "dot")
 
@@ -213,6 +236,18 @@ class VectorIndex:
         that does not already end in ``.npz`` it appends one, and a caller who
         asked for ``corpus`` would find ``corpus.npz`` with nothing at the name
         they were told about. The same trap ``_glove._save_npz`` documents.
+
+        The write is whole or not at all (#139, folded in from #380): the
+        archive goes to a scratch file in the same directory, created by
+        ``tempfile.mkstemp`` so two saves -- two threads of one process as
+        much as two processes -- never share one, and ``os.replace`` puts it
+        at *path* once it is complete and fsynced. On POSIX the directory is
+        fsynced too, so the rename itself survives a power cut. Writing into *path* directly truncated the old index the
+        moment a save began, so an interrupted save left neither the old
+        index nor the new one. A failed save removes its scratch file and
+        leaves whatever was at *path* untouched. On Windows the replace is
+        refused while another handle has the old file open (#488), so it is
+        retried for a moment, as ``_glove._save_npz`` does, and then raised.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,16 +255,37 @@ class VectorIndex:
             {"chunks": self.chunks, "metadata": self.metadata},
             ensure_ascii=False,
         ).encode("utf-8")
-        with open(path, "wb") as handle:
-            np.savez(
-                handle,
-                **{
-                    _KEY_VECTORS: self.vectors.detach().cpu().numpy(),
-                    _KEY_METRIC: np.frombuffer(self.metric.encode("utf-8"), dtype=np.uint8),
-                    _KEY_NORMALIZED: np.bool_(self.normalized),
-                    _KEY_TEXTS: np.frombuffer(payload, dtype=np.uint8),
-                },
-            )
+        fd, part_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.",
+                                         suffix=".part")
+        part_path = Path(part_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                np.savez(
+                    handle,
+                    **{
+                        _KEY_VECTORS: self.vectors.detach().cpu().numpy(),
+                        _KEY_METRIC: np.frombuffer(self.metric.encode("utf-8"), dtype=np.uint8),
+                        _KEY_NORMALIZED: np.bool_(self.normalized),
+                        _KEY_TEXTS: np.frombuffer(payload, dtype=np.uint8),
+                    },
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+                try:
+                    os.replace(part_path, path)
+                    break
+                except PermissionError:
+                    if attempt == _REPLACE_ATTEMPTS:
+                        raise
+                    time.sleep(_REPLACE_PAUSE_S)
+            _fsync_directory(path.parent)
+        except BaseException:
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def load(cls, path: Path) -> "VectorIndex":

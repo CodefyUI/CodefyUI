@@ -37,7 +37,8 @@ class EvalHFProcessorLoaderNode(BaseNode):
         "`model_id` loads that repository instead, resolved the same way. A "
         "`revision` of the model's repository that resolves to another commit "
         "is refused. `kind` tokenizer loads AutoTokenizer; auto loads "
-        "AutoProcessor (image and multimodal processors)."
+        "AutoProcessor (image and multimodal processors), which a vqa model "
+        "needs."
     )
 
     cacheable = False
@@ -107,6 +108,12 @@ class EvalHFProcessorLoaderNode(BaseNode):
         if kind not in KINDS:
             raise ValueError(f"{node}: unknown kind {kind!r}; expected one of {list(KINDS)}.")
         model_prov = hub.provenance_of(inputs.get("model")) if inputs.get("model") is not None else {}
+        if model_prov.get("task") == "vqa" and kind == "tokenizer":
+            raise ValueError(
+                f"{node}: the connected model answers questions about images, and a "
+                "tokenizer alone cannot read an image. Set `kind` to auto to load its "
+                "processor (tokenizer and image processor together)."
+            )
         model_id = str(params.get("model_id", "") or "").strip()
         revision = str(params.get("revision", "") or "").strip()
         follows_model = False

@@ -2192,8 +2192,10 @@ const zhTW: NodeTranslations = {
   'eval:Eval-BatchInference': {
     description: '分批讓模型跑完評估集，輸出預測表',
     details:
-      'classification 取分類模型 logits 的 argmax，並用模型的 id2label 命名；generation 由因果語言模型生成 ' +
-      'max_new_tokens 個 token，可用貪婪解碼，或以 `seed` 為每筆資料各自建立的本地亂數產生器抽樣。每列記錄 id、input、' +
+      'classification 取分類模型 logits 的 argmax，並用模型的 id2label 命名；vqa 對一張影像與一個問題做同樣的事' +
+      '（資料集需設定 `image_field`）；generation 由因果語言模型生成 max_new_tokens 個 token，可用貪婪解碼，或以 `seed` ' +
+      '為每筆資料各自建立的本地亂數產生器抽樣，抽樣設定取自此節點，或在 generation_config=model 時取自模型自己的 ' +
+      'generation_config。每列記錄 id、input、' +
       'input_hash、raw_answer、正規化後的 answer、label、status（ok、error 或 cancelled）與 error。在批次之間按停止，' +
       '已完成的列維持 ok，其餘標成 cancelled；某一筆出錯只會把那一筆標成 error，其他照常完成。`label_map` 在正規化前' +
       '先改名原始答案（LABEL_0=negative）。表格的 meta 記錄兩邊的 revision、實際生效的設定、seed 與資料集的 sha256。',
@@ -2203,12 +2205,15 @@ const zhTW: NodeTranslations = {
       normalize: '比較前如何正規化原始答案與標籤。',
       label_map: '先改名原始答案，例如 LABEL_0=negative, LABEL_1=positive。',
       max_new_tokens: '每筆要生成的 token 數（僅 generation）。',
+      generation_config:
+        'node：使用下方此節點的抽樣設定。model：do_sample、temperature、top_p、top_k 與 repetition_penalty 取自模型的 generation_config（僅 generation）。',
       do_sample: '改用抽樣而非貪婪解碼（僅 generation）。',
       temperature: '抽樣溫度（generation 且開啟 do_sample）。',
       top_p: 'nucleus 抽樣的機率總量（generation 且開啟 do_sample）。',
+      repetition_penalty: '對已出現在提示或答案中的 token 施加懲罰，算法與 transformers 相同；1.0 為關閉（generation，貪婪或抽樣皆適用）。',
       seed: '抽樣用的種子；每筆資料有自己的產生器。',
-      max_length: '輸入截斷到這麼多個 token（classification）。',
-      top_k: '每列保留幾個排序後的標籤，供 Eval-TopKAccuracy 使用（classification）。',
+      max_length: '輸入截斷到這麼多個 token（classification、vqa；vqa 的上限為模型的 max_position_embeddings）。',
+      top_k: '每列保留幾個排序後的標籤，供 Eval-TopKAccuracy 使用（classification、vqa）。',
     },
     inputs: {
       model: '來自 Eval-HFModelLoader 的模型。',
@@ -2219,6 +2224,31 @@ const zhTW: NodeTranslations = {
       predictions: '預測表：每筆一列，含狀態與來源資訊。',
       answers: 'ok 且有標籤的列的正規化答案，依表格順序。',
       labels: '同一批列的標籤，與 `answers` 對齊。',
+    },
+  },
+  'eval:Eval-BLEU': {
+    description: '答案對標籤的語料層級 BLEU',
+    details:
+      '0 到 100 的語料層級 BLEU，算法與 sacrebleu 的 corpus_bleu 相同，每筆一個參考答案：所有計入列的 1 到 4-gram ' +
+      '合併計算，再乘上長度懲罰並套用所選的平滑方法。答案與標籤是 Eval-BatchInference 正規化後的版本；它的預設 ' +
+      'normalize=strip_lower 會把兩者轉成小寫，所以預設是不分大小寫的 BLEU（sacrebleu 的 case:lc），' +
+      'normalize=strip 或 none 則保留大小寫（case:mixed）。tokenize 的 13a 是 sacrebleu 的預設；中文請用 zh 或 char。' +
+      '略過 error、cancelled 與沒有標籤的列。metrics 表格的 meta 記錄 sacrebleu 的 signature 與 n-gram 計數。',
+    params: {
+      tokenize: '13a：sacrebleu 的預設。zh：把中文字逐字切開。char：每個字元一個 token。none：只依空白切分。',
+      smooth_method: 'sacrebleu 對沒有任何相符 n-gram 的階數所用的平滑方法；預設為 exp。',
+      metric_name: '記錄成 run metric 時的名稱；留空用指標本身的名稱。A、B 兩次執行請取不同名稱。',
+      step: '記錄 run metric 時的 step。',
+    },
+    inputs: {
+      predictions: '來自 Eval-BatchInference 的預測表。',
+    },
+    outputs: {
+      value: '計入列上的指標值。',
+      table: '一列的 [1, 3] 表格：指標值、計入列數、略過列數。',
+      columns: '`table` 的欄位名稱。',
+      row_labels: '這一列量測的執行：model@revision。',
+      metrics: '同一列的紀錄表，meta 記錄產生此指標的節點。',
     },
   },
   'eval:Eval-CompareRuns': {
@@ -2298,11 +2328,12 @@ const zhTW: NodeTranslations = {
       '`revision`（分支、tag 或 commit，預設 main）會在載入前解析成 commit sha：能連上 Hub 時向 Hub 查詢，否則使用快取中' +
       '已有的快照，並記錄來源。遵守 HF_HUB_OFFLINE=1：不會下載任何東西，未快取的模型會直接報錯。本機目錄以其中檔案的 ' +
       'sha256 作為識別。下載存放在 CodefyUI 自己位於使用者資料夾下的快取。`task` 為 auto 時讀取設定中的架構：' +
-      '...ForSequenceClassification 為 classification，因果語言模型為 generation。需要 transformers 套件，安裝此外掛時會一併安裝。',
+      '...ForSequenceClassification 為 classification，因果語言模型為 generation，ViltForQuestionAnswering 為 vqa' +
+      '（針對一張影像與一個問題，從模型的答案詞表中選出答案）。需要 transformers 套件，安裝此外掛時會一併安裝。',
     params: {
       model_id: 'Hugging Face Hub 的 id（org/name）或本機模型目錄。',
       revision: '分支、tag 或 commit sha，載入前會解析成 commit sha。',
-      task: 'classification（取標籤的 argmax）或 generation（因果語言模型）；auto 讀取設定判斷。',
+      task: 'classification（取標籤的 argmax）、generation（因果語言模型）或 vqa（影像加問題）；auto 讀取設定判斷。',
       dtype: '權重要轉成的精度；auto 保留 checkpoint 原本的精度。',
       device: 'auto 跟隨這次執行的裝置。',
     },
@@ -2317,7 +2348,7 @@ const zhTW: NodeTranslations = {
       '接上 Eval-HFModelLoader 的模型，並把 `model_id` 與 `revision` 留空：processor 就會從模型自己的 repository、' +
       '在模型解析出的同一個 commit 載入。填入其他 `model_id` 則改載那個 repository，以同樣方式解析。若填入的 `revision` ' +
       '讓模型自己的 repository 解析到另一個 commit，會被拒絕。`kind` 為 tokenizer 時載入 AutoTokenizer；auto 載入 ' +
-      'AutoProcessor（影像與多模態 processor）。',
+      'AutoProcessor（影像與多模態 processor），vqa 模型需要後者。',
     params: {
       model_id: '留空則跟隨接上的模型；否則填 Hub id 或本機目錄。',
       revision: '留空則跟隨接上模型的 commit（或 main）。',
@@ -2337,12 +2368,14 @@ const zhTW: NodeTranslations = {
       '每行讀一個 JSON 物件。`input_field` 是模型看到的文字，`label_field` 是預期答案（每列可有可無），`id_field` ' +
       '是穩定的項目 id；檔案沒有 id 時用 `line-N`。重複的 id、空白輸入與格式錯誤的行都會被拒絕並指出行號。資料集帶著自己的' +
       '識別（路徑、檔案的 sha256 與列數）進入由它產生的每一張預測表。以 `eval:` 開頭的路徑指向此外掛內附的檔案，例如 ' +
-      '`eval:samples/sst2-mini-20.jsonl`。',
+      '`eval:samples/sst2-mini-20.jsonl`。`image_field` 指定存放影像路徑的欄位（相對於 JSONL 檔所在的資料夾），' +
+      '供 VQA 使用；每張影像的雜湊都會加入該項目的識別。',
     params: {
       path: 'JSONL 檔。可選上傳的檔案、相對於後端工作目錄的路徑，或用 `eval:samples/...` 指向此外掛內附的檔案。',
       input_field: '存放模型輸入文字的欄位。',
       label_field: '存放預期答案的欄位；沒有這個欄位的列就沒有標籤。',
       id_field: '存放穩定項目 id 的欄位；缺少時用 line-N。',
+      image_field: '存放影像路徑的欄位，相對於 JSONL 檔所在的資料夾（VQA）。留空則不讀影像。',
       limit: '只用前 N 筆；0 代表全部。',
     },
     outputs: {
@@ -2363,6 +2396,30 @@ const zhTW: NodeTranslations = {
     },
     outputs: {
       dataset: '同樣的項目，輸入換成套用範本後的文字。',
+    },
+  },
+  'eval:Eval-ROUGE-L': {
+    description: '答案對標籤的平均 ROUGE-L',
+    details:
+      'ROUGE-L 以答案與標籤 token 的最長共同子序列為每一列評分，算法與 rouge-score 的 RougeScorer([\'rougeL\']) ' +
+      '不做詞幹化時相同，結果是計入列的平均（0 到 1）。tokenize 的 rouge 是 rouge-score 的 tokenizer：轉小寫，a-z 與 ' +
+      '0-9 以外的字元都當作分隔，因此沒有 ASCII 字母或數字的文字（例如中文）沒有任何 token，得分為 0；這類文字請用 char。' +
+      '兩邊任一邊沒有 token 的列得 0。略過 error、cancelled 與沒有標籤的列。',
+    params: {
+      measure: 'fmeasure、precision（答案中落在 LCS 的比例）或 recall（標籤中落在 LCS 的比例）。',
+      tokenize: 'rouge：rouge-score 的 tokenizer（僅 ASCII）。char：逐字元。whitespace：依空白切分。',
+      metric_name: '記錄成 run metric 時的名稱；留空用指標本身的名稱。A、B 兩次執行請取不同名稱。',
+      step: '記錄 run metric 時的 step。',
+    },
+    inputs: {
+      predictions: '來自 Eval-BatchInference 的預測表。',
+    },
+    outputs: {
+      value: '計入列上的指標值。',
+      table: '一列的 [1, 3] 表格：指標值、計入列數、略過列數。',
+      columns: '`table` 的欄位名稱。',
+      row_labels: '這一列量測的執行：model@revision。',
+      metrics: '同一列的紀錄表，meta 記錄產生此指標的節點。',
     },
   },
   'eval:Eval-TopKAccuracy': {

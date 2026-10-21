@@ -1,8 +1,8 @@
 [plugin]
 id              = "eval"
 name            = "Eval — 評估與推論管線"
-version         = "0.1.0"
-description     = "Evaluation pipelines as nodes: Eval-JSONLDataset and Eval-PromptTemplate for eval sets with ids and a content hash, Eval-HFModelLoader and Eval-HFProcessorLoader pinned to the commit they resolved to, Eval-BatchInference for a prediction table with per-item status, Eval-ExactMatch / Eval-F1Score / Eval-TopKAccuracy, and Eval-CompareRuns for an item-aligned A/B diff. 評估流程節點：有 id 與雜湊的評估集、鎖定 commit 的 Hugging Face 模型、逐筆狀態的預測表、指標，以及依 id 對齊的 A/B 比較。"
+version         = "0.2.0"
+description     = "Evaluation pipelines as nodes: Eval-JSONLDataset and Eval-PromptTemplate for eval sets with ids and a content hash, Eval-HFModelLoader and Eval-HFProcessorLoader pinned to the commit they resolved to, Eval-BatchInference for a prediction table with per-item status, Eval-ExactMatch / Eval-F1Score / Eval-TopKAccuracy / Eval-BLEU / Eval-ROUGE-L, and Eval-CompareRuns for an item-aligned A/B diff; text classification, generation and VQA. 評估流程節點：有 id 與雜湊的評估集、鎖定 commit 的 Hugging Face 模型、逐筆狀態的預測表、指標（含 BLEU 與 ROUGE-L），以及依 id 對齊的 A/B 比較；支援文字分類、生成與 VQA。"
 schema_version  = 1
 requires_codefyui = ">=2.9.0"
 
