@@ -255,6 +255,10 @@ function StudyDetailBody({ detail, back }: { detail: StudyDetail; back: ReactNod
   const resume = useStudyStore((s) => s.resume);
   const name = detail.name || t('studies.unnamed');
   const status = detail.status;
+  // A resume with the same budget would be refused (409): a halted study,
+  // or any resumable one whose budget ran out, resumes through the form.
+  const needsBudget = RESUMABLE.has(status)
+    && (status === 'halted' || detail.budget_usage.exhausted !== null);
 
   return (
     <>
@@ -291,13 +295,13 @@ function StudyDetailBody({ detail, back }: { detail: StudyDetail; back: ReactNod
             {t('studies.action.cancel')}
           </button>
         )}
-        {RESUMABLE.has(status) && status !== 'halted' && (
+        {RESUMABLE.has(status) && !needsBudget && (
           <button type="button" className={`${styles.btn} ${styles.accent}`} disabled={pending !== null} onClick={() => void resume()}>
             {t('studies.action.resume')}
           </button>
         )}
       </div>
-      {status === 'halted' && (
+      {needsBudget && (
         <BudgetEditor key={detail.revision} budget={detail.budget} halt={detail.halt} disabled={pending !== null} onResume={(budget) => void resume(budget)} />
       )}
 

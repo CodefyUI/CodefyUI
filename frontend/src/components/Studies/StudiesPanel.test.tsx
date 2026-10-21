@@ -392,6 +392,16 @@ describe('StudiesPanel: a halted study', () => {
     });
   });
 
+  it('offers the budget form, not a plain resume, for an interrupted study whose budget ran out', async () => {
+    detailOf.mockResolvedValue(detail({
+      status: 'interrupted',
+      budget_usage: { ...detail().budget_usage, exhausted: 'max_runs' },
+    }));
+    await openPanel('s1');
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume with this budget' })).toBeInTheDocument();
+  });
+
   it('words a budget it does not know generically', async () => {
     detailOf.mockResolvedValue(halted(
       { budget: 'max_gpu_hours', limit: 1, used: 1, unfinished_repetitions: 1, at: 't' },

@@ -113,12 +113,15 @@ export const useStudyStore = create<StudyState>()((set, get) => {
       set({ detail, detailError: null, notFound: false });
       const page = await getStudyEvents(studyId, get().cursor);
       if (!current()) return;
-      if (page.events.length > 0) {
-        set((state) => ({
-          events: [...state.events, ...page.events].slice(-STUDY_EVENTS_KEPT),
-          cursor: page.cursor,
-        }));
-      }
+      // Two reads in flight can fetch the same page: keep each cursor once.
+      set((state) => {
+        const fresh = page.events.filter((event) => event.cursor > state.cursor);
+        if (fresh.length === 0) return state;
+        return {
+          events: [...state.events, ...fresh].slice(-STUDY_EVENTS_KEPT),
+          cursor: fresh[fresh.length - 1].cursor,
+        };
+      });
     } catch (error) {
       if (!current()) return;
       set({

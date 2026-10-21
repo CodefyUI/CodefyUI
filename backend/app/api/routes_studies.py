@@ -410,7 +410,7 @@ async def _study_detail(coordinator: StudyCoordinator,
     ranked = sorted((row for row in variant_rows if row["rank"] is not None),
                     key=lambda row: (row["rank"], row["index"]))
     usage = budget_usage(study.budget, attempts,
-                         now=coordinator._clock())
+                         now=coordinator.now())
     return {
         **_study_summary(study),
         "options": study.options,

@@ -49,9 +49,9 @@ study 的 `budget` 由伺服器強制執行，不論是否有人在看。每個�
 | `max_run_seconds` | 單一 child 的執行時間，從它開始執行起算（排隊時間不算）。 | 伺服器取消該 child。該次重複以**逾時**（`timed_out`）結束：這是一個結果，與失敗相同，不會再執行，所屬變體也不會排名。study 會繼續。 |
 | `max_active_seconds` | 所有 child 的累計執行時間，包含重試。 | 伺服器取消執行中的 child（這些重複顯示**已取消**），等它們停下後 study 會**暫停**。 |
 
-時間上限以秒為單位，必須大於 0，最多 30 天。伺服器因預算停止 child 之前，會先把預算記錄在 attempt 上（`stop_reason`），因此 study 自己停止的 child，不會被誤認為是在 study 之外被停止（那會讓 study 中斷）。停止使用的是執行佇列的協作式取消：在這台伺服器上的 child 會在下一次檢查時停止（訓練、評估與取樣節點每個 batch 檢查一次），在 [worker](./remote-workers) 上的 child 若未在寬限期內停止，會由 worker 終止。因此累計執行時間可能略超過 `max_active_seconds`。
+時間上限以秒為單位，必須大於 0，最多 30 天。伺服器因預算停止 child 之前，會先把預算記錄在 attempt 上（`stop_reason`），因此 study 自己停止的 child，不會被誤認為是在 study 之外被停止（那會讓 study 中斷）。停止使用的是執行佇列的協作式取消：在這台伺服器上的 child 會在下一次檢查時停止（訓練、評估與取樣節點每個 batch 檢查一次），在 [worker](./remote-workers) 上的 child 若未在寬限期內停止，會由 worker 終止。因此累計執行時間可能略超過 `max_active_seconds`。被停止的 child 仍在執行時，伺服器每 10 秒會再送出一次停止要求，因此因錯誤或伺服器重新啟動而遺失的取消不會就此沒有送出。
 
-**暫停**的 study 會保留它所有的結果：已完成的重複、它們的值、目前的排名與事件紀錄。`GET /api/studies/{id}` 會回傳 `halt`（`budget`、`limit`、`used`、`unfinished_repetitions` 與 `at`）與 `budget_usage`（每項預算的用量，以及哪一項已用完），事件紀錄最後一筆是 `study_halted`，其 payload 帶有部分排名。暫停的 study 不算進行中：它不會出現在 `?status=queued|running|cancel_requested` 的結果中，伺服器重新啟動後維持原狀，在繼續或取消之前不會執行任何東西。
+**暫停**的 study 會保留它所有的結果：已完成的重複、它們的值、目前的排名與事件紀錄。`GET /api/studies/{id}` 會回傳 `halt`（`budget`、`limit`、`used`、`unfinished_repetitions` 與 `at`）與 `budget_usage`（每項預算的用量，以及哪一項已用完），事件紀錄最後一筆是 `study_halted`，其 payload 帶有部分排名。暫停的 study 不算進行中：它不會出現在 `?status=queued|running|cancel_requested` 的結果中，伺服器重新啟動後維持原狀，在繼續或取消之前不會執行任何東西。指定 `"resume_policy": "auto"` 的 study 若在預算用完後被重新啟動中斷，會變成暫停，而不會自行繼續。
 
 ### 繼續暫停的 study {/* #resuming-a-halted-study */}
 

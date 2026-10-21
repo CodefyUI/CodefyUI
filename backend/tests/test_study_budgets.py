@@ -376,6 +376,106 @@ async def test_a_plugin_key_prefix_is_reserved_on_the_core_route(client):
     assert "reserved" in response.json()["detail"]
 
 
+async def test_an_auto_resume_with_a_used_up_budget_halts_and_startup_goes_on(
+        make_env, store, probe):
+    """resume_policy auto, every run of max_runs already submitted, and a
+    restart interrupts two of them: recover() must not raise (it runs at
+    startup); the study halts on max_runs and a raised budget resumes it."""
+    service, coordinator = make_env(shutdown_grace_s=0.1)
+    release = probe.hold("B")
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL,
+                           headers={TOKEN_HEADER: session_token()}) as http:
+        created = await http.post("/api/studies", json=_body(
+            resume_policy="auto",
+            budget={"max_runs": 4, "max_parallel_runs": 4}))
+        study_id = created.json()["study_id"]
+        await probe.wait_entered("B")
+
+        async def all_submitted() -> bool:
+            attempts = await coordinator.store.list_attempts(study_id)
+            return all(a.status != "pending" for a in attempts)
+
+        deadline = time.monotonic() + 10
+        while not await all_submitted():
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.02)
+        await _crash(service, coordinator)
+        release.set()
+        probe.gates.pop("B")
+
+        service2, coordinator2 = make_env()
+        await service2.recover_interrupted()
+        await coordinator2.recover()              # does not raise
+        halted = (await http.get(f"/api/studies/{study_id}")).json()
+        assert halted["status"] == "halted", halted["status"]
+        assert halted["halt"]["budget"] == "max_runs"
+        assert halted["halt"]["used"] == 4
+        before = len(await _study_runs(store, study_id))
+        resumed = await http.post(f"/api/studies/{study_id}/resume", json={
+            "budget": {"max_runs": 10, "max_parallel_runs": 4}})
+        assert resumed.status_code == 200, resumed.text
+        final = await _wait_status(http, study_id, "succeeded")
+    retried = sum(1 for v in final["variants"] for a in v["attempts"]
+                  if a["attempt"] == 2)
+    assert len(await _study_runs(store, study_id)) == before + retried
+    assert retried >= 1
+
+
+async def test_a_budget_stop_that_failed_to_send_is_sent_again(
+        client, env, probe, monkeypatch):
+    service, coordinator = env
+    from app.core import study_coordinator as sc
+    monkeypatch.setattr(sc, "_STOP_RESEND_S", 0.3)
+    original = type(service).cancel
+    calls = {"n": 0}
+
+    async def flaky(self, run_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("injected: the cancel was lost")
+        return await original(self, run_id)
+
+    monkeypatch.setattr(type(service), "cancel", flaky)
+    release = probe.hold("A")
+    created = await client.post("/api/studies", json=_body(
+        [("A", 1.0)], repetitions=1, budget={"max_run_seconds": 0.3}))
+    study_id = created.json()["study_id"]
+    await probe.wait_entered("A")
+    deadline = time.monotonic() + 10
+    while calls["n"] < 2:
+        assert time.monotonic() < deadline, "the stop was never sent again"
+        await asyncio.sleep(0.05)
+    release.set()
+    await _wait_stored_status(coordinator, study_id, "succeeded")
+    attempt = (await coordinator.store.list_attempts(study_id))[0]
+    assert attempt.status == "timed_out"
+
+
+async def test_the_budget_timer_does_not_spin_while_a_stopped_child_drains(
+        client, env, probe, monkeypatch):
+    _service, coordinator = env
+    ticks = {"n": 0}
+    original = type(coordinator).tick
+
+    async def counting(self, study_id):
+        ticks["n"] += 1
+        return await original(self, study_id)
+
+    monkeypatch.setattr(type(coordinator), "tick", counting)
+    release = probe.hold("A")
+    created = await client.post("/api/studies", json=_body(
+        [("A", 1.0)], repetitions=2, budget={"max_active_seconds": 0.2}))
+    study_id = created.json()["study_id"]
+    await probe.wait_entered("A")
+    await _wait_event(coordinator, study_id, "attempt_stop_requested")
+    start = ticks["n"]
+    await asyncio.sleep(1.5)          # the child ignores the cancel meanwhile
+    assert ticks["n"] - start <= 3, ticks["n"] - start
+    release.set()
+    await _wait_stored_status(coordinator, study_id, "halted")
+
+
 # ── expected_revision ─────────────────────────────────────────────────────
 
 

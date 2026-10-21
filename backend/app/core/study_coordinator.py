@@ -114,6 +114,7 @@ from .study_store import (
     ATTEMPT_LOST,
     ATTEMPT_PENDING,
     ATTEMPT_QUEUED,
+    ATTEMPT_RETRYABLE,
     ATTEMPT_RUNNING,
     ATTEMPT_SUBMITTING,
     RESUME_AUTO,
@@ -155,6 +156,9 @@ _BUDGET_POLL_S = 1.0
 #: The shortest budget-timer delay, so a limit already reached does not
 #: spin the loop while its child drains.
 _BUDGET_MIN_DELAY_S = 0.05
+#: How often a stop the study already sent for a budget is sent again while
+#: its child is still active (a cancel lost to a restart or an error).
+_STOP_RESEND_S = 10.0
 
 
 def repetition_seed(study_seed: int, repetition: int) -> int:
@@ -228,6 +232,9 @@ class StudyCoordinator:
         self._clock = clock
         #: The pending budget timer of each study (one at most).
         self._timers: dict[str, asyncio.TimerHandle] = {}
+        #: When a budget stop was last sent, by attempt id (in memory: after
+        #: a restart every stop is sent again once).
+        self._stops_sent: dict[str, float] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._signals: dict[str, _Broadcast] = {}
         self._secrets: dict[tuple[str, int], SecretVault] = {}
@@ -248,6 +255,10 @@ class StudyCoordinator:
         service.add_terminal_listener(self._on_terminal)
 
     # ── plumbing ─────────────────────────────────────────────────────────
+
+    def now(self) -> float:
+        """The clock the budgets are measured with (epoch seconds)."""
+        return self._clock()
 
     def _lock(self, study_id: str) -> asyncio.Lock:
         lock = self._locks.get(study_id)
@@ -385,6 +396,9 @@ class StudyCoordinator:
     async def _tick_locked(self, study_id: str) -> StudyRecord | None:
         study = await self.store.get_study(study_id)
         if study is None:
+            handle = self._timers.pop(study_id, None)
+            if handle is not None:
+                handle.cancel()
             return None
         if await self._reconcile(study_id):
             self._notify(study_id)
@@ -745,6 +759,7 @@ class StudyCoordinator:
         now = self._clock()
         attempts = await self.store.list_attempts(study.id)
         current = current_attempts(attempts)
+        await self._resend_stops(study, current, now)
         max_run = study.budget.get("max_run_seconds")
         if max_run is not None:
             for attempt in current.values():
@@ -791,6 +806,24 @@ class StudyCoordinator:
         marked = await self.store.request_stop(attempt.id, reason)
         if marked is None or attempt.run_id is None:
             return
+        await self._send_stop(study, attempt, reason)
+
+    async def _resend_stops(self, study: StudyRecord,
+                            current: dict[tuple[int, int], AttemptRecord],
+                            now: float) -> None:
+        """Cancel again every active child the study already stopped, at
+        most every ``_STOP_RESEND_S``: a cancel that failed, or that reached
+        a process that restarted since, is never left unsent."""
+        for attempt in current.values():
+            if attempt.status in ATTEMPT_ACTIVE and attempt.stop_reason \
+                    and attempt.run_id is not None \
+                    and now - self._stops_sent.get(attempt.id, -1e18) \
+                    >= _STOP_RESEND_S:
+                await self._send_stop(study, attempt, attempt.stop_reason)
+
+    async def _send_stop(self, study: StudyRecord, attempt: AttemptRecord,
+                         reason: str) -> None:
+        self._stops_sent[attempt.id] = self._clock()
         try:
             await self.service.cancel(attempt.run_id)
         except Exception:
@@ -814,15 +847,28 @@ class StudyCoordinator:
                   if a.status in ATTEMPT_ACTIVE]
         if not active:
             return
-        delays = [_BUDGET_POLL_S]
-        running = [a for a in active if a.status == ATTEMPT_RUNNING]
+        delays: list[float] = []
+        # A child without a start time has no event of its own for it.
+        if any(a.status != ATTEMPT_RUNNING or a.started_at is None
+               for a in active):
+            delays.append(_BUDGET_POLL_S)
+        # Children the study already stopped are draining: only the stop
+        # re-send needs them.
+        if any(a.stop_reason for a in active):
+            delays.append(_STOP_RESEND_S)
+        running = [a for a in active if a.status == ATTEMPT_RUNNING
+                   and a.started_at is not None and a.stop_reason is None]
         if max_run is not None:
-            delays += [max_run - attempt_seconds(a, now) for a in running
-                       if a.stop_reason is None]
+            delays += [max_run - attempt_seconds(a, now) for a in running]
         if max_active is not None and running:
             used = budget_usage(study.budget, attempts,
                                 now=now)["active_seconds"]["used"]
-            delays.append((max_active - used) / len(running))
+            if used < max_active:
+                delays.append((max_active - used) / len(running))
+            else:
+                delays.append(0.0)
+        if not delays:
+            return
         delay = max(_BUDGET_MIN_DELAY_S, min(delays))
         try:
             loop = asyncio.get_running_loop()
@@ -939,9 +985,48 @@ class StudyCoordinator:
         study = await self.store.get_study(study_id)
         if study is not None and study.status == STUDY_INTERRUPTED \
                 and study.resume_policy == RESUME_AUTO:
-            await self.resume(
-                study_id, reason="resume_policy is auto; resumed after "
-                                 "a server restart")
+            try:
+                await self.resume(
+                    study_id, reason="resume_policy is auto; resumed after "
+                                     "a server restart")
+            except StudyStateError as exc:
+                # The budget is used up (or the study moved meanwhile). Never
+                # raise out of recover(): a study that cannot go on halts,
+                # where a raised budget resumes it.
+                logger.warning("study %s: not resumed after the restart: %s",
+                               study_id, exc)
+                await self._halt_used_up(study_id)
+
+    async def _halt_used_up(self, study_id: str) -> None:
+        """An ``interrupted`` study whose budget is used up -> ``halted``."""
+        async with self._lock(study_id):
+            study = await self.store.get_study(study_id)
+            if study is None or study.status != STUDY_INTERRUPTED:
+                return
+            attempts = await self.store.list_attempts(study.id)
+            usage = budget_usage(study.budget, attempts, now=self._clock())
+            exhausted = usage["exhausted"]
+            if exhausted is None:
+                # Only a pending-free study can be refused without an
+                # exhausted budget here; it waits for a resume as it is.
+                current = current_attempts(attempts)
+                if not any(a.status in ATTEMPT_RETRYABLE
+                           for a in current.values()):
+                    return
+                # Retryable repetitions and runs used up: the next attempt
+                # would exceed max_runs.
+                exhausted = "max_runs"
+            key = "runs" if exhausted == "max_runs" else "active_seconds"
+            await self.store.transition(
+                study.id, to=STUDY_HALTED, expected=(STUDY_INTERRUPTED,),
+                event_type="study_halted", halt={
+                    "budget": exhausted, "limit": usage[key]["limit"],
+                    "used": usage[key]["used"],
+                    "unfinished_repetitions":
+                        usage["unfinished_repetitions"],
+                    "at": utc_now_iso()},
+                payload={"reason": "resume_policy is auto, but the budget "
+                                   "is used up; raise it to resume"})
 
     # ── events ───────────────────────────────────────────────────────────
 
