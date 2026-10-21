@@ -24,6 +24,7 @@ import { settleAutosave } from './components/WorkspaceLock/settleAutosave';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { useWorkerStore } from './store/workerStore';
+import { useStudyStore } from './store/studyStore';
 import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
 import { lazyRetry } from './components/shared/lazyRetry';
@@ -111,6 +112,26 @@ function WorkersPanelSlot() {
   return (
     <Suspense fallback={null}>
       <WorkersPanel />
+    </Suspense>
+  );
+}
+
+/**
+ * The Studies panel (#343), lazy like the Workers panel: reached from the
+ * Runs panel's Studies button, and kept out of the entry chunk.
+ */
+const StudiesPanel = lazyRetry(
+  () => import('./components/Studies/StudiesPanel').then((module) => module.StudiesPanel),
+  () => useStudyStore.getState().closePanel(),
+);
+
+/** Mounts the lazy Studies panel only while it is open. */
+function StudiesPanelSlot() {
+  const open = useStudyStore((s) => s.panelOpen);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <StudiesPanel />
     </Suspense>
   );
 }
@@ -215,6 +236,7 @@ function App() {
       <ToastContainer />
       <ShortcutsModal />
       <WorkersPanelSlot />
+      <StudiesPanelSlot />
       <GuideTour />
       <DialogContainer />
       <PluginHost />

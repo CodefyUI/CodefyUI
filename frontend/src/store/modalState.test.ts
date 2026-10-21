@@ -6,6 +6,7 @@ import { useSweepStore } from './sweepStore';
 import { useTabStore } from './tabStore';
 import { useUIStore } from './uiStore';
 import { useWorkerStore } from './workerStore';
+import { useStudyStore } from './studyStore';
 
 const ORIGINAL_TABS = useTabStore.getState().tabs;
 const ORIGINAL_ACTIVE = useTabStore.getState().activeTabId;
@@ -34,6 +35,7 @@ const MODALS: Array<[ModalName, () => void]> = [
   ['newSweep', () => useSweepStore.getState().setNewSweepOpen(true)],
   ['workers', () => useWorkerStore.getState().openPanel()],
   ['queueRun', () => useUIStore.getState().setQueueRunOpen(true)],
+  ['studies', () => useStudyStore.setState({ panelOpen: true })],
 ];
 
 beforeEach(() => {
@@ -62,6 +64,7 @@ beforeEach(() => {
   useDialogStore.setState({ active: null, resolve: null });
   useSweepStore.setState({ newSweepOpen: false });
   useWorkerStore.setState({ panelOpen: false });
+  useStudyStore.setState({ panelOpen: false });
 });
 
 afterEach(() => {

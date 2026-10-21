@@ -54,6 +54,7 @@ from .api import (
     routes_nodes,
     routes_packs,
     routes_plugin_frontend,
+    routes_plugin_jobs,
     routes_plugins,
     routes_presets,
     routes_runs,
@@ -765,6 +766,7 @@ app.include_router(routes_presets.router)
 app.include_router(routes_custom_nodes.router)
 app.include_router(routes_plugins.router)
 app.include_router(routes_plugin_frontend.router)
+app.include_router(routes_plugin_jobs.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_media.router)
