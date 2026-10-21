@@ -1,7 +1,7 @@
 ---
 sidebar_position: 8
 title: 訓練記憶體
-description: 讓單張顯示卡跑更大的訓練——混合精度、梯度累積、指定某一張 GPU、記憶體不足時會發生什麼，以及伺服器自己的記憶體上限。
+description: 讓單張顯示卡跑更大的訓練——混合精度、梯度累積、指定某一張 GPU、多張 GPU 帶來的改變、記憶體不足時會發生什麼，以及伺服器自己的記憶體上限。
 ---
 
 # 訓練記憶體
@@ -84,11 +84,17 @@ NVIDIA CUDA #1 · cuda:1 · RTX 3060 · 可用 11.4 / 12.0 GiB
 
 根本無法尋址的裝置字串——`cuda:`、`cuda:abc`（例如沒展開的 `${CUDA_INDEX}`）、`cuda:0:1`、`cuda: 0`——會落到同一個地方，理由也一樣：`cuda` 這個前綴仍然是明確要求 GPU，錯的只有編號。在這之前，這些字串會原封不動送到 PyTorch，換來 `RuntimeError: Invalid device string`——而那則錯誤既沒有說是哪張圖，也沒有說是哪個參數。
 
-:::note 尚未支援分散式訓練
-一個 run 在一個程序中執行：預設是伺服器程序，指定 worker agent 為目標時則是該 worker 上的 run 子程序。沒有 `DistributedDataParallel`、沒有多卡資料平行，也沒有多機訓練。在伺服器程序內執行的 run 使用一張卡。worker 上的 run 可以被指定一組裝置集合，並以 `cuda:0` 到 `cuda:N-1` 看到這些卡，因此它的節點可以固定到不同的卡上，但沒有任何節點會把一個模型的訓練拆到多張卡。多個 run 可以透過各裝置的佇列同時佔用多張卡；請參閱[多 GPU 執行](/usage/multi-gpu)。
+## 多張 GPU {/* #several-gpus */}
 
-DDP 需要啟動行程、rendezvous、逐 rank 的記錄與逐 rank 的檢查點，每一項都會動到 run service、事件串流與 artifact 儲存。它規劃為建立在 worker run 之上的 `TrainingLoop` 策略（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
-:::
+在伺服器程序內執行的 run 只用一張卡。要用多張卡訓練同一個模型，把 `TrainingLoop` 的 **strategy**（在 **Advanced** 底下）設為 `ddp`，再把這張圖排入一個裝置集合有兩張以上 CUDA 卡的 worker：訓練迴圈會改用 PyTorch 的 `DistributedDataParallel`，每張卡一個程序。操作方式、每個程序做什麼，以及 `ddp` 在哪些情況會退回單一程序，請參閱[多 GPU 執行：用多張卡訓練同一個模型](/usage/multi-gpu#ddp)。
+
+對記憶體的影響：
+
+- **每張卡都放著完整的模型**、它的梯度與優化器狀態，再加上一個批次的 activation；這個批次大小就是 DataLoader 的 `batch_size`，以每張卡計算。DDP 增加的是卡數，不會把一張卡放不下的模型拆開。單張卡放不下的模型要靠上面的工具（`bf16`、較小的批次搭配 `accumulate_steps`），目前沒有分片（FSDP）或模型平行的策略。
+- **有效批次大小隨卡數增加。** 每次優化器更新會平均所有卡上那一批的梯度，所以兩張卡、`batch_size` 32 的更新等同一張卡、`batch_size` 64，`accumulate_steps` 再往上乘。設定資訊會回報 `effective_batch_size` = `batch_size` × `accumulate_steps` × 卡數。
+- **記憶體預算以每張卡計算。** 在依記憶體共用的卡上，每個程序都受它自己那張卡的預算限制。
+
+沒有多機訓練：這些卡都屬於同一個 worker。
 
 ## 如果還是不夠用 {/* #when-the-card-runs-out-anyway */}
 

@@ -439,7 +439,7 @@ CONTROL=https://codefyui.example.com
 - **畫布在控制面執行。** **Run** 一律在那裡執行，連同它的快取與持久化權重；要把分頁的圖送到 worker，請使用**排入佇列...**。
 - **擷取的輸出保存在 worker 上。** 開啟**錄製節點輸出**時，worker run 的擷取資料保存在 worker 上，Inspector 經由它的連線讀取，因此只有 worker 連線時才能讀取（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)，[執行架構：Worker 上的錄製輸出](/advanced/execution-architecture#recorded-outputs-on-a-worker)）。Worker run 每次都從新的權重開始。
 - **依記憶體准入需逐卡開啟。** Run 與在控制面上一樣，以每個裝置名額的數量准入，除非該卡設為 **依記憶體共用**（[多 GPU：共用一張卡](/usage/multi-gpu#sharing-a-card)）。
-- **一個 run，一台機器。** Run 只使用一個 worker 的裝置；沒有跨卡或跨機器的 `DistributedDataParallel`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
+- **一個 run，一台機器。** Run 只使用一個 worker 的裝置。`strategy: ddp` 的 `TrainingLoop` 會在該 worker 的多張卡上訓練（[多 GPU 執行](/usage/multi-gpu#ddp)）；沒有跨機器的訓練。
 - **以 Linux 為主。** Worker 在 Linux 上開發與測試；macOS 可用，Windows 盡力支援。
 - **正常停止控制面會結束 worker 上的 run。** 關閉時會停止 worker 上正在執行的 run，與停止本機 run 相同（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)）；只有在沒有停止它們就結束的控制面，才會在下次啟動時接手（[連線中斷時](#when-the-connection-drops)）。
 

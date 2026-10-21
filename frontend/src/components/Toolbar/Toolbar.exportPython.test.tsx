@@ -435,7 +435,11 @@ describe('Toolbar Export as Python: absolute file paths', () => {
   it('names the readable entries beside a malformed one', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({
       script: 'print(1)',
-      warnings: [{ ...absolutePath(), containers: {} }, absolutePath({ label: 'Readable' })],
+      warnings: [
+        { ...absolutePath(), containers: {} },
+        { ...absolutePath(), containers: ['not a level'] },
+        absolutePath({ label: 'Readable' }),
+      ],
     } as unknown as rest.ExportResult);
     render(<Toolbar />);
 

@@ -637,6 +637,36 @@ def _with_validation(graph: dict[str, Any]) -> dict[str, Any]:
     return graph
 
 
+def _chained(batch_size: int, strategy: str) -> dict[str, Any]:
+    """Two loops in sequence: the second trains the first one's model with
+    the first one's optimizer, and saves it."""
+    graph = _ddp.training_graph(batch_size=batch_size, epochs=2,
+                                strategy=strategy, save_as=None)
+    graph["nodes"].append(h.node("train2", "TrainingLoop", epochs=2,
+                                 device="auto", strategy=strategy))
+    graph["nodes"].append(h.node("save", "ModelSaver", path="trained.pt"))
+    graph["edges"] += [h.wire("train", "model", "train2", "model"),
+                       h.wire("train", "optimizer", "train2", "optimizer"),
+                       h.wire("dl", "dataloader", "train2", "dataloader"),
+                       h.wire("loss", "loss_fn", "train2", "loss_fn"),
+                       h.wire("train2", "model", "save", "model")]
+    return graph
+
+
+def test_two_ddp_loops_in_sequence_train_like_one_process(
+        tmp_path, monkeypatch):
+    import torch
+
+    run = ChildRun(tmp_path, _chained(4, "ddp"))
+    assert run.finish()["status"] == "succeeded", run.tail()
+    _, reference = _reference(tmp_path, _chained(8, "single"), monkeypatch)
+    trained = torch.load(run.data / "models" / "trained.pt")
+    expected = torch.load(reference / "trained.pt")
+    for key in expected:
+        assert torch.allclose(trained[key], expected[key], atol=1e-5), key
+    assert len(run.metric("train_loss")) == 4
+
+
 def test_a_cancel_stops_every_rank_and_rank_zero_writes_one_checkpoint(
         tmp_path):
     run = ChildRun(tmp_path, _ddp.training_graph(
