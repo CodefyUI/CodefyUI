@@ -91,6 +91,7 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A worker's node catalog could be compared against a stale catalog** ([#863]). `node_catalog` cached its result in a module global keyed by `id(registry)` and the registry's generation; a registry created after another one was garbage-collected could get the same address and generation and read the dead registry's catalog, which made `test_the_catalog_hash_does_not_depend_on_this_machines_devices` fail intermittently on CI. The cache now lives on the registry instance.
 - **A worker run cancelled while its subprocess is still starting now ends
   on Windows too.** A spawned run subprocess on Windows takes over its pipe
   ends only once it has started, so one stopped before that (a cancel with
@@ -6363,3 +6364,4 @@ Release candidates before 1.0.0 are on the
 [#838]: https://github.com/CodefyUI/CodefyUI/issues/838
 [#842]: https://github.com/CodefyUI/CodefyUI/issues/842
 [#856]: https://github.com/CodefyUI/CodefyUI/issues/856
+[#863]: https://github.com/CodefyUI/CodefyUI/issues/863

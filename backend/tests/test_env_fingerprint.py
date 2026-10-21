@@ -632,6 +632,48 @@ def test_the_catalog_hash_does_not_depend_on_this_machines_devices(
     assert node_catalog(nodes).hash == cpu_box
 
 
+def test_the_catalog_cache_never_answers_for_a_dead_registry():
+    """#863: the cache was keyed by ``id(registry)``, and a registry made
+    right after another was freed gets the same address and generation
+    (CPython reuses the freed block at once), so it was handed the dead
+    one's catalog. Keyed on the object now. No ``gc.collect()`` here: it
+    changes the allocator's pattern and hides the reuse this reproduces."""
+    from app.core.node_registry import NodeRegistry, node_catalog
+
+    class Other(BaseNode):
+        NODE_NAME = "CatalogOther"
+        CATEGORY = "Test"
+
+        @classmethod
+        def define_inputs(cls):
+            return []
+
+        @classmethod
+        def define_outputs(cls):
+            return []
+
+        def execute(self, inputs, params):
+            return {}
+
+    reused = 0
+    for _ in range(30):
+        first = NodeRegistry()
+        first.register(_CatalogNode)
+        first_hash = node_catalog(first).hash
+        address = id(first)
+        first = None                     # freed now: refcount, not gc
+        second = NodeRegistry()
+        second.register(Other)           # the same generation `first` had
+        reused += id(second) == address
+        assert node_catalog(second).hash != first_hash
+        assert node_catalog(second).node_types == ("CatalogOther",)
+        second = None
+    # The old key collided whenever the address was reused, which the
+    # allocator does nearly every time; the test is meaningful only when
+    # it happened at least once.
+    assert reused > 0
+
+
 def test_a_broken_definition_hashes_instead_of_failing():
     from app.core.node_registry import NodeRegistry, node_catalog
 
