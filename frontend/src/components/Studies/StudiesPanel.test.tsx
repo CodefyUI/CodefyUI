@@ -151,9 +151,10 @@ describe('StudiesPanel: the list', () => {
         summary({ study_id: 's2', name: null, owner: 'graph-copilot', status: 'halted', counts: {}, created_at: 'not a date' }),
         summary({ study_id: 's3', status: 'from_the_future' }),
       ],
-      total: 3,
+      total: 12,
     });
     await openPanel();
+    expect(screen.getByText('Showing the newest 3 of 12 studies.')).toBeInTheDocument();
     const first = screen.getByTestId('study-row-s1');
     expect(within(first).getByText('API')).toBeInTheDocument();
     expect(within(first).getByText('2 of 4')).toBeInTheDocument();

@@ -928,7 +928,6 @@ class StudyStore:
     async def resume(
         self, study_id: str, *, reason: str,
         budget: dict[str, Any] | None = None,
-        expected_revision: int | None = None,
     ) -> tuple[StudyRecord, list[AttemptRecord]]:
         """Reopen a resumable study: every repetition whose current attempt
         is cancelled, interrupted or lost gets a NEW pending attempt
@@ -936,9 +935,9 @@ class StudyStore:
         *budget*, when given, replaces the study's budget in the same
         transaction (and the event records the old and new one).
 
-        Raises ``StudyStateError`` when the study cannot be resumed (or its
-        revision is not *expected_revision*), and ``KeyError`` when it does
-        not exist.
+        Raises ``StudyStateError`` when the study cannot be resumed and
+        ``KeyError`` when it does not exist. (``expected_revision`` is
+        checked by the coordinator, under the study's lock.)
         """
         stamp = utc_now_iso()
 
@@ -948,10 +947,6 @@ class StudyStore:
                 study = _select_study(conn, study_id)
                 if study is None:
                     raise KeyError(study_id)
-                if expected_revision is not None \
-                        and study.revision != expected_revision:
-                    raise RevisionConflict(study_id, expected_revision,
-                                           study.revision)
                 if study.status not in STUDY_RESUMABLE:
                     raise StudyStateError(
                         f"study {study_id} is {study.status}; only "

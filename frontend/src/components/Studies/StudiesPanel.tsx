@@ -146,6 +146,7 @@ function formatNumber(value: number | null | undefined): string {
 function StudyList() {
   const { t } = useI18n();
   const studies = useStudyStore((s) => s.studies);
+  const total = useStudyStore((s) => s.total);
   const loaded = useStudyStore((s) => s.loaded);
   const listError = useStudyStore((s) => s.listError);
   const openStudy = useStudyStore((s) => s.openStudy);
@@ -194,6 +195,9 @@ function StudyList() {
               })}
             </tbody>
           </table>
+          {total > studies.length && (
+            <p className={styles.muted}>{t('studies.listed', { shown: studies.length, total })}</p>
+          )}
         </div>
       )}
     </>
@@ -302,7 +306,7 @@ function StudyDetailBody({ detail, back }: { detail: StudyDetail; back: ReactNod
         )}
       </div>
       {needsBudget && (
-        <BudgetEditor key={detail.revision} budget={detail.budget} halt={detail.halt} disabled={pending !== null} onResume={(budget) => void resume(budget)} />
+        <BudgetEditor key={`${detail.study_id}:${detail.halt?.at ?? detail.status}`} budget={detail.budget} halt={detail.halt} disabled={pending !== null} onResume={(budget) => void resume(budget)} />
       )}
 
       <BudgetFacts detail={detail} />

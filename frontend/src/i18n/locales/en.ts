@@ -2399,6 +2399,7 @@ const en = {
   'studies.col.created': 'Created',
   'studies.owner.core': 'API',
   'studies.progress': '{done} of {total}',
+  'studies.listed': 'Showing the newest {shown} of {total} studies.',
   'studies.action.open': 'Open',
   'studies.action.openTitle': 'Open {name}',
   'studies.back': 'Back to studies',

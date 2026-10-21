@@ -306,13 +306,13 @@ study 的證據比它的 child 存在得更久。child 結束時，它的目標�
 
 `POST /api/studies/{id}/cancel` 會停止排程，並對 study 每個排隊中或執行中的 child 送出協作式取消；`cancelled_runs` 列出取消請求送達的 run。在每個 child 都停下之前，study 顯示 `cancel_requested`，之後變成 `cancelled`。已完成的 attempt 會保留，從未送出的 attempt 維持 `pending`。再次取消已 cancelled 的 study 不會有任何變化；`succeeded` 的 study 不能取消（`409`）。
 
-`POST /api/studies/{id}/resume` 會繼續一個 `interrupted`、`cancelled`、`failed` 或 `halted` 的 study。目前 attempt 已成功或失敗的重複維持原樣，永遠不會再執行。目前 attempt 被取消、中斷或遺失的重複，會得到一筆新的 attempt 紀錄，使用下一個 attempt 編號與相同的種子，舊的 attempt 則留在 `attempts` 中作為歷史紀錄。接著，pending 的重複照常送出。對其他狀態呼叫 resume 會回傳 `409`。選填的 body `{"budget": {...}}` 會取代 study 的預算（事件紀錄會記下新舊預算）；若繼續時的預算已經用完則回傳 `409`，因為 study 會立刻再次暫停。兩個 route 的 body 都接受 `expected_revision`，study 已超過該 revision 時回傳 `409`，讓依據上次讀取結果動作的用戶端不會誤對較新的狀態動作。
+`POST /api/studies/{id}/resume` 會繼續一個 `interrupted`、`cancelled`、`failed` 或 `halted` 的 study。目前 attempt 已成功、失敗或逾時的重複維持原樣，永遠不會再執行。目前 attempt 被取消、中斷或遺失的重複，會得到一筆新的 attempt 紀錄，使用下一個 attempt 編號與相同的種子，舊的 attempt 則留在 `attempts` 中作為歷史紀錄。接著，pending 的重複照常送出。對其他狀態呼叫 resume 會回傳 `409`。選填的 body `{"budget": {...}}` 會取代 study 的預算（事件紀錄會記下新舊預算）；若繼續時的預算已經用完則回傳 `409`，因為 study 會立刻再次暫停。兩個 route 的 body 都接受 `expected_revision`，study 已超過該 revision 時回傳 `409`，讓依據上次讀取結果動作的用戶端不會誤對較新的狀態動作。
 
 以 `POST /api/runs/{id}/cancel` 直接取消的 child，會讓所屬 study 變成 `interrupted`。study 不會自行重試那個 run；要再執行那次重複，請繼續（resume）該 study。
 
 ### 重新啟動前後的 study {/* #studies-across-a-restart */}
 
-執行佇列不會跨越重新啟動保留，因此伺服器再次啟動時，會把 study 排隊中與執行中的 child 標記為 `interrupted`（請見[伺服器停止時](#when-the-server-stops)）。接著，study coordinator 會整理每一個仍在進行的 study：每個 child 的證據會複製到它的 attempt 上，正在取消中的 study 會變成 `cancelled`，其他未完成的 study 則變成 `interrupted` 並等待。若 study 有某個 child 是重新啟動的伺服器從 worker 接手的，這個 study 不會被整理：那個 child 視為仍在執行，study 會照常繼續；若那個 child 以 `interrupted` 結束，study 就變成 `interrupted` 並等待 resume（指定 `"resume_policy": "auto"` 時則自行繼續）。正在取消中的 study 會再次要求被接手的 child 停止，等它停下後變成 `cancelled`。在你呼叫 `resume` 之前不會重送任何東西；若 study 送出時指定了 `"resume_policy": "auto"`，則會在重新啟動後自行繼續。
+執行佇列不會跨越重新啟動保留，因此伺服器再次啟動時，會把 study 排隊中與執行中的 child 標記為 `interrupted`（請見[伺服器停止時](#when-the-server-stops)）。接著，study coordinator 會整理每一個仍在進行的 study：每個 child 的證據會複製到它的 attempt 上，正在取消中的 study 會變成 `cancelled`，其他未完成的 study 則變成 `interrupted` 並等待。若 study 有某個 child 是重新啟動的伺服器從 worker 接手的，這個 study 不會被整理：那個 child 視為仍在執行，study 會照常繼續；若那個 child 以 `interrupted` 結束，study 就變成 `interrupted` 並等待 resume（指定 `"resume_policy": "auto"` 時則自行繼續）。正在取消中的 study 會再次要求被接手的 child 停止，等它停下後變成 `cancelled`。在你呼叫 `resume` 之前不會重送任何東西；若 study 送出時指定了 `"resume_policy": "auto"`，則會在重新啟動後自行繼續。此時若 `auto` study 的預算已經用完，它會改為進入 `halted`（請見[預算](./studies#budgets)），因為它會立刻再次暫停。
 
 每個 attempt 在 child 送出之前，就會先記錄它即將使用的 run id，而 child 也帶有該 attempt 的 id。如果伺服器在送出 child 與記錄「已送出」之間停止，或該次寫入失敗，study 會依這個標記找到 child 並重新連結（`attempt_relinked`），而不會再送出第二個。若沒有任何 child 帶有這個標記，代表該次送出從未建立 run；這個 attempt 會被標記為 `lost`，該次重複則會得到新的 attempt。
 

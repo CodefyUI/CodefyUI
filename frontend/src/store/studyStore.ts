@@ -179,9 +179,9 @@ export const useStudyStore = create<StudyState>()((set, get) => {
       else await refreshList();
     },
 
-    // No expected_revision from the panel: every read of a study ticks it,
-    // so the revision shown is often one behind, and the server refuses a
-    // cancel or resume that its status does not allow anyway.
+    // No expected_revision from the panel: it acts on the latest state it
+    // polled, and the server refuses a cancel or resume that the study's
+    // status does not allow.
     cancel: () => act('cancel', (study) => cancelStudy(study.study_id)),
 
     resume: (budget) => act('resume', (study) => resumeStudy(study.study_id, budget ? { budget } : {})),

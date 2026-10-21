@@ -663,9 +663,9 @@ MIGRATION_017 = ""
 #   its own studies there; ``/api/studies`` shows every study. A plugin's
 #   idempotency keys are stored as ``plugin:<id>:<key>`` so two plugins
 #   cannot collide on a key.
-# - ``studies.halt``: JSON ``{budget, limit, used, at}`` for a study that a
-#   server-enforced budget stopped (status ``halted``); NULL otherwise, and
-#   cleared by a resume.
+# - ``studies.halt``: JSON ``{budget, limit, used, unfinished_repetitions,
+#   at}`` for a study that a server-enforced budget stopped (status
+#   ``halted``); NULL otherwise, and cleared by a resume.
 # - ``study_attempts.stop_reason``: the budget the coordinator stopped the
 #   attempt's child for (``max_run_seconds`` or ``max_active_seconds``),
 #   written BEFORE the cancel is sent, so the harvest of the child knows a

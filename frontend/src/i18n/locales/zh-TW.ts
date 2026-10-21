@@ -2033,6 +2033,7 @@ const zhTW: Record<TranslationKey, string> = {
   'studies.col.created': '建立時間',
   'studies.owner.core': 'API',
   'studies.progress': '{done} / {total}',
+  'studies.listed': '顯示最新的 {shown} / {total} 個 study。',
   'studies.action.open': '開啟',
   'studies.action.openTitle': '開啟 {name}',
   'studies.back': '回到 study 清單',

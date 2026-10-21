@@ -483,6 +483,68 @@ async def test_the_budget_timer_does_not_spin_while_a_stopped_child_drains(
     await _wait_stored_status(coordinator, study_id, "halted")
 
 
+# ── time budgets bind a study that no longer schedules ───────────────────
+
+
+@pytest.mark.parametrize("budget_key, ends", [
+    ("max_run_seconds", "timed_out"),
+    ("max_active_seconds", "cancelled"),
+])
+async def test_time_budgets_bind_a_child_of_an_interrupted_study(
+        make_env, client, store, probe, budget_key, ends):
+    """A runs and B is queued behind it (one cpu slot); B's run is
+    cancelled from the Runs panel, which interrupts the study while A
+    keeps running. The study schedules nothing more, but A is still bound
+    by the time budgets: the timer (nobody reads the study) stops it past
+    ``max_run_seconds`` (it ends ``timed_out``) or once
+    ``max_active_seconds`` is used up (it ends ``cancelled`` with the
+    budget as its stop reason)."""
+    _service, coordinator = make_env(cpu=1)
+    release_a = probe.hold("A")
+    created = await client.post("/api/studies", json=_body(
+        repetitions=1, budget={"max_parallel_runs": 2, budget_key: 1.0}))
+    assert created.status_code == 201, created.text
+    study_id = created.json()["study_id"]
+    await probe.wait_entered("A")
+    run_b = _attempts(created.json(), 1, 0)[0]["run_id"]
+    assert (await store.get_run(run_b)).status == "queued"
+    assert (await client.post(f"/api/runs/{run_b}/cancel")).status_code == 200
+    await _wait_stored_status(coordinator, study_id, "interrupted")
+    stop = await _wait_event(coordinator, study_id, "attempt_stop_requested")
+    assert stop["payload"]["reason"] == budget_key
+    release_a.set()
+    probe.gates.pop("A")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        attempts = await coordinator.store.list_attempts(study_id)
+        a = next(x for x in attempts if x.variant_index == 0)
+        if a.status == ends:
+            break
+        await asyncio.sleep(0.02)
+    assert a.status == ends, a.status
+    assert a.stop_reason == budget_key
+    assert (await store.get_run(a.run_id)).status == "cancelled"
+    assert (await coordinator.store.get_study(study_id)).status \
+        == "interrupted"
+    order = [e["type"] for e in await _events(client, study_id)]
+    # The stop came AFTER the study stopped scheduling.
+    assert order.index("study_interrupted") \
+        < order.index("attempt_stop_requested")
+    if ends == "timed_out":
+        # A timed-out repetition is a result: a resume re-runs only B.
+        resumed = await client.post(f"/api/studies/{study_id}/resume")
+        assert resumed.status_code == 200, resumed.text
+        final = await _wait_status(client, study_id, "succeeded")
+        assert [a["status"] for a in _attempts(final, 0, 0)] == ["timed_out"]
+        assert len(await _study_runs(store, study_id)) == 3
+    else:
+        # Both repetitions remain and the budget is used up: a resume
+        # needs a raised budget.
+        refused = await client.post(f"/api/studies/{study_id}/resume")
+        assert refused.status_code == 409, refused.text
+        assert "max_active_seconds" in refused.json()["detail"]
+
+
 # ── expected_revision ─────────────────────────────────────────────────────
 
 
@@ -496,14 +558,12 @@ async def test_cancel_and_resume_refuse_a_stale_revision(client, probe):
                               json={"expected_revision": 1})
     assert stale.status_code == 409
     assert "not the expected 1" in stale.json()["detail"]
-    # The client's loop: read, act on that revision, re-read on a 409.
-    for _ in range(5):
-        revision = (await client.get(f"/api/studies/{study_id}")).json()[
-            "revision"]
-        fresh = await client.post(f"/api/studies/{study_id}/cancel",
-                                  json={"expected_revision": revision})
-        if fresh.status_code != 409:
-            break
+    # A read returns the revision as stored, after the tick it performs:
+    # acting on it is never refused while nothing else moves the study.
+    revision = (await client.get(f"/api/studies/{study_id}")).json()[
+        "revision"]
+    fresh = await client.post(f"/api/studies/{study_id}/cancel",
+                              json={"expected_revision": revision})
     assert fresh.status_code == 200, fresh.text
     release.set()
     probe.gates.pop("A")

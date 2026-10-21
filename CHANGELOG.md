@@ -112,6 +112,13 @@ received — each links to the release it was published as.
   delegate its experiments to it; that change belongs to the plugin's
   repository.
 
+### Changed
+
+- **A study that uses up `budget.max_runs` now ends `halted`, not `failed`**
+  ([#343]). It keeps every completed repetition and its ranking so far, and
+  `POST /api/studies/{id}/resume` with a raised `max_runs` continues it; a
+  `failed` study still means the study itself could not go on.
+
 ### Fixed
 
 - **A worker run cancelled while its subprocess is still starting now ends
