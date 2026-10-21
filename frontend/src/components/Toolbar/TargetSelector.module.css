@@ -62,6 +62,18 @@
   color: var(--text-muted);
 }
 
+/* "Add a worker" beside the no-worker hint (#840). */
+.linkBtn {
+  padding: 0;
+  margin-left: var(--sp-1);
+  color: var(--accent);
+  background: none;
+  border: 0;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .error {
   margin: 0;
   font-size: var(--fs-sm);

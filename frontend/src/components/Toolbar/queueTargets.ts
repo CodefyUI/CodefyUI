@@ -62,11 +62,35 @@ export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
   return workers.filter((w) => w.status !== 'disconnected' && w.status !== 'offline');
 }
 
-/** The workers a run can name in the dialog: the connected ones, and the
- * enrolled ones that are `offline` (#780), for which the run waits in the
- * queue until the worker connects. */
-export function targetableWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
-  return workers.filter((w) => w.status !== 'disconnected');
+/**
+ * Whether *worker* is an SSH worker that is disabled (#840). The worker's
+ * own `ssh_enabled` decides when the server sends it: it comes with the
+ * worker list, while the SSH list may be an older read kept after a failed
+ * one. The SSH list is the fallback for an older server that sends no
+ * `ssh_enabled`. The Workers panel and the run target list both read it
+ * from here.
+ */
+export function sshDisabled(worker: WorkerInfo, ssh?: { enabled: boolean }): boolean {
+  if (worker.ssh_enabled != null) return !worker.ssh_enabled;
+  return ssh !== undefined && !ssh.enabled;
+}
+
+/** Whether *worker* is started over ssh by this server (#784). */
+export function sshManaged(worker: WorkerInfo, ssh?: { enabled: boolean }): boolean {
+  if (worker.ssh_enabled !== undefined) return worker.ssh_enabled !== null;
+  return ssh !== undefined;
+}
+
+/** The status to show for *worker*: `disabled` for a disabled SSH worker,
+ * whatever its connection reads, else the server's. */
+export function shownStatus(worker: WorkerInfo, ssh?: { enabled: boolean }): string {
+  return sshDisabled(worker, ssh) ? 'disabled' : worker.status;
+}
+
+/** Whether a run cannot be queued on *worker* now: it does not take new
+ * runs (drained, or a disabled SSH worker, which is drained too). */
+export function refusesRuns(worker: WorkerInfo): boolean {
+  return worker.draining || worker.status === 'draining' || sshDisabled(worker);
 }
 
 const ACCELERATORS = ['cuda', 'mps'];
