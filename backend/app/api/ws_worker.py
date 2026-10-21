@@ -58,6 +58,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -76,6 +78,7 @@ from ..core.auth import (
     session_token,
 )
 from ..core.tunnel_listener import tunnel_of
+from ..core.worker_store import hash_secret
 
 logger = logging.getLogger(__name__)
 
@@ -153,16 +156,24 @@ AUTHORISERS: list[Authoriser] = [session_token_authoriser,
                                  worker_token_authoriser]
 
 
-async def refuse_token(ws: WebSocket) -> None:
+async def refuse_token(ws: WebSocket, *, revoked: bool = False) -> None:
     """Refuse a missing or invalid credential so the agent can tell it from
     every other refusal: HTTP 401 where the server can answer a handshake
     with a response of its own (uvicorn's ``websocket.http.response``),
     else a close with 4401 (seen as HTTP 403, like the other refusals).
     The agent reads only a 401 as "my token was refused", which is what
-    makes an SSH worker forget its credential (#784)."""
+    makes an SSH worker forget its credential (#784). A *revoked* credential
+    (one this server revoked) says so in ``X-CodefyUI-Refusal``, on which
+    the agent stops (#840)."""
     if "websocket.http.response" in ws.scope.get("extensions", {}):
         from fastapi.responses import JSONResponse
 
+        if revoked:
+            await ws.send_denial_response(JSONResponse(
+                status_code=401,
+                content={"detail": "This worker's credential was revoked"},
+                headers={wp.REFUSAL_HEADER: wp.REFUSAL_REVOKED}))
+            return
         await ws.send_denial_response(JSONResponse(
             status_code=401,
             content={"detail": "Missing or invalid token"}))
@@ -170,9 +181,66 @@ async def refuse_token(ws: WebSocket) -> None:
     await ws.close(code=4401, reason="Missing or invalid token")
 
 
-async def authorise(ws: WebSocket) -> Authorised | None:
-    provided = (ws.headers.get("x-codefyui-token")
-                or ws.query_params.get(TOKEN_QUERY_PARAM))
+#: Why a revoked credential was refused, by ``WorkerStore.revoked``'s why.
+REVOKED_REASONS = {
+    "removed": "its credential was revoked: the worker was removed in the "
+               "Workers panel. Stop that agent, or enroll it again with a "
+               "new token (cdui agent forget <address> first)",
+    "rekeyed": "its credential was replaced by a re-key; only the agent "
+               "that enrolled with the re-key token can connect",
+}
+
+
+#: A revoked credential presented again within this many seconds is not
+#: logged or listed again (#840): an agent that keeps dialling would
+#: otherwise log a warning every few seconds.
+REVOKED_NOTE_INTERVAL_S = 3600.0
+MAX_REVOKED_NOTED = 256
+#: ``(name, credential hash) -> when (monotonic)`` it was last noted.
+_revoked_noted: OrderedDict[tuple[str, str], float] = OrderedDict()
+
+
+def _note_revoked(ws: WebSocket, provided: str | None) -> bool:
+    """Whether the refused *provided* is a credential this server revoked
+    (a Remove, a re-key). Such a refusal is logged and listed under its
+    worker's name in the Workers panel, so an agent left running after its
+    worker was removed does not go unseen (#840); both at most once per
+    worker and credential per :data:`REVOKED_NOTE_INTERVAL_S`. Any other
+    refused token names no worker and is not listed."""
+    store = getattr(ws.app.state, "worker_store", None)
+    revoked = getattr(store, "revoked", None)
+    found = None if revoked is None else revoked(provided)
+    if found is None:
+        return False
+    name, why = found
+    key = (name, hash_secret(provided or ""))
+    now = time.monotonic()
+    last = _revoked_noted.get(key)
+    if last is not None and now - last < REVOKED_NOTE_INTERVAL_S:
+        return True
+    _revoked_noted.pop(key, None)
+    _revoked_noted[key] = now
+    while len(_revoked_noted) > MAX_REVOKED_NOTED:
+        _revoked_noted.popitem(last=False)
+    reason = REVOKED_REASONS.get(why, "its credential was revoked")
+    logger.warning("worker connection refused: %s presented a revoked "
+                   "credential (%s)", name, why)
+    registry = getattr(ws.app.state, "worker_registry", None)
+    if registry is not None:
+        registry.record_rejection(
+            name, reason,
+            peer=ws.client.host if ws.client is not None else None)
+    return True
+
+
+def presented_token(ws: WebSocket) -> str | None:
+    """The token the handshake carries (header first, then the query)."""
+    return (ws.headers.get("x-codefyui-token")
+            or ws.query_params.get(TOKEN_QUERY_PARAM))
+
+
+async def authorise(ws: WebSocket,
+                    provided: str | None) -> Authorised | None:
     # Through an SSH worker's listener the peer is ssh on this machine, but
     # the client is anyone who can reach the forward's far end: never the
     # session token there (#784).
@@ -193,13 +261,14 @@ async def websocket_worker(ws: WebSocket) -> None:
     if ws.headers.get("origin"):
         await ws.close(code=4003, reason="Browsers may not connect here")
         return
-    auth = await authorise(ws)
+    provided = presented_token(ws)
+    auth = await authorise(ws, provided)
     if auth is None:
         # Not reported to the SSH launcher, even through a tunnel: this
         # side cannot tell the agent from another client of the listener.
         # The launcher acts on the agent's own report instead
         # (``ssh_launch.TOKEN_REFUSED``).
-        await refuse_token(ws)
+        await refuse_token(ws, revoked=_note_revoked(ws, provided))
         return
     enrolled_as = auth.worker
     registry = getattr(ws.app.state, "worker_registry", None)

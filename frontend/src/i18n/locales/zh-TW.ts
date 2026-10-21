@@ -1154,7 +1154,7 @@ const zhTW: Record<TranslationKey, string> = {
   'workers.ssh.remotePid': '遠端 agent PID {pid}',
   'workers.ssh.remotePidReattached': '遠端 agent PID {pid}，連線中斷後重新接上',
   'workers.ssh.retry': '重試',
-  'workers.ssh.retry.title': '重新啟動 ssh 連線；它已停止自動重試',
+  'workers.ssh.retry.title': '立即重新嘗試 ssh 連線，已停止自動重試時也可使用',
   'workers.ssh.readFailed': '無法讀取 SSH worker：{error}',
 
   // 執行面板（#124）：把 Run Service 攤開給使用者看 —— 所有由伺服器持有的

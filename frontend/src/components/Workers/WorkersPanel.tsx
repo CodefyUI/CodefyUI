@@ -220,7 +220,7 @@ function TunnelLine({ entry, running = 0 }: { entry: SshWorker; running?: number
       >
         {label}
       </button>
-      {entry.enabled && entry.gave_up && (
+      {entry.enabled && (entry.gave_up || entry.state === 'failed') && (
         <button
           type="button"
           className={styles.btn}
