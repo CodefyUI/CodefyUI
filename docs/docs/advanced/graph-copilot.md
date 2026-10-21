@@ -83,6 +83,10 @@ Click **Stop** during a stream to cancel the in-flight request; text that alread
 
 Each batch of operations the AI applies is one undo snapshot. Press **Ctrl+Z** (or Cmd+Z on macOS) once to undo the last batch. When the AI corrects itself within one reply, it applies more than one batch, and each needs its own Ctrl+Z.
 
+## Server-side studies
+
+The Lab runs a study in the page that started it, so closing that tab stops the study. CodefyUI also offers [server-side studies](/usage/studies) that keep running after the tab closes, survive a restart, enforce budgets and are listed in the Studies panel. A plugin delegates its studies to them through the plugin jobs routes (`POST /api/plugins/graph-copilot/jobs` with `kind: "study"`, listed in the [API Reference](/advanced/api-reference#plugin-jobs)). The plugin's chat keeps planning the experiment and asking for your approval; the server runs the approved plan. Moving the Lab onto these routes is a change in the plugin's own repository, and until a plugin release does so the Lab runs in the page as described above.
+
 ## Tips
 
 - Give context about what you are building: "I am building a vision classifier with a ResNet backbone" helps the AI make better choices.
