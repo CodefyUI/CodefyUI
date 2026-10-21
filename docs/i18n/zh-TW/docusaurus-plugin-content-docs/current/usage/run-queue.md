@@ -251,7 +251,7 @@ child 都是一般 run：它們在執行任務面板的清單中以 sweep 的 `n
 
 ## 實驗研究（study） {/* #studies */}
 
-**study** 是一個從頭到尾都由伺服器負責的實驗：一組圖的變體，每個變體重複執行固定次數、每次重複使用不同的種子，並依單一明確的目標排名。Graph Copilot 過去把這份計畫放在啟動它的瀏覽器分頁裡，關掉分頁 study 就跟著中斷。送到 `POST /api/studies` 的 study 存放在伺服器的資料庫中：分頁關閉後它會繼續執行，伺服器重新啟動後它仍在，繼續執行時也不會重跑已完成的重複。任何用戶端都能列出 study，並依 id 追蹤其中一個；study 與送出它的分頁或外掛沒有綁定關係。
+**study** 是一個從頭到尾都由伺服器負責的實驗：一組圖的變體，每個變體重複執行固定次數、每次重複使用不同的種子，並依單一明確的目標排名。Graph Copilot 過去把這份計畫放在啟動它的瀏覽器分頁裡，關掉分頁 study 就跟著中斷。送到 `POST /api/studies` 的 study 存放在伺服器的資料庫中：分頁關閉後它會繼續執行，伺服器重新啟動後它仍在，繼續執行時也不會重跑已完成的重複。任何用戶端都能列出 study，並依 id 追蹤其中一個；study 與送出它的分頁或外掛沒有綁定關係。在網頁介面中，執行任務面板上的 **Studies** 按鈕會開啟 [Studies 面板](./studies)，列出所有 study 並追蹤其中一個。
 
 ```json
 {
@@ -283,16 +283,16 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 
 **冪等性（idempotency）。** 請送出 `Idempotency-Key` header（或 body 欄位 `idempotency_key`；兩者同時送出時必須相同）。以同一個 key 重送相同請求時，會以 `200` 與 `created: false` 回傳同一個 study，且不建立任何 run，因此遺失第一次回覆的用戶端可以放心重送。同一個 key 用於不同請求時回傳 `409`，並指出既有的 study。比對請求時會先清空 `SECRET` 值，因此只有 secret 值不同的重送會被視為同一個請求。
 
-**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。每個 child 都指定了種子，所以在這台伺服器上執行的 child 仍會一次執行一個，較大的值只是讓後面的 child 提早進入佇列。`options.target` 會像 sweep 的 variant 一樣交給每個 child，建立任何資料列前也套用同樣的 `400` 檢查（使用相同 idempotency key 的重試會先回傳既有的 study 或 `409`，再做這項檢查）；被放到 worker 上的 child 在自己的程序裡執行，因此使用 `"target": {"worker": "any"}` 且有兩張空閒的卡時，`max_parallel_runs: 2` 會同時執行兩個 child。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。用完 `max_runs` 時仍有重複未完成的 study 會以 `failed` 結束。單一 run 的時間上限與總執行時間上限目前尚未實作。
+**預算。** `budget.max_parallel_runs`（預設 1，最多 32）是這個 study 同時可以排隊或執行中的 child 數。每個 child 都指定了種子，所以在這台伺服器上執行的 child 仍會一次執行一個，較大的值只是讓後面的 child 提早進入佇列。`options.target` 會像 sweep 的 variant 一樣交給每個 child，建立任何資料列前也套用同樣的 `400` 檢查（使用相同 idempotency key 的重試會先回傳既有的 study 或 `409`，再做這項檢查）；被放到 worker 上的 child 在自己的程序裡執行，因此使用 `"target": {"worker": "any"}` 且有兩張空閒的卡時，`max_parallel_runs: 2` 會同時執行兩個 child。`budget.max_runs`（選填）限制 study 總共可送出的 attempt 數（包含重試），且必須至少為 `variants x repetitions`。`budget.max_run_seconds`（選填）會停止執行時間超過上限的 child；該次重複以 `timed_out` 結束，這是與 `failed` 相同的結果，study 會繼續。`budget.max_active_seconds`（選填）限制所有 child 的累計執行時間。用完 `max_runs` 或 `max_active_seconds` 時仍有重複未完成的 study 會變成 `halted`：排程停止，所有結果都會保留，以提高後的預算繼續即可接續。請見[實驗研究：預算](./studies#budgets)。
 
 **順序。** child 依重複逐輪送出：先送所有變體的第 0 次重複，再送所有變體的第 1 次重複，依此類推。因此中途停下的 study，所有變體都已在相同的種子上比較過。每個 child 都是一般 run，名稱為 `<study 名稱> / <label> / r<n>`，`GET /api/runs` 的每一列都帶有 `study_id` 與 `study_attempt_id`。
 
 ### 讀取 study {/* #reading-a-study */}
 
-`GET /api/studies/{id}` 會回傳 study 的 `status`、`revision`（study 或其 attempt 每次變動都會增加）、目前 attempt 依狀態分類的 `counts`，以及每個變體一筆資料，內容包括：
+`GET /api/studies/{id}` 會回傳 study 的 `status`、`revision`（study 或其 attempt 每次變動都會增加）、目前 attempt 依狀態分類的 `counts`、`budget_usage`（每項預算的用量，以及哪一項已用完）、`halt`（暫停的 study 才有：預算、上限與用量）、`owner`（送出它的外掛，或 `null`），以及每個變體一筆資料，內容包括：
 
 - `repetitions`：每次重複的種子與目前的 attempt。
-- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics` 與 `fingerprint_digest`；child run 仍存在時另有 `worker_id`、`devices` 與 `queue_key`（執行的位置，與 sweep variant 相同）。每個重複的 `current` attempt 也帶有這些欄位。
+- `attempts`：曾經建立過的每一個 attempt，包含 `attempt`（1、2、……）、`run_id`、`status`、`error`、時間戳記、`objective_value`、`final_metrics`、`fingerprint_digest` 與 `stop_reason`（study 因哪一項預算停止它的 child，或 `null`）；child run 仍存在時另有 `worker_id`、`devices` 與 `queue_key`（執行的位置，與 sweep variant 相同）。每個重複的 `current` attempt 也帶有這些欄位。
 - `aggregate`：對記錄到目標值的目前 attempt 計算的 `count`、`mean` 與 `std`，以及 `values`，也就是每次重複的原始值（沒有值時為 `null`）。`std` 是樣本標準差，值少於兩個時為 `null`。
 - `eligible`、`ineligible_reasons`、`rank`、`tie` 與 `tied_with`。
 
@@ -300,13 +300,13 @@ study、它的變體與所有 attempt 會在同一個 transaction 中寫入，�
 
 study 的證據比它的 child 存在得更久。child 結束時，它的目標值、最終指標、開始與結束時間，以及環境摘要都會複製到它的 attempt 上；retention 在刪除 run 之前，也會把尚未複製的內容複製過去。retention 刪除 study 的 child 之後，`GET /api/studies/{id}` 仍會回傳所有數值與排名，只有 `run_id` 指向一個已不存在的 run。
 
-`GET /api/studies/{id}/events?cursor=` 會回傳 cursor 之後的 study 稽核紀錄：`study_created`、`study_started`、`attempt_submitting`、`attempt_submitted`、`attempt_started`、`attempt_finished`、`attempt_relinked`、`attempt_lost`、`attempt_added`、`study_cancel_requested`、`study_cancelled`、`study_interrupted`、`study_resumed`、`study_failed` 與 `study_finished`（其 payload 帶有最終排名）。cursor 連續不中斷，每個 payload 都帶有該次變動產生的 `revision`。study 仍在進行時，`?wait=` 最多長輪詢 60 秒。`GET /api/studies` 由新到舊列出 study；`?status=queued|running|cancel_requested` 可找出仍在進行的 study。
+`GET /api/studies/{id}/events?cursor=` 會回傳 cursor 之後的 study 稽核紀錄：`study_created`、`study_started`、`attempt_submitting`、`attempt_submitted`、`attempt_started`、`attempt_finished`、`attempt_relinked`、`attempt_lost`、`attempt_added`、`attempt_stop_requested`（預算停止了 child）、`study_cancel_requested`、`study_cancelled`、`study_interrupted`、`study_resumed`、`study_failed`、`study_halted`（其 payload 帶有暫停資訊與目前的排名）與 `study_finished`（其 payload 帶有最終排名）。cursor 連續不中斷，每個 payload 都帶有該次變動產生的 `revision`。study 仍在進行時，`?wait=` 最多長輪詢 60 秒。`GET /api/studies` 由新到舊列出 study；`?status=queued|running|cancel_requested` 可找出仍在進行的 study。
 
 ### 取消與繼續 study {/* #cancelling-and-resuming-a-study */}
 
 `POST /api/studies/{id}/cancel` 會停止排程，並對 study 每個排隊中或執行中的 child 送出協作式取消；`cancelled_runs` 列出取消請求送達的 run。在每個 child 都停下之前，study 顯示 `cancel_requested`，之後變成 `cancelled`。已完成的 attempt 會保留，從未送出的 attempt 維持 `pending`。再次取消已 cancelled 的 study 不會有任何變化；`succeeded` 的 study 不能取消（`409`）。
 
-`POST /api/studies/{id}/resume` 會繼續一個 `interrupted`、`cancelled` 或 `failed` 的 study。目前 attempt 已成功或失敗的重複維持原樣，永遠不會再執行。目前 attempt 被取消、中斷或遺失的重複，會得到一筆新的 attempt 紀錄，使用下一個 attempt 編號與相同的種子，舊的 attempt 則留在 `attempts` 中作為歷史紀錄。接著，pending 的重複照常送出。對其他狀態呼叫 resume 會回傳 `409`。
+`POST /api/studies/{id}/resume` 會繼續一個 `interrupted`、`cancelled`、`failed` 或 `halted` 的 study。目前 attempt 已成功或失敗的重複維持原樣，永遠不會再執行。目前 attempt 被取消、中斷或遺失的重複，會得到一筆新的 attempt 紀錄，使用下一個 attempt 編號與相同的種子，舊的 attempt 則留在 `attempts` 中作為歷史紀錄。接著，pending 的重複照常送出。對其他狀態呼叫 resume 會回傳 `409`。選填的 body `{"budget": {...}}` 會取代 study 的預算（事件紀錄會記下新舊預算）；若繼續時的預算已經用完則回傳 `409`，因為 study 會立刻再次暫停。兩個 route 的 body 都接受 `expected_revision`，study 已超過該 revision 時回傳 `409`，讓依據上次讀取結果動作的用戶端不會誤對較新的狀態動作。
 
 以 `POST /api/runs/{id}/cancel` 直接取消的 child，會讓所屬 study 變成 `interrupted`。study 不會自行重試那個 run；要再執行那次重複，請繼續（resume）該 study。
 
