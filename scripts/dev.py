@@ -125,6 +125,8 @@
                     cdui packs install sentence-embeddings --yes
                     cdui packs install sentence-embeddings --items all-MiniLM-L6-v2
                     cdui packs remove word-vectors glove-50d
+                    cdui packs export sentence-embeddings /media/usb/bundle   # 離線套件包
+                    cdui packs install sentence-embeddings --from /media/usb/bundle
                 離開碼：0 成功、1 失敗、2 拒絕執行（id 錯誤、相依未裝、無法確認）、
                 3 需要重啟伺服器（會印出該執行的指令）、130 Ctrl+C 取消。
 

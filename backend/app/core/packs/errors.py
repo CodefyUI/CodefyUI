@@ -118,3 +118,15 @@ class RestartRefused(PackInstallError):
         super().__init__(message, hint=hint)
         self.reason = reason
         self.command = command
+
+
+class BundleInvalid(ValueError):
+    """An offline bundle that cannot be installed as it is.
+
+    No manifest, a manifest for another pack, an item or revision the
+    catalog does not know, wheels built for another platform. Raised before
+    anything is copied, so nothing has changed. A ``ValueError`` because it
+    is a bad input: the routes answer it with a 400 and the CLI with exit 2.
+    A file whose bytes do not match the manifest is found while copying and
+    is a :class:`PackInstallError` instead.
+    """

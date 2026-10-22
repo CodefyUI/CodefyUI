@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -87,6 +88,21 @@ class InstallRequest(BaseModel):
     mode: Literal["live", "restart"] | None = None
     #: Only meaningful for the GPU pack: which torch wheel to install.
     variant: str | None = None
+    #: An offline bundle directory ON THE SERVER (``cdui packs export``).
+    #: Only where it is read from comes from the request: what it may
+    #: install is still the catalog's, checked against its manifest.
+    from_dir: str | None = None
+
+    @field_validator("from_dir")
+    @classmethod
+    def _bundle_path(cls, value: str | None) -> str | None:
+        """An absolute path, so it cannot depend on the server's cwd."""
+        if value is None:
+            return None
+        if (not value.strip() or "\x00" in value
+                or not Path(value).is_absolute()):
+            raise ValueError("from_dir must be an absolute directory path")
+        return value
 
     @field_validator("variant")
     @classmethod
@@ -149,7 +165,8 @@ def _active_job(service: PackService) -> PackJob | None:
 
 
 def _item_status(item: ItemState, active: PackJob | None) -> str:
-    if active is not None and active.current_step == f"download:{item.item_id}":
+    if active is not None and active.current_step in (
+            f"download:{item.item_id}", f"copy:{item.item_id}"):
         return "downloading"
     return "present" if item.present else "missing"
 
@@ -331,7 +348,8 @@ async def install_pack(pack_id: str, request: Request,
     try:
         job = await service.submit_install(
             pack, payload.items, mode=payload.mode or "live",
-            variant=payload.variant)
+            variant=payload.variant,
+            from_dir=None if payload.from_dir is None else Path(payload.from_dir))
     except PackBusy as exc:
         # ``reason`` only when there IS one -- the job in the way is a plugin
         # install rather than a pack one. The two-key body is what every

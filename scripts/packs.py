@@ -5,6 +5,8 @@
     cdui packs install sentence-embeddings --yes     # install a whole pack
     cdui packs install sentence-embeddings --items all-MiniLM-L6-v2
     cdui packs remove word-vectors glove-50d         # delete one download
+    cdui packs export sentence-embeddings /media/usb/st   # offline bundle
+    cdui packs install sentence-embeddings --from /media/usb/st
 
 The in-app panel and this command are two front ends over ONE install:
 ``app.core.packs.flows.install_pack_live``. Nothing about what an install
@@ -16,7 +18,9 @@ Which matters most for what this module deliberately CANNOT do. There is no
 way to hand it a package spec, an index URL or a repo id: the only thing a
 subcommand accepts is an id that has to be in ``catalog.CATALOG``, and the
 catalog is the whole allowlist. This file spawns no processes at all, so
-there is no path from an argument to a package manager to be found.
+there is no path from an argument to a package manager to be found. A
+bundle directory (``--from``, ``export``) is a path, not a spec: what it may
+install is checked against the catalog by ``app.core.packs.bundle``.
 
 Exit codes, because scripts and CI read them:
 
@@ -429,12 +433,14 @@ def _confirm(total_bytes: int) -> bool | None:
 def cmd_install(args: argparse.Namespace) -> int:
     from app.core.packs import catalog, flows, restart, state
     from app.core.packs.errors import (
+        BundleInvalid,
         PackCancelled,
         PackInstallError,
         PackInsufficientDisk,
         PackNeedsRestart,
     )
 
+    from_dir = getattr(args, "from_dir", None)
     pack = catalog.find_pack(args.pack_id)
     if pack is None:
         return _refuse_unknown_pack(args.pack_id)
@@ -466,7 +472,10 @@ def cmd_install(args: argparse.Namespace) -> int:
         err_info(f"可用的項目：{known}", f"Items in this pack: {known}")
         return 2
 
-    total = sum(item.approx_bytes for item in _pending_items(pack, probe, item_ids))
+    # A bundle install downloads nothing, so there is no size to confirm.
+    total = (0 if from_dir is not None else
+             sum(item.approx_bytes
+                 for item in _pending_items(pack, probe, item_ids)))
     if total and not args.yes:
         try:
             answered = _confirm(total)
@@ -479,7 +488,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             warn("已取消（沒有安裝任何東西）", "Cancelled (nothing was installed)")
             return 1
 
-    section(f"安裝 {pack.title}", f"Installing {pack.title}")
+    if from_dir is None:
+        section(f"安裝 {pack.title}", f"Installing {pack.title}")
+    else:
+        section(f"從套件包安裝 {pack.title}",
+                f"Installing {pack.title} from {from_dir}")
     reporter = _ConsoleReporter()
     cancelled = threading.Event()
     notice = ("正在取消……（等目前的步驟收尾）",
@@ -528,8 +541,18 @@ def cmd_install(args: argparse.Namespace) -> int:
         pass
 
     try:
-        outcome = flows.install_pack_live(
-            pack, item_ids, emit=reporter, cancel_check=_cancel_check)
+        if from_dir is None:
+            outcome = flows.install_pack_live(
+                pack, item_ids, emit=reporter, cancel_check=_cancel_check)
+        else:
+            outcome = flows.install_pack_from_bundle(
+                pack, item_ids, Path(from_dir), emit=reporter,
+                cancel_check=_cancel_check)
+    except BundleInvalid as exc:
+        # Refused before anything was copied or installed.
+        reporter.close()
+        raw_err(str(exc))
+        return 2
     except PackCancelled:
         reporter.close()
         warn("已取消", "Cancelled")
@@ -564,7 +587,10 @@ def cmd_install(args: argparse.Namespace) -> int:
         info("已安裝 Python 套件", "Python packages were installed")
     if outcome.items_done:
         done = ", ".join(outcome.items_done)
-        info(f"已下載：{done}", f"Downloaded: {done}")
+        if from_dir is None:
+            info(f"已下載：{done}", f"Downloaded: {done}")
+        else:
+            info(f"已從套件包複製：{done}", f"Copied from the bundle: {done}")
     return 0
 
 
@@ -575,6 +601,84 @@ def _print_hint(hint: str | None) -> None:
     for line in str(hint).splitlines():
         if line.strip():
             print(f"      {DIM}{line}{RESET}", file=sys.stderr)
+
+
+# ── offline bundles ───────────────────────────────────────────────────────
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """``cdui packs export <pack> <dir>``: bundle an installed pack.
+
+    The copying and the ``pip download`` are ``bundle.export_pack``'s; this
+    renders its events and maps its failures to exit codes.
+    """
+    from app.core.packs import bundle, catalog
+    from app.core.packs.errors import (
+        PackCancelled,
+        PackInstallError,
+        PackInsufficientDisk,
+    )
+
+    pack = catalog.find_pack(args.pack_id)
+    if pack is None:
+        return _refuse_unknown_pack(args.pack_id)
+    try:
+        item_ids = _parse_items(pack, args.items)
+    except KeyError:
+        err(f"{pack.pack_id} 沒有你指定的項目：{args.items}",
+            f"pack {pack.pack_id} has no such item: {args.items}")
+        known = ", ".join(item.item_id for item in pack.items) or "(none)"
+        err_info(f"可用的項目：{known}", f"Items in this pack: {known}")
+        return 2
+
+    section(f"匯出 {pack.title}", f"Exporting {pack.title}")
+    reporter = _ConsoleReporter()
+    try:
+        outcome = bundle.export_pack(
+            pack, item_ids, Path(args.dest), emit=reporter,
+            cancel_check=lambda: False,
+            download_wheels=not args.no_wheels)
+    except KeyboardInterrupt:
+        reporter.close()
+        warn("已取消，已寫入的檔案已移除",
+             "Cancelled; what was written has been removed")
+        return 130
+    except PackCancelled:
+        reporter.close()
+        warn("已取消", "Cancelled")
+        return 130
+    except PackInsufficientDisk as exc:
+        reporter.close()
+        raw_err(str(exc))
+        return 1
+    except PackInstallError as exc:
+        reporter.close()
+        raw_err(str(exc))
+        _print_hint(exc.hint)
+        return 1
+    except ValueError as exc:
+        reporter.close()
+        raw_err(str(exc))
+        return 2
+    finally:
+        reporter.close()
+
+    ok(f"套件包已寫入 {outcome.dest}", f"Bundle written to {outcome.dest}")
+    if outcome.items:
+        done = ", ".join(outcome.items)
+        info(f"項目：{done}", f"Items: {done}")
+    if outcome.wheels:
+        info(f"{len(outcome.wheels)} 個 wheel（只適用於這種平台與 Python 版本）",
+             f"{len(outcome.wheels)} wheels (for this platform and Python "
+             f"version only)")
+    for name in outcome.skipped:
+        warn(f"未打包 {name}：離線電腦上必須已經安裝",
+             f"{name} is not in the bundle; the offline machine must "
+             f"already have it")
+    info(f"在離線電腦上執行：cdui packs install {pack.pack_id} --from <目錄>",
+         f"On the offline machine run: cdui packs install {pack.pack_id} "
+         f"--from <dir>")
+    return 0
 
 
 # ── remove ────────────────────────────────────────────────────────────────
@@ -683,7 +787,26 @@ def build_parser() -> argparse.ArgumentParser:
              "pack is missing)")
     p_install.add_argument("--yes", "-y", action="store_true",
                            help="skip the download-size confirmation")
+    p_install.add_argument(
+        "--from", dest="from_dir", default=None, metavar="DIR",
+        help="install from an offline bundle made by `cdui packs export` "
+             "instead of downloading")
     p_install.set_defaults(_func=cmd_install)
+
+    p_export = sub.add_parser(
+        "export",
+        help="Copy an installed pack and its wheels into a directory for an "
+             "offline machine")
+    p_export.add_argument("pack_id", help="a pack id from `cdui packs list`")
+    p_export.add_argument("dest", help="an empty or new directory")
+    p_export.add_argument(
+        "--items", default=None,
+        help="comma-separated item ids to bundle (default: every item "
+             "installed here)")
+    p_export.add_argument(
+        "--no-wheels", action="store_true",
+        help="leave the pip wheels out (models only)")
+    p_export.set_defaults(_func=cmd_export)
 
     p_remove = sub.add_parser(
         "remove", help="Delete one downloaded item and forget it")
