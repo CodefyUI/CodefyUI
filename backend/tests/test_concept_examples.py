@@ -51,6 +51,9 @@ _CONCEPT_EXAMPLES = (
     "Transformer/Causal-Attention-From-Scratch",
     "RL/Reward-Hacking-Shortcut",
     "RL/GRPO-Step-GridWorld",
+    "Classical/KFold-Cross-Validation",
+    "Others/Reduce-And-Switch",
+    "Others/Tensor-Ops-Tour",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -497,3 +500,134 @@ def test_the_lstm_example_tests_on_sequences_it_never_trained_on():
     for key in ("kind", "seq_len", "n_classes", "n_distractors"):
         assert train[key] == test[key], key
     assert _feeds(graph, "eval", "dataset") == ("seq-test", "dataset")
+
+
+# ── K-fold cross-validation: the three errors and their mean ──────────────
+
+def test_the_three_folds_differ_only_in_which_fold_they_hold_out():
+    graph = _graph("Classical/KFold-Cross-Validation")
+    params = [_params(graph, f"fold-{k}") for k in range(3)]
+    assert [p["fold"] for p in params] == [0, 1, 2]
+    for p in params:
+        assert {k: v for k, v in p.items() if k != "fold"} == {
+            k: v for k, v in params[0].items() if k != "fold"}
+        assert p["n_folds"] == 3
+    for k in range(3):
+        assert _feeds(graph, f"reg-{k}", "x_query") == (f"fold-{k}", "x_val")
+        assert _feeds(graph, f"metrics-{k}", "targets") == (f"fold-{k}", "y_val")
+
+
+def test_the_kfold_errors_are_the_ones_the_note_quotes():
+    """0.050, 0.030 and 0.033 per fold, 0.038 for their mean, and the
+    worst fold about 1.7 times the best."""
+    results = _run_with_its_seed("Classical/KFold-Cross-Validation")
+    mse = [results[f"metrics-{k}"]["mse"] for k in range(3)]
+    assert [f"{m:.3f}" for m in mse] == ["0.050", "0.030", "0.033"], mse
+    assert f"{max(mse) / min(mse):.1f}" == "1.7", mse
+    mean = float(results["print-mean"]["value"])
+    assert mean == pytest.approx(sum(mse) / 3)
+    assert f"{mean:.3f}" == "0.038"
+    # Every row held out exactly once, in folds of 50.
+    held_out = [len(results[f"fold-{k}"]["y_val"]) for k in range(3)]
+    assert held_out == [50, 50, 50]
+
+
+# ── Reduce and Switch: what each selector reports ─────────────────────────
+
+def _run_reduce_switch(selector: int) -> dict:
+    from app.core.execution_context import ExecutionContext
+
+    graph = _graph("Others/Reduce-And-Switch")
+    _nodes_by_id(graph)["switch"]["data"]["params"]["selector"] = selector
+    prev_cwd = Path.cwd()
+    os.chdir(_BACKEND_DIR)
+    try:
+        return asyncio.run(execute_graph(
+            graph["nodes"], graph["edges"], error_mode="fail_fast",
+            context=ExecutionContext(device="cpu", seed=graph["settings"]["seed"])))
+    finally:
+        os.chdir(prev_cwd)
+
+
+@pytest.mark.parametrize("selector,expected,skipped", [
+    (0, ("3.758", "1.0", "6.9"), "csv-sepal"),
+    (1, ("5.843", "4.3", "7.9"), "csv-petal"),
+])
+def test_the_switch_picks_the_column_the_note_says(selector, expected, skipped):
+    graph = _graph("Others/Reduce-And-Switch")
+    assert _params(graph, "switch")["selector"] == 0, "the note starts on petal length"
+    results = _run_reduce_switch(selector)
+    got = (f"{float(results['mean']['result']):.3f}",
+           f"{float(results['min']['result']):.1f}",
+           f"{float(results['max']['result']):.1f}")
+    assert got == expected
+    assert tuple(results["stack"]["result"].shape) == (150,)
+    # The unselected reader is left out of the run, as note-switch says.
+    assert skipped not in results
+
+
+# ── Tensor ops tour: the shapes and statistics the notes quote ────────────
+
+def test_the_tensor_tour_lands_on_the_numbers_its_notes_quote():
+    results = _run_with_its_seed("Others/Tensor-Ops-Tour")
+    grid = results["stats-grid"]
+    assert grid["shape"] == "(4, 6)"
+    assert grid["mean"] == pytest.approx(11.5)
+    assert f"{grid['std']:.4f}" == "6.9222"
+
+    stacked = results["stats-stack"]
+    assert stacked["shape"] == "(2, 2, 6)"
+    assert stacked["std"] == pytest.approx(grid["std"])
+
+    rows = results["rows"]["tensor"]
+    assert rows[:, 0].tolist() == [18.0, 0.0], "rows 3 and 0, in that order"
+
+    pooled = results["pool"]["tensor"]
+    assert pooled.tolist() == [[[[3.5, 5.5, 7.5], [15.5, 17.5, 19.5]]]]
+    assert results["stats-pool"]["mean"] == pytest.approx(11.5)
+    assert f"{results['stats-pool']['std']:.4f}" == "6.2183"
+
+
+# ── Training section: augmentation and resuming ───────────────────────────
+
+def _run_training_example(key: str) -> dict:
+    """``_run_with_its_seed`` for a graph outside ``_CONCEPT_EXAMPLES``."""
+    return _run_with_its_seed(key)
+
+
+def test_augmentation_goes_on_the_training_split_only():
+    from app.nodes.data.transforms._base import pipeline_is_random
+
+    graph = _graph("Usage_Example/Augment-Then-Train")
+    assert _feeds(graph, "ds-train", "train_transform") == ("normalize", "transform")
+    assert _feeds(graph, "ds-test", "eval_transform") == ("eval-normalize", "transform")
+    assert _params(graph, "ds-test")["split"] == "test"
+    assert _feeds(graph, "eval", "dataset") == ("subset-test", "train")
+
+    results = _run_training_example("Usage_Example/Augment-Then-Train")
+    assert pipeline_is_random(results["normalize"]["transform"])
+    assert not pipeline_is_random(results["eval-normalize"]["transform"])
+    # The overview note says "about 0.9"; 0.895 on this Mac.
+    assert results["eval"]["total"] == 1000
+    assert results["eval"]["accuracy"] >= 0.85, results["eval"]
+
+
+def test_the_resumed_loop_picks_up_at_the_epoch_the_checkpoint_stores(
+        tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    graph = _graph("Usage_Example/Resume-From-Checkpoint")
+    assert _feeds(graph, "save", "epoch") == ("train-1", "epoch")
+    assert _feeds(graph, "save", "optimizer") == ("train-1", "optimizer")
+    assert _feeds(graph, "load", "model") == ("save", "model")
+    assert _feeds(graph, "train-2", "start_epoch") == ("load", "epoch")
+    assert _params(graph, "save")["path"] == _params(graph, "load")["path"]
+
+    results = _run_training_example("Usage_Example/Resume-From-Checkpoint")
+    assert (tmp_path / "models" / _params(graph, "save")["path"]).is_file()
+    assert int(results["load"]["epoch"]) == 10
+    assert int(results["train-2"]["epoch"]) == 20
+    assert tuple(results["train-2"]["losses"].shape) == (10,)
+    assert tuple(results["curve"]["tensor"].shape) == (20,)
+    assert torch.equal(results["load"]["losses"], results["train-1"]["losses"])

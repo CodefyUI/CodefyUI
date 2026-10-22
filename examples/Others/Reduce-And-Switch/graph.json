@@ -1,0 +1,307 @@
+{
+  "name": "Reduce and Switch",
+  "description": "Pick a column, fold it to one number",
+  "gallery": {
+    "section": "concepts",
+    "order": 14
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv-petal",
+      "type": "CSVReader",
+      "position": {
+        "x": 40,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "petal length (cm)",
+          "target_type": "number",
+          "include_columns": "",
+          "drop_missing_target": false,
+          "skip_header": true
+        }
+      }
+    },
+    {
+      "id": "csv-sepal",
+      "type": "CSVReader",
+      "position": {
+        "x": 40,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "sepal length (cm)",
+          "target_type": "number",
+          "include_columns": "",
+          "drop_missing_target": false,
+          "skip_header": true
+        }
+      }
+    },
+    {
+      "id": "switch",
+      "type": "Switch",
+      "position": {
+        "x": 400,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "selector": 0,
+          "inputs": 2
+        }
+      }
+    },
+    {
+      "id": "mean",
+      "type": "Reduce",
+      "position": {
+        "x": 740,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "operation": "mean",
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "min",
+      "type": "Reduce",
+      "position": {
+        "x": 740,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "operation": "min",
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "max",
+      "type": "Reduce",
+      "position": {
+        "x": 740,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "operation": "max",
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "stack",
+      "type": "Reduce",
+      "position": {
+        "x": 740,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "operation": "stack",
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "print-mean",
+      "type": "Print",
+      "position": {
+        "x": 1040,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Mean (cm)"
+        }
+      }
+    },
+    {
+      "id": "print-min",
+      "type": "Print",
+      "position": {
+        "x": 1040,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "label": "Shortest (cm)"
+        }
+      }
+    },
+    {
+      "id": "print-max",
+      "type": "Print",
+      "position": {
+        "x": 1040,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "label": "Longest (cm)"
+        }
+      }
+    },
+    {
+      "id": "hist",
+      "type": "Visualize",
+      "position": {
+        "x": 1040,
+        "y": 600
+      },
+      "data": {
+        "params": {
+          "title": "The selected column, 150 flowers",
+          "plot_type": "histogram"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Switch forwards one of its inputs, picked by selector, and Reduce folds a list into one value. Both CSVReaders read Iris and output one column as a list of 150 numbers: petal length on input_0, sepal length on input_1. With selector 0 the mean petal length is 3.758 cm, the shortest 1.0 and the longest 6.9. Set selector to 1 and the same Reduce nodes report sepal length: 5.843, 4.3 and 7.9. The fourth Reduce stacks the list into a tensor for the histogram.\n\nSwitch 依 selector 從多個輸入中轉送一個，Reduce 把一個串列摺疊成單一數值。兩個 CSVReader 都讀 Iris，各輸出一個欄位，是 150 個數字的串列：input_0 是花瓣長度，input_1 是花萼長度。selector 為 0 時，花瓣長度的平均是 3.758 公分，最短 1.0，最長 6.9。把 selector 改成 1，同樣的 Reduce 節點就改為回報花萼長度：5.843、4.3 與 7.9。第四個 Reduce 把串列堆疊成張量，畫成直方圖。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-switch",
+      "type": "note",
+      "position": {
+        "x": 400,
+        "y": 700
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A selector set in the param is known before the run starts, so the run leaves out what feeds only the inputs it does not pick: with selector 0 the sepal CSVReader never runs. Wire a number into the selector port instead and the choice is made during the run, so every wired input is computed first.\n\nselector 寫在參數裡時，執行開始前就已知道選哪一個，所以只餵給未選輸入的節點會被略過：selector 為 0 時，讀花萼的 CSVReader 不會執行。若改把數值接到 selector 埠，選擇會在執行中才決定，所有接上的輸入都會先算出來。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "switch",
+        "boundOffset": {
+          "x": 0,
+          "y": 400
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_csv-petal",
+      "source": "start",
+      "target": "csv-petal",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_csv-sepal",
+      "source": "start",
+      "target": "csv-sepal",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_csv-petal_labels_switch_input_0",
+      "source": "csv-petal",
+      "target": "switch",
+      "sourceHandle": "labels",
+      "targetHandle": "input_0"
+    },
+    {
+      "id": "e_csv-sepal_labels_switch_input_1",
+      "source": "csv-sepal",
+      "target": "switch",
+      "sourceHandle": "labels",
+      "targetHandle": "input_1"
+    },
+    {
+      "id": "e_switch_output_mean_items",
+      "source": "switch",
+      "target": "mean",
+      "sourceHandle": "output",
+      "targetHandle": "items"
+    },
+    {
+      "id": "e_switch_output_min_items",
+      "source": "switch",
+      "target": "min",
+      "sourceHandle": "output",
+      "targetHandle": "items"
+    },
+    {
+      "id": "e_switch_output_max_items",
+      "source": "switch",
+      "target": "max",
+      "sourceHandle": "output",
+      "targetHandle": "items"
+    },
+    {
+      "id": "e_switch_output_stack_items",
+      "source": "switch",
+      "target": "stack",
+      "sourceHandle": "output",
+      "targetHandle": "items"
+    },
+    {
+      "id": "e_mean_result_print-mean_value",
+      "source": "mean",
+      "target": "print-mean",
+      "sourceHandle": "result",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_min_result_print-min_value",
+      "source": "min",
+      "target": "print-min",
+      "sourceHandle": "result",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_max_result_print-max_value",
+      "source": "max",
+      "target": "print-max",
+      "sourceHandle": "result",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_stack_result_hist_data",
+      "source": "stack",
+      "target": "hist",
+      "sourceHandle": "result",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

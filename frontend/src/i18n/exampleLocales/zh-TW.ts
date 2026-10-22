@@ -340,6 +340,23 @@ const zhTW: ExampleTranslations = {
   'plugin:stats/Stats/Iris-GroupBy-Chart': {
     description: '三根長條：平均花瓣長度',
   },
+
+  // ── Data and IO examples (feat/examples-data-io) ──
+  'Usage_Example/Augment-Then-Train': {
+    description: '訓練時旋轉數字並調整明暗',
+  },
+  'Usage_Example/Resume-From-Checkpoint': {
+    description: '10 個 epoch 後存檔，再接著訓練 10 個',
+  },
+  'Classical/KFold-Cross-Validation': {
+    description: '三份資料、三個誤差、一個平均',
+  },
+  'Others/Reduce-And-Switch': {
+    description: '選一個欄位，摺疊成一個數字',
+  },
+  'Others/Tensor-Ops-Tour': {
+    description: '對同一個網格切分、堆疊、選列、池化',
+  },
 };
 
 export default zhTW;
