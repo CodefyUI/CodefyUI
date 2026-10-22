@@ -354,6 +354,9 @@ const zhTW: ExampleTranslations = {
   'RL/Discounted-Returns': {
     description: '一個獎勵、三個 gamma、三種回報',
   },
+  'LLM/Data-Mix-Ratios': {
+    description: '兩個語料：照原樣混合，再 1:1 混合',
+  },
 };
 
 export default zhTW;

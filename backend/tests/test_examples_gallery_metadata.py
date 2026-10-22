@@ -294,6 +294,7 @@ _SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
     "LLM/Sentence-Similarity-zhTW": ("llm", 2, None),
     "LLM/RAG-Local-Offline": ("llm", 3, None),
     "LLM/RAG-LLMChat-API": ("llm", 4, None),
+    "LLM/Data-Mix-Ratios": ("llm", 5, None),
     "Classical/Tabular-Iris-Pipeline": ("concepts", 1, None),
     "Classical/Iris-Sklearn-KNN": ("concepts", 2, None),
     "RNN/RNN-OneStep": ("concepts", 3, None),

@@ -82,8 +82,14 @@ _PAPER_EXAMPLES = (
     "Papers/GroupNorm-Wu-2018",
 )
 
+#: The ``llm`` examples written to the same note rules. The others in that
+#: section predate them.
+_LLM_EXAMPLES = (
+    "LLM/Data-Mix-Ratios",
+)
+
 #: The examples the note rules below hold over.
-_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES
+_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES + _LLM_EXAMPLES
 
 
 def _graph(key: str) -> dict:
@@ -615,3 +621,37 @@ def test_the_step_cost_the_rewards_note_suggests_does_what_it_says():
     first = {g: DiscountNode().execute({"rewards": rewards}, {"gamma": g})["first_return"]
              for g in (0.5, 0.9, 0.99)}
     assert first[0.5] < 0 and first[0.9] < 0 < first[0.99], first
+
+
+# ── Data mix ratios: the counts its notes quote ───────────────────────────
+
+def test_the_data_mix_example_mixes_the_counts_its_note_gives():
+    """36 rows as found, 1 in 6 a fact; 60 rows by ratio, 30 from each."""
+    key = "LLM/Data-Mix-Ratios"
+    text = _notes_of(key)
+    for quoted in ("30 short children's stories and 6", "the mixture has 36 rows",
+                   "1 in 6 of them is a fact", "each corpus supplies 30",
+                   "every fact five times", "45 stories (15 of them a second time) and 15 facts"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    assert results["corpus-stories"]["num_rows"] == 30
+    assert results["corpus-facts"]["num_rows"] == 6
+    natural, ratio = results["mix-natural"], results["mix-ratio"]
+    assert natural["num_rows"] == 36 and ratio["num_rows"] == 60
+    assert natural["__log__"].endswith("corpus_1: 30, corpus_2: 6.")
+    assert ratio["__log__"].endswith("corpus_1: 30 of 30, corpus_2: 30 of 6.")
+
+    facts = {results["corpus-facts"]["dataset"][i] for i in range(6)}
+    rows = [ratio["dataset"][i] for i in range(60)]
+    assert sum(row in facts for row in rows) == 30
+    assert all(rows.count(fact) == 5 for fact in facts)
+
+
+def test_the_3_to_1_mix_the_ratio_note_suggests_gives_45_and_15():
+    from app.nodes.llm.data_mix_dataset_node import DataMixDatasetNode
+
+    out = DataMixDatasetNode().execute(
+        {"corpus_1": [f"s{i}" for i in range(30)], "corpus_2": [f"f{i}" for i in range(6)]},
+        {"sources": 2, "weights": "3, 1", "mode": "ratio", "total_rows": 60, "seed": 0})
+    assert out["__log__"].endswith("corpus_1: 45 of 30, corpus_2: 15 of 6.")
