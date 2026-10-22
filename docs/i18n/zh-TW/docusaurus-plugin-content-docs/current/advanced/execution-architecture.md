@@ -1,7 +1,7 @@
 ---
 sidebar_position: 6.5
 title: 執行架構
-description: run 可以在伺服器程序內或 worker agent 上執行時，從送出到結果的路徑——控制面、executor、worker agent 與 run 子程序、slot 與 placement、事件路徑、隔離、儲存、安全，以及每項變更都要遵守的不變量。
+description: run 可以在伺服器程序內或 worker agent 上執行時，從送出到結果的路徑——控制面、executor、worker agent 與 run 子程序、slot 與 placement、事件路徑、隔離、儲存與安全。設計理由、不變量與待決問題見執行設計筆記。
 ---
 
 # 執行架構
@@ -9,7 +9,7 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 [架構](./architecture)說明整個伺服器。本頁深入其中一部分：run 的圖在哪裡執行。預設情況下，每個 run 都在伺服器程序內執行，與 3.0 完全相同。queued run 也可以改送到 **worker agent**（`cdui agent start`），由它在自己的子程序中執行。設計追蹤於 [#764](https://github.com/CodefyUI/CodefyUI/issues/764)；使用方式見[執行佇列：Workers](/usage/run-queue#workers) 與 [CLI 指令：Agent 指令](/getting-started/cli-commands#agent-commands)。
 
 :::note 現況
-程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）、斷線與續接（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）、SSH 反向通道（[#784](https://github.com/CodefyUI/CodefyUI/issues/784)）、transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）與它的 S3／MinIO 替代方案（[#791](https://github.com/CodefyUI/CodefyUI/issues/791)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板，以及工具列的 **Queue on...** 對話框。遠端 worker 的設定方式見[遠端 Worker](/usage/remote-workers)。
+程式碼已有：executor 接縫、依 `(worker, device)` slot 放置、`target` 選項（單一 run、sweep 與 study 皆可用）、與伺服器在同一台機器上、或以一次性 token 加入的另一台機器上的 worker agent（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）、握手時檢查版本、環境指紋與節點目錄（[#781](https://github.com/CodefyUI/CodefyUI/issues/781)）、儲存 mount（[#782](https://github.com/CodefyUI/CodefyUI/issues/782)）、斷線與續接（[#783](https://github.com/CodefyUI/CodefyUI/issues/783)）、SSH 反向通道（[#784](https://github.com/CodefyUI/CodefyUI/issues/784)）、transfer 後端（[#785](https://github.com/CodefyUI/CodefyUI/issues/785)）與它的 S3／MinIO 替代方案（[#791](https://github.com/CodefyUI/CodefyUI/issues/791)）、agent 對控制面 TLS 憑證的驗證（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）、裝置集合、每個 run 的峰值記憶體、Workers 面板、工具列的 **Queue on...** 對話框、共用卡片上的記憶體准入（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）與建議預算（[#794](https://github.com/CodefyUI/CodefyUI/issues/794)）、worker run 的錄製輸出（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）、一次性 worker（[#790](https://github.com/CodefyUI/CodefyUI/issues/790)）、在 worker 的多張卡上以 DDP 訓練的 `TrainingLoop`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）、控制面重啟後收養 worker run（[#793](https://github.com/CodefyUI/CodefyUI/issues/793)），以及 run 子程序自己的指紋與節點來源紀錄（[#344](https://github.com/CodefyUI/CodefyUI/issues/344)）。遠端 worker 的設定方式見[遠端 Worker](/usage/remote-workers)。設計為何如此見[執行設計筆記](./execution-design)。
 :::
 
 ## 名詞 {/* #vocabulary */}
@@ -22,14 +22,14 @@ description: run 可以在伺服器程序內或 worker agent 上執行時，從�
 | **Run 子程序** | worker 為單一 run 以 `spawn` 啟動的全新直譯器。在 worker 上，只有這裡會 import PyTorch 並初始化 CUDA。 |
 | **Slot** | 一台機器上的一個裝置，鍵為 `(worker_id, device)`：`("local", "cuda:0")` 是伺服器的第一張卡，`("gpu-box-1", "cuda:0")` 是 worker `gpu-box-1` 的第一張卡。一個 slot 同時容納固定數量的 run。 |
 | **Placement** | 排程器對等待中 run 的回答：哪個 worker、在哪些裝置上執行、占用哪些 slot。 |
-| **Target** | 送出時帶的 `options.target` 物件：`{"worker", "devices"}`。 |
+| **Target** | 送出時帶的 `options.target` 物件：`{"worker", "devices"}`；用於一次性 worker 或依記憶體共用的卡時，另有 `pool`、`memory_gib`、`memory_source` 與 `wait`。 |
 | **裝置集合** | 列出同一種類、多於一個裝置的 `target.devices`。 |
 | **Mount** | 兩台機器共用、各自位於不同路徑之資料夾的標籤（`data`）（[儲存](#storage)）。 |
 | **Transfer 後端** | 由控制面擔任檔案庫，供與它沒有共用資料夾的 worker 使用（[儲存](#storage)）。 |
 
 ## 角色 {/* #roles */}
 
-**控制面。** `cdui start` 的伺服器程序擁有所有需要持久保存的東西，以及畫布需要的一切。`RunService`（`core/run_service.py`）接收送出、為每個 queue key 維護一條 FIFO、詢問排程器哪個 run 可以開始、寫入 run 列與事件紀錄，並把事件分送給 `/ws/execution` 與 REST 讀取端。`WorkerRegistry`（`core/workers.py`）在記憶體中保存已連線的 worker：裝置、心跳、狀態、各自正在執行的 run，以及聯絡它的 socket。控制面重啟後沒有任何 worker，每個 agent 會在下次連線時重新註冊。
+**控制面。** `cdui start` 的伺服器程序擁有所有需要持久保存的東西，以及畫布需要的一切。`RunService`（`core/run_service.py`）接收送出、為每個 queue key 維護一條 FIFO、詢問排程器哪個 run 可以開始、寫入 run 列與事件紀錄，並把事件分送給 `/ws/execution` 與 REST 讀取端。`WorkerRegistry`（`core/workers.py`）在記憶體中保存已連線的 worker：裝置、心跳、狀態、各自正在執行的 run，以及聯絡它的 socket。控制面重啟後沒有任何已連線的 worker：已加入的 worker 會從 `workers` 資料表載入為 `offline`，每個 agent 會在下次連線時重新註冊。
 
 **Executor。** `RunService._execute` 建立一個 `ExecutionRequest`（圖、選項、`ExecutionContext`、placement、sink），並 await `Executor.run`，後者回傳 `ExecutionOutcome`（狀態、錯誤、峰值記憶體）。由 placement 決定使用哪個 executor：
 
@@ -47,7 +47,7 @@ Browser / cdui run ── REST, /ws/execution ──► control plane (cdui star
                                                           ▲
                                                           │ WS /ws/worker  (the agent dials out)
                                                           │
-                                               cdui agent (same machine, this release)
+                                               cdui agent (this machine or another)
                                                one spawn subprocess per run
                                                CUDA_VISIBLE_DEVICES = the run's cards
 ```
@@ -91,7 +91,7 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **一個裝置、多個 slot。** 每個 slot 都維持提供者自己的 `(worker, device)`；同一個實體裝置的 slot 會分在同一組（`WorkerRegistry.card_slots`）：CUDA 卡依各提供者回報的 UUID 分組，涵蓋伺服器知道的每個 worker 與伺服器自己的卡；同一台機器的 CPU 與 `mps:0` 分在一起（同機 worker 與伺服器的，或回報相同 machine id 的兩個 agent）。因此同一台 GPU 伺服器上提供同一張卡的兩個 agent（一個 SSH worker 與一個 enroll 的 agent）就像一張卡一樣接收 run：這張卡所有 slot 上的 run 都計入其中每一個，套用線上（或仍有 run 在這張卡上）的提供者中最小的上限（沒有自己覆寫的同機 worker 採用伺服器對該裝置的上限）；依記憶體共用的卡在它們之間只讀一份帳本，且只有在每個提供它的線上 worker 都設為共用時才依記憶體接收 run。重啟後接手的 run 會在 `worker_resume` 記下每個 slot 的裝置識別，所以在它的 worker 重新連上前，它的 slot 就已分組。伺服器只在可能共用卡時於執行緒中列出自己的卡一次：註冊同機 worker 之前（有時間上限，其餘在背景完成）與重啟後接手 run 之前。沒有回報 UUID 的 CUDA 卡保有自己的 slot。`GET /api/workers` 以 `same_card` 列出每個裝置的其他提供者，`slots.limited_by` 指出採用哪個提供者的上限。
 
-**`target` 選項**（[#769](https://github.com/CodefyUI/CodefyUI/issues/769)）是 `{"worker": "local" | "any" | <名稱>, "devices": [...]}`，兩個鍵都可省略。`worker` 是符合 `[a-z0-9][a-z0-9-]{0,62}` 的名稱；`local` 與 `any` 為保留字。`devices` 列出同一種類、不重複的具體裝置（`cpu`、`cuda:N`、`mps:N`），第一項成為 run 的 `device`。排程器這樣放置：
+**`target` 選項**（[#769](https://github.com/CodefyUI/CodefyUI/issues/769)）是 `{"worker": "local" | "any" | <名稱>, "devices": [...]}`，兩個鍵都可省略；另有用於一次性 worker 池的 `pool: "one-shot"`（[#790](https://github.com/CodefyUI/CodefyUI/issues/790)），以及用於依記憶體共用之卡的 `memory_gib`、`memory_source` 與 `wait`（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)；`memory_gib` 搭配 `local` 會被拒絕）。`worker` 是符合 `[a-z0-9][a-z0-9-]{0,62}` 的名稱，共用一次性憑證的 instance 則是 `<名稱>.<instance>`；`local` 與 `any` 為保留字。`devices` 列出同一種類、不重複的具體裝置（`cpu`、`cuda:N`、`mps:N`），第一項成為 run 的 `device`。排程器這樣放置：
 
 - **`local`**（或沒有 target）：`LocalScheduler`，即 3.0 的規則。
 - **worker 名稱**：放到該 worker，用裝置集合、或要求的裝置、或該 worker 提供的同種類裝置中第一個有空 slot 的。
@@ -164,34 +164,9 @@ frame 只在 `core/worker_protocol.py` 定義一次，兩端共用：
 
 **TLS。** Agent 會以這台機器的 CA 或釘選的金鑰驗證控制面的 TLS 憑證，機密應只經由已驗證的通道傳送：見 [遠端 Worker，agent 與控制面之間的信任](/usage/remote-workers#trust-between-agent-and-control-plane)（[#786](https://github.com/CodefyUI/CodefyUI/issues/786)）。
 
-## 不變量 {/* #invariants */}
+## 不變量與設計決策 {/* #invariants */}
 
-這個領域的每項變更都要遵守以下規則（[#764](https://github.com/CodefyUI/CodefyUI/issues/764)）：
-
-1. 沒有 worker 註冊、也沒有 `target` 選項時，送出的行為與 3.0.2 完全相同：同一個 queue key、同一個 `InProcessExecutor`、同一組事件序列。`single_node_parity` 快照只在有意變更它的 commit 中改變。
-2. **匯出面凍結。** `backend/app/core/codegen.py`、`backend/run_graph.py`、節點 `execute()` 的語意，以及匯出腳本 import 的執行期符號：`graph_engine.invoke_node`、`prepare_executable_graph` 與 `topological_sort`；`ExecutionContext` 建構子與 `derive_seed`、`current_node_id`；`device_utils.resolve_device`；`seeding.*`、`runtime.*` 與 `api_contract.*`。run 子程序會建構 `ExecutionContext`，但從不改變它的介面；裝置集合以 `CUDA_VISIBLE_DEVICES` 實作，`resolve_device` 維持原樣。
-3. Interactive（畫布）通道一律在控制面程序內執行。
-4. worker 從不開啟入站埠，也從不寫 SQLite。
-5. 新行為都在 `target` 選項或 `CODEFYUI_EXECUTION_*` 設定之後，預設關閉。
-6. 網頁優先：worker 在瀏覽器中管理，CLI 只新增 `cdui agent start|stop`。不新增 `cdui status` 或 TUI 功能。
-
-## 決策紀錄 {/* #decisions-log */}
-
-| 日期 | 決策 |
-|------|----------|
-| 2026-10-15 | 把執行從控制面拆出；保留 in-process 路徑作為預設，也是唯一的單節點路徑。 |
-| 2026-10-15 | 網頁優先：Workers 面板、「新增 worker」對話框與 run 目標選擇器都在瀏覽器中；CLI 只保留啟動、加入與停止。 |
-| 2026-10-15 | 拓撲：任何機器都可以 `cdui start` 作為控制面；GPU 機器執行 `cdui agent start`，以瀏覽器產生的一行指令加入。連線方向一律是 worker → 控制面。 |
-| 2026-10-15 | 准入維持以每個 `(worker, device)` slot 計數；依記憶體准入延後（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）。 |
-| 2026-10-15 | 儲存：預設使用 NAS（mount）；也必須有不需 NAS 的 transfer 後端。 |
-| 2026-10-15 | Interactive 通道留在控制面；worker 憑證透過 enrollment 取得；先支援 Linux worker，Windows 盡力而為；控制面與 worker 版本須相同；DDP 之後再做（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。 |
-| 2026-10-15 | 每個 run 一個 spawn 子程序，裝置集合以 `CUDA_VISIBLE_DEVICES` 傳入（[#771](https://github.com/CodefyUI/CodefyUI/issues/771)）；agent 程序從不 import torch。 |
-| 2026-10-21 | DDP 是 run 子程序內的 `TrainingLoop` 策略：裝置集合有兩張以上 CUDA 卡的 worker run 每張卡一個 rank，rank 0 擁有通往 agent 的 pipe，其他 rank 只執行訓練迴圈所需的部分；其他情況（畫布、伺服器程序、匯出的腳本）訓練迴圈以單一程序訓練並發出警告。沒有多機訓練（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。 |
-| 2026-10-15 | 同機 worker 以 machine id 判定，共用的卡以 NVML UUID 判定，從不依對端位址（[#773](https://github.com/CodefyUI/CodefyUI/issues/773)）。 |
-| 2026-10-18 | 多個 slot 提供的同一個實體裝置只有一份額度：slot 依 UUID 分組（同機 worker 的 CPU／`mps:0` 與伺服器的分在一起），不再對應到伺服器的 slot；取線上提供者中最小的上限、一份記憶體帳本、較嚴格的政策（[#842](https://github.com/CodefyUI/CodefyUI/issues/842)）。 |
-| 2026-10-15 | enrollment 完成之前，`/ws/worker` 只接受帶 session token 的 loopback 對端（[#772](https://github.com/CodefyUI/CodefyUI/issues/772)）。 |
-| 2026-10-15 | 加入：一次性 token 換成每個 worker 獨立的憑證；session token 仍只限 loopback；身分綁定憑證，已加入的名稱只能透過重新核發 token 易手，同機需要 loopback 對端且 machine id 相符（[#780](https://github.com/CodefyUI/CodefyUI/issues/780)）。 |
-| 2026-10-15 | 單一 run、sweep 與 study 共用同一條送出規則：只有啟動以來從未見過的 worker 名稱會被拒絕；目標為已知但離線之 worker 的 run 會等它回來（[#777](https://github.com/CodefyUI/CodefyUI/issues/777)）。 |
+這個領域的每項變更都要遵守六條不變量（[#764](https://github.com/CodefyUI/CodefyUI/issues/764)）：預設路徑不變、匯出面凍結、畫布在控制面執行、worker 不開入站埠也不寫 SQLite、新行為預設關閉，以及網頁優先。[執行設計筆記](./execution-design#invariants)列出每一條與它的理由、各項決策與被排除的替代方案、依日期排列的決策紀錄，以及仍待決定的問題。
 
 ## 進入點 {/* #entry-points */}
 
