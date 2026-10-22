@@ -300,8 +300,8 @@ def test_the_deep_sigmoid_net_stalls_with_a_small_gradient():
 
 def test_groupnorm_trains_at_batch_2_where_batchnorm_does_not():
     name = "GroupNorm-Wu-2018"
-    _quoted(name, "scores 0.96 on the test set", "training loss of 1.70",
-            "and scores 0.70", "ends at 0.18 and scores 0.95")
+    _quoted(name, "scores 0.96 on the test set", "training loss of about 1.7",
+            "scores 0.5 to 0.7", "ends at 0.18 and scores 0.95")
     r, _ = _run(name)
     bn, gn, bn32 = (_acc(r, f"eval-test-{k}") for k in ("bn", "gn", "bn32"))
     bn_loss, gn_loss = _losses(r, "train-bn")[-1], _losses(r, "train-gn")[-1]
@@ -312,7 +312,10 @@ def test_groupnorm_trains_at_batch_2_where_batchnorm_does_not():
     assert gn_loss == pytest.approx(0.18, abs=0.06), measured
     # BatchNorm1d over two samples maps every feature to +1 or -1, so the
     # batch-2 BatchNorm net is pinned as the claim: well below both others.
-    assert bn == pytest.approx(0.70, abs=0.08), measured
+    # Where it lands inside that depends on the platform's BLAS (0.70 on an
+    # M3, 0.55 to 0.59 on CI's Linux runners, 0.51 on Windows), so the note
+    # quotes the range and the test holds it to the range.
+    assert 0.45 <= bn <= 0.78, measured
     assert bn_loss > 1.4, measured
     assert gn > bn + 0.15 and bn32 > bn + 0.15, measured
 

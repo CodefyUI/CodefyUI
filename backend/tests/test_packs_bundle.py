@@ -824,11 +824,16 @@ async def test_the_route_installs_from_a_bundle_directory(api, tmp_path):
     ({"from_dir": "relative/bundle"}, 422),
     ({"from_dir": "   "}, 422),
     ({"from_dir": "/x\x00y"}, 422),
-    ({"from_dir": "/no/such/bundle"}, 400),
-    ({"from_dir": "/no/such/bundle", "mode": "restart"}, 400),
+    ({"from_dir": "<missing>"}, 400),
+    ({"from_dir": "<missing>", "mode": "restart"}, 400),
 ])
-async def test_the_route_refuses_a_bundle_it_cannot_use(api, body, status):
+async def test_the_route_refuses_a_bundle_it_cannot_use(api, tmp_path, body, status):
     http, service, flow = api
+    # An absolute path that exists nowhere, spelled for this platform: a
+    # literal ``/no/such/bundle`` is not absolute on Windows and is refused
+    # as 422 by the validator before the 400 this case is about.
+    if body.get("from_dir") == "<missing>":
+        body = {**body, "from_dir": str(tmp_path / "no-such-bundle")}
     response = await http.post("/api/packs/word-vectors/install", json=body)
     assert response.status_code == status, response.text
     assert service.current_job() is None and flow.calls == []

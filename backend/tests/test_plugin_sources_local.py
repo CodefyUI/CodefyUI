@@ -21,6 +21,7 @@ import os
 import stat
 import tarfile
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from textwrap import dedent
@@ -162,21 +163,30 @@ def _install(spec: str, **decisions) -> tuple[flows.InstallOutcome, list[dict]]:
 
 @pytest.mark.parametrize("spec", ["/srv/usb/demo", "/srv/usb/demo.zip"])
 def test_an_absolute_path_is_a_local_source(spec):
-    assert parse_source(spec, catalog={"plugins": {}}) == ("local", spec, "", "")
+    # ``os.path.abspath`` rather than *spec* itself: on Windows a path that
+    # starts with ``/`` is relative to the current drive, and the parser
+    # records where it would really read from (``C:\\srv\\usb\\demo``).
+    assert parse_source(spec, catalog={"plugins": {}}) == (
+        "local", os.path.abspath(spec), "", "")
 
 
 def test_relative_home_and_file_url_paths_are_made_absolute(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # ``expanduser`` reads HOME on POSIX and USERPROFILE on Windows.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     empty = {"plugins": {}}
     assert parse_source("./demo", catalog=empty).name_or_owner == str(tmp_path / "demo")
     assert parse_source("../demo", catalog=empty).name_or_owner == str(tmp_path.parent / "demo")
     assert parse_source(".", catalog=empty).name_or_owner == str(tmp_path)
     assert parse_source("~/demo.zip", catalog=empty).name_or_owner == str(
         tmp_path / "home" / "demo.zip")
+    # ``url2pathname`` then ``abspath``, so the expectation is spelled the
+    # way the platform spells it (a drive letter in front on Windows).
     assert parse_source("file:///srv/usb/my%20plugin", catalog=empty) == (
-        "local", "/srv/usb/my plugin", "", "")
-    assert parse_source("FILE://localhost/srv/x", catalog=empty).name_or_owner == "/srv/x"
+        "local", os.path.abspath(urllib.request.url2pathname("/srv/usb/my%20plugin")), "", "")
+    assert parse_source("FILE://localhost/srv/x", catalog=empty).name_or_owner == os.path.abspath(
+        urllib.request.url2pathname("/srv/x"))
 
 
 def test_owner_slash_repo_is_still_a_repository_not_a_relative_path():
@@ -658,7 +668,9 @@ def test_uninstall_deletes_the_copy_and_offers_the_path_again(tmp_path, user_roo
     assert outcome.files_removed is True
     assert not (user_root / "classroom-demo").exists()
     assert folder.exists()
-    assert outcome.reinstall_hint == f"cdui plugin install {folder}"
+    # Quoted the way the hint quotes every path: a backslash path on Windows
+    # comes back in double quotes, a plain POSIX one bare.
+    assert outcome.reinstall_hint == f"cdui plugin install {lifecycle._shell_quote(str(folder))}"
 
 
 def test_the_reinstall_hint_needs_the_source_to_still_be_there(tmp_path):
