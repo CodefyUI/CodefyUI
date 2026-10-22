@@ -1832,8 +1832,8 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.uninstallConfirm':
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
   'pluginCenter.source.invalid':
-    '請輸入 owner/repo[@ref]、GitHub URL，或伺服器上的資料夾、.zip、.tar.gz 路徑'
-    + '（/abs、./rel、~/x、file:///x）。',
+    '請輸入 owner/repo[@ref]、GitHub URL、其他 git 主機的 https://host/owner/repo[@ref]，'
+    + '或伺服器上的資料夾、.zip、.tar.gz 路徑（/abs、./rel、~/x、file:///x）。',
 
   // The panel: chrome, list states, filter.
   'pluginCenter.title': '外掛中心',
@@ -1870,10 +1870,11 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Installing something the catalog does not list.
   'pluginCenter.source.label': '從來源安裝',
-  'pluginCenter.source.placeholder': 'owner/repo、GitHub URL 或伺服器上的路徑',
+  'pluginCenter.source.placeholder': 'owner/repo、git URL 或伺服器上的路徑',
   'pluginCenter.source.hint':
-    '可輸入 owner/repo[@ref]、GitHub URL，或伺服器上的外掛資料夾、.zip、.tar.gz'
-    + '（/abs/path、./relative、~/path、file:///path）。',
+    '可輸入 owner/repo[@ref]、GitHub URL、GitLab、Gitea、Codeberg 或其他 git 主機的 '
+    + 'HTTPS URL（https://host/owner/repo[@ref]），或伺服器上的外掛資料夾、.zip、'
+    + '.tar.gz（/abs/path、./relative、~/path、file:///path）。',
   'pluginCenter.source.review': '檢視',
   'pluginCenter.source.reviewing': '檢視中...',
   'pluginCenter.source.fail': '無法取得 {source}：{message}',
@@ -1885,6 +1886,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.review.author': '作者：{author}',
   'pluginCenter.review.localFolder': '本機資料夾：{path}',
   'pluginCenter.review.localArchive': '本機壓縮檔：{path}',
+  'pluginCenter.review.gitRepo': '儲存庫：{url}',
   'pluginCenter.review.nodes': '節點：{nodes}',
   'pluginCenter.review.capabilities': '這個外掛要求：',
   'pluginCenter.review.capNote':
@@ -1950,6 +1952,11 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.error.sourceUnreadable': '壓縮檔已損壞或無法讀取。',
   'pluginCenter.error.sourceLayout':
     '壓縮檔的根目錄或唯一的頂層資料夾裡必須有 cdui.plugin.toml。',
+  'pluginCenter.error.gitUnavailable':
+    '從這個 git 主機安裝需要伺服器上有 git。請在伺服器安裝 git 後重新啟動伺服器。',
+  'pluginCenter.error.gitNotFound': '這個 git 主機上沒有這個儲存庫或 ref，或是需要登入。',
+  'pluginCenter.error.gitTimeout': '複製儲存庫花了太久。請稍後再試。',
+  'pluginCenter.error.gitFailed': 'git 無法複製這個儲存庫。',
 
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',

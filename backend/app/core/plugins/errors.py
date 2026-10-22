@@ -342,3 +342,26 @@ class SourceRefused(PluginInstallError):
         super().__init__(message, hint=hint)
         self.reason = reason
         self.path = path
+
+
+class GitUnavailable(PluginInstallError):
+    """A git source was asked for and no ``git`` executable is on PATH.
+
+    Its own class because the fix is on the server (install git, or put it
+    on the PATH the server runs with), not in the source that was typed.
+    """
+
+
+class GitError(PluginInstallError):
+    """Cloning a repository from a git host failed.
+
+    ``reason`` is ``not_found`` (the repository or the ref does not exist,
+    or the host wants credentials, which is how a private repository looks
+    from outside), ``timeout`` (the clone ran past its time limit) or
+    ``failed`` (anything else git reported). ``hint`` carries the last lines
+    git wrote to stderr.
+    """
+
+    def __init__(self, message: str, *, reason: str, hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.reason = reason

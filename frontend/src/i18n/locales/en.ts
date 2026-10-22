@@ -2098,8 +2098,9 @@ const en = {
   // build does not have gets its own refusal with the list of names that WOULD
   // work — so this one names only what the label and the placeholder do.
   'pluginCenter.source.invalid':
-    'Enter owner/repo[@ref], a GitHub URL, or a folder, .zip or .tar.gz path '
-    + 'on the server (/abs, ./rel, ~/x, file:///x).',
+    'Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on '
+    + 'another git host, or a folder, .zip or .tar.gz path on the server '
+    + '(/abs, ./rel, ~/x, file:///x).',
 
   // The panel: its chrome, what the list can be saying instead of rows, and
   // the filter over them.
@@ -2151,13 +2152,15 @@ const en = {
 
   // Installing something the catalog does not list.
   'pluginCenter.source.label': 'Install from a source',
-  'pluginCenter.source.placeholder': 'owner/repo, a GitHub URL, or a path on the server',
+  'pluginCenter.source.placeholder': 'owner/repo, a git URL, or a path on the server',
   // Under the box, always: the shapes the field takes. A path is read on the
   // machine the server runs on, which is the one fact a student on another
   // laptop would not guess.
   'pluginCenter.source.hint':
-    'Accepts owner/repo[@ref], a GitHub URL, or a plugin folder, .zip or '
-    + '.tar.gz on the server (/abs/path, ./relative, ~/path, file:///path).',
+    'Accepts owner/repo[@ref], a GitHub URL, an HTTPS URL on GitLab, Gitea, '
+    + 'Codeberg or another git host (https://host/owner/repo[@ref]), or a '
+    + 'plugin folder, .zip or .tar.gz on the server (/abs/path, ./relative, '
+    + '~/path, file:///path).',
   'pluginCenter.source.review': 'Review',
   'pluginCenter.source.reviewing': 'Reviewing...',
   'pluginCenter.source.fail': 'Could not fetch {source}: {message}',
@@ -2176,6 +2179,7 @@ const en = {
   // check, the way a repository review names the repository.
   'pluginCenter.review.localFolder': 'Local folder: {path}',
   'pluginCenter.review.localArchive': 'Local archive: {path}',
+  'pluginCenter.review.gitRepo': 'Repository: {url}',
   'pluginCenter.review.nodes': 'Nodes: {nodes}',
   'pluginCenter.review.capabilities': 'This plugin asks for:',
   // The word "capabilities" suggests a sandbox, so the caption states what
@@ -2280,6 +2284,14 @@ const en = {
   'pluginCenter.error.sourceUnreadable': 'The archive is damaged or could not be read.',
   'pluginCenter.error.sourceLayout':
     'The archive needs cdui.plugin.toml at its root or in its one top-level folder.',
+  // A repository on another git host, cloned with git on the SERVER.
+  'pluginCenter.error.gitUnavailable':
+    'Installing from this git host needs git on the server. Install git there '
+    + 'and restart the server.',
+  'pluginCenter.error.gitNotFound':
+    'The git host has no such repository or ref, or it needs a login.',
+  'pluginCenter.error.gitTimeout': 'The clone took too long. Try again later.',
+  'pluginCenter.error.gitFailed': 'git could not clone the repository.',
 
   // Source Control (the sidebar's fifth tab). Parts 2 and 3 of the track:
   // status, stage / unstage / discard, commit, the commit identity, and then

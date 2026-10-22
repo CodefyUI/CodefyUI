@@ -12,6 +12,12 @@ A path on this machine is a fifth shape (``/x``, ``./x``, ``~/x``,
 like any other source. A relative path has to start with ``./`` because
 ``plugins/x`` is already ``owner/repo``.
 
+An HTTPS URL on any other host is a sixth (``https://host/owner/repo[.git]
+[@ref]``): GitLab, Gitea, Codeberg, Bitbucket, a school's own server. It is
+cloned with ``git``. github.com keeps going down the GitHub API road, and
+nothing else that looks like a git remote (``ssh://``, ``git@host:x``,
+``http://``, a URL with a user name in it) is a source.
+
 The catalog wins over the GitHub patterns, and it is checked first for a
 reason: ``deep`` is a legal repository name, so a bare word that IS a catalog
 id has to resolve to the pack that ships here rather than to whatever
@@ -62,6 +68,17 @@ _LOCAL_PATH = re.compile(
     re.IGNORECASE,
 )
 
+# A repository on any HTTPS git host: a DNS host name (no user name, so no
+# ``@`` before the path), an optional port, at least two path segments in
+# the characters GitHub allows, and an optional ``@ref``. Group 1 is the URL
+# without the ref, group 2 the host, group 3 the ref.
+_GIT_HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+_GIT_URL = re.compile(
+    rf"^((?i:https)://({_GIT_HOST_LABEL}(?:\.{_GIT_HOST_LABEL})*)(?::\d{{1,5}})?"
+    rf"(?:/{REPO_SEGMENT}+){{2,}})/?(?:@({REF_SEGMENT}+))?$"
+)
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
 
 class ParsedSource(NamedTuple):
     """Where a plugin is to come from.
@@ -74,7 +91,7 @@ class ParsedSource(NamedTuple):
     wanted.
     """
 
-    kind: Literal["catalog", "github", "local"]
+    kind: Literal["catalog", "github", "local", "git"]
     name_or_owner: str
     repo: str
     ref: str
@@ -83,6 +100,27 @@ class ParsedSource(NamedTuple):
 def is_local_path(spec: str) -> bool:
     """Does *spec* have the shape of a path on this machine? Reads nothing."""
     return bool(_LOCAL_PATH.match(spec))
+
+
+def parse_git_url(spec: str) -> tuple[str, str] | None:
+    """``(url, ref)`` when *spec* is an HTTPS repository on a host other than
+    GitHub, else ``None``. ``ref`` is ``""`` for the default branch.
+
+    Refused here rather than at the clone: a path segment of ``.`` or
+    ``..`` (the URL would name a different repository than it reads as), a
+    ref that walks up or starts with ``-`` (it is handed to ``git`` as an
+    argument), and github.com, which has its own road.
+    """
+    m = _GIT_URL.match(spec)
+    if m is None or m.group(2).lower() in _GITHUB_HOSTS:
+        return None
+    url, ref = m.group(1), m.group(3) or ""
+    segments = url.split("/")[3:]
+    if any(segment in (".", "..") for segment in segments):
+        return None
+    if ref and (_walks_up(ref) or ref.startswith("-")):
+        return None
+    return url, ref
 
 
 def parse_github_url(url: str) -> tuple[str, str] | None:
@@ -155,6 +193,10 @@ def parse_source(
         if _walks_up(ref):
             raise UnparseableSource(spec)
         return ParsedSource("github", m.group(1), m.group(2), ref)
+
+    git = parse_git_url(spec)
+    if git is not None:
+        return ParsedSource("git", git[0], "", git[1])
 
     if _BARE_NAME.match(spec):
         raise UnknownCatalogName(spec, sorted(plugins), catalog_module.catalog_path())

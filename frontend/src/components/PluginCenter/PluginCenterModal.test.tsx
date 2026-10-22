@@ -443,6 +443,55 @@ describe('PluginCenterModal — what a row offers', () => {
     expect(repo.tagName).toBe('SPAN');
   });
 
+  it('links a plugin from another git host by its URL and offers Update', () => {
+    seed({
+      plugins: [
+        entry({
+          id: 'hosted',
+          name: 'Hosted',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'git_url',
+          source: 'https://gitlab.com/school/hosted@v1',
+          url: 'https://gitlab.com/school/hosted',
+          ref: 'v1',
+          sha: '0123456789abcdef0123456789abcdef01234567',
+        }),
+        entry({
+          id: 'odd',
+          name: 'Odd record',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'git_url',
+          url: 'javascript:alert(1)',
+        }),
+        entry({
+          id: 'bare',
+          name: 'No URL recorded',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'git_url',
+          url: null,
+        }),
+      ],
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const link = within(cardFor('hosted')).getByRole('link', {
+      name: 'https://gitlab.com/school/hosted',
+    });
+    expect(link).toHaveAttribute('href', 'https://gitlab.com/school/hosted');
+    expect(within(cardFor('hosted')).getByText('v1 @ 0123456')).toBeInTheDocument();
+    expect(buttonsOn('hosted')).toEqual(['Disable', 'Update', 'Uninstall']);
+    // A URL that is not a web address is never made into a link.
+    expect(within(cardFor('odd')).queryByRole('link')).toBeNull();
+    expect(within(cardFor('bare')).queryByRole('link')).toBeNull();
+  });
+
   it('offers to put a removed plugin back', () => {
     seed({ plugins: [entry({ id: 'stats', status: 'removed' })] });
     open();
@@ -576,7 +625,7 @@ describe('PluginCenterModal — the source box', () => {
 
     const field = screen.getByLabelText('Install from a source');
     expect(field).toHaveAttribute(
-      'placeholder', 'owner/repo, a GitHub URL, or a path on the server',
+      'placeholder', 'owner/repo, a git URL, or a path on the server',
     );
     // The shapes the field takes are on screen under it, and are what the
     // field is described by until a refusal joins them.
@@ -618,7 +667,7 @@ describe('PluginCenterModal — the source box', () => {
     review('not a repo!');
 
     expect(
-      screen.getByText('Enter owner/repo[@ref], a GitHub URL, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
+      screen.getByText('Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
     ).toBeInTheDocument();
     // The server would answer 400 to the same string; this build knows that
     // without the round trip, so it does not make one.
@@ -634,7 +683,7 @@ describe('PluginCenterModal — the source box', () => {
 
     expect(actions.inspect).toHaveBeenCalledWith('owner/demo@v1');
     expect(
-      screen.queryByText('Enter owner/repo[@ref], a GitHub URL, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
+      screen.queryByText('Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
     ).toBeNull();
   });
 
@@ -659,7 +708,7 @@ describe('PluginCenterModal — the source box', () => {
     // keystroke that changes it rather than by another press of Review.
     fireEvent.change(input, { target: { value: 'owner/demo' } });
     expect(
-      screen.queryByText('Enter owner/repo[@ref], a GitHub URL, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
+      screen.queryByText('Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
     ).toBeNull();
     expect(input).not.toHaveAttribute('aria-invalid');
   });
@@ -1221,6 +1270,28 @@ describe('PluginCenterModal — the review', () => {
     render(<PluginCenterModal />);
 
     expect(within(card()).getByText('Local archive: /srv/usb/demo.zip')).toBeInTheDocument();
+  });
+
+  it('names the repository a git review is about', () => {
+    seed({
+      inspection: ready({
+        kind: 'git', source: 'https://codeberg.org/a/b@v2', url: 'https://codeberg.org/a/b',
+        ref: 'v2', sha: 'fedcba9876543210fedcba9876543210fedcba98', consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByText('Repository: https://codeberg.org/a/b')).toBeInTheDocument();
+    expect(within(card()).getByText('v2 @ fedcba9')).toBeInTheDocument();
+  });
+
+  it('says nothing about a place for a git review with no URL', () => {
+    seed({ inspection: ready({ kind: 'git', url: null }) });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).queryByText(/^Repository:/)).toBeNull();
   });
 
   it('says nothing about a place for a local review with no path', () => {

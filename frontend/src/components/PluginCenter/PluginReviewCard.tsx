@@ -123,6 +123,10 @@ export function PluginReviewCard({
       ),
     });
   }
+  // A repository on another git host: the URL is the only name it has.
+  if (data.kind === 'git' && data.url !== null) {
+    facts.push({ key: 'origin', node: t('pluginCenter.review.gitRepo', { url: data.url }) });
+  }
   if (author !== null) {
     facts.push({ key: 'author', node: t('pluginCenter.review.author', { author }) });
   }

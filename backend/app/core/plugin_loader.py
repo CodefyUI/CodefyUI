@@ -159,11 +159,11 @@ def _py_id(plugin_id: str) -> str:
 
 
 #: ``source_kind`` values whose files an install COPIED into the user plugin
-#: directory: a GitHub repository, and a folder or archive from this
-#: machine's disk. Uninstall deletes those files; ``builtin`` (the release's
-#: own) and ``local`` (a ``cdui plugin link``, loaded in place) are never
-#: deleted.
-COPIED_SOURCE_KINDS = frozenset({"github_url", "local_copy"})
+#: directory: a GitHub repository, a repository on another git host, and a
+#: folder or archive from this machine's disk. Uninstall deletes those files;
+#: ``builtin`` (the release's own) and ``local`` (a ``cdui plugin link``,
+#: loaded in place) are never deleted.
+COPIED_SOURCE_KINDS = frozenset({"github_url", "local_copy", "git_url"})
 
 
 def _resolve_plugin_dir(

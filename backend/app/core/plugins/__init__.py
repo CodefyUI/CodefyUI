@@ -37,7 +37,9 @@ from __future__ import annotations
 from .errors import (
     AlreadyInstalled,
     ConsentRequired,
+    GitError,
     GitHubError,
+    GitUnavailable,
     InspectBusy,
     InspectionExpired,
     ManifestError,
@@ -58,7 +60,9 @@ from .errors import (
 __all__ = [
     "AlreadyInstalled",
     "ConsentRequired",
+    "GitError",
     "GitHubError",
+    "GitUnavailable",
     "InspectBusy",
     "InspectionExpired",
     "ManifestError",

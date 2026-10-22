@@ -45,7 +45,7 @@ from typing import Any, Literal
 from app.core import plugin_loader
 
 from . import catalog as catalog_module
-from . import github, listing, local, sources
+from . import git_source, github, listing, local, sources
 from .errors import (
     ManifestError,
     NotInstalled,
@@ -109,11 +109,15 @@ NO_UPDATE_HINTS = {
 }
 
 
+#: The ``source_kind`` values that have a repository to fetch an update from.
+UPDATABLE_SOURCE_KINDS = frozenset({"github_url", "git_url"})
+
+
 @dataclass(frozen=True)
 class Inspection:
     """One source, read and compared against what this install already has."""
 
-    kind: Literal["builtin", "github", "local"]
+    kind: Literal["builtin", "github", "local", "git"]
     mode: Literal["install", "update"]
     plugin_id: str
     catalog_id: str | None
@@ -198,7 +202,7 @@ def _installed_record(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _inspection(
     *,
-    kind: Literal["builtin", "github", "local"],
+    kind: Literal["builtin", "github", "local", "git"],
     plugin_id: str,
     manifest: dict[str, Any],
     lockfile: dict[str, Any],
@@ -478,6 +482,47 @@ def inspect_local(path_str: str, *, lockfile: dict[str, Any]) -> Inspection:
     )
 
 
+def inspect_git(
+    url: str,
+    ref: str,
+    *,
+    lockfile: dict[str, Any],
+    pinned_sha: str | None = None,
+) -> Inspection:
+    """Describe a repository on an HTTPS git host other than GitHub.
+
+    A shallow clone into a temporary directory (see :mod:`.git_source`), the
+    clone copied under the archive caps, and the manifest read from the
+    copy. The commit the clone landed on is the pin, like a resolved GitHub
+    ref: the install clones again and checks out exactly that commit.
+    *pinned_sha* skips to that commit for a restore.
+
+    Raises :class:`~.errors.GitUnavailable`, :class:`~.errors.GitError`,
+    :class:`~.errors.SourceRefused`, :class:`~.errors.ManifestError`,
+    ``tomllib.TOMLDecodeError`` or :class:`~.errors.ReservedPluginId`.
+    """
+    origin = url + (f"@{ref}" if ref else "")
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        sha = git_source.clone(url, ref, Path(workdir) / "clone",
+                               want_sha=pinned_sha)
+        tree = local.materialize(Path(workdir) / "clone", "folder",
+                                 Path(workdir) / "copy")
+        manifest = read_tree_manifest(tree.root, origin=origin)
+    plugin_id = manifest["plugin"]["id"]
+    _refuse_reserved_id(plugin_id, origin)
+    return _inspection(
+        kind="git",
+        plugin_id=plugin_id,
+        manifest=manifest,
+        lockfile=lockfile,
+        source=origin,
+        url=url,
+        ref=ref,
+        sha=sha,
+        consent_required=True,
+    )
+
+
 def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     """Describe whatever the user typed: a catalog name, ``owner/repo``, a URL.
 
@@ -490,6 +535,8 @@ def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     parsed = sources.parse_source(spec)
     if parsed.kind == "local":
         return inspect_local(parsed.name_or_owner, lockfile=lockfile)
+    if parsed.kind == "git":
+        return inspect_git(parsed.name_or_owner, parsed.ref, lockfile=lockfile)
     if parsed.kind != "catalog":
         return inspect_github(
             parsed.name_or_owner, parsed.repo, parsed.ref, lockfile=lockfile
@@ -543,7 +590,7 @@ def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, An
         )
     recorded = entry.get("source_kind")
     source_kind = _text(recorded)
-    if source_kind != "github_url":
+    if source_kind not in UPDATABLE_SOURCE_KINDS:
         raise NotUpdatable(
             f"Plugin {plugin_id!r} does not update from a repository.",
             plugin_id=plugin_id,
@@ -557,6 +604,37 @@ def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, An
             ),
         )
     return entry
+
+
+def _inspect_installed_git(
+    plugin_id: str, entry: dict[str, Any], *, lockfile: dict[str, Any]
+) -> Inspection:
+    """:func:`inspect_installed` for a ``git_url`` entry: clone the recorded
+    URL at the recorded ref again. ``up_to_date`` is the commit comparison
+    the GitHub road makes, and a manifest that now declares another id is
+    refused the same way."""
+    url = _text(entry.get("url"))
+    ref = _text(entry.get("ref"))
+    if sources.parse_git_url(url + (f"@{ref}" if ref else "")) != (url, ref):
+        raise NotUpdatable(
+            f"Cannot tell which repository {plugin_id!r} came from.",
+            plugin_id=plugin_id,
+            source_kind="git_url",
+            hint=f"url={entry.get('url')!r} ref={entry.get('ref')!r}",
+        )
+    found = inspect_git(url, ref, lockfile=lockfile)
+    if found.plugin_id != plugin_id:
+        raise NotUpdatable(
+            f"{plugin_id!r} now installs as {found.plugin_id!r}.",
+            plugin_id=plugin_id,
+            source_kind="git_url",
+            hint=(
+                f"Its repository renamed the plugin. Install "
+                f"{found.plugin_id!r} as a new plugin if that is what you "
+                f"want."
+            ),
+        )
+    return found
 
 
 def _record_moved_repository(
@@ -646,6 +724,8 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
     and installing the new plugin is left as the deliberate act it is.
     """
     entry = updatable_entry(plugin_id, lockfile=lockfile)
+    if entry.get("source_kind") == "git_url":
+        return _inspect_installed_git(plugin_id, entry, lockfile=lockfile)
     url = _text(entry.get("url"))
     match = _GITHUB_URL.match(url) or _GITHUB_SHORT.match(_text(entry.get("source")))
     if match is None:

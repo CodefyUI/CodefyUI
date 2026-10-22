@@ -46,6 +46,10 @@ download replaced by a copy (:mod:`.local`): ``resolve extract verify [deps]
 stage lock``, where ``extract`` copies or unpacks into a temporary directory
 and refuses a copy whose digest is not the one the inspection pinned.
 
+A repository on another HTTPS git host keeps every GitHub step, with the
+download replaced by a shallow clone of the reviewed commit
+(:mod:`.git_source`) and the extract by the local-folder copy of the clone.
+
 ``reload`` is NOT a step here. Re-discovering the registry touches a dict the
 event loop reads, and this function runs on a worker thread; the caller runs
 it after this returns (see ``JobRunner.start``'s ``after_work``).
@@ -66,7 +70,7 @@ from typing import Any, Literal
 from app.core import plugin_loader
 
 from . import catalog as catalog_module
-from . import consent, deps, gate
+from . import consent, deps, gate, git_source
 from . import github as github_client
 from . import local as local_source
 from .errors import (
@@ -103,6 +107,7 @@ SOURCE_KINDS = {
     "builtin": "builtin",
     "github": "github_url",
     "local": "local_copy",
+    "git": "git_url",
 }
 
 #: Minimum seconds between two ``progress`` events for the tarball. The
@@ -142,7 +147,7 @@ class InstallPlan:
     request; ``trust_author`` says the same thing about ``allowed_modules``.
     """
 
-    kind: Literal["builtin", "github", "local"]
+    kind: Literal["builtin", "github", "local", "git"]
     plugin_id: str
     catalog_id: str | None
     owner: str | None
@@ -158,6 +163,9 @@ class InstallPlan:
     #: A local source's path, its form (``"folder"``/``"archive"``) and the
     #: digest the inspection pinned; ``None`` for every other kind.
     path: str | None = None
+    #: A git source's repository URL; ``None`` for every other kind (a
+    #: GitHub plan carries ``owner``/``repo`` instead).
+    url: str | None = None
     source_form: str | None = None
     digest: str | None = None
 
@@ -262,6 +270,7 @@ def plan_from_inspection(
         path=inspection.path,
         source_form=inspection.source_form,
         digest=inspection.digest,
+        url=inspection.url if inspection.kind == "git" else None,
     )
 
 
@@ -320,6 +329,11 @@ def install_plugin_live(
         )
     if plan.kind == "local":
         return _install_from_local(
+            plan, emit=emit, cancel_check=cancel_check,
+            replace_allowed=replace_allowed,
+        )
+    if plan.kind == "git":
+        return _install_from_git(
             plan, emit=emit, cancel_check=cancel_check,
             replace_allowed=replace_allowed,
         )
@@ -519,6 +533,68 @@ def _install_from_local(
 
     return _record(plan, manifest, allowed_modules, emit=emit, specs=specs, backup=backup,
                    plugin_dir=plugin_dir, sha=None)
+
+
+def _install_from_git(
+    plan: InstallPlan,
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    replace_allowed: bool = False,
+) -> InstallOutcome:
+    """Clone the reviewed commit from an HTTPS git host and install it.
+
+    The GitHub road with the download replaced by a shallow clone of the
+    reviewed commit, then the local-folder road from the clone on: the copy
+    under the caps (which leaves ``.git`` out), the manifest check, the
+    gate, deps, staging and the lockfile.
+    """
+    user_root = plugin_loader.plugins_user_root()
+    plugin_dir = user_root / plan.plugin_id
+    origin = (plan.url or "") + (f"@{plan.ref}" if plan.ref else "")
+
+    with _step(emit, "resolve", f"Resolving {origin}"):
+        if not plan.url or not plan.sha:
+            raise PluginInstallError(
+                f"The plan for {plan.plugin_id!r} names no commit.",
+                hint="An install plan is built from an inspection, which "
+                     "pins the commit it read the manifest at.",
+            )
+        _check_destination(
+            plan, plugin_dir, origin=origin,
+            taken_by=catalog_module.reserved_for_copied_source(plan.plugin_id),
+        )
+        git_source.require_git()
+
+    short_sha = plan.sha[:7]
+    staging = user_root / STAGING_DIRNAME / f"{plan.plugin_id}-{short_sha}"
+    _stop_if_cancelled(plan, cancel_check)
+
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        clone_dir = Path(workdir) / "clone"
+        with _step(emit, "download", f"Cloning {origin} at {short_sha}"):
+            git_source.clone(plan.url, plan.ref, clone_dir, want_sha=plan.sha,
+                             cancel_check=cancel_check)
+        _stop_if_cancelled(plan, cancel_check)
+
+        with _step(emit, "extract", f"Copying {plan.plugin_id}"):
+            tree = local_source.materialize(
+                clone_dir, "folder", Path(workdir) / "copy",
+                cancel_check=cancel_check,
+            )
+            manifest = _manifest_at(tree.root, source=f"{origin} at {short_sha}")
+            allowed_modules = tuple(manifest_allowed_modules(manifest))
+            _refuse_a_changed_manifest(plan, manifest, allowed_modules, short_sha)
+        _stop_if_cancelled(plan, cancel_check)
+
+        specs, backup = _verify_and_stage(
+            plan, tree.root, manifest, allowed_modules,
+            staging=staging, plugin_dir=plugin_dir, emit=emit,
+            cancel_check=cancel_check, replace_allowed=replace_allowed,
+        )
+
+    return _record(plan, manifest, allowed_modules, emit=emit, specs=specs,
+                   backup=backup, plugin_dir=plugin_dir, sha=plan.sha)
 
 
 def _check_destination(
@@ -935,6 +1011,11 @@ def _lockfile_record(
         record["path"] = plan.path
         record["source_form"] = plan.source_form
         record["sha256"] = plan.digest
+    elif plan.kind == "git":
+        record["source"] = (plan.url or "") + (f"@{plan.ref}" if plan.ref else "")
+        record["url"] = plan.url
+        record["ref"] = plan.ref
+        record["sha"] = plan.sha
     record["installed_at"] = plugin_loader.now_iso()
     record["manifest"] = plugin_meta if isinstance(plugin_meta, dict) else {}
     record["trusted_modules"] = list(allowed_modules)

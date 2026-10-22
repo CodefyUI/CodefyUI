@@ -2117,9 +2117,11 @@ export async function removePackItem(
 /**
  * Where an INSTALLED plugin's files came from. `local` is a folder linked in
  * place (`cdui plugin link`); `local_copy` is a folder or archive that was
- * COPIED in through the install flow.
+ * COPIED in through the install flow; `git_url` is a repository cloned from
+ * an HTTPS git host other than GitHub.
  */
-export type PluginSourceKind = 'builtin' | 'github_url' | 'local' | 'local_copy';
+export type PluginSourceKind =
+  'builtin' | 'github_url' | 'local' | 'local_copy' | 'git_url';
 
 /**
  * Where a catalog entry stands right now. `removed` is a builtin the user
@@ -2218,9 +2220,10 @@ export interface PluginInspection {
   expires_at: string;
   /**
    * An `external` plugin has no source to inspect, so it never appears.
-   * `local` is a folder or archive on the server's disk.
+   * `local` is a folder or archive on the server's disk, `git` a repository
+   * on another HTTPS git host.
    */
-  kind: 'builtin' | 'github' | 'local';
+  kind: 'builtin' | 'github' | 'local' | 'git';
   /** The same two values as a job's kind: a fresh install, or an update. */
   mode: PluginJobKind;
   plugin_id: string;
@@ -2358,7 +2361,7 @@ const PLUGIN_STATUSES: readonly string[] = [
 ];
 const PLUGIN_KINDS: readonly string[] = ['builtin', 'github', 'external'];
 const PLUGIN_SOURCE_KINDS: readonly string[] = [
-  'builtin', 'github_url', 'local', 'local_copy',
+  'builtin', 'github_url', 'local', 'local_copy', 'git_url',
 ];
 
 /**
@@ -2459,7 +2462,7 @@ type RawInspection = Omit<
 };
 
 /** The inspection kinds this build can draw; anything else reads as `github`. */
-const INSPECTION_KINDS: readonly string[] = ['builtin', 'local'];
+const INSPECTION_KINDS: readonly string[] = ['builtin', 'local', 'git'];
 
 function normalizeInstalled(raw: RawInstalled | null | undefined) {
   if (raw === null || raw === undefined) return null;

@@ -2127,6 +2127,19 @@ describe('plugin center endpoints', () => {
       expect((await inspectPluginSource('/srv/usb/demo')).source_form).toBe('folder');
     });
 
+    it('reads a repository on another git host as kind git', async () => {
+      mockFetch(200, inspection({
+        kind: 'git', url: 'https://codeberg.org/a/b',
+        installed: {
+          sha: 'abc', version: '1.0.0', capabilities: [], trusted_modules: [],
+          enabled: true, source_kind: 'git_url',
+        },
+      }));
+      const out = await inspectPluginSource('https://codeberg.org/a/b');
+      expect(out.kind).toBe('git');
+      expect(out.installed?.source_kind).toBe('git_url');
+    });
+
     it('drops a source form this build cannot name', async () => {
       mockFetch(200, inspection({
         kind: 'local', source_form: 'disk-image' as PluginInspection['source_form'],

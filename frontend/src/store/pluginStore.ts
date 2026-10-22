@@ -63,12 +63,14 @@ export type { PluginJobKind };
  * `catalog` is a bare word, which can only have been meant as one of the
  * built-in packs; the server is what decides whether that name exists.
  * `local` is a path on the SERVER's disk (a folder or an archive), passed on
- * as typed: whether anything is there is the server's question.
+ * as typed: whether anything is there is the server's question. `git` is an
+ * HTTPS repository on a host other than GitHub, which the server clones.
  */
 export type PluginSourceRef =
   | { kind: 'github'; owner: string; repo: string; ref: string | null }
   | { kind: 'catalog'; id: string }
-  | { kind: 'local'; path: string };
+  | { kind: 'local'; path: string }
+  | { kind: 'git'; url: string; ref: string | null };
 
 /**
  * Why an inspection or an install was refused, in the three parts a review
@@ -238,6 +240,35 @@ const CATALOG_NAME = /^[A-Za-z0-9][\w.-]*$/;
  * (`~/x`) or a `file://` URL. `plugins/x` stays `owner/repo`.
  */
 const LOCAL_PATH = /^(?:\/|\\\\|[A-Za-z]:[\\/]|\.{1,2}(?:$|[\\/])|~|file:\/\/)/i;
+/**
+ * An HTTPS repository on any other git host, by the backend's rule
+ * (`sources.py: _GIT_URL` and `parse_git_url`): a host name with no user
+ * name, an optional port, two or more path segments, an optional `@ref`.
+ */
+const GIT_HOST_LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?';
+const GIT_URL = new RegExp(
+  `^(https:\\/\\/(${GIT_HOST_LABEL}(?:\\.${GIT_HOST_LABEL})*)(?::\\d{1,5})?`
+  + '(?:\\/[\\w.-]+){2,})\\/?(?:@([\\w./-]+))?$',
+  'i',
+);
+const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
+
+/** `..` standing alone between slashes: a path that names somewhere else. */
+function walksUp(path: string): boolean {
+  return path.split('/').some((segment) => segment === '..');
+}
+
+/** *spec* as a repository on another git host, or null. */
+function parseGitUrl(spec: string): PluginSourceRef | null {
+  const match = GIT_URL.exec(spec);
+  if (match === null || GITHUB_HOSTS.has(match[2].toLowerCase())) return null;
+  const url = match[1];
+  const ref = match[3] ?? null;
+  const segments = url.split('/').slice(3);
+  if (segments.some((segment) => segment === '.' || segment === '..')) return null;
+  if (ref !== null && (walksUp(ref) || ref.startsWith('-'))) return null;
+  return { kind: 'git', url, ref };
+}
 
 /**
  * Read a plugin source the way the CLI reads one, or answer null.
@@ -258,6 +289,8 @@ export function parseGitHubSource(input: string): PluginSourceRef | null {
   if (short !== null) {
     return { kind: 'github', owner: short[1], repo: short[2], ref: short[3] ?? null };
   }
+  const git = parseGitUrl(spec);
+  if (git !== null) return git;
   // Lower-cased, not echoed: the server looks a catalog name up in lower
   // case, so `EDU` and `edu` are the same pack and the panel should not show
   // them as two.
@@ -340,6 +373,10 @@ export const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
   github_unreachable: 'pluginCenter.error.githubUnreachable',
   local_not_found: 'pluginCenter.error.localNotFound',
   source_refused: 'pluginCenter.error.sourceRefused',
+  git_unavailable: 'pluginCenter.error.gitUnavailable',
+  git_not_found: 'pluginCenter.error.gitNotFound',
+  git_timeout: 'pluginCenter.error.gitTimeout',
+  git_failed: 'pluginCenter.error.gitFailed',
 };
 
 /**

@@ -252,7 +252,10 @@ def test_an_injected_catalog_is_what_gets_searched():
     [
         "not a valid source spec",
         "",
-        "https://gitlab.com/alice/extras",
+        # Off GitHub, only an https URL with no user name is a source.
+        "http://gitlab.com/alice/extras",
+        "ssh://gitlab.com/alice/extras",
+        "https://user@gitlab.com/alice/extras",
         "alice/extras/deeper",
         "-leading-dash",
     ],

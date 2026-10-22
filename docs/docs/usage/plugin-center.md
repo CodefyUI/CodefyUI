@@ -26,7 +26,7 @@ When the job ends, the panel re-reads the catalog, the node definitions and the 
 
 ## Installing from GitHub
 
-Open **Install from a source** above the list. Its field takes a catalog name, `owner/repo`, `owner/repo@ref` (a tag, a branch or a commit), a GitHub URL, or a path on the server (see [the next section](#installing-from-a-folder-or-an-archive)); the line under the field lists the shapes. **Review** reads the manifest at one resolved commit and installs nothing. What comes back is a card at the top of the list, and the install acts on that card rather than on whatever the branch holds a minute later.
+Open **Install from a source** above the list. Its field takes a catalog name, `owner/repo`, `owner/repo@ref` (a tag, a branch or a commit), a GitHub URL, an HTTPS URL on another git host (see [Installing from another git host](#installing-from-another-git-host)), or a path on the server (see [Installing from a folder or an archive](#installing-from-a-folder-or-an-archive)); the line under the field lists the shapes. **Review** reads the manifest at one resolved commit and installs nothing. What comes back is a card at the top of the list, and the install acts on that card rather than on whatever the branch holds a minute later.
 
 The card names the plugin, its author, its version and commit, and the Python packages it would install. Under that is what it is asking for:
 
@@ -51,11 +51,19 @@ An archive may hold the manifest at its root or inside its one top-level folder;
 
 The install is pinned to what the review read: the sha256 of the archive file, or of every file in the copied folder. A folder edited between **Review** and **Install** is refused with *changed after it was reviewed*; review it again. There is no **Update** for a local copy, since there is nothing to fetch from. Install the newer copy over it with **Reinstall** (or `cdui plugin install <path> --force`).
 
+## Installing from another git host
+
+A plugin on GitLab, Gitea or Forgejo, Codeberg, Bitbucket or a school's own server goes in the same field as `https://host/owner/repo`, with an optional `.git` and an optional `@ref` (a branch, a tag or a commit): `https://gitlab.com/school/ml-nodes.git@v1.2`, `https://git.school.edu:3000/teacher/demo`. Only `https://` URLs are accepted, without a user name or token in them; `ssh://`, `git@host:owner/repo` and `http://` are refused. A github.com URL keeps going through GitHub's API as described above.
+
+**Review** clones the repository with `git` on the server (a shallow clone of the ref, or the full history when the ref is a commit) into a temporary directory and reads the manifest there; the clone is held to the folder limits in the previous section, `.git` is left out of the copy, and a clone that runs past five minutes is stopped. The card says **Repository:** with the URL and the commit it read. Installing clones that commit again, so a branch that moved after the review installs what you reviewed. The installed row links the URL and offers **Update**, which clones the recorded URL at the recorded ref again and answers the same three ways as a GitHub update.
+
+The server needs `git` on its PATH for this source. A server without it refuses with *Installing from this git host needs git on the server*; GitHub repositories and local folders do not need it. A private repository looks the same as a missing one from outside: the server never asks for a password.
+
 ## Enable, disable, update, uninstall
 
 **Disable** keeps the plugin on disk and takes its nodes out of the registry; **Enable** puts them back. Neither downloads anything.
 
-**Update** is offered only on a plugin fetched from a repository, and answers one of three ways: the plugin is up to date, the new version asks for something the installed one did not (so a review card opens, with the added capabilities on it), or there is nothing new to agree to and the job starts. A built-in pack has no Update button: it ships with the release and updates with `cdui update`. Neither has a directory you linked with `cdui plugin link`, which is already whatever is on your disk, or a plugin copied from a local folder or archive.
+**Update** is offered only on a plugin fetched from a repository (on GitHub or another git host), and answers one of three ways: the plugin is up to date, the new version asks for something the installed one did not (so a review card opens, with the added capabilities on it), or there is nothing new to agree to and the job starts. A built-in pack has no Update button: it ships with the release and updates with `cdui update`. Neither has a directory you linked with `cdui plugin link`, which is already whatever is on your disk, or a plugin copied from a local folder or archive.
 
 **Uninstall** asks first, and the question names the plugin and both halves of what removing it does: graphs that use its nodes will stop running, and its Python packages stay installed. A downloaded or copied plugin's directory is deleted (the folder or archive it was copied from stays where it is); a built-in keeps its files and is remembered as removed, so it stays out until you install it by name again. Nothing here removes a plugin's Python packages: pulling a package out from under the interpreter that imported it is not something a running server may do to itself. When the uninstall is done, the right-hand column names the packages it left behind that nothing else still needs, and the `uv pip uninstall` line that removes them once the server is stopped.
 
@@ -75,13 +83,16 @@ A downloaded plugin, and one copied from a local folder or archive, goes to `<US
 
 ## Troubleshooting
 
-- **"Enter owner/repo[@ref], a GitHub URL, or a folder, .zip or .tar.gz path on the server ..."** The field refused the string without asking the server, because it is not a source: what it takes is one of the names this build ships, an `owner/repo` with an optional `@ref`, a GitHub URL, or a path in one of the spellings under [Installing from a folder or an archive](#installing-from-a-folder-or-an-archive). A bare word that is not a pack this build knows is refused by the server instead, and the names that would have worked are printed under it.
+- **"Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server ..."** The field refused the string without asking the server, because it is not a source: what it takes is one of the names this build ships, an `owner/repo` with an optional `@ref`, a GitHub URL, an `https://` URL on another git host, or a path in one of the spellings under [Installing from a folder or an archive](#installing-from-a-folder-or-an-archive). A bare word that is not a pack this build knows is refused by the server instead, and the names that would have worked are printed under it.
 - **"Nothing was installed: ...'s Python packages would replace one the server is using."** A plugin's Python packages are installed add-only, under a constraints file that pins every package installed in the server's environment to its current version (editable installs, such as CodefyUI itself, are left out), so nothing a plugin asks for can replace a package the server already has. When that cannot be done live, the job stops before staging or recording anything -- the plugin is not installed, and nothing on disk changed. Stop the server, run the `uv pip install` line the panel prints, and install again. Asking the same running server a second time ends the same way.
 - **An uninstall that says the directory is still there.** Something has a file open, which on Windows is the ordinary cause. Nothing was removed: the lockfile entry stays and the plugin stays installed. Close whatever is using the directory, or stop the server, and uninstall again.
 - **Files missing.** The lockfile has the plugin and its directory is gone. **Install** opens a review card saying the plugin is already installed; press **Reinstall** on it to fetch the files again. **Uninstall** clears the record.
 - **"Nothing at that path on the server."** The path is read on the server's machine. Check that the drive is mounted there and that a relative path starts from the server's working directory; an absolute path avoids the question.
 - **"This plugin contains a link, a device file or a path outside its folder."** and the other refusals about size, file count or layout name the rule the folder or archive broke. Nothing was copied.
 - **"... changed after it was reviewed."** The files differ from the ones the review read. Press **Review** again and install what that shows.
+- **"Installing from this git host needs git on the server."** Install git on the machine the server runs on, make sure it is on the PATH the server starts with, and restart the server.
+- **"The git host has no such repository or ref, or it needs a login."** Check the URL and the `@ref`. A private repository cannot be installed this way; download it as an archive and install the file instead.
+- **"The clone took too long."** The host is slow or unreachable from the server. Try again later, or install from an archive of the repository.
 - **"GitHub's request limit was reached."** Unauthenticated GitHub requests are capped per address, which a classroom behind one NAT can exhaust in a morning. Set `CODEFYUI_GITHUB_TOKEN` on the server, or try again later.
 
 For the routes, the security tiers, and every refusal by name, see [Plugins](/advanced/plugins#plugin-center).

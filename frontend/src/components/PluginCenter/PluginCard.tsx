@@ -3,7 +3,9 @@ import type { PluginCatalogEntry } from '../../api/rest';
 import type { PluginJob } from '../../store/pluginStore';
 import { useI18n } from '../../i18n';
 import { Pill } from '../shared/Pill';
-import { depSpec, originLabel, provenancePin, statusKey, statusTone } from './pluginStatus';
+import {
+  depSpec, httpUrl, originLabel, provenancePin, statusKey, statusTone,
+} from './pluginStatus';
 import styles from '../PackCenter/PackCenterModal.module.css';
 
 /**
@@ -98,7 +100,8 @@ export function PluginCard({
   // Only a plugin fetched from a repository has anything to update FROM: a
   // built-in ships with the server, and a linked folder is already whatever
   // the folder says.
-  const showUpdate = status === 'installed' && entry.source_kind === 'github_url';
+  const showUpdate = status === 'installed'
+    && (entry.source_kind === 'github_url' || entry.source_kind === 'git_url');
   // `missing_files` is in the lockfile with its directory gone, so removing
   // the record is a real answer to it. `removed` is the opposite — already a
   // tombstone, with nothing left to remove.
@@ -118,6 +121,19 @@ export function PluginCard({
   // copied from is what says where it came from.
   if (entry.source_kind === 'local_copy' && entry.source !== '') {
     provenance.push({ key: 'path', node: <span>{entry.source}</span> });
+  }
+  // A repository on another git host has no `owner/repo`; its URL is the
+  // name, and the link. `httpUrl` because the lockfile is a file on disk.
+  const gitUrl = entry.source_kind === 'git_url' ? httpUrl(entry.url ?? '') : null;
+  if (gitUrl !== null) {
+    provenance.push({
+      key: 'url',
+      node: (
+        <a className={styles.linkBtn} href={gitUrl} target="_blank" rel="noreferrer">
+          {gitUrl}
+        </a>
+      ),
+    });
   }
   if (repo !== '') {
     provenance.push({

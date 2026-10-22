@@ -79,7 +79,9 @@ from ..core.plugins.catalog import (
 from ..core.plugins.errors import (
     AlreadyInstalled,
     ConsentRequired,
+    GitError,
     GitHubError,
+    GitUnavailable,
     InspectBusy,
     InspectionExpired,
     ManifestError,
@@ -141,8 +143,8 @@ _LOCKFILE_WAIT_S = 0.2
 class PluginInspectRequest(BaseModel):
     """What to read. One field, and ``extra="forbid"`` keeps it one.
 
-    A source is a catalog name, ``owner/repo``, a GitHub URL or a path on
-    the server's disk -- never a
+    A source is a catalog name, ``owner/repo``, a GitHub URL, an HTTPS URL
+    on another git host, or a path on the server's disk -- never a
     manifest, a sha or a capability list. Everything an install later acts
     on is read by the SERVER from that source and kept under an inspection
     id, so there is no field here for a client to smuggle a decision through.
@@ -315,6 +317,27 @@ def _source_refusal(exc: SourceRefused) -> HTTPException:
     if exc.reason == "not_found":
         return _coded(404, "local_not_found", path=exc.path)
     return _coded(400, "source_refused", reason=exc.reason, path=exc.path)
+
+
+#: :attr:`~.errors.GitError.reason` as a status and a code.
+_GIT_REFUSAL = {
+    "not_found": (404, "git_not_found"),
+    "timeout": (504, "git_timeout"),
+}
+
+
+def _git_refusal(exc: GitUnavailable | GitError) -> HTTPException:
+    """A clone that could not happen, split by what the user can do next.
+
+    No git on the server is a 400 ``git_unavailable``: the fix is installing
+    git there, and nothing about the URL. A repository or ref the host does
+    not have (or will not show without credentials) is a 404, a clone past
+    its time limit a 504, anything else git reported a 502 ``git_failed``.
+    """
+    if isinstance(exc, GitUnavailable):
+        return _coded(400, "git_unavailable")
+    status, code = _GIT_REFUSAL.get(exc.reason, (502, "git_failed"))
+    return _coded(status, code)
 
 
 def _job_not_found(job_id: str) -> HTTPException:
@@ -582,6 +605,9 @@ async def inspect_plugin_source(
     except SourceRefused as exc:
         # Before ``PluginInstallError``, which it is.
         raise _source_refusal(exc) from None
+    except (GitUnavailable, GitError) as exc:
+        # Also ``PluginInstallError``s, and also answered first.
+        raise _git_refusal(exc) from None
     except PluginInstallError as exc:
         raise _inspect_refusal(exc) from None
     return _inspection_payload(stored)
@@ -907,6 +933,8 @@ async def update_plugin(plugin_id: str, request: Request,
         raise _github_refusal(exc) from None
     except SourceRefused as exc:
         raise _source_refusal(exc) from None
+    except (GitUnavailable, GitError) as exc:
+        raise _git_refusal(exc) from None
     except PluginInstallError as exc:
         # An id this build reserves (the repository renamed itself into one),
         # and whatever else the inspection path refuses a source with.

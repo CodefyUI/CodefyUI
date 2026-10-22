@@ -88,6 +88,7 @@ from app.core.plugins.errors import (
     AlreadyInstalled,
     ConsentRequired,
     GitHubError,
+    GitUnavailable,
     PluginCancelled,
     PluginInstallError,
     PluginNeedsRestart,
@@ -431,10 +432,12 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
         raise ValueError(
             t(
                 f"無法解析外掛來源：{spec!r}。請輸入內建包名稱"
-                f"（例如 {example}）、owner/repo[@ref]、GitHub URL，"
+                f"（例如 {example}）、owner/repo[@ref]、GitHub URL、"
+                f"其他 git 主機的 https://host/owner/repo[@ref]，"
                 f"或本機資料夾／壓縮檔路徑（/abs、./rel、~/x、file:///x）。",
                 f"Could not parse plugin source: {spec!r}. "
                 f"Expected a catalog name (e.g. {example}), owner/repo[@ref], a GitHub URL, "
+                f"https://host/owner/repo[@ref] on another git host, "
                 f"or a local folder/archive path (/abs, ./rel, ~/x, file:///x).",
             )
         ) from None
@@ -1282,6 +1285,8 @@ def cmd_install(args: argparse.Namespace) -> int:
             rc = _install_by_catalog_name(a, args, lockfile)
         elif kind == "local":
             rc = _install_local(a, args, lockfile)
+        elif kind == "git":
+            rc = _install_git(a, ref, args, lockfile)
         else:
             rc = _install_github(a, b, ref, args, lockfile)
         if rc != 0:
@@ -1564,6 +1569,42 @@ def _install_local(path: str, args, lockfile) -> int:
     else:
         info(f"本機資料夾（sha256 {short}）", f"Local folder (sha256 {short})")
     return _install_inspected(found, args, short=short)
+
+
+def _report_git_unavailable(exc: GitUnavailable) -> int:
+    """No git on this machine: said in both languages, with what to do."""
+    err(
+        "從其他 git 主機安裝需要 git，但這台機器的 PATH 上找不到 git。"
+        "請安裝 git（https://git-scm.com/downloads）後再試；GitHub 儲存庫與本機資料夾不需要 git。",
+        f"{exc} Install git (https://git-scm.com/downloads) and try again; "
+        f"GitHub repositories and local folders do not need it.",
+    )
+    return 1
+
+
+def _install_git(url: str, ref: str, args, lockfile, *,
+                 expected_id: str | None = None) -> int:
+    """Install a plugin from a repository on an HTTPS git host other than
+    GitHub: a shallow clone, the same preview and consent questions, and
+    the shared flow, which clones the reviewed commit again."""
+    info(f"來源：{url}", f"Source: {url}")
+    try:
+        found = core_inspect.inspect_git(
+            url, ref, lockfile=lockfile,
+            pinned_sha=getattr(args, "pinned_sha", None),
+        )
+    except GitUnavailable as e:
+        return _report_git_unavailable(e)
+    except (ValueError, RuntimeError) as e:
+        raw_err(str(e))
+        _print_hint(getattr(e, "hint", None))
+        return 1
+    short_sha = (found.sha or "")[:7]
+    info(
+        f"版本：{ref or 'default branch'} ({short_sha})",
+        f"Ref: {ref or 'default branch'} ({short_sha})",
+    )
+    return _install_inspected(found, args, expected_id=expected_id, short=short_sha)
 
 
 def _install_inspected(
@@ -2411,8 +2452,8 @@ def cmd_info(args: argparse.Namespace) -> int:
         err(str(e), str(e))
         return 2
 
-    if kind == "local":
-        return _info_from_inspection(a, lockfile)
+    if kind in ("local", "git"):
+        return _info_from_inspection(spec, lockfile)
 
     owner, repo = a, b
     if kind == "catalog":
@@ -2472,19 +2513,25 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 def _info_from_inspection(spec: str, lockfile: dict[str, Any]) -> int:
     """``cdui plugin info`` for a source that has to be read to be described:
-    a local folder or archive. Installs nothing."""
+    a local folder or archive, or a clone from another git host. Installs
+    nothing."""
     try:
         found = core_inspect.inspect_source(spec, lockfile=lockfile)
+    except GitUnavailable as e:
+        return _report_git_unavailable(e)
     except (ValueError, RuntimeError) as e:
         raw_err(str(e))
         _print_hint(getattr(e, "hint", None))
         return 1
-    synthetic_entry = {
-        "source_kind": "local_copy",
+    synthetic_entry: dict[str, Any] = {
+        "source_kind": core_flows.SOURCE_KINDS.get(found.kind, found.kind),
         "source": found.source,
-        "sha256": found.digest,
         "manifest": found.manifest.get("plugin", {}),
     }
+    if found.kind == "git":
+        synthetic_entry.update(url=found.url, ref=found.ref, sha=found.sha)
+    else:
+        synthetic_entry["sha256"] = found.digest
     _print_info(found.plugin_id, found.manifest, synthetic_entry, None,
                 installed=False)
     return 0
@@ -2645,6 +2692,17 @@ def cmd_update(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
+        if kind == "git_url":
+            rc, was_updated = _update_git(plugin_id, entry, lockfile)
+            if rc != 0:
+                return rc
+            if was_updated:
+                updated += 1
+                lockfile = load_lockfile()
+            else:
+                skipped += 1
+            continue
+
         if kind != "github_url":
             warn(f"{plugin_id}: 未知的 source_kind {kind!r}", f"{plugin_id}: unknown source_kind {kind!r}")
             skipped += 1
@@ -2715,6 +2773,46 @@ def cmd_update(args: argparse.Namespace) -> int:
         f"Done: updated {updated}, skipped {skipped}",
     )
     return 0
+
+
+def _update_git(plugin_id: str, entry: dict[str, Any], lockfile) -> tuple[int, bool]:
+    """``cdui plugin update`` for a plugin from another git host. Returns
+    ``(exit code, whether it was updated)``.
+
+    Re-clones the recorded URL at the recorded ref, the same inspection the
+    Plugin Center's Update makes, and reinstalls when the commit moved. The
+    capability rule is the GitHub one: no prompt for what the lockfile
+    already grants, a stop for anything new.
+    """
+    try:
+        found = core_inspect.inspect_installed(plugin_id, lockfile=lockfile)
+    except GitUnavailable as e:
+        return _report_git_unavailable(e), False
+    except (ValueError, RuntimeError) as e:
+        err(f"{plugin_id}: {e}", f"{plugin_id}: {e}")
+        _print_hint(getattr(e, "hint", None))
+        return 1, False
+    new_sha = found.sha or ""
+    if found.up_to_date:
+        info(
+            f"{plugin_id}: 已是最新版 ({new_sha[:7]})",
+            f"{plugin_id}: already up to date ({new_sha[:7]})",
+        )
+        return 0, False
+    section(
+        f"更新 {plugin_id}: {str(entry.get('sha', ''))[:7]} {ARROW} {new_sha[:7]}",
+        f"Updating {plugin_id}: {str(entry.get('sha', ''))[:7]} {ARROW} {new_sha[:7]}",
+    )
+    synthetic_args = argparse.Namespace(
+        force=True,
+        no_confirm=True,
+        trust_author=bool(entry.get("trusted_modules")),
+        accept_capabilities=False,
+        prior_capabilities=list(entry.get("capabilities") or []),
+    )
+    rc = _install_inspected(found, synthetic_args, expected_id=plugin_id,
+                            short=new_sha[:7])
+    return rc, rc == 0
 
 
 def cmd_search(args: argparse.Namespace) -> int:
@@ -2906,7 +3004,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_inst = sub.add_parser("install", help="Install one or more plugin packs")
     p_inst.add_argument("source", nargs="+",
-                        help="catalog name(s), owner/repo[@ref], a GitHub URL, or a "
+                        help="catalog name(s), owner/repo[@ref], a GitHub URL, "
+                             "https://host/owner/repo[@ref] on another git host, or a "
                              "local folder/.zip/.tar.gz path (/abs, ./rel, ~/x, "
                              "file:///x) — one or more")
     p_inst.add_argument("--force", action="store_true",
