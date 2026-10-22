@@ -54,6 +54,10 @@ _CONCEPT_EXAMPLES = (
     "Classical/KFold-Cross-Validation",
     "Others/Reduce-And-Switch",
     "Others/Tensor-Ops-Tour",
+    "RNN/Conv1d-Sequence-Classifier",
+    "RL/Reward-Model-Bradley-Terry",
+    "RL/Discounted-Returns",
+    "Others/One-Backward-Pass",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -79,10 +83,17 @@ _PAPER_EXAMPLES = (
     "Papers/DQN-CartPole",
     "Papers/PPO-CartPole",
     "Papers/QLearning-GridWorld",
+    "Papers/GroupNorm-Wu-2018",
+)
+
+#: The ``llm`` examples written to the same note rules. The others in that
+#: section predate them.
+_LLM_EXAMPLES = (
+    "LLM/Data-Mix-Ratios",
 )
 
 #: The examples the note rules below hold over.
-_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES
+_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES + _LLM_EXAMPLES
 
 
 def _graph(key: str) -> dict:
@@ -631,3 +642,195 @@ def test_the_resumed_loop_picks_up_at_the_epoch_the_checkpoint_stores(
     assert tuple(results["train-2"]["losses"].shape) == (10,)
     assert tuple(results["curve"]["tensor"].shape) == (20,)
     assert torch.equal(results["load"]["losses"], results["train-1"]["losses"])
+# ── Conv1d sequence classifier: the numbers its notes quote ───────────────
+
+def _notes_of(key: str) -> str:
+    return "\n".join(n["data"]["noteContent"] for n in _notes(_graph(key)))
+
+
+def test_the_conv1d_classifier_learns_the_first_token_and_not_the_last():
+    """Trained with the answer first, it scores 1.00 there and about chance
+    with the answer last; the note explains the gap with the padded edge."""
+    key = "RNN/Conv1d-Sequence-Classifier"
+    text = _notes_of(key)
+    for quoted in ("from 2.20 to 0.05", "scores 1.00 on 500 sequences", "scores 0.02 there"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    losses = results["train"]["losses"].tolist()
+    first, last = results["eval"]["accuracy"], results["eval-last"]["accuracy"]
+    assert losses[0] == pytest.approx(2.20, abs=0.1), losses
+    assert losses[-1] < 0.2, losses
+    assert first == pytest.approx(1.0, abs=0.03), (first, last)
+    # Seeds 0 to 4 land between 0.02 and 0.11: chance is 0.10.
+    assert last < 0.2, (first, last)
+
+
+def test_the_conv1d_layers_are_the_ones_the_note_walks_through():
+    graph = _graph("RNN/Conv1d-Sequence-Classifier")
+    spec = json.loads(_params(graph, "model")["layers"])
+    types = [n["type"] for n in spec["nodes"]]
+    assert types == ["Input", "Embedding", "Reshape", "Conv1d", "BatchNorm1d", "ReLU",
+                     "Conv1d", "BatchNorm1d", "ReLU", "Reshape", "AdaptiveAvgPool2d",
+                     "Flatten", "Linear", "Output"]
+    train, test, last = (_params(graph, k) for k in ("seq-train", "seq-test", "seq-last"))
+    assert train["kind"] == test["kind"] == "recall_first"
+    assert last["kind"] == "recall_last"
+    assert len({train["seed"], test["seed"], last["seed"]}) == 3
+    for k in ("seq_len", "n_classes", "n_distractors"):
+        assert train[k] == test[k] == last[k], k
+
+
+# ── Reward model from preferences: Bradley-Terry before and after ─────────
+
+def test_the_bradley_terry_example_lands_where_its_note_says():
+    """Untrained: about ln 2 and a coin flip's ranking. Trained: 0.11 and
+    0.96 on the held-out pairs, the number BradleyTerryTrain reports too."""
+    key = "RL/Reward-Model-Bradley-Terry"
+    text = _notes_of(key)
+    for quoted in ("Its loss is 0.69", "it ranks 0.57", "the loss drops to 0.11",
+                   "and 0.96 of them"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    before, after = results["bt-before"], results["bt-after"]
+    assert f"{float(before['loss']):.2f}" == "0.69"
+    assert f"{before['accuracy']:.2f}" == "0.57"
+    assert f"{float(after['loss']):.2f}" == "0.11"
+    assert f"{after['accuracy']:.2f}" == "0.96"
+    assert after["accuracy"] == pytest.approx(
+        float(results["train"]["holdout_accuracy"][-1]))
+    assert tuple(after["preference_prob"].shape) == (256,)
+
+
+def test_the_untrained_heads_are_the_head_bradley_terry_train_starts_from():
+    """The note says so: same width and seed, same weights."""
+    from torch import nn
+
+    from app.core.seeding import seeded_linear_init
+
+    graph = _graph("RL/Reward-Model-Bradley-Terry")
+    rm_w, rm_l, train = (_params(graph, k) for k in ("rm-w", "rm-l", "train"))
+    assert rm_w == rm_l
+    assert (rm_w["hidden_dim"], rm_w["seed"]) == (train["hidden_dim"], train["seed"])
+
+    results = _run_with_its_seed("RL/Reward-Model-Bradley-Terry")
+    head = results["rm-w"]["model"].net
+    start = seeded_linear_init(nn.Sequential(
+        nn.Linear(16, train["hidden_dim"]), nn.ReLU(),
+        nn.Linear(train["hidden_dim"], 1)), train["seed"])
+    for got, want in zip(head.parameters(), start.parameters()):
+        assert torch.equal(got.detach().cpu(), want.detach())
+
+
+# ── Discounted returns: G_t = gamma^(9 - t) for a reward at the last step ─
+
+def test_discount_folds_one_final_reward_into_gamma_powers():
+    key = "RL/Discounted-Returns"
+    text = _notes_of(key)
+    for quoted in ("0.002 at gamma 0.5", "0.387 at gamma 0.9", "0.914 at gamma 0.99",
+                   "G_t = r_t + gamma G_{t+1}"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    for node, gamma, first in (("disc-05", 0.5, "0.002"), ("disc-09", 0.9, "0.387"),
+                               ("disc-099", 0.99, "0.914")):
+        assert _params(_graph(key), node)["gamma"] == gamma
+        returns = results[node]["returns"]
+        expected = torch.tensor([gamma ** (9 - t) for t in range(10)])
+        assert torch.allclose(returns, expected, atol=1e-6), (node, returns)
+        assert f"{results[node]['first_return']:.3f}" == first
+
+    plotted = results["concat"]["tensor"]
+    assert tuple(plotted.shape) == (3, 10)
+    assert torch.equal(plotted[2], results["disc-099"]["returns"])
+
+
+def test_the_step_cost_the_rewards_note_suggests_does_what_it_says():
+    """A -0.1 before the final 1: G_0 < 0 at gamma 0.5 and 0.9, > 0 at 0.99."""
+    from app.nodes.rl.discount_node import DiscountNode
+
+    rewards = torch.tensor([-0.1] * 9 + [1.0])
+    first = {g: DiscountNode().execute({"rewards": rewards}, {"gamma": g})["first_return"]
+             for g in (0.5, 0.9, 0.99)}
+    assert first[0.5] < 0 and first[0.9] < 0 < first[0.99], first
+
+
+# ── Data mix ratios: the counts its notes quote ───────────────────────────
+
+def test_the_data_mix_example_mixes_the_counts_its_note_gives():
+    """36 rows as found, 1 in 6 a fact; 60 rows by ratio, 30 from each."""
+    key = "LLM/Data-Mix-Ratios"
+    text = _notes_of(key)
+    for quoted in ("30 short children's stories and 6", "the mixture has 36 rows",
+                   "1 in 6 of them is a fact", "each corpus supplies 30",
+                   "every fact five times", "45 stories (15 of them a second time) and 15 facts"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    assert results["corpus-stories"]["num_rows"] == 30
+    assert results["corpus-facts"]["num_rows"] == 6
+    natural, ratio = results["mix-natural"], results["mix-ratio"]
+    assert natural["num_rows"] == 36 and ratio["num_rows"] == 60
+    assert natural["__log__"].endswith("corpus_1: 30, corpus_2: 6.")
+    assert ratio["__log__"].endswith("corpus_1: 30 of 30, corpus_2: 30 of 6.")
+
+    facts = {results["corpus-facts"]["dataset"][i] for i in range(6)}
+    rows = [ratio["dataset"][i] for i in range(60)]
+    assert sum(row in facts for row in rows) == 30
+    assert all(rows.count(fact) == 5 for fact in facts)
+
+
+def test_the_3_to_1_mix_the_ratio_note_suggests_gives_45_and_15():
+    from app.nodes.llm.data_mix_dataset_node import DataMixDatasetNode
+
+    out = DataMixDatasetNode().execute(
+        {"corpus_1": [f"s{i}" for i in range(30)], "corpus_2": [f"f{i}" for i in range(6)]},
+        {"sources": 2, "weights": "3, 1", "mode": "ratio", "total_rows": 60, "seed": 0})
+    assert out["__log__"].endswith("corpus_1: 45 of 30, corpus_2: 15 of 6.")
+
+
+# ── One backward pass: the gradients the overview quotes ──────────────────
+
+def test_one_backward_pass_reaches_only_the_rows_it_looked_up():
+    """With Capture gradients on, as the note asks: the table's gradient is
+    the sum of each row's weights over its lookups, zero for unread rows."""
+    from app.core.execution_context import ExecutionContext
+    from app.core.node_state_store import NodeStateStore
+    from app.core.run_output_store import RunOutputStore
+
+    key = "Others/One-Backward-Pass"
+    text = _notes_of(key)
+    for quoted in ("[1, 1] for row 0", "[5, 5] for row 2", "[4, 4] for row 3",
+                   "zero for rows 1 and 4", "Capture gradients", "L = sum(z)"):
+        assert quoted in text, quoted
+
+    graph = _graph(key)
+    store = RunOutputStore(max_runs=2)
+    context = ExecutionContext(
+        device="cpu", seed=graph["settings"]["seed"], graph_id="one-backward-pass",
+        weights_persistent=True, node_state_store=NodeStateStore(), backward_mode=True)
+
+    async def run_and_read():
+        results = await execute_graph(
+            graph["nodes"], graph["edges"], context=context, run_id="bwd",
+            output_store=store, record_outputs=True)
+        grads = {name: await store.get("bwd", node, port) for name, node, port in (
+            ("table", "emb", "__weight_grad__weight"),
+            ("weights", "weights", "tensor__grad"),
+            ("rows", "emb", "tensor__grad"))}
+        return results, grads
+
+    results, grads = asyncio.run(run_and_read())
+    assert torch.equal(grads["table"].cpu(), torch.tensor(
+        [[1.0, 1.0], [0.0, 0.0], [5.0, 5.0], [4.0, 4.0], [0.0, 0.0]]))
+    assert torch.equal(grads["rows"].cpu(), torch.tensor([[1.0] * 2, [2.0] * 2, [3.0] * 2, [4.0] * 2]))
+    rows = results["emb"]["tensor"].detach().cpu()
+    assert torch.allclose(grads["weights"].cpu(), rows.sum(dim=1, keepdim=True))
+    assert results["stats"]["sum"] == pytest.approx(float(results["mul"]["tensor"].detach().sum()))
+
+
+def test_one_backward_pass_runs_as_a_plain_forward_with_capture_off():
+    results = _run_with_its_seed("Others/One-Backward-Pass")
+    assert torch.equal(results["bwd"]["tensor"], results["mul"]["tensor"])
+    assert tuple(results["stats"]["tensor"].shape) == (4, 2)

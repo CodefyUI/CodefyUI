@@ -1,0 +1,705 @@
+{
+  "name": "GroupNorm holds at batch 2",
+  "description": "BatchNorm vs GroupNorm, 2 images a step",
+  "gallery": {
+    "section": "papers",
+    "order": 25
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "subset",
+      "type": "DatasetSplit",
+      "position": {
+        "x": 360,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "val_fraction": 0.0,
+          "subset": 3000,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 2,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "dl-train-32",
+      "type": "DataLoader",
+      "position": {
+        "x": 680,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "batch_size": 32,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 360,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "model-bn",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":1,\"out_channels\":16,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":16}},{\"id\":\"l2\",\"type\":\"ReLU\"},{\"id\":\"l3\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l4\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l5\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":32}},{\"id\":\"l6\",\"type\":\"ReLU\"},{\"id\":\"l7\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l8\",\"type\":\"Flatten\"},{\"id\":\"l9\",\"type\":\"Linear\",\"params\":{\"in_features\":1568,\"out_features\":64}},{\"id\":\"l10\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":64}},{\"id\":\"l11\",\"type\":\"ReLU\"},{\"id\":\"l12\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"e7\",\"source\":\"l6\",\"target\":\"l7\"},{\"id\":\"e8\",\"source\":\"l7\",\"target\":\"l8\"},{\"id\":\"e9\",\"source\":\"l8\",\"target\":\"l9\"},{\"id\":\"e10\",\"source\":\"l9\",\"target\":\"l10\"},{\"id\":\"e11\",\"source\":\"l10\",\"target\":\"l11\"},{\"id\":\"e12\",\"source\":\"l11\",\"target\":\"l12\"},{\"id\":\"eout\",\"source\":\"l12\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-bn",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.02
+        }
+      }
+    },
+    {
+      "id": "train-bn",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "epochs": 2,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-test-bn",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-bn",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "label": "BatchNorm, batch 2: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "viz-bn",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "title": "BatchNorm, batch 2: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "model-gn",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":1,\"out_channels\":16,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l1\",\"type\":\"GroupNorm\",\"params\":{\"num_groups\":4,\"num_channels\":16}},{\"id\":\"l2\",\"type\":\"ReLU\"},{\"id\":\"l3\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l4\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l5\",\"type\":\"GroupNorm\",\"params\":{\"num_groups\":4,\"num_channels\":32}},{\"id\":\"l6\",\"type\":\"ReLU\"},{\"id\":\"l7\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l8\",\"type\":\"Flatten\"},{\"id\":\"l9\",\"type\":\"Linear\",\"params\":{\"in_features\":1568,\"out_features\":64}},{\"id\":\"l10\",\"type\":\"GroupNorm\",\"params\":{\"num_groups\":4,\"num_channels\":64}},{\"id\":\"l11\",\"type\":\"ReLU\"},{\"id\":\"l12\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"e7\",\"source\":\"l6\",\"target\":\"l7\"},{\"id\":\"e8\",\"source\":\"l7\",\"target\":\"l8\"},{\"id\":\"e9\",\"source\":\"l8\",\"target\":\"l9\"},{\"id\":\"e10\",\"source\":\"l9\",\"target\":\"l10\"},{\"id\":\"e11\",\"source\":\"l10\",\"target\":\"l11\"},{\"id\":\"e12\",\"source\":\"l11\",\"target\":\"l12\"},{\"id\":\"eout\",\"source\":\"l12\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-gn",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.02
+        }
+      }
+    },
+    {
+      "id": "train-gn",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "epochs": 2,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-test-gn",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-gn",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "label": "GroupNorm, batch 2: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "viz-gn",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "title": "GroupNorm, batch 2: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "model-bn32",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 2400
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":1,\"out_channels\":16,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":16}},{\"id\":\"l2\",\"type\":\"ReLU\"},{\"id\":\"l3\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l4\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l5\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":32}},{\"id\":\"l6\",\"type\":\"ReLU\"},{\"id\":\"l7\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l8\",\"type\":\"Flatten\"},{\"id\":\"l9\",\"type\":\"Linear\",\"params\":{\"in_features\":1568,\"out_features\":64}},{\"id\":\"l10\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":64}},{\"id\":\"l11\",\"type\":\"ReLU\"},{\"id\":\"l12\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"e7\",\"source\":\"l6\",\"target\":\"l7\"},{\"id\":\"e8\",\"source\":\"l7\",\"target\":\"l8\"},{\"id\":\"e9\",\"source\":\"l8\",\"target\":\"l9\"},{\"id\":\"e10\",\"source\":\"l9\",\"target\":\"l10\"},{\"id\":\"e11\",\"source\":\"l10\",\"target\":\"l11\"},{\"id\":\"e12\",\"source\":\"l11\",\"target\":\"l12\"},{\"id\":\"eout\",\"source\":\"l12\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt-bn32",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 2400
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.02
+        }
+      }
+    },
+    {
+      "id": "train-bn32",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 680,
+        "y": 2400
+      },
+      "data": {
+        "params": {
+          "epochs": 2,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval-test-bn32",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 1000,
+        "y": 2400
+      },
+      "data": {
+        "params": {
+          "batch_size": 1000,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-test-bn32",
+      "type": "Print",
+      "position": {
+        "x": 1320,
+        "y": 2400
+      },
+      "data": {
+        "params": {
+          "label": "BatchNorm, batch 32: test accuracy"
+        }
+      }
+    },
+    {
+      "id": "viz-bn32",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 2400
+      },
+      "data": {
+        "params": {
+          "title": "BatchNorm, batch 32: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Wu and He, \"Group Normalization\", ECCV 2018. Claim: BatchNorm normalises with the mean and variance of the current mini-batch, so it degrades as the batch shrinks; GroupNorm normalises each sample on its own, over groups of channels, and does not depend on the batch size. Recipe: three copies of one small CNN (two Conv2d blocks and a 64-unit hidden Linear, each followed by a normalisation layer) trained on 3,000 MNIST images with SGD at lr 0.02 for 2 epochs. Under seed 0 on a CPU, BatchNorm trained 32 images at a time scores 0.96 on the test set. The same BatchNorm net trained 2 images at a time ends at a training loss of 1.70 and scores 0.70. GroupNorm at batch 2 ends at 0.18 and scores 0.95.\n\nWu 與 He，〈Group Normalization〉，ECCV 2018。論點：BatchNorm 用當下這個 mini-batch 的平均值與變異數來正規化，batch 越小效果越差；GroupNorm 對每個樣本自己、在一組一組的通道上正規化，跟 batch 大小無關。配方：同一個小 CNN 複製三份（兩個 Conv2d 區塊加一個 64 單元的隱藏 Linear，每一層後面都接一個正規化層），在 3,000 張 MNIST 影像上用 lr 0.02 的 SGD 訓練 2 個 epoch。在 CPU 上以種子 0 執行，一次 32 張訓練的 BatchNorm 在測試集拿到 0.96。同一個 BatchNorm 網路改成一次 2 張，訓練損失停在 1.70，測試只有 0.70。GroupNorm 在 batch 2 的訓練損失降到 0.18，測試拿到 0.95。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-data",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "MNIST ships with the repository under backend/data, so nothing is downloaded. DatasetSplit keeps a fixed 3,000 training images and feeds both DataLoaders: this one hands out 2 images per step (1,500 steps per epoch), the one below it 32 (94 steps per epoch).\n\nMNIST 隨專案放在 backend/data，不需要下載。DatasetSplit 固定留下 3,000 張訓練影像，同時餵給兩個 DataLoader：這一個每步給 2 張（每個 epoch 1,500 步），下面那個每步給 32 張（每個 epoch 94 步）。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "dl-train",
+        "boundOffset": {
+          "x": 320,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-bn",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Open the layer editor: Conv2d 1->16, BatchNorm2d, ReLU, MaxPool2d, Conv2d 16->32, BatchNorm2d, ReLU, MaxPool2d, Flatten, Linear 1568->64, BatchNorm1d, ReLU, Linear 64->10. With a batch of 2, BatchNorm1d computes each feature's mean and variance from two numbers a and b, and (a - mean) / std is exactly +1 for the larger and -1 for the smaller. All the hidden layer passes on is which of the two images had the larger value. EvaluateModel runs in eval mode, where BatchNorm uses running averages instead, so the network is tested on inputs it never saw in training.\n\n打開圖層編輯器：Conv2d 1->16、BatchNorm2d、ReLU、MaxPool2d、Conv2d 16->32、BatchNorm2d、ReLU、MaxPool2d、Flatten、Linear 1568->64、BatchNorm1d、ReLU、Linear 64->10。batch 只有 2 時，BatchNorm1d 用兩個數 a 和 b 算每個特徵的平均值與變異數，(a - 平均) / 標準差 對較大的那個剛好是 +1，較小的是 -1。隱藏層傳下去的只剩「兩張影像誰的值比較大」。EvaluateModel 用 eval 模式，此時 BatchNorm 改用訓練期間累積的平均值，所以網路測試時看到的輸入跟訓練時完全不同。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-bn",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-gn",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 1400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The same layers with GroupNorm (4 groups) in place of every BatchNorm. GroupNorm splits one image's channels into 4 groups and normalises each group over its channels and positions; in the 64-unit hidden layer that is 16 features per group. No statistic involves another image, so training and evaluation compute the same thing at any batch size.\n\n同樣的圖層，只是每個 BatchNorm 都換成 GroupNorm（4 組）。GroupNorm 把一張影像的通道分成 4 組，每組在自己的通道與位置上正規化；在 64 單元的隱藏層裡就是每組 16 個特徵。沒有任何統計量牽涉到別張影像，所以不論 batch 多大，訓練和評估算的都是同一件事。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-gn",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-bn32",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 2400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The control: the BatchNorm network again, trained from the DataLoader with batch_size 32. Same images, same epochs and learning rate. Statistics over 32 images are close to the dataset's, and BatchNorm works as intended. With Persist weights between runs on (Settings > Training Behavior), a second Run continues from the trained weights; turn it off to repeat these numbers.\n\n對照組：同一個 BatchNorm 網路，改由 batch_size 32 的 DataLoader 訓練。影像、epoch 數與學習率都一樣。32 張影像算出的統計量接近整個資料集的，BatchNorm 照預期運作。若開著「在多次執行間保留權重」（設定 > 訓練行為），第二次執行會接著已訓練的權重繼續；關掉它才能重現這些數字。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model-bn32",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_ds-train",
+      "source": "start",
+      "target": "ds-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_ds-test",
+      "source": "start",
+      "target": "ds-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_ds-train_dataset_subset_dataset",
+      "source": "ds-train",
+      "target": "subset",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset_train_dl-train_dataset",
+      "source": "subset",
+      "target": "dl-train",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset_train_dl-train-32_dataset",
+      "source": "subset",
+      "target": "dl-train-32",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "t_model-bn",
+      "source": "start",
+      "target": "model-bn",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-bn_model_opt-bn_model",
+      "source": "model-bn",
+      "target": "opt-bn",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-bn_model_train-bn_model",
+      "source": "model-bn",
+      "target": "train-bn",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-bn_dataloader",
+      "source": "dl-train",
+      "target": "train-bn",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-bn_optimizer_train-bn_optimizer",
+      "source": "opt-bn",
+      "target": "train-bn",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-bn_loss_fn",
+      "source": "loss",
+      "target": "train-bn",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-bn_model_eval-test-bn_model",
+      "source": "train-bn",
+      "target": "eval-test-bn",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-bn_dataset",
+      "source": "ds-test",
+      "target": "eval-test-bn",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-bn_accuracy_print-test-bn_value",
+      "source": "eval-test-bn",
+      "target": "print-test-bn",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-bn_losses_viz-bn_data",
+      "source": "train-bn",
+      "target": "viz-bn",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "t_model-gn",
+      "source": "start",
+      "target": "model-gn",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-gn_model_opt-gn_model",
+      "source": "model-gn",
+      "target": "opt-gn",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-gn_model_train-gn_model",
+      "source": "model-gn",
+      "target": "train-gn",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-gn_dataloader",
+      "source": "dl-train",
+      "target": "train-gn",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-gn_optimizer_train-gn_optimizer",
+      "source": "opt-gn",
+      "target": "train-gn",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-gn_loss_fn",
+      "source": "loss",
+      "target": "train-gn",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-gn_model_eval-test-gn_model",
+      "source": "train-gn",
+      "target": "eval-test-gn",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-gn_dataset",
+      "source": "ds-test",
+      "target": "eval-test-gn",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-gn_accuracy_print-test-gn_value",
+      "source": "eval-test-gn",
+      "target": "print-test-gn",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-gn_losses_viz-gn_data",
+      "source": "train-gn",
+      "target": "viz-gn",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    },
+    {
+      "id": "t_model-bn32",
+      "source": "start",
+      "target": "model-bn32",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_model-bn32_model_opt-bn32_model",
+      "source": "model-bn32",
+      "target": "opt-bn32",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model-bn32_model_train-bn32_model",
+      "source": "model-bn32",
+      "target": "train-bn32",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train-32_dataloader_train-bn32_dataloader",
+      "source": "dl-train-32",
+      "target": "train-bn32",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt-bn32_optimizer_train-bn32_optimizer",
+      "source": "opt-bn32",
+      "target": "train-bn32",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-bn32_loss_fn",
+      "source": "loss",
+      "target": "train-bn32",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-bn32_model_eval-test-bn32_model",
+      "source": "train-bn32",
+      "target": "eval-test-bn32",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval-test-bn32_dataset",
+      "source": "ds-test",
+      "target": "eval-test-bn32",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-test-bn32_accuracy_print-test-bn32_value",
+      "source": "eval-test-bn32",
+      "target": "print-test-bn32",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train-bn32_losses_viz-bn32_data",
+      "source": "train-bn32",
+      "target": "viz-bn32",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

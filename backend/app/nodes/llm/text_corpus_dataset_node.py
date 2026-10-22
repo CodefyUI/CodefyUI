@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 #: The two things the ``source`` param may say.
 SOURCES = ["huggingface", "local_file"]
 
+#: ``backend/`` -- this file is ``backend/app/nodes/llm/``. Where the bundled
+#: ``data/samples/`` live, whatever directory the server was started from.
+_BACKEND_DIR = Path(__file__).resolve().parents[3]
+
 
 class TextRowDataset(Dataset):
     """A list of strings as a map-style torch Dataset.
@@ -77,6 +81,11 @@ def _resolve_corpus_path(path_str: str) -> Path:
     2. In PROJECT MODE a relative path resolves inside the project directory and
        may not escape it, so a graph shared between machines cannot read
        arbitrary files on the one that opens it.
+    3. A path under ``data/samples/`` names the install's bundled samples, the
+       rule ``DocumentLoader`` follows: it is exempt from rule 2 and, when the
+       working directory has no such file, read from ``backend/``. Without it
+       the Data mix ratios example only ran from a server started in
+       ``backend/`` and never in project mode.
 
     Deliberately NOT importing ``CSVReaderNode._resolve_path``: that one also
     special-cases the bundled ``data/samples/iris.csv`` and puts "CSVReader" in
@@ -95,6 +104,13 @@ def _resolve_corpus_path(path_str: str) -> Path:
         candidate = settings.DATA_FILES_DIR / path.name
         if candidate.is_file():
             return candidate
+    normalised = path_str.replace("\\", "/")
+    if (not path.is_absolute() and normalised.startswith("data/samples/")
+            and ".." not in Path(normalised).parts):
+        from_cwd = Path.cwd() / normalised
+        if from_cwd.is_file():
+            return from_cwd
+        return _BACKEND_DIR / normalised
     if settings.PROJECT_DIR is not None and not path.is_absolute():
         project = settings.PROJECT_DIR.resolve()
         resolved = (project / path).resolve()

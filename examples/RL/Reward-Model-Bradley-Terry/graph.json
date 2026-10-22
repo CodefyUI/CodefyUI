@@ -1,0 +1,422 @@
+{
+  "name": "Reward model from preferences",
+  "description": "Bradley-Terry loss before and after",
+  "gallery": {
+    "section": "concepts",
+    "order": 18
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "pairs",
+      "type": "PreferenceDataset",
+      "position": {
+        "x": 40,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "n_pairs": 512,
+          "holdout_pairs": 256,
+          "feature_dim": 16,
+          "signal_dims": 8,
+          "shortcut_strength": 0.0,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "rm-w",
+      "type": "RewardModel",
+      "position": {
+        "x": 380,
+        "y": -420
+      },
+      "data": {
+        "params": {
+          "input_dim": 16,
+          "hidden_dim": 32,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "rm-l",
+      "type": "RewardModel",
+      "position": {
+        "x": 380,
+        "y": -140
+      },
+      "data": {
+        "params": {
+          "input_dim": 16,
+          "hidden_dim": 32,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "bt-before",
+      "type": "BradleyTerryLoss",
+      "position": {
+        "x": 700,
+        "y": -280
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-loss-before",
+      "type": "Print",
+      "position": {
+        "x": 1020,
+        "y": -420
+      },
+      "data": {
+        "params": {
+          "label": "Untrained: Bradley-Terry loss on held-out pairs"
+        }
+      }
+    },
+    {
+      "id": "print-acc-before",
+      "type": "Print",
+      "position": {
+        "x": 1020,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "label": "Untrained: share of held-out pairs ranked right"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "BradleyTerryTrain",
+      "position": {
+        "x": 380,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "epochs": 60,
+          "hidden_dim": 32,
+          "lr": 0.01,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "inf-w",
+      "type": "Inference",
+      "position": {
+        "x": 700,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "inf-l",
+      "type": "Inference",
+      "position": {
+        "x": 700,
+        "y": 560
+      },
+      "data": {
+        "params": {
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "bt-after",
+      "type": "BradleyTerryLoss",
+      "position": {
+        "x": 1020,
+        "y": 420
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-loss-after",
+      "type": "Print",
+      "position": {
+        "x": 1340,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "label": "Trained: Bradley-Terry loss on held-out pairs"
+        }
+      }
+    },
+    {
+      "id": "print-acc-after",
+      "type": "Print",
+      "position": {
+        "x": 1340,
+        "y": 520
+      },
+      "data": {
+        "params": {
+          "label": "Trained: share of held-out pairs ranked right"
+        }
+      }
+    },
+    {
+      "id": "viz-prob",
+      "type": "Visualize",
+      "position": {
+        "x": 1340,
+        "y": 740
+      },
+      "data": {
+        "params": {
+          "title": "Trained: P(preferred beats rejected) per held-out pair",
+          "plot_type": "histogram"
+        }
+      }
+    },
+    {
+      "id": "viz-loss",
+      "type": "Visualize",
+      "position": {
+        "x": 700,
+        "y": 860
+      },
+      "data": {
+        "params": {
+          "title": "Training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Step 1 of RLHF: fit a reward model to pairs of answers where a person said which one is better. Bradley-Terry turns the two scores into a probability, P(w beats l) = sigmoid(r_w - r_l), and the loss is -log sigmoid(r_w - r_l), averaged over the pairs. Only the difference between the two scores enters, so the model learns an ordering and its zero point means nothing. PreferenceDataset makes 512 training and 256 held-out pairs of 16-number responses. Top row: an untrained head scores the held-out pairs. Its loss is 0.69, close to ln 2 = 0.693, the loss of a coin flip, and it ranks 0.57 of the pairs right. Bottom row: BradleyTerryTrain fits the same head for 60 epochs. On the held-out pairs the loss drops to 0.11 and 0.96 of them are ranked right. Step 2, PPO, then trains the language model to raise this model's score.\n\nRLHF 的第一步：用「人選出兩個回答中較好的一個」的成對資料，訓練一個獎勵模型。Bradley-Terry 把兩個分數變成機率，P(w 勝過 l) = sigmoid(r_w - r_l)，損失是 -log sigmoid(r_w - r_l) 對所有成對資料取平均。式子裡只有兩個分數的差，所以模型學到的是排序，它的零點沒有意義。PreferenceDataset 產生 512 組訓練用、256 組保留的成對資料，每個回答是 16 個數字。上排：未訓練的獎勵頭替保留集打分，損失是 0.69，接近 ln 2 = 0.693，也就是擲硬幣的損失，排對的比例是 0.57。下排：BradleyTerryTrain 把同一個獎勵頭訓練 60 個 epoch，保留集上的損失降到 0.11，排對的比例是 0.96。第二步 PPO 再訓練語言模型去提高這個模型給的分數。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-heads",
+      "type": "note",
+      "position": {
+        "x": 380,
+        "y": -860
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "These two RewardModel nodes are one head: the same input_dim, hidden_dim and seed build the same weights, and they are the weights BradleyTerryTrain starts from (hidden_dim 32, seed 0). One scores the preferred half of every held-out pair, the other the rejected half.\n\n這兩個 RewardModel 節點其實是同一個獎勵頭：相同的 input_dim、hidden_dim 與 seed 會建出相同的權重，也就是 BradleyTerryTrain 開始訓練時的權重（hidden_dim 32、seed 0）。一個替每組保留資料中被選中的回答打分，另一個替落選的回答打分。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "rm-w",
+        "boundOffset": {
+          "x": 0,
+          "y": -440
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-train",
+      "type": "note",
+      "position": {
+        "x": 380,
+        "y": 860
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "BradleyTerryTrain minimises the same loss with full-batch Adam (lr 0.01) on the 512 training pairs and checks the held-out pairs after every epoch. The two Inference nodes score the held-out pairs once more with the final head, so BradleyTerryLoss on the right agrees with its last holdout_accuracy. shortcut_strength is 0 here; Reward hacking via a shortcut turns it up.\n\nBradleyTerryTrain 在 512 組訓練資料上用全批次 Adam（lr 0.01）最小化同一個損失，每個 epoch 結束後檢查一次保留集。兩個 Inference 節點再用訓練完的獎勵頭替保留集打分，所以右邊 BradleyTerryLoss 的結果和它最後一個 holdout_accuracy 一致。這裡 shortcut_strength 是 0；Reward hacking via a shortcut 會把它調高。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "train",
+        "boundOffset": {
+          "x": 0,
+          "y": 560
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_pairs",
+      "source": "start",
+      "target": "pairs",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_pairs_holdout_w_rm-w_hidden_states",
+      "source": "pairs",
+      "target": "rm-w",
+      "sourceHandle": "holdout_w",
+      "targetHandle": "hidden_states"
+    },
+    {
+      "id": "e_pairs_holdout_l_rm-l_hidden_states",
+      "source": "pairs",
+      "target": "rm-l",
+      "sourceHandle": "holdout_l",
+      "targetHandle": "hidden_states"
+    },
+    {
+      "id": "e_rm-w_rewards_bt-before_reward_w",
+      "source": "rm-w",
+      "target": "bt-before",
+      "sourceHandle": "rewards",
+      "targetHandle": "reward_w"
+    },
+    {
+      "id": "e_rm-l_rewards_bt-before_reward_l",
+      "source": "rm-l",
+      "target": "bt-before",
+      "sourceHandle": "rewards",
+      "targetHandle": "reward_l"
+    },
+    {
+      "id": "e_bt-before_loss_print-loss-before_value",
+      "source": "bt-before",
+      "target": "print-loss-before",
+      "sourceHandle": "loss",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_bt-before_accuracy_print-acc-before_value",
+      "source": "bt-before",
+      "target": "print-acc-before",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_pairs_train_w_train_train_w",
+      "source": "pairs",
+      "target": "train",
+      "sourceHandle": "train_w",
+      "targetHandle": "train_w"
+    },
+    {
+      "id": "e_pairs_train_l_train_train_l",
+      "source": "pairs",
+      "target": "train",
+      "sourceHandle": "train_l",
+      "targetHandle": "train_l"
+    },
+    {
+      "id": "e_pairs_holdout_w_train_holdout_w",
+      "source": "pairs",
+      "target": "train",
+      "sourceHandle": "holdout_w",
+      "targetHandle": "holdout_w"
+    },
+    {
+      "id": "e_pairs_holdout_l_train_holdout_l",
+      "source": "pairs",
+      "target": "train",
+      "sourceHandle": "holdout_l",
+      "targetHandle": "holdout_l"
+    },
+    {
+      "id": "e_train_model_inf-w_model",
+      "source": "train",
+      "target": "inf-w",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_pairs_holdout_w_inf-w_input",
+      "source": "pairs",
+      "target": "inf-w",
+      "sourceHandle": "holdout_w",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_train_model_inf-l_model",
+      "source": "train",
+      "target": "inf-l",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_pairs_holdout_l_inf-l_input",
+      "source": "pairs",
+      "target": "inf-l",
+      "sourceHandle": "holdout_l",
+      "targetHandle": "input"
+    },
+    {
+      "id": "e_inf-w_output_bt-after_reward_w",
+      "source": "inf-w",
+      "target": "bt-after",
+      "sourceHandle": "output",
+      "targetHandle": "reward_w"
+    },
+    {
+      "id": "e_inf-l_output_bt-after_reward_l",
+      "source": "inf-l",
+      "target": "bt-after",
+      "sourceHandle": "output",
+      "targetHandle": "reward_l"
+    },
+    {
+      "id": "e_bt-after_loss_print-loss-after_value",
+      "source": "bt-after",
+      "target": "print-loss-after",
+      "sourceHandle": "loss",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_bt-after_accuracy_print-acc-after_value",
+      "source": "bt-after",
+      "target": "print-acc-after",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_bt-after_preference_prob_viz-prob_data",
+      "source": "bt-after",
+      "target": "viz-prob",
+      "sourceHandle": "preference_prob",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_train_losses_viz-loss_data",
+      "source": "train",
+      "target": "viz-loss",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

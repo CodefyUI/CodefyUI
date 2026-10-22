@@ -356,6 +356,24 @@ const zhTW: ExampleTranslations = {
   },
   'Others/Tensor-Ops-Tour': {
     description: '對同一個網格切分、堆疊、選列、池化',
+  // ── Built-ins added after the plugin blocks (papers, concepts, llm) ──
+  'Papers/GroupNorm-Wu-2018': {
+    description: '一次 2 張：BatchNorm 對上 GroupNorm',
+  },
+  'RNN/Conv1d-Sequence-Classifier': {
+    description: '時間卷積用滑動視窗讀 token',
+  },
+  'RL/Reward-Model-Bradley-Terry': {
+    description: '訓練前後的 Bradley-Terry 損失',
+  },
+  'RL/Discounted-Returns': {
+    description: '一個獎勵、三個 gamma、三種回報',
+  },
+  'LLM/Data-Mix-Ratios': {
+    description: '兩個語料：照原樣混合，再 1:1 混合',
+  },
+  'Others/One-Backward-Pass': {
+    description: '梯度只會到達被查過的那幾列',
   },
 };
 

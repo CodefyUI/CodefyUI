@@ -162,6 +162,38 @@ def test_a_bare_filename_resolves_against_the_upload_directory(
     assert res["dataset"][0] == "from the dropdown"
 
 
+def test_a_bundled_sample_is_found_from_any_working_directory(
+        tmp_path, monkeypatch):
+    """``data/samples/...`` names the install, as it does for DocumentLoader.
+
+    A server started outside ``backend/`` (``cdui start`` from a home
+    directory) read it against its own working directory and found nothing.
+    """
+    monkeypatch.chdir(tmp_path)
+    res = TextCorpusDatasetNode().execute({}, {
+        "source": "local_file", "local_path": "data/samples/mix/facts.txt",
+        "split_lines": True})
+    assert res["num_rows"] == 6
+
+
+def test_a_bundled_sample_is_exempt_from_the_project_directory(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "PROJECT_DIR", tmp_path)
+    res = TextCorpusDatasetNode().execute({}, {
+        "source": "local_file", "local_path": "data/samples/mix/stories.txt",
+        "split_lines": True})
+    assert res["num_rows"] == 30
+
+
+def test_the_sample_exemption_does_not_cover_a_path_that_climbs_out(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "PROJECT_DIR", tmp_path)
+    with pytest.raises(ValueError, match="escapes the project directory"):
+        TextCorpusDatasetNode().execute({}, {
+            "source": "local_file",
+            "local_path": "data/samples/../../../etc/hosts"})
+
+
 def test_a_non_utf8_file_says_so(tmp_path):
     corpus = tmp_path / "latin1.txt"
     corpus.write_bytes("caf\xe9".encode("latin-1"))
