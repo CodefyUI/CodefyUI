@@ -269,6 +269,10 @@ def image_folder_dataset(params: dict[str, Any],
     record["source"]["type"] = "directory"
     record["split"] = str(params.get("split") or "train")
     root = ImageFolderDatasetNode._resolve_root(params)
+    dataset_root = getattr(_output(outputs, "dataset"), "root", None)
+    if dataset_root:
+        # The folder the dataset read: a wired path overrides the param.
+        root = Path(dataset_root)
     if root is None:
         record["notes"].append("no folder selected")
     else:
