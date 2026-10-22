@@ -22,6 +22,24 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-10-22
+
+3.2.0 completes the control-plane / worker split that 3.1.0 started (#764).
+A worker's GPU can be shared by memory budget, one-shot workers come up
+inside SLURM jobs and ssh commands, and worker runs can keep their files in
+an S3 or MinIO bucket, record their outputs for the Teaching Inspector, and
+outlive a control-plane restart. Studies enforce their budgets on the
+server, show in a Studies panel, and plugins can submit them as durable
+jobs. `TrainingLoop` can train one model across the GPUs of a worker run
+(`strategy: ddp`). A run can record which dataset files and model weights it
+read, and a worker run records the environment that executed it. The `eval`
+pack scores free text with BLEU and ROUGE-L and evaluates visual question
+answering. Everything new is off by default: a run with no target executes
+exactly as in 3.1.1, the exported Python script is unchanged, and the
+`single-node-parity` check holds both to that. New guides:
+`docs/docs/usage/studies.md`, `docs/docs/usage/eval-pipelines.md` and
+`docs/docs/advanced/execution-design.md`.
+
 ### Added
 
 - **A run can record which dataset files and model weights it read, and a worker run records the environment of the process that executed it** ([#344]). The new run option `provenance` (`"identity"` or `"content"`; **Data and model provenance** in the Queue on... dialog) gives `CSVReader`, `Dataset`, `ImageFolderDataset`, `HuggingFaceDataset`, `KaggleDataset`, `ModelLoader`, `CheckpointLoader` and `HFTextGenerate` one record each: the source, the resolved revision where one exists (a Hugging Face commit, a Kaggle version), the row count where the node knows it, and a content identity labelled as a stat identity (path, size and modification time) or a sha256 content hash. Content hashing is incremental, so unchanged files are not read again on later runs, and it does not block other runs from starting; the walk follows directory symlinks, a pack's digest leaves out virtual environments, build output and file-manager metadata, and a pack inside a git checkout is listed by `git ls-files`. A missing or unreadable input leaves the digest `null`, unknown facts are explicit nulls, and paths are never recorded relative to a filesystem root or the home directory. `GET /api/runs/{id}` returns the records as `provenance` and the Runs panel shows them under **Data and models**; without the option nothing changes. The environment fingerprint moves to `schema_version` 2: a linked local pack is identified by the digest of its files (`revision_kind: "content-sha256"`), and every pack gets `content_sha256` and `immutable`. A worker's run subprocess now reports its own fingerprint (with the agent's device facts) and torch numerics, which replace the ones from the agent's handshake (`execution_facts.fingerprint_source`), so a worker updated after its agent started records what actually ran. Migration 017 adds `exec_run_provenance`.
@@ -6254,7 +6272,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.1.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.2.0...main
+[3.2.0]: https://github.com/CodefyUI/CodefyUI/compare/3.1.1...3.2.0
 [3.1.1]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...3.1.1
 [3.1.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...3.1.0
 [3.0.2]: https://github.com/CodefyUI/CodefyUI/compare/3.0.1...3.0.2
