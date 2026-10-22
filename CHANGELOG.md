@@ -150,6 +150,8 @@ received — each links to the release it was published as.
 
 ### Internal
 
+- **The design of the control-plane / worker split is documented in a new Execution Design Notes page** ([#764]). `docs/docs/advanced/execution-design.md` (en + zh-TW) records the six invariants with the reason for each, the decisions with the alternatives they ruled out (the control plane in the server process, the canvas kept local, workers that dial out, one subprocess per run, memory admission on shared cards, one-shot workers, DDP over a `FileStore` on loopback, the fingerprint / provenance split, server-enforced study budgets and plugin jobs), the dated decision log moved from Execution Architecture, and the questions still open. Execution Architecture and the API reference now list every `options.target` key (`pool`, `memory_gib`, `memory_source`, `wait`), the Wave 12 features in the status note, and that a restarted control plane loads enrolled workers as `offline`.
+
 - **The Linux pytest jobs get 30 minutes instead of 20** ([#764]). The suite runs 13-20 minutes on `ubuntu-latest` depending on the runner, and the Wave D and studies tests added about a minute, so green runs were being cancelled at the cap with no failing test.
 
 ## [3.1.1] — 2026-10-17

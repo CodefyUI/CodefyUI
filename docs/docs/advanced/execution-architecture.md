@@ -1,7 +1,7 @@
 ---
 sidebar_position: 6.5
 title: Execution Architecture
-description: How a run gets from submission to a result when it can execute in the server process or on a worker agent — the control plane, executors, worker agents and run subprocesses, slots and placement, the event path, isolation, storage, security, and the invariants every change keeps.
+description: How a run gets from submission to a result when it can execute in the server process or on a worker agent — the control plane, executors, worker agents and run subprocesses, slots and placement, the event path, isolation, storage and security. The reasons, invariants and open questions are in Execution Design Notes.
 ---
 
 # Execution Architecture
@@ -9,7 +9,7 @@ description: How a run gets from submission to a result when it can execute in t
 [Architecture](./architecture) describes the server as a whole. This page covers one part of it in depth: where a run's graph executes. By default every run executes inside the server process, exactly as in 3.0. A queued run can instead be sent to a **worker agent** (`cdui agent start`), which executes it in a subprocess of its own. The design is tracked in [#764](https://github.com/CodefyUI/CodefyUI/issues/764); the usage side is [Run Queue, Workers](/usage/run-queue#workers) and [CLI Commands, Agent commands](/getting-started/cli-commands#agent-commands).
 
 :::note Status
-In the code: the executor seam, placement by `(worker, device)` slot, the `target` option (for single runs, sweeps and studies), worker agents on the same machine or, enrolled with a one-time token, on another ([#780](https://github.com/CodefyUI/CodefyUI/issues/780)), handshake checks of version, environment fingerprint and node catalog ([#781](https://github.com/CodefyUI/CodefyUI/issues/781)), storage mounts ([#782](https://github.com/CodefyUI/CodefyUI/issues/782)), disconnect and resume ([#783](https://github.com/CodefyUI/CodefyUI/issues/783)), SSH reverse tunnels ([#784](https://github.com/CodefyUI/CodefyUI/issues/784)), the transfer backend ([#785](https://github.com/CodefyUI/CodefyUI/issues/785)) and its S3 / MinIO alternative ([#791](https://github.com/CodefyUI/CodefyUI/issues/791)), the agent's verification of the control plane's TLS certificate ([#786](https://github.com/CodefyUI/CodefyUI/issues/786)), device sets, peak memory per run, the Workers panel, and the toolbar's **Queue on...** dialog. How to set a remote worker up: [Remote Workers](/usage/remote-workers).
+In the code: the executor seam, placement by `(worker, device)` slot, the `target` option (for single runs, sweeps and studies), worker agents on the same machine or, enrolled with a one-time token, on another ([#780](https://github.com/CodefyUI/CodefyUI/issues/780)), handshake checks of version, environment fingerprint and node catalog ([#781](https://github.com/CodefyUI/CodefyUI/issues/781)), storage mounts ([#782](https://github.com/CodefyUI/CodefyUI/issues/782)), disconnect and resume ([#783](https://github.com/CodefyUI/CodefyUI/issues/783)), SSH reverse tunnels ([#784](https://github.com/CodefyUI/CodefyUI/issues/784)), the transfer backend ([#785](https://github.com/CodefyUI/CodefyUI/issues/785)) and its S3 / MinIO alternative ([#791](https://github.com/CodefyUI/CodefyUI/issues/791)), the agent's verification of the control plane's TLS certificate ([#786](https://github.com/CodefyUI/CodefyUI/issues/786)), device sets, peak memory per run, the Workers panel, the toolbar's **Queue on...** dialog, memory admission on shared cards ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)) with suggested budgets ([#794](https://github.com/CodefyUI/CodefyUI/issues/794)), recorded outputs of worker runs ([#789](https://github.com/CodefyUI/CodefyUI/issues/789)), one-shot workers ([#790](https://github.com/CodefyUI/CodefyUI/issues/790)), `TrainingLoop` DDP on a worker's cards ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)), adoption of worker runs after a control-plane restart ([#793](https://github.com/CodefyUI/CodefyUI/issues/793)), and the run subprocess's own fingerprint and node provenance ([#344](https://github.com/CodefyUI/CodefyUI/issues/344)). How to set a remote worker up: [Remote Workers](/usage/remote-workers). Why the design is this way: [Execution Design Notes](./execution-design).
 :::
 
 ## Vocabulary
@@ -22,14 +22,14 @@ In the code: the executor seam, placement by `(worker, device)` slot, the `targe
 | **Run subprocess** | A fresh `spawn` interpreter the worker starts for one run. It is the only place on a worker that imports PyTorch and initialises CUDA. |
 | **Slot** | One device on one machine, keyed `(worker_id, device)`: `("local", "cuda:0")` is the server's first card, `("gpu-box-1", "cuda:0")` the first card of the worker `gpu-box-1`. A slot admits a fixed number of runs at once. |
 | **Placement** | The scheduler's answer for a waiting run: the worker, the devices it executes on, and the slots it holds. |
-| **Target** | The `options.target` object a submission carries: `{"worker", "devices"}`. |
+| **Target** | The `options.target` object a submission carries: `{"worker", "devices"}`, and for a one-shot worker or a card shared by memory also `pool`, `memory_gib`, `memory_source` and `wait`. |
 | **Device set** | A `target.devices` list of more than one device of one kind. |
 | **Mount** | A label (`data`) for a folder that two machines share, each at its own path ([Storage](#storage)). |
 | **Transfer backend** | The control plane acting as the file store for a worker that shares no folder with it ([Storage](#storage)). |
 
 ## Roles
 
-**Control plane.** The `cdui start` server process owns everything durable and everything the canvas needs. `RunService` (`core/run_service.py`) accepts submissions, keeps one FIFO per queue key, asks a scheduler which run may start, writes the run row and its event log, and fans events out to `/ws/execution` and the REST readers. `WorkerRegistry` (`core/workers.py`) holds the connected workers in memory: their devices, heartbeats, status, the runs each one is executing and the socket to reach it. A restarted control plane starts with no workers, and each agent registers again on its next dial.
+**Control plane.** The `cdui start` server process owns everything durable and everything the canvas needs. `RunService` (`core/run_service.py`) accepts submissions, keeps one FIFO per queue key, asks a scheduler which run may start, writes the run row and its event log, and fans events out to `/ws/execution` and the REST readers. `WorkerRegistry` (`core/workers.py`) holds the connected workers in memory: their devices, heartbeats, status, the runs each one is executing and the socket to reach it. A restarted control plane starts with no worker connected: enrolled workers are loaded from the `workers` table as `offline`, and each agent registers again on its next dial.
 
 **Executors.** `RunService._execute` builds one `ExecutionRequest` (graph, options, `ExecutionContext`, placement, sinks) and awaits `Executor.run`, which returns an `ExecutionOutcome` (status, error, peak memory). The placement decides which executor runs it:
 
@@ -47,7 +47,7 @@ Browser / cdui run ── REST, /ws/execution ──► control plane (cdui star
                                                           ▲
                                                           │ WS /ws/worker  (the agent dials out)
                                                           │
-                                               cdui agent (same machine, this release)
+                                               cdui agent (this machine or another)
                                                one spawn subprocess per run
                                                CUDA_VISIBLE_DEVICES = the run's cards
 ```
@@ -91,7 +91,7 @@ The frames are defined once, in `core/worker_protocol.py`, imported by both ends
 
 **One device, several slots.** Every slot stays its offerer's own `(worker, device)`; the slots that are one physical device are grouped (`WorkerRegistry.card_slots`): a CUDA card by the UUID each offerer reports, across every worker the server knows and the server's own cards, and the CPU and `mps:0` of one machine (a same-host worker's with the server's, or two agents that report the same machine id). Two agents on one GPU server that offer one card (an SSH worker and an enrolled agent) therefore admit as one card: the runs on every slot of it count against each, under the smallest limit among the offerers that are online or still hold a run there (a same-host worker without an override of its own takes the server's limit for the device), a card shared by memory reads one ledger across them and admits by memory only while every online worker offering it is set to share it. A run adopted after a restart records each slot's device identity in `worker_resume`, so its slots are grouped before its worker reconnects. The server lists its own cards once, in a thread, only where one could be shared: before registering a same-host worker (bounded, the rest lands in the background) and before adopting runs after a restart. A CUDA card reported without a UUID keeps a slot of its own. `GET /api/workers` lists the other offerers of each device as `same_card`, and `slots.limited_by` names the offerer whose limit applies.
 
-**The `target` option** ([#769](https://github.com/CodefyUI/CodefyUI/issues/769)) is `{"worker": "local" | "any" | <name>, "devices": [...]}`, both keys optional. `worker` is a name matching `[a-z0-9][a-z0-9-]{0,62}`; `local` and `any` are reserved. `devices` lists concrete devices of one kind with no duplicates (`cpu`, `cuda:N`, `mps:N`), and its first entry becomes the run's `device`. The scheduler places:
+**The `target` option** ([#769](https://github.com/CodefyUI/CodefyUI/issues/769)) is `{"worker": "local" | "any" | <name>, "devices": [...]}`, both keys optional, plus `pool: "one-shot"` for the one-shot pool ([#790](https://github.com/CodefyUI/CodefyUI/issues/790)) and `memory_gib`, `memory_source` and `wait` for a card shared by memory ([#788](https://github.com/CodefyUI/CodefyUI/issues/788); `memory_gib` is refused with `local`). `worker` is a name matching `[a-z0-9][a-z0-9-]{0,62}`, or `<name>.<instance>` for an instance of a shared one-shot credential; `local` and `any` are reserved. `devices` lists concrete devices of one kind with no duplicates (`cpu`, `cuda:N`, `mps:N`), and its first entry becomes the run's `device`. The scheduler places:
 
 - **`local`** (or no target): `LocalScheduler`, the 3.0 rule.
 - **a worker name**: that worker, on the device set, or on the requested device, or on the first offered device of the requested kind with a free slot.
@@ -164,34 +164,9 @@ A refused handshake is closed with **4003** (Host, Origin) or **4401** (credenti
 
 **TLS.** The agent verifies the control plane's TLS certificate, by this machine's CAs or by a pinned key, and secrets should travel only over a verified channel: see [Remote Workers, Trust between agent and control plane](/usage/remote-workers#trust-between-agent-and-control-plane) ([#786](https://github.com/CodefyUI/CodefyUI/issues/786)).
 
-## Invariants
+## Invariants and design decisions {/* #invariants */}
 
-Every change in this area keeps these ([#764](https://github.com/CodefyUI/CodefyUI/issues/764)):
-
-1. With no worker enrolled and no `target` option, submission behaves exactly as 3.0.2: the same queue key, the same `InProcessExecutor`, the same event sequence. The `single_node_parity` snapshot changes only in a commit that means to change it.
-2. **The export surface is frozen.** `backend/app/core/codegen.py`, `backend/run_graph.py`, node `execute()` semantics, and the runtime symbols exported scripts import: `graph_engine.invoke_node`, `prepare_executable_graph` and `topological_sort`; the `ExecutionContext` constructor with `derive_seed` and `current_node_id`; `device_utils.resolve_device`; `seeding.*`, `runtime.*` and `api_contract.*`. The run subprocess constructs an `ExecutionContext` and never changes its interface; device sets use `CUDA_VISIBLE_DEVICES`, and `resolve_device` stays as it is.
-3. The interactive (canvas) lane always executes in the control-plane process.
-4. A worker never opens an inbound port and never writes SQLite.
-5. New behaviour sits behind the `target` option or `CODEFYUI_EXECUTION_*` settings and is off by default.
-6. Web UI first: workers are managed in the browser, and the CLI gains only `cdui agent start|stop`. No new `cdui status` or TUI features.
-
-## Decisions log
-
-| Date | Decision |
-|------|----------|
-| 2026-10-15 | Split execution from the control plane; keep the in-process path as the default and the only single-node path. |
-| 2026-10-15 | Web UI first: the Workers panel, the Add-worker dialog and the run target selector live in the browser; the CLI keeps only start, join and stop. |
-| 2026-10-15 | Topology: any machine runs `cdui start` as the control plane; GPU machines run `cdui agent start`, joining with a one-line command the browser generates. Connections always go worker → control plane. |
-| 2026-10-15 | Admission stays count-based per `(worker, device)` slot; memory-based admission is deferred ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)). |
-| 2026-10-15 | Storage: a NAS (mounts) is the default; a no-NAS transfer backend is required too. |
-| 2026-10-15 | The interactive lane stays in the control plane; worker credentials come from enrollment; Linux workers first, Windows best effort; control plane and worker run the same version; DDP later ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)). |
-| 2026-10-15 | One spawned subprocess per run, with the device set as `CUDA_VISIBLE_DEVICES` ([#771](https://github.com/CodefyUI/CodefyUI/issues/771)); the agent process never imports torch. |
-| 2026-10-21 | DDP is a `TrainingLoop` strategy inside the run subprocess: one rank per card of a worker run with two or more CUDA cards, rank 0 owns the pipe to the agent, the other ranks run only what the loop needs; everywhere else (canvas, server process, exported script) the loop trains in one process with a warning. No multi-node training ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)). |
-| 2026-10-15 | Same-host workers are detected by machine id, and shared cards by NVML UUID, never by peer address ([#773](https://github.com/CodefyUI/CodefyUI/issues/773)). |
-| 2026-10-18 | One physical device offered by several slots is one budget: slots grouped by UUID (and a same-host worker's CPU / `mps:0` with the server's) instead of aliased, the smallest limit among the online offerers, one memory ledger, the stricter policy ([#842](https://github.com/CodefyUI/CodefyUI/issues/842)). |
-| 2026-10-15 | Until enrollment exists, `/ws/worker` accepts loopback peers with the session token only ([#772](https://github.com/CodefyUI/CodefyUI/issues/772)). |
-| 2026-10-15 | Enrollment: one-time tokens traded for per-worker credentials; the session token stays loopback-only; identity is bound to the credential, an enrolled name changes hands only through a re-key token, and same-host needs a loopback peer and a matching machine id ([#780](https://github.com/CodefyUI/CodefyUI/issues/780)). |
-| 2026-10-15 | One submit rule for single runs, sweeps and studies: only a worker name never seen since startup is refused; a run for a known worker that is away waits for it ([#777](https://github.com/CodefyUI/CodefyUI/issues/777)). |
+Every change in this area keeps six invariants ([#764](https://github.com/CodefyUI/CodefyUI/issues/764)): the default path unchanged, the export surface frozen, the canvas in the control plane, no inbound port and no SQLite writes on a worker, new behaviour off by default, and the web UI first. [Execution Design Notes](./execution-design#invariants) gives each with its reason, the decisions with the alternatives they ruled out, the dated decision log and the questions still open.
 
 ## Entry points
 
