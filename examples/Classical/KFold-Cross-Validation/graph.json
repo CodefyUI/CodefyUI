@@ -1,0 +1,532 @@
+{
+  "name": "K-fold cross-validation",
+  "description": "Three folds, three errors, one mean",
+  "gallery": {
+    "section": "concepts",
+    "order": 13
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 400
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 40,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "petal width (cm)",
+          "target_type": "number",
+          "include_columns": "",
+          "drop_missing_target": false,
+          "skip_header": true
+        }
+      }
+    },
+    {
+      "id": "fold-0",
+      "type": "KFoldSplit",
+      "position": {
+        "x": 400,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "n_folds": 3,
+          "fold": 0,
+          "shuffle": true,
+          "seed": 0,
+          "stratify": false
+        }
+      }
+    },
+    {
+      "id": "reg-0",
+      "type": "LinearRegression",
+      "position": {
+        "x": 760,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "fit_intercept": true
+        }
+      }
+    },
+    {
+      "id": "metrics-0",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1100,
+        "y": -200
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-0",
+      "type": "Print",
+      "position": {
+        "x": 1400,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "label": "Fold 0 MSE"
+        }
+      }
+    },
+    {
+      "id": "fold-1",
+      "type": "KFoldSplit",
+      "position": {
+        "x": 400,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "n_folds": 3,
+          "fold": 1,
+          "shuffle": true,
+          "seed": 0,
+          "stratify": false
+        }
+      }
+    },
+    {
+      "id": "reg-1",
+      "type": "LinearRegression",
+      "position": {
+        "x": 760,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "fit_intercept": true
+        }
+      }
+    },
+    {
+      "id": "metrics-1",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1100,
+        "y": 400
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-1",
+      "type": "Print",
+      "position": {
+        "x": 1400,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "label": "Fold 1 MSE"
+        }
+      }
+    },
+    {
+      "id": "fold-2",
+      "type": "KFoldSplit",
+      "position": {
+        "x": 400,
+        "y": 1000
+      },
+      "data": {
+        "params": {
+          "n_folds": 3,
+          "fold": 2,
+          "shuffle": true,
+          "seed": 0,
+          "stratify": false
+        }
+      }
+    },
+    {
+      "id": "reg-2",
+      "type": "LinearRegression",
+      "position": {
+        "x": 760,
+        "y": 1000
+      },
+      "data": {
+        "params": {
+          "fit_intercept": true
+        }
+      }
+    },
+    {
+      "id": "metrics-2",
+      "type": "RegressionMetrics",
+      "position": {
+        "x": 1100,
+        "y": 1000
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-2",
+      "type": "Print",
+      "position": {
+        "x": 1400,
+        "y": 1000
+      },
+      "data": {
+        "params": {
+          "label": "Fold 2 MSE"
+        }
+      }
+    },
+    {
+      "id": "sum-01",
+      "type": "Add",
+      "position": {
+        "x": 1740,
+        "y": 100
+      },
+      "data": {
+        "params": {
+          "alpha": 1.0
+        }
+      }
+    },
+    {
+      "id": "sum-012",
+      "type": "Add",
+      "position": {
+        "x": 1740,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "alpha": 1.0
+        }
+      }
+    },
+    {
+      "id": "mean",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 2060,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "scalar": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "id": "print-mean",
+      "type": "Print",
+      "position": {
+        "x": 2360,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "label": "Mean MSE over 3 folds"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 400
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Cross-validation measures how a model does on rows it was not fitted on, without setting aside a fixed test set. KFoldSplit cuts the 150 Iris rows into 3 folds of 50. Each of the three copies holds out a different fold, fits LinearRegression on the other 100 rows, and scores its petal-width predictions on the 50 it held out. The three errors are 0.050, 0.030 and 0.033: the worst fold's error is about 1.7 times the best one's, so which 50 rows happen to be held out moves the score a lot. Their mean, 0.038, is the cross-validation estimate to report.\n\n交叉驗證衡量模型在沒拿來擬合的資料列上表現如何，而且不必另外保留一份固定的測試集。KFoldSplit 把 150 列 Iris 資料切成 3 份，每份 50 列。三個複本各留下不同的一份，用其餘 100 列擬合 LinearRegression，再在留下的 50 列上評估花瓣寬度的預測。三個誤差分別是 0.050、0.030 與 0.033：最差一份的誤差約是最好一份的 1.7 倍，可見留下哪 50 列會大幅影響分數。三者的平均 0.038 就是該回報的交叉驗證估計。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-folds",
+      "type": "note",
+      "position": {
+        "x": 400,
+        "y": -720
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The three KFoldSplit nodes differ only in fold: 0, 1 and 2. The folds depend on n_folds, shuffle and seed alone, so all three cut the same folds and every row is held out exactly once. For 5-fold cross-validation, set n_folds to 5 on every copy and add two more rows of nodes.\n\n三個 KFoldSplit 節點只有 fold 不同：0、1 與 2。分組只由 n_folds、shuffle 與 seed 決定，所以三個複本切出同樣的分組，每一列剛好被留下一次。若要做 5-fold 交叉驗證，把每個複本的 n_folds 都改成 5，再多加兩排節點。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "fold-0",
+        "boundOffset": {
+          "x": 0,
+          "y": -520
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-mean",
+      "type": "note",
+      "position": {
+        "x": 2060,
+        "y": 960
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Each Print shows its fold's MSE and passes the number on. The two Add nodes sum the three errors and ScalarMultiply divides by 3. The folds are all 50 rows, so this mean equals the MSE over all 150 held-out predictions.\n\n每個 Print 顯示該份的 MSE，並把數值往下傳。兩個 Add 節點把三個誤差加總，ScalarMultiply 再除以 3。三份都是 50 列，所以這個平均等於全部 150 個留出預測的 MSE。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "mean",
+        "boundOffset": {
+          "x": 0,
+          "y": 260
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_csv",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_csv_tensor_fold-0_features",
+      "source": "csv",
+      "target": "fold-0",
+      "sourceHandle": "tensor",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_csv_labels_fold-0_labels",
+      "source": "csv",
+      "target": "fold-0",
+      "sourceHandle": "labels",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_fold-0_x_train_reg-0_x_train",
+      "source": "fold-0",
+      "target": "reg-0",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_fold-0_y_train_reg-0_y_train",
+      "source": "fold-0",
+      "target": "reg-0",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_fold-0_x_val_reg-0_x_query",
+      "source": "fold-0",
+      "target": "reg-0",
+      "sourceHandle": "x_val",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_reg-0_predictions_metrics-0_predictions",
+      "source": "reg-0",
+      "target": "metrics-0",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_fold-0_y_val_metrics-0_targets",
+      "source": "fold-0",
+      "target": "metrics-0",
+      "sourceHandle": "y_val",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_metrics-0_mse_print-0_value",
+      "source": "metrics-0",
+      "target": "print-0",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_csv_tensor_fold-1_features",
+      "source": "csv",
+      "target": "fold-1",
+      "sourceHandle": "tensor",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_csv_labels_fold-1_labels",
+      "source": "csv",
+      "target": "fold-1",
+      "sourceHandle": "labels",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_fold-1_x_train_reg-1_x_train",
+      "source": "fold-1",
+      "target": "reg-1",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_fold-1_y_train_reg-1_y_train",
+      "source": "fold-1",
+      "target": "reg-1",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_fold-1_x_val_reg-1_x_query",
+      "source": "fold-1",
+      "target": "reg-1",
+      "sourceHandle": "x_val",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_reg-1_predictions_metrics-1_predictions",
+      "source": "reg-1",
+      "target": "metrics-1",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_fold-1_y_val_metrics-1_targets",
+      "source": "fold-1",
+      "target": "metrics-1",
+      "sourceHandle": "y_val",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_metrics-1_mse_print-1_value",
+      "source": "metrics-1",
+      "target": "print-1",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_csv_tensor_fold-2_features",
+      "source": "csv",
+      "target": "fold-2",
+      "sourceHandle": "tensor",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_csv_labels_fold-2_labels",
+      "source": "csv",
+      "target": "fold-2",
+      "sourceHandle": "labels",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_fold-2_x_train_reg-2_x_train",
+      "source": "fold-2",
+      "target": "reg-2",
+      "sourceHandle": "x_train",
+      "targetHandle": "x_train"
+    },
+    {
+      "id": "e_fold-2_y_train_reg-2_y_train",
+      "source": "fold-2",
+      "target": "reg-2",
+      "sourceHandle": "y_train",
+      "targetHandle": "y_train"
+    },
+    {
+      "id": "e_fold-2_x_val_reg-2_x_query",
+      "source": "fold-2",
+      "target": "reg-2",
+      "sourceHandle": "x_val",
+      "targetHandle": "x_query"
+    },
+    {
+      "id": "e_reg-2_predictions_metrics-2_predictions",
+      "source": "reg-2",
+      "target": "metrics-2",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "e_fold-2_y_val_metrics-2_targets",
+      "source": "fold-2",
+      "target": "metrics-2",
+      "sourceHandle": "y_val",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_metrics-2_mse_print-2_value",
+      "source": "metrics-2",
+      "target": "print-2",
+      "sourceHandle": "mse",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_print-0_value_sum-01_tensor_a",
+      "source": "print-0",
+      "target": "sum-01",
+      "sourceHandle": "value",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_print-1_value_sum-01_tensor_b",
+      "source": "print-1",
+      "target": "sum-01",
+      "sourceHandle": "value",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_sum-01_tensor_sum-012_tensor_a",
+      "source": "sum-01",
+      "target": "sum-012",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_print-2_value_sum-012_tensor_b",
+      "source": "print-2",
+      "target": "sum-012",
+      "sourceHandle": "value",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_sum-012_tensor_mean_tensor",
+      "source": "sum-012",
+      "target": "mean",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_mean_tensor_print-mean_value",
+      "source": "mean",
+      "target": "print-mean",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
