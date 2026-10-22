@@ -5,7 +5,7 @@
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
     { "id": "mel_input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,32,40", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "bigru", "type": "GRU", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 40, "hidden_size": 64, "num_layers": 2, "batch_first": true, "bidirectional": true, "dropout": 0.0 } } },
+    { "id": "bigru", "type": "GRU", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 40, "hidden_size": 64, "num_layers": 2, "batch_first": true, "bidirectional": true } } },
     { "id": "frame_head", "type": "Linear", "position": { "x": 590, "y": 0 }, "data": { "params": { "in_features": 128, "out_features": 50 } } },
     { "id": "print_logits", "type": "Print", "position": { "x": 860, "y": 0 }, "data": { "params": { "label": "Frame logits (B,T,50)" } } },
 

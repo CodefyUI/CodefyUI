@@ -21,7 +21,7 @@
     { "id": "se_expand", "type": "Linear", "position": { "x": 1090, "y": 353 }, "data": { "params": { "in_features": 8, "out_features": 128 } } },
     { "id": "se_sigmoid", "type": "Activation", "position": { "x": 1360, "y": 260 }, "data": { "params": { "function": "sigmoid" } } },
     { "id": "se_unflat", "type": "Reshape", "position": { "x": 1640, "y": 260 }, "data": { "params": { "shape": "2,128,1,1" } } },
-    { "id": "se_apply", "type": "Multiply", "position": { "x": 1910, "y": 130 }, "data": { "params": { "alpha": 1.0 } } },
+    { "id": "se_apply", "type": "Multiply", "position": { "x": 1910, "y": 130 }, "data": { "params": {} } },
 
     { "id": "project", "type": "Conv2d", "position": { "x": 2180, "y": 130 }, "data": { "params": { "in_channels": 128, "out_channels": 32, "kernel_size": 1, "stride": 1, "padding": 0 } } },
     { "id": "project_bn", "type": "BatchNorm2d", "position": { "x": 2460, "y": 130 }, "data": { "params": { "num_features": 32 } } },
