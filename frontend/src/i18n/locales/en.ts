@@ -2105,7 +2105,7 @@ const en = {
   // The panel: its chrome, what the list can be saying instead of rows, and
   // the filter over them.
   'pluginCenter.title': 'Plugin Center',
-  'pluginCenter.subtitle': 'Teaching node packs and GitHub plugins',
+  'pluginCenter.subtitle': 'Teaching node packs and plugins from GitHub, other git hosts or a folder',
   'pluginCenter.close': 'Close Plugin Center',
   'pluginCenter.refresh': 'Refresh plugin status',
   'pluginCenter.list': 'Plugin list',

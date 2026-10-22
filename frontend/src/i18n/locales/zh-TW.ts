@@ -1837,7 +1837,7 @@ const zhTW: Record<TranslationKey, string> = {
 
   // The panel: chrome, list states, filter.
   'pluginCenter.title': '外掛中心',
-  'pluginCenter.subtitle': '教學節點套件與 GitHub 外掛',
+  'pluginCenter.subtitle': '教學節點套件，以及來自 GitHub、其他 git 主機或資料夾的外掛',
   'pluginCenter.close': '關閉外掛中心',
   'pluginCenter.refresh': '重新整理外掛狀態',
   'pluginCenter.list': '外掛清單',
