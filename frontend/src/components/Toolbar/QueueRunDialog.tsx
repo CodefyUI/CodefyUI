@@ -76,6 +76,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   const [seed, setSeed] = useState(() => (tab.seed == null ? '' : String(tab.seed)));
   const [deterministic, setDeterministic] = useState(tab.deterministic);
   const [recordOutputs, setRecordOutputs] = useState(tab.recordOutputs);
+  // Node provenance (#344): off unless asked for, so a queued run stores
+  // the options row it always did.
+  const [provenance, setProvenance] = useState<'off' | 'identity' | 'content'>('off');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -218,6 +221,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       // Sent even when blank: `seed: null` is an unseeded run, said outright.
       seed: seedValue,
       ...(deterministic ? { deterministic: true } : {}),
+      ...(provenance !== 'off' ? { provenance } : {}),
     };
     const runName = storableRunName(name) || tabDefaultName(active) || null;
     setSubmitting(true);
@@ -340,6 +344,18 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
             </label>
             {oneShot && <p className={styles.hint}>{t('queueRun.recordOutputsOneShot')}</p>}
             {isWorker && records && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
+            <label className={styles.field}>
+              {t('queueRun.provenance')}
+              <select
+                value={provenance}
+                onChange={(event) => setProvenance(event.target.value as typeof provenance)}
+              >
+                <option value="off">{t('queueRun.provenance.off')}</option>
+                <option value="identity">{t('queueRun.provenance.identity')}</option>
+                <option value="content">{t('queueRun.provenance.content')}</option>
+              </select>
+            </label>
+            {provenance !== 'off' && <p className={styles.hint}>{t('queueRun.provenance.hint')}</p>}
             {error !== null && <div className={styles.error} role="alert">{error}</div>}
           </div>
 

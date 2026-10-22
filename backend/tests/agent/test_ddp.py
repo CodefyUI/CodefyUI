@@ -879,3 +879,23 @@ async def test_the_agent_cancels_a_ddp_run(tmp_path, monkeypatch):
         except psutil.Error:
             pass
     assert not left
+
+
+def test_rank_zero_alone_reports_the_runs_environment_and_provenance():
+    """#344 on a ``ddp`` run: ``run_assignment`` runs on rank 0 only, so
+    the ``environment`` report and the provenance records come once, from
+    rank 0, and the launcher forwards them; the same kinds from another
+    rank (which never sends them) would be dropped, never duplicated."""
+    sent: list[tuple] = []
+    ranks = [ddp._Rank(index=i, process=None, events_in=None,
+                       control_out=None) for i in range(2)]
+    state = ddp._Launch(ranks=ranks, send=sent.append, world_size=2)
+    environment = (child.MSG_ENVIRONMENT, {
+        "fingerprint": {"schema_version": 2}, "digest": "d" * 64,
+        "numerics": {"num_threads": 1}})
+    record = (child.MSG_PROVENANCE, {"node_id": "csv"})
+    state.from_rank(ranks[0], environment)
+    state.from_rank(ranks[0], record)
+    state.from_rank(ranks[1], environment)
+    state.from_rank(ranks[1], record)
+    assert sent == [environment, record]

@@ -277,7 +277,7 @@ Worker 必須執行與控制面相同的 CodefyUI 版本，也應該認得相同
 
 要解除降級，請在 worker 上安裝相同的外掛與套件（`cdui plugin install ...`、Package Center、相同的自訂節點檔）並重新啟動 agent：它只在啟動時回報節點。輔助程序失敗的 worker 不會回報節點目錄：它的卡片會顯示警告，`any` 會略過它，指定它的 run 則不經檢查直接送出（agent 的 log 會說明輔助程序失敗的原因）。目前還沒有把控制面的外掛組合複製到 worker 的指令。
 
-**環境指紋。** 同一個輔助程序也會收集 worker 的[環境指紋](/advanced/api-reference#run-environment)（CodefyUI commit、Python、torch build、加速器、外掛版本、影響數值的環境變數）。Workers 面板顯示它的摘要，worker 執行的每個 run 都會記錄這個摘要（重新連線時未回報指紋的 worker 會顯示「未回報」，不會沿用舊的摘要），所以 Runs 面板會指出實際執行它的環境。指紋描述的是 agent 的環境，也就是它的 run 子程序所繼承的環境，在 run 的裝置集合縮小 `CUDA_VISIBLE_DEVICES` 之前。
+**環境指紋。** 同一個輔助程序也會收集 worker 的[環境指紋](/advanced/api-reference#run-environment)（CodefyUI commit、Python、torch build、加速器、外掛版本、影響數值的環境變數）。Workers 面板顯示它的摘要，worker 執行的每個 run 開始時都會記錄這個摘要（重新連線時未回報指紋的 worker 會顯示「未回報」，不會沿用舊的摘要）。接著 run 子程序回報它所載入之程式碼、外掛與自訂節點的指紋並取而代之（`execution_facts.fingerprint_source: "worker-run"`），所以 agent 啟動後 checkout 或外掛有變動的 worker，記錄的是實際執行的內容，而不是 agent 當時看到的內容。兩者描述的都是 agent 所見的機器裝置，在 run 的裝置集合縮小 `CUDA_VISIBLE_DEVICES` 之前，所以沒有任何變動時兩個摘要相同。子程序也會回報它的 torch 數值設定（`execution_facts.resolved.numerics`）。見[執行環境](/advanced/api-reference#run-environment)。
 
 ## 連線中斷時 {/* #when-the-connection-drops */}
 

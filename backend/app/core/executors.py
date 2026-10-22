@@ -136,6 +136,17 @@ class RunSinks:
     #: buffer) and persist *seq*, so a restarted server resumes the stream
     #: after it. None: nothing is persisted.
     record_worker_seq: Callable[[int], Awaitable[Any]] | None = None
+    #: Store one node's provenance record (#344, ``core.node_provenance``)
+    #: for a run with the ``provenance`` option. None: nothing records it,
+    #: and the executor collects none.
+    record_provenance: (
+        Callable[[dict[str, Any]], Awaitable[Any]] | None) = None
+    #: ``record_environment(document, numerics)``: the environment the
+    #: run's worker subprocess reported (#344): its fingerprint document
+    #: (or None) and its torch numerics switches. None: nothing records it.
+    record_environment: (
+        Callable[[dict[str, Any] | None, dict[str, Any] | None],
+                 Awaitable[Any]] | None) = None
 
 
 @dataclass
@@ -296,9 +307,21 @@ class InProcessExecutor:
         session = request.session
         media_ports = declared_media_ports(graph["nodes"])
         on_progress = _progress_bridge(request, media_ports)
+        on_inner_status = _inner_status_bridge(request, on_progress,
+                                               media_ports)
+        recorder = _provenance_recorder(request)
+
         async def on_expanded(expanded: list[dict[str, Any]]) -> None:
+            # The nodes inside blocks and preset cards declare media too:
+            # read once, from the node list the run executes (#559).
             media_ports.update(declared_media_ports(expanded))
+            if recorder is not None:
+                recorder.add(expanded)
             await self._warn_device_fallbacks(request, expanded)
+
+        if recorder is not None:
+            on_progress, on_inner_status = _observed(
+                recorder, on_progress, on_inner_status)
 
         try:
             # The RUN-level baseline (``seeding.seed_rngs``): anything that
@@ -316,10 +339,7 @@ class InProcessExecutor:
                 graph["nodes"],
                 graph["edges"],
                 on_progress=on_progress,
-                on_inner_status=_inner_status_bridge(
-                    request, on_progress, media_ports),
-                # The nodes inside blocks and preset cards declare media too:
-                # read once, from the node list the run executes (#559).
+                on_inner_status=on_inner_status,
                 on_expanded=on_expanded,
                 on_signal=_signal_bridge(request),
                 context=request.context,
@@ -353,6 +373,39 @@ class InProcessExecutor:
             logger.warning("run %s failed: %s", request.run_id, exc,
                            exc_info=True)
             return ExecutionOutcome(STATUS_FAILED, str(exc))
+
+
+def _provenance_recorder(request: ExecutionRequest) -> Any:
+    """A ``ProvenanceRecorder`` for a run with the ``provenance`` option
+    and a sink to report into (#344), else None."""
+    from .node_provenance import MODES, ProvenanceRecorder
+
+    mode = request.options.get("provenance")
+    sink = request.sinks.record_provenance
+    if mode not in MODES or sink is None:
+        return None
+    return ProvenanceRecorder(request.graph.get("nodes") or [], mode, sink)
+
+
+def _observed(recorder: Any, on_progress: Callable[..., Any],
+              on_inner_status: Callable[..., Any],
+              ) -> tuple[Callable[..., Any], Callable[..., Any]]:
+    """The two status bridges, each followed by *recorder*: a node's
+    status event goes out first, then its provenance is described."""
+
+    async def progress(node_id: str, status: str,
+                       result: dict[str, Any] | None,
+                       inner_node_id: str | None = None) -> None:
+        await on_progress(node_id, status, result,
+                          inner_node_id=inner_node_id)
+        await recorder.observe(node_id, status, result)
+
+    async def inner(node_id: str, container_id: str, status: str,
+                    result: dict[str, Any] | None) -> None:
+        await on_inner_status(node_id, container_id, status, result)
+        await recorder.observe(node_id, status, result)
+
+    return progress, inner
 
 
 # ── peak memory (#770) ────────────────────────────────────────────────────
@@ -1259,10 +1312,37 @@ class WorkerExecutor:
             await sinks.warn(WarningSignal(kind=frame.kind,
                                            detail=frame.detail,
                                            node_id=frame.node_id))
+        elif isinstance(frame, wp.RunFacts):
+            await self._run_facts(request, frame)
         elif isinstance(frame, wp.RunFinished):
             return self._outcome(frame, devices,
                                  stop_asked=request.context.should_stop())
         return None
+
+    @staticmethod
+    async def _run_facts(request: ExecutionRequest, frame: Any) -> None:
+        """A ``run_facts`` frame (#344): the subprocess's environment to
+        ``record_environment``, a provenance record to
+        ``record_provenance``. Observability: a failure is logged."""
+        from .worker_handshake import verified_fingerprint
+
+        sinks = request.sinks
+        try:
+            if (frame.fingerprint is not None or frame.numerics is not None) \
+                    and sinks.record_environment is not None:
+                document, _ = verified_fingerprint(
+                    frame.fingerprint, worker=request.placement.worker_id
+                    if request.placement is not None else "?")
+                await sinks.record_environment(document, frame.numerics)
+            if frame.provenance is not None \
+                    and sinks.record_provenance is not None:
+                await sinks.record_provenance(frame.provenance)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- observability
+            logger.warning("run %s: could not record what its worker "
+                           "reported about it", request.run_id,
+                           exc_info=True)
 
     @staticmethod
     def _outcome(frame: Any, devices: list[str], *,

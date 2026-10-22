@@ -54,10 +54,20 @@ logger = logging.getLogger(__name__)
 #: Bump when a key is added, removed or changes meaning. A stored
 #: fingerprint carries the version it was written under, so a reader can
 #: tell an old document from a new one that lacks a fact.
-SCHEMA_VERSION = 1
+#:
+#: 2 (#344, hook 5) adds ``content_sha256`` and ``immutable`` to every
+#: ``plugins`` entry, and gives a linked local pack its content digest as
+#: its ``revision`` (``revision_kind: "content-sha256"``).
+SCHEMA_VERSION = 2
 
 #: ``backend/app/core/env_fingerprint.py`` -> repository root.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: The device-visibility variables. A worker's run subprocess sees its own
+#: narrowed value; its fingerprint takes the agent's (see
+#: :func:`collect_fingerprint`'s *host*).
+VISIBILITY_ENV_VARS: tuple[str, ...] = ("CUDA_VISIBLE_DEVICES",
+                                        "HIP_VISIBLE_DEVICES")
 
 #: Environment variables that change numerics or device selection. Only
 #: these are read, and only their values; nothing else in ``os.environ``
@@ -269,21 +279,35 @@ def _devices() -> dict[str, Any]:
 
 
 def _plugin_identity(plugin_id: str, entry: dict[str, Any],
-                     code: dict[str, Any]) -> dict[str, Any]:
+                     code: dict[str, Any],
+                     directory: Path | None = None) -> dict[str, Any]:
     """One enabled lockfile entry, as an identity that names no local path.
 
-    ``revision`` is the immutable thing the pack's code can be recovered
-    from, and ``revision_kind`` says what kind of thing it is:
+    ``revision`` is the thing the pack's code is identified by, and
+    ``revision_kind`` says what kind of thing it is:
 
     - ``"git-sha"`` for a pack installed from a repository at a commit.
     - ``"codefyui-commit"`` for a builtin pack: it ships inside the
       CodefyUI checkout, so the checkout's commit (and its ``dirty`` flag,
       under ``codefyui``) is its revision. ``source`` is its path relative
       to the repository.
-    - ``None`` for a linked local pack, or anything else with no recorded
-      revision. Its ``source`` is withheld (it is an absolute path on the
-      author's machine). The manifest ``version`` is then the only label,
-      and it is not a guarantee: the files can change under it.
+    - ``"content-sha256"`` for a linked local pack (#344, hook 5): it has
+      no immutable revision, so its revision is the digest of its files as
+      they were when the run started. Its ``source`` is withheld (it is an
+      absolute path on the author's machine).
+    - ``None`` when nothing identifies the code (a local pack whose files
+      could not be read, a builtin pack outside a git checkout).
+
+    ``content_sha256`` is the digest of the pack's files for every kind
+    (``content_hash.content_identity``, incremental, skipping VCS, cache,
+    virtual-environment and build directories; a pack inside a git
+    checkout is listed by ``git ls-files``, so what its ``.gitignore``
+    excludes is left out), so a pack edited in place after
+    it was installed is visible as such; ``None`` when unreadable.
+    ``immutable`` says whether ``revision`` names something the code can
+    be recovered from later: True for a git commit (a builtin pack's only
+    while the checkout is clean), False for a content digest, which
+    identifies the files but cannot bring them back.
     """
     kind = str(entry.get("source_kind") or "") or None
     manifest = entry.get("manifest")
@@ -291,16 +315,21 @@ def _plugin_identity(plugin_id: str, entry: dict[str, Any],
     sha = str(entry.get("sha") or "") or None
     ref = str(entry.get("ref") or "") or None
     source: str | None = str(entry.get("source") or "") or None
+    content = _pack_content(directory)
     revision: str | None = None
     revision_kind: str | None = None
+    immutable = False
     if kind == "builtin":
         source = f"plugins/{plugin_id}"
         revision = code.get("commit")
         revision_kind = "codefyui-commit" if revision else None
+        immutable = bool(revision) and code.get("dirty") is False
     elif kind == "local":
         source = None
+        if content is not None:
+            revision, revision_kind = content, "content-sha256"
     elif sha:
-        revision, revision_kind = sha, "git-sha"
+        revision, revision_kind, immutable = sha, "git-sha", True
     return {
         "source_kind": kind,
         "source": source,
@@ -308,11 +337,34 @@ def _plugin_identity(plugin_id: str, entry: dict[str, Any],
         "version": version if isinstance(version, str) else None,
         "revision": revision,
         "revision_kind": revision_kind,
+        "immutable": immutable,
+        "content_sha256": content,
     }
 
 
+def _pack_content(directory: Path | None) -> str | None:
+    """The content digest of a pack directory, or None."""
+    if directory is None:
+        return None
+    try:
+        from .content_hash import PACK_SKIPS, content_identity
+
+        if not directory.is_dir():
+            return None
+        return content_identity([directory], use_git=True,
+                                skips=PACK_SKIPS).get("digest")
+    except Exception:  # noqa: BLE001 -- a fact, never a failure
+        return None
+
+
 def _plugins(code: dict[str, Any]) -> dict[str, Any]:
-    from .plugin_loader import is_enabled, load_lockfile
+    from .plugin_loader import (
+        _resolve_plugin_dir,
+        is_enabled,
+        load_lockfile,
+        plugins_builtin_root,
+        plugins_user_root,
+    )
 
     try:
         plugins = load_lockfile().get("plugins")
@@ -320,8 +372,18 @@ def _plugins(code: dict[str, Any]) -> dict[str, Any]:
         return {}
     if not isinstance(plugins, dict):
         return {}
+
+    def directory(plugin_id: str, entry: dict[str, Any]) -> Path | None:
+        try:
+            return _resolve_plugin_dir(plugin_id, entry,
+                                       plugins_builtin_root(),
+                                       plugins_user_root())
+        except Exception:  # noqa: BLE001
+            return None
+
     return {
-        str(plugin_id): _plugin_identity(str(plugin_id), entry, code)
+        str(plugin_id): _plugin_identity(str(plugin_id), entry, code,
+                                         directory(str(plugin_id), entry))
         for plugin_id, entry in plugins.items()
         if isinstance(entry, dict) and is_enabled(entry)
     }
@@ -381,7 +443,7 @@ def _environment_variables() -> dict[str, str | None]:
 # ── the document ──────────────────────────────────────────────────────────
 
 
-def collect_fingerprint() -> dict[str, Any]:
+def collect_fingerprint(host: dict[str, Any] | None = None) -> dict[str, Any]:
     """The fingerprint of this process, as a fresh JSON-safe dict.
 
     Blocking (a lockfile read, a few package-metadata lookups, git once per
@@ -398,6 +460,17 @@ def collect_fingerprint() -> dict[str, Any]:
     ``plugins`` (enabled packs, see :func:`_plugin_identity`),
     ``custom_nodes`` (file name -> sha256), ``optional_packages`` (Package
     Center pip versions) and ``env`` (:data:`NUMERICS_ENV_VARS`).
+
+    *host* is the fingerprint of the process that started this one, for a
+    worker's run subprocess (#344): the agent narrows each run's
+    ``CUDA_VISIBLE_DEVICES`` to the run's cards, so the subprocess would
+    describe a machine with only those cards. With *host*, ``accelerators``,
+    ``devices`` and the :data:`VISIBILITY_ENV_VARS` come from it (the
+    machine as the agent sees it, as on the control plane, where a run's
+    own device set is in its ``execution_facts``), and everything else --
+    the code, the libraries, the plugins and custom nodes the subprocess
+    loaded -- is read here. A subprocess on an unchanged machine therefore
+    reports the agent's digest exactly.
     """
     static = _static_facts()
     # Deep enough a copy: the cached dict's nested values are dicts of
@@ -405,14 +478,25 @@ def collect_fingerprint() -> dict[str, Any]:
     document: dict[str, Any] = {
         key: dict(value) for key, value in static.items()
     }
+    host = host if isinstance(host, dict) else None
     document["schema_version"] = SCHEMA_VERSION
     document["libraries"] = _libraries()
-    document["accelerators"] = _accelerators()
-    document["devices"] = _devices()
+    if host is not None and isinstance(host.get("accelerators"), dict) \
+            and isinstance(host.get("devices"), dict):
+        document["accelerators"] = json.loads(json.dumps(host["accelerators"]))
+        document["devices"] = json.loads(json.dumps(host["devices"]))
+    else:
+        host = None
+        document["accelerators"] = _accelerators()
+        document["devices"] = _devices()
     document["plugins"] = _plugins(document["codefyui"])
     document["custom_nodes"] = _custom_nodes()
     document["optional_packages"] = _optional_packages()
     document["env"] = _environment_variables()
+    if host is not None:
+        host_env = host.get("env") if isinstance(host.get("env"), dict) else {}
+        for name in VISIBILITY_ENV_VARS:
+            document["env"][name] = host_env.get(name)
     return document
 
 
@@ -431,7 +515,23 @@ def collect_with_digest() -> tuple[dict[str, Any], str]:
 #: finish) and, for a run on a worker, ``visible_devices`` and
 #: ``device_aliases`` (#774, from ``run_started``). A key a run never got
 #: is absent, as in version 1.
-EXECUTION_FACTS_VERSION = 2
+#:
+#: 3 adds ``fingerprint_source`` (#344): which process the run's
+#: ``fingerprint_digest`` describes (:data:`FINGERPRINT_PROCESS`,
+#: :data:`FINGERPRINT_WORKER_HELLO`, :data:`FINGERPRINT_WORKER_RUN`; None
+#: when none was recorded), and, for a worker run, ``resolved.numerics``
+#: from the run subprocess.
+EXECUTION_FACTS_VERSION = 3
+
+#: ``fingerprint_source``: the control plane process executed the run and
+#: collected the fingerprint when it started.
+FINGERPRINT_PROCESS = "process"
+#: A worker run, before its subprocess reported: the fingerprint the
+#: worker agent's ``hello`` carried (collected when the agent started).
+FINGERPRINT_WORKER_HELLO = "worker-hello"
+#: A worker run whose subprocess reported the fingerprint of the code and
+#: plugins it loaded when the run started (``agent.child``).
+FINGERPRINT_WORKER_RUN = "worker-run"
 
 
 def numerics_settings() -> dict[str, Any]:

@@ -42,6 +42,8 @@ def test_connect_migrates_empty_file(tmp_path):
         assert {"workers", "worker_enrollments", "ssh_workers"} <= names
         assert {"exec_runs", "exec_run_metrics", "exec_run_events",
                 "exec_run_artifacts", "sweeps"} <= names
+        # Node provenance (017, #344).
+        assert "exec_run_provenance" in names
     finally:
         db.close()
 

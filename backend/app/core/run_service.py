@@ -235,8 +235,12 @@ from .device_utils import (
     split_device,
 )
 from .env_fingerprint import (
+    FINGERPRINT_PROCESS,
+    FINGERPRINT_WORKER_HELLO,
+    FINGERPRINT_WORKER_RUN,
     collect_fingerprint,
     execution_facts,
+    fingerprint_digest,
     worker_execution_facts,
 )
 from .execution_context import (
@@ -422,6 +426,9 @@ OPTION_KEYS = frozenset({
     # Stored only when the caller sent it, so a run without a target keeps
     # exactly the options row it had before; see :func:`normalize_target`.
     "target",
+    # Node provenance (#344): ``"identity"`` or ``"content"``
+    # (``core.node_provenance``). Stored only when on, like ``target``.
+    "provenance",
 })
 
 #: Default lane, and the one the per-device FIFO schedules. Every lane that
@@ -1216,7 +1223,23 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     # stored before #769.
     if target is not None:
         normalized["target"] = target
+    provenance = normalize_provenance(raw.get("provenance"))
+    if provenance is not None:
+        normalized["provenance"] = provenance
     return normalized
+
+
+def normalize_provenance(raw: Any) -> str | None:
+    """The ``provenance`` option (#344): ``"identity"``, ``"content"``, or
+    None for off (absent, null or ``"off"``, which store nothing)."""
+    from .node_provenance import MODES
+
+    if raw is None or raw == "off":
+        return None
+    if not isinstance(raw, str) or raw.strip().lower() not in MODES:
+        raise RunSubmitError(
+            f"provenance must be one of {['off', *MODES]}, got {raw!r}")
+    return raw.strip().lower()
 
 
 def normalize_name(raw: Any) -> str | None:
@@ -3753,6 +3776,10 @@ class RunService:
                 options=options or {}, graph=graph,
                 worker_id=active.placement.worker_id,
                 devices=list(active.placement.devices))
+            # Until the run subprocess reports its own (#344): the agent's,
+            # from its ``hello``.
+            facts["fingerprint_source"] = (FINGERPRINT_WORKER_HELLO
+                                           if digest is not None else None)
             # What a restarted server needs to adopt the run (#793).
             facts[WORKER_RESUME_KEY] = self._worker_resume(active, 0)
             if getattr(worker, "instance_id", None):
@@ -3822,6 +3849,7 @@ class RunService:
             facts = execution_facts(
                 options=options or {}, graph=graph,
                 resolved_device=active.context.device)
+            facts["fingerprint_source"] = FINGERPRINT_PROCESS
             return fingerprint, facts
         except Exception:
             logger.warning("run %s: could not record its environment",
@@ -4014,6 +4042,10 @@ class RunService:
                 self.store.update_execution_facts, active.run_id),
             record_worker_connection=functools.partial(
                 self._record_worker_connection, active),
+            record_provenance=functools.partial(
+                self._record_provenance, active.run_id),
+            record_environment=functools.partial(
+                self._record_environment, active.run_id),
             # Only read by a restarted server's adoption (#793): with no
             # resume grace nothing would ever read it.
             record_worker_seq=(functools.partial(self._record_worker_seq,
@@ -4021,6 +4053,43 @@ class RunService:
                                if on_a_worker(active.placement)
                                and self._resume_grace() > 0 else None),
         )
+
+    async def _record_provenance(self, run_id: str,
+                                 record: dict[str, Any]) -> None:
+        """Store one node's provenance record (#344). Never raises but
+        cancel: provenance is observability, never a reason to fail."""
+        try:
+            await self.store.record_provenance(run_id, record)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("run %s: could not record a node's provenance",
+                           run_id, exc_info=True)
+
+    async def _record_environment(
+        self, run_id: str, fingerprint: dict[str, Any] | None,
+        numerics: dict[str, Any] | None,
+    ) -> None:
+        """The environment a worker's run subprocess reported (#344): its
+        fingerprint replaces the ``hello`` one, its numerics fill
+        ``execution_facts.resolved.numerics``. Never raises but cancel."""
+        digest = None
+        if fingerprint is not None:
+            try:
+                digest = fingerprint_digest(fingerprint)
+            except (TypeError, ValueError):
+                logger.warning("run %s: its worker reported a fingerprint "
+                               "that cannot be canonicalised", run_id)
+                fingerprint = None
+        try:
+            await self.store.record_run_environment(
+                run_id, fingerprint=fingerprint, digest=digest,
+                numerics=numerics, source=FINGERPRINT_WORKER_RUN)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("run %s: could not record its worker's "
+                           "environment", run_id, exc_info=True)
 
     def _worker_resume(self, active: _ActiveRun, seq: int) -> dict[str, Any]:
         """``execution_facts.worker_resume`` (#793): the last frame recorded,

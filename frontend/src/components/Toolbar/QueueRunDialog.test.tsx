@@ -221,6 +221,17 @@ describe('QueueRunDialog: this server', () => {
     expect(options).toMatchObject({ deterministic: true, record_outputs: false });
   });
 
+  it('sends node provenance only when it is asked for (#344)', async () => {
+    await open();
+    const choice = screen.getByRole('combobox', { name: 'Data and model provenance' });
+    expect(choice).toHaveValue('off');
+    expect(screen.queryByText(/reads each file once/)).toBeNull();
+    fireEvent.change(choice, { target: { value: 'content' } });
+    expect(screen.getByText(/reads each file once/)).toBeInTheDocument();
+    await submit();
+    expect(sentRequest().options).toMatchObject({ provenance: 'content' });
+  });
+
   it('defaults to the graph device, a lone CUDA card named as cuda:0', async () => {
     api.fetchDevices.mockResolvedValue({ default: 'cuda', devices: [CPU, CUDA] });
     patchTab({ graphDevice: 'cuda' });

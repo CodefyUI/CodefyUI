@@ -652,7 +652,7 @@ def test_options_accept_every_documented_key():
         "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
         "backward_mode": True, "auto_backward": True,
         "error_mode": "retry", "max_retries": 3, "deterministic": True,
-        "target": {"devices": [" CUDA:1 "]},
+        "target": {"devices": [" CUDA:1 "]}, "provenance": "content",
     }
     assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
     # " CUDA " is the bare kind, so the device set's first card wins.

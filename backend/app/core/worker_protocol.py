@@ -81,6 +81,10 @@ What the frames carry
   ``artifact`` the agent uploaded to the control plane (the ``transfer``
   backend, #785) carries ``backend: "transfer"`` and the key the upload
   answered with (``runs/<run_id>/<kind>/<name>``) as its ``path``.
+- ``run_facts`` (#344, capability ``run_facts``): what the run subprocess
+  reports about itself, for ``RunSinks.record_environment`` (its own
+  fingerprint and numerics, once, before the graph runs) and
+  ``RunSinks.record_provenance`` (one node's provenance record).
 - ``assign.storage.backend == "transfer"`` (#785): the worker holds no
   directory for the control plane's mount. ``storage.inputs`` lists the
   uploads the run reads, by content hash; the agent fetches the ones its
@@ -177,9 +181,12 @@ PROTOCOL_VERSION = 3
 #: concurrent one-shot agents, each registered as ``<name>.<instance>``
 #: (:func:`instance_worker_id`); a ``--instance`` agent refuses a control
 #: plane whose ``welcome`` lacks it.
+#: ``run_facts`` (#344): the agent sends ``run_facts`` frames (the run
+#: subprocess's own fingerprint and numerics, and node provenance records);
+#: an agent sends them only to a control plane whose ``welcome`` lists it.
 CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
                                  "memory_budget", "one_shot", "s3",
-                                 "record_outputs", "instances")
+                                 "record_outputs", "instances", "run_facts")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
@@ -196,6 +203,8 @@ CAPABILITY_S3 = "s3"
 CAPABILITY_RECORD_OUTPUTS = "record_outputs"
 #: The capability name of one-shot instances (#845).
 CAPABILITY_INSTANCES = "instances"
+#: The capability name of ``run_facts`` frames (#344).
+CAPABILITY_RUN_FACTS = "run_facts"
 
 
 def agent_capabilities(s3_client: bool) -> list[str]:
@@ -224,6 +233,7 @@ WARNING = "warning"
 RUN_FINISHED = "run_finished"
 RUN_ALIVE = "run_alive"
 OUTPUT_ANSWER = "output_answer"
+RUN_FACTS = "run_facts"
 
 # ── frame types: control plane -> agent ──────────────────────────────────
 WELCOME = "welcome"
@@ -238,7 +248,8 @@ DROP_OUTPUTS = "drop_outputs"
 CANCEL_FETCH = "cancel_fetch"
 
 AGENT_FRAME_TYPES = (HELLO, HEARTBEAT, RUN_STARTED, EVENT, METRICS, ARTIFACT,
-                     WARNING, RUN_FINISHED, RUN_ALIVE, OUTPUT_ANSWER)
+                     WARNING, RUN_FINISHED, RUN_ALIVE, OUTPUT_ANSWER,
+                     RUN_FACTS)
 CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK,
                        CREDENTIALS, FETCH_OUTPUT, DROP_OUTPUTS,
                        CANCEL_FETCH)
@@ -505,6 +516,27 @@ class RunWarning(_RunFrame):
     node_id: str | None = None
 
 
+class RunFacts(_RunFrame):
+    """What the run subprocess reports about itself (#344).
+
+    ``fingerprint``: its own environment fingerprint, collected after it
+    loaded the code, plugins and custom nodes the run executes with (the
+    agent's ``hello`` describes the agent at its start). The control plane
+    recomputes the digest and records it as the run's
+    (``fingerprint_source: "worker-run"``). ``numerics``: its torch
+    numerics switches when the run started
+    (``execution_facts.resolved.numerics``). ``provenance``: one node's
+    provenance record (``core.node_provenance``). Any of the three may be
+    absent; the subprocess sends the first two once, before the graph
+    runs, and one frame per provided node after.
+    """
+
+    type: Literal["run_facts"] = RUN_FACTS
+    fingerprint: FingerprintReport | None = None
+    numerics: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
+
+
 class RunFinished(_RunFrame):
     type: Literal["run_finished"] = RUN_FINISHED
     status: FinishedStatus
@@ -753,7 +785,7 @@ class Ack(_Frame):
 
 AgentFrame = Annotated[
     Union[Hello, Heartbeat, RunStarted, Event, Metrics, Artifact, RunWarning,
-          RunFinished, RunAlive, OutputAnswer],
+          RunFinished, RunAlive, OutputAnswer, RunFacts],
     Field(discriminator="type"),
 ]
 ControlFrame = Annotated[

@@ -171,6 +171,12 @@ class NodeRegistry:
         #: Bumped on every change to the set of nodes, so a value derived
         #: from it (:func:`node_catalog`) can be cached until the next one.
         self.generation = 0
+        #: :func:`node_catalog`'s cache for THIS registry: ``(generation,
+        #: catalog)``, or None. On the instance rather than in a module
+        #: global keyed by ``id(registry)`` (#863): an id is unique among
+        #: live objects only, so a registry created after another was
+        #: collected could inherit the dead one's catalog.
+        self._catalog: tuple[int, NodeCatalog] | None = None
 
     @property
     def nodes(self) -> dict[str, Type[BaseNode]]:
@@ -424,9 +430,6 @@ class NodeCatalog:
     node_types: tuple[str, ...]
 
 
-_catalog_cache: tuple[int, int, NodeCatalog] | None = None
-
-
 def node_catalog(reg: NodeRegistry | None = None) -> NodeCatalog:
     """This process's node catalog: its node types and their hash (#781).
 
@@ -441,14 +444,13 @@ def node_catalog(reg: NodeRegistry | None = None) -> NodeCatalog:
 
     A node whose definition cannot be built (its ``define_params`` raises)
     hashes as ``{"error": "<exception type>"}`` rather than failing the
-    catalog. Cached per registry generation, so calling it on every worker
-    handshake costs a compare until a node is registered.
+    catalog. Cached on the registry per generation, so calling it on every
+    worker handshake costs a compare until a node is registered.
     """
-    global _catalog_cache
     reg = registry if reg is None else reg
-    key = (id(reg), reg.generation)
-    if _catalog_cache is not None and _catalog_cache[:2] == key:
-        return _catalog_cache[2]
+    cached = getattr(reg, "_catalog", None)
+    if cached is not None and cached[0] == reg.generation:
+        return cached[1]
     nodes = reg.nodes
     entries = []
     for name in sorted(nodes):
@@ -462,5 +464,5 @@ def node_catalog(reg: NodeRegistry | None = None) -> NodeCatalog:
                      ensure_ascii=False, default=str).encode("utf-8")
     catalog = NodeCatalog(hash=hashlib.sha256(raw).hexdigest(),
                           node_types=tuple(name for name, _ in entries))
-    _catalog_cache = (key[0], key[1], catalog)
+    reg._catalog = (reg.generation, catalog)
     return catalog

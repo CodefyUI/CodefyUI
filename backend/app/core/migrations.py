@@ -647,13 +647,36 @@ MIGRATION_016 = """
 ALTER TABLE workers ADD COLUMN one_shot INTEGER;
 """
 
-# ── Migration 017: reserved (#344) ────────────────────────────────────────
+# ── Migration 017: node provenance (#344, hook 4) ────────────────────────
 #
-# The number belongs to the run-fingerprint / provenance work of #344, which
-# lands in its own pull request. Until it does, the slot is empty so 018
-# keeps its number; whichever of the two merges second puts #344's
-# statements here (no released build has applied this placeholder).
-MIGRATION_017 = ""
+# What data and which weights a run read, one row per node that read them,
+# for a run submitted with the ``provenance`` option
+# (``core.node_provenance``). ``provenance`` is the node's record as JSON
+# (source, revision, content identity, row count; unknown facts are
+# explicit nulls). The primary key keeps one row per node: a replayed
+# worker frame rewrites the row it already wrote. Deleted with its run
+# (CASCADE), like the run's metrics and artifacts; the run's environment
+# fingerprint is the part that outlives it.
+MIGRATION_017 = """
+CREATE TABLE exec_run_provenance (
+  run_id      TEXT NOT NULL REFERENCES exec_runs(id) ON DELETE CASCADE,
+  node_id     TEXT NOT NULL,
+  node_type   TEXT NOT NULL,
+  kind        TEXT NOT NULL,                -- 'dataset' | 'model'
+  provenance  TEXT NOT NULL,                -- JSON, node_provenance's record
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, node_id)
+);
+"""
+
+#: Migration 017's table, created when it is missing (#344). A development
+#: database that ran a wave-d build with 017 still empty is at
+#: ``user_version`` 18 or later without the table, and no migration will
+#: add it; ``RunStore`` creates it on first use with this statement. A
+#: released build always has the table from 017, so there it is a no-op.
+PROVENANCE_TABLE_DDL = MIGRATION_017.replace(
+    "CREATE TABLE exec_run_provenance",
+    "CREATE TABLE IF NOT EXISTS exec_run_provenance", 1)
 
 # ── Migration 018: study budgets and plugin-owned studies (#343) ──────────
 #

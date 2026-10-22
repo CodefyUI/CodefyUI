@@ -458,6 +458,10 @@ async def get_run(run_id: str, request: Request):
     the server recorded one. Only here, not on the list: a list row carries
     the digest and the small ``execution_facts``, and a poll of fifty rows
     must not ship fifty copies of the same few kilobytes.
+
+    And ``provenance``: the run's node provenance records (#344, the
+    ``provenance`` option; ``core.node_provenance``), in the order they
+    were recorded. An empty list for a run without the option.
     """
     service = _get_service(request)
     record = await _require_run(service, run_id)
@@ -483,6 +487,7 @@ async def get_run(run_id: str, request: Request):
     payload["fingerprint"] = (
         None if record.fingerprint_digest is None
         else await service.store.get_fingerprint(record.fingerprint_digest))
+    payload["provenance"] = await service.store.list_provenance(run_id)
     return payload
 
 

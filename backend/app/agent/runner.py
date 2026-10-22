@@ -491,6 +491,13 @@ class Runner:
         self.draining = False
         #: Grace a run gets when the agent itself stops (``cdui agent stop``).
         self.shutdown_grace_s = 10.0
+        #: The control plane understands ``run_facts`` (#344): set by the
+        #: connection from ``welcome``. A run subprocess started meanwhile
+        #: reports its own fingerprint and provenance records.
+        self.run_facts = False
+        #: This agent's fingerprint document (``agent.facts``), whose device
+        #: facts a run subprocess's own fingerprint takes (#344).
+        self.host_fingerprint: dict[str, Any] | None = None
         self.runs: dict[str, RunHandle] = {}
         #: Runs refused at assignment whose ``run_finished`` is still to be
         #: acknowledged: they have no handle to retire their directory.
@@ -797,6 +804,8 @@ class Runner:
             "run_id": frame.run_id, "graph": frame.graph,
             "options": frame.options, "device": device,
             "env": env, "log_path": str(log_path), "mount": mount,
+            "run_facts": self.run_facts,
+            "host_fingerprint": self.host_fingerprint,
         }
         record = bool(frame.options.get("record_outputs"))
         if record:
@@ -1108,6 +1117,17 @@ class Runner:
                                  for name, limit in limits.items()}}})
         elif kind == child_module.MSG_FINISHED:
             frame = self._reported_end(handle, message[1], 1)
+        elif kind == child_module.MSG_ENVIRONMENT:
+            report = message[1] if isinstance(message[1], dict) else {}
+            document, digest = report.get("fingerprint"), report.get("digest")
+            frame = wp.RunFacts(
+                run_id=run_id, seq=1, numerics=report.get("numerics"),
+                fingerprint=(wp.FingerprintReport(document=document,
+                                                  digest=digest)
+                             if isinstance(document, dict) and digest
+                             else None))
+        elif kind == child_module.MSG_PROVENANCE:
+            frame = wp.RunFacts(run_id=run_id, seq=1, provenance=message[1])
         else:
             logger.debug("run %s: ignoring pipe message %r", run_id, kind)
             return None
