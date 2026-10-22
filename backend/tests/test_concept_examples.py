@@ -54,6 +54,7 @@ _CONCEPT_EXAMPLES = (
     "RNN/Conv1d-Sequence-Classifier",
     "RL/Reward-Model-Bradley-Terry",
     "RL/Discounted-Returns",
+    "Others/One-Backward-Pass",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -655,3 +656,49 @@ def test_the_3_to_1_mix_the_ratio_note_suggests_gives_45_and_15():
         {"corpus_1": [f"s{i}" for i in range(30)], "corpus_2": [f"f{i}" for i in range(6)]},
         {"sources": 2, "weights": "3, 1", "mode": "ratio", "total_rows": 60, "seed": 0})
     assert out["__log__"].endswith("corpus_1: 45 of 30, corpus_2: 15 of 6.")
+
+
+# ── One backward pass: the gradients the overview quotes ──────────────────
+
+def test_one_backward_pass_reaches_only_the_rows_it_looked_up():
+    """With Capture gradients on, as the note asks: the table's gradient is
+    the sum of each row's weights over its lookups, zero for unread rows."""
+    from app.core.execution_context import ExecutionContext
+    from app.core.node_state_store import NodeStateStore
+    from app.core.run_output_store import RunOutputStore
+
+    key = "Others/One-Backward-Pass"
+    text = _notes_of(key)
+    for quoted in ("[1, 1] for row 0", "[5, 5] for row 2", "[4, 4] for row 3",
+                   "zero for rows 1 and 4", "Capture gradients", "L = sum(z)"):
+        assert quoted in text, quoted
+
+    graph = _graph(key)
+    store = RunOutputStore(max_runs=2)
+    context = ExecutionContext(
+        device="cpu", seed=graph["settings"]["seed"], graph_id="one-backward-pass",
+        weights_persistent=True, node_state_store=NodeStateStore(), backward_mode=True)
+
+    async def run_and_read():
+        results = await execute_graph(
+            graph["nodes"], graph["edges"], context=context, run_id="bwd",
+            output_store=store, record_outputs=True)
+        grads = {name: await store.get("bwd", node, port) for name, node, port in (
+            ("table", "emb", "__weight_grad__weight"),
+            ("weights", "weights", "tensor__grad"),
+            ("rows", "emb", "tensor__grad"))}
+        return results, grads
+
+    results, grads = asyncio.run(run_and_read())
+    assert torch.equal(grads["table"].cpu(), torch.tensor(
+        [[1.0, 1.0], [0.0, 0.0], [5.0, 5.0], [4.0, 4.0], [0.0, 0.0]]))
+    assert torch.equal(grads["rows"].cpu(), torch.tensor([[1.0] * 2, [2.0] * 2, [3.0] * 2, [4.0] * 2]))
+    rows = results["emb"]["tensor"].detach().cpu()
+    assert torch.allclose(grads["weights"].cpu(), rows.sum(dim=1, keepdim=True))
+    assert results["stats"]["sum"] == pytest.approx(float(results["mul"]["tensor"].detach().sum()))
+
+
+def test_one_backward_pass_runs_as_a_plain_forward_with_capture_off():
+    results = _run_with_its_seed("Others/One-Backward-Pass")
+    assert torch.equal(results["bwd"]["tensor"], results["mul"]["tensor"])
+    assert tuple(results["stats"]["tensor"].shape) == (4, 2)

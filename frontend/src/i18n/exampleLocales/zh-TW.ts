@@ -357,6 +357,9 @@ const zhTW: ExampleTranslations = {
   'LLM/Data-Mix-Ratios': {
     description: '兩個語料：照原樣混合，再 1:1 混合',
   },
+  'Others/One-Backward-Pass': {
+    description: '梯度只會到達被查過的那幾列',
+  },
 };
 
 export default zhTW;
