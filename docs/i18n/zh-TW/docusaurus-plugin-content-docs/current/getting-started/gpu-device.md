@@ -21,10 +21,10 @@ nvidia-smi
 查看右上角的 `CUDA Version:` 欄位，然後使用 `cdui install --gpu` 安裝相符的 wheel。此指令會替換 venv 中的 PyTorch build。之後執行 `cdui update` 時，指令會從已安裝的 wheel 讀取變體並保留該設定：
 
 ```bash
-# CUDA 13.0 —— 需要 NVIDIA driver 580 以上
+# CUDA 13.0：需要 NVIDIA driver 580 以上
 cdui install --gpu cu130
 
-# CUDA 12.9 —— 需要 NVIDIA driver 575 以上
+# CUDA 12.9：需要 NVIDIA driver 575 以上
 cdui install --gpu cu129
 
 # CUDA 12.8 —— RTX 50 系列（Blackwell, sm_120）必裝，RTX 30 / 40 亦可使用。
@@ -49,7 +49,7 @@ uv pip install --reinstall-package torch --reinstall-package torchvision torch t
 ```
 
 :::warning RTX 50 系列（Blackwell）
-RTX 5090 / 5080 / 5070 **必須**使用 `cu128` 或更新的版本（`cu129`、`cu130`）—— 舊版 wheel 缺少 `sm_120` kernel，執行時會以 `no kernel image is available for execution` 失敗。
+RTX 5090 / 5080 / 5070 **必須**使用 `cu128` 或更新的版本（`cu129`、`cu130`）；舊版 wheel 缺少 `sm_120` kernel，執行時會以 `no kernel image is available for execution` 失敗。
 :::
 
 驗證 CUDA 可用：

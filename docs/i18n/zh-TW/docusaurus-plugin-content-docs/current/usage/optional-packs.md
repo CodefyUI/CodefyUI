@@ -106,6 +106,32 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 
 認領狀態為**已中斷**時，請執行 `cdui start` 刪除紀錄並啟動伺服器。狀態為**收尾中**時，`cdui start` 會拒絕啟動另一個行程，並要求查看 `cdui status`。
 
+### 離線安裝 {/* #offline-install */}
+
+沒有網路的電腦教室，可以用連網電腦做好的套件包（bundle）安裝。在連網電腦上照常安裝套件包，再匯出到一個目錄，例如 USB 隨身碟：
+
+```bash
+cdui packs install sentence-embeddings --yes
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+cdui packs export sentence-embeddings /media/usb/st-mini --items all-MiniLM-L6-v2
+```
+
+套件包內含已安裝的項目（Hugging Face snapshot 的檔案與單檔素材）、這個套件包在標準 CodefyUI 安裝之外新增的 Python 套件 wheel，以及一份 `manifest.json`，記錄套件包、項目與 revision、每個檔案的大小與 sha256、CodefyUI 版本與平台。不加 `--items` 時，會匯出連網電腦上已安裝的所有項目。`--no-wheels` 會略過 wheel，只打包模型。目的地必須是空目錄或尚不存在；匯出失敗或取消時，會移除已寫入的內容。
+
+在每台離線電腦上，把套件包複製過去後從它安裝：
+
+```bash
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`--from` 不會下載任何東西，因此不會要求確認。`--items` 可從套件包中挑選項目。安裝會在複製任何檔案前，先用這台電腦的型錄檢查 manifest：屬於其他套件包的套件包，或列出型錄沒有的項目、repository、revision 或檔案時，會以離開碼 `2` 拒絕，所以套件包只能提供型錄本來就列出的檔案。每個檔案在複製進快取時都會比對 sha256，位置與下載時相同；不相符時安裝失敗，不會留下不完整的項目。Python 套件會在與線上安裝相同的 constraints 檔案下，以 `uv pip install --no-index --find-links <套件包>/wheels` 安裝。
+
+wheel 與平台相關：它們符合執行匯出那台電腦的作業系統、CPU 架構與 Python 版本，在不同平台上安裝會被拒絕，並說明兩邊各是什麼平台。電腦教室裡每種平台各做一份套件包。套件包不含 PyTorch，也不含標準 CodefyUI 安裝已經提供的任何套件；離線電腦必須先有可正常運作的 CodefyUI。為某台電腦硬體建置的套件（例如 `+cu128` 版本）不會被打包，匯出時會列出它們。磁碟檢查、一次只執行一個安裝，以及 loopback 限制，都與線上安裝相同。GPU 版 PyTorch 套件包無法打包；請在每台電腦上用 `cdui install --gpu` 安裝它的 wheel。
+
+請只安裝你自己製作或信任的套件包。型錄決定可以安裝什麼，但 Hugging Face snapshot 與 wheel 的內容來自套件包本身。
+
+API 也接受同樣的安裝：`POST /api/packs/{id}/install`，body 為 `{"from_dir": "<伺服器上的絕對路徑>"}`。套件中心目前還沒有對應的操作介面。
+
 ## 畫布上會看到的變化 {/* #what-changes-on-the-canvas */}
 
 缺少套件時，編輯器會在執行前顯示狀態。所有後端都需要套件的 `TextEmbedding` 和 `HFTextGenerate` 會在節點面板顯示**需要套件**標籤，但仍可拖曳。放在畫布上的節點會顯示**需套件**徽章，點擊後會開啟套件中心並定位至必要套件。`WordVector` 中無法使用的 **backend** 選項會變灰，`demo-16d` 仍可選取，欄位下方則顯示**安裝套件**連結。如果使用不含套件中心的版本，請執行 `cdui packs list` 查看可用狀態。

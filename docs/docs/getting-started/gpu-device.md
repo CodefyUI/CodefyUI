@@ -21,10 +21,10 @@ nvidia-smi
 Read the `CUDA Version:` field in the top-right, and then install the matching wheel with `cdui install --gpu`. This command replaces the PyTorch build in the venv. Later `cdui update` commands read the variant from the installed wheel and preserve it:
 
 ```bash
-# CUDA 13.0 — needs NVIDIA driver 580 or newer
+# CUDA 13.0: needs NVIDIA driver 580 or newer
 cdui install --gpu cu130
 
-# CUDA 12.9 — needs NVIDIA driver 575 or newer
+# CUDA 12.9: needs NVIDIA driver 575 or newer
 cdui install --gpu cu129
 
 # CUDA 12.8 — required for RTX 50 series (Blackwell, sm_120). Also works on RTX 30/40.
@@ -49,7 +49,7 @@ uv pip install --reinstall-package torch --reinstall-package torchvision torch t
 ```
 
 :::warning RTX 50 series (Blackwell)
-RTX 5090 / 5080 / 5070 **require** `cu128` or newer (`cu129`, `cu130`) — older wheels lack the `sm_120` kernels and fail at runtime with `no kernel image is available for execution`.
+RTX 5090 / 5080 / 5070 **require** `cu128` or newer (`cu129`, `cu130`); older wheels lack the `sm_120` kernels and fail at runtime with `no kernel image is available for execution`.
 :::
 
 Verify CUDA is working:

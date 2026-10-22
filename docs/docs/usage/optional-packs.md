@@ -106,6 +106,32 @@ Run `cdui status` to inspect restart state. Its `Restart install` line identifie
 
 When a claim is *abandoned*, run `cdui start` to delete the claim and start the server. When it is *finishing*, `cdui start` refuses to start another process and directs you to `cdui status`.
 
+### Offline install {/* #offline-install */}
+
+Lab machines without internet access install packs from a bundle made on a connected machine. On the connected machine, install the pack as usual, then export it to a directory, for example a USB drive:
+
+```bash
+cdui packs install sentence-embeddings --yes
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+cdui packs export sentence-embeddings /media/usb/st-mini --items all-MiniLM-L6-v2
+```
+
+The bundle holds the installed items (the Hugging Face snapshot files and single-file assets), the wheels of the Python packages the pack adds on top of a standard CodefyUI install, and a `manifest.json` that names the pack, its items and revisions, the size and sha256 of every file, the CodefyUI version and the platform. Without `--items`, every item installed on the connected machine is exported. `--no-wheels` leaves the wheels out for a bundle of models only. The destination must be empty or new; a failed or cancelled export removes what it wrote.
+
+On each offline machine, copy the bundle over and install from it:
+
+```bash
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`--from` downloads nothing, so it does not ask for confirmation. `--items` selects items from the bundle. The install checks the manifest against this machine's catalog before it copies anything: a bundle for another pack, or one naming an item, repository, revision or file the catalog does not list, is refused with exit code `2`, so a bundle can only supply the files the catalog already names. Each file is checked against its sha256 while it is copied into the cache, at the same location a download would use, and a mismatch fails the install without leaving a partial item. The Python packages install with `uv pip install --no-index --find-links <bundle>/wheels` under the same constraints file as an online install.
+
+The wheels are platform-specific. They match the operating system, CPU architecture and Python version of the machine that ran the export, and an install on a different platform is refused with the platform each side has. Make one bundle per platform in the lab. The bundle does not contain PyTorch or anything else a standard CodefyUI install already provides; the offline machine needs a working CodefyUI installation first. Packages built for one machine's hardware, such as a `+cu128` build, are never bundled and are listed in the export output. The disk check, the one-install-at-a-time rule and the loopback rule apply as for an online install. The GPU PyTorch pack cannot be bundled; install its wheel with `cdui install --gpu` on each machine.
+
+Install bundles that you made or trust. The catalog decides what may be installed, but the bytes of a Hugging Face snapshot and of the wheels come from the bundle.
+
+The API accepts the same install as `POST /api/packs/{id}/install` with `{"from_dir": "<absolute path on the server>"}`. The Package Center has no control for it yet.
+
 ## What changes on the canvas
 
 When a pack is missing, the editor indicates it before execution. `TextEmbedding` and `HFTextGenerate`, which require packs for every backend, display a **Needs pack** chip in the palette but remain draggable. A placed node displays a **PACK** badge that opens the Package Center at the required pack. In `WordVector`, unavailable **backend** options are greyed out while `demo-16d` remains selectable, and an **Install pack** link appears below the field. On a build without the Package Center, use `cdui packs list` to view availability.
