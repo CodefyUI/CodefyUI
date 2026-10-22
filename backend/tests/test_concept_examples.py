@@ -76,6 +76,7 @@ _PAPER_EXAMPLES = (
     "Papers/DQN-CartPole",
     "Papers/PPO-CartPole",
     "Papers/QLearning-GridWorld",
+    "Papers/GroupNorm-Wu-2018",
 )
 
 #: The examples the note rules below hold over.

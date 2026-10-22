@@ -340,6 +340,11 @@ const zhTW: ExampleTranslations = {
   'plugin:stats/Stats/Iris-GroupBy-Chart': {
     description: '三根長條：平均花瓣長度',
   },
+
+  // ── Built-ins added after the plugin blocks (papers, concepts, llm) ──
+  'Papers/GroupNorm-Wu-2018': {
+    description: '一次 2 張：BatchNorm 對上 GroupNorm',
+  },
 };
 
 export default zhTW;

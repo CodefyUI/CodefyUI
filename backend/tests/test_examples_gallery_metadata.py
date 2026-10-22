@@ -289,6 +289,7 @@ _SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
     "Papers/DQN-CartPole": ("papers", 22, None),
     "Papers/PPO-CartPole": ("papers", 23, None),
     "Papers/QLearning-GridWorld": ("papers", 24, None),
+    "Papers/GroupNorm-Wu-2018": ("papers", 25, None),
     "LLM/Word-Embedding-Analogy": ("llm", 1, None),
     "LLM/Sentence-Similarity-zhTW": ("llm", 2, None),
     "LLM/RAG-Local-Offline": ("llm", 3, None),
