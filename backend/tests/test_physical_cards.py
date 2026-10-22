@@ -50,6 +50,13 @@ WS_PATH = f"{wp.WORKER_WS_PATH}?{TOKEN_QUERY_PARAM}={session_token()}"
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 
 
+def _reason_text(service: Any, run_id: str) -> str | None:
+    """The English ``queue_reason`` of a waiting run (``queue_wait``)."""
+    reason = service.queue_wait(run_id)
+    return None if reason is None else reason.text
+
+
+
 @pytest.fixture(autouse=True)
 def _no_cuda_context(monkeypatch):
     from app.config import settings
@@ -614,7 +621,7 @@ async def test_two_agents_on_one_card_run_any_cuda_runs_one_at_a_time(env):
         assert service.is_queued(second["run_id"])
         assert all(not w["running"] for w in listing["workers"]
                    if w["id"] == "meow-join")
-        assert service.queue_reason(second["run_id"]) is None  # its turn
+        assert _reason_text(service, second["run_id"]) is None  # its turn
 
         await owner.send(wp.RunFinished(run_id=assign.run_id, seq=2,
                                         status="succeeded"))

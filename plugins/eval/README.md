@@ -1,8 +1,13 @@
 # Eval — evaluation and inference pipelines
 
-Nine nodes that turn "run these two checkpoints over this eval set and tell
+Eleven nodes that turn "run these two checkpoints over this eval set and tell
 me where they differ" into a graph whose every number can be traced back to
-the exact weights, tokenizer, configuration and file that produced it.
+the exact weights, tokenizer, configuration and file that produced it. Text
+classifiers, causal LMs and visual question answering models (ViLT-style,
+image + question) are supported.
+
+A step-by-step tutorial, **Build Your Own Eval Pipeline**, is in the
+CodefyUI docs (`docs/docs/usage/eval-pipelines.md`).
 
 ```bash
 cdui plugin install eval
@@ -11,7 +16,9 @@ cdui plugin install eval
 Installing the pack also installs `transformers` (its `[python_deps]`,
 `>=5.0,<6`) into the CodefyUI environment. The node modules import without it,
 so the palette never breaks; only the two loaders need it, and they say how to
-get it when it is missing. The pack declares no capability. Its sources pass
+get it when it is missing. BLEU and ROUGE-L are computed by the pack itself
+(`nodes/_eval_text_metrics.py`), so they add no dependency; the tests check
+them against sacrebleu and rouge-score. The pack declares no capability. Its sources pass
 the plugin AST gate at Tier 0 except for one import, `threading` in
 `nodes/_eval_hub.py`: transformers resolves its classes lazily, which is not
 safe when the two loaders of an A/B graph start at once, so the pack resolves
@@ -23,7 +30,7 @@ published from GitHub would declare `allowed_modules = ["threading"]`.
 ```
 Eval-JSONLDataset ─► (Eval-PromptTemplate) ─┐
 Eval-HFModelLoader ─► Eval-HFProcessorLoader ┴► Eval-BatchInference ─► Eval-ExactMatch / Eval-F1Score / Eval-TopKAccuracy
-                                                         │
+                                                         │              Eval-BLEU / Eval-ROUGE-L (generation)
                          (a second run, same shape) ─────┴► Eval-CompareRuns ─► Stats-TableView / Stats-ChartView
 ```
 
@@ -60,7 +67,19 @@ in project mode).
 | `input_field` | string | `text` |
 | `label_field` | string | `label` |
 | `id_field` | string | `id` |
+| `image_field` | string | `""` *(no images)* |
 | `limit` *(advanced)* | int | `0` *(all)* |
+
+With `image_field` set, each record names an image file, relative to the JSONL
+file's folder; an absolute path, a drive letter or a `..` segment is refused,
+so a dataset folder is self-contained. Every image is read and hashed at load:
+a missing or unreadable image is refused with the line number, each item
+carries `image` (the path as written) and `image_sha256`, and the dataset's
+identity gains `images_sha256`, a hash over every item's id and image hash.
+The JSONL's own `sha256` cannot see an image that changed under an unchanged
+name; `images_sha256` can. `eval:samples/shapes-vqa-12.jsonl` is the VQA
+example's set: 12 questions about 7 PNG drawings in `samples/shapes-vqa/`,
+drawn for this pack.
 
 ### `Eval-PromptTemplate`
 
@@ -87,14 +106,19 @@ is refused: it would show the model the answer.
 |---|---|---|---|
 | `model_id` | string | `""` | Hub id (`org/name`) or a local directory |
 | `revision` | string | `main` | branch, tag or commit sha |
-| `task` | select | `auto` | `auto`, `classification`, `generation` |
+| `task` | select | `auto` | `auto`, `classification`, `generation`, `vqa` |
 | `dtype` *(advanced)* | select | `float32` | `float32`, `auto`, `float16`, `bfloat16` |
 | `device` *(advanced)* | select | `auto` | `auto`, `cpu`, `cuda`, `mps` |
 
 See [revisions, the cache and offline mode](#revisions-the-cache-and-offline-mode).
 `task = auto` reads the config's `architectures`: `...ForSequenceClassification`
-is classification, `...ForCausalLM` / `...LMHeadModel` is generation. Loaded
-models are kept in-process (two at a time, for an A/B pair).
+is classification, `...ForCausalLM` / `...LMHeadModel` is generation, and
+`ViltForQuestionAnswering` (spelled `ViltForVisualQuestionAnswering` in the
+published ViLT configs) is vqa, loaded with `AutoModelForVisualQuestionAnswering`.
+`vqa` means visual question answering as classification over the model's
+answer vocabulary (`config.id2label`); BLIP's question-answering model, which
+generates its answer, is not one. Loaded models are kept in-process (two at a
+time, for an A/B pair).
 
 ### `Eval-HFProcessorLoader`
 
@@ -107,7 +131,8 @@ Connect the model and leave `model_id` and `revision` empty: the tokenizer is
 loaded from the model's repository at the commit the model resolved to. A
 `revision` that resolves to a different commit of the model's own repository
 is refused. `kind` (advanced) is `tokenizer` (AutoTokenizer) or `auto`
-(AutoProcessor).
+(AutoProcessor). A `vqa` model needs `auto`, which loads its image processor
+with its tokenizer; `tokenizer` is refused for one.
 
 ### `Eval-BatchInference`
 
@@ -123,16 +148,40 @@ is refused. `kind` (advanced) is `tokenizer` (AutoTokenizer) or `auto`
 | `normalize` | select | `strip_lower` | `strip_lower`, `strip`, `none` |
 | `label_map` | string | `""` | `LABEL_0=negative, LABEL_1=positive` |
 | `max_new_tokens` | int | `32` | generation |
-| `do_sample`, `temperature`, `top_p`, `seed` *(advanced)* | | `false`, `1.0`, `1.0`, `0` | generation |
-| `max_length`, `top_k` *(advanced)* | int | `256`, `5` | classification |
+| `generation_config` *(advanced)* | select | `node` | `node` or `model`; generation |
+| `do_sample`, `temperature`, `top_p`, `repetition_penalty`, `seed` *(advanced)* | | `false`, `1.0`, `1.0`, `1.0`, `0` | generation |
+| `max_length`, `top_k` *(advanced)* | int | `256`, `5` | classification, vqa |
 
 * **classification** -- softmax over the logits, argmax named by the model's
   `config.id2label` (`LABEL_i` when it has none); the `topk` column keeps up to
   five ranked label names for `Eval-TopKAccuracy`, `score` the top probability.
+* **vqa** -- the same over the model's answer vocabulary, for an image and a
+  question: the processor gets `images=` and `text=` together, as ViLT's does.
+  `max_length` is capped at the model's `config.max_position_embeddings` when
+  it has one (40 for ViLT), so a long question is truncated to what the model
+  can read instead of failing; `meta.inference.max_length` records the cap.
+  The dataset needs `image_field`. Each item's image is opened when its batch
+  runs, so one unreadable image is one `error` row. Rows add `image` and
+  `image_sha256`.
 * **generation** -- greedy or sampled decoding with a KV cache, one item at a
   time. Sampling draws from a local `torch.Generator` seeded per item from
   `sha256(seed:id)`: an item's sample does not depend on the batch size, the
   item order or anything else that touched the global RNG, which is never used.
+* **generation settings** -- `generation_config = node` (the default, and what
+  every graph saved before the option ran) uses this node's `do_sample`,
+  `temperature`, `top_p` and `repetition_penalty`, with no top-k filter.
+  `generation_config = model` takes `do_sample`, `temperature`, `top_p`,
+  `top_k` and `repetition_penalty` from the model's `generation_config`
+  (transformers reads it from `generation_config.json`, or derives it from
+  `config.json` when the checkpoint has none), the
+  settings `model.generate` would use, filling a field the checkpoint leaves
+  unset with transformers' default; a model without a generation config is
+  refused. `repetition_penalty` is transformers' rule: every token already in
+  the prompt or the answer has its logit divided by the penalty when positive
+  and multiplied by it when negative. Greedy decoding with a penalty matches
+  `model.generate(do_sample=False, repetition_penalty=...)` (tested).
+  `meta.generation` records the settings that ran and, under
+  `model_generation_config`, what the model's own config suggests.
 * `label_map` renames the raw answer before normalising; `raw_answer` keeps
   what the model said.
 * `answers` / `labels` are the normalised answers and labels of the `ok`,
@@ -153,8 +202,46 @@ zero_division=0)` and `top_k_accuracy_score` (no ties). `Eval-TopKAccuracy`
 reads the `topk` column and skips rows without one (generation rows).
 
 The value is also logged as a run metric (`context.log_metric`) under
-`metric_name` (default `exact_match`, `f1_macro`, `top2_accuracy`, ...) at
-`step`, so a sweep can rank on it. Give the A and B runs different names.
+`metric_name` (default `exact_match`, `f1_macro`, `top2_accuracy`, `bleu`,
+`rouge_l`, ...) at `step`, so a sweep can rank on it. Give the A and B runs
+different names. The `metrics` record table's `meta.metric` names the metric
+node and its params (its producer), and BLEU and ROUGE-L add `details`.
+
+### `Eval-BLEU`, `Eval-ROUGE-L`
+
+Same ports and the same skipping rules as the metrics above; meant for
+generation, where an answer is free text.
+
+| Node | Param | Default | Values |
+|---|---|---|---|
+| `Eval-BLEU` | `tokenize` | `13a` | `13a`, `zh`, `char`, `none` |
+| | `smooth_method` *(advanced)* | `exp` | `exp`, `floor`, `add-k`, `none` |
+| `Eval-ROUGE-L` | `measure` | `fmeasure` | `fmeasure`, `precision`, `recall` |
+| | `tokenize` | `rouge` | `rouge`, `char`, `whitespace` |
+
+* **`Eval-BLEU`** is corpus BLEU on a 0 to 100 scale, exactly
+  `sacrebleu.corpus_bleu(answers, [labels], tokenize=..., smooth_method=...)`
+  with sacrebleu's other defaults (case-sensitive, n-grams up to 4, no
+  effective order). The answer and label are the normalised ones, and
+  BatchInference's default `normalize = strip_lower` lowercases both, so by
+  default the score is case-insensitive (sacrebleu's `case:lc`);
+  `normalize = strip` or `none` keeps the case (`case:mixed`). The node reads
+  the normalisation from the prediction table's `meta.producer`. Use `zh` or
+  `char` for Chinese. `details` records `normalize`, sacrebleu's signature
+  without its version field (`nrefs:1|case:lc|eff:no|tok:13a|smooth:exp` by
+  default), the four precisions, the brevity penalty and the n-gram counts.
+* **`Eval-ROUGE-L`** is the mean over the counted rows of
+  `rouge_score.rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False).score(label, answer)`
+  (0 to 1). `tokenize = rouge` is rouge-score's tokenizer, which lowercases and
+  treats anything outside `a-z0-9` as a separator, so text with no ASCII
+  letters or digits has no tokens and scores 0; `char` scores such text by
+  characters. `details` counts the rows that scored 0.
+
+Both are implemented in `nodes/_eval_text_metrics.py`. The parity tests in
+`backend/tests/test_eval_text_metrics.py` compare them with sacrebleu and
+rouge-score (installed by the backend's `dev` extra, for the tests only) over
+random fixtures that hit every tokenizer rule, including the two entries of
+sacrebleu's `zh` range table that are written as two-character strings.
 
 ### `Eval-CompareRuns`
 
@@ -216,24 +303,25 @@ The fixed columns, first and in this order:
 |---|---|
 | `id` | the item's stable id from the dataset |
 | `input` | the exact text the model saw (after any template) |
-| `input_hash` | first 16 hex digits of the sha256 of `input` -- the input's identity |
+| `input_hash` | first 16 hex digits of the sha256 of `input` -- the input's identity; for a vqa row, of `input` and the image's sha256 together |
 | `raw_answer` | what the model produced, before any mapping |
 | `answer` | `raw_answer` after `label_map` and normalisation; `null` unless `ok` |
 | `label` | the normalised label, or `null` |
 | `status` | `ok`, `error` or `cancelled` |
 | `error` | why, for `error` and `cancelled` rows |
 
-Extras follow: `score`, `topk` (classification) or `new_tokens` (generation).
+Extras follow: `score`, `topk` (classification); `score`, `topk`, `image`,
+`image_sha256` (vqa); or `new_tokens` (generation).
 
 `meta` records where the rows came from:
 
 | Key | Contents |
 |---|---|
 | `producer` | `node`, `model_id`, `requested_revision`, `model_revision`, `revision_source`, `processor_id`, `processor_revision`, `processor_revision_source`, `model_class`, `processor_class`, `dtype`, `device`, `normalize`, `label_map` |
-| `inference` | the effective `task`, `batch_size` and (classification) `max_length`, `top_k` |
-| `generation` | generation only: `decoding`, `max_new_tokens`, `do_sample`, `temperature`, `top_p`, `seed`, `seed_scope`, `eos_token_id` |
+| `inference` | the effective `task`, `batch_size` and (classification, vqa) `max_length`, `top_k` |
+| `generation` | generation only: `decoding`, `source` (`node` or `model`), `max_new_tokens`, `do_sample`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`, `seed_scope`, `eos_token_id`, and `model_generation_config` (what the model's own config suggests, with the fields it left `unset`) |
 | `seed` | the seed param |
-| `dataset` | `path`, `sha256`, `rows`, `used`, `template` (text and sha256, if one was applied) |
+| `dataset` | `path`, `sha256`, `rows`, `used`, `template` (text and sha256, if one was applied), and `images_sha256` when the items have images |
 | `counts` | rows per status |
 | `interrupted_at_batch` | the batch a Stop landed before, else `null` |
 | `reproducibility` | `{"reproducible": bool, "reasons": [...]}` |
@@ -282,7 +370,9 @@ snapshot cached under it, a commit sha to its snapshot, and anything not cached
 is an error that says so. huggingface_hub reads the variable once at import,
 so set it before starting the server.
 
-## Example
+## Examples
+
+### A/B text classifier eval
 
 `examples/Eval/AB-Text-Classification/` -- **A/B text classifier eval**. Two
 two-layer BERT sentiment classifiers, `philschmid/tiny-bert-sst2-distilled`
@@ -302,20 +392,50 @@ only A correct, 0 only B, 0 both wrong. The models are tiny: the example
 demonstrates the pipeline, not either model's quality. The outcome chart and
 table are `stats` pack nodes, so install `stats` as well.
 
+### VQA eval skeleton
+
+`examples/Eval/VQA-Shapes/` -- **VQA eval skeleton**, the image-and-question
+stand-in for a video-LM evaluation. ViLT (`dandelin/vilt-b32-finetuned-vqa`,
+pinned to commit `d0a1f6a`, about 470 MB, Apache-2.0) answers the 12 questions
+of `samples/shapes-vqa-12.jsonl` about the 7 drawings in
+`samples/shapes-vqa/`, scored by `Eval-ExactMatch` and `Eval-TopKAccuracy`
+(`k = 3`). The processor loader uses `kind = auto`. Expected, CPU:
+
+| | value |
+|---|---|
+| exact match | 0.5000 (6 of 12) |
+| top-3 accuracy | 0.8333 (10 of 12) |
+
+ViLT names the triangle, answers the yes/no question about a square, counts
+one and two balls, and gets red and orange balls right. It misses three
+colours (red read as orange twice, blue as yellow), two counts and one yes/no
+question. ViLT learned from VQAv2 photographs, and flat drawings on white are
+far from them, so read the numbers as the pipeline at work. The example needs
+no other pack.
+
+To evaluate your own model the same way, point `Eval-JSONLDataset` at your
+JSONL (with `image_field`) and the loader at your checkpoint. The `vqa` task
+covers models that choose from an answer vocabulary; a generative
+vision-language model, and video frames, are not tasks of this pack yet.
+
 ## Tests
 
 * `backend/tests/test_eval_nodes.py` -- offline, CPU, no transformers: metric
   parity with scikit-learn, CompareRuns alignment and refusals, Stop and
-  per-item errors, provenance and reproducibility, revision resolution.
+  per-item errors, provenance and reproducibility, revision resolution, the
+  generation settings (`generation_config`, `repetition_penalty`, top-k).
+* `backend/tests/test_eval_text_metrics.py` -- BLEU and ROUGE-L parity with
+  sacrebleu and rouge-score on random fixtures, and the two metric nodes.
+* `backend/tests/test_eval_vqa.py` -- offline, no transformers: images in the
+  dataset and its identity, the vqa rows and their input hash, per-item image
+  errors, Stop, and the VQA example graph run end to end through the engine on
+  its bundled images with a ViLT-shaped stand-in for the two loaders.
 * `backend/tests/test_eval_hf_local.py` -- real tiny random-init
-  `BertForSequenceClassification` / `GPT2LMHeadModel` saved to a temp dir;
-  skipped without transformers. The Hub checks (the example's numbers, and a
-  branch resolved offline from the cache) run only with
-  `CODEFYUI_PACK_NETWORK_TESTS=1`.
+  `BertForSequenceClassification` / `GPT2LMHeadModel` /
+  `ViltForQuestionAnswering` saved to a temp dir; skipped without
+  transformers. Generation with a repetition penalty and with
+  `generation_config = model` is compared with `model.generate`. The Hub
+  checks (both examples' numbers, and a branch resolved offline from the
+  cache) run only with `CODEFYUI_PACK_NETWORK_TESTS=1`.
 * `backend/tests/test_eval_pack.py` -- catalog, manifest, discovery, the AST
-  gate, the zh-TW node entries and the example graph's wiring.
-
-## Not in this version
-
-BLEU and ROUGE-L, a VQA-style example, and a "build your own eval pipeline"
-tutorial page are tracked in issue #139.
+  gate, the zh-TW node entries and the A/B example graph's wiring.

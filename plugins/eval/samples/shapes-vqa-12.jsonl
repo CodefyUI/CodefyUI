@@ -1,0 +1,12 @@
+{"id": "q01", "image": "shapes-vqa/red-ball.png", "question": "What color is the ball?", "answer": "red"}
+{"id": "q02", "image": "shapes-vqa/red-ball.png", "question": "How many balls are there?", "answer": "1"}
+{"id": "q03", "image": "shapes-vqa/two-red-balls.png", "question": "How many balls are there?", "answer": "2"}
+{"id": "q04", "image": "shapes-vqa/two-red-balls.png", "question": "What color are the balls?", "answer": "red"}
+{"id": "q05", "image": "shapes-vqa/green-triangle.png", "question": "What shape is this?", "answer": "triangle"}
+{"id": "q06", "image": "shapes-vqa/green-triangle.png", "question": "Is there a circle?", "answer": "no"}
+{"id": "q07", "image": "shapes-vqa/blue-circle.png", "question": "What color is the circle?", "answer": "blue"}
+{"id": "q08", "image": "shapes-vqa/three-blue-squares.png", "question": "How many squares are there?", "answer": "3"}
+{"id": "q09", "image": "shapes-vqa/orange-ball.png", "question": "What color is the ball?", "answer": "orange"}
+{"id": "q10", "image": "shapes-vqa/red-square-blue-circle.png", "question": "Is there a square?", "answer": "yes"}
+{"id": "q11", "image": "shapes-vqa/red-square-blue-circle.png", "question": "What color is the square?", "answer": "red"}
+{"id": "q12", "image": "shapes-vqa/red-square-blue-circle.png", "question": "How many circles are there?", "answer": "1"}

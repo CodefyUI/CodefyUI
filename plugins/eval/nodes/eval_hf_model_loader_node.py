@@ -37,8 +37,9 @@ class EvalHFModelLoaderNode(BaseNode):
         "sha256 of its files. Downloads go to CodefyUI's own cache under the "
         "user data directory. `task` auto reads the config's architecture: "
         "...ForSequenceClassification is classification, a causal LM is "
-        "generation. Needs the transformers package, which installing this "
-        "pack brings."
+        "generation, ViltForQuestionAnswering is vqa (an answer chosen from the "
+        "model's answer vocabulary for an image and a question). Needs the "
+        "transformers package, which installing this pack brings."
     )
 
     # Hands out a live model (#254), and reads the network.
@@ -84,7 +85,7 @@ class EvalHFModelLoaderNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="auto",
                 options=list(hub.TASKS),
-                description="classification (argmax over labels) or generation (causal LM); auto reads the config.",
+                description="classification (argmax over labels), generation (causal LM) or vqa (image + question); auto reads the config.",
             ),
             ParamDefinition(
                 name="dtype",

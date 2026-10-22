@@ -192,6 +192,15 @@ async def test_hello_registers_and_heartbeats_update(env):
     await _until(lambda: not registry.get("box").online)
 
 
+async def test_the_list_names_mps_as_this_server_does(env):
+    """#840: an agent reports MPS as ``mps``; the list says ``mps:0``, as
+    this server and a run's options do."""
+    async with _client() as client, aconnect_ws(_path(), client) as ws:
+        await FakeAgent(ws).hello(devices=("cpu", "mps"))
+        listed = (await client.get("/api/workers")).json()["workers"]
+        assert [d["value"] for d in listed[0]["devices"]] == ["cpu", "mps:0"]
+
+
 # ── runs ─────────────────────────────────────────────────────────────────
 
 
@@ -412,6 +421,9 @@ async def test_drain_holds_runs_and_undrain_releases_them(env):
         row = (await client.get(f"/api/runs/{run_id}")).json()
         assert (row["status"], row["queue_reason"]) == (
             "queued", "worker box is draining")
+        # The same, for a client to word in its own language (#841).
+        assert (row["queue_reason_code"], row["queue_reason_params"]) == (
+            "worker_draining", {"worker": "box"})
         assert (await client.post("/api/workers/box/undrain")).json()[
             "draining"] is False
         assign = await agent.recv()
@@ -490,7 +502,9 @@ async def test_a_queued_run_says_which_worker_it_waits_for(env):
             await agent.recv()
             await agent.recv()
             row = (await client.get(f"/api/runs/{third}")).json()
-            assert (row["queue_position"], row["queue_reason"]) == (1, None)
+            assert (row["queue_position"], row["queue_reason"],
+                    row["queue_reason_code"], row["queue_reason_params"]) \
+                == (1, None, None, None)
         await _terminal(service, first)
         await _terminal(service, second)
         listed = {r["id"]: r for r in

@@ -140,6 +140,9 @@ class _StudyProbeNode(BaseNode):
         if context is not None:
             context.log_metric("val_loss", value, step=0)
             context.log_metric("train_loss", value * 2, step=0)
+            if tag == "EVAL":
+                # A series no other probe logs: an Evaluate node's.
+                context.log_metric("val_acc", value / 10, step=0)
         if must_fail:
             # AFTER logging: a failed repetition that recorded a number
             # must still make its variant ineligible.
@@ -932,3 +935,27 @@ async def test_the_objective_needs_an_exact_producer(client):
     body = _body()
     body["variants"][0] = {"label": "A", "ops": [], "graph": _graph()}
     assert (await client.post("/api/studies", json=body)).status_code == 422
+
+
+async def test_attempt_final_metrics_prefer_the_objective_node(client):
+    """#841: a second node logging the same names AFTER the objective node
+    (another branch) must not supply those names in the attempt's summary,
+    which the plain run-wide one would make it. A series only a third node
+    logged (an Evaluate node's val_acc) stays in the summary."""
+    graph = _graph()
+    graph["nodes"].append({"id": "probe2", "type": "_StudyProbe",
+                           "data": {"params": {"tag": "Z", "value": 9.0}}})
+    graph["nodes"].append({"id": "eval", "type": "_StudyProbe",
+                           "data": {"params": {"tag": "EVAL", "value": 5.0}}})
+    graph["edges"].append({"id": "e2", "source": "probe", "target": "probe2",
+                           "sourceHandle": "value", "targetHandle": "value"})
+    graph["edges"].append({"id": "e3", "source": "probe2", "target": "eval",
+                           "sourceHandle": "value", "targetHandle": "value"})
+    created = await client.post("/api/studies", json=_body(
+        [("A", 1.0)], repetitions=1, base_graph=graph))
+    assert created.status_code == 201, created.text
+    done = await _wait_status(client, created.json()["study_id"], "succeeded")
+    attempt = done["variants"][0]["attempts"][0]
+    assert attempt["objective_value"] == 1.0
+    assert attempt["final_metrics"] == {"val_loss": 1.0, "train_loss": 2.0,
+                                        "val_acc": 0.5}

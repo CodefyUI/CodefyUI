@@ -169,7 +169,7 @@ def resolve_data_path(path: str | Path, *, base: Path) -> Path:
     return resolved
 
 
-def resolve_under(directory: Path, name: str, *,
+def resolve_under(directory: Path | str, name: str, *,
                   direct_child: bool = False) -> Path | None:
     """*name* resolved inside *directory*, or None when it cannot be one.
 
@@ -205,11 +205,14 @@ def resolve_under(directory: Path, name: str, *,
     serve nested names by design. Without it an empty name resolves to
     *directory* itself, and the route's own "is it a file" check answers
     for that.
+
+    *directory* may be a string: plugin code, which the AST gate keeps from
+    importing ``pathlib``, calls this too (the eval pack's image paths).
     """
     if not isinstance(name, str) or "\x00" in name:
         return None
     try:
-        base = directory.resolve()
+        base = Path(directory).resolve()
         target = (base / name).resolve()
     except (OSError, ValueError):
         return None

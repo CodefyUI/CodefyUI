@@ -1,23 +1,28 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import * as rest from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { _resetRunStoreForTesting } from '../../store/runStore';
-import { _resetSweepStoreForTesting } from '../../store/sweepStore';
+import { _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useToastStore } from '../../store/toastStore';
+import { settle } from '../../test/utils';
 import { RunsPanel } from './RunsPanel';
 
-// In a file of its own: the lazy chunk's loader is cached per module, and
-// here its import fails (a stale `dist/` after an update, a flaky network).
+// The New sweep dialog's chunk cannot load (a deploy replaced it, the
+// network dropped): the panel closes the dialog instead of leaving the
+// canvas shortcuts standing down behind nothing.
 vi.mock('./NewSweepDialog', () => {
-  throw new Error('chunk gone');
+  throw new Error('chunk failed to load');
 });
+
+vi.mock('./LossChart', () => ({ LossChart: () => null }));
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof rest>();
   return {
     ...actual,
     listRuns: vi.fn(async () => ({ runs: [], total: 0, limit: 50, offset: 0 })),
+    getSweep: vi.fn(),
   };
 });
 
@@ -28,16 +33,20 @@ beforeEach(() => {
   _resetSweepStoreForTesting();
 });
 
-afterEach(() => {
-  act(() => {
-    _resetRunStoreForTesting();
-    _resetSweepStoreForTesting();
+describe('RunsPanel when the New sweep chunk cannot load', () => {
+  it('closes the dialog and keeps the panel usable', async () => {
+    render(<RunsPanel panelHeight={400} />);
+    await waitFor(() => expect(rest.listRuns).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'New sweep' }));
+    expect(useSweepStore.getState().newSweepOpen).toBe(true);
+    await settle();
+    await settle();
+    await waitFor(() => expect(useSweepStore.getState().newSweepOpen).toBe(false));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'New sweep' })).toBeInTheDocument();
   });
-  vi.restoreAllMocks();
-});
 
-describe('RunsPanel: the New sweep chunk fails to load', () => {
-  it('closes the dialog it was opening and says so', async () => {
+  it('says so in an error toast', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     render(<RunsPanel panelHeight={400} />);
     const t = useI18n.getState().t;
@@ -48,5 +57,6 @@ describe('RunsPanel: the New sweep chunk fails to load', () => {
       type: 'error',
     });
     expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

@@ -13,6 +13,7 @@ import { _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStor
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
+import { _resetWorkerStoreForTesting, useWorkerStore } from '../../store/workerStore';
 import { renderSettled, settle } from '../../test/utils';
 
 vi.mock('../../api/rest', async (importOriginal) => {
@@ -139,6 +140,8 @@ describe('QueueRunDialog: this server', () => {
     await open();
     expect(within(targetSelect()).getAllByRole('option').map((o) => o.textContent)).toEqual(['This server']);
     expect(targetSelect()).toHaveFocus();
+    // Says so, with a way to add one (#840).
+    expect(screen.getByText(/No worker is connected to this server yet/)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /cpu/ })).toBeChecked();
     expect(screen.getByText('A run on this server uses one device.')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Random seed' })).toHaveValue('7');
@@ -268,12 +271,13 @@ describe('QueueRunDialog: this server', () => {
 });
 
 describe('QueueRunDialog: workers', () => {
-  it('lists workers with status and devices, an offline one too, leaving out the disconnected, disabling the draining', async () => {
+  it('lists workers with status and devices, offline and disconnected ones too, disabling the drained', async () => {
     workersMock.fetchWorkers.mockResolvedValue([
       worker({ name: 'gpu-box' }),
       worker({ name: 'slow-box', status: 'degraded', devices: [] }),
       worker({ name: 'busy-box', status: 'draining', draining: true }),
       worker({ name: 'gone-box', status: 'disconnected' }),
+      worker({ name: 'off-box', status: 'disconnected', draining: true, ssh_enabled: false }),
       worker({ name: 'cold-box', status: 'offline' }),
     ]);
     await open();
@@ -283,15 +287,53 @@ describe('QueueRunDialog: workers', () => {
       'gpu-box (Online): cpu, cuda:0, cuda:1, cuda:2',
       'slow-box (Degraded): no devices',
       'busy-box (Draining): cpu, cuda:0, cuda:1, cuda:2',
+      'gone-box (Disconnected): cpu, cuda:0, cuda:1, cuda:2',
+      'off-box (Disabled): cpu, cuda:0, cuda:1, cuda:2',
       'cold-box (Offline): cpu, cuda:0, cuda:1, cuda:2',
       'Any available',
       'A one-shot worker (cdui agent start --one-shot)',
     ]);
     expect(options[3]).toBeDisabled();
+    // A disabled SSH worker reads Disabled, as in the Workers panel, and is
+    // drained: no run goes there, and a hint says why (#840 review).
+    expect(options[5]).toBeDisabled();
+    expect(screen.getByText('A disabled SSH worker takes no runs: enable it in the Workers panel first.')).toBeInTheDocument();
+    expect(options[4]).toBeEnabled();
     expect(screen.queryByText(/is offline/)).toBeNull();
+    expect(screen.queryByText(/No worker is connected/)).toBeNull();
     // An offline worker can be chosen; the run waits for it.
     fireEvent.change(targetSelect(), { target: { value: 'cold-box' } });
     expect(screen.getByText('cold-box is offline: the run waits in the queue until it connects.')).toBeInTheDocument();
+    // A disconnected one too, as the server accepts it (#840).
+    fireEvent.change(targetSelect(), { target: { value: 'gone-box' } });
+    expect(screen.getByText('gone-box is disconnected: the run waits in the queue until it reconnects.')).toBeInTheDocument();
+  });
+
+  it('starts a worker on its accelerator when the device only follows Settings (#840)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    await open();
+    // This server: the Settings device.
+    expect(screen.getByRole('radio', { name: /cpu/ })).toBeChecked();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    expect(screen.getByRole('checkbox', { name: /^cuda:0 / })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /^cpu/ })).not.toBeChecked();
+  });
+
+  it('keeps a device the tab names on a worker', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    patchTab({ graphDevice: 'cpu' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
+    expect(screen.getByRole('checkbox', { name: /^cpu/ })).toBeChecked();
+  });
+
+  it('opens the Workers panel from the no-worker hint, closing itself', async () => {
+    _resetWorkerStoreForTesting();
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Add a worker' }));
+    expect(onClose).toHaveBeenCalled();
+    expect(useWorkerStore.getState().panelOpen).toBe(true);
+    act(() => useWorkerStore.getState().closePanel());
   });
 
   it('builds a device set of one kind and shows each card under its in-run name', async () => {
@@ -337,9 +379,10 @@ describe('QueueRunDialog: workers', () => {
 
   it('replaces the set with a device of another kind, and unchecks one already in it', async () => {
     workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    patchTab({ graphDevice: 'cpu' });
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
-    // The graph's device is cpu, which the worker has.
+    // The tab's device is cpu, which the worker has.
     expect(screen.getByRole('checkbox', { name: /^cpu/ })).toBeChecked();
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     expect(screen.getByRole('checkbox', { name: /^cpu/ })).not.toBeChecked();
@@ -388,6 +431,37 @@ describe('QueueRunDialog: workers', () => {
 });
 
 describe('QueueRunDialog: any available', () => {
+  it('starts on the accelerator a worker offers when the device only follows Settings (#840 review)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    const group = within(screen.getByRole('group', { name: 'Devices' }));
+    expect(group.getByRole('radio', { name: 'CUDA GPU' })).toBeChecked();
+    await submit();
+    expect(sentRequest().options).toMatchObject({ target: { worker: 'any' }, device: 'cuda' });
+  });
+
+  it('starts on a kind a worker that takes runs offers, not a drained one\'s (#840 review)', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([
+      worker({ name: 'busy-box', status: 'draining', draining: true }),
+      worker({ name: 'off-box', ssh_enabled: false }),
+    ]);
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    const group = within(screen.getByRole('group', { name: 'Devices' }));
+    // CUDA is still offered (a choice), but not where the run starts.
+    expect(group.getByRole('radio', { name: 'CUDA GPU' })).not.toBeChecked();
+    expect(group.getByRole('radio', { name: 'CPU' })).toBeChecked();
+  });
+
+  it('keeps the kind of a device the tab names', async () => {
+    workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
+    patchTab({ graphDevice: 'cpu' });
+    await open();
+    fireEvent.change(targetSelect(), { target: { value: 'any' } });
+    expect(within(screen.getByRole('group', { name: 'Devices' })).getByRole('radio', { name: 'CPU' })).toBeChecked();
+  });
+
   it('asks for a kind, defaulting to the graph device kind, and sends no device set', async () => {
     workersMock.fetchWorkers.mockResolvedValue([worker({ name: 'gpu-box' })]);
     patchTab({ graphDevice: 'cuda' });
@@ -458,6 +532,8 @@ describe('QueueRunDialog: the worker list', () => {
     await open();
     expect(screen.getByText('Could not list workers: worker registry is not available')).toBeInTheDocument();
     expect(within(targetSelect()).getAllByRole('option')).toHaveLength(1);
+    // Not "no worker": the list is unknown.
+    expect(screen.queryByText(/No worker is connected/)).toBeNull();
   });
 
   it('reads a refusal that is not an Error as text', async () => {
@@ -585,12 +661,12 @@ describe('QueueRunDialog: memory budget (#788)', () => {
     });
     await open();
     fireEvent.change(targetSelect(), { target: { value: 'gpu-box' } });
-    // The CPU is picked first (the graph's device) and cuda:0 is exclusive:
-    // no budget asked for.
+    // A worker starts on its first accelerator (#840), and cuda:0 is
+    // exclusive: no budget asked for.
+    expect(screen.getByRole('checkbox', { name: /^cuda:0 / })).toBeChecked();
     expect(screen.queryByRole('textbox', { name: /Memory budget/ })).toBeNull();
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     expect(screen.queryByRole('textbox', { name: /Memory budget/ })).toBeNull();
-    fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:0 / }));
     fireEvent.click(screen.getByRole('checkbox', { name: /^cuda:1 / }));
     await settle();
     expect(api.estimateMemory).toHaveBeenCalledWith(GRAPH, { device: 'cuda:1', target: { devices: ['cuda:1'] } });

@@ -30,8 +30,9 @@ REGISTRY = PLUGINS_DIR / "registry.json"
 
 # Names shaped like a pack node. Bare CamelCase is deliberately excluded --
 # the prose legitimately says things like "policy gradient" and "max-pool" as
-# English, and only the hyphenated form is what a student types.
-NODE_NAME_RE = re.compile(r"\b((?:Edu|Stats|Eval)-[A-Za-z0-9]+)\b")
+# English, and only the hyphenated form is what a student types. A name may
+# carry one more all-capitals segment, as `Eval-ROUGE-L` does.
+NODE_NAME_RE = re.compile(r"\b((?:Edu|Stats|Eval)-[A-Za-z0-9]+(?:-[A-Z0-9]+\b)?)\b")
 
 
 def _registered_node_names() -> set[str]:

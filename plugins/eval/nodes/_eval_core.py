@@ -51,7 +51,9 @@ STATUSES = (STATUS_OK, STATUS_ERROR, STATUS_CANCELLED)
 
 #: The fixed head of a prediction table, in order. ``input_hash`` is the
 #: input's identity: the first 16 hex digits of the sha256 of the exact text
-#: the model saw, so two runs over "the same" item can prove they were.
+#: the model saw (and, for a VQA item, of the image's sha256 with it; see
+#: :func:`item_input_hash`), so two runs over "the same" item can prove
+#: they were.
 PREDICTION_COLUMNS = (
     "id",
     "input",
@@ -83,6 +85,19 @@ def input_hash(text: str) -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def item_input_hash(text: str, image_sha256: str | None = None) -> str:
+    """The identity of what the model saw: the text, plus the image if it read one.
+
+    Without an image this is :func:`input_hash` of the text, so a text-only
+    table keeps the hashes it always had. With one, the image's sha256 joins
+    the text, so two runs over "q07" can prove they asked the same question
+    about the same picture.
+    """
+    if not image_sha256:
+        return input_hash(text)
+    return input_hash(f"{text}\0image-sha256:{image_sha256}")
 
 
 # ── record tables ────────────────────────────────────────────────────────────
@@ -326,13 +341,15 @@ def metric_result(
     skipped: int,
     table: dict[str, Any],
     params: dict[str, Any],
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The outputs every metric node returns, in one shape.
 
     ``table``/``columns``/``row_labels`` are the stats split table (one row);
     ``metrics`` is the same row as a record table whose meta names the
     metric's producer -- the metric node and its params -- and the run it
-    measured, copied from the prediction table's own provenance.
+    measured, copied from the prediction table's own provenance. *details*
+    (BLEU's signature and n-gram counts, say) joins the metric's entry.
     """
     label = producer_label(table.get("meta") or {})
     columns = [metric, "counted", "skipped"]
@@ -342,7 +359,8 @@ def metric_result(
         ["run", *columns],
         [[label, *row]],
         meta={
-            "metric": {"name": metric, "node": node, "params": dict(params)},
+            "metric": {"name": metric, "node": node, "params": dict(params),
+                       **({"details": json_safe(details)} if details else {})},
             "producer": source.get("producer"),
             "dataset": source.get("dataset"),
             "seed": source.get("seed"),

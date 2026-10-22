@@ -456,6 +456,106 @@ def test_top_p_keeps_at_least_the_most_likely_token():
     assert {predictor._choose(logits, generator) for _ in range(20)} == {2}
 
 
+# ── generation settings: node or the model's generation_config (#139, #380) ──
+
+class _GenerationConfig:
+    """The ``to_dict`` half of transformers' GenerationConfig."""
+
+    def __init__(self, **fields):
+        self.fields = fields
+
+    def to_dict(self):
+        return dict(self.fields)
+
+
+def _penalized(logits: torch.Tensor, seen: list[int], penalty: float) -> torch.Tensor:
+    """transformers' RepetitionPenaltyLogitsProcessor, written out longhand."""
+    out = logits.clone()
+    for token in set(seen):
+        value = logits[token]
+        out[token] = value * penalty if value < 0 else value / penalty
+    return out
+
+
+def test_the_default_settings_are_this_nodes_and_record_the_models_suggestion():
+    model, tokenizer = CountingLM(), CharTokenizer()
+    model.generation_config = _GenerationConfig(do_sample=True, temperature=0.7, top_p=0.8,
+                                                top_k=20, repetition_penalty=1.1)
+    hub.stamp(model, {"model_id": "org/lm", "model_revision": SHA_A, "task": "generation"})
+    hub.stamp(tokenizer, {"processor_id": "org/lm", "processor_revision": SHA_A})
+    out = EvalBatchInferenceNode().execute(
+        {"model": model, "processor": tokenizer, "dataset": _dataset(["ab"], ["x"])},
+        {"task": "auto", "max_new_tokens": 5})
+    generation = out["predictions"]["meta"]["generation"]
+    # Unchanged from before the option: greedy, no penalty -- the graph's
+    # params decide, and the model's suggestion is recorded beside them.
+    assert generation["source"] == "node"
+    assert generation["decoding"] == "greedy"
+    assert generation["repetition_penalty"] == 1.0
+    assert table_records(out["predictions"])[0]["raw_answer"] == "bcdef"
+    assert generation["model_generation_config"] == {
+        "do_sample": True, "temperature": 0.7, "top_p": 0.8, "top_k": 20,
+        "repetition_penalty": 1.1, "unset": []}
+
+
+def test_generation_config_model_takes_the_models_settings_and_fills_unset_ones():
+    model, tokenizer = CountingLM(), CharTokenizer()
+    model.generation_config = _GenerationConfig(do_sample=True, temperature=0.7, top_p=None,
+                                                repetition_penalty=1.1)
+    hub.stamp(model, {"model_id": "org/lm", "model_revision": SHA_A, "task": "generation"})
+    hub.stamp(tokenizer, {"processor_id": "org/lm", "processor_revision": SHA_A})
+    out = EvalBatchInferenceNode().execute(
+        {"model": model, "processor": tokenizer, "dataset": _dataset(["ab"], ["x"])},
+        {"task": "auto", "max_new_tokens": 3, "generation_config": "model",
+         "do_sample": False, "temperature": 3.0})
+    generation = out["predictions"]["meta"]["generation"]
+    assert generation["source"] == "model"
+    assert generation["decoding"] == "sample"
+    assert generation["temperature"] == 0.7  # the model's, not the node's 3.0
+    assert generation["top_p"] == 1.0        # unset: transformers' default
+    assert generation["top_k"] == 50         # unset: transformers' default
+    assert generation["repetition_penalty"] == 1.1
+    assert generation["model_generation_config"]["unset"] == ["top_p", "top_k"]
+
+
+def test_generation_config_model_refuses_a_model_without_one():
+    with pytest.raises(ValueError, match="no generation_config"):
+        _generate(_dataset(["ab"], ["x"]), generation_config="model")
+
+
+def test_the_repetition_penalty_is_transformers_rule():
+    predictor = GenerationPredictor(
+        CountingLM(), CharTokenizer(), max_new_tokens=1, do_sample=False,
+        temperature=1.0, top_p=1.0, seed=0, repetition_penalty=1.5)
+    logits = torch.tensor([2.0, -1.0, 0.5, 3.0, -2.0])
+    seen = [0, 1, 1, 4]
+    assert torch.equal(predictor._penalize(logits, seen), _penalized(logits, seen, 1.5))
+    # Greedy picks token 3 either way here, but a penalty on 3 itself flips it.
+    assert predictor._choose(logits, None, seen) == 3
+    assert predictor._choose(torch.tensor([0.0, 2.9, 0.0, 3.0]), None, [3]) == 1
+
+
+def test_a_repetition_penalty_changes_greedy_output_and_is_recorded():
+    # "ba" is ids [1, 7]; CountingLM's favourite after 7 is 1, already in the
+    # prompt. Penalised by 5 its logit 2.0 drops to 0.4, below the flat 0.5
+    # of the tokens not seen yet, so greedy takes the first of those (2).
+    plain = table_records(_generate(_dataset(["ba"], ["x"]), max_new_tokens=1)["predictions"])
+    out = _generate(_dataset(["ba"], ["x"]), max_new_tokens=1, repetition_penalty=5.0)
+    penalized = table_records(out["predictions"])
+    assert plain[0]["raw_answer"] == "a"
+    assert penalized[0]["raw_answer"] == "b"
+    assert out["predictions"]["meta"]["generation"]["repetition_penalty"] == 5.0
+
+
+def test_top_k_keeps_only_the_k_most_likely_tokens_when_sampling():
+    predictor = GenerationPredictor(
+        CountingLM(), CharTokenizer(), max_new_tokens=1, do_sample=True,
+        temperature=1.0, top_p=1.0, seed=0, top_k=2)
+    generator = torch.Generator().manual_seed(0)
+    logits = torch.tensor([3.0, 2.9, 0.0, 0.1, 0.2])
+    assert {predictor._choose(logits, generator) for _ in range(200)} == {0, 1}
+
+
 # ── metrics: parity with scikit-learn ────────────────────────────────────────
 
 def _random_table(seed: int, classes: list[str], n: int, *, broken: int = 0):
@@ -747,7 +847,7 @@ def test_the_loader_says_how_to_get_transformers_when_it_is_missing(monkeypatch,
 # ── transformers' lazy module, hit by two loaders at once ───────────────────
 
 _HF_NAMES = ("AutoConfig", "AutoModelForSequenceClassification", "AutoModelForCausalLM",
-             "AutoTokenizer", "AutoProcessor")
+             "AutoModelForVisualQuestionAnswering", "AutoTokenizer", "AutoProcessor")
 
 
 class _SlowLazyTransformers(types.ModuleType):

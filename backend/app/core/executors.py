@@ -207,6 +207,10 @@ class ExecutionOutcome:
     #: the end; None when no card holds memory (a plain CPU run), without
     #: torch or a CUDA context, or when the allocator could not be read. See :meth:`PeakMemoryScope.read`.
     peak_memory: dict[str, Any] | None = None
+    #: ``{code, params}`` of *error* when it is a coded message (#841: a
+    #: worker run's "worker X went away: ..."), stored as the row's
+    #: ``execution_facts.error_reason`` so the Runs panel can word it.
+    error_reason: dict[str, Any] | None = None
 
 
 class Executor(Protocol):
@@ -229,8 +233,19 @@ class InProcessExecutor:
     ever ``shared``. The server's executor keeps the default, False.
     """
 
-    def __init__(self, *, exclusive_process: bool = False) -> None:
+    def __init__(self, *, exclusive_process: bool = False,
+                 worker_run: bool = False,
+                 run_cards: Mapping[str, str] | None = None) -> None:
         self.exclusive_process = exclusive_process
+        #: This executes a run a worker was assigned (``agent.child``),
+        #: for the ``device_fallback`` report (#839): the run's own device
+        #: is not judged there, and the sentence names the worker.
+        self.worker_run = worker_run
+        #: In a worker run, each in-run CUDA name and the worker's card it
+        #: is (``{"cuda:0": "cuda:1"}``; empty when it sees no card). None
+        #: when the numbering is not the run's own (the server, or a worker
+        #: run that kept the agent's visibility).
+        self.run_cards = None if run_cards is None else dict(run_cards)
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph, classify the outcome and attach its peak memory.
@@ -250,6 +265,41 @@ class InProcessExecutor:
         finally:
             scope.close()
 
+    async def _warn_device_fallbacks(self, request: ExecutionRequest,
+                                     expanded: list[dict[str, Any]]) -> None:
+        """Send a ``run_warning`` (``device_fallback``) for every device the
+        run asked for and will not get (#839).
+
+        Called from ``execute_graph``'s ``on_expanded``, with the node list
+        it already expanded, before any node runs: no second expansion, and
+        a graph that does not prepare (or a bypassed node) warns about
+        nothing. The fallback itself is unchanged (``resolve_device``); a
+        run that meets none emits nothing. In a worker's run subprocess the
+        run's own device is not judged (its cards are renumbered there and
+        submit checked the set), and a CUDA node is described in the run's
+        own card names (``run_cards``). Never raises: a failure here is
+        logged and the run goes on.
+        """
+        from .device_fallback import WARNING_DEVICE_FALLBACK, device_fallbacks
+
+        try:
+            found = device_fallbacks(
+                expanded, request.options.get("device"),
+                request.context.device,
+                where="this worker" if self.worker_run else "this server",
+                check_run=not self.worker_run,
+                run_cards=self.run_cards)
+            for entry in found:
+                # Emitted directly, like a worker's coded warnings, so the
+                # payload carries ``code`` and ``params`` beside ``detail``.
+                await request.sinks.emit(EVENT_WARNING, {
+                    "kind": WARNING_DEVICE_FALLBACK,
+                    "detail": entry["detail"], "node_id": entry["node_id"],
+                    "code": entry["code"], "params": entry["params"]})
+        except Exception:  # noqa: BLE001 -- a report, never the run's failure
+            logger.warning("run %s: could not report device fallbacks",
+                           request.run_id, exc_info=True)
+
     async def _execute(self, request: ExecutionRequest) -> ExecutionOutcome:
         """Run the graph and classify the outcome. Never raises but cancel."""
         graph = request.graph
@@ -261,16 +311,18 @@ class InProcessExecutor:
                                                media_ports)
         recorder = _provenance_recorder(request)
 
-        def on_expanded(expanded: list[dict]) -> None:
+        async def on_expanded(expanded: list[dict[str, Any]]) -> None:
             # The nodes inside blocks and preset cards declare media too:
             # read once, from the node list the run executes (#559).
             media_ports.update(declared_media_ports(expanded))
             if recorder is not None:
                 recorder.add(expanded)
+            await self._warn_device_fallbacks(request, expanded)
 
         if recorder is not None:
             on_progress, on_inner_status = _observed(
                 recorder, on_progress, on_inner_status)
+
         try:
             # The RUN-level baseline (``seeding.seed_rngs``): anything that
             # draws outside a node's ``execute`` (preset expansion, a
@@ -809,6 +861,12 @@ class WorkerExecutor:
 
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         from . import worker_protocol as wp
+        from .workers import (
+            not_connected_message,
+            s3_transfer_failed_message,
+            storage_fallback_message,
+            transfer_failed_message,
+        )
 
         placement = request.placement
         if placement is None:
@@ -819,9 +877,9 @@ class WorkerExecutor:
             return await self._resume(request, worker_id)
         worker = self._registry.get(worker_id)
         if worker is None or not worker.online:
-            detail = f"worker {worker_id} is not connected"
-            await _worker_gone_warning(request, detail)
-            return self._gone(request, detail)
+            message = not_connected_message(worker_id)
+            await _worker_gone_warning(request, message)
+            return self._gone(request, message)
         # The submit-time check again, against the worker as it is now: it
         # may have reconnected with fewer node types since (#781).
         refusal = await self._catalog_refusal(request, worker)
@@ -866,16 +924,15 @@ class WorkerExecutor:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
-                where = "the S3 bucket" if backend == "s3" \
-                    else f"worker {worker_id}"
-                return ExecutionOutcome(STATUS_FAILED, (
-                    f"cannot send this run's input files to {where}: {exc}"))
+                message = (s3_transfer_failed_message(worker_id, exc)
+                           if backend == "s3"
+                           else transfer_failed_message(worker_id, exc))
+                return ExecutionOutcome(STATUS_FAILED, message.text,
+                                        error_reason=_reason_of(message))
             if backend == "transfer" and _s3_skipped(worker):
                 from . import s3
-                await _warning(request, s3.WARNING_STORAGE_FALLBACK, (
-                    f"worker {worker_id} cannot use the S3 bucket (its agent "
-                    "has no boto3); this run's files go through this "
-                    "server instead"))
+                await _warning(request, s3.WARNING_STORAGE_FALLBACK,
+                               storage_fallback_message(worker_id))
         input_keys: list[str] = []
         if storage.s3 is not None:
             self._s3_runs[request.run_id] = _S3Run(
@@ -908,18 +965,17 @@ class WorkerExecutor:
         retained here again from now on (#789), once its worker still has
         it.
         """
+        from .workers import adopted_message, lost_after_restart_message
+
         run = self._registry.claim_adopted(request.run_id)
         if run is None:
-            detail = (f"this server restarted and worker {worker_id} no "
-                      "longer has the run")
-            await _worker_gone_warning(request, detail)
-            return self._gone(request, detail)
+            message = lost_after_restart_message(worker_id)
+            await _worker_gone_warning(request, message)
+            return self._gone(request, message)
         await _retain_outputs(request, worker_id)
         grace = getattr(self._registry, "resume_grace_s", 0)
-        await _warning(request, WARNING_WORKER_DISCONNECTED, (
-            f"this server restarted while the run was executing on worker "
-            f"{worker_id}; the run keeps running there and waits up to "
-            f"{grace:.0f} s for the worker to reconnect"))
+        await _warning(request, WARNING_WORKER_DISCONNECTED,
+                       adopted_message(worker_id, grace))
         await _record_connection(request, False)
         s3_reissue = None
         resume_s3 = request.resume_s3
@@ -942,7 +998,13 @@ class WorkerExecutor:
         """Send *assign* (``(worker, frame)``; none for an adopted run),
         then turn the run's inbox into sink calls until it ends."""
         from . import worker_protocol as wp
-        from .workers import WORKER_DISCONNECTED, WORKER_GONE, WORKER_RECONNECTED
+        from .workers import (
+            WORKER_DISCONNECTED,
+            WORKER_GONE,
+            WORKER_RECONNECTED,
+            gone_message,
+            unreachable_message,
+        )
 
         watcher: asyncio.Task | None = None
         refresher: asyncio.Task | None = None
@@ -985,9 +1047,9 @@ class WorkerExecutor:
                     await acks.flush()
                     continue
                 if isinstance(item, tuple) and item and item[0] is WORKER_GONE:
-                    detail = f"worker {worker_id} went away: {item[1]}"
-                    await _worker_gone_warning(request, detail)
-                    return self._gone(request, detail)
+                    message = gone_message(worker_id, item[1])
+                    await _worker_gone_warning(request, message)
+                    return self._gone(request, message)
                 if isinstance(item, tuple) and item \
                         and item[0] is WORKER_DISCONNECTED:
                     await self._disconnected(request, worker_id, item[1])
@@ -1019,9 +1081,9 @@ class WorkerExecutor:
         except Exception as exc:  # noqa: BLE001 -- e.g. the socket closed under send
             logger.warning("run %s: worker %s failed: %s", request.run_id,
                            worker_id, exc, exc_info=True)
-            detail = f"could not reach worker {worker_id}: {exc}"
-            await _worker_gone_warning(request, detail)
-            return self._gone(request, detail)
+            message = unreachable_message(worker_id, exc)
+            await _worker_gone_warning(request, message)
+            return self._gone(request, message)
         finally:
             if watcher is not None:
                 watcher.cancel()
@@ -1034,22 +1096,23 @@ class WorkerExecutor:
                                      finished=finished)
 
     async def _disconnected(self, request: ExecutionRequest, worker_id: str,
-                            reason: str) -> None:
+                            reason: Any) -> None:
         """The worker's connection dropped; the run waits for it (#783)."""
+        from .workers import disconnected_message
+
         grace = getattr(self._registry, "resume_grace_s", 0)
-        await _warning(request, WARNING_WORKER_DISCONNECTED, (
-            f"worker {worker_id} disconnected ({reason}); the run keeps "
-            f"running there and waits up to {grace:.0f} s for it to "
-            "reconnect"))
+        await _warning(request, WARNING_WORKER_DISCONNECTED,
+                       disconnected_message(worker_id, reason, grace))
         await _record_connection(request, False)
 
     async def _reconnected(self, request: ExecutionRequest, worker_id: str,
                            acks: "_Acks") -> None:
         """The worker is back and still has the run (#783)."""
         from . import worker_protocol as wp
+        from .workers import reconnected_message
 
         await _warning(request, WARNING_WORKER_RECONNECTED,
-                       f"worker {worker_id} reconnected; the run continues")
+                       reconnected_message(worker_id))
         await _record_connection(request, True)
         # Its replay starts after the last ack it got; tell it what this
         # side already has, and repeat a stop it may never have received.
@@ -1089,13 +1152,14 @@ class WorkerExecutor:
             return None
 
     @staticmethod
-    def _gone(request: ExecutionRequest, detail: str) -> ExecutionOutcome:
+    def _gone(request: ExecutionRequest, message: Any) -> ExecutionOutcome:
         """The outcome of a run whose worker is gone: a stop if one was
         asked (``_stopped_status`` keeps a user's Stop ``cancelled``),
-        else ``interrupted``."""
+        else ``interrupted`` with *message* (a ``workers.WorkerReason``)."""
         if request.context.should_stop():
             return ExecutionOutcome(STATUS_CANCELLED, None)
-        return ExecutionOutcome(STATUS_INTERRUPTED, detail)
+        return ExecutionOutcome(STATUS_INTERRUPTED, str(message),
+                                error_reason=_reason_of(message))
 
     async def _forward_cancel(self, request: ExecutionRequest,
                               worker_id: str) -> None:
@@ -1395,18 +1459,37 @@ async def _retain_outputs(request: ExecutionRequest, worker_id: str) -> None:
         await request.output_store.add_remote(request.run_id, worker_id)
 
 
-async def _worker_gone_warning(request: ExecutionRequest, detail: str) -> None:
-    await _warning(request, WARNING_WORKER_DISCONNECTED, detail)
+def _reason_of(message: Any) -> dict[str, Any] | None:
+    """``{code, params}`` of a coded message, or None for plain text
+    (``workers.reason_dict``)."""
+    from .workers import reason_dict
+
+    return reason_dict(message)
 
 
-async def _warning(request: ExecutionRequest, kind: str, detail: str) -> None:
+async def _worker_gone_warning(request: ExecutionRequest,
+                               message: Any) -> None:
+    await _warning(request, WARNING_WORKER_DISCONNECTED, message)
+
+
+async def _warning(request: ExecutionRequest, kind: str,
+                   message: Any) -> None:
+    """A ``run_warning`` about the run's worker. *message* is a
+    ``workers.WorkerReason``: ``detail`` is its English text, and ``code``
+    and ``params`` let the Runs panel word it (#841). Only worker runs
+    send these, so a run with no target never carries the two keys."""
+    payload: dict[str, Any] = {"kind": kind, "detail": str(message),
+                               "node_id": None}
+    reason = _reason_of(message)
+    if reason is not None:
+        payload.update(reason)
     try:
-        await request.sinks.emit(EVENT_WARNING, {
-            "kind": kind, "detail": detail, "node_id": None})
+        await request.sinks.emit(EVENT_WARNING, payload)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 -- observability
-        logger.warning("run %s: could not record %s", request.run_id, detail)
+        logger.warning("run %s: could not record %s", request.run_id,
+                       message)
 
 
 async def _record_facts(request: ExecutionRequest,

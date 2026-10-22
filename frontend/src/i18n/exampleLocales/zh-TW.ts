@@ -326,6 +326,9 @@ const zhTW: ExampleTranslations = {
   'plugin:eval/Eval/AB-Text-Classification': {
     description: '兩個情感分類模型逐筆比較',
   },
+  'plugin:eval/Eval/VQA-Shapes': {
+    description: '影像加問題，答案逐筆評分',
+  },
 
   // ── plugin: stats -- Stats teaching pack ──
   'plugin:stats/Stats/Confusion-Matrix-Heatmap': {

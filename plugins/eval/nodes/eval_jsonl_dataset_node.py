@@ -8,12 +8,20 @@ tell, months later, whether two results were computed on the same file.
 
 Duplicate ids are refused at load rather than discovered at comparison
 time, because a duplicated id makes "item s07" mean two different rows.
+
+With ``image_field`` set, each record also names an image file, relative to
+the JSONL file's own folder (the layout ``samples/shapes-vqa-12.jsonl`` next
+to ``samples/shapes-vqa/`` uses). Every image is read and hashed at load: a
+missing or unreadable image is refused with its line number, the item
+carries the image's sha256 into its prediction row, and the set's identity
+gains ``images_sha256`` -- the JSONL's own hash cannot see an image that
+changed under an unchanged name.
 """
 
 from __future__ import annotations
 
 import json
-from os.path import dirname, join
+from os.path import dirname, isabs, join
 from typing import Any
 
 from app.core.node_base import (
@@ -24,7 +32,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 
-from ._eval_core import first_duplicates, make_dataset, sha256_bytes
+from ._eval_core import first_duplicates, make_dataset, sha256_bytes, sha256_text
 
 #: Prefix that names a file shipped inside this pack.
 PACK_PREFIX = "eval:"
@@ -53,7 +61,9 @@ class EvalJSONLDatasetNode(BaseNode):
         "line number. The dataset carries its identity -- path, sha256 of the "
         "file and row count -- into every prediction table built from it. A "
         "path starting with `eval:` names a file shipped in this pack, such as "
-        "`eval:samples/sst2-mini-20.jsonl`."
+        "`eval:samples/sst2-mini-20.jsonl`. `image_field` names a field holding "
+        "an image path relative to the JSONL file's folder, for VQA; each image "
+        "is hashed into the item's identity."
     )
 
     # The file can change under an unchanged path, and the run is cheap.
@@ -110,6 +120,15 @@ class EvalJSONLDatasetNode(BaseNode):
                 description="Field holding a stable item id. Missing ids become line-N.",
             ),
             ParamDefinition(
+                name="image_field",
+                param_type=ParamType.STRING,
+                default="",
+                description=(
+                    "Field holding an image path, relative to the JSONL file's folder "
+                    "(VQA). Empty reads no images."
+                ),
+            ),
+            ParamDefinition(
                 name="limit",
                 param_type=ParamType.INT,
                 default=0,
@@ -152,6 +171,7 @@ class EvalJSONLDatasetNode(BaseNode):
         id_field = str(params.get("id_field", "id") or "").strip()
         if not input_field:
             raise ValueError(f"{node}: `input_field` cannot be empty.")
+        image_field = str(params.get("image_field", "") or "").strip()
         limit = max(0, int(params.get("limit", 0) or 0))
 
         resolved = self.resolve_path(path)
@@ -188,13 +208,19 @@ class EvalJSONLDatasetNode(BaseNode):
                 )
             raw_id = record.get(id_field) if id_field else None
             item_id = str(raw_id) if raw_id is not None and str(raw_id) != "" else f"line-{lineno}"
-            items.append({
+            item = {
                 "id": item_id,
                 "input": value,
                 "label": _label_text(record.get(label_field)) if label_field else None,
                 "line": lineno,
                 "fields": record,
-            })
+            }
+            if image_field:
+                item.update(_read_image(
+                    node, record.get(image_field), field=image_field,
+                    base=dirname(resolved), lineno=lineno,
+                ))
+            items.append(item)
 
         if not items:
             raise ValueError(f"{node}: {path!r} has no records.")
@@ -206,6 +232,7 @@ class EvalJSONLDatasetNode(BaseNode):
             )
 
         total = len(items)
+        every_item = items
         if limit:
             items = items[:limit]
         meta = {
@@ -218,12 +245,58 @@ class EvalJSONLDatasetNode(BaseNode):
             "fields": {"input": input_field, "label": label_field, "id": id_field},
             "template": None,
         }
+        if image_field:
+            meta["fields"]["image"] = image_field
+            # Over every row of the file, like `sha256`, so `limit` does not
+            # change the set's identity.
+            meta["images_sha256"] = sha256_text("".join(
+                f"{item['id']}:{item['image_sha256']};" for item in every_item))
         log = (
             f"{len(items)} item(s) from {path} (of {total}; sha256 "
             f"{meta['sha256'][:12]})"
+            + (f", one image each (images sha256 {meta['images_sha256'][:12]})"
+               if image_field else "")
         )
         return {
             "dataset": make_dataset(items, meta),
             "labels": [item["label"] for item in items],
             "__log__": log,
         }
+
+
+def _read_image(node: str, value: Any, *, field: str, base: str, lineno: int) -> dict[str, Any]:
+    """Resolve and hash one item's image; refuse what cannot be read.
+
+    The path is relative to the JSONL file's folder and may not leave it: an
+    eval set describes its own images, and a ``..`` or absolute path would
+    let a shared file point the server at anything it can read.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{node}: line {lineno} has no image path in `{field}`.")
+    normalized = value.strip().replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    if (isabs(value) or normalized.startswith("/") or ":" in normalized
+            or any(p in (".", "..") for p in parts)):
+        raise ValueError(
+            f"{node}: line {lineno}: image {value!r} must be a relative path inside "
+            "the JSONL file's folder, without '..'."
+        )
+    path = join(base, *parts)
+    # The string check above cannot see a symlink: `link/hosts` with
+    # `link -> /etc` passes it. So containment is checked again on the
+    # resolved paths, with the rule the API routes use (#483).
+    from app.core.data_paths import resolve_under
+
+    if resolve_under(base, "/".join(parts)) is None:
+        raise ValueError(
+            f"{node}: line {lineno}: image {value!r} resolves outside the JSONL "
+            "file's folder (through a symbolic link)."
+        )
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise ValueError(
+            f"{node}: line {lineno}: cannot read image {value!r} ({type(exc).__name__})."
+        ) from None
+    return {"image": value, "image_path": path, "image_sha256": sha256_bytes(data)}

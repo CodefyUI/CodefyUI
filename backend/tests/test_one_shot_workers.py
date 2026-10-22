@@ -117,6 +117,9 @@ def test_the_pool_places_on_a_one_shot_worker_only():
     assert scheduler.place(entry, {("slurm", "cuda:0"): 1}) is None
     assert "waiting for a one-shot worker that offers cuda" in \
         scheduler.explain(entry)
+    coded = scheduler.explain_reason(entry)
+    assert (coded.code, coded.params_dict()) == ("one_shot_pool",
+                                                 {"devices": "cuda"})
 
 
 def test_a_one_shot_worker_takes_one_run_and_only_its_run_id():
@@ -128,11 +131,17 @@ def test_a_one_shot_worker_takes_one_run_and_only_its_run_id():
     assert scheduler.explain(entry) == (
         "one-shot worker slurm already took run r0; start another one-shot "
         "agent")
+    coded = scheduler.explain_reason(entry)
+    assert (coded.code, coded.params_dict()) == (
+        "one_shot_taken", {"worker": "slurm", "run": "r0"})
     pinned = _one_shot("slurm", "cpu", run_id="r7")
     scheduler = _scheduler(pinned)
     assert scheduler.place(_Entry("r1", "p/cpu", _pool()), {}) is None
     assert scheduler.explain(entry) == (
         "one-shot worker slurm takes only run r7 (--run-id)")
+    coded = scheduler.explain_reason(entry)
+    assert (coded.code, coded.params_dict()) == (
+        "one_shot_run_id", {"worker": "slurm", "run": "r7"})
     assert scheduler.place(_Entry("r7", "p/cpu", _pool()), {}) == Placement(
         "slurm", ("cpu",), (("slurm", "cpu"),))
     # No reservation for a set run it will not take.
@@ -149,6 +158,9 @@ def test_an_away_one_shot_worker_is_waited_for_with_its_own_words():
     assert _scheduler(away).explain(entry) == (
         "waiting for one-shot worker slurm to start (cdui agent start "
         "--one-shot)")
+    coded = _scheduler(away).explain_reason(entry)
+    assert (coded.code, coded.params_dict()) == ("one_shot_start",
+                                                 {"worker": "slurm"})
 
 
 # ── the registry ─────────────────────────────────────────────────────────

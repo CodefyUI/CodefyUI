@@ -214,6 +214,13 @@ def agent_capabilities(s3_client: bool) -> list[str]:
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
+#: A refused handshake's 401 names why in this header (#840). Only
+#: :data:`REFUSAL_REVOKED` is sent: the credential is one this server revoked
+#: (the worker was removed or re-keyed), which the agent stops on. Any other
+#: 401 (another server or database on the address, a proxy) says nothing,
+#: and the agent keeps retrying.
+REFUSAL_HEADER = "X-CodefyUI-Refusal"
+REFUSAL_REVOKED = "credential_revoked"
 
 # ── frame types: agent -> control plane ──────────────────────────────────
 HELLO = "hello"

@@ -122,7 +122,13 @@ from ..core.mounts import (
 )
 from ..core.scheduling import LOCAL_WORKER_ID, slot_for
 from ..core.worker_protocol import canonical_device
-from ..core.workers import CREDENTIAL_SESSION, policy_owner
+from ..core.workers import (
+    CREDENTIAL_SESSION,
+    REKEYED,
+    policy_owner,
+    removed_message,
+)
+from ..core.workers import removed as worker_removed
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +196,27 @@ def _store(request: Request) -> Any:
     return store
 
 
-def _describe(worker: Any, service: Any,
-              registry: Any = None) -> dict[str, Any]:
+def worker_name_problem(typed: str, name: str) -> str | None:
+    """Why *name* (*typed*, lower-cased) cannot name a worker, or None. The
+    name is quoted as typed (#840): the lower-cased form is not what the
+    user entered. One wording for ``/enroll`` and the SSH form."""
+    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
+        return (f"worker name {typed!r} may use only letters, digits and "
+                "'-' (stored in lower case), starting with a letter or "
+                "digit, at most 63 characters")
+    if name in wp.RESERVED_WORKER_NAMES:
+        return f"worker name {typed!r} is reserved"
+    return None
+
+
+def _describe(worker: Any, service: Any, registry: Any = None,
+              launcher: Any = None) -> dict[str, Any]:
     """``worker.describe()`` with each device's slot usage filled in.
+
+    ``ssh_enabled`` is whether this server's SSH worker of that name is
+    enabled, or None when the worker is not one (#840): the panel and the
+    run target list tell a disabled SSH worker from this, also when the SSH
+    list cannot be read.
 
     ``mounts`` are the labels the worker declared (``--mount``, #782); a
     same-host worker that declared no directory for this server's label
@@ -224,6 +248,8 @@ def _describe(worker: Any, service: Any,
             else None)
     entry["memory_budget"] = wp.CAPABILITY_MEMORY_BUDGET in (
         getattr(worker, "capabilities", None) or ())
+    ssh = getattr(launcher, "entries", {}).get(entry["id"])
+    entry["ssh_enabled"] = None if ssh is None else bool(ssh.enabled)
     return entry
 
 
@@ -268,7 +294,8 @@ def _describe_local(service: Any,
 async def list_workers(request: Request) -> dict[str, Any]:
     registry = _registry(request)
     service = _service(request)
-    return {"workers": [_describe(w, service, registry)
+    launcher = getattr(request.app.state, "ssh_launcher", None)
+    return {"workers": [_describe(w, service, registry, launcher)
                         for w in registry.workers()],
             "local": _describe_local(service, registry),
             "rejections": registry.rejections()}
@@ -280,7 +307,8 @@ def _set_draining(request: Request, worker_id: str,
     worker = registry.drain(worker_id, draining)
     if worker is None:
         raise HTTPException(404, f"no worker named {worker_id!r}")
-    return _describe(worker, _service(request), registry)
+    return _describe(worker, _service(request), registry,
+                     getattr(request.app.state, "ssh_launcher", None))
 
 
 @router.post("/{worker_id}/drain")
@@ -550,12 +578,9 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
                                f"in {wait:.0f} s"},
             headers={"Retry-After": str(max(1, round(wait)))})
     name = body.name.strip().lower()
-    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
-        raise HTTPException(400, f"worker name {body.name!r} must be "
-                                 "lowercase letters, digits and '-', at most "
-                                 "63 characters")
-    if name in wp.RESERVED_WORKER_NAMES:
-        raise HTTPException(400, f"worker name {name!r} is reserved")
+    problem = worker_name_problem(body.name.strip(), name)
+    if problem is not None:
+        raise HTTPException(400, problem)
     if not ws_store.is_enrollment_token(body.token):
         logger.warning("enrollment from %s refused: not an enrollment token",
                        client)
@@ -581,8 +606,7 @@ async def enroll(request: Request, body: EnrollRequest) -> Any:
         if rekeyed or held:
             # The connection that used the old credential (or the session
             # token, for a name now enrolled) must not outlive it.
-            registry.kick(name, "the worker was re-keyed; its old "
-                                "credential no longer works")
+            registry.kick(name, REKEYED)
         registry.load_known([ws_store.KnownWorker(
             name=name, platform=dict(body.platform), mounts=dict(body.mounts),
             devices=devices, created_at="", last_seen_at=None)])
@@ -645,12 +669,9 @@ async def add_ssh_worker(request: Request,
         raise HTTPException(400, str(exc)) from exc
     name = (body.name or "").strip().lower() or (
         ssh_launch.default_worker_name(target))
-    if wp.WORKER_NAME_PATTERN.fullmatch(name) is None:
-        raise HTTPException(400, f"worker name {name!r} must be lowercase "
-                                 "letters, digits and '-', at most 63 "
-                                 "characters")
-    if name in wp.RESERVED_WORKER_NAMES:
-        raise HTTPException(400, f"worker name {name!r} is reserved")
+    problem = worker_name_problem((body.name or "").strip() or name, name)
+    if problem is not None:
+        raise HTTPException(400, problem)
     if launcher.ssh_path() is None:
         raise HTTPException(400, "ssh was not found on this machine's PATH; "
                                  "install an OpenSSH client first")
@@ -697,10 +718,11 @@ async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
 
 
 async def _revoke_worker(request: Request, worker_id: str,
-                         reason: str) -> tuple[bool, bool, list[str]]:
+                         *, ssh: bool = False) -> tuple[bool, bool, list[str]]:
     """Revoke *worker_id*'s credential, drop it from the registry (its runs
     end ``interrupted``) and fail its queued runs. Returns (revoked,
-    whether the registry dropped anything, the failed run ids).
+    whether the registry dropped anything, the failed run ids). *ssh*: the
+    worker's SSH entry was deleted, which its runs' reason says.
 
     Revoking a credential also drops its instances (#845), which
     authenticated with the token just revoked, and fails the runs queued
@@ -717,7 +739,7 @@ async def _revoke_worker(request: Request, worker_id: str,
     instances: list[str] = []
     if registry is not None:
         registry.forget_policies(worker_id)
-        why = f"{reason} and its credential revoked" if revoked else reason
+        why = worker_removed(revoked=revoked, ssh=ssh)
         dropped = registry.forget(worker_id, why) is not None
         if revoked:
             instances = registry.forget_instances(worker_id, why)
@@ -730,8 +752,7 @@ async def _revoke_worker(request: Request, worker_id: str,
     failed: list[str] = []
     if service is not None:
         failed = await service.fail_queued_for_worker(
-            worker_id, f"worker {worker_id} was removed",
-            instances=revoked)
+            worker_id, removed_message(worker_id), instances=revoked)
     return revoked, dropped, failed
 
 
@@ -748,7 +769,7 @@ async def delete_ssh_worker(request: Request, name: str) -> dict[str, Any]:
 
     async def revoke() -> None:
         outcome["revoked"], _, outcome["failed_runs"] = await _revoke_worker(
-            request, name, "the SSH worker was deleted")
+            request, name, ssh=True)
 
     if not await _launcher(request).remove(name, before_cleanup=revoke):
         raise HTTPException(404, f"no SSH worker named {name!r}")
@@ -787,7 +808,7 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
 
     async def revoke() -> None:
         outcome["result"] = await _revoke_worker(
-            request, worker_id, "the worker was removed")
+            request, worker_id)
 
     ssh_removed = (launcher is not None and worker_id in launcher.entries
                    and await launcher.remove(worker_id,

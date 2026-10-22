@@ -328,6 +328,31 @@ async def test_a_worker_stopped_on_purpose_ends_its_runs_at_once(
     registry.stopped("nobody", "unknown")
 
 
+async def test_a_reconnect_that_does_not_list_the_run_ends_it_in_plain_words(
+        registry):
+    """#841: the error named the protocol frame (``no run_alive after
+    reconnect``); it says what happened instead."""
+    from app.core.workers import ALIVE_MISSING_REASON
+
+    clock = [100.0]
+    registry._clock = lambda: clock[0]
+    recorder = _Recorder()
+    agent = _Agent(registry)
+    task = asyncio.create_task(WorkerExecutor(registry).run(
+        _request(recorder)))
+    await agent.wait_for(wp.Assign)
+    registry.route(agent.worker, wp.RunStarted(run_id="r1", seq=1))
+    registry.disconnect(agent.worker, "test")
+    await _until(lambda: ("connection", False) in recorder.calls)
+    back = _Agent(registry)
+    clock[0] += back.worker.heartbeat_s + 0.1
+    registry.check()
+    outcome = await asyncio.wait_for(task, 5)
+    assert outcome.status == "interrupted"
+    assert outcome.error == f"worker box went away: {ALIVE_MISSING_REASON}"
+    assert "run_alive" not in outcome.error
+
+
 async def test_past_the_grace_the_run_is_interrupted_and_late_results_noted(
         registry):
     clock = [100.0]

@@ -179,21 +179,29 @@ class ClassificationPredictor:
         return self.labels.get(index, f"LABEL_{index}")
 
     def predict_batch(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        texts = [item["input"] for item in items]
+        inputs = self._encode(items)
+        with torch.no_grad():
+            logits = _logits_of(self.model(**inputs))
+        return self._answers(logits)
+
+    def predict_one(self, item: dict[str, Any]) -> dict[str, Any]:
+        return self.predict_batch([item])[0]
+
+    def _encode(self, items: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         encoding = self.processor(
-            texts,
+            [item["input"] for item in items],
             padding=True,
             truncation=True,
             max_length=self.max_length,
             return_tensors="pt",
         )
-        inputs = {
+        return {
             key: value.to(self.device)
             for key, value in dict(encoding).items()
             if isinstance(value, torch.Tensor)
         }
-        with torch.no_grad():
-            logits = _logits_of(self.model(**inputs))
+
+    def _answers(self, logits: torch.Tensor) -> list[dict[str, Any]]:
         probs = torch.softmax(logits.detach().float().cpu(), dim=-1)
         k = min(self.top_k, probs.shape[-1])
         top = probs.topk(k, dim=-1)
@@ -206,8 +214,114 @@ class ClassificationPredictor:
             })
         return out
 
-    def predict_one(self, item: dict[str, Any]) -> dict[str, Any]:
-        return self.predict_batch([item])[0]
+
+def _model_dtype(model: Any) -> torch.dtype:
+    try:
+        return next(model.parameters()).dtype
+    except (AttributeError, StopIteration, TypeError):
+        return torch.float32
+
+
+def load_rgb_image(path: str) -> Any:
+    """The image at *path* as an RGB ``PIL.Image``, fully read and closed."""
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return image.convert("RGB")
+
+
+class VQAPredictor(ClassificationPredictor):
+    """Visual question answering as classification over the answer vocabulary.
+
+    The processor takes the images and the questions together
+    (``processor(images=..., text=..., return_tensors="pt")``, the shape of
+    ViLT's processor) and the model's logits range over ``config.id2label``.
+    Each item's image is opened when its batch runs, so one unreadable image
+    is one ``error`` row.
+    """
+
+    def __init__(self, model: Any, processor: Any, *, max_length: int, top_k: int):
+        super().__init__(model, processor, max_length=max_length, top_k=top_k)
+        self.dtype = _model_dtype(model)
+        # ViLT reads at most config.max_position_embeddings text tokens (40);
+        # padding or truncating to more makes every batch fail. Cap it.
+        try:
+            limit = int(model.config.max_position_embeddings)
+        except (AttributeError, TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            self.max_length = min(self.max_length, limit)
+
+    def _encode(self, items: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        missing = [item.get("id") for item in items if not item.get("image_path")]
+        if missing:
+            raise ValueError(
+                f"item(s) {missing} have no image; set `image_field` on Eval-JSONLDataset"
+            )
+        images = [load_rgb_image(item["image_path"]) for item in items]
+        encoding = self.processor(
+            images=images,
+            text=[item["input"] for item in items],
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        out = {}
+        for key, value in dict(encoding).items():
+            if not isinstance(value, torch.Tensor):
+                continue
+            if value.is_floating_point():
+                out[key] = value.to(self.device, dtype=self.dtype)
+            else:
+                out[key] = value.to(self.device)
+        return out
+
+
+#: What ``model.generate`` falls back to for a field the model's
+#: ``generation_config`` leaves unset (transformers'
+#: ``GenerationConfig._get_default_generation_params``).
+HF_GENERATION_DEFAULTS = {
+    "do_sample": False,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 50,
+    "repetition_penalty": 1.0,
+}
+
+
+def model_generation_config(model: Any) -> dict[str, Any] | None:
+    """The sampling fields of ``model.generation_config``, defaults filled in.
+
+    ``None`` when the model has no generation config (a classifier, or a
+    stand-in in a test). Fields the checkpoint leaves unset take the value
+    ``model.generate`` would use, and ``unset`` lists them.
+    """
+    try:
+        config = model.generation_config
+    except AttributeError:
+        return None
+    if config is None:
+        return None
+    try:
+        fields = dict(config.to_dict())
+    except (AttributeError, TypeError):
+        return None
+    out: dict[str, Any] = {}
+    unset = []
+    for name, default in HF_GENERATION_DEFAULTS.items():
+        value = fields.get(name)
+        if value is None:
+            unset.append(name)
+            value = default
+        out[name] = value
+    out["do_sample"] = bool(out["do_sample"])
+    out["temperature"] = float(out["temperature"])
+    out["top_p"] = float(out["top_p"])
+    out["top_k"] = int(out["top_k"])
+    out["repetition_penalty"] = float(out["repetition_penalty"])
+    out["unset"] = unset
+    return out
 
 
 def item_seed(seed: int, item_id: Any) -> int:
@@ -229,6 +343,9 @@ class GenerationPredictor:
         temperature: float,
         top_p: float,
         seed: int,
+        top_k: int = 0,
+        repetition_penalty: float = 1.0,
+        source: str = "node",
     ):
         self.model = model
         self.processor = processor
@@ -236,6 +353,9 @@ class GenerationPredictor:
         self.do_sample = bool(do_sample)
         self.temperature = float(temperature)
         self.top_p = float(top_p)
+        self.top_k = max(0, int(top_k))
+        self.repetition_penalty = float(repetition_penalty)
+        self.source = source
         self.seed = int(seed)
         self.device = _device_of(model)
         try:
@@ -247,19 +367,46 @@ class GenerationPredictor:
         """The generation configuration that actually ran."""
         return {
             "decoding": "sample" if self.do_sample else "greedy",
+            "source": self.source,
             "max_new_tokens": self.max_new_tokens,
             "do_sample": self.do_sample,
             "temperature": self.temperature if self.do_sample else None,
             "top_p": self.top_p if self.do_sample else None,
+            "top_k": (self.top_k or None) if self.do_sample else None,
+            "repetition_penalty": self.repetition_penalty,
             "seed": self.seed,
             "seed_scope": "per item: sha256(seed:id)",
             "eos_token_id": self.eos_token_id,
         }
 
-    def _choose(self, logits: torch.Tensor, generator: torch.Generator) -> int:
+    def _penalize(self, logits: torch.Tensor, seen: list[int]) -> torch.Tensor:
+        """transformers' ``RepetitionPenaltyLogitsProcessor`` over *seen* tokens.
+
+        Every token already in the prompt or the output has its logit divided
+        by the penalty when positive and multiplied by it when negative, so a
+        penalty above 1 makes a repeat less likely either way.
+        """
+        if self.repetition_penalty == 1.0 or not seen:
+            return logits
+        index = torch.tensor(sorted(set(seen)), dtype=torch.long)
+        index = index[index < logits.shape[-1]]
+        picked = logits[index]
+        logits = logits.clone()
+        logits[index] = torch.where(picked < 0, picked * self.repetition_penalty,
+                                    picked / self.repetition_penalty)
+        return logits
+
+    def _choose(self, logits: torch.Tensor, generator: torch.Generator,
+                seen: list[int] | None = None) -> int:
+        logits = self._penalize(logits, seen or [])
         if not self.do_sample:
             return int(logits.argmax(dim=-1).item())
         scaled = logits / max(self.temperature, 1e-6)
+        if self.top_k and self.top_k < scaled.shape[-1]:
+            # transformers' TopKLogitsWarper: keep every token whose logit
+            # reaches the k-th largest.
+            kth = scaled.topk(self.top_k).values[-1]
+            scaled = scaled.masked_fill(scaled < kth, float("-inf"))
         probs = torch.softmax(scaled, dim=-1)
         if self.top_p < 1.0:
             sorted_probs, order = probs.sort(descending=True)
@@ -284,6 +431,7 @@ class GenerationPredictor:
         attention = attention.to(self.device)
 
         produced: list[int] = []
+        prompt_ids = [int(t) for t in input_ids[0].tolist()]
         past = None
         step_ids = input_ids
         with torch.no_grad():
@@ -296,7 +444,7 @@ class GenerationPredictor:
                 )
                 past = output.past_key_values
                 logits = _logits_of(output)[0, -1, :].detach().float().cpu()
-                token = self._choose(logits, generator)
+                token = self._choose(logits, generator, prompt_ids + produced)
                 if self.eos_token_id is not None and token == self.eos_token_id:
                     break
                 produced.append(token)

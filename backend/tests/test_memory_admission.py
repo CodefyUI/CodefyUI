@@ -33,7 +33,7 @@ from app.core.run_service import (
     normalize_options,
 )
 from app.core.run_store import RunStore
-from app.core.scheduling import Placement, WorkerScheduler
+from app.core.scheduling import Placement, QueueReason, WorkerScheduler
 from app.core.sweep_store import SweepStore
 from app.core.version import get_version
 from app.core.worker_store import WorkerStore
@@ -44,6 +44,13 @@ GIB = mem.GIB
 BASE = "http://127.0.0.1:8000"
 WS_PATH = f"{wp.WORKER_WS_PATH}?{TOKEN_QUERY_PARAM}={session_token()}"
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
+
+
+def _reason_text(service: Any, run_id: str) -> str | None:
+    """The English ``queue_reason`` of a waiting run (``queue_wait``)."""
+    reason = service.queue_wait(run_id)
+    return None if reason is None else reason.text
+
 
 
 @pytest.fixture(autouse=True)
@@ -273,6 +280,15 @@ def test_two_budgets_share_a_card_and_a_third_does_not_fit():
     reason = scheduler.explain(_entry("r3", 6))
     assert reason == ("waiting for memory: needs 6.0 GiB, cuda:0 on box has "
                       "4.0 GiB free (runs r1, r2)")
+    # The same reason, coded for the Runs panel (#841).
+    coded = scheduler.explain_reason(_entry("r3", 6))
+    assert coded.text == reason
+    assert (coded.code, coded.params_dict()) == ("memory_wait", {
+        "need": "6.0 GiB", "context": None, "reasons": [{
+            "code": "does_not_fit",
+            "params": {"device": "cuda:0", "worker": "box",
+                       "free": "4.0 GiB", "runs": ["r1", "r2"]},
+            "text": "cuda:0 on box has 4.0 GiB free (runs r1, r2)"}]})
 
 
 def test_a_run_without_a_budget_never_takes_a_shared_card():
@@ -280,6 +296,9 @@ def test_a_run_without_a_budget_never_takes_a_shared_card():
     assert scheduler.place(_entry("r1"), {}) is None
     assert "queue it again with target.memory_gib" in scheduler.explain(
         _entry("r1"))
+    coded = scheduler.explain_reason(_entry("r1"))
+    assert (coded.code, coded.params_dict()) == (
+        "memory_no_budget", {"device": "cuda:0", "worker": "box"})
 
 
 def test_a_holder_without_a_budget_keeps_the_card_to_itself():
@@ -615,7 +634,7 @@ async def test_two_6_gib_runs_share_a_16_gib_card_and_a_third_is_refused(
             "graph": _graph(), "options": {"device": "cuda:0", "target": {
                 "worker": "any", "memory_gib": 6}}})
         assert waiting.json()["status"] == "queued"
-        reason = service.queue_reason(waiting.json()["run_id"])
+        reason = _reason_text(service, waiting.json()["run_id"])
         assert reason is None or "memory" in reason
         refused = await client.post("/api/runs", json={
             "graph": _graph(), "options": {"device": "cuda:0", "target": {
@@ -699,7 +718,7 @@ async def test_a_named_run_may_wait_and_a_never_fitting_batch_is_refused(
             "graph": _graph(), "options": {"device": "cuda:0", "target": {
                 "worker": "box", "memory_gib": 12, "wait": True}}})
         assert waits.json()["status"] == "queued"
-        assert service.queue_reason(waits.json()["run_id"]).startswith(
+        assert _reason_text(service, waits.json()["run_id"]).startswith(
             "waiting for memory: needs 12.0 GiB, cuda:0 on box has 3.0 GiB")
         await agent.nothing()
         with pytest.raises(RunSubmitError, match="16.0 GiB in total"):
@@ -976,7 +995,7 @@ async def test_an_estimate_queued_for_an_exclusive_card_is_raised_too(env):
                                  "source": "history", "from_run": first,
                                  "raised_from": GIB}
         assert "memory budget raised from the accepted estimate, 1.0 GiB" \
-            in service.queue_reason(waiting)
+            in _reason_text(service, waiting)
         await agent.send(wp.RunStarted(run_id=holder, seq=1, pid=1))
         await agent.finish(assigned)
         placed = await agent.assignment()
@@ -1081,8 +1100,10 @@ def test_a_raised_estimate_is_named_in_the_waiting_run_s_reason():
         run_id: str
         memory_budget: Any
 
-    explains: list[str | None] = ["waiting for cuda:0 on box", None]
-    service._scheduler.explain = lambda entry, view: explains.pop(0)
+    explains: list[QueueReason | None] = [QueueReason(
+        "memory_wait", {"need": "2.4 GiB"}, "waiting for cuda:0 on box"),
+        None]
+    service._scheduler.explain_reason = lambda entry, view: explains.pop(0)
     service._admission_view = lambda run_id: None
     budget = mem.Budget(mem.gib_to_bytes(2.4), mem.SOURCE_HISTORY,
                         from_run="r1", raised_from=GIB)
@@ -1090,18 +1111,26 @@ def test_a_raised_estimate_is_named_in_the_waiting_run_s_reason():
     note = ("memory budget raised from the accepted estimate, 1.0 GiB, to "
             "2.4 GiB: an earlier run of its graph (run r1) peaked above the "
             "estimate")
-    assert service.queue_reason("w") == f"waiting for cuda:0 on box; {note}"
-    assert service.queue_reason("w") == note
+    both = service.queue_wait("w")
+    assert both.text == f"waiting for cuda:0 on box; {note}"
+    # The reason keeps its code; the raise rides in its params (#841).
+    assert both.code == "memory_wait"
+    assert both.params_dict() == {"need": "2.4 GiB", "raised": {
+        "from": "1.0 GiB", "to": "2.4 GiB", "run": "r1"}}
+    alone = service.queue_wait("w")
+    assert alone.text == note
+    assert (alone.code, alone.params_dict()) == ("budget_raised", {
+        "from": "1.0 GiB", "to": "2.4 GiB", "run": "r1"})
     service._pending_by_id["w"] = _Pending("w", mem.Budget(GIB))
     explains.append(None)
-    assert service.queue_reason("w") is None
+    assert _reason_text(service, "w") is None
     # Below a GiB the note counts MiB (0.1 GiB would hide the raise), and a
     # run id is cut to eight characters.
     service._pending_by_id["w"] = _Pending("w", mem.Budget(
         60397978, mem.SOURCE_HISTORY, from_run="376a2c0ac3c74e2fbd04",
         raised_from=10737419))
     explains.append(None)
-    assert service.queue_reason("w") == (
+    assert _reason_text(service, "w") == (
         "memory budget raised from the accepted estimate, 10 MiB, to "
         "58 MiB: an earlier run of its graph (run 376a2c0a) peaked above "
         "the estimate")
@@ -1145,6 +1174,9 @@ def test_a_card_held_by_a_run_without_a_budget_says_so():
         "without a memory budget (a run on this server, or one started "
         "before the card was shared) until it ends")
     assert "free" not in reason
+    assert [r["code"] for r in scheduler.explain_reason(
+        _entry("r1", 6), taken).params_dict()["reasons"]] == [
+        "held_without_budget"]
     assert scheduler.memory_refusal(_options(), 6 * GIB, taken,
                                     wait=False) == reason.removeprefix(
         "waiting for memory: ")
@@ -1339,7 +1371,7 @@ async def test_a_run_queued_while_its_card_was_exclusive_is_not_stranded(
             .memory_budget.bytes == 2 * GIB
         # The holder has no budget: the run waits for it, and says so.
         assert "held by a run without a memory budget" in \
-            service.queue_reason(early.json()["run_id"])
+            _reason_text(service, early.json()["run_id"])
         await agent.send(wp.RunStarted(run_id=holder_assign.run_id, seq=1,
                                        pid=1))
         await agent.finish(holder_assign)
@@ -1371,7 +1403,7 @@ async def test_a_waiting_run_takes_the_peak_a_run_of_its_graph_reports(env):
         await client.put("/api/workers/box/devices/cuda:0/policy",
                          json={"policy": "shared"})
         assert service._pending_by_id[waiting].memory_budget is None
-        reason = service.queue_reason(waiting)
+        reason = _reason_text(service, waiting)
         assert "cancel it and queue it again with target.memory_gib" in reason
         await agent.send(wp.RunStarted(run_id=holder.run_id, seq=1, pid=1))
         await agent.finish(holder, peak=2 * GIB)

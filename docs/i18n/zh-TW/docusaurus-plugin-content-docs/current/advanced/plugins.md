@@ -31,11 +31,11 @@ cdui plugin uninstall deep                 # 會被記住：sync 不會再把它
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
 | `edu` | I1 Data Representation · I2 Classical ML（動手實作） | FilterRows、SlidingWindow2D、SentenceEmbedding、Classifier、AdvancedClassifier、FFNLayer、ActivationLayer、TrainAndEvaluate |
 | `stats` | —（任何資料集） | Stats-Describe、Stats-GroupByAggregate、Stats-Histogram、Stats-Percentile、Stats-Correlation、Stats-ConfusionMatrix、Stats-TableView、Stats-ChartView |
-| `eval` | —（Hugging Face 文字模型） | Eval-JSONLDataset、Eval-PromptTemplate、Eval-HFModelLoader、Eval-HFProcessorLoader、Eval-BatchInference、Eval-ExactMatch、Eval-F1Score、Eval-TopKAccuracy、Eval-CompareRuns |
+| `eval` | —（Hugging Face 文字與 VQA 模型） | Eval-JSONLDataset、Eval-PromptTemplate、Eval-HFModelLoader、Eval-HFProcessorLoader、Eval-BatchInference、Eval-ExactMatch、Eval-F1Score、Eval-TopKAccuracy、Eval-BLEU、Eval-ROUGE-L、Eval-CompareRuns |
 
 `stats` 是這裡的例外：它不是教科書的配套，而是給第三方外掛作者的實作範例。它只用 numpy 與 torch，以[第 0 級](#security--three-tiers)安裝且**整份 manifest 沒有 `[security]` 區段**；它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) 正式記載了資料類外掛需要的兩份契約——表格如何在連接埠之間傳遞，以及 `chart` 輸出如何宣告與繪製。
 
-`eval` 把一次評估做成一張圖：含項目 id 與內容雜湊的評估集、鎖定在解析出的 commit 的 Hugging Face 模型與 tokenizer、每筆都有狀態的預測表、會略過沒跑完項目的指標，以及依項目 id 對齊的 A/B 比較。安裝時會一併裝上 `transformers`，這是它 `[python_deps]` 唯一列出的套件；它不宣告任何能力。它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/eval/README.md) 記載了預測表契約、離線行為與範例 graph。
+`eval` 把一次評估做成一張圖：含項目 id 與內容雜湊的評估集、鎖定在解析出的 commit 的 Hugging Face 模型與 tokenizer、每筆都有狀態的預測表、會略過沒跑完項目的指標（exact match、F1、top-k accuracy、BLEU 與 ROUGE-L，各自與參考實作比對過），以及依項目 id 對齊的 A/B 比較。它可評估文字分類模型、因果語言模型，以及 ViLT 這類從答案詞表選答案的 VQA 模型。安裝時會一併裝上 `transformers`，這是它 `[python_deps]` 唯一列出的套件；它不宣告任何能力。[建立自己的評估流程](../usage/eval-pipelines.md)逐步說明如何用自己的資料建立一張圖，[README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/eval/README.md) 則記載了預測表契約、離線行為與兩個範例 graph。
 
 另外有三個官方外掛放在各自的儲存庫裡。它們一樣可以用型錄列出的名稱安裝，但和上面的外掛包不同：它們是從 GitHub 下載的，所以安裝時會請你確認。
 

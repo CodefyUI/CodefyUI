@@ -166,6 +166,22 @@ def quick_child(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
                                           "error": None, "peak_memory": None}))
 
 
+def workdir_child(spec: dict[str, Any], events_out: Any,
+                  control_in: Any) -> None:
+    """Report the run subprocess's working directory and what ``app.config``
+    reads from the environment it inherited (#839)."""
+    child.apply_environment(spec.get("env") or {})
+    from app.config import settings
+
+    events_out.send((child.MSG_EVENT, "workdir", {
+        "cwd": os.getcwd(),
+        "prefer_env": os.environ.get("CODEFYUI_PREFER_WORKING_DIR"),
+        "prefer": settings.PREFER_WORKING_DIR,
+        "models_dir": str(settings.MODELS_DIR),
+    }))
+    quick_child(spec, events_out, control_in)
+
+
 def lingering_child(spec: dict[str, Any], events_out: Any,
                     control_in: Any) -> None:
     """Report success, then stay alive (pipe open) until terminated."""

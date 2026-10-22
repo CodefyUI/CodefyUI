@@ -397,7 +397,10 @@ export function Toolbar() {
   // exactly the part that carries the news. The row explains; this reports.
   const followText = isDeviceServed(devices, globalDevice)
     ? t('toolbar.device.follow', {
+        // isDeviceServed is the same `d.value === globalDevice` test as the find, so followDevice is always set here
+        /* v8 ignore start */
         device: followDevice ? deviceLabel(followDevice) : globalDevice,
+        /* v8 ignore stop */
       })
     : t('toolbar.device.followFallback', { device: globalDevice });
   const addToast = useToastStore((s) => s.addToast);
@@ -463,7 +466,10 @@ export function Toolbar() {
     const place = () => {
       const split = layoutTriggerRef.current;
       const menu = layoutMenuRef.current;
+      // Both refs are set while the menu is open (it renders with layoutMenuOpen), and the resize listener goes with it
+      /* v8 ignore start */
       if (!split || !menu) return;
+      /* v8 ignore stop */
       // The menu's right edge when it hangs from the left edge, whichever
       // edge it hangs from now: its width is the same from both, and its
       // containing block starts inside the split button's border.
@@ -913,7 +919,11 @@ export function Toolbar() {
           data-tour="device"
           aria-label={t('toolbar.device.aria')}
           title={t('toolbar.device.title')}
-          className={styles.deviceSelect}
+          // Narrowed only while the status names the device it waits for:
+          // a seed wait's label does not, so the select keeps it (#848 review).
+          className={runQueue === null || runQueue.reason === 'seed'
+            ? styles.deviceSelect
+            : `${styles.deviceSelect} ${styles.deviceSelectQueued}`}
           value={storedDevice ?? ''}
           disabled={activeTab.readOnly}
           onChange={(e) => setGraphDevice(e.target.value || null)}
@@ -1065,12 +1075,15 @@ export function Toolbar() {
           )}
         </div>
 
-        <div className={styles.status}>
+        <div className={styles.status} title={statusLabel}>
           <span
             className={styles.statusDot}
             style={{ background: statusDotColor, boxShadow: statusGlow }}
           />
-          <span style={{ color: status === 'running' ? 'var(--status-running)' : undefined }}>
+          <span
+            className={styles.statusLabel}
+            style={{ color: status === 'running' ? 'var(--status-running)' : undefined }}
+          >
             {statusLabel}
           </span>
         </div>

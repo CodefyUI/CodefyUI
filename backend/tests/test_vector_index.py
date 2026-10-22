@@ -307,6 +307,113 @@ def test_save_and_load_round_trip_keeps_a_dot_index_unnormalised(tmp_path):
     assert torch.allclose(loaded.vectors, torch.tensor([[3.0, 0.0], [0.0, 1.0]]))
 
 
+def test_a_save_leaves_no_scratch_file_behind(tmp_path):
+    path = tmp_path / "corpus.npz"
+    _small_index().save(path)
+    _small_index("dot", False).save(path)  # over an existing index
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["corpus.npz"]
+    assert VectorIndex.load(path).metric == "dot"
+
+
+def test_every_save_gets_its_own_scratch_file(tmp_path, monkeypatch):
+    """Two saves of one process -- two threads -- must not share a scratch
+    name, so it comes from mkstemp, not from the pid."""
+    import app.nodes.llm._vector_index as module
+
+    path = tmp_path / "corpus.npz"
+    real_replace = module.os.replace
+    sources = []
+
+    def spy(src, dst):
+        sources.append(str(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", spy)
+    _small_index().save(path)
+    _small_index().save(path)
+    assert len(set(sources)) == 2
+    for source in sources:
+        name = source.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        assert name.startswith("corpus.npz.") and name.endswith(".part")
+
+
+def test_saves_from_two_threads_leave_one_whole_index(tmp_path):
+    import threading
+
+    path = tmp_path / "corpus.npz"
+    errors = []
+
+    def save(metric):
+        try:
+            for _ in range(5):
+                _small_index(metric, metric == "cosine").save(path)
+        except BaseException as exc:  # noqa: BLE001 - collected for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save, args=(m,)) for m in ("cosine", "dot")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert VectorIndex.load(path).metric in ("cosine", "dot")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["corpus.npz"]
+
+
+def test_an_interrupted_save_keeps_the_old_index_whole(tmp_path, monkeypatch):
+    """#139 (from #380): writing straight into the path truncated the old
+    index the moment a save began, so a save that died halfway left neither
+    the old index nor a complete new one."""
+    import app.nodes.llm._vector_index as module
+
+    path = tmp_path / "corpus.npz"
+    _small_index().save(path)
+    before = path.read_bytes()
+
+    def dies_halfway(handle, **_arrays):
+        handle.write(b"PK\x03\x04 half an archive")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module.np, "savez", dies_halfway)
+    with pytest.raises(KeyboardInterrupt):
+        build_index(torch.eye(4), list("abcd"), None, metric="cosine", normalize=True).save(path)
+
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["corpus.npz"]
+    assert len(VectorIndex.load(path)) == 3
+
+
+def test_a_refused_replace_is_retried_then_raised(tmp_path, monkeypatch):
+    """Windows refuses os.replace while another handle has the old file open
+    (#488): a short refusal is waited out, a lasting one is an error that
+    leaves the old index and no scratch file."""
+    import app.nodes.llm._vector_index as module
+
+    path = tmp_path / "corpus.npz"
+    _small_index().save(path)
+    real_replace = module.os.replace
+    calls = []
+
+    def busy_twice(src, dst):
+        calls.append(src)
+        if len(calls) <= 2:
+            raise PermissionError("in use")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", busy_twice)
+    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    _small_index("dot", False).save(path)
+    assert len(calls) == 3
+    assert VectorIndex.load(path).metric == "dot"
+
+    monkeypatch.setattr(module.os, "replace",
+                        lambda src, dst: (_ for _ in ()).throw(PermissionError("in use")))
+    with pytest.raises(PermissionError):
+        _small_index().save(path)
+    assert VectorIndex.load(path).metric == "dot"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["corpus.npz"]
+
+
 def test_load_rejects_a_file_whose_lists_disagree(tmp_path):
     index = build_index(torch.eye(3), ["a", "b", "c"], None, metric="cosine", normalize=True)
     # Three rows, two texts -- what a truncated write, a hand-edited archive

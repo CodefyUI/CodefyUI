@@ -326,12 +326,49 @@ def history_suggestion(run_id: str | None,
 # ── messages ──────────────────────────────────────────────────────────────
 
 
-def held_without_budget(device: str, worker: str) -> str:
+class CardWhy(str):
+    """Why one shared card cannot take a run: the English sentence (a
+    ``str``, as refusals and logs use it) with a code and parameters, so a
+    waiting run's reason can be worded in the viewer's language (#841)."""
+
+    code: str
+    params: dict[str, Any]
+
+    def __new__(cls, text: str, code: str,
+                params: Mapping[str, Any]) -> "CardWhy":
+        made = super().__new__(cls, text)
+        made.code = code
+        made.params = dict(params)
+        return made
+
+
+def coded_payload(why: str) -> dict[str, Any]:
+    """``{code, params, text}`` of a card reason; ``other`` for plain text."""
+    if isinstance(why, CardWhy):
+        return {"code": why.code, "params": dict(why.params),
+                "text": str(why)}
+    return {"code": "other", "params": {}, "text": str(why)}
+
+
+def no_total_reported(device: str, worker: str) -> CardWhy:
+    return CardWhy(f"{device} on {worker} has no memory total reported",
+                   "no_total_reported", {"device": device, "worker": worker})
+
+
+def total_too_small(device: str, worker: str, total: int) -> CardWhy:
+    return CardWhy(f"{device} on {worker} has {format_gib(total)} in total",
+                   "total_too_small", {"device": device, "worker": worker,
+                                       "total": format_gib(total)})
+
+
+def held_without_budget(device: str, worker: str) -> CardWhy:
     """Why a shared card cannot take a budgeted run although memory is
     free: a run without a budget holds it (#788 review 3)."""
-    return (f"{device} on {worker} is held by a run without a memory budget "
-            "(a run on this server, or one started before the card was "
-            "shared) until it ends")
+    return CardWhy(
+        f"{device} on {worker} is held by a run without a memory budget "
+        "(a run on this server, or one started before the card was "
+        "shared) until it ends",
+        "held_without_budget", {"device": device, "worker": worker})
 
 
 def no_budget_message(where: str, *, waiting: bool = False) -> str:
@@ -347,23 +384,30 @@ def no_budget_message(where: str, *, waiting: bool = False) -> str:
             "devices reported its peak memory)")
 
 
-def reserved_for_a_set(device: str, worker: str) -> str:
+def reserved_for_a_set(device: str, worker: str) -> CardWhy:
     """Why a shared card cannot take a run although memory is free: an
     earlier run waiting for its whole device set holds it (#788)."""
-    return (f"{device} on {worker} is reserved for an earlier run that waits "
-            "for its whole device set")
+    return CardWhy(
+        f"{device} on {worker} is reserved for an earlier run that waits "
+        "for its whole device set",
+        "reserved_for_a_set", {"device": device, "worker": worker})
 
 
 def does_not_fit(device: str, worker: str, room: int | None,
-                 runs: list[str]) -> str:
+                 runs: list[str]) -> CardWhy:
     """``cuda:1 on gpu-box-1 has 6.3 GiB free (runs a1b2c3d4, ...)``."""
     if room is None:
-        return (f"{device} on {worker} reports no memory total, so it cannot "
-                "admit by memory")
+        return CardWhy(
+            f"{device} on {worker} reports no memory total, so it cannot "
+            "admit by memory",
+            "no_total", {"device": device, "worker": worker})
+    short = [short_run(r) for r in runs]
     text = f"{device} on {worker} has {format_gib(room)} free"
     if runs:
-        text += f" (runs {', '.join(short_run(r) for r in runs)})"
-    return text
+        text += f" (runs {', '.join(short)})"
+    return CardWhy(text, "does_not_fit",
+                   {"device": device, "worker": worker,
+                    "free": format_gib(room), "runs": short})
 
 
 def needs_message(budget: int, reasons: list[str], device: str = "") -> str:
