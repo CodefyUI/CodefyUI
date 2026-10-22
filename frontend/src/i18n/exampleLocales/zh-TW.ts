@@ -345,6 +345,9 @@ const zhTW: ExampleTranslations = {
   'Papers/GroupNorm-Wu-2018': {
     description: '一次 2 張：BatchNorm 對上 GroupNorm',
   },
+  'RNN/Conv1d-Sequence-Classifier': {
+    description: '時間卷積用滑動視窗讀 token',
+  },
 };
 
 export default zhTW;

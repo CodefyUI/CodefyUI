@@ -1,0 +1,397 @@
+{
+  "name": "Conv1d classifies sequences",
+  "description": "A temporal CNN reads tokens in windows",
+  "gallery": {
+    "section": "concepts",
+    "order": 17
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": -300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "seq-train",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "n_samples": 2000,
+          "seed": 0,
+          "kind": "recall_first",
+          "seq_len": 20,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "seq-test",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": 40,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "n_samples": 500,
+          "seed": 1,
+          "kind": "recall_first",
+          "seq_len": 20,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "seq-last",
+      "type": "SyntheticSequence",
+      "position": {
+        "x": 40,
+        "y": 380
+      },
+      "data": {
+        "params": {
+          "n_samples": 500,
+          "seed": 2,
+          "kind": "recall_last",
+          "seq_len": 20,
+          "n_classes": 10,
+          "n_distractors": 10
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 720
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Embedding\",\"params\":{\"num_embeddings\":20,\"embedding_dim\":1}},{\"id\":\"l1\",\"type\":\"Reshape\",\"params\":{\"shape\":\"1,20\"}},{\"id\":\"l2\",\"type\":\"Conv1d\",\"params\":{\"in_channels\":1,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l3\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"l4\",\"type\":\"ReLU\"},{\"id\":\"l5\",\"type\":\"Conv1d\",\"params\":{\"in_channels\":32,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l6\",\"type\":\"BatchNorm1d\",\"params\":{\"num_features\":32}},{\"id\":\"l7\",\"type\":\"ReLU\"},{\"id\":\"l8\",\"type\":\"Reshape\",\"params\":{\"shape\":\"32,20,1\"}},{\"id\":\"l9\",\"type\":\"AdaptiveAvgPool2d\",\"params\":{\"output_size\":1}},{\"id\":\"l10\",\"type\":\"Flatten\"},{\"id\":\"l11\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"e7\",\"source\":\"l6\",\"target\":\"l7\"},{\"id\":\"e8\",\"source\":\"l7\",\"target\":\"l8\"},{\"id\":\"e9\",\"source\":\"l8\",\"target\":\"l9\"},{\"id\":\"e10\",\"source\":\"l9\",\"target\":\"l10\"},{\"id\":\"e11\",\"source\":\"l10\",\"target\":\"l11\"},{\"id\":\"eout\",\"source\":\"l11\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 340,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 340,
+        "y": 720
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 340,
+        "y": 1020
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 640,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "epochs": 20,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 960,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "batch_size": 500
+        }
+      }
+    },
+    {
+      "id": "print-acc",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Answer first: test accuracy (chance 0.10)"
+        }
+      }
+    },
+    {
+      "id": "eval-last",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 960,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "batch_size": 500
+        }
+      }
+    },
+    {
+      "id": "print-last",
+      "type": "Print",
+      "position": {
+        "x": 1260,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "label": "Answer last: test accuracy (chance 0.10)"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 960,
+        "y": 380
+      },
+      "data": {
+        "params": {
+          "title": "Conv1d: training loss per epoch",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": -300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A temporal CNN reads a sequence through a small window that slides along it, the 1-D version of what Conv2d does to an image. Each sequence here is 20 tokens: the answer (one of 10 classes) is the first token and 19 random distractors follow. Two Conv1d layers with a window of 3 tokens, each followed by BatchNorm1d and ReLU, turn the sequence into 32 feature channels; averaging every channel over the 20 positions gives one 32-number summary, and a Linear layer names the class. Under seed 0 on a CPU the training loss falls from 2.20 to 0.05 in 20 epochs and the network scores 1.00 on 500 sequences it never trained on (chance is 0.10). LSTM remembers the first token solves the same task with a recurrence.\n\n時間卷積（temporal CNN）用一個沿著序列滑動的小視窗讀取序列，就是 Conv2d 處理影像的一維版本。這裡每條序列有 20 個 token：答案（10 類之一）是第一個 token，後面接 19 個隨機干擾 token。兩層視窗寬 3 個 token 的 Conv1d，各接 BatchNorm1d 與 ReLU，把序列變成 32 個特徵通道；每個通道在 20 個位置上取平均，得到 32 個數字的摘要，再由 Linear 層判斷類別。在 CPU 上以種子 0 執行，訓練損失在 20 個 epoch 內從 2.20 降到 0.05，在 500 條從沒訓練過的序列上拿到 1.00（亂猜是 0.10）。LSTM remembers the first token 用循環結構解同一個任務。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 920
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Open the layer editor. Shapes for a batch B: tokens [B, 20] -> Embedding with embedding_dim 1, one learned number per token [B, 20, 1] -> Reshape [B, 1, 20], a one-channel signal -> Conv1d, BatchNorm1d, ReLU, twice [B, 32, 20] -> Reshape [B, 32, 20, 1] -> AdaptiveAvgPool2d [B, 32, 1, 1], the mean over time -> Flatten -> Linear 32->10. [B, 20, 1] and [B, 1, 20] hold the same numbers in the same order, so a Reshape stands in for a transpose.\n\n打開圖層編輯器。批次大小 B 時的形狀：token [B, 20] -> embedding_dim 為 1 的 Embedding，每個 token 一個學出來的數字 [B, 20, 1] -> Reshape [B, 1, 20]，單通道訊號 -> Conv1d、BatchNorm1d、ReLU 兩次 [B, 32, 20] -> Reshape [B, 32, 20, 1] -> AdaptiveAvgPool2d [B, 32, 1, 1]，也就是對時間取平均 -> Flatten -> Linear 32->10。[B, 20, 1] 和 [B, 1, 20] 以相同順序存著相同的數字，所以用 Reshape 就能代替轉置。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": 200
+        },
+        "noteWidth": 280
+      }
+    },
+    {
+      "id": "note-last",
+      "type": "note",
+      "position": {
+        "x": -300,
+        "y": 380
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The catch. This test set moves the answer to the last position. The same trained network scores 0.02 there, no better than guessing. Conv1d applies one filter at every position, but in training the answer token only ever appeared at the left edge, beside the zero padding, so the network learned it in that context alone. Set kind to recall_last on the training generator and rerun to see the result flip.\n\n陷阱在這裡。這組測試資料把答案移到最後一個位置。同一個訓練好的網路在這裡只拿到 0.02，跟亂猜差不多。Conv1d 在每個位置套用同一個濾波器，但訓練時答案 token 只出現在最左邊、緊鄰補零的地方，所以網路只學會在那個情境下認出它。把訓練用產生器的 kind 改成 recall_last 再執行一次，就會看到結果反過來。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "seq-last",
+        "boundOffset": {
+          "x": -340,
+          "y": 0
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_seq-train",
+      "source": "start",
+      "target": "seq-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_seq-test",
+      "source": "start",
+      "target": "seq-test",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_seq-last",
+      "source": "start",
+      "target": "seq-last",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_seq-train_dataset_dl-train_dataset",
+      "source": "seq-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train_dataloader",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_model_eval_model",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_seq-test_dataset_eval_dataset",
+      "source": "seq-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval_accuracy_print-acc_value",
+      "source": "eval",
+      "target": "print-acc",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train_model_eval-last_model",
+      "source": "train",
+      "target": "eval-last",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_seq-last_dataset_eval-last_dataset",
+      "source": "seq-last",
+      "target": "eval-last",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval-last_accuracy_print-last_value",
+      "source": "eval-last",
+      "target": "print-last",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train_losses_viz_data",
+      "source": "train",
+      "target": "viz",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

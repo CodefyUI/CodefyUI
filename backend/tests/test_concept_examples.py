@@ -51,6 +51,7 @@ _CONCEPT_EXAMPLES = (
     "Transformer/Causal-Attention-From-Scratch",
     "RL/Reward-Hacking-Shortcut",
     "RL/GRPO-Step-GridWorld",
+    "RNN/Conv1d-Sequence-Classifier",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -498,3 +499,42 @@ def test_the_lstm_example_tests_on_sequences_it_never_trained_on():
     for key in ("kind", "seq_len", "n_classes", "n_distractors"):
         assert train[key] == test[key], key
     assert _feeds(graph, "eval", "dataset") == ("seq-test", "dataset")
+
+
+# ── Conv1d sequence classifier: the numbers its notes quote ───────────────
+
+def _notes_of(key: str) -> str:
+    return "\n".join(n["data"]["noteContent"] for n in _notes(_graph(key)))
+
+
+def test_the_conv1d_classifier_learns_the_first_token_and_not_the_last():
+    """Trained with the answer first, it scores 1.00 there and about chance
+    with the answer last; the note explains the gap with the padded edge."""
+    key = "RNN/Conv1d-Sequence-Classifier"
+    text = _notes_of(key)
+    for quoted in ("from 2.20 to 0.05", "scores 1.00 on 500 sequences", "scores 0.02 there"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    losses = results["train"]["losses"].tolist()
+    first, last = results["eval"]["accuracy"], results["eval-last"]["accuracy"]
+    assert losses[0] == pytest.approx(2.20, abs=0.1), losses
+    assert losses[-1] < 0.2, losses
+    assert first == pytest.approx(1.0, abs=0.03), (first, last)
+    # Seeds 0 to 4 land between 0.02 and 0.11: chance is 0.10.
+    assert last < 0.2, (first, last)
+
+
+def test_the_conv1d_layers_are_the_ones_the_note_walks_through():
+    graph = _graph("RNN/Conv1d-Sequence-Classifier")
+    spec = json.loads(_params(graph, "model")["layers"])
+    types = [n["type"] for n in spec["nodes"]]
+    assert types == ["Input", "Embedding", "Reshape", "Conv1d", "BatchNorm1d", "ReLU",
+                     "Conv1d", "BatchNorm1d", "ReLU", "Reshape", "AdaptiveAvgPool2d",
+                     "Flatten", "Linear", "Output"]
+    train, test, last = (_params(graph, k) for k in ("seq-train", "seq-test", "seq-last"))
+    assert train["kind"] == test["kind"] == "recall_first"
+    assert last["kind"] == "recall_last"
+    assert len({train["seed"], test["seed"], last["seed"]}) == 3
+    for k in ("seq_len", "n_classes", "n_distractors"):
+        assert train[k] == test[k] == last[k], k
