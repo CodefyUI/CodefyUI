@@ -34,8 +34,8 @@ from ._eval_core import (
     STATUS_ERROR,
     STATUS_OK,
     format_records,
-    input_hash,
     is_pinned_revision,
+    item_input_hash,
     json_safe,
     make_table,
     normalize_answer,
@@ -47,10 +47,14 @@ from ._eval_infer import (
     MAX_TOPK,
     ClassificationPredictor,
     GenerationPredictor,
+    VQAPredictor,
+    model_generation_config,
     run_batches,
 )
 
-TASKS = ("auto", "classification", "generation")
+TASKS = ("auto", "classification", "generation", "vqa")
+#: Where generation's sampling settings come from.
+GENERATION_SOURCES = ("node", "model")
 
 
 class EvalBatchInferenceNode(BaseNode):
@@ -59,9 +63,12 @@ class EvalBatchInferenceNode(BaseNode):
     DESCRIPTION = "A model over an eval set, batched, as a prediction table"
     DETAILS = (
         "classification takes the argmax of a sequence-classification model's "
-        "logits and names it from the model's id2label; generation decodes "
-        "max_new_tokens from a causal LM, greedily or by sampling with a local "
-        "generator seeded per item from `seed`. Each row records id, input, "
+        "logits and names it from the model's id2label; vqa does the same for "
+        "an image and a question (the dataset needs `image_field`); generation "
+        "decodes max_new_tokens from a causal LM, greedily or by sampling with "
+        "a local generator seeded per item from `seed`, with the sampling "
+        "settings taken from this node or, with generation_config=model, from "
+        "the model's own generation_config. Each row records id, input, "
         "input_hash, raw_answer, the normalised answer, label, status (ok, "
         "error or cancelled) and error. Stop between batches keeps finished "
         "rows as ok and marks the rest cancelled; an item that raises is "
@@ -157,6 +164,18 @@ class EvalBatchInferenceNode(BaseNode):
                 visible_when={"task": ["auto", "generation"]},
             ),
             ParamDefinition(
+                name="generation_config",
+                param_type=ParamType.SELECT,
+                default="node",
+                options=list(GENERATION_SOURCES),
+                description=(
+                    "node: this node's sampling settings below. model: do_sample, "
+                    "temperature, top_p, top_k and repetition_penalty from the model's "
+                    "generation_config (generation only)."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
                 name="do_sample",
                 param_type=ParamType.BOOL,
                 default=False,
@@ -182,6 +201,18 @@ class EvalBatchInferenceNode(BaseNode):
                 advanced=True,
             ),
             ParamDefinition(
+                name="repetition_penalty",
+                param_type=ParamType.FLOAT,
+                default=1.0,
+                min_value=0.01,
+                max_value=10.0,
+                description=(
+                    "Penalty on tokens already in the prompt or the answer, as in "
+                    "transformers; 1.0 is off (generation, greedy or sampled)."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
                 name="seed",
                 param_type=ParamType.INT,
                 default=0,
@@ -195,7 +226,10 @@ class EvalBatchInferenceNode(BaseNode):
                 default=256,
                 min_value=8,
                 max_value=8192,
-                description="Inputs are truncated to this many tokens (classification).",
+                description=(
+                    "Inputs are truncated to this many tokens (classification, vqa; "
+                    "vqa caps it at the model's max_position_embeddings)."
+                ),
                 advanced=True,
             ),
             ParamDefinition(
@@ -204,7 +238,7 @@ class EvalBatchInferenceNode(BaseNode):
                 default=MAX_TOPK,
                 min_value=1,
                 max_value=MAX_TOPK,
-                description="Ranked labels kept per row for Eval-TopKAccuracy (classification).",
+                description="Ranked labels kept per row for Eval-TopKAccuracy (classification, vqa).",
                 advanced=True,
             ),
         ]
@@ -258,34 +292,33 @@ class EvalBatchInferenceNode(BaseNode):
             pass
 
         generation: dict[str, Any] | None = None
-        if task == "classification":
-            predictor = ClassificationPredictor(
+        if task in ("classification", "vqa"):
+            predictor_class = VQAPredictor if task == "vqa" else ClassificationPredictor
+            predictor = predictor_class(
                 model, processor,
                 max_length=int(params.get("max_length", 256) or 256),
                 top_k=int(params.get("top_k", MAX_TOPK) or MAX_TOPK),
             )
             predict_batch = predictor.predict_batch
             predict_one = predictor.predict_one
-            extras = ["score", "topk"]
+            extras = ["score", "topk"] + (["image", "image_sha256"] if task == "vqa" else [])
             inference = {"task": task, "batch_size": batch_size,
                          "max_length": predictor.max_length, "top_k": predictor.top_k}
         else:
-            temperature = float(params.get("temperature", 1.0) or 1.0)
-            top_p = float(params.get("top_p", 1.0) or 1.0)
-            if not 0.0 < top_p <= 1.0:
-                raise ValueError(f"{node}: `top_p` must be in (0, 1]; got {top_p}.")
+            settings = _generation_settings(node, params, model)
             predictor = GenerationPredictor(
                 model, processor,
                 max_new_tokens=int(params.get("max_new_tokens", 32) or 32),
-                do_sample=bool(params.get("do_sample", False)),
-                temperature=temperature,
-                top_p=top_p,
                 seed=seed,
+                **settings,
             )
             predict_batch = None
             predict_one = predictor.predict_one
             extras = ["new_tokens"]
             generation = predictor.config()
+            # What the model's own generation_config suggests, beside what
+            # ran, so a reader can see where the two differ.
+            generation["model_generation_config"] = model_generation_config(model)
             inference = {"task": task, "batch_size": batch_size}
 
         throttle = ProgressThrottle(progress_callback)
@@ -324,14 +357,18 @@ class EvalBatchInferenceNode(BaseNode):
             )
             extra_values = []
             for name in extras:
-                value = outcome["extras"].get(name)
+                if name in ("image", "image_sha256"):
+                    value = item.get(name)
+                else:
+                    value = outcome["extras"].get(name)
                 if name == "topk" and isinstance(value, list):
                     value = [normalize_answer(v, normalize, label_map) for v in value]
                 extra_values.append(value)
+            image_sha = item.get("image_sha256") if task == "vqa" else None
             rows.append([
                 str(item["id"]),
                 text if isinstance(text, str) else None,
-                input_hash(text) if isinstance(text, str) else None,
+                item_input_hash(text, image_sha) if isinstance(text, str) else None,
                 outcome["raw_answer"],
                 answer,
                 norm_label,
@@ -371,6 +408,8 @@ class EvalBatchInferenceNode(BaseNode):
                 "rows": dataset_meta.get("rows"),
                 "used": dataset_meta.get("used"),
                 "template": dataset_meta.get("template"),
+                **({"images_sha256": dataset_meta["images_sha256"]}
+                   if dataset_meta.get("images_sha256") else {}),
             },
             "counts": counts,
             "interrupted_at_batch": stopped_at,
@@ -399,6 +438,47 @@ class EvalBatchInferenceNode(BaseNode):
         if stopped_at is not None:
             result.update(interrupted_result(batch=stopped_at, completed=counts[STATUS_OK]))
         return result
+
+
+def _generation_settings(node: str, params: dict[str, Any], model: Any) -> dict[str, Any]:
+    """The sampling settings generation runs with, and where they came from.
+
+    ``node`` (the default, and what every graph saved before this option
+    ran) reads this node's params: greedy unless ``do_sample``, no top-k
+    filter. ``model`` reads the model's ``generation_config`` -- the
+    settings ``model.generate`` would use -- and refuses a model without one
+    rather than quietly falling back.
+    """
+    source = str(params.get("generation_config", "node") or "node")
+    if source not in GENERATION_SOURCES:
+        raise ValueError(
+            f"{node}: unknown generation_config {source!r}; expected one of "
+            f"{list(GENERATION_SOURCES)}."
+        )
+    if source == "model":
+        suggested = model_generation_config(model)
+        if suggested is None:
+            raise ValueError(
+                f"{node}: generation_config=model, but the model has no "
+                "generation_config to read. Use generation_config=node."
+            )
+        settings = {k: suggested[k] for k in
+                    ("do_sample", "temperature", "top_p", "top_k", "repetition_penalty")}
+    else:
+        settings = {
+            "do_sample": bool(params.get("do_sample", False)),
+            "temperature": float(params.get("temperature", 1.0) or 1.0),
+            "top_p": float(params.get("top_p", 1.0) or 1.0),
+            "top_k": 0,
+            "repetition_penalty": float(params.get("repetition_penalty", 1.0) or 1.0),
+        }
+    if not 0.0 < settings["top_p"] <= 1.0:
+        raise ValueError(f"{node}: `top_p` must be in (0, 1]; got {settings['top_p']}.")
+    if settings["repetition_penalty"] <= 0.0:
+        raise ValueError(
+            f"{node}: `repetition_penalty` must be positive; got {settings['repetition_penalty']}."
+        )
+    return {**settings, "source": source}
 
 
 def _check_revisions_agree(node: str, model_prov: dict[str, Any], proc_prov: dict[str, Any]) -> None:

@@ -29,6 +29,7 @@ _EXAMPLE = _PACK_DIR / "examples" / "Eval" / "AB-Text-Classification" / "graph.j
 _ZH_NODES = _REPO_ROOT / "frontend" / "src" / "i18n" / "nodeLocales" / "zh-TW.ts"
 
 NODE_NAMES = [
+    "Eval-BLEU",
     "Eval-BatchInference",
     "Eval-CompareRuns",
     "Eval-ExactMatch",
@@ -37,6 +38,7 @@ NODE_NAMES = [
     "Eval-HFProcessorLoader",
     "Eval-JSONLDataset",
     "Eval-PromptTemplate",
+    "Eval-ROUGE-L",
     "Eval-TopKAccuracy",
 ]
 
@@ -98,7 +100,7 @@ def test_an_install_would_bring_transformers():
 
 # ── discovery ────────────────────────────────────────────────────────────────
 
-def test_discovery_registers_exactly_the_nine_nodes():
+def test_discovery_registers_exactly_the_eleven_nodes():
     registry = _discover()
     assert sorted(registry.nodes) == [f"eval:{name}" for name in NODE_NAMES]
 
@@ -154,7 +156,8 @@ def test_every_node_has_a_complete_zh_tw_entry(name):
 def test_nodes_that_hand_out_models_or_log_metrics_are_not_cacheable():
     registry = _discover()
     for name in ("Eval-HFModelLoader", "Eval-BatchInference", "Eval-ExactMatch",
-                 "Eval-F1Score", "Eval-TopKAccuracy", "Eval-JSONLDataset"):
+                 "Eval-F1Score", "Eval-TopKAccuracy", "Eval-BLEU", "Eval-ROUGE-L",
+                 "Eval-JSONLDataset"):
         assert registry.get(f"eval:{name}").cacheable is False, name
 
 
@@ -228,8 +231,12 @@ def test_the_example_compares_the_two_runs_and_charts_the_outcomes():
     assert infer_b["data"]["params"]["label_map"] == "LABEL_0=negative, LABEL_1=positive"
 
 
-def test_every_example_note_is_bilingual_and_sits_where_its_binding_says():
-    graph = _example()
+_VQA_EXAMPLE = _PACK_DIR / "examples" / "Eval" / "VQA-Shapes" / "graph.json"
+
+
+@pytest.mark.parametrize("path", [_EXAMPLE, _VQA_EXAMPLE], ids=["ab", "vqa"])
+def test_every_example_note_is_bilingual_and_sits_where_its_binding_says(path):
+    graph = json.loads(path.read_text(encoding="utf-8"))
     by_id = {n["id"]: n for n in graph["nodes"]}
     notes = [n for n in graph["nodes"] if n.get("type") == "note"]
     assert notes

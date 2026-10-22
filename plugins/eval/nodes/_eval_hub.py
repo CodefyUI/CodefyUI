@@ -78,7 +78,15 @@ LOCAL_IDENTITY_FILES = (
 #: Files whose presence in the cache proves a snapshot of a repo is there.
 _PROBE_FILES = ("config.json", "tokenizer_config.json", "preprocessor_config.json")
 
-TASKS = ("auto", "classification", "generation")
+TASKS = ("auto", "classification", "generation", "vqa")
+
+#: Architectures ``task = auto`` loads as ``vqa``: visual question answering
+#: as classification over a fixed answer vocabulary (``config.id2label``).
+#: BLIP's ``...ForQuestionAnswering`` generates its answer instead, so it is
+#: not listed; this pack's vqa path reads logits. ViLT's published
+#: checkpoints spell the class ``ViltForVisualQuestionAnswering`` in their
+#: config, the name it had before transformers renamed it.
+VQA_ARCHITECTURES = ("ViltForQuestionAnswering", "ViltForVisualQuestionAnswering")
 DTYPES = ("float32", "auto", "float16", "bfloat16")
 
 #: Attribute the loaders stamp on what they hand out.
@@ -120,6 +128,8 @@ def hf_classes() -> dict[str, Any]:
                 "AutoConfig": transformers.AutoConfig,
                 "AutoModelForSequenceClassification": transformers.AutoModelForSequenceClassification,
                 "AutoModelForCausalLM": transformers.AutoModelForCausalLM,
+                "AutoModelForVisualQuestionAnswering": (
+                    transformers.AutoModelForVisualQuestionAnswering),
                 "AutoTokenizer": transformers.AutoTokenizer,
                 "AutoProcessor": transformers.AutoProcessor,
             }
@@ -333,16 +343,18 @@ def snapshot_dir(resolved: dict[str, Any]) -> str:
 
 
 def infer_task(directory: str) -> str:
-    """``classification`` or ``generation``, read off the config's architectures."""
+    """``classification``, ``generation`` or ``vqa``, read off the config's architectures."""
     config = hf_classes()["AutoConfig"].from_pretrained(directory)
     architectures = [str(a) for a in (config.architectures or [])]
+    if any(a in VQA_ARCHITECTURES for a in architectures):
+        return "vqa"
     if any(a.endswith("ForSequenceClassification") for a in architectures):
         return "classification"
     if any(a.endswith(("ForCausalLM", "LMHeadModel")) for a in architectures):
         return "generation"
     raise ValueError(
         f"cannot tell the task from the architectures {architectures}; "
-        "set `task` to classification or generation."
+        "set `task` to classification, generation or vqa."
     )
 
 
@@ -364,11 +376,11 @@ def load_model(
         return cached
 
     loaded_task = infer_task(directory) if task == "auto" else task
-    auto = (
-        classes["AutoModelForSequenceClassification"]
-        if loaded_task == "classification"
-        else classes["AutoModelForCausalLM"]
-    )
+    auto = {
+        "classification": classes["AutoModelForSequenceClassification"],
+        "generation": classes["AutoModelForCausalLM"],
+        "vqa": classes["AutoModelForVisualQuestionAnswering"],
+    }[loaded_task]
     model = auto.from_pretrained(directory)
     # Cast after the load, never through a from_pretrained keyword: the
     # keyword was renamed between transformers releases, `.to` was not.

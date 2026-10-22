@@ -36,6 +36,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 - **RAG with a chat API** 使用同一條檢索鏈，但最後一個節點是 `LLMChat`，所以它只需要 `multilingual-e5-small`，以及可接收 prompt 的服務。預設使用本機的 [Ollama](https://ollama.com)（先執行 `ollama pull qwen2.5:0.5b`），資料仍不會離開本機；把 `provider` 換成 hosted model 後，檢索到的內容會送給第三方，而且需要在環境變數中設定 key。
 - **擴充套件包**區塊裡有四個範例會在第一次執行時下載東西，每一個都會在自己畫布上的註記裡寫明：`deep` 套件包裡處理真實文字的範例 **Self-Attention 101**、**Multi-Head Causal Attention**、**C4-2 Self-attention on real text** 與 **C4-4 LLM inference pipeline** 會把 `cl100k_base` 的 BPE 表下載到快取目錄，之後每次執行都直接讀本機的快取。`foundations` 與 `deep` 套件包各有一個 MNIST 訓練範例，它們讀的是 CodefyUI 隨附的 MNIST，和內建範例一樣，只有在專案目錄中才會下載。這四個套件包的其他範例從第一次點下去就能離線執行。
 - `eval` 套件包的範例 **A/B text classifier eval** 第一次執行時，會從 Hugging Face Hub 下載兩個情感分類模型（各約 18 MB）到 CodefyUI 自己的快取，並用 `transformers` 載入；安裝 `eval` 套件包時會一併裝上它。結果圖表與表格是 `stats` 套件包的節點。兩個載入節點都鎖定了 commit，所以之後的執行都讀快取，設定 `HF_HUB_OFFLINE=1` 時也一樣。
+- `eval` 套件包的第二個範例 **VQA eval skeleton** 第一次執行時，會下載 ViLT 視覺問答模型 `dandelin/vilt-b32-finetuned-vqa`（約 470 MB）到同一個快取，回答關於套件包內附 7 張圖片的 12 個問題。它的載入節點同樣鎖定了 commit。[建立自己的評估流程](./eval-pipelines.md)說明了這兩個 eval 範例。
 
 兩個 RL 架構 graph（**DQN on Atari pixels**、**PPO Robotics Controller**）會將合成的觀測張量（`TensorCreate`、`randn`）傳入網路，而不是連接真正的 gym 環境，所以不需要安裝 `ale-py`/`mujoco` — 若要用真實環境驅動它們，換成 `EnvWrapper` 節點即可。
 

@@ -1,0 +1,236 @@
+{
+  "name": "VQA eval skeleton",
+  "description": "Image and question in, answer scored",
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "Start",
+      "position": {
+        "x": -320,
+        "y": 300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "data",
+      "type": "eval:Eval-JSONLDataset",
+      "position": {
+        "x": 0,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "path": "eval:samples/shapes-vqa-12.jsonl",
+          "input_field": "question",
+          "label_field": "answer",
+          "id_field": "id",
+          "image_field": "image",
+          "limit": 0
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "eval:Eval-HFModelLoader",
+      "position": {
+        "x": 0,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "model_id": "dandelin/vilt-b32-finetuned-vqa",
+          "revision": "d0a1f6ab88522427a7ae76ceb6e1e1e7b68a1d08",
+          "task": "auto",
+          "dtype": "float32",
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "proc",
+      "type": "eval:Eval-HFProcessorLoader",
+      "position": {
+        "x": 380,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "model_id": "",
+          "revision": "",
+          "kind": "auto"
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "type": "eval:Eval-BatchInference",
+      "position": {
+        "x": 760,
+        "y": 120
+      },
+      "data": {
+        "params": {
+          "task": "auto",
+          "batch_size": 4,
+          "normalize": "strip_lower",
+          "label_map": "",
+          "max_new_tokens": 32,
+          "generation_config": "node",
+          "do_sample": false,
+          "temperature": 1.0,
+          "top_p": 1.0,
+          "repetition_penalty": 1.0,
+          "seed": 0,
+          "max_length": 40,
+          "top_k": 3
+        }
+      }
+    },
+    {
+      "id": "em",
+      "type": "eval:Eval-ExactMatch",
+      "position": {
+        "x": 1180,
+        "y": -40
+      },
+      "data": {
+        "params": {
+          "metric_name": "vqa_exact_match",
+          "step": 0
+        }
+      }
+    },
+    {
+      "id": "top3",
+      "type": "eval:Eval-TopKAccuracy",
+      "position": {
+        "x": 1180,
+        "y": 360
+      },
+      "data": {
+        "params": {
+          "k": 3,
+          "metric_name": "vqa_top3_accuracy",
+          "step": 0
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -760,
+        "y": 300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Twelve questions about seven drawn pictures, answered by a visual question answering model and scored with exact match and top-3 accuracy. This is the image-and-question skeleton a video-LM evaluation grows from. Eval-JSONLDataset reads each item's image through image_field and hashes it, so every prediction row records the question, the image, its sha256 and an input hash covering both: two runs can prove they asked the same question about the same picture. Point the dataset at your own JSONL and images and the loader at your own model; the rest of the graph stays.\n\n用一個視覺問答模型回答關於七張手繪圖片的十二個問題，再以 exact match 與 top-3 accuracy 評分。這是影片語言模型評估的骨架：影像加問題。Eval-JSONLDataset 透過 image_field 讀取每筆項目的影像並計算雜湊，因此每一列預測都記錄問題、影像、影像的 sha256，以及涵蓋兩者的輸入雜湊：兩次執行可以證明它們針對同一張圖問了同一個問題。把資料集換成自己的 JSONL 與影像、把載入節點換成自己的模型，圖的其餘部分不必更動。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start-1",
+        "boundOffset": {
+          "x": -440,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-model",
+      "type": "note",
+      "position": {
+        "x": 0,
+        "y": -600
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "ViLT (dandelin/vilt-b32-finetuned-vqa), pinned to a commit, picks each answer from the 3,129 answers it learned on VQAv2. The first run downloads about 470 MB and needs the transformers package, which installing the eval pack brings. The processor loader uses kind auto, so the model gets its image processor along with its tokenizer. With HF_HUB_OFFLINE=1 the cached snapshot is used and nothing is downloaded.\n\nViLT（dandelin/vilt-b32-finetuned-vqa）鎖定在一個 commit，從它在 VQAv2 上學到的 3,129 個答案中選出每個答案。第一次執行會下載約 470 MB，並需要安裝 eval 外掛時一併裝上的 transformers 套件。processor 載入節點設為 kind auto，模型才會拿到影像 processor 與 tokenizer。設定 HF_HUB_OFFLINE=1 時只使用快取，不會下載任何東西。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "model",
+        "boundOffset": {
+          "x": 0,
+          "y": -480
+        },
+        "noteWidth": 340
+      }
+    },
+    {
+      "id": "note-results",
+      "type": "note",
+      "position": {
+        "x": 1560,
+        "y": -40
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "ViLT gets 6 of 12 right (exact match 0.5000), and the right answer is among its top three for 10 of 12 (top-3 accuracy 0.8333). Its misses are three colours (red read as orange twice, blue as yellow), two counts and one yes/no question: flat drawings on white look little like the photographs it learned from. The Log of Eval-BatchInference lists every answer beside its label.\n\nViLT 答對 12 題中的 6 題（exact match 0.5000），12 題中有 10 題的正確答案落在它的前三名內（top-3 accuracy 0.8333）。答錯的是三題顏色（兩次把紅色看成橘色，一次把藍色看成黃色）、兩題數量與一題是非題：白底上的平面圖形和它學習用的照片差異很大。Eval-BatchInference 的記錄會逐筆列出答案與標籤。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "em",
+        "boundOffset": {
+          "x": 380,
+          "y": 0
+        },
+        "noteWidth": 340
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "trig-data",
+      "source": "start-1",
+      "target": "data",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "trig-model",
+      "source": "start-1",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "model.model->proc.model",
+      "source": "model",
+      "target": "proc",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "model.model->infer.model",
+      "source": "model",
+      "target": "infer",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "proc.processor->infer.processor",
+      "source": "proc",
+      "target": "infer",
+      "sourceHandle": "processor",
+      "targetHandle": "processor"
+    },
+    {
+      "id": "data.dataset->infer.dataset",
+      "source": "data",
+      "target": "infer",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "infer.predictions->em.predictions",
+      "source": "infer",
+      "target": "em",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    },
+    {
+      "id": "infer.predictions->top3.predictions",
+      "source": "infer",
+      "target": "top3",
+      "sourceHandle": "predictions",
+      "targetHandle": "predictions"
+    }
+  ]
+}

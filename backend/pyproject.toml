@@ -151,6 +151,12 @@ dev = [
     # backend's tests, no network. Brings boto3, which the `s3` extra below
     # names for real installs.
     "moto[s3]>=5.0",
+    # TEST-ONLY (#139): the reference implementations the eval pack's BLEU
+    # and ROUGE-L nodes are checked against. The pack computes both itself,
+    # so installing it costs no nltk/lxml; these are what the parity tests
+    # compare its numbers with.
+    "sacrebleu>=2.4,<3",
+    "rouge-score>=0.1.2",
 ]
 # The S3 / MinIO artifact backend (#791, CODEFYUI_S3_*): the control plane
 # and every worker that should use it. Optional: without it the backend is

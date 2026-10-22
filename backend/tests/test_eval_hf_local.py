@@ -257,7 +257,180 @@ def test_sampled_generation_is_reproducible_and_leaves_the_global_rng_alone(tiny
     assert answers == [r["raw_answer"] for r in table_records(second["infer_a"]["predictions"])]
 
 
+def test_greedy_with_a_repetition_penalty_matches_transformers_generate(tiny_lm, tmp_path):
+    rows = _items(4)
+    results = _run(*_graph(tiny_lm, _jsonl(tmp_path, rows), extra={"repetition_penalty": 1.7}))
+    records = table_records(results["infer_a"]["predictions"])
+    model = transformers.AutoModelForCausalLM.from_pretrained(str(tiny_lm))
+    tokenizer = transformers.AutoTokenizer.from_pretrained(str(tiny_lm))
+    for row, record in zip(rows, records):
+        encoded = tokenizer(row["text"], return_tensors="pt")
+        with torch.no_grad():
+            out = model.generate(**encoded, max_new_tokens=4, do_sample=False,
+                                 repetition_penalty=1.7, pad_token_id=0, eos_token_id=2)
+        new = out[0, encoded["input_ids"].shape[1]:].tolist()
+        if 2 in new:
+            new = new[:new.index(2)]
+        assert record["raw_answer"] == tokenizer.decode(new, skip_special_tokens=True)
+    assert results["infer_a"]["predictions"]["meta"]["generation"]["repetition_penalty"] == 1.7
+
+
+@pytest.fixture(scope="module")
+def tiny_lm_with_config(tiny_lm, tmp_path_factory) -> Path:
+    """The tiny LM with a generation_config.json asking for a penalty."""
+    directory = tmp_path_factory.mktemp("tiny-gpt2-config")
+    for item in tiny_lm.iterdir():
+        (directory / item.name).write_bytes(item.read_bytes())
+    transformers.GenerationConfig(do_sample=False, repetition_penalty=1.4, bos_token_id=2,
+                                  eos_token_id=2, pad_token_id=0).save_pretrained(str(directory))
+    return directory
+
+
+def test_generation_config_model_decodes_as_generate_does_with_no_arguments(
+        tiny_lm_with_config, tmp_path):
+    rows = _items(4)
+    results = _run(*_graph(tiny_lm_with_config, _jsonl(tmp_path, rows),
+                           extra={"generation_config": "model"}))
+    records = table_records(results["infer_a"]["predictions"])
+    model = transformers.AutoModelForCausalLM.from_pretrained(str(tiny_lm_with_config))
+    tokenizer = transformers.AutoTokenizer.from_pretrained(str(tiny_lm_with_config))
+    for row, record in zip(rows, records):
+        encoded = tokenizer(row["text"], return_tensors="pt")
+        with torch.no_grad():
+            out = model.generate(**encoded, max_new_tokens=4)
+        new = out[0, encoded["input_ids"].shape[1]:].tolist()
+        if 2 in new:
+            new = new[:new.index(2)]
+        assert record["raw_answer"] == tokenizer.decode(new, skip_special_tokens=True)
+    generation = results["infer_a"]["predictions"]["meta"]["generation"]
+    assert generation["source"] == "model"
+    assert generation["repetition_penalty"] == 1.4
+    assert generation["model_generation_config"]["repetition_penalty"] == 1.4
+
+
+# ── vqa ──────────────────────────────────────────────────────────────────────
+
+VQA_WORDS = ["what", "color", "is", "the", "ball", "how", "many", "?"]
+VQA_ANSWERS = {0: "red", 1: "green", 2: "blue"}
+
+
+@pytest.fixture(scope="module")
+def tiny_vilt(tmp_path_factory) -> Path:
+    """A two-layer random ViltForQuestionAnswering and its processor, saved."""
+    directory = tmp_path_factory.mktemp("tiny-vilt")
+    vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + VQA_WORDS
+    (directory / "vocab.txt").write_text("\n".join(vocab) + "\n", encoding="utf-8")
+    tokenizer = transformers.BertTokenizerFast(vocab_file=str(directory / "vocab.txt"))
+    images = transformers.ViltImageProcessor(size={"shortest_edge": 32}, size_divisor=8)
+    transformers.ViltProcessor(image_processor=images, tokenizer=tokenizer).save_pretrained(
+        str(directory))
+    config = transformers.ViltConfig(
+        vocab_size=len(vocab), hidden_size=16, num_hidden_layers=2, num_attention_heads=2,
+        intermediate_size=32, image_size=32, patch_size=8, max_position_embeddings=16,
+        num_labels=3, id2label=VQA_ANSWERS, label2id={v: k for k, v in VQA_ANSWERS.items()})
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        transformers.ViltForQuestionAnswering(config).save_pretrained(str(directory))
+    return directory
+
+
+def _vqa_set(tmp_path: Path) -> tuple[Path, list[dict]]:
+    from PIL import Image
+
+    (tmp_path / "img").mkdir()
+    colours = [(220, 30, 30), (30, 160, 60), (20, 60, 230), (240, 200, 20), (90, 90, 90)]
+    rows = []
+    for i, colour in enumerate(colours):
+        Image.new("RGB", (40 + 8 * i, 32), colour).save(tmp_path / "img" / f"{i}.png")
+        for j, question in enumerate(["what color is the ball ?", "how many ?"]):
+            rows.append({"id": f"v{i}{j}", "q": question, "a": VQA_ANSWERS[i % 3],
+                         "img": f"img/{i}.png"})
+    path = tmp_path / "vqa.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return path, rows
+
+
+def _vqa_graph(model_dir: Path, data: Path, *, batch_size: int) -> tuple[list, list]:
+    nodes = [
+        {"id": "start", "type": "Start", "data": {"params": {}}},
+        {"id": "data", "type": "eval:Eval-JSONLDataset", "data": {"params": {
+            "path": str(data), "input_field": "q", "label_field": "a", "image_field": "img"}}},
+        {"id": "model", "type": "eval:Eval-HFModelLoader",
+         "data": {"params": {"model_id": str(model_dir), "device": "cpu"}}},
+        {"id": "proc", "type": "eval:Eval-HFProcessorLoader", "data": {"params": {"kind": "auto"}}},
+        {"id": "infer", "type": "eval:Eval-BatchInference",
+         "data": {"params": {"batch_size": batch_size, "max_length": 16}}},
+        {"id": "em", "type": "eval:Eval-ExactMatch", "data": {"params": {}}},
+    ]
+    edges = [
+        {"id": "t-d", "source": "start", "target": "data", "sourceHandle": "trigger",
+         "type": "trigger"},
+        {"id": "t-m", "source": "start", "target": "model", "sourceHandle": "trigger",
+         "type": "trigger"},
+        {"id": "m-p", "source": "model", "sourceHandle": "model", "target": "proc",
+         "targetHandle": "model"},
+        {"id": "m-i", "source": "model", "sourceHandle": "model", "target": "infer",
+         "targetHandle": "model"},
+        {"id": "p-i", "source": "proc", "sourceHandle": "processor", "target": "infer",
+         "targetHandle": "processor"},
+        {"id": "d-i", "source": "data", "sourceHandle": "dataset", "target": "infer",
+         "targetHandle": "dataset"},
+        {"id": "i-e", "source": "infer", "sourceHandle": "predictions", "target": "em",
+         "targetHandle": "predictions"},
+    ]
+    return nodes, edges
+
+
+def test_vqa_answers_exactly_as_the_model_does_directly(tiny_vilt, tmp_path):
+    from PIL import Image
+
+    data, rows = _vqa_set(tmp_path)
+    results = _run(*_vqa_graph(tiny_vilt, data, batch_size=3))
+    assert results["model"]["provenance"]["task"] == "vqa"
+    records = table_records(results["infer"]["predictions"])
+    assert {r["status"] for r in records} == {STATUS_OK}
+
+    model = transformers.AutoModelForVisualQuestionAnswering.from_pretrained(str(tiny_vilt))
+    processor = transformers.AutoProcessor.from_pretrained(str(tiny_vilt))
+    expected = []
+    for row in rows:
+        with Image.open(tmp_path / row["img"]) as image:
+            encoded = processor(images=image.convert("RGB"), text=row["q"], return_tensors="pt")
+        with torch.no_grad():
+            expected.append(model.config.id2label[int(model(**encoded).logits.argmax(-1))])
+    assert [r["raw_answer"] for r in records] == expected
+    assert [r["image"] for r in records] == [r["img"] for r in rows]
+    correct = sum(e == r["a"] for e, r in zip(expected, rows))
+    assert results["em"]["value"] == pytest.approx(correct / len(rows))
+
+
+def test_vqa_batch_size_does_not_change_an_answer(tiny_vilt, tmp_path):
+    data, _ = _vqa_set(tmp_path)
+    one = table_records(_run(*_vqa_graph(tiny_vilt, data, batch_size=1))["infer"]["predictions"])
+    four = table_records(_run(*_vqa_graph(tiny_vilt, data, batch_size=4))["infer"]["predictions"])
+    assert [r["answer"] for r in one] == [r["answer"] for r in four]
+    for a, b in zip(one, four):
+        assert a["score"] == pytest.approx(b["score"], abs=1e-5)
+
+
 # ── against the Hub (opt-in) ─────────────────────────────────────────────────
+
+_VQA_EXAMPLE = _EXAMPLE.parent.parent / "VQA-Shapes" / "graph.json"
+
+
+@network
+def test_hub_vqa_example_reproduces_the_numbers_its_notes_quote():
+    payload = json.loads(_VQA_EXAMPLE.read_text(encoding="utf-8"))
+    results = _run(payload["nodes"], payload["edges"])
+    assert f"{results['em']['value']:.4f}" == "0.5000"
+    assert f"{results['top3']['value']:.4f}" == "0.8333"
+    answers = {r["id"]: r["answer"] for r in table_records(results["infer"]["predictions"])}
+    assert answers == {
+        "q01": "red", "q02": "1", "q03": "2", "q04": "orange", "q05": "triangle", "q06": "yes",
+        "q07": "yellow", "q08": "4", "q09": "orange", "q10": "yes", "q11": "orange", "q12": "2"}
+    notes = " ".join(n["data"]["noteContent"] for n in payload["nodes"] if n.get("type") == "note")
+    for quoted in ("0.5000", "0.8333", "6 of 12", "10 of 12", "3,129", "470 MB"):
+        assert quoted in notes
 
 @network
 def test_hub_example_graph_reproduces_the_numbers_its_notes_quote():
