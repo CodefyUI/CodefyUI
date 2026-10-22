@@ -27,7 +27,7 @@ Installing or removing a pack changes the availability of related options withou
 | `sentence-embeddings` | The `sentence-transformers` package, plus four small encoders: `all-MiniLM-L6-v2`, `paraphrase-multilingual-MiniLM-L12-v2`, `bge-small-zh-v1.5`, `multilingual-e5-small` | 90 MB, 470 MB, 95 MB, 470 MB per model (they are alternatives, not a set), plus the pip packages | Apache-2.0 for both MiniLM models, MIT for `bge` and `e5` | `TextEmbedding` (the whole node) and `WordVector`'s four sentence backends |
 | `word-vectors` | `glove-wiki-gigaword-50.gz`, a 400,000-word GloVe table with 50 dimensions; no Python packages | 69 MB, plus about 83 MB for the converted table stored beside it | PDDL-1.0 | The `glove-50d` backend for `WordVector` |
 | `rag` | `Qwen2.5-0.5B-Instruct`, a local generator that can run on CPU | about 1 GB | Apache-2.0 | `HFTextGenerate`, which also needs `sentence-embeddings` installed: `rag` ships no Python packages and uses the `transformers` package from that pack |
-| `gpu-torch` | The CUDA or ROCm PyTorch build selected for this machine | varies by variant | PyTorch's BSD-3-Clause licence | Adds no nodes. Install with `cdui install --gpu <variant>`, not `cdui packs`; see [GPU & Device Setup](../getting-started/gpu-device.md) |
+| `gpu-torch` | The CUDA, ROCm or Intel XPU PyTorch build selected for this machine | varies by variant | PyTorch's BSD-3-Clause licence | Adds no nodes. Install with `cdui install --gpu <variant>`, not `cdui packs`; see [GPU & Device Setup](../getting-started/gpu-device.md) |
 
 The Download column lists network transfer sizes. Installing `word-vectors` downloads 69 MB and writes an additional converted table of about 83 MB. Its disk precheck requires about 230 MB of free space, and removal deletes both files.
 
@@ -72,7 +72,7 @@ Run it with the server stopped.
 
 Some installations must replace packages already imported by the server. **GPU PyTorch** always requires this mode. A pack also requires it when the live-install constraints detect a resolver conflict and stop before replacing any package. A server managed by `cdui start` handles these installations by recording the request, starting a detached helper, and shutting down. The helper waits for the server to exit, runs the installation, records the result, and starts the server with the original `cdui start` arguments. The helper does not use the constraints file applied to live installations, so it can replace torch when a pack requires a different build.
 
-**Package Center behavior.** The **GPU PyTorch** card displays the detected GPU and installed build, and adds the recommended build when it differs. The card shows **Install and restart** when three things hold: restart mode is available, this platform has a build to install, and the installed build differs from the recommended one. A build selector precedes the button when more than one build is offered. The caption under the button reads "A running graph blocks the restart.", and the same install as a terminal command is folded under **Manual command**. When restart mode is unavailable, including under `cdui dev`, or the platform has no build to install, the card omits the button, states why, and displays the command. A machine already on the recommended build sees the build facts and the command only. On Apple Silicon, MPS acceleration ships in the default PyTorch build, so the card shows only the build facts and "GPU acceleration is built into the default PyTorch build." The builds offered are `cpu`, `cu118`, `cu121`, `cu124`, `cu126` and `cu128` on Windows, the same plus `rocm6.1` and `rocm6.2` on Linux, and none on macOS.
+**Package Center behavior.** The **GPU PyTorch** card displays the detected GPU and installed build, and adds the recommended build when it differs. The card shows **Install and restart** when three things hold: restart mode is available, this platform has a build to install, and the installed build differs from the recommended one. A build selector precedes the button when more than one build is offered. The caption under the button reads "A running graph blocks the restart.", and the same install as a terminal command is folded under **Manual command**. When restart mode is unavailable, including under `cdui dev`, or the platform has no build to install, the card omits the button, states why, and displays the command. A machine already on the recommended build sees the build facts and the command only. On Apple Silicon, MPS acceleration ships in the default PyTorch build, so the card shows only the build facts and "GPU acceleration is built into the default PyTorch build." The builds offered are `cpu`, `cu118`, `cu121`, `cu124`, `cu126`, `cu128`, `cu129`, `cu130` and `xpu` on Windows, the same plus `rocm6.1`, `rocm6.2`, `rocm6.3`, `rocm6.4` and `rocm7.0` on Linux, and none on macOS. Each option in the selector names its hardware, for example `cu130 (CUDA 13.0)` or `xpu (Intel GPU)`.
 
 After confirmation, for example "Install cu128 and restart the server?", a **Server restarting** overlay blocks the page and displays elapsed seconds. The page reloads when a different server process responds. It then displays either "Server restarted. GPU PyTorch is ready." or "The server restarted, but installing GPU PyTorch failed:" followed by the reason or the installer's final output. A live installation stopped by a resolver conflict offers **Install and restart** in its activity banner when the server can restart itself; the confirmation reads "The server restarts to install the Python packages; download the models afterwards with a normal install." Otherwise the banner shows the `uv pip install` command to run with the server stopped.
 
@@ -105,6 +105,32 @@ Each user-data root supports one restart claim for one managed server. Running t
 Run `cdui status` to inspect restart state. Its `Restart install` line identifies the pack and reports *finishing* while the helper or its install runs, or *abandoned* after they stop without clearing the claim. For one hour after completion, `Last restart` displays the recorded outcome. If installation succeeds but relaunch fails, the record retains the installation status, adds `relaunch: failed`, and includes the log path; `cdui status` reports the overall restart as failed. Complete installer output is stored in `packs/logs/restart-<job>.log`.
 
 When a claim is *abandoned*, run `cdui start` to delete the claim and start the server. When it is *finishing*, `cdui start` refuses to start another process and directs you to `cdui status`.
+
+### Offline install {/* #offline-install */}
+
+Lab machines without internet access install packs from a bundle made on a connected machine. On the connected machine, install the pack as usual, then export it to a directory, for example a USB drive:
+
+```bash
+cdui packs install sentence-embeddings --yes
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+cdui packs export sentence-embeddings /media/usb/st-mini --items all-MiniLM-L6-v2
+```
+
+The bundle holds the installed items (the Hugging Face snapshot files and single-file assets), the wheels of the Python packages the pack adds on top of a standard CodefyUI install, and a `manifest.json` that names the pack, its items and revisions, the size and sha256 of every file, the CodefyUI version and the platform. Without `--items`, every item installed on the connected machine is exported. `--no-wheels` leaves the wheels out for a bundle of models only. The destination must be empty or new; a failed or cancelled export removes what it wrote.
+
+On each offline machine, copy the bundle over and install from it:
+
+```bash
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`--from` downloads nothing, so it does not ask for confirmation. `--items` selects items from the bundle. The install checks the manifest against this machine's catalog before it copies anything: a bundle for another pack, or one naming an item, repository, revision or file the catalog does not list, is refused with exit code `2`, so a bundle can only supply the files the catalog already names. Each file is checked against its sha256 while it is copied into the cache, at the same location a download would use, and a mismatch fails the install without leaving a partial item. The Python packages install with `uv pip install --no-index --find-links <bundle>/wheels` under the same constraints file as an online install.
+
+The wheels are platform-specific. They match the operating system, CPU architecture and Python version of the machine that ran the export, and an install on a different platform is refused with the platform each side has. Make one bundle per platform in the lab. The bundle does not contain PyTorch or anything else a standard CodefyUI install already provides; the offline machine needs a working CodefyUI installation first. Packages built for one machine's hardware, such as a `+cu128` build, are never bundled and are listed in the export output. The disk check, the one-install-at-a-time rule and the loopback rule apply as for an online install. The GPU PyTorch pack cannot be bundled; install its wheel with `cdui install --gpu` on each machine.
+
+Install bundles that you made or trust. The catalog decides what may be installed, but the bytes of a Hugging Face snapshot and of the wheels come from the bundle.
+
+The API accepts the same install as `POST /api/packs/{id}/install` with `{"from_dir": "<absolute path on the server>"}`. The Package Center has no control for it yet.
 
 ## What changes on the canvas
 

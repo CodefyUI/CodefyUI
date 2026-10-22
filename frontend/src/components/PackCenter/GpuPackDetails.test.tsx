@@ -126,6 +126,32 @@ describe('GpuPackDetails — what this machine has', () => {
       'cu126',
       'cpu',
     ]);
+    // Each option says what hardware the build is for; the value stays the
+    // bare variant the server accepts.
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      'cu128 (CUDA 12.8)',
+      'cu126 (CUDA 12.6)',
+      'cpu (CPU only)',
+    ]);
+  });
+
+  it('labels the newer CUDA, ROCm and Intel builds the server offers', () => {
+    renderCard({
+      restartAvailable: true,
+      gpu: gpu({
+        variants: ['cu130', 'cu129', 'rocm7.0', 'xpu', 'mystery'],
+        recommended_variant: 'cu130',
+      }),
+    });
+    const select = screen.getByLabelText('PyTorch build') as HTMLSelectElement;
+    expect(select.value).toBe('cu130');
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      'cu130 (CUDA 13.0)',
+      'cu129 (CUDA 12.9)',
+      'rocm7.0 (AMD ROCm 7.0)',
+      'xpu (Intel GPU)',
+      'mystery',
+    ]);
   });
 
   it('hides the select when the machine offers one build', () => {

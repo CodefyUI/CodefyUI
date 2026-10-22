@@ -79,6 +79,10 @@ Mixed precision is not used on MPS. bf16 and fp16 autocast run on torch 2.11 but
 
 On AMD + Linux with a ROCm build of PyTorch, `torch.cuda.is_available()` returns `True` because ROCm exposes a CUDA-compatible interface. Settings and the graph's device select label the device **AMD ROCm**; the value stored in the graph and used by the run is `cuda` (`cuda:N` per card), and a node's **device** parameter lists it as `cuda`. That is expected.
 
+## Intel GPUs (XPU) {/* #intel-gpus-xpu */}
+
+`cdui install --gpu xpu` installs PyTorch's Intel GPU build, and `torch.xpu` works in that venv. The run's device controls do not offer `xpu` yet: the device options are `cpu`, `auto`, `cuda` (or `cuda:N`) and `mps`, `auto` resolves to CUDA, then MPS, then CPU, a run whose device is `xpu` is refused as an invalid device, and a node parameter set to `xpu` falls back to the CPU with a warning in the log. Runs on a machine with the `xpu` build therefore execute on the CPU.
+
 ## Experimental: native MLX (spike)
 
 There is a **proof-of-concept** that ports a small MLP's *forward inference* from PyTorch to Apple's [MLX](https://github.com/ml-explore/mlx) framework, producing numerically identical results (max abs difference ~1.9e-7). Key points:

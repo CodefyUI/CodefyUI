@@ -59,12 +59,24 @@ Optional packs are the large extras a stock install deliberately leaves out — 
 |---------|-------------|
 | `cdui packs list` | List every pack in the catalog: what is in it, what it costs to download, and what is already installed. |
 | `cdui packs status` | Like `list`, plus the PyTorch build in this venv and the command to run next. |
-| `cdui packs install <id>` | Install one pack. `--items a,b` downloads only those models (default: everything the pack is missing); `--yes` / `-y` skips the download-size confirmation, and is required when there is no terminal to confirm at. Only ids from the catalog are accepted — there is no way to pass a package spec, an index URL or a repo id. |
+| `cdui packs install <id>` | Install one pack. `--items a,b` downloads only those models (default: everything the pack is missing); `--yes` / `-y` skips the download-size confirmation, and is required when there is no terminal to confirm at. `--from <dir>` installs from an offline bundle instead of downloading (see [Offline install](#offline-install)). Only ids from the catalog are accepted — there is no way to pass a package spec, an index URL or a repo id. |
+| `cdui packs export <id> <dir>` | Copy an installed pack into `<dir>` as an offline bundle: its items, a `manifest.json`, and the wheels of its Python packages for this platform. `--items a,b` exports only those items (default: every item installed here); `--no-wheels` leaves the wheels out. `<dir>` must be empty or new. |
 | `cdui packs remove <id> <item-id>` | Delete one downloaded model and forget it. A pack's Python packages are left alone; the `uv pip uninstall` line that would remove them is printed for you to run with the server stopped. |
 
 Script exit codes are: `0` when complete; `1` when installation fails or the user declines the prompt; `2` when validation fails before installation, including an unknown pack or `--items` id, an unmet dependency, a restart-only pack, or no terminal for confirmation; `3` when the server must be stopped before the operation; and `130` when cancelled with `Ctrl+C`. For the restart-only `gpu-torch` pack, the command prints the required `cdui install --gpu` command. For exit code `3`, it also prints the command to run instead.
 
 **Installs that restart the server.** A server started with `cdui start` can install the GPU PyTorch pack — or any pack whose live install hits a resolver conflict — by going away and coming back: it writes down what to install, starts `cdui packs-run-pending` detached, and shuts down; that helper waits for the process to go, installs, records the outcome, and starts the server again with the arguments this `cdui start` was given, minus `--foreground`: the server always comes back in the background. `packs-run-pending` is **internal** and deliberately absent from the help text — the file it is handed names a process to wait for, so running it by hand against a live server would wait two minutes and then stop it. `CODEFYUI_ENABLE_RESTART_INSTALL=0` turns the whole path off on a machine where the restart does not come back cleanly. While one is still *finishing* — the helper it recorded, or the `uv` install that helper started, is alive, or its claim file is under sixty seconds old and no helper has stamped its pid in yet — `cdui start` will not start a second server into the venv that helper is rewriting: it says a restart install is finishing, points at `cdui status`, and returns. Once both are gone, or the helper never arrived and those sixty seconds have passed, the claim is *abandoned*: `cdui start` deletes it and starts normally. See **[Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server)**.
+
+### Offline install {/* #offline-install */}
+
+```bash
+# On a machine with internet access, where the pack is installed:
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+# On the offline machine:
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`install --from` checks the bundle's `manifest.json` against the catalog before it copies anything and exits `2` for a bundle the catalog does not vouch for: another pack, an unknown item, repository, revision or file, or wheels built for another platform. Wheels match the operating system, CPU architecture and Python version of the exporting machine, so make one bundle per platform. Exit codes are otherwise those of `cdui packs install`. See [Offline install](/usage/optional-packs#offline-install) for what a bundle contains.
 
 ## Cache commands
 

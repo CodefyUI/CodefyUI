@@ -46,6 +46,10 @@ def _fake_venv(tmp_path, monkeypatch, *, torch_version=None, pytest_installed=Fa
     ("2.4.0+cu118", "cu118"),
     ("2.6.0+cpu", "cpu"),
     ("2.5.1+rocm6.2", "rocm6.2"),
+    ("2.9.1+cu130", "cu130"),
+    ("2.9.1+rocm7.0", "rocm7.0"),
+    ("2.9.1+rocm6.3", "rocm6.3"),
+    ("2.9.1+xpu", "xpu"),
 ])
 def test_installed_torch_variant_reads_local_build_tag(
         tmp_path, monkeypatch, version, expected):

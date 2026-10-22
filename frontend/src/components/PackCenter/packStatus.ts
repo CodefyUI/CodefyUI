@@ -200,3 +200,21 @@ export function currentStep(
   const step = job.steps[index];
   return { index: index + 1, step: step.step, label: step.label };
 }
+
+/**
+ * What a PyTorch wheel variant is, for the GPU card's build picker.
+ *
+ * Read off the variant's own spelling (`cu130`, `rocm7.0`, `xpu`) rather
+ * than a table, so a build the server starts offering before this frontend
+ * knows about it still gets a readable line. Anything unrecognised is shown
+ * as the variant alone.
+ */
+export function variantLabel(variant: string): string {
+  if (variant === 'cpu') return 'cpu (CPU only)';
+  if (variant === 'xpu') return 'xpu (Intel GPU)';
+  const cuda = /^cu(\d+)(\d)$/.exec(variant);
+  if (cuda) return `${variant} (CUDA ${cuda[1]}.${cuda[2]})`;
+  const rocm = /^rocm(\d+\.\d+)$/.exec(variant);
+  if (rocm) return `${variant} (AMD ROCm ${rocm[1]})`;
+  return variant;
+}

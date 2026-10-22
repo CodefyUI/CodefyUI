@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -45,7 +46,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import download, runner, state
+from . import bundle, download, runner, state
 from .catalog import ModelItem, Pack, get_item
 from .constraints import write_constraints_file
 from .errors import PackCancelled, PackInstallError, PackNeedsRestart
@@ -149,7 +150,7 @@ def _shell_quote(part: str) -> str:
     return part if _BARE_ARGUMENT.fullmatch(part) else f'"{part}"'
 
 
-def _restart_command(pack: Pack) -> str:
+def _restart_command(pack: Pack, extra_args: Sequence[str] = ()) -> str:
     """The command that finishes this install with the server stopped.
 
     Spelled out in full rather than pointing at a ``cdui packs`` flag: no
@@ -163,12 +164,18 @@ def _restart_command(pack: Pack) -> str:
     interpreter path keeps its backslashes and the version spec keeps its
     ``<``/``>``, in Git Bash as well as in PowerShell and cmd.
     """
-    argv = ["uv", "pip", "install", "--python", sys.executable, *pack.pip]
+    argv = ["uv", "pip", "install", "--python", sys.executable, *extra_args,
+            *pack.pip]
     return " ".join(_shell_quote(part) for part in argv)
 
 
-def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
-    """Install *pack*'s packages, or explain why it could not be done here."""
+def _run_pip_step(pack: Pack, *, emit, cancel_check,
+                  extra_args: Sequence[str] = ()) -> None:
+    """Install *pack*'s packages, or explain why it could not be done here.
+
+    *extra_args* reach uv's command line before the specs: the bundle
+    install's ``--no-index --find-links <wheels>``. Same constraints file
+    either way."""
     emit({"type": "step_started", "step": "pip",
           "label": f"Installing packages: {', '.join(pack.pip)}"})
 
@@ -196,12 +203,13 @@ def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
             cwd=BACKEND_DIR,
             tail=tail,
             conflict=conflict,
+            extra_args=tuple(extra_args),
         )
 
     if returncode != 0:
         detail = _tail_text(tail)
         if conflict.is_set():
-            command = _restart_command(pack)
+            command = _restart_command(pack, extra_args)
             raise PackNeedsRestart(
                 f"{pack.title} cannot be installed while the server is "
                 f"running: it would have to replace a package already in use",
@@ -443,6 +451,144 @@ def install_pack_live(
     finally:
         # Whatever happened -- finished, failed, cancelled -- the disk is not
         # what it was, and the next status poll has to see that.
+        state.invalidate()
+
+    return InstallOutcome(pack_id=pack.pack_id, pip_installed=pip_installed,
+                          items_done=tuple(done))
+
+
+def _write_hf_ref(repo_dir: Path, revision: str, commit: str) -> None:
+    """Point ``refs/<revision>`` at *commit*, as huggingface_hub would.
+
+    Only for a branch or tag name: when the revision IS the commit there is
+    no ref to write. Skipped for anything that is not one plain component.
+    """
+    if (revision == commit or not revision
+            or not bundle._SAFE_PART.fullmatch(revision)):
+        return
+    refs = repo_dir / "refs"
+    refs.mkdir(parents=True, exist_ok=True)
+    (refs / revision).write_text(commit, encoding="utf-8", newline="")
+
+
+def _bundle_copy_step(pack: Pack, item: ModelItem, source: bundle.Bundle, *,
+                      emit, cancel_check) -> Path:
+    """Copy one item out of *source* to where a download would have put it.
+
+    Staged beside the target and moved into place only once every file
+    matched its sha256, then the sentinel is written: the same order, and the
+    same sentinel shape, as ``download.download_hf_item`` and
+    ``download.download_asset_item``. Every target path comes from the
+    catalog item; the manifest only supplies relative names inside it, which
+    ``bundle.load_bundle`` has already checked.
+    """
+    entry = source.items[item.item_id]
+    step = f"copy:{item.item_id}"
+    emit({"type": "step_started", "step": step,
+          "label": f"Copying {item.item_id} from the bundle"})
+    meter = bundle._Meter(emit, item.item_id, entry.size)
+    origin = source.item_dir(item)
+
+    def _copy(rel: str, target: Path, expected: str) -> None:
+        digest = bundle.copy_hashed(bundle.inside(origin, rel), target,
+                                    on_bytes=meter.add,
+                                    cancel_check=cancel_check)
+        if digest != expected:
+            raise PackInstallError(
+                f"{item.item_id}: {rel} does not match the bundle's manifest; "
+                f"the bundle is damaged",
+                hint=f"expected {expected}, got {digest}")
+
+    if item.kind == "hf":
+        repo_dir = hf_cache_dir() / _hf_repo_folder_name(item.repo_id)
+        snapshots = repo_dir / "snapshots"
+        target = snapshots / entry.commit
+        staging = snapshots / f".{entry.commit}.partial-{os.getpid()}"
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            for file in entry.files:
+                _copy(file.path, staging / file.path, file.sha256)
+            if target.exists():
+                shutil.rmtree(target)
+            os.replace(staging, target)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        _write_hf_ref(repo_dir, item.revision, entry.commit)
+        state.write_sentinel(pack.pack_id, item.item_id, {
+            "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+            "kind": "hf", "repo_id": item.repo_id, "revision": item.revision,
+            "snapshot_dir": str(target), "bytes": entry.size,
+            "at": download._now_iso(), "source": "bundle",
+        })
+    else:
+        file = entry.files[0]
+        target = asset_dir() / item.filename
+        staging = target.with_name(f"{item.filename}.part")
+        try:
+            _copy(file.path, staging, file.sha256)
+            os.replace(staging, target)
+        finally:
+            staging.unlink(missing_ok=True)
+        state.write_sentinel(pack.pack_id, item.item_id, {
+            "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+            "kind": "asset", "url": item.url, "path": str(target),
+            "bytes": file.size, "sha256": file.sha256,
+            "at": download._now_iso(), "source": "bundle",
+        })
+    emit({"type": "step_done", "step": step})
+    return target
+
+
+def install_pack_from_bundle(
+    pack: Pack,
+    item_ids: Sequence[str] | None,
+    bundle_dir: Path,
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+) -> InstallOutcome:
+    """:func:`install_pack_live`, with the bytes coming from an offline bundle.
+
+    The same order (disk check, packages, items, GloVe convert, import
+    probe), the same constraints file, and ``state.invalidate()`` whatever
+    happens. Packages install with ``--no-index --find-links <wheels>``, so
+    nothing is fetched from the network. The bundle is checked against the
+    catalog first (:func:`bundle.load_bundle`); a refusal there is a
+    :class:`~.errors.BundleInvalid` and nothing has been touched.
+    """
+    if pack.install_mode == "restart":
+        raise ValueError(
+            f"pack {pack.pack_id!r} installs in restart mode; it cannot be "
+            f"installed from a bundle")
+    source = bundle.load_bundle(bundle_dir, pack)
+    items = bundle.select_items(source, item_ids)
+    pip_installed = False
+    done: list[str] = []
+
+    try:
+        download.check_disk(items)
+
+        if pack.pip and not state.pip_ready(pack):
+            wheels = bundle.check_wheels(source)
+            _run_pip_step(pack, emit=emit, cancel_check=cancel_check,
+                          extra_args=("--no-index", "--find-links",
+                                      str(wheels)))
+            pip_installed = True
+
+        landed: dict[str, Path] = {}
+        for item in items:
+            if cancel_check():
+                raise PackCancelled(f"install of {pack.pack_id} cancelled")
+            landed[item.item_id] = _bundle_copy_step(
+                pack, item, source, emit=emit, cancel_check=cancel_check)
+            done.append(item.item_id)
+
+        glove_pack_id, glove_item_id = _GLOVE
+        if pack.pack_id == glove_pack_id and glove_item_id in done:
+            _convert_glove_step(landed[glove_item_id], emit=emit)
+
+        verify_imports(pack, emit=emit)
+    finally:
         state.invalidate()
 
     return InstallOutcome(pack_id=pack.pack_id, pip_installed=pip_installed,

@@ -3,6 +3,7 @@ import type { LaunchMode, PackGpuInfo, PackSummary } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { CommandBlock } from './CommandBlock';
+import { variantLabel } from './packStatus';
 import styles from './PackCenterModal.module.css';
 
 export interface GpuPackDetailsProps {
@@ -158,7 +159,7 @@ export function GpuPackDetails({
               >
                 {variants.map((name) => (
                   <option key={name} value={name}>
-                    {name}
+                    {variantLabel(name)}
                   </option>
                 ))}
               </select>

@@ -25,6 +25,7 @@ from pathlib import Path
 # keeps the promise above: importing this package still touches neither the
 # filesystem nor the import machinery.
 from .errors import (
+    BundleInvalid,
     PackCancelled,
     PackInstallError,
     PackInsufficientDisk,
@@ -34,6 +35,7 @@ from .errors import (
 )
 
 __all__ = [
+    "BundleInvalid",
     "PackCancelled",
     "PackInstallError",
     "PackInsufficientDisk",

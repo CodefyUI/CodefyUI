@@ -59,12 +59,24 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 |------|------|
 | `cdui packs list` | 列出型錄中的所有套件包，包括內容、下載大小及安裝狀態。 |
 | `cdui packs status` | 跟 `list` 一樣，另外加上這個 venv 裡的 PyTorch 版本，以及接下來該執行什麼。 |
-| `cdui packs install <id>` | 安裝一個套件包。`--items a,b` 只下載指定的模型（預設會補齊這個套件包缺的全部）；`--yes`／`-y` 可跳過下載大小的確認，沒有終端機可確認時必須加。只接受型錄裡的 id —— 沒有任何方式可以傳入套件安裝字串、index 網址或 repo id。 |
+| `cdui packs install <id>` | 安裝一個套件包。`--items a,b` 只下載指定的模型（預設會補齊這個套件包缺的全部）；`--yes`／`-y` 可跳過下載大小的確認，沒有終端機可確認時必須加。`--from <dir>` 改從離線套件包安裝，不下載（見[離線安裝](#offline-install)）。只接受型錄裡的 id —— 沒有任何方式可以傳入套件安裝字串、index 網址或 repo id。 |
+| `cdui packs export <id> <dir>` | 把已安裝的套件包複製到 `<dir>`，做成離線套件包：包含項目、一份 `manifest.json`，以及這個平台適用的 Python 套件 wheel。`--items a,b` 只匯出指定項目（預設為這台電腦已安裝的所有項目）；`--no-wheels` 會略過 wheel。`<dir>` 必須是空目錄或尚不存在。 |
 | `cdui packs remove <id> <item-id>` | 刪除一個已下載的模型並清掉紀錄。套件包的 Python 套件不會一併移除；能移除它們的 `uv pip uninstall` 指令會印出來，請在伺服器停掉後自行執行。 |
 
 腳本可使用下列離開碼：`0` 表示完成；`1` 表示安裝失敗或在提示中拒絕安裝；`2` 表示執行前即遭拒，包括套件包或 `--items` id 不存在、相依未滿足、套件包只能透過重新啟動安裝（`gpu-torch` 會印出改用的 `cdui install --gpu` 指令），或沒有終端機可進行確認；`3` 表示伺服器執行中，無法執行作業，並會印出替代指令；`130` 表示以 `Ctrl+C` 中斷。
 
 **讓伺服器重新啟動的安裝。** 由 `cdui start` 啟動的伺服器，可透過自動重新啟動安裝 GPU PyTorch 套件包，或處理線上安裝遇到相依衝突的套件包。伺服器會先記錄安裝內容，以分離模式啟動 `cdui packs-run-pending`，再自行關閉。輔助程式會等待原行程結束、執行安裝、記錄結果，最後用原本的 `cdui start` 參數（去掉 `--foreground`）重新啟動伺服器，因此伺服器一律回到背景執行。`packs-run-pending` 是**內部指令**，刻意不列在說明文字中。它收到的檔案會指定要等待的行程；若手動對執行中的伺服器執行，會等待兩分鐘後停止該伺服器。若自動重新啟動在某台機器上無法正常完成，可設定 `CODEFYUI_ENABLE_RESTART_INSTALL=0` 關閉此功能。重新啟動安裝仍在「收尾中」時——記錄的輔助程式或它啟動的 `uv` 安裝仍在執行，或認領單建立未滿六十秒且輔助程式尚未寫入 pid——`cdui start` 不會在正在修改的 venv 中啟動第二個伺服器，而會提示查看 `cdui status` 後返回。兩者都結束後，或輔助程式未啟動且已超過六十秒，認領單會標示為「已中斷」；此時 `cdui start` 會刪除認領單並正常啟動。詳見 **[讓伺服器重新啟動的安裝](/usage/optional-packs#installs-that-restart-the-server)**。
+
+### 離線安裝 {/* #offline-install */}
+
+```bash
+# 在已安裝該套件包、可以連網的電腦上：
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+# 在離線電腦上：
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`install --from` 會在複製任何檔案前，先用型錄檢查套件包的 `manifest.json`；型錄無法擔保的套件包會以離開碼 `2` 拒絕：屬於其他套件包、未知的項目、repository、revision 或檔案，或為其他平台建置的 wheel。wheel 符合匯出電腦的作業系統、CPU 架構與 Python 版本，所以每種平台各做一份套件包。其餘離開碼與 `cdui packs install` 相同。套件包的內容請見[離線安裝](/usage/optional-packs#offline-install)。
 
 ## 快取指令 {/* #cache-commands */}
 

@@ -1115,7 +1115,8 @@ async def test_gpu_info_never_raises_and_mirrors_dev_py():
     assert restart.TORCH_INDEX_URLS == dev.TORCH_INDEX_URLS
     assert list(restart.VARIANTS) == [key for key in dev.TORCH_INDEX_URLS
                                       if key not in {"auto", "skip"}]
-    for driver in ("580.1", "560.0", "555.99", "545.0", "530.2", "520.0",
+    for driver in ("610.74", "580.1", "580.0", "579.9", "575.0", "574.9",
+                   "560.0", "555.99", "545.0", "530.2", "520.0",
                    "470.0", "", "not-a-version"):
         assert (restart.recommended_cu_for_driver(driver)
                 == dev._recommended_cu_for_driver(driver)), driver
@@ -1137,9 +1138,11 @@ async def test_gpu_info_never_raises_and_mirrors_dev_py():
 
 @pytest.mark.parametrize("system, expected", [
     ("darwin", ()),
-    ("linux", ("cpu", "cu118", "cu121", "cu124", "cu126", "cu128",
-               "rocm6.1", "rocm6.2")),
-    ("win32", ("cpu", "cu118", "cu121", "cu124", "cu126", "cu128")),
+    ("linux", ("cpu", "cu118", "cu121", "cu124", "cu126", "cu128", "cu129",
+               "cu130", "rocm6.1", "rocm6.2", "rocm6.3", "rocm6.4", "rocm7.0",
+               "xpu")),
+    ("win32", ("cpu", "cu118", "cu121", "cu124", "cu126", "cu128", "cu129",
+               "cu130", "xpu")),
 ])
 async def test_installable_variants_names_the_wheels_a_platform_has(
         system, expected):
@@ -1253,6 +1256,48 @@ async def test_detect_gpu_matches_dev_py_with_no_gpu(monkeypatch, system):
     assert restart.detect_gpu() == dev.detect_gpu() == ("CPU only", "cpu")
 
 
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+async def test_detect_gpu_matches_dev_py_on_an_intel_gpu(monkeypatch, system):
+    """``xpu-smi`` on PATH is the Intel driver stack; nothing is run."""
+    import dev
+
+    monkeypatch.setattr(restart.platform, "system", lambda: system)
+    monkeypatch.setattr(restart.shutil, "which",
+                        lambda name: "/usr/bin/xpu-smi"
+                        if name == "xpu-smi" else None)
+
+    def _never(*args, **kwargs):
+        raise AssertionError("Intel detection must not run a process")
+
+    monkeypatch.setattr(restart.subprocess, "run", _never)
+    assert restart.detect_gpu() == dev.detect_gpu() == (
+        "Intel GPU (XPU)", "xpu")
+
+
+async def test_sycl_ls_alone_is_not_an_intel_gpu(monkeypatch):
+    """oneAPI installs ``sycl-ls`` on machines with no Intel GPU at all."""
+    import dev
+
+    monkeypatch.setattr(restart.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(restart.shutil, "which",
+                        lambda name: "/opt/intel/bin/sycl-ls"
+                        if name == "sycl-ls" else None)
+    assert restart.detect_gpu() == dev.detect_gpu() == ("CPU only", "cpu")
+
+
+@pytest.mark.parametrize("driver, expected", [
+    ("610.74", "cu130"), ("580.65", "cu130"), ("579.1", "cu129"),
+    ("575.0", "cu129"), ("574.9", "cu128"), ("560.0", "cu128"),
+    ("555.0", "cu126"), ("519.0", "cpu"),
+])
+async def test_the_cuda_13_and_12_9_floors(driver, expected):
+    """CUDA 13.0 wheels need driver 580, CUDA 12.9 needs 575."""
+    import dev
+
+    assert restart.recommended_cu_for_driver(driver) == expected
+    assert dev._recommended_cu_for_driver(driver) == expected
+
+
 async def test_detect_gpu_matches_dev_py_on_apple_silicon(monkeypatch):
     import dev
 
@@ -1288,7 +1333,7 @@ async def test_detect_gpu_probes_without_a_console_window(monkeypatch):
     monkeypatch.setattr(restart.subprocess, "run", _fake_run)
 
     assert restart.detect_gpu() == (
-        "NVIDIA GeForce RTX 4080 (driver 610.74)", "cu128")
+        "NVIDIA GeForce RTX 4080 (driver 610.74)", "cu130")
     assert seen["argv"][0] == "nvidia-smi"
     assert seen["kwargs"]["creationflags"] == flags
     assert seen["kwargs"]["stdin"] is subprocess.DEVNULL

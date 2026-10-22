@@ -835,6 +835,160 @@ def test_second_sigint_terminates_a_stalled_cli_process_with_code_130(
             process.wait(timeout=5)
 
 
+# ── offline bundles ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def fake_bundle_flow(monkeypatch):
+    """Replace the bundle install flow; ``rec["raise"]`` makes it fail."""
+    from app.core.packs import flows
+
+    rec: dict = {"calls": [], "raise": None}
+
+    def _fake(pack, item_ids, source, *, emit, cancel_check):
+        rec["calls"].append({"pack_id": pack.pack_id, "item_ids": item_ids,
+                             "source": source})
+        emit({"type": "step_started", "step": "copy:glove-50d",
+              "label": "Copying glove-50d from the bundle"})
+        emit({"type": "progress", "item": "glove-50d", "bytes_done": 5,
+              "bytes_total": 10, "percent": 50.0})
+        if rec["raise"] is not None:
+            raise rec["raise"]
+        return flows.InstallOutcome(pack_id=pack.pack_id, pip_installed=False,
+                                    items_done=("glove-50d",))
+
+    monkeypatch.setattr(flows, "install_pack_from_bundle", _fake)
+    return rec
+
+
+def test_cli_install_from_a_bundle_needs_no_prompt(
+        probed, flow_never_runs, fake_bundle_flow, monkeypatch, capsys,
+        tmp_path):
+    """Nothing is downloaded, so there is no size to confirm, and the
+    download flow is never reached."""
+    monkeypatch.setattr(packs, "_stdin_is_interactive", lambda: False)
+    assert packs.main(["install", "word-vectors", "--from",
+                       str(tmp_path)]) == 0
+    assert fake_bundle_flow["calls"] == [
+        {"pack_id": "word-vectors", "item_ids": None, "source": tmp_path}]
+    out = capsys.readouterr().out
+    assert out.isascii()
+    assert "Copied from the bundle: glove-50d" in out
+    assert "[#####.....]  50%" in out
+
+
+def test_cli_install_from_a_bundle_passes_the_items(
+        probed, fake_bundle_flow, tmp_path):
+    assert packs.main(["install", "sentence-embeddings", "--from",
+                       str(tmp_path), "--items", "all-MiniLM-L6-v2"]) == 0
+    assert fake_bundle_flow["calls"][0]["item_ids"] == ["all-MiniLM-L6-v2"]
+
+
+@pytest.mark.parametrize("exc_factory, code, text", [
+    (lambda e: e.BundleInvalid("the bundle is for pack 'rag'"), 2,
+     "the bundle is for pack 'rag'"),
+    (lambda e: e.PackInstallError("glove-50d: damaged", hint="expected a"), 1,
+     "expected a"),
+    (lambda e: e.PackInsufficientDisk("full", needed=2_000_000, free=0), 1,
+     "needs 2.0 MB"),
+    (lambda e: e.PackNeedsRestart("in use", command="uv pip install x"), 3,
+     "uv pip install x"),
+])
+def test_cli_install_from_a_bundle_maps_failures_to_exit_codes(
+        probed, fake_bundle_flow, capsys, tmp_path, exc_factory, code, text):
+    from app.core.packs import errors
+
+    fake_bundle_flow["raise"] = exc_factory(errors)
+    assert packs.main(["install", "word-vectors", "--from",
+                       str(tmp_path)]) == code
+    assert text in capsys.readouterr().err
+
+
+def test_cli_install_from_a_bundle_cancelled_exits_130(
+        probed, fake_bundle_flow, tmp_path):
+    from app.core.packs.errors import PackCancelled
+
+    fake_bundle_flow["raise"] = PackCancelled("stop")
+    assert packs.main(["install", "word-vectors", "--from",
+                       str(tmp_path)]) == 130
+
+
+def test_cli_install_gpu_torch_from_a_bundle_is_refused(
+        probed, no_gpu_probe, fake_bundle_flow, tmp_path, capsys):
+    assert packs.main(["install", "gpu-torch", "--from", str(tmp_path)]) == 2
+    assert fake_bundle_flow["calls"] == []
+
+
+@pytest.fixture
+def fake_export(monkeypatch):
+    from app.core.packs import bundle
+
+    rec: dict = {"calls": [], "raise": None}
+
+    def _fake(pack, item_ids, dest, *, emit, cancel_check, download_wheels):
+        rec["calls"].append({"pack_id": pack.pack_id, "item_ids": item_ids,
+                             "dest": dest, "wheels": download_wheels})
+        emit({"type": "step_started", "step": "export:all-MiniLM-L6-v2",
+              "label": "Copying all-MiniLM-L6-v2 into the bundle"})
+        if rec["raise"] is not None:
+            raise rec["raise"]
+        return bundle.ExportOutcome(
+            pack_id=pack.pack_id, dest=dest, items=("all-MiniLM-L6-v2",),
+            wheels=("a-1.0-py3-none-any.whl",), skipped=("torch==2.9.1+cu130",))
+
+    monkeypatch.setattr(bundle, "export_pack", _fake)
+    return rec
+
+
+def test_cli_export_writes_a_bundle_and_says_what_to_run(fake_export, capsys,
+                                                         tmp_path):
+    dest = tmp_path / "usb"
+    assert packs.main(["export", "sentence-embeddings", str(dest)]) == 0
+    assert fake_export["calls"] == [{"pack_id": "sentence-embeddings",
+                                     "item_ids": None, "dest": dest,
+                                     "wheels": True}]
+    out = capsys.readouterr().out
+    assert out.isascii()
+    assert f"Bundle written to {dest}" in out
+    assert "1 wheels (for this platform and Python version only)" in out
+    assert "torch==2.9.1+cu130 is not in the bundle" in out
+    assert "cdui packs install sentence-embeddings --from <dir>" in out
+
+
+def test_cli_export_passes_items_and_no_wheels(fake_export, tmp_path):
+    assert packs.main(["export", "sentence-embeddings", str(tmp_path / "b"),
+                       "--items", "all-MiniLM-L6-v2", "--no-wheels"]) == 0
+    assert fake_export["calls"][0]["item_ids"] == ["all-MiniLM-L6-v2"]
+    assert fake_export["calls"][0]["wheels"] is False
+
+
+def test_cli_export_refuses_unknown_ids(fake_export, capsys, tmp_path):
+    assert packs.main(["export", "nope", str(tmp_path)]) == 2
+    assert packs.main(["export", "word-vectors", str(tmp_path),
+                       "--items", "nope"]) == 2
+    assert "glove-50d" in capsys.readouterr().err
+    assert fake_export["calls"] == []
+
+
+@pytest.mark.parametrize("exc_factory, code, text", [
+    (lambda e: ValueError("x is not an empty directory"), 2,
+     "x is not an empty directory"),
+    (lambda e: e.PackInstallError("wheels failed", hint="No matching"), 1,
+     "No matching"),
+    (lambda e: e.PackInsufficientDisk("not enough free space", needed=1,
+                                      free=0), 1, "not enough free space"),
+    (lambda e: e.PackCancelled("stop"), 130, ""),
+    (lambda e: KeyboardInterrupt(), 130, ""),
+])
+def test_cli_export_maps_failures_to_exit_codes(
+        fake_export, capsys, tmp_path, exc_factory, code, text):
+    from app.core.packs import errors
+
+    fake_export["raise"] = exc_factory(errors)
+    assert packs.main(["export", "word-vectors", str(tmp_path)]) == code
+    assert text in capsys.readouterr().err
+
+
 # ── remove ────────────────────────────────────────────────────────────────
 
 

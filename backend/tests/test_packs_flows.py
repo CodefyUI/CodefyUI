@@ -117,9 +117,9 @@ def installer(monkeypatch, tmp_path):
     fake = _Installer()
 
     def _run_pip(specs, *, constraints_path, emit, cancel_check, cwd,
-                 tail=None, conflict=None):
+                 tail=None, conflict=None, extra_args=()):
         fake.pip_calls.append({
-            "specs": list(specs), "cwd": cwd,
+            "specs": list(specs), "cwd": cwd, "extra_args": list(extra_args),
             "constraints": Path(constraints_path).read_text(encoding="utf-8"),
             "constraints_path": Path(constraints_path),
         })

@@ -2,13 +2,17 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import type { PackItem, PackSummary } from '../../api/rest';
 import { emptyPackJob, reducePackEvents, type PackJob } from '../../store/packStore';
 import { useI18n } from '../../i18n';
+import type { PackStatus } from '../../api/rest';
 import {
   catalogKey,
+  currentStep,
   formatBytes,
   jobOverallPercent,
   missingItems,
+  statusKey,
   statusTone,
   stepLabel,
+  variantLabel,
 } from './packStatus';
 
 function item(over: Partial<PackItem> & { id: string }): PackItem {
@@ -222,5 +226,59 @@ describe('catalogKey', () => {
     expect(catalogKey('a-pack-from-the-future', 'title')).toBeNull();
     // Nothing inherited off Object.prototype counts as shipped copy.
     expect(catalogKey('constructor', 'title')).toBeNull();
+  });
+});
+
+describe('statusKey', () => {
+  it('reads a status this build does not know as not installed', () => {
+    expect(statusKey('installed')).toBe('packs.status.installed');
+    expect(statusKey('mystery' as PackStatus)).toBe(statusKey('not_installed'));
+  });
+});
+
+describe('jobOverallPercent without sizes', () => {
+  it('ignores items with no size and falls back to the steps', () => {
+    const j = job({
+      items: { x: { bytesDone: 5, bytesTotal: 0, percent: null } },
+      steps: [{ step: 'copy:x', label: 'Copying x', state: 'done' }],
+    });
+    expect(jobOverallPercent(j, pack({ id: 'p1' }))).toBe(100);
+  });
+});
+
+describe('stepLabel for a convert step with no item', () => {
+  it('falls back to the server label', () => {
+    expect(stepLabel(t(), 'convert', 'Converting')).toBe('Converting');
+    // A bundle install's copy step has no translation of its own yet.
+    expect(stepLabel(t(), 'copy:glove-50d', 'Copying glove-50d from the bundle')).toBe(
+      'Copying glove-50d from the bundle',
+    );
+  });
+});
+
+describe('currentStep', () => {
+  it('shows the running step, else the last one, else nothing', () => {
+    expect(currentStep(job())).toBeNull();
+    const running = job({
+      steps: [
+        { step: 'pip', label: 'pip', state: 'done' },
+        { step: 'verify', label: 'verify', state: 'running' },
+        { step: 'later', label: 'later', state: 'done' },
+      ],
+    });
+    expect(currentStep(running)).toEqual({ index: 2, step: 'verify', label: 'verify' });
+    const finished = job({ steps: [{ step: 'pip', label: 'pip', state: 'done' }] });
+    expect(currentStep(finished)).toEqual({ index: 1, step: 'pip', label: 'pip' });
+  });
+});
+
+describe('variantLabel', () => {
+  it('names the hardware each PyTorch build is for', () => {
+    expect(variantLabel('cu118')).toBe('cu118 (CUDA 11.8)');
+    expect(variantLabel('cu130')).toBe('cu130 (CUDA 13.0)');
+    expect(variantLabel('rocm6.4')).toBe('rocm6.4 (AMD ROCm 6.4)');
+    expect(variantLabel('xpu')).toBe('xpu (Intel GPU)');
+    expect(variantLabel('cpu')).toBe('cpu (CPU only)');
+    expect(variantLabel('rocm')).toBe('rocm');
   });
 });

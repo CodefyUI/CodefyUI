@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: GPU 與裝置設定
-description: 為 NVIDIA CUDA、Apple Silicon（MPS）或 AMD ROCm 選擇合適的 PyTorch 版本，並驗證 GPU 偵測。
+description: 為 NVIDIA CUDA、Apple Silicon（MPS）、AMD ROCm 或 Intel GPU（XPU）選擇合適的 PyTorch 版本，並驗證 GPU 偵測。
 ---
 
 # GPU 與裝置設定
@@ -21,6 +21,12 @@ nvidia-smi
 查看右上角的 `CUDA Version:` 欄位，然後使用 `cdui install --gpu` 安裝相符的 wheel。此指令會替換 venv 中的 PyTorch build。之後執行 `cdui update` 時，指令會從已安裝的 wheel 讀取變體並保留該設定：
 
 ```bash
+# CUDA 13.0：需要 NVIDIA driver 580 以上
+cdui install --gpu cu130
+
+# CUDA 12.9：需要 NVIDIA driver 575 以上
+cdui install --gpu cu129
+
 # CUDA 12.8 —— RTX 50 系列（Blackwell, sm_120）必裝，RTX 30 / 40 亦可使用。
 cdui install --gpu cu128
 
@@ -31,7 +37,7 @@ cdui install --gpu cu126
 cdui install --gpu cu118
 ```
 
-一行指令安裝程式使用 `--gpu auto`。它會依 `nvidia-smi` 回報的 driver 版本選擇 wheel：560 以上選擇 `cu128`，555 以上選擇 `cu126`，545 以上選擇 `cu124`，530 以上選擇 `cu121`，520 以上選擇 `cu118`。較舊的 driver 會選擇 CPU build。如果伺服器是以 `cdui start` 啟動，套件中心的 **GPU 版 PyTorch** 卡片會執行相同的安裝並重新啟動伺服器。請參閱[讓伺服器重新啟動的安裝](/usage/optional-packs#installs-that-restart-the-server)。
+一行指令安裝程式使用 `--gpu auto`。它會依 `nvidia-smi` 回報的 driver 版本選擇 wheel：580 以上選擇 `cu130`，575 以上選擇 `cu129`，560 以上選擇 `cu128`，555 以上選擇 `cu126`，545 以上選擇 `cu124`，530 以上選擇 `cu121`，520 以上選擇 `cu118`。較舊的 driver 會選擇 CPU build。如果伺服器是以 `cdui start` 啟動，套件中心的 **GPU 版 PyTorch** 卡片會執行相同的安裝並重新啟動伺服器。請參閱[讓伺服器重新啟動的安裝](/usage/optional-packs#installs-that-restart-the-server)。
 
 若要手動安裝，請啟用 `backend/.venv`，並執行安裝程式使用的同一個 `uv pip` 指令：
 
@@ -39,11 +45,11 @@ cdui install --gpu cu118
 cd backend
 .venv\Scripts\activate       # Windows
 source .venv/bin/activate    # macOS / Linux
-uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu128   # 或 cu126 / cu118
+uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu128   # 或 cu130 / cu129 / cu126 / cu118
 ```
 
 :::warning RTX 50 系列（Blackwell）
-RTX 5090 / 5080 / 5070 **必須**使用 `cu128` —— 舊版 wheel 缺少 `sm_120` kernel，執行時會以 `no kernel image is available for execution` 失敗。
+RTX 5090 / 5080 / 5070 **必須**使用 `cu128` 或更新的版本（`cu129`、`cu130`）；舊版 wheel 缺少 `sm_120` kernel，執行時會以 `no kernel image is available for execution` 失敗。
 :::
 
 驗證 CUDA 可用：
@@ -71,10 +77,10 @@ AMD 的支援度高度取決於你的作業系統。
 ### Linux + AMD（ROCm，官方支援） {/* #linux--amd-rocm-officially-supported */}
 
 ```bash
-cdui install --gpu rocm6.2      # 或 rocm6.1
+cdui install --gpu rocm6.2      # 或 rocm6.1 / rocm6.3 / rocm6.4 / rocm7.0
 ```
 
-`PATH` 中有 `rocm-smi` 時，`--gpu auto` 會選擇 `rocm6.2`。若要手動安裝，請啟用 `backend/.venv`，再執行 `uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2`。
+`PATH` 中有 `rocm-smi` 時，`--gpu auto` 會選擇 `rocm6.2`。`rocm-smi` 不會回報 driver 支援的 ROCm 版本，所以若你安裝的 ROCm 較新，請自行選擇 `rocm6.3`、`rocm6.4` 或 `rocm7.0`。若要手動安裝，請啟用 `backend/.venv`，再執行 `uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2`。
 
 驗證：
 
@@ -95,6 +101,26 @@ PyTorch **沒有**提供官方的 Windows ROCm 版本。你的選項有：
   ```
 
 - **(b) CPU 模式** —— 上方的預設安裝已經可用。建議在 Windows + AMD 上用於學習／原型開發。
+
+## Intel GPU（XPU） {/* #intel-gpu-xpu */}
+
+PyTorch 為 Intel Arc、Data Center GPU Max/Flex 與較新的 Intel 內顯提供 `xpu` build，支援 Linux 與 Windows。請先安裝 Intel GPU driver；各款 GPU 的需求請見 Intel 的 PyTorch 安裝前置說明。
+
+```bash
+cdui install --gpu xpu
+```
+
+只有 `PATH` 中有 `xpu-smi`（Intel GPU driver 套件的一部分）時，`--gpu auto` 才會選擇 `xpu`。偵測不使用 `sycl-ls`，因為 oneAPI 工具組在沒有 Intel GPU 的電腦上也會安裝它。沒有 `xpu-smi` 的電腦請自行選擇 `xpu`。
+
+驗證：
+
+```bash
+python -c "import torch; print('XPU:', torch.xpu.is_available())"
+```
+
+:::note 執行仍使用 CPU
+CodefyUI 的裝置控制項提供 `cpu`、`auto`、`cuda`（或 `cuda:N`）與 `mps`，`auto` 不會選用 Intel GPU。安裝 `xpu` build 後，執行仍留在 CPU，直到 CodefyUI 加入 `xpu` 裝置選項為止。現在先提供這個 build，是為了讓同一個 venv 中的自訂節點與腳本可以直接使用 `torch.xpu`。
+:::
 
 ## 裝置無法使用時 {/* #when-a-device-is-unavailable */}
 
