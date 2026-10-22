@@ -310,6 +310,7 @@ _SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
     "Classical/KFold-Cross-Validation": ("concepts", 13, None),
     "Others/Reduce-And-Switch": ("concepts", 14, None),
     "Others/Tensor-Ops-Tour": ("concepts", 15, None),
+    "Others/Image-Batch-IO": ("concepts", 16, None),
     "Model_Architecture/ResNet-SkipConnection-CNN": ("architectures", 1, "CNN"),
     "Model_Architecture/UNet-Segmentation-CNN": ("architectures", 2, "CNN"),
     "Model_Architecture/EfficientNet-CNN": ("architectures", 3, "CNN"),

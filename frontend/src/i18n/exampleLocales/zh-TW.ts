@@ -357,6 +357,9 @@ const zhTW: ExampleTranslations = {
   'Others/Tensor-Ops-Tour': {
     description: '對同一個網格切分、堆疊、選列、池化',
   },
+  'Others/Image-Batch-IO': {
+    description: '寫入 8 張影像，再讀回整個資料夾',
+  },
 };
 
 export default zhTW;

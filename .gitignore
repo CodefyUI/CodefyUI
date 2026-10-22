@@ -78,6 +78,9 @@ backend/data/files/*
 # served by /api/media; never ship in the repo.
 backend/data/media/
 
+# ImageWriter's relative-path output (<data>/output) -- run-produced images.
+backend/data/output/
+
 backend/data/runs/
 backend/data/cifar-10-batches-py/
 backend/data/cifar-10-python.tar.gz
