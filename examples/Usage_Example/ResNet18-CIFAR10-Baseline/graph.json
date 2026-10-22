@@ -194,7 +194,7 @@
       "type": "Loss",
       "position": {
         "x": 1100,
-        "y": 900
+        "y": 987
       },
       "data": {
         "params": {
@@ -285,7 +285,7 @@
       "type": "Visualize",
       "position": {
         "x": 2060,
-        "y": 620
+        "y": 738
       },
       "data": {
         "params": {

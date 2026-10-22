@@ -181,7 +181,7 @@
       "type": "TrainingLoop",
       "position": {
         "x": 667,
-        "y": 435
+        "y": 529
       },
       "data": {
         "params": {
@@ -310,7 +310,7 @@
       "type": "note",
       "position": {
         "x": 667,
-        "y": 1170
+        "y": 1358
       },
       "data": {
         "noteKind": "text",
@@ -319,7 +319,7 @@
         "boundToNodeId": "train-clip",
         "boundOffset": {
           "x": 0,
-          "y": 735
+          "y": 829
         },
         "noteWidth": 300
       }

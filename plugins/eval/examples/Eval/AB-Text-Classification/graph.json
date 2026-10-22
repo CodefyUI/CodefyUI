@@ -267,7 +267,7 @@
       "type": "note",
       "position": {
         "x": 0,
-        "y": -480
+        "y": -529
       },
       "data": {
         "noteKind": "text",
@@ -276,7 +276,7 @@
         "boundToNodeId": "model_a",
         "boundOffset": {
           "x": 0,
-          "y": -480
+          "y": -529
         },
         "noteWidth": 340
       }

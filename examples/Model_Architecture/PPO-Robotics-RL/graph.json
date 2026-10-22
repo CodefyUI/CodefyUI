@@ -139,7 +139,7 @@
       "type": "note",
       "position": {
         "x": -290,
-        "y": 700
+        "y": 743
       },
       "data": {
         "noteKind": "text",
@@ -148,7 +148,7 @@
         "boundToNodeId": "ppo-1",
         "boundOffset": {
           "x": -340,
-          "y": 300
+          "y": 343
         },
         "noteWidth": 300
       }

@@ -15,10 +15,10 @@
     { "id": "spatial_act", "type": "Activation", "position": { "x": 1640, "y": 0 }, "data": { "params": { "function": "silu" } } },
 
     { "id": "se_pool", "type": "AdaptiveAvgPool2d", "position": { "x": 0, "y": 260 }, "data": { "params": { "output_height": 1, "output_width": 1 } } },
-    { "id": "se_flat", "type": "Flatten", "position": { "x": 270, "y": 260 }, "data": { "params": { "start_dim": 1 } } },
+    { "id": "se_flat", "type": "Flatten", "position": { "x": 270, "y": 353 }, "data": { "params": { "start_dim": 1 } } },
     { "id": "se_reduce", "type": "Linear", "position": { "x": 550, "y": 260 }, "data": { "params": { "in_features": 128, "out_features": 8 } } },
     { "id": "se_act", "type": "Activation", "position": { "x": 820, "y": 260 }, "data": { "params": { "function": "silu" } } },
-    { "id": "se_expand", "type": "Linear", "position": { "x": 1090, "y": 260 }, "data": { "params": { "in_features": 8, "out_features": 128 } } },
+    { "id": "se_expand", "type": "Linear", "position": { "x": 1090, "y": 353 }, "data": { "params": { "in_features": 8, "out_features": 128 } } },
     { "id": "se_sigmoid", "type": "Activation", "position": { "x": 1360, "y": 260 }, "data": { "params": { "function": "sigmoid" } } },
     { "id": "se_unflat", "type": "Reshape", "position": { "x": 1640, "y": 260 }, "data": { "params": { "shape": "2,128,1,1" } } },
     { "id": "se_apply", "type": "Multiply", "position": { "x": 1910, "y": 130 }, "data": { "params": { "alpha": 1.0 } } },
@@ -28,7 +28,7 @@
     { "id": "skip_add", "type": "Add", "position": { "x": 2730, "y": 130 }, "data": { "params": { "alpha": 1.0 } } },
 
     { "id": "head_pool", "type": "AdaptiveAvgPool2d", "position": { "x": 0, "y": 520 }, "data": { "params": { "output_height": 1, "output_width": 1 } } },
-    { "id": "head_flat", "type": "Flatten", "position": { "x": 270, "y": 520 }, "data": { "params": { "start_dim": 1 } } },
+    { "id": "head_flat", "type": "Flatten", "position": { "x": 270, "y": 613 }, "data": { "params": { "start_dim": 1 } } },
     { "id": "head_fc", "type": "Linear", "position": { "x": 550, "y": 520 }, "data": { "params": { "in_features": 32, "out_features": 10 } } },
     { "id": "print_logits", "type": "Print", "position": { "x": 820, "y": 520 }, "data": { "params": { "label": "Class logits (B,10)" } } },
 

@@ -219,7 +219,7 @@
       "id": "print-confidence-hard",
       "type": "Print",
       "position": {
-        "x": 2320,
+        "x": 2367,
         "y": 740
       },
       "data": {
@@ -371,7 +371,7 @@
       "id": "print-confidence-smooth",
       "type": "Print",
       "position": {
-        "x": 2320,
+        "x": 2367,
         "y": 1740
       },
       "data": {
