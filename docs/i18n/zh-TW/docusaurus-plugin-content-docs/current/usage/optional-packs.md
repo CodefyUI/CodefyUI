@@ -27,7 +27,7 @@ description: 安裝特定 LLM 節點與 GPU 後端所需的選用 Python 套件�
 | `sentence-embeddings` | `sentence-transformers` 套件和四個小型編碼器：`all-MiniLM-L6-v2`、`paraphrase-multilingual-MiniLM-L12-v2`、`bge-small-zh-v1.5`、`multilingual-e5-small` | 每個模型分別為 90 MB、470 MB、95 MB、470 MB（它們是替代選項，不是一組），另加 pip 套件 | 兩個 MiniLM 模型為 Apache-2.0；`bge` 和 `e5` 為 MIT | 整個 `TextEmbedding` 節點，以及 `WordVector` 的四個句子後端 |
 | `word-vectors` | `glove-wiki-gigaword-50.gz`，包含 400,000 個詞、50 個維度的 GloVe 詞向量表；不含 Python 套件 | 69 MB，另加儲存在旁邊、約 83 MB 的轉換表 | PDDL-1.0 | `WordVector` 的 `glove-50d` 後端 |
 | `rag` | `Qwen2.5-0.5B-Instruct`，可在 CPU 上執行的本機生成模型 | 約 1 GB | Apache-2.0 | `HFTextGenerate`，它也需要先安裝 `sentence-embeddings`：`rag` 不含 Python 套件，使用的是該套件包提供的 `transformers` 套件 |
-| `gpu-torch` | 為這台機器選取的 CUDA 或 ROCm PyTorch 版本 | 依版本而異 | PyTorch 的 BSD-3-Clause 授權 | 不新增節點。請使用 `cdui install --gpu <variant>` 安裝，而非 `cdui packs`；詳見 [GPU 與裝置設定](../getting-started/gpu-device.md) |
+| `gpu-torch` | 為這台機器選取的 CUDA、ROCm 或 Intel XPU PyTorch 版本 | 依版本而異 | PyTorch 的 BSD-3-Clause 授權 | 不新增節點。請使用 `cdui install --gpu <variant>` 安裝，而非 `cdui packs`；詳見 [GPU 與裝置設定](../getting-started/gpu-device.md) |
 
 下載量欄列出網路傳輸大小。安裝 `word-vectors` 會下載 69 MB，並寫入另一份約 83 MB 的轉換表。磁碟預檢查需要約 230 MB 可用空間；移除時會刪除這兩個檔案。
 
@@ -72,7 +72,7 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 
 部分安裝必須取代伺服器已匯入的套件。**GPU 版 PyTorch** 一律需要此模式。如果線上安裝的 constraints 偵測到 resolver 衝突，並在取代任何套件前停止，該套件也需要此模式。由 `cdui start` 管理的伺服器會記錄請求、啟動分離的輔助程式，然後關閉。輔助程式會等待伺服器結束、執行安裝、記錄結果，再使用原本的 `cdui start` 引數啟動伺服器。輔助程式不使用線上安裝的 constraints 檔，因此可在套件需要不同版本時取代 torch。
 
-**套件中心行為。** **GPU 版 PyTorch** 卡片會顯示偵測到的 GPU 和已安裝版本；如果建議版本不同，也會顯示建議版本。以下三項都成立時，卡片會顯示**安裝並重新啟動**：重新啟動模式可用、這個平台有可安裝的版本，且已安裝版本與建議版本不同。提供的版本超過一個時，按鈕前面會有版本選單。按鈕下方的說明文字為「圖執行期間無法重新啟動。」，同一個安裝的終端機命令則收合在**手動指令**底下。重新啟動模式無法使用時（包括使用 `cdui dev`），或這個平台沒有可安裝的版本時，卡片不會顯示按鈕，而會說明原因並顯示命令。已經是建議版本的機器只會看到版本資訊和命令。在 Apple Silicon 上，MPS 加速已包含在預設的 PyTorch 版本中，所以卡片只顯示版本資訊和「GPU 加速已內建於預設的 PyTorch 版本。」提供的版本：Windows 為 `cpu`、`cu118`、`cu121`、`cu124`、`cu126`、`cu128`；Linux 為上述版本再加上 `rocm6.1`、`rocm6.2`；macOS 沒有。
+**套件中心行為。** **GPU 版 PyTorch** 卡片會顯示偵測到的 GPU 和已安裝版本；如果建議版本不同，也會顯示建議版本。以下三項都成立時，卡片會顯示**安裝並重新啟動**：重新啟動模式可用、這個平台有可安裝的版本，且已安裝版本與建議版本不同。提供的版本超過一個時，按鈕前面會有版本選單。按鈕下方的說明文字為「圖執行期間無法重新啟動。」，同一個安裝的終端機命令則收合在**手動指令**底下。重新啟動模式無法使用時（包括使用 `cdui dev`），或這個平台沒有可安裝的版本時，卡片不會顯示按鈕，而會說明原因並顯示命令。已經是建議版本的機器只會看到版本資訊和命令。在 Apple Silicon 上，MPS 加速已包含在預設的 PyTorch 版本中，所以卡片只顯示版本資訊和「GPU 加速已內建於預設的 PyTorch 版本。」提供的版本：Windows 為 `cpu`、`cu118`、`cu121`、`cu124`、`cu126`、`cu128`、`cu129`、`cu130`、`xpu`；Linux 為上述版本再加上 `rocm6.1`、`rocm6.2`、`rocm6.3`、`rocm6.4`、`rocm7.0`；macOS 沒有。選單中的每個選項都會標示對應的硬體，例如 `cu130 (CUDA 13.0)` 或 `xpu (Intel GPU)`。
 
 確認「安裝 cu128 並重新啟動伺服器？」等提示後，**伺服器重新啟動中**遮罩會阻擋頁面並顯示經過秒數。另一個伺服器行程開始回應時，頁面會重新載入，接著顯示「伺服器已重新啟動，GPU 版 PyTorch 已可使用。」或「伺服器已重新啟動，但安裝 GPU 版 PyTorch 失敗：」，並附上原因或安裝程式的最後輸出。如果線上安裝因 resolver 衝突而停止，且伺服器能自行重新啟動，其活動橫幅會提供**安裝並重新啟動**；確認視窗的內容為「伺服器將重新啟動並安裝 Python 套件；模型須於重啟後再執行一次安裝下載。」否則橫幅會顯示需在伺服器停止時執行的 `uv pip install` 命令。
 

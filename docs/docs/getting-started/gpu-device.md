@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: GPU & Device Setup
-description: Choose the right PyTorch build for NVIDIA CUDA, Apple Silicon (MPS), or AMD ROCm, and verify GPU detection.
+description: Choose the right PyTorch build for NVIDIA CUDA, Apple Silicon (MPS), AMD ROCm, or Intel GPUs (XPU), and verify GPU detection.
 ---
 
 # GPU & Device Setup
@@ -21,6 +21,12 @@ nvidia-smi
 Read the `CUDA Version:` field in the top-right, and then install the matching wheel with `cdui install --gpu`. This command replaces the PyTorch build in the venv. Later `cdui update` commands read the variant from the installed wheel and preserve it:
 
 ```bash
+# CUDA 13.0 — needs NVIDIA driver 580 or newer
+cdui install --gpu cu130
+
+# CUDA 12.9 — needs NVIDIA driver 575 or newer
+cdui install --gpu cu129
+
 # CUDA 12.8 — required for RTX 50 series (Blackwell, sm_120). Also works on RTX 30/40.
 cdui install --gpu cu128
 
@@ -31,7 +37,7 @@ cdui install --gpu cu126
 cdui install --gpu cu118
 ```
 
-The one-line installer uses `--gpu auto`. It maps the driver version reported by `nvidia-smi` to a wheel: 560 or newer selects `cu128`, 555 or newer selects `cu126`, 545 or newer selects `cu124`, 530 or newer selects `cu121`, and 520 or newer selects `cu118`. Older drivers select the CPU build. If the server was started with `cdui start`, the **GPU PyTorch** card in the Package Center performs the same installation and restarts the server. See [Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server).
+The one-line installer uses `--gpu auto`. It maps the driver version reported by `nvidia-smi` to a wheel: 580 or newer selects `cu130`, 575 or newer selects `cu129`, 560 or newer selects `cu128`, 555 or newer selects `cu126`, 545 or newer selects `cu124`, 530 or newer selects `cu121`, and 520 or newer selects `cu118`. Older drivers select the CPU build. If the server was started with `cdui start`, the **GPU PyTorch** card in the Package Center performs the same installation and restarts the server. See [Installs that restart the server](/usage/optional-packs#installs-that-restart-the-server).
 
 To install manually, activate `backend/.venv` and run the same `uv pip` command as the installer:
 
@@ -39,11 +45,11 @@ To install manually, activate `backend/.venv` and run the same `uv pip` command 
 cd backend
 .venv\Scripts\activate       # Windows
 source .venv/bin/activate    # macOS / Linux
-uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu128   # or cu126 / cu118
+uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/cu128   # or cu130 / cu129 / cu126 / cu118
 ```
 
 :::warning RTX 50 series (Blackwell)
-RTX 5090 / 5080 / 5070 **require** `cu128` — older wheels lack the `sm_120` kernels and fail at runtime with `no kernel image is available for execution`.
+RTX 5090 / 5080 / 5070 **require** `cu128` or newer (`cu129`, `cu130`) — older wheels lack the `sm_120` kernels and fail at runtime with `no kernel image is available for execution`.
 :::
 
 Verify CUDA is working:
@@ -71,10 +77,10 @@ AMD support depends heavily on your OS.
 ### Linux + AMD (ROCm, officially supported)
 
 ```bash
-cdui install --gpu rocm6.2      # or rocm6.1
+cdui install --gpu rocm6.2      # or rocm6.1 / rocm6.3 / rocm6.4 / rocm7.0
 ```
 
-When `rocm-smi` is on `PATH`, `--gpu auto` selects `rocm6.2`. For a manual installation, activate `backend/.venv` and run `uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2`.
+When `rocm-smi` is on `PATH`, `--gpu auto` selects `rocm6.2`; `rocm-smi` does not report which ROCm release the driver supports, so pick `rocm6.3`, `rocm6.4` or `rocm7.0` yourself when your ROCm installation is that new. For a manual installation, activate `backend/.venv` and run `uv pip install --reinstall-package torch --reinstall-package torchvision torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2`.
 
 Verify:
 
@@ -95,6 +101,26 @@ PyTorch does **not** ship an official Windows ROCm build. Your options:
   ```
 
 - **(b) CPU mode** — the default install already works. Recommended for learning/prototyping on Windows with AMD.
+
+## Intel GPU (XPU) {/* #intel-gpu-xpu */}
+
+PyTorch publishes an `xpu` build for Intel Arc, Data Center GPU Max/Flex and recent integrated Intel GPUs, on Linux and Windows. It needs the Intel GPU driver installed first; see Intel's PyTorch prerequisites for your GPU.
+
+```bash
+cdui install --gpu xpu
+```
+
+`--gpu auto` selects `xpu` only when `xpu-smi` (part of the Intel GPU driver stack) is on `PATH`. `sycl-ls` is not used for detection, because the oneAPI toolkit installs it on machines without an Intel GPU. On a machine without `xpu-smi`, choose `xpu` yourself.
+
+Verify:
+
+```bash
+python -c "import torch; print('XPU:', torch.xpu.is_available())"
+```
+
+:::note Runs still use the CPU
+CodefyUI's device controls offer `cpu`, `auto`, `cuda` (or `cuda:N`) and `mps`, and `auto` does not select an Intel GPU. With the `xpu` build installed, runs stay on the CPU until CodefyUI gains an `xpu` device option. The build is offered now so that custom nodes and scripts in the same venv can use `torch.xpu` directly.
+:::
 
 ## When a device is unavailable {/* #when-a-device-is-unavailable */}
 
