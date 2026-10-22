@@ -233,7 +233,7 @@
       "type": "note",
       "position": {
         "x": 380,
-        "y": -800
+        "y": -860
       },
       "data": {
         "noteKind": "text",
@@ -242,7 +242,7 @@
         "boundToNodeId": "rm-w",
         "boundOffset": {
           "x": 0,
-          "y": -380
+          "y": -440
         },
         "noteWidth": 300
       }

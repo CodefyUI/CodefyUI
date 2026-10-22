@@ -200,7 +200,7 @@
       "type": "note",
       "position": {
         "x": 40,
-        "y": 300
+        "y": 340
       },
       "data": {
         "noteKind": "text",
@@ -209,7 +209,7 @@
         "boundToNodeId": "rewards",
         "boundOffset": {
           "x": 0,
-          "y": 300
+          "y": 340
         },
         "noteWidth": 300
       }

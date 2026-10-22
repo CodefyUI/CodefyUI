@@ -169,7 +169,7 @@
       "type": "note",
       "position": {
         "x": 1000,
-        "y": 300
+        "y": 480
       },
       "data": {
         "noteKind": "text",
@@ -178,7 +178,7 @@
         "boundToNodeId": "stats",
         "boundOffset": {
           "x": 0,
-          "y": 300
+          "y": 480
         },
         "noteWidth": 300
       }
