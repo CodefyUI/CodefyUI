@@ -2114,8 +2114,14 @@ export async function removePackItem(
 
 // ── Plugin Center ────────────────────────────────────────────────────────
 
-/** Where an INSTALLED plugin's files came from. */
-export type PluginSourceKind = 'builtin' | 'github_url' | 'local';
+/**
+ * Where an INSTALLED plugin's files came from. `local` is a folder linked in
+ * place (`cdui plugin link`); `local_copy` is a folder or archive that was
+ * COPIED in through the install flow; `git_url` is a repository cloned from
+ * an HTTPS git host other than GitHub.
+ */
+export type PluginSourceKind =
+  'builtin' | 'github_url' | 'local' | 'local_copy' | 'git_url';
 
 /**
  * Where a catalog entry stands right now. `removed` is a builtin the user
@@ -2212,8 +2218,12 @@ export interface PluginInspection {
    *  `expires_at`, which is a 404 `inspection_expired`. */
   inspection_id: string;
   expires_at: string;
-  /** An `external` plugin has no source to inspect, so it never appears. */
-  kind: 'builtin' | 'github';
+  /**
+   * An `external` plugin has no source to inspect, so it never appears.
+   * `local` is a folder or archive on the server's disk, `git` a repository
+   * on another HTTPS git host.
+   */
+  kind: 'builtin' | 'github' | 'local' | 'git';
   /** The same two values as a job's kind: a fresh install, or an update. */
   mode: PluginJobKind;
   plugin_id: string;
@@ -2258,6 +2268,12 @@ export interface PluginInspection {
   capabilities_added: string[];
   allowed_modules_added: string[];
   warnings: string[];
+  /** A local source's path on the server; null for every other kind. */
+  path: string | null;
+  /** Whether a local source is a folder or an archive; null otherwise. */
+  source_form: 'folder' | 'archive' | null;
+  /** sha256 the install is pinned to (the archive's, or the copied tree's). */
+  digest: string | null;
 }
 
 /**
@@ -2344,7 +2360,9 @@ const PLUGIN_STATUSES: readonly string[] = [
   'missing_files',
 ];
 const PLUGIN_KINDS: readonly string[] = ['builtin', 'github', 'external'];
-const PLUGIN_SOURCE_KINDS: readonly string[] = ['builtin', 'github_url', 'local'];
+const PLUGIN_SOURCE_KINDS: readonly string[] = [
+  'builtin', 'github_url', 'local', 'local_copy', 'git_url',
+];
 
 /**
  * One catalog row, field by field.
@@ -2435,12 +2453,16 @@ type RawInstalled = Omit<
 /** An inspection as it arrives, with the enum-ish fields widened. */
 type RawInspection = Omit<
   Partial<PluginInspection>,
-  'kind' | 'mode' | 'installed'
+  'kind' | 'mode' | 'installed' | 'source_form'
 > & {
   kind?: string;
   mode?: string;
   installed?: RawInstalled | null;
+  source_form?: string | null;
 };
+
+/** The inspection kinds this build can draw; anything else reads as `github`. */
+const INSPECTION_KINDS: readonly string[] = ['builtin', 'local', 'git'];
 
 function normalizeInstalled(raw: RawInstalled | null | undefined) {
   if (raw === null || raw === undefined) return null;
@@ -2475,7 +2497,9 @@ function normalizePluginInspection(raw: RawInspection): PluginInspection {
     expires_at: raw.expires_at ?? '',
     // A source this build cannot name is still one it can install from a
     // repository; `builtin` is the narrower claim, so it has to be said.
-    kind: raw.kind === 'builtin' ? 'builtin' : 'github',
+    kind: INSPECTION_KINDS.includes(raw.kind ?? '')
+      ? (raw.kind as PluginInspection['kind'])
+      : 'github',
     // Same narrowing as the store's `jobKind`: anything a newer backend
     // invents reads as a fresh install rather than as an update of nothing.
     mode: raw.mode === 'update' ? 'update' : 'install',
@@ -2503,6 +2527,11 @@ function normalizePluginInspection(raw: RawInspection): PluginInspection {
     capabilities_added: raw.capabilities_added ?? [],
     allowed_modules_added: raw.allowed_modules_added ?? [],
     warnings: raw.warnings ?? [],
+    path: raw.path ?? null,
+    source_form: raw.source_form === 'folder' || raw.source_form === 'archive'
+      ? raw.source_form
+      : null,
+    digest: raw.digest ?? null,
   };
 }
 

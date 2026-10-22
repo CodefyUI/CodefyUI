@@ -1831,7 +1831,9 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.uninstall': '解除安裝',
   'pluginCenter.uninstallConfirm':
     '要解除安裝「{plugin}」嗎？使用它節點的圖將無法執行；它安裝的 Python 套件會保留。',
-  'pluginCenter.source.invalid': '請輸入 owner/repo[@ref] 或 GitHub URL。',
+  'pluginCenter.source.invalid':
+    '請輸入 owner/repo[@ref]、GitHub URL、其他 git 主機的 https://host/owner/repo[@ref]，'
+    + '或伺服器上的資料夾、.zip、.tar.gz 路徑（/abs、./rel、~/x、file:///x）。',
 
   // The panel: chrome, list states, filter.
   'pluginCenter.title': '外掛中心',
@@ -1851,6 +1853,7 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.origin.builtin': '內建',
   'pluginCenter.origin.official': '官方',
   'pluginCenter.origin.local': '本機連結',
+  'pluginCenter.origin.localCopy': '本機複本',
   'pluginCenter.homepage': '首頁',
   'pluginCenter.chapters': '課程：{chapters}',
 
@@ -1866,8 +1869,12 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.reinstall': '重新安裝',
 
   // Installing something the catalog does not list.
-  'pluginCenter.source.label': '從 GitHub 安裝',
-  'pluginCenter.source.placeholder': 'owner/repo[@ref] 或 GitHub URL',
+  'pluginCenter.source.label': '從來源安裝',
+  'pluginCenter.source.placeholder': 'owner/repo、git URL 或伺服器上的路徑',
+  'pluginCenter.source.hint':
+    '可輸入 owner/repo[@ref]、GitHub URL、GitLab、Gitea、Codeberg 或其他 git 主機的 '
+    + 'HTTPS URL（https://host/owner/repo[@ref]），或伺服器上的外掛資料夾、.zip、'
+    + '.tar.gz（/abs/path、./relative、~/path、file:///path）。',
   'pluginCenter.source.review': '檢視',
   'pluginCenter.source.reviewing': '檢視中...',
   'pluginCenter.source.fail': '無法取得 {source}：{message}',
@@ -1877,6 +1884,9 @@ const zhTW: Record<TranslationKey, string> = {
   // The consent screen.
   'pluginCenter.review.title': '安裝前請確認',
   'pluginCenter.review.author': '作者：{author}',
+  'pluginCenter.review.localFolder': '本機資料夾：{path}',
+  'pluginCenter.review.localArchive': '本機壓縮檔：{path}',
+  'pluginCenter.review.gitRepo': '儲存庫：{url}',
   'pluginCenter.review.nodes': '節點：{nodes}',
   'pluginCenter.review.capabilities': '這個外掛要求：',
   'pluginCenter.review.capNote':
@@ -1933,6 +1943,20 @@ const zhTW: Record<TranslationKey, string> = {
   'pluginCenter.error.githubRateLimited':
     '已達 GitHub 請求上限，請稍後再試，或在伺服器設定 CODEFYUI_GITHUB_TOKEN。',
   'pluginCenter.error.githubUnreachable': '無法連線到 GitHub。',
+  'pluginCenter.error.localNotFound': '伺服器上的這個路徑沒有東西。',
+  'pluginCenter.error.sourceRefused': '無法安裝這個資料夾或壓縮檔。',
+  'pluginCenter.error.sourceNotSupported': '只能安裝資料夾、.zip、.tar.gz 或 .tgz。',
+  'pluginCenter.error.sourceTooLarge': '這個外掛超過安裝大小上限。',
+  'pluginCenter.error.sourceTooManyFiles': '這個外掛的檔案數超過安裝上限。',
+  'pluginCenter.error.sourceUnsafe': '這個外掛含有連結、裝置檔，或指向資料夾外的路徑。',
+  'pluginCenter.error.sourceUnreadable': '壓縮檔已損壞或無法讀取。',
+  'pluginCenter.error.sourceLayout':
+    '壓縮檔的根目錄或唯一的頂層資料夾裡必須有 cdui.plugin.toml。',
+  'pluginCenter.error.gitUnavailable':
+    '從這個 git 主機安裝需要伺服器上有 git。請在伺服器安裝 git 後重新啟動伺服器。',
+  'pluginCenter.error.gitNotFound': '這個 git 主機上沒有這個儲存庫或 ref，或是需要登入。',
+  'pluginCenter.error.gitTimeout': '複製儲存庫花了太久。請稍後再試。',
+  'pluginCenter.error.gitFailed': 'git 無法複製這個儲存庫。',
 
   // Source Control (the sidebar's fifth tab).
   'git.action.more': '更多動作',

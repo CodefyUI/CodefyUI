@@ -346,6 +346,23 @@ def reserved_id_holder(
     return None
 
 
+def reserved_for_copied_source(plugin_id: str) -> str | None:
+    """:func:`reserved_id_holder` for an INSTALL with no GitHub repository.
+
+    A folder, an archive or a clone from another host is copied into the
+    plugin directory like a GitHub install, so it may not take a ``github``
+    catalog row's id either: nothing about it can be checked against the
+    repository the row names. ``link`` and ``new`` keep the narrower rule.
+    """
+    taken_by = reserved_id_holder(plugin_id)
+    if taken_by is not None:
+        return taken_by
+    entry = catalog_entries().get(plugin_id.lower())
+    if entry is not None and entry.repo:
+        return f"the repository {entry.repo}"
+    return None
+
+
 def catalog_entry(plugin_id: str) -> CatalogEntry | None:
     """One entry by id, case-insensitively, or ``None``.
 

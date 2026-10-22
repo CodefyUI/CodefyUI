@@ -2097,7 +2097,10 @@ const en = {
   // A bare catalog name still parses (`parseGitHubSource`), and a name this
   // build does not have gets its own refusal with the list of names that WOULD
   // work — so this one names only what the label and the placeholder do.
-  'pluginCenter.source.invalid': 'Enter owner/repo[@ref] or a GitHub URL.',
+  'pluginCenter.source.invalid':
+    'Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on '
+    + 'another git host, or a folder, .zip or .tar.gz path on the server '
+    + '(/abs, ./rel, ~/x, file:///x).',
 
   // The panel: its chrome, what the list can be saying instead of rows, and
   // the filter over them.
@@ -2127,6 +2130,9 @@ const en = {
   'pluginCenter.origin.builtin': 'Built-in',
   'pluginCenter.origin.official': 'Official',
   'pluginCenter.origin.local': 'Linked folder',
+  // A folder or archive COPIED in through the install flow, as opposed to a
+  // linked folder that loads in place.
+  'pluginCenter.origin.localCopy': 'Local copy',
   'pluginCenter.homepage': 'Homepage',
   'pluginCenter.chapters': 'Lessons: {chapters}',
 
@@ -2145,8 +2151,16 @@ const en = {
   'pluginCenter.reinstall': 'Reinstall',
 
   // Installing something the catalog does not list.
-  'pluginCenter.source.label': 'Install from GitHub',
-  'pluginCenter.source.placeholder': 'owner/repo[@ref] or GitHub URL',
+  'pluginCenter.source.label': 'Install from a source',
+  'pluginCenter.source.placeholder': 'owner/repo, a git URL, or a path on the server',
+  // Under the box, always: the shapes the field takes. A path is read on the
+  // machine the server runs on, which is the one fact a student on another
+  // laptop would not guess.
+  'pluginCenter.source.hint':
+    'Accepts owner/repo[@ref], a GitHub URL, an HTTPS URL on GitLab, Gitea, '
+    + 'Codeberg or another git host (https://host/owner/repo[@ref]), or a '
+    + 'plugin folder, .zip or .tar.gz on the server (/abs/path, ./relative, '
+    + '~/path, file:///path).',
   'pluginCenter.source.review': 'Review',
   'pluginCenter.source.reviewing': 'Reviewing...',
   'pluginCenter.source.fail': 'Could not fetch {source}: {message}',
@@ -2161,6 +2175,11 @@ const en = {
   // what it asks for has been ticked.
   'pluginCenter.review.title': 'Review before installing',
   'pluginCenter.review.author': 'Author: {author}',
+  // Where a local source is, so the consent is about a place the reader can
+  // check, the way a repository review names the repository.
+  'pluginCenter.review.localFolder': 'Local folder: {path}',
+  'pluginCenter.review.localArchive': 'Local archive: {path}',
+  'pluginCenter.review.gitRepo': 'Repository: {url}',
   'pluginCenter.review.nodes': 'Nodes: {nodes}',
   'pluginCenter.review.capabilities': 'This plugin asks for:',
   // The word "capabilities" suggests a sandbox, so the caption states what
@@ -2252,6 +2271,27 @@ const en = {
     "GitHub's request limit was reached. Try again later, or set "
     + 'CODEFYUI_GITHUB_TOKEN on the server.',
   'pluginCenter.error.githubUnreachable': 'Could not reach GitHub.',
+  // A local folder or archive. The path is read on the SERVER, which is why
+  // the not-found sentence says so.
+  'pluginCenter.error.localNotFound': 'Nothing at that path on the server.',
+  'pluginCenter.error.sourceRefused': 'This folder or archive cannot be installed.',
+  'pluginCenter.error.sourceNotSupported':
+    'Only a folder, a .zip, a .tar.gz or a .tgz can be installed.',
+  'pluginCenter.error.sourceTooLarge': 'This plugin is larger than the install limit.',
+  'pluginCenter.error.sourceTooManyFiles': 'This plugin holds more files than the install limit.',
+  'pluginCenter.error.sourceUnsafe':
+    'This plugin contains a link, a device file or a path outside its folder.',
+  'pluginCenter.error.sourceUnreadable': 'The archive is damaged or could not be read.',
+  'pluginCenter.error.sourceLayout':
+    'The archive needs cdui.plugin.toml at its root or in its one top-level folder.',
+  // A repository on another git host, cloned with git on the SERVER.
+  'pluginCenter.error.gitUnavailable':
+    'Installing from this git host needs git on the server. Install git there '
+    + 'and restart the server.',
+  'pluginCenter.error.gitNotFound':
+    'The git host has no such repository or ref, or it needs a login.',
+  'pluginCenter.error.gitTimeout': 'The clone took too long. Try again later.',
+  'pluginCenter.error.gitFailed': 'git could not clone the repository.',
 
   // Source Control (the sidebar's fifth tab). Parts 2 and 3 of the track:
   // status, stage / unstage / discard, commit, the commit identity, and then

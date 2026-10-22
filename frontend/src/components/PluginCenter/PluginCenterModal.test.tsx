@@ -82,6 +82,9 @@ function inspection(over: Partial<PluginInspection> = {}): PluginInspection {
     capabilities_added: [],
     allowed_modules_added: [],
     warnings: [],
+    path: null,
+    source_form: null,
+    digest: null,
     ...over,
   };
 }
@@ -329,7 +332,7 @@ describe('PluginCenterModal — the plugin list', () => {
     ).toBeInTheDocument();
     // No filter and no source box over a server that cannot answer either.
     expect(screen.queryByRole('button', { name: 'All' })).toBeNull();
-    expect(screen.queryByLabelText('Install from GitHub')).toBeNull();
+    expect(screen.queryByLabelText('Install from a source')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Review' })).toBeNull();
   });
 
@@ -397,6 +400,96 @@ describe('PluginCenterModal — what a row offers', () => {
     // somebody's working copy.
     expect(within(cardFor('wip')).getByText('Linked folder')).toBeInTheDocument();
     expect(buttonsOn('wip')).toEqual(['Disable']);
+  });
+
+  it('names a plugin copied from a folder by where it came from', () => {
+    seed({
+      plugins: [
+        entry({
+          id: 'usb-demo',
+          name: 'USB demo',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'local_copy',
+          source: '/Volumes/USB/usb-demo',
+        }),
+      ],
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const row = within(cardFor('usb-demo'));
+    expect(row.getByText('Local copy')).toBeInTheDocument();
+    expect(row.getByText('/Volumes/USB/usb-demo')).toBeInTheDocument();
+    // It was installed through the flow, so it can be removed; there is no
+    // repository to update it from.
+    expect(buttonsOn('usb-demo')).toEqual(['Disable', 'Uninstall']);
+  });
+
+  it('names a row by its id when it has no name, and its repo without a link', () => {
+    seed({
+      plugins: [entry({
+        id: 'nameless', name: '', status: 'installed', source_kind: 'github_url',
+        repo: 'owner/nameless', url: '',
+      })],
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const row = within(cardFor('nameless'));
+    expect(row.getByText('nameless')).toBeInTheDocument();
+    const repo = row.getByText('owner/nameless');
+    expect(repo.tagName).toBe('SPAN');
+  });
+
+  it('links a plugin from another git host by its URL and offers Update', () => {
+    seed({
+      plugins: [
+        entry({
+          id: 'hosted',
+          name: 'Hosted',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'git_url',
+          source: 'https://gitlab.com/school/hosted@v1',
+          url: 'https://gitlab.com/school/hosted',
+          ref: 'v1',
+          sha: '0123456789abcdef0123456789abcdef01234567',
+        }),
+        entry({
+          id: 'odd',
+          name: 'Odd record',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'git_url',
+          url: 'javascript:alert(1)',
+        }),
+        entry({
+          id: 'bare',
+          name: 'No URL recorded',
+          kind: 'external',
+          official: false,
+          status: 'installed',
+          source_kind: 'git_url',
+          url: null,
+        }),
+      ],
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    const link = within(cardFor('hosted')).getByRole('link', {
+      name: 'https://gitlab.com/school/hosted',
+    });
+    expect(link).toHaveAttribute('href', 'https://gitlab.com/school/hosted');
+    expect(within(cardFor('hosted')).getByText('v1 @ 0123456')).toBeInTheDocument();
+    expect(buttonsOn('hosted')).toEqual(['Disable', 'Update', 'Uninstall']);
+    // A URL that is not a web address is never made into a link.
+    expect(within(cardFor('odd')).queryByRole('link')).toBeNull();
+    expect(within(cardFor('bare')).queryByRole('link')).toBeNull();
   });
 
   it('offers to put a removed plugin back', () => {
@@ -519,7 +612,7 @@ describe('PluginCenterModal — remote installs refused', () => {
 describe('PluginCenterModal — the source box', () => {
   /** Type *value* into the box and press Review. */
   function review(value: string) {
-    fireEvent.change(screen.getByLabelText('Install from GitHub'), {
+    fireEvent.change(screen.getByLabelText('Install from a source'), {
       target: { value },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
@@ -530,9 +623,15 @@ describe('PluginCenterModal — the source box', () => {
     open();
     render(<PluginCenterModal />);
 
-    expect(screen.getByLabelText('Install from GitHub')).toHaveAttribute(
-      'placeholder', 'owner/repo[@ref] or GitHub URL',
+    const field = screen.getByLabelText('Install from a source');
+    expect(field).toHaveAttribute(
+      'placeholder', 'owner/repo, a git URL, or a path on the server',
     );
+    // The shapes the field takes are on screen under it, and are what the
+    // field is described by until a refusal joins them.
+    const hint = screen.getByText(/^Accepts owner\/repo\[@ref\], a GitHub URL/);
+    expect(hint).toHaveTextContent('.zip');
+    expect(field).toHaveAttribute('aria-describedby', hint.id);
     // Nothing to review until something is typed.
     expect(screen.getByRole('button', { name: 'Review' })).toBeDisabled();
   });
@@ -544,11 +643,11 @@ describe('PluginCenterModal — the source box', () => {
 
     // The disclosure carries the name on screen and the field carries it in
     // the accessibility tree, so opening it does not print it twice.
-    const summary = screen.getByText('Install from GitHub', { selector: 'summary' });
+    const summary = screen.getByText('Install from a source', { selector: 'summary' });
     const disclosure = summary.closest('details');
     expect(disclosure).not.toBeNull();
     expect(disclosure).not.toHaveAttribute('open');
-    expect(screen.getByLabelText('Install from GitHub').closest('details'))
+    expect(screen.getByLabelText('Install from a source').closest('details'))
       .toBe(disclosure);
 
     // The filter is what sits directly above the rows it filters: the box is
@@ -568,7 +667,7 @@ describe('PluginCenterModal — the source box', () => {
     review('not a repo!');
 
     expect(
-      screen.getByText('Enter owner/repo[@ref] or a GitHub URL.'),
+      screen.getByText('Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
     ).toBeInTheDocument();
     // The server would answer 400 to the same string; this build knows that
     // without the round trip, so it does not make one.
@@ -584,7 +683,7 @@ describe('PluginCenterModal — the source box', () => {
 
     expect(actions.inspect).toHaveBeenCalledWith('owner/demo@v1');
     expect(
-      screen.queryByText('Enter owner/repo[@ref] or a GitHub URL.'),
+      screen.queryByText('Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
     ).toBeNull();
   });
 
@@ -602,14 +701,14 @@ describe('PluginCenterModal — the source box', () => {
     render(<PluginCenterModal />);
 
     review('not a repo!');
-    const input = screen.getByLabelText('Install from GitHub');
+    const input = screen.getByLabelText('Install from a source');
     expect(input).toHaveAttribute('aria-invalid', 'true');
 
     // The refusal was earned by the STRING, so it is withdrawn by the
     // keystroke that changes it rather than by another press of Review.
     fireEvent.change(input, { target: { value: 'owner/demo' } });
     expect(
-      screen.queryByText('Enter owner/repo[@ref] or a GitHub URL.'),
+      screen.queryByText('Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).'),
     ).toBeNull();
     expect(input).not.toHaveAttribute('aria-invalid');
   });
@@ -632,8 +731,12 @@ describe('PluginCenterModal — the source box', () => {
     ).toBeInTheDocument();
     // `role="alert"` says it once when it arrives; this is what says it again
     // to somebody who tabs back into the field.
-    expect(screen.getByLabelText('Install from GitHub')).toHaveAttribute(
-      'aria-describedby', screen.getByRole('alert').id,
+    const described = screen.getByLabelText('Install from a source')
+      .getAttribute('aria-describedby')?.split(' ');
+    expect(described).toContain(screen.getByRole('alert').id);
+    // The shapes hint stays part of the description beside the refusal.
+    expect(described).toContain(
+      screen.getByText(/^Accepts owner\/repo\[@ref\]/).id,
     );
   });
 
@@ -838,12 +941,46 @@ describe('PluginCenterModal — the source box', () => {
     expect(screen.getByText('This server can install: edu, stats')).toBeInTheDocument();
   });
 
+  it('offers no names when a catalog miss listed none', () => {
+    for (const detail of [
+      { code: 'unknown_catalog_name', known: [] },
+      { code: 'unknown_catalog_name', known: 'edu' },
+      null,
+    ]) {
+      seed({
+        inspection: {
+          phase: 'error',
+          source: 'c9',
+          failure: { message: 'unknown_catalog_name', code: 'unknown_catalog_name', detail },
+        },
+      });
+      open();
+      const { unmount } = render(<PluginCenterModal />);
+
+      expect(screen.getByText('No plugin is called "c9".')).toBeInTheDocument();
+      expect(screen.queryByText(/^This server can install/)).toBeNull();
+      unmount();
+    }
+  });
+
+  it('sends nothing for a box submitted empty', () => {
+    seed();
+    open();
+    render(<PluginCenterModal />);
+
+    const field = screen.getByLabelText('Install from a source');
+    fireEvent.change(field, { target: { value: '   ' } });
+    fireEvent.submit(field.closest('form') as HTMLFormElement);
+    expect(actions.inspect).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('will not review from a browser the server refuses installs from', () => {
     seed({ remoteInstallAllowed: false });
     open();
     render(<PluginCenterModal />);
 
-    fireEvent.change(screen.getByLabelText('Install from GitHub'), {
+    fireEvent.change(screen.getByLabelText('Install from a source'), {
       target: { value: 'owner/demo' },
     });
     const button = screen.getByRole('button', { name: 'Review' });
@@ -1107,6 +1244,76 @@ describe('PluginCenterModal — the review', () => {
     render(<PluginCenterModal />);
 
     expect(within(card()).queryByText(/^Nodes:/)).toBeNull();
+  });
+
+  it('says where a local folder under review is', () => {
+    seed({
+      inspection: ready({
+        kind: 'local', source: '/srv/usb/demo', path: '/srv/usb/demo',
+        source_form: 'folder', digest: 'a'.repeat(64), consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByText('Local folder: /srv/usb/demo')).toBeInTheDocument();
+  });
+
+  it('says where a local archive under review is', () => {
+    seed({
+      inspection: ready({
+        kind: 'local', source: '/srv/usb/demo.zip', path: '/srv/usb/demo.zip',
+        source_form: 'archive', digest: 'b'.repeat(64), consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByText('Local archive: /srv/usb/demo.zip')).toBeInTheDocument();
+  });
+
+  it('names the repository a git review is about', () => {
+    seed({
+      inspection: ready({
+        kind: 'git', source: 'https://codeberg.org/a/b@v2', url: 'https://codeberg.org/a/b',
+        ref: 'v2', sha: 'fedcba9876543210fedcba9876543210fedcba98', consent_required: true,
+      }),
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByText('Repository: https://codeberg.org/a/b')).toBeInTheDocument();
+    expect(within(card()).getByText('v2 @ fedcba9')).toBeInTheDocument();
+  });
+
+  it('says nothing about a place for a git review with no URL', () => {
+    seed({ inspection: ready({ kind: 'git', url: null }) });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).queryByText(/^Repository:/)).toBeNull();
+  });
+
+  it('says nothing about a place for a local review with no path', () => {
+    seed({ inspection: ready({ kind: 'local', path: null }) });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).queryByText(/^Local (folder|archive):/)).toBeNull();
+  });
+
+  it('titles a review with no name by its plugin id', () => {
+    seed({
+      inspection: {
+        ...ready({ plugin_id: 'demo', name: '', consent_required: true }),
+        error: { message: 'already_installed', code: 'already_installed', detail: null },
+      },
+    });
+    open();
+    render(<PluginCenterModal />);
+
+    expect(within(card()).getByText('demo')).toBeInTheDocument();
+    expect(within(card()).getByText(/^demo is already installed\./)).toBeInTheDocument();
   });
 
   it('puts the review away when it is cancelled', () => {

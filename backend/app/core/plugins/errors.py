@@ -313,3 +313,55 @@ class ManifestError(ValueError):
     ``except ValueError`` around ``validate_manifest`` -- in the CLI and in
     the tests -- predates this class and keeps working.
     """
+
+
+class SourceRefused(PluginInstallError):
+    """A folder or an archive whose CONTENT this build will not take.
+
+    ``reason`` is what a caller branches on, one of:
+
+    * ``not_found`` -- nothing at the path;
+    * ``not_supported`` -- a file that is not ``.zip``/``.tar.gz``/``.tgz``,
+      or a path that is neither a file nor a directory;
+    * ``too_large`` -- past the size cap, compressed or unpacked;
+    * ``too_many_files`` -- past the member-count cap;
+    * ``unsafe_member`` -- a member that would write outside the target, a
+      link, or a device file;
+    * ``unreadable`` -- a truncated or corrupt archive, or a read error;
+    * ``layout`` -- no manifest at the root and no single top-level
+      directory to find one in;
+    * ``changed`` -- the files differ from the ones that were reviewed.
+
+    A :class:`PluginInstallError`, so every existing ``except`` keeps
+    working. The GitHub tarball extraction raises it too, with the sentences
+    it always printed.
+    """
+
+    def __init__(self, message: str, *, reason: str, path: str = "",
+                 hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.reason = reason
+        self.path = path
+
+
+class GitUnavailable(PluginInstallError):
+    """A git source was asked for and no ``git`` executable is on PATH.
+
+    Its own class because the fix is on the server (install git, or put it
+    on the PATH the server runs with), not in the source that was typed.
+    """
+
+
+class GitError(PluginInstallError):
+    """Cloning a repository from a git host failed.
+
+    ``reason`` is ``not_found`` (the repository or the ref does not exist,
+    or the host wants credentials, which is how a private repository looks
+    from outside), ``timeout`` (the clone ran past its time limit) or
+    ``failed`` (anything else git reported). ``hint`` carries the last lines
+    git wrote to stderr.
+    """
+
+    def __init__(self, message: str, *, reason: str, hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.reason = reason
