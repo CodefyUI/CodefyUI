@@ -214,7 +214,7 @@ def uninstall_plugin(
 
         files_removed: bool | None = None
         directory: Path | None = None
-        if entry.get("source_kind") == "github_url":
+        if entry.get("source_kind") in plugin_loader.COPIED_SOURCE_KINDS:
             files_removed, failure, directory = _remove_downloaded_files(plugin_id)
             if not files_removed:
                 return _outcome(
@@ -343,6 +343,17 @@ def reinstall_command(
             and (Path(path) / plugin_loader.MANIFEST_FILENAME).is_file()
         ):
             return f"cdui plugin link {_shell_quote(path)}"
+    if kind == "local_copy":
+        # The folder or archive it was copied from, while that is still
+        # there. Uninstalling deleted only the copy.
+        path = entry.get("path")
+        if (
+            isinstance(path, str)
+            and Path(path).is_absolute()
+            and not _UNSAFE_PATH_CHARS.intersection(path)
+            and Path(path).exists()
+        ):
+            return f"cdui plugin install {_shell_quote(path)}"
     return None
 
 

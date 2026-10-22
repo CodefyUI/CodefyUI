@@ -523,8 +523,8 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     pins: dict = {}
     for pid, entry in load_lockfile().get("plugins", {}).items():
         kind = entry.get("source_kind")
-        if kind == "local":
-            warn(f"略過本地連結：{pid}",
+        if kind in ("local", "local_copy"):
+            warn(f"略過本地連結或本機來源：{pid}",
                  f"Skipping linked/local plugin: {pid} (machine-specific path)")
             continue
         if kind == "builtin":

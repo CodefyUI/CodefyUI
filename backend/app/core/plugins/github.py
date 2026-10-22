@@ -23,6 +23,10 @@ exception -- this module logs nothing at all, which is the cheapest way to
 be sure -- and never carried across a redirect, which is the one way it
 could leave GitHub's own hosts (see :func:`_request`).
 
+The archive extraction at the bottom is shared with local sources
+(:mod:`.local`): a ``.zip`` or ``.tar.gz`` from a USB stick is held to the
+same member-count, size and traversal rules as a codeload tarball.
+
 The download is streamed rather than read whole, and takes a *cancel_check*
 and a *progress* callback, because the caller may be a job the user can stop
 from a browser: a 100 MB read inside one ``resp.read()`` is a Stop button
@@ -31,16 +35,20 @@ that does nothing for a minute and a progress bar with two frames.
 
 from __future__ import annotations
 
+import gzip
 import http.client
 import json
 import os
 import re
+import stat
 import tarfile
 import time
 import urllib.request
+import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
 
 from app.core.plugin_loader import MANIFEST_FILENAME
@@ -50,6 +58,7 @@ from .errors import (
     ManifestError,
     PluginCancelled,
     PluginInstallError,
+    SourceRefused,
 )
 
 USER_AGENT = "cdui-plugin-installer/0.1"
@@ -425,75 +434,246 @@ def download_tarball(
         raise
 
 
-def extract_tarball(tar_path: Path, dest_dir: Path) -> Path:
-    """Unpack *tar_path* into *dest_dir* and return its single root directory.
+#: How many members an archive may hold. A plugin is a few dozen files; a
+#: generous ceiling still stops an archive whose index alone is the attack,
+#: where each member is empty and the size cap never trips.
+MAX_ARCHIVE_MEMBERS = 20_000
+
+#: Top-level names an archive tool adds that are not part of the plugin.
+#: macOS "Compress" writes ``__MACOSX/`` beside the folder it zips, and a
+#: classroom zip made on a Mac would otherwise have two top-level
+#: directories and no root.
+_IGNORED_TOP_LEVEL = frozenset({"__MACOSX", ".DS_Store"})
+
+
+def check_caps(name: str, members: int, unpacked: int) -> None:
+    """Refuse an archive past the member-count or the unpacked-size cap."""
+    if members > MAX_ARCHIVE_MEMBERS:
+        raise SourceRefused(
+            f"{name} holds more than {MAX_ARCHIVE_MEMBERS} files.",
+            reason="too_many_files",
+            hint=(
+                f"It lists {members} members; nothing was unpacked."
+            ),
+        )
+    if unpacked > MAX_EXTRACTED_BYTES:
+        cap_mb = MAX_EXTRACTED_BYTES // (1024 * 1024)
+        raise SourceRefused(
+            f"{name} unpacks to more than {cap_mb} MB.",
+            reason="too_large",
+            hint=(
+                f"Its members add up to {unpacked // (1024 * 1024)} MB, "
+                f"which is past the {cap_mb} MB this build will write; "
+                f"nothing was unpacked."
+            ),
+        )
+
+
+def _extract_tar(tar_path: Path, dest_dir: Path) -> None:
+    """Unpack a gzip tarball into *dest_dir* under every cap.
 
     ``filter="data"`` is the load-bearing argument: without it a tarball can
     write outside *dest_dir* through ``../`` members, absolute paths, links
-    and device nodes -- and this one comes off the internet.
+    and device nodes.
 
-    The unpacked size is added up BEFORE a single member is written, because
-    the alternative is finding out at the point where the disk is already
-    full: ``filter="data"`` says where the bytes may go and nothing says how
-    many there may be, and the ratio between the two caps is gzip's, not the
-    author's. The index has to be read to do it, which for a gzip stream
-    means decompressing it once more than a bare ``extractall`` would --
-    paid on every install, in exchange for a cap that cannot be reached.
+    The unpacked size and the member count are added up BEFORE a single
+    member is written, because the alternative is finding out at the point
+    where the disk is already full: ``filter="data"`` says where the bytes
+    may go and nothing says how many there may be, and the ratio between the
+    two caps is gzip's, not the author's. The index has to be read to do it,
+    which for a gzip stream means decompressing it once more than a bare
+    ``extractall`` would.
 
-    Exactly one top-level directory, or nothing is installed. A GitHub
-    codeload tarball is always ``<repo>-<ref>/...`` and that root is what the
-    manifest is read from; a tarball with two of them is not a plugin whose
-    root can be guessed, and guessing would mean installing whichever one the
-    filesystem happened to list first.
-
-    Every ``tarfile`` failure becomes a :class:`~.errors.PluginInstallError`.
-    A truncated download and a file that is not a gzip at all both arrive
-    here as ``TarError``, which is a class no caller of an installer has any
-    reason to know about -- and one that travelled past every ``except`` on
-    the way out to a traceback. A tarball the data filter REFUSED is told
-    apart from those two, because "retry the install" is exactly the wrong
-    advice to give about one that tried to escape.
+    Every ``tarfile`` failure becomes a :class:`~.errors.SourceRefused`. A
+    truncated download and a file that is not a gzip at all both arrive here
+    as ``TarError``, which no caller of an installer has any reason to know
+    about. A tarball the data filter REFUSED is told apart from those two,
+    because "retry the install" is exactly the wrong advice to give about one
+    that tried to escape.
     """
     try:
         with tarfile.open(tar_path, "r:gz") as tf:
             members = tf.getmembers()
-            unpacked = sum(member.size for member in members)
-            if unpacked > MAX_EXTRACTED_BYTES:
-                cap_mb = MAX_EXTRACTED_BYTES // (1024 * 1024)
-                raise PluginInstallError(
-                    f"{tar_path.name} unpacks to more than {cap_mb} MB.",
-                    hint=(
-                        f"Its members add up to {unpacked // (1024 * 1024)} MB, "
-                        f"which is past the {cap_mb} MB this build will write; "
-                        f"nothing was unpacked."
-                    ),
-                )
+            check_caps(
+                tar_path.name, len(members), sum(member.size for member in members)
+            )
             tf.extractall(dest_dir, filter="data", members=members)
     except tarfile.FilterError as exc:
         # FIRST, because ``FilterError`` IS a ``TarError``: an absolute path,
         # a link pointing out of the destination, a device node -- every
         # refusal ``filter="data"`` makes -- would otherwise be reported by
-        # the clause below as a transient read failure, and the user told to
-        # RETRY a tarball that was caught trying to write outside the
-        # directory it was unpacked into. Nothing about that is transient,
-        # and retrying it is the one thing nobody should do.
-        raise PluginInstallError(
+        # the clause below as a transient read failure.
+        raise SourceRefused(
             f"{tar_path.name} holds a member this build will not unpack.",
+            reason="unsafe_member",
             hint=(
                 f"A plugin tarball may not write outside the directory it is "
                 f"unpacked into, and may not carry links that point outside "
                 f"it, or device files: {exc}"
             ),
         ) from exc
-    except tarfile.TarError as exc:
-        raise PluginInstallError(
+    except (tarfile.TarError, EOFError, zlib.error, gzip.BadGzipFile) as exc:
+        raise SourceRefused(
             f"{tar_path.name} could not be unpacked.",
+            reason="unreadable",
             hint=f"tarfile could not read it ({exc}); retry the install.",
         ) from exc
+
+
+def _zip_member_path(name: str) -> PurePosixPath | None:
+    """The relative path a zip member names, or ``None`` when it escapes.
+
+    Backslashes are read as separators because Windows tools write them, and
+    a member that is absolute, names a drive, or has a ``..`` segment is
+    refused rather than cleaned up: an archive that tries it is not one to
+    second-guess.
+    """
+    parts = PurePosixPath(name.replace("\\", "/")).parts
+    if not parts or name.startswith(("/", "\\")):
+        return None
+    if any(part == ".." for part in parts) or ":" in parts[0]:
+        return None
+    return PurePosixPath(*[part for part in parts if part not in ("", ".")])
+
+
+def _extract_zip(zip_path: Path, dest_dir: Path) -> None:
+    """Unpack a zip into *dest_dir* under the same caps as a tarball.
+
+    ``zipfile`` has no data filter, so the three things it would refuse are
+    checked here per member: a path that leaves *dest_dir*, a symbolic link
+    (recorded in the Unix mode bits), and anything that is neither a file
+    nor a directory. The declared sizes are checked up front and the real
+    bytes again while writing, because a zip's header states a size and the
+    stream behind it does not have to agree.
+    """
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            infos = zf.infolist()
+            check_caps(
+                zip_path.name, len(infos), sum(info.file_size for info in infos)
+            )
+            root = dest_dir.resolve()
+            written = 0
+            for info in infos:
+                relative = _zip_member_path(info.filename)
+                mode = (info.external_attr >> 16) & 0o170000
+                if relative is None or mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise SourceRefused(
+                        f"{zip_path.name} holds a member this build will not "
+                        f"unpack.",
+                        reason="unsafe_member",
+                        hint=(
+                            f"{info.filename!r}: a plugin archive may not "
+                            f"write outside the directory it is unpacked "
+                            f"into, and may not carry links or device files."
+                        ),
+                    )
+                if not relative.parts:
+                    continue
+                target = root.joinpath(*relative.parts)
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, target.open("wb") as out:
+                    while True:
+                        chunk = src.read(CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > MAX_EXTRACTED_BYTES:
+                            check_caps(zip_path.name, 0, written)
+                        out.write(chunk)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, zlib.error,
+            NotImplementedError, RuntimeError) as exc:
+        # ``RuntimeError`` is what an encrypted member raises, and
+        # ``NotImplementedError`` an unsupported compression method. Neither
+        # is a SourceRefused, so the clause cannot swallow the refusals above.
+        if isinstance(exc, PluginInstallError):
+            raise
+        raise SourceRefused(
+            f"{zip_path.name} could not be unpacked.",
+            reason="unreadable",
+            hint=f"zipfile could not read it ({exc}).",
+        ) from exc
+
+
+def archive_format(path: Path) -> str | None:
+    """``"zip"``, ``"tar"`` (gzip), or ``None`` for a name this build does not
+    unpack. Decided by the file name, which is what a person picks a file by."""
+    name = path.name.lower()
+    if name.endswith(".zip"):
+        return "zip"
+    if name.endswith((".tar.gz", ".tgz")):
+        return "tar"
+    return None
+
+
+def plugin_root(dest_dir: Path, *, label: str) -> Path:
+    """Where the manifest is in an unpacked archive: at its root, or one level
+    down in its single top-level directory.
+
+    Both shapes occur in the wild: a zip of a folder's CONTENTS has the
+    manifest at the root, a zip of the FOLDER has one directory. Anything
+    else (two directories, none) has no root that can be told apart from a
+    guess, and is refused. ``__MACOSX`` and ``.DS_Store`` do not count.
+    """
+    if (dest_dir / MANIFEST_FILENAME).is_file():
+        return dest_dir
+    roots = [
+        p for p in sorted(dest_dir.iterdir())
+        if p.is_dir() and p.name not in _IGNORED_TOP_LEVEL
+    ]
+    if len(roots) != 1:
+        raise SourceRefused(
+            f"{label} has no {MANIFEST_FILENAME} at its root and no single "
+            f"top-level directory.",
+            reason="layout",
+            hint=(
+                f"It unpacked to {len(roots)} directories: "
+                f"{', '.join(p.name for p in roots) or '(none)'}. Put the "
+                f"manifest at the root, or zip the plugin's one folder."
+            ),
+        )
+    return roots[0]
+
+
+def extract_archive(archive: Path, dest_dir: Path) -> Path:
+    """Unpack a ``.zip``/``.tar.gz``/``.tgz`` and return the plugin's root.
+
+    The local-archive road: the same caps and the same refusals as a GitHub
+    tarball, with a looser layout rule (see :func:`plugin_root`), because a
+    file somebody zipped by hand is not shaped by codeload.
+    """
+    fmt = archive_format(archive)
+    if fmt is None:
+        raise SourceRefused(
+            f"{archive.name} is not an archive this build unpacks.",
+            reason="not_supported",
+            hint="Use a .zip, .tar.gz or .tgz file, or the plugin's folder.",
+        )
+    if fmt == "zip":
+        _extract_zip(archive, dest_dir)
+    else:
+        _extract_tar(archive, dest_dir)
+    return plugin_root(dest_dir, label=archive.name)
+
+
+def extract_tarball(tar_path: Path, dest_dir: Path) -> Path:
+    """Unpack *tar_path* into *dest_dir* and return its single root directory.
+
+    See :func:`_extract_tar` for the caps and the refusals. Exactly one
+    top-level directory, or nothing is installed: a GitHub codeload tarball
+    is always ``<repo>-<ref>/...`` and that root is what the manifest is read
+    from; a tarball with two of them is not a plugin whose root can be
+    guessed.
+    """
+    _extract_tar(tar_path, dest_dir)
     roots = [p for p in sorted(dest_dir.iterdir()) if p.is_dir()]
     if len(roots) != 1:
-        raise PluginInstallError(
+        raise SourceRefused(
             "A plugin tarball must hold exactly one top-level directory.",
+            reason="layout",
             hint=(
                 f"{tar_path.name} unpacked to {len(roots)}: "
                 f"{', '.join(p.name for p in roots) or '(none)'}"

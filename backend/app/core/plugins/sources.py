@@ -7,6 +7,11 @@ install paths it goes down. Sorting that out is this module's whole job, and
 it is deliberately the only place that knows the answer: the CLI and the
 routes both get the same verdict on the same string.
 
+A path on this machine is a fifth shape (``/x``, ``./x``, ``~/x``,
+``file:///x``): a folder or an archive the inspection copies and reviews
+like any other source. A relative path has to start with ``./`` because
+``plugins/x`` is already ``owner/repo``.
+
 The catalog wins over the GitHub patterns, and it is checked first for a
 reason: ``deep`` is a legal repository name, so a bare word that IS a catalog
 id has to resolve to the pack that ships here rather than to whatever
@@ -27,6 +32,7 @@ from typing import Any, Literal, NamedTuple
 
 from . import catalog as catalog_module
 from .errors import UnknownCatalogName, UnparseableSource
+from .local import path_from_spec
 from .manifest import REF_SEGMENT, REPO_SEGMENT
 
 # Accepts owner/repo or owner/repo@ref, in the same characters the catalog
@@ -47,21 +53,36 @@ _GITHUB_URL = re.compile(
 # a catalog name. See UnknownCatalogName for why that deserves its own error.
 _BARE_NAME = re.compile(r"^[A-Za-z0-9][\w.-]*$")
 
+# A path on this machine: absolute (``/x``, ``C:\x``, ``C:/x``, ``\\server``),
+# explicitly relative (``./x``, ``../x``, ``.``, ``..``), home-relative
+# (``~``, ``~/x``) or a ``file://`` URL. ``plugins/x`` is NOT one: it is the
+# ``owner/repo`` shape, and a relative path has to say so with ``./``.
+_LOCAL_PATH = re.compile(
+    r"^(?:/|\\\\|[A-Za-z]:[\\/]|\.{1,2}(?:$|[\\/])|~|file://)",
+    re.IGNORECASE,
+)
+
 
 class ParsedSource(NamedTuple):
     """Where a plugin is to come from.
 
-    ``name_or_owner`` carries the plugin id for a catalog source and the
-    GitHub owner for a repository one -- one field because the two are
-    mutually exclusive and the ``kind`` says which is meant. ``repo`` and
-    ``ref`` are empty strings for a catalog source, and ``ref`` is empty for a
-    repository whose default branch is wanted.
+    ``name_or_owner`` carries the plugin id for a catalog source, the GitHub
+    owner for a repository one, and the absolute path for a local one -- one
+    field because they are mutually exclusive and the ``kind`` says which is
+    meant. ``repo`` and ``ref`` are empty strings for a catalog or a local
+    source, and ``ref`` is empty for a repository whose default branch is
+    wanted.
     """
 
-    kind: Literal["catalog", "github"]
+    kind: Literal["catalog", "github", "local"]
     name_or_owner: str
     repo: str
     ref: str
+
+
+def is_local_path(spec: str) -> bool:
+    """Does *spec* have the shape of a path on this machine? Reads nothing."""
+    return bool(_LOCAL_PATH.match(spec))
 
 
 def parse_github_url(url: str) -> tuple[str, str] | None:
@@ -122,6 +143,11 @@ def parse_source(
 
     if spec.lower() in plugins:
         return ParsedSource("catalog", spec.lower(), "", "")
+
+    if is_local_path(spec):
+        # Shape only: whether anything is there is the inspection's question,
+        # asked where the answer can say what WAS found.
+        return ParsedSource("local", path_from_spec(spec), "", "")
 
     m = _GITHUB_URL.match(spec) or _GITHUB_SHORT.match(spec)
     if m:

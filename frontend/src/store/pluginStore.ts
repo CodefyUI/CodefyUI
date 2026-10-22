@@ -62,10 +62,13 @@ export type { PluginJobKind };
  *
  * `catalog` is a bare word, which can only have been meant as one of the
  * built-in packs; the server is what decides whether that name exists.
+ * `local` is a path on the SERVER's disk (a folder or an archive), passed on
+ * as typed: whether anything is there is the server's question.
  */
 export type PluginSourceRef =
   | { kind: 'github'; owner: string; repo: string; ref: string | null }
-  | { kind: 'catalog'; id: string };
+  | { kind: 'catalog'; id: string }
+  | { kind: 'local'; path: string };
 
 /**
  * Why an inspection or an install was refused, in the three parts a review
@@ -228,6 +231,13 @@ const GITHUB_SHORT = /^([\w.-]+)\/([\w.-]+?)(?:@([\w./-]+))?$/;
  * case-insensitive there (`spec.lower()`), so the id is lower-cased to match.
  */
 const CATALOG_NAME = /^[A-Za-z0-9][\w.-]*$/;
+/**
+ * A path on the server's disk, by the backend's rule
+ * (`backend/app/core/plugins/sources.py: _LOCAL_PATH`): absolute (`/x`,
+ * `C:\x`, `\\server\x`), explicitly relative (`./x`, `../x`, `.`), home
+ * (`~/x`) or a `file://` URL. `plugins/x` stays `owner/repo`.
+ */
+const LOCAL_PATH = /^(?:\/|\\\\|[A-Za-z]:[\\/]|\.{1,2}(?:$|[\\/])|~|file:\/\/)/i;
 
 /**
  * Read a plugin source the way the CLI reads one, or answer null.
@@ -239,6 +249,7 @@ const CATALOG_NAME = /^[A-Za-z0-9][\w.-]*$/;
 export function parseGitHubSource(input: string): PluginSourceRef | null {
   const spec = input.trim();
 
+  if (LOCAL_PATH.test(spec)) return { kind: 'local', path: spec };
   const url = GITHUB_URL.exec(spec);
   if (url !== null) {
     return { kind: 'github', owner: url[1], repo: url[2], ref: url[3] ?? null };
@@ -327,11 +338,31 @@ export const REFUSAL_KEY: Record<string, TranslationKey | undefined> = {
   not_found: 'pluginCenter.error.notFound',
   github_rate_limited: 'pluginCenter.error.githubRateLimited',
   github_unreachable: 'pluginCenter.error.githubUnreachable',
+  local_not_found: 'pluginCenter.error.localNotFound',
+  source_refused: 'pluginCenter.error.sourceRefused',
+};
+
+/**
+ * A `source_refused` refusal's `reason`, as the sentence that names the rule
+ * the folder or archive broke. A reason this build has no sentence for falls
+ * back to the code's own, which is true of all of them.
+ */
+export const SOURCE_REFUSED_KEY: Record<string, TranslationKey | undefined> = {
+  not_supported: 'pluginCenter.error.sourceNotSupported',
+  too_large: 'pluginCenter.error.sourceTooLarge',
+  too_many_files: 'pluginCenter.error.sourceTooManyFiles',
+  unsafe_member: 'pluginCenter.error.sourceUnsafe',
+  unreadable: 'pluginCenter.error.sourceUnreadable',
+  layout: 'pluginCenter.error.sourceLayout',
 };
 
 /** What a refusal should read as, once its code has had its say. */
 function refusalMessage(err: unknown): string {
-  const key = REFUSAL_KEY[refusalCode(err) ?? ''];
+  const code = refusalCode(err) ?? '';
+  const reason = code === 'source_refused'
+    ? SOURCE_REFUSED_KEY[str(errorDetail(err)?.reason) ?? '']
+    : undefined;
+  const key = reason ?? REFUSAL_KEY[code];
   return key === undefined ? errorMessage(err) : useI18n.getState().t(key);
 }
 

@@ -37,14 +37,17 @@ that speaks another language is expected to key off ``has_frontend`` and
 from __future__ import annotations
 
 import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from app.core import plugin_loader
 
 from . import catalog as catalog_module
-from . import github, listing, sources
+from . import github, listing, local, sources
 from .errors import (
+    ManifestError,
     NotInstalled,
     NotUpdatable,
     PluginInstallError,
@@ -99,6 +102,10 @@ NO_UPDATE_HINTS = {
         "A linked directory is whatever is on its author's disk right now; "
         "there is nothing to fetch."
     ),
+    "local_copy": (
+        "A plugin installed from a folder or an archive has nowhere to fetch "
+        "from; install the newer copy with cdui plugin install <path> --force."
+    ),
 }
 
 
@@ -106,7 +113,7 @@ NO_UPDATE_HINTS = {
 class Inspection:
     """One source, read and compared against what this install already has."""
 
-    kind: Literal["builtin", "github"]
+    kind: Literal["builtin", "github", "local"]
     mode: Literal["install", "update"]
     plugin_id: str
     catalog_id: str | None
@@ -139,6 +146,14 @@ class Inspection:
     capabilities_added: tuple[str, ...]
     allowed_modules_added: tuple[str, ...]
     warnings: tuple[str, ...]
+    #: A local source's absolute path, and whether it is a ``"folder"`` or
+    #: an ``"archive"``; ``None`` for every other kind.
+    path: str | None = None
+    source_form: str | None = None
+    #: sha256 of what a local source holds: the archive file, or the copied
+    #: tree (see :mod:`.local`). The install recomputes it and refuses a
+    #: mismatch, which is what pins a folder the way ``sha`` pins a commit.
+    digest: str | None = None
 
 
 def _text(value: Any) -> str:
@@ -183,7 +198,7 @@ def _installed_record(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _inspection(
     *,
-    kind: Literal["builtin", "github"],
+    kind: Literal["builtin", "github", "local"],
     plugin_id: str,
     manifest: dict[str, Any],
     lockfile: dict[str, Any],
@@ -196,6 +211,9 @@ def _inspection(
     catalog_id: str | None = None,
     official: bool = False,
     consent_required: bool,
+    path: str | None = None,
+    source_form: str | None = None,
+    digest: str | None = None,
 ) -> Inspection:
     """Assemble one :class:`Inspection` from a manifest and a lockfile.
 
@@ -225,8 +243,11 @@ def _inspection(
             m for m in allowed_modules if m not in known_modules
         )
         # A built-in pack has no sha on either side, and two ``None`` is the
-        # honest "the copy on disk is the copy you installed".
-        up_to_date = (installed["sha"] or None) == (sha or None)
+        # honest "the copy on disk is the copy you installed". A local copy
+        # is pinned by its digest instead of a commit.
+        up_to_date = (installed["sha"] or entry.get("sha256") or None) == (
+            sha or digest or None
+        )
 
     warnings: list[str] = []
     if has_frontend:
@@ -265,6 +286,9 @@ def _inspection(
         capabilities_added=capabilities_added,
         allowed_modules_added=allowed_modules_added,
         warnings=tuple(warnings),
+        path=path,
+        source_form=source_form,
+        digest=digest,
     )
 
 
@@ -390,6 +414,70 @@ def inspect_github(
     )
 
 
+def _refuse_reserved_id(plugin_id: str, origin: str) -> None:
+    """Refuse an id this build reserves, for a source with no GitHub
+    repository (see :func:`~.catalog.reserved_for_copied_source`)."""
+    taken_by = catalog_module.reserved_for_copied_source(plugin_id)
+    if taken_by is not None:
+        raise ReservedPluginId(
+            f"Plugin id {plugin_id!r} is reserved by this build.",
+            plugin_id=plugin_id,
+            taken_by=taken_by,
+            hint=(
+                f"{origin} declares an id that names {taken_by}; it cannot be "
+                f"installed under that id."
+            ),
+        )
+
+
+def read_tree_manifest(root: Path, *, origin: str) -> dict[str, Any]:
+    """The validated manifest at *root*, with a missing file as a
+    :class:`~.errors.ManifestError` (so every caller that refuses a bad
+    manifest refuses a missing one the same way)."""
+    try:
+        manifest = read_manifest(root)
+    except FileNotFoundError as exc:
+        raise ManifestError(
+            f"{origin} has no {plugin_loader.MANIFEST_FILENAME} at its root."
+        ) from exc
+    validate_manifest(manifest)
+    return manifest
+
+
+def inspect_local(path_str: str, *, lockfile: dict[str, Any]) -> Inspection:
+    """Describe a plugin folder or archive on this machine's disk.
+
+    The source is copied (or unpacked) into a temporary directory and read
+    there, under the caps a GitHub tarball gets, so a refusal for size,
+    links or layout arrives here, before anybody is asked to consent. The
+    copy is thrown away; the install makes its own and checks it against
+    :attr:`Inspection.digest`.
+
+    ``consent_required`` is True: a folder somebody handed you is third-party
+    code, whatever drive it is on.
+
+    Raises :class:`~.errors.SourceRefused`, :class:`~.errors.ManifestError`,
+    ``tomllib.TOMLDecodeError`` or :class:`~.errors.ReservedPluginId`.
+    """
+    path, form = local.resolve(path_str)
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        tree = local.materialize(path, form, Path(workdir))
+        manifest = read_tree_manifest(tree.root, origin=path_str)
+    plugin_id = manifest["plugin"]["id"]
+    _refuse_reserved_id(plugin_id, path_str)
+    return _inspection(
+        kind="local",
+        plugin_id=plugin_id,
+        manifest=manifest,
+        lockfile=lockfile,
+        source=path_str,
+        consent_required=True,
+        path=path_str,
+        source_form=form,
+        digest=tree.digest,
+    )
+
+
 def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     """Describe whatever the user typed: a catalog name, ``owner/repo``, a URL.
 
@@ -400,6 +488,8 @@ def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     "official" is a claim only the catalog is entitled to make.
     """
     parsed = sources.parse_source(spec)
+    if parsed.kind == "local":
+        return inspect_local(parsed.name_or_owner, lockfile=lockfile)
     if parsed.kind != "catalog":
         return inspect_github(
             parsed.name_or_owner, parsed.repo, parsed.ref, lockfile=lockfile

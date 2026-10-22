@@ -114,6 +114,11 @@ export function PluginCard({
 
   const provenance: Fact[] = [];
   if (origin !== null) provenance.push({ key: 'origin', node: <span>{t(origin)}</span> });
+  // A copied folder or archive has no repository to name; the path it was
+  // copied from is what says where it came from.
+  if (entry.source_kind === 'local_copy' && entry.source !== '') {
+    provenance.push({ key: 'path', node: <span>{entry.source}</span> });
+  }
   if (repo !== '') {
     provenance.push({
       key: 'repo',

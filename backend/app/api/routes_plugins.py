@@ -89,6 +89,7 @@ from ..core.plugins.errors import (
     PluginInstallError,
     ReservedPluginId,
     SourceError,
+    SourceRefused,
     TrustAuthorRequired,
     UnknownCatalogName,
 )
@@ -140,7 +141,8 @@ _LOCKFILE_WAIT_S = 0.2
 class PluginInspectRequest(BaseModel):
     """What to read. One field, and ``extra="forbid"`` keeps it one.
 
-    A source is a catalog name, ``owner/repo`` or a GitHub URL -- never a
+    A source is a catalog name, ``owner/repo``, a GitHub URL or a path on
+    the server's disk -- never a
     manifest, a sha or a capability list. Everything an install later acts
     on is read by the SERVER from that source and kept under an inspection
     id, so there is no field here for a client to smuggle a decision through.
@@ -302,6 +304,19 @@ def _inspect_refusal(exc: PluginInstallError) -> HTTPException:
     return _coded(400, "invalid_manifest")
 
 
+def _source_refusal(exc: SourceRefused) -> HTTPException:
+    """A folder or archive this build will not read, coded by ``reason``.
+
+    Nothing at the path is a 404 (``local_not_found``), the one the user
+    fixes by retyping it; every other reason is a 400 ``source_refused``
+    with the reason beside it, so the panel can say which cap or rule the
+    source broke.
+    """
+    if exc.reason == "not_found":
+        return _coded(404, "local_not_found", path=exc.path)
+    return _coded(400, "source_refused", reason=exc.reason, path=exc.path)
+
+
 def _job_not_found(job_id: str) -> HTTPException:
     """Only the most recent job is kept, so "gone" and "never existed" are
     the same answer -- and the client's next move is the same either way."""
@@ -381,6 +396,11 @@ def _inspection_payload(stored: StoredInspection) -> dict[str, Any]:
         "capabilities_added": list(found.capabilities_added),
         "allowed_modules_added": list(found.allowed_modules_added),
         "warnings": list(found.warnings),
+        # A local source's path, whether it is a folder or an archive, and
+        # the digest the install is pinned to; null for every other kind.
+        "path": found.path,
+        "source_form": found.source_form,
+        "digest": found.digest,
     }
 
 
@@ -559,6 +579,9 @@ async def inspect_plugin_source(
         raise _coded(400, "invalid_manifest") from None
     except GitHubError as exc:
         raise _github_refusal(exc) from None
+    except SourceRefused as exc:
+        # Before ``PluginInstallError``, which it is.
+        raise _source_refusal(exc) from None
     except PluginInstallError as exc:
         raise _inspect_refusal(exc) from None
     return _inspection_payload(stored)
@@ -882,6 +905,8 @@ async def update_plugin(plugin_id: str, request: Request,
         raise _coded(400, "invalid_manifest") from None
     except GitHubError as exc:
         raise _github_refusal(exc) from None
+    except SourceRefused as exc:
+        raise _source_refusal(exc) from None
     except PluginInstallError as exc:
         # An id this build reserves (the repository renamed itself into one),
         # and whatever else the inspection path refuses a source with.

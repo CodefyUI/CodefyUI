@@ -431,9 +431,11 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
         raise ValueError(
             t(
                 f"無法解析外掛來源：{spec!r}。請輸入內建包名稱"
-                f"（例如 {example}）、owner/repo[@ref] 或 GitHub URL。",
+                f"（例如 {example}）、owner/repo[@ref]、GitHub URL，"
+                f"或本機資料夾／壓縮檔路徑（/abs、./rel、~/x、file:///x）。",
                 f"Could not parse plugin source: {spec!r}. "
-                f"Expected a catalog name (e.g. {example}), owner/repo[@ref], or a GitHub URL.",
+                f"Expected a catalog name (e.g. {example}), owner/repo[@ref], a GitHub URL, "
+                f"or a local folder/archive path (/abs, ./rel, ~/x, file:///x).",
             )
         ) from None
     return (parsed.kind, parsed.name_or_owner, parsed.repo, parsed.ref)
@@ -1276,11 +1278,12 @@ def cmd_install(args: argparse.Namespace) -> int:
             return 2
 
         lockfile = load_lockfile()
-        rc = (
-            _install_by_catalog_name(a, args, lockfile)
-            if kind == "catalog"
-            else _install_github(a, b, ref, args, lockfile)
-        )
+        if kind == "catalog":
+            rc = _install_by_catalog_name(a, args, lockfile)
+        elif kind == "local":
+            rc = _install_local(a, args, lockfile)
+        else:
+            rc = _install_github(a, b, ref, args, lockfile)
         if rc != 0:
             return rc
         overall = rc
@@ -1525,13 +1528,56 @@ def _install_github(
         _print_hint(getattr(e, "hint", None))
         return 1
 
-    plugin_id = found.plugin_id
     short_sha = (found.sha or "")[:7]
     info(
         f"版本：{ref or 'default branch'} ({short_sha})",
         f"Ref: {ref or 'default branch'} ({short_sha})",
     )
+    return _install_inspected(
+        found, args, catalog_id=catalog_id, expected_id=expected_id,
+        short=short_sha,
+    )
 
+
+def _install_local(path: str, args, lockfile) -> int:
+    """Install a plugin folder or archive from this machine's disk.
+
+    The same conversation as a repository install: the inspection copies the
+    source into a temporary directory and reads its manifest there, the
+    preview and the consent questions follow, and the install itself is the
+    shared flow, which copies the source again and refuses it when its
+    digest no longer matches the one shown here.
+    """
+    info(f"來源：{path}", f"Source: {path}")
+    try:
+        found = core_inspect.inspect_local(path, lockfile=lockfile)
+    # A refused folder or archive (SourceRefused), a missing or invalid
+    # manifest (ManifestError, TOMLDecodeError) and a reserved id: every one
+    # is "this source is not installable", in its own words.
+    except (ValueError, RuntimeError) as e:
+        raw_err(str(e))
+        _print_hint(getattr(e, "hint", None))
+        return 1
+    short = (found.digest or "")[:7]
+    if found.source_form == "archive":
+        info(f"本機壓縮檔（sha256 {short}）", f"Local archive (sha256 {short})")
+    else:
+        info(f"本機資料夾（sha256 {short}）", f"Local folder (sha256 {short})")
+    return _install_inspected(found, args, short=short)
+
+
+def _install_inspected(
+    found: core_inspect.Inspection,
+    args,
+    *,
+    catalog_id: str | None = None,
+    expected_id: str | None = None,
+    short: str,
+) -> int:
+    """Everything after the inspection: the id check, the preview, the two
+    consent questions, the plan and the flow. Shared by every source kind,
+    so a folder and a repository are asked the same questions."""
+    plugin_id = found.plugin_id
     # The caller said this install ends up under `expected`; the repository's
     # own manifest says which id it installs under. When those disagree the
     # caller is describing one pack and fetching another, and every card,
@@ -1628,8 +1674,8 @@ def _install_github(
 
     _report_reload()
     ok(
-        f"安裝完成：{plugin_id} ({short_sha})",
-        f"Installed: {plugin_id} ({short_sha})",
+        f"安裝完成：{plugin_id} ({short})",
+        f"Installed: {plugin_id} ({short})",
     )
     _report_still_disabled(plugin_id)
     return 0
@@ -2365,6 +2411,9 @@ def cmd_info(args: argparse.Namespace) -> int:
         err(str(e), str(e))
         return 2
 
+    if kind == "local":
+        return _info_from_inspection(a, lockfile)
+
     owner, repo = a, b
     if kind == "catalog":
         catalog_row = catalog_entry(a)
@@ -2418,6 +2467,26 @@ def cmd_info(args: argparse.Namespace) -> int:
         "manifest": manifest.get("plugin", {}),
     }
     _print_info(manifest.get("plugin", {}).get("id", "(unnamed)"), manifest, synthetic_entry, None, installed=False)
+    return 0
+
+
+def _info_from_inspection(spec: str, lockfile: dict[str, Any]) -> int:
+    """``cdui plugin info`` for a source that has to be read to be described:
+    a local folder or archive. Installs nothing."""
+    try:
+        found = core_inspect.inspect_source(spec, lockfile=lockfile)
+    except (ValueError, RuntimeError) as e:
+        raw_err(str(e))
+        _print_hint(getattr(e, "hint", None))
+        return 1
+    synthetic_entry = {
+        "source_kind": "local_copy",
+        "source": found.source,
+        "sha256": found.digest,
+        "manifest": found.manifest.get("plugin", {}),
+    }
+    _print_info(found.plugin_id, found.manifest, synthetic_entry, None,
+                installed=False)
     return 0
 
 
@@ -2561,6 +2630,17 @@ def cmd_update(args: argparse.Namespace) -> int:
             info(
                 f"{plugin_id}: 內建包，請以 cdui update 更新",
                 f"{plugin_id}: built-in pack — update with `cdui update`",
+            )
+            skipped += 1
+            continue
+
+        if kind == "local_copy":
+            info(
+                f"{plugin_id}: 從本機資料夾或壓縮檔安裝，沒有可更新的來源；"
+                f"請用 cdui plugin install <路徑> --force 安裝新版",
+                f"{plugin_id}: installed from a local folder or archive, "
+                f"nothing to fetch — install the newer copy with "
+                f"`cdui plugin install <path> --force`",
             )
             skipped += 1
             continue
@@ -2826,7 +2906,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_inst = sub.add_parser("install", help="Install one or more plugin packs")
     p_inst.add_argument("source", nargs="+",
-                        help="catalog name(s), owner/repo[@ref], or GitHub URL — one or more")
+                        help="catalog name(s), owner/repo[@ref], a GitHub URL, or a "
+                             "local folder/.zip/.tar.gz path (/abs, ./rel, ~/x, "
+                             "file:///x) — one or more")
     p_inst.add_argument("--force", action="store_true",
                         help="reinstall over an existing version")
     p_inst.add_argument("--no-confirm", "-y", action="store_true",

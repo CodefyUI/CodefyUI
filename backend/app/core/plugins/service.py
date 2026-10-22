@@ -534,7 +534,7 @@ class PluginService:
         # refusal does. Only the repository road: a built-in pack lives under
         # the built-in root, and a stray user directory of the same name is
         # not a copy of it.
-        on_disk = inspection.kind == "github" and (
+        on_disk = inspection.kind != "builtin" and (
             plugin_loader.plugins_user_root() / inspection.plugin_id).exists()
         if (inspection.installed is not None or on_disk) and not force:
             raise AlreadyInstalled(

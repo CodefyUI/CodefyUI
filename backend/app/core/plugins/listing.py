@@ -603,7 +603,9 @@ def _consent_required(
     """
     if row is not None and row.kind == "github":
         return True
-    return entry is not None and entry.get("source_kind") == "github_url"
+    return entry is not None and (
+        entry.get("source_kind") in plugin_loader.COPIED_SOURCE_KINDS
+    )
 
 
 def _job_for(

@@ -910,7 +910,7 @@ INSPECTION_KEYS = [
     "description", "homepage", "manifest", "capabilities", "allowed_modules",
     "python_deps", "has_frontend", "chapters", "lessons", "consent_required",
     "installed", "up_to_date", "capabilities_added", "allowed_modules_added",
-    "warnings",
+    "warnings", "path", "source_form", "digest",
 ]
 
 #: A repository plugin that asks for everything a consent screen has to draw:

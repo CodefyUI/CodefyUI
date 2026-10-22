@@ -328,6 +328,13 @@ def _plugin_identity(plugin_id: str, entry: dict[str, Any],
         source = None
         if content is not None:
             revision, revision_kind = content, "content-sha256"
+    elif kind == "local_copy":
+        # Copied from a folder or an archive: no commit to name, and the
+        # installed files are what ran. The path it came from is this
+        # machine's, like a link's.
+        source = None
+        if content is not None:
+            revision, revision_kind = content, "content-sha256"
     elif sha:
         revision, revision_kind, immutable = sha, "git-sha", True
     return {
