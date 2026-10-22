@@ -202,6 +202,38 @@ def test_constraints_text_format():
     assert "\r" not in text
 
 
+@pytest.mark.parametrize("version", [
+    "2.9.1+cu130", "2.9.1+cu129", "2.9.1+rocm7.0", "2.9.1+rocm6.4",
+    "2.9.1+xpu",
+])
+def test_constraints_text_keeps_every_new_local_tag(version):
+    """The newer CUDA, ROCm and Intel builds are pinned with their tag, so a
+    resolver cannot swap them for the untagged PyPI wheel."""
+    assert constraints_text({"torch": version}) == f"torch=={version}\n"
+
+
+def test_replacement_plan_pins_an_intel_build_and_its_runtime(monkeypatch):
+    """An ``+xpu`` torch pins itself, and its exact runtime requirements
+    become constraints, so ``pytorch-triton-xpu`` cannot move under it."""
+    monkeypatch.setattr(importlib.metadata, "distributions", _yielding(
+        _FakeDist("torch", "2.9.1+xpu", requires=[
+            "pytorch-triton-xpu==3.5.0; platform_system == \"Linux\"",
+            "intel-cmplr-lib-rt==2025.2.1",
+        ]),
+        _FakeDist("pytorch-triton-xpu", "3.5.0"),
+        _FakeDist("torchaudio", "2.9.1+rocm7.0"),
+    ))
+    plan = replacement_plan()
+
+    assert plan.names == ("pytorch-triton-xpu",)
+    assert plan.constraints.splitlines() == [
+        "torch==2.9.1+xpu",
+        "torchaudio==2.9.1+rocm7.0",
+        'pytorch-triton-xpu==3.5.0; platform_system == "Linux"',
+        "intel-cmplr-lib-rt==2025.2.1",
+    ]
+
+
 def test_constraints_text_of_nothing_is_empty():
     assert constraints_text({}) == ""
 

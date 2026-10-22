@@ -321,6 +321,11 @@ def test_sentinel_ids_may_not_walk_out_of_the_state_directory(bad_id, user_data_
     ("2.11.0+cu128", "cu128"),
     ("2.6.0+cpu", "cpu"),
     ("2.5.1+rocm6.2", "rocm6.2"),
+    ("2.9.1+cu130", "cu130"),
+    ("2.9.1+cu129", "cu129"),
+    ("2.9.1+rocm7.0", "rocm7.0"),
+    ("2.9.1+rocm6.4", "rocm6.4"),
+    ("2.9.1+xpu", "xpu"),
 ])
 def test_torch_variant_parses_local_tag(monkeypatch, version, expected):
     monkeypatch.setattr(torch, "__version__", version)
@@ -404,6 +409,10 @@ def test_gpu_torch_installed_follows_torch_variant(monkeypatch):
 
     monkeypatch.setattr(torch, "__version__", "2.5.1+rocm6.2")
     assert state.pack_state(get_pack("gpu-torch")).installed
+
+    for tagged in ("2.9.1+cu130", "2.9.1+rocm7.0", "2.9.1+xpu"):
+        monkeypatch.setattr(torch, "__version__", tagged)
+        assert state.pack_state(get_pack("gpu-torch")).installed, tagged
 
     # macOS ships its acceleration in the untagged wheel, so there is no tag
     # to read and ``torch_variant`` asks the backend instead. A Mac whose MPS

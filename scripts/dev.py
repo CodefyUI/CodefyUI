@@ -8,7 +8,8 @@
 
 指令：
     install     安裝所有節點需要的依賴（含 PyTorch wheel 選擇）
-                旗標：--gpu {auto|cpu|cu118|cu121|cu124|cu126|cu128|rocm6.1|rocm6.2|mps|skip}
+                旗標：--gpu {auto|cpu|cu118|cu121|cu124|cu126|cu128|cu129|cu130|
+                             rocm6.1|rocm6.2|rocm6.3|rocm6.4|rocm7.0|xpu|mps|skip}
                       --dev / --no-dev   是否安裝測試工具（pytest 等）
                       --yes / -y         略過互動，自動偵測 + 非 dev
                 從 TTY 不帶旗標執行會跳出互動選單；從非 TTY（curl|bash、CI）走 --yes。
@@ -1043,8 +1044,14 @@ TORCH_INDEX_URLS: dict[str, str | None] = {
     "cu124":   "https://download.pytorch.org/whl/cu124",
     "cu126":   "https://download.pytorch.org/whl/cu126",
     "cu128":   "https://download.pytorch.org/whl/cu128",
+    "cu129":   "https://download.pytorch.org/whl/cu129",
+    "cu130":   "https://download.pytorch.org/whl/cu130",
     "rocm6.1": "https://download.pytorch.org/whl/rocm6.1",
     "rocm6.2": "https://download.pytorch.org/whl/rocm6.2",
+    "rocm6.3": "https://download.pytorch.org/whl/rocm6.3",
+    "rocm6.4": "https://download.pytorch.org/whl/rocm6.4",
+    "rocm7.0": "https://download.pytorch.org/whl/rocm7.0",
+    "xpu":     "https://download.pytorch.org/whl/xpu",            # Intel GPUs
     "mps":     None,                                            # default PyPI on Apple Silicon
     "skip":    "__skip__",                                      # leave torch untouched
 }
@@ -1056,8 +1063,8 @@ def _installable_variants(system: str | None = None) -> tuple[str, ...]:
     Mirror of ``backend/app/core/packs/restart.installable_variants`` (the
     same copy-rather-than-import as TORCH_INDEX_URLS above; the backend's
     ``test_gpu_info_never_raises_and_mirrors_dev_py`` fails the day the two
-    drift). ROCm wheels are linux_x86_64 only, the CUDA indexes carry
-    manylinux and win_amd64 only, and macOS has nothing to switch to at all:
+    drift). ROCm wheels are linux_x86_64 only, the CUDA and Intel xpu
+    indexes carry manylinux and win_amd64 only, and macOS has nothing to switch to at all:
     its acceleration ships in the default wheel.
 
     "auto" and "skip" are requests rather than builds, so they are not in
@@ -1085,6 +1092,10 @@ def _recommended_cu_for_driver(driver_version: str) -> str:
         major = int(driver_version.split(".")[0])
     except (ValueError, IndexError):
         return "cu121"
+    if major >= 580:
+        return "cu130"
+    if major >= 575:
+        return "cu129"
     if major >= 560:
         return "cu128"
     if major >= 555:
@@ -1127,6 +1138,13 @@ def detect_gpu() -> tuple[str, str]:
     if platform.system() == "Linux" and shutil.which("rocm-smi"):
         return ("AMD GPU (ROCm)", "rocm6.2")
 
+    # Intel: only ``xpu-smi``, which ships with the Intel GPU driver stack.
+    # ``sycl-ls`` comes with the oneAPI toolkit and is present on machines
+    # with no Intel GPU at all, so it is not evidence of one. Only a PATH
+    # lookup, nothing is run.
+    if platform.system() in ("Linux", "Windows") and shutil.which("xpu-smi"):
+        return ("Intel GPU (XPU)", "xpu")
+
     return ("CPU only", "cpu")
 
 
@@ -1146,7 +1164,9 @@ def _parse_install_args(argv_tail: list[str],
         "--gpu",
         choices=list(TORCH_INDEX_URLS.keys()),
         default=None,
-        help="PyTorch wheel variant; auto-detect if omitted.",
+        help=("PyTorch wheel variant: cuNNN = NVIDIA CUDA, rocmX.Y = AMD "
+              "(Linux), xpu = Intel GPU (Linux/Windows), mps = Apple "
+              "Silicon; auto-detect if omitted."),
     )
     dev_grp = p.add_mutually_exclusive_group()
     dev_grp.add_argument(
@@ -1188,8 +1208,14 @@ def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str
         "cu124":   "CUDA 12.4",
         "cu126":   "CUDA 12.6",
         "cu128":   "CUDA 12.8",
+        "cu129":   t("CUDA 12.9（驅動 >= 575）", "CUDA 12.9 (driver >= 575)"),
+        "cu130":   t("CUDA 13.0（驅動 >= 580）", "CUDA 13.0 (driver >= 580)"),
         "rocm6.1": "ROCm 6.1 (AMD, Linux)",
         "rocm6.2": "ROCm 6.2 (AMD, Linux)",
+        "rocm6.3": "ROCm 6.3 (AMD, Linux)",
+        "rocm6.4": "ROCm 6.4 (AMD, Linux)",
+        "rocm7.0": "ROCm 7.0 (AMD, Linux)",
+        "xpu":     t("Intel GPU（XPU，Linux / Windows）", "Intel GPU (XPU, Linux / Windows)"),
         "mps":     t("Apple Silicon (MPS)", "Apple Silicon (MPS)"),
         "skip":    t("不動 torch（保留現有）", "leave torch untouched"),
     }
