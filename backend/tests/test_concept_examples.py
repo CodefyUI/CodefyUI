@@ -52,6 +52,7 @@ _CONCEPT_EXAMPLES = (
     "RL/Reward-Hacking-Shortcut",
     "RL/GRPO-Step-GridWorld",
     "RNN/Conv1d-Sequence-Classifier",
+    "RL/Reward-Model-Bradley-Terry",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -538,3 +539,45 @@ def test_the_conv1d_layers_are_the_ones_the_note_walks_through():
     assert len({train["seed"], test["seed"], last["seed"]}) == 3
     for k in ("seq_len", "n_classes", "n_distractors"):
         assert train[k] == test[k] == last[k], k
+
+
+# ── Reward model from preferences: Bradley-Terry before and after ─────────
+
+def test_the_bradley_terry_example_lands_where_its_note_says():
+    """Untrained: about ln 2 and a coin flip's ranking. Trained: 0.11 and
+    0.96 on the held-out pairs, the number BradleyTerryTrain reports too."""
+    key = "RL/Reward-Model-Bradley-Terry"
+    text = _notes_of(key)
+    for quoted in ("Its loss is 0.69", "it ranks 0.57", "the loss drops to 0.11",
+                   "and 0.96 of them"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    before, after = results["bt-before"], results["bt-after"]
+    assert f"{float(before['loss']):.2f}" == "0.69"
+    assert f"{before['accuracy']:.2f}" == "0.57"
+    assert f"{float(after['loss']):.2f}" == "0.11"
+    assert f"{after['accuracy']:.2f}" == "0.96"
+    assert after["accuracy"] == pytest.approx(
+        float(results["train"]["holdout_accuracy"][-1]))
+    assert tuple(after["preference_prob"].shape) == (256,)
+
+
+def test_the_untrained_heads_are_the_head_bradley_terry_train_starts_from():
+    """The note says so: same width and seed, same weights."""
+    from torch import nn
+
+    from app.core.seeding import seeded_linear_init
+
+    graph = _graph("RL/Reward-Model-Bradley-Terry")
+    rm_w, rm_l, train = (_params(graph, k) for k in ("rm-w", "rm-l", "train"))
+    assert rm_w == rm_l
+    assert (rm_w["hidden_dim"], rm_w["seed"]) == (train["hidden_dim"], train["seed"])
+
+    results = _run_with_its_seed("RL/Reward-Model-Bradley-Terry")
+    head = results["rm-w"]["model"].net
+    start = seeded_linear_init(nn.Sequential(
+        nn.Linear(16, train["hidden_dim"]), nn.ReLU(),
+        nn.Linear(train["hidden_dim"], 1)), train["seed"])
+    for got, want in zip(head.parameters(), start.parameters()):
+        assert torch.equal(got.detach().cpu(), want.detach())

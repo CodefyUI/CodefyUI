@@ -307,6 +307,7 @@ _SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
     "RL/Reward-Hacking-Shortcut": ("concepts", 11, None),
     "RL/GRPO-Step-GridWorld": ("concepts", 12, None),
     "RNN/Conv1d-Sequence-Classifier": ("concepts", 17, None),
+    "RL/Reward-Model-Bradley-Terry": ("concepts", 18, None),
     "Model_Architecture/ResNet-SkipConnection-CNN": ("architectures", 1, "CNN"),
     "Model_Architecture/UNet-Segmentation-CNN": ("architectures", 2, "CNN"),
     "Model_Architecture/EfficientNet-CNN": ("architectures", 3, "CNN"),

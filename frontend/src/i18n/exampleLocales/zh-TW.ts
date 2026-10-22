@@ -348,6 +348,9 @@ const zhTW: ExampleTranslations = {
   'RNN/Conv1d-Sequence-Classifier': {
     description: '時間卷積用滑動視窗讀 token',
   },
+  'RL/Reward-Model-Bradley-Terry': {
+    description: '訓練前後的 Bradley-Terry 損失',
+  },
 };
 
 export default zhTW;
