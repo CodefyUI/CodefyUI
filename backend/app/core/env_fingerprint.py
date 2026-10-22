@@ -347,11 +347,12 @@ def _pack_content(directory: Path | None) -> str | None:
     if directory is None:
         return None
     try:
-        from .content_hash import content_identity
+        from .content_hash import PACK_SKIPS, content_identity
 
         if not directory.is_dir():
             return None
-        return content_identity([directory], use_git=True).get("digest")
+        return content_identity([directory], use_git=True,
+                                skips=PACK_SKIPS).get("digest")
     except Exception:  # noqa: BLE001 -- a fact, never a failure
         return None
 

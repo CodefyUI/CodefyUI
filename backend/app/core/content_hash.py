@@ -39,10 +39,12 @@ was missing, unreadable or not followed.
 
 A walk follows directory symlinks (a dataset folder that links its class
 folders from another disk is made of those files), never a link back into
-its own path, and skips version control, caches, virtual environments,
-build output and desktop metadata (:data:`SKIPPED_DIRS`,
-:data:`SKIPPED_DIR_SUFFIXES`, :data:`SKIPPED_FILES`,
-:data:`SKIPPED_SUFFIXES`).
+its own path. What it skips is a parameter (:class:`Skips`):
+:data:`DATA_SKIPS`, the default for dataset and model roots, leaves out
+only version control, ``__pycache__`` and tool caches, so a dataset is
+hashed as its loader reads it (a class folder may well be named ``build``
+or ``env``); :data:`PACK_SKIPS`, for pack (code) directories, also leaves
+out virtual environments, build output and desktop metadata.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -64,25 +66,41 @@ logger = logging.getLogger(__name__)
 #: drive root picked by mistake, not an operating limit.
 WALK_CAP = 200_000
 
-#: Directory names a walk never enters: version control, caches, editor
-#: state, virtual environments and build output. They are not content a
-#: dataset or a pack is made of, and they change on their own
-#: (``__pycache__`` with every import, a ``.venv`` with every
-#: ``pip install``); a ``.venv`` inside a linked pack checkout would also
-#: be gigabytes read at every run start.
-SKIPPED_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__",
-                          "node_modules", ".mypy_cache", ".pytest_cache",
-                          ".ruff_cache", ".ipynb_checkpoints", ".venv",
-                          "venv", "env", ".tox", ".nox", "build", "dist"})
+class Skips(NamedTuple):
+    """What a walk leaves out: directory names, directory name suffixes,
+    file names and file name suffixes."""
 
-#: Directory name suffixes a walk never enters (``<name>.egg-info``).
-SKIPPED_DIR_SUFFIXES = (".egg-info",)
+    dirs: frozenset[str]
+    dir_suffixes: tuple[str, ...]
+    files: frozenset[str]
+    suffixes: tuple[str, ...]
 
-#: File suffixes a walk leaves out for the same reason.
-SKIPPED_SUFFIXES = (".pyc", ".pyo")
+    def dir(self, name: str) -> bool:
+        return name in self.dirs or name.endswith(self.dir_suffixes)
 
-#: File names a walk leaves out: desktop metadata the file manager writes.
-SKIPPED_FILES = frozenset({".DS_Store", "Thumbs.db"})
+    def file(self, name: str) -> bool:
+        return name in self.files or name.endswith(self.suffixes)
+
+
+#: Dataset and model roots: version control, ``__pycache__`` (it changes
+#: with every import), tool caches and ``*.pyc``. Nothing a loader such as
+#: ``ImageFolder`` would read is left out.
+DATA_SKIPS = Skips(
+    dirs=frozenset({".git", ".hg", ".svn", "__pycache__", "node_modules",
+                    ".mypy_cache", ".pytest_cache", ".ruff_cache",
+                    ".ipynb_checkpoints"}),
+    dir_suffixes=(), files=frozenset(), suffixes=(".pyc", ".pyo"))
+
+#: Pack (code) directories: :data:`DATA_SKIPS` plus virtual environments,
+#: build output and desktop metadata, which change on their own (a
+#: ``.venv`` with every ``pip install``) and inside a linked pack checkout
+#: would be gigabytes read at every run start.
+PACK_SKIPS = Skips(
+    dirs=DATA_SKIPS.dirs | {".venv", "venv", "env", ".tox", ".nox", "build",
+                            "dist"},
+    dir_suffixes=(".egg-info",),
+    files=frozenset({".DS_Store", "Thumbs.db"}),
+    suffixes=DATA_SKIPS.suffixes)
 
 #: Seconds ``git ls-files`` may take before a pack is walked instead.
 GIT_TIMEOUT = 10.0
@@ -116,20 +134,13 @@ def default_cache_dir() -> Path:
 # ── walking ───────────────────────────────────────────────────────────────
 
 
-def _skipped_dir(name: str) -> bool:
-    return name in SKIPPED_DIRS or name.endswith(SKIPPED_DIR_SUFFIXES)
-
-
-def _skipped_file(name: str) -> bool:
-    return name in SKIPPED_FILES or name.endswith(SKIPPED_SUFFIXES)
-
-
 class _Listing:
     """What a walk found: ``entries`` (sorted ``(relative posix path,
     path)``), ``truncated``, ``unreadable`` (directories that could not be
     listed) and ``notes``."""
 
-    def __init__(self) -> None:
+    def __init__(self, skips: Skips = DATA_SKIPS) -> None:
+        self.skips = skips
         self.entries: list[tuple[str, Path]] = []
         self.truncated = False
         self.unreadable = 0
@@ -184,18 +195,18 @@ def _walk_dir(directory: Path, prefix: str, listing: _Listing,
         except OSError:
             is_dir = False
         if is_dir:
-            if _skipped_dir(name):
+            if listing.skips.dir(name):
                 continue
             _walk_dir(Path(entry.path), f"{prefix}{name}/", listing,
                       ancestors)
-        elif not _skipped_file(name):
+        elif not listing.skips.file(name):
             if not listing.add(f"{prefix}{name}", Path(entry.path)):
                 return
         if listing.truncated:
             return
 
 
-def _git_listing(root: Path) -> _Listing | None:
+def _git_listing(root: Path, skips: Skips) -> _Listing | None:
     """The files of *root* as git sees them, or None (not a checkout, no
     git, too slow, or git lists nothing).
 
@@ -226,15 +237,15 @@ def _git_listing(root: Path) -> _Listing | None:
                     if name})
     if not names:
         return None
-    listing = _Listing()
+    listing = _Listing(skips)
     for rel in names:
         parts = rel.split("/")
-        if any(_skipped_dir(part) for part in parts[:-1]) \
-                or _skipped_file(parts[-1]):
+        if any(skips.dir(part) for part in parts[:-1]) \
+                or skips.file(parts[-1]):
             continue
         path = root / rel
         if path.is_dir():
-            if _skipped_dir(parts[-1]):
+            if skips.dir(parts[-1]):
                 continue
             _walk_dir(path, f"{rel}/", listing, (_dir_key(root) or (0, 0),))
         elif path.exists():
@@ -245,7 +256,8 @@ def _git_listing(root: Path) -> _Listing | None:
     return listing
 
 
-def _walk(root: Path, *, use_git: bool = False) -> _Listing:
+def _walk(root: Path, *, use_git: bool = False,
+          skips: Skips = DATA_SKIPS) -> _Listing:
     """The files under *root*: a file *root* is its own single entry, named
     by its file name. With *use_git*, a directory inside a git checkout is
     listed by git (:func:`_git_listing`) when it can be."""
@@ -254,10 +266,10 @@ def _walk(root: Path, *, use_git: bool = False) -> _Listing:
         listing.add(root.name, root)
         return listing
     if use_git:
-        listing = _git_listing(root)
+        listing = _git_listing(root, skips)
         if listing is not None:
             return listing
-    listing = _Listing()
+    listing = _Listing(skips)
     _walk_dir(root, "", listing, ())
     listing.entries.sort()
     return listing
@@ -302,14 +314,16 @@ def _finish(result: dict[str, Any], lines: list[str],
 
 
 def stat_identity(paths: Iterable[Path | str], *,
-                  use_git: bool = False) -> dict[str, Any]:
+                  use_git: bool = False,
+                  skips: Skips = DATA_SKIPS) -> dict[str, Any]:
     """The ``"stat"`` identity of one or more files or directories.
 
     ``digest`` is the sha256 of the sorted ``relative path, size,
     mtime_ns`` lines; ``files`` / ``bytes`` / ``latest_mtime`` summarise
     them. No content is read. Several *paths* are combined under their own
     names (``<name>/<relative path>``) so the same files under two roots
-    are two identities. *use_git* as for :func:`content_identity`.
+    are two identities. *use_git* and *skips* as for
+    :func:`content_identity`.
     """
     result = _empty("stat")
     lines: list[str] = []
@@ -319,7 +333,7 @@ def stat_identity(paths: Iterable[Path | str], *,
             _missing(result, root)
             continue
         result["exists"] = True
-        listing = _walk(root, use_git=use_git)
+        listing = _walk(root, use_git=use_git, skips=skips)
         result["truncated"] = result["truncated"] or listing.truncated
         result["unreadable"] += listing.unreadable
         result["notes"].extend(listing.notes)
@@ -442,7 +456,8 @@ def _sha256_file(path: Path) -> str | None:
 def content_identity(paths: Iterable[Path | str], *,
                      cache_dir: Path | None | bool = True,
                      refresh: bool = False,
-                     use_git: bool = False) -> dict[str, Any]:
+                     use_git: bool = False,
+                     skips: Skips = DATA_SKIPS) -> dict[str, Any]:
     """The ``"sha256"`` identity of one or more files or directories.
 
     One file alone: ``digest`` is that file's own sha256, the value
@@ -456,6 +471,8 @@ def content_identity(paths: Iterable[Path | str], *,
     ``git ls-files`` (tracked and untracked, not ignored files) when git
     answers within :data:`GIT_TIMEOUT`, and walks it otherwise; it is for
     pack directories, whose ``.gitignore`` says what is not code.
+    *skips* is what a walk (and a git listing) leaves out:
+    :data:`DATA_SKIPS` by default, :data:`PACK_SKIPS` for a pack.
     """
     result = _empty("sha256")
     result["reused"] = 0
@@ -476,7 +493,7 @@ def content_identity(paths: Iterable[Path | str], *,
             _missing(result, root)
             continue
         result["exists"] = True
-        listing = _walk(root, use_git=use_git)
+        listing = _walk(root, use_git=use_git, skips=skips)
         result["truncated"] = result["truncated"] or listing.truncated
         result["unreadable"] += listing.unreadable
         result["notes"].extend(listing.notes)

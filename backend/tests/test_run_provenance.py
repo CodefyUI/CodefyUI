@@ -188,9 +188,30 @@ def test_generated_content_is_not_hashed(tmp_path):
         (root / name / "lib" / "big.so").write_bytes(b"\0" * 10)
     (root / ".DS_Store").write_bytes(b"finder")
     (root / "Thumbs.db").write_bytes(b"explorer")
-    result = content_hash.content_identity([root], cache_dir=None)
+    packs = content_hash.PACK_SKIPS
+    result = content_hash.content_identity([root], cache_dir=None,
+                                           skips=packs)
     assert result["files"] == 2  # the manifest and nodes.py
-    assert content_hash.stat_identity([root])["files"] == 2
+    assert content_hash.stat_identity([root], skips=packs)["files"] == 2
+    # The same tree as a dataset root keeps everything but node_modules.
+    assert content_hash.content_identity([root], cache_dir=None)["files"] \
+        == 2 + 8 + 2
+
+
+def test_a_dataset_class_folder_named_like_build_output_is_hashed(tmp_path):
+    # The generated-content list is for pack code only: ImageFolder reads a
+    # class folder named build or env like any other.
+    root = tmp_path / "train"
+    for label in ("build", "env"):
+        (root / label).mkdir(parents=True)
+        (root / label / "1.png").write_bytes(label.encode())
+    (root / "Thumbs.db").write_bytes(b"explorer")
+    before = content_hash.content_identity([root], cache_dir=None)
+    assert before["files"] == 3 and before["digest"] is not None
+    assert content_hash.stat_identity([root])["files"] == 3
+    (root / "env" / "1.png").write_bytes(b"changed")
+    after = content_hash.content_identity([root], cache_dir=None)
+    assert after["digest"] != before["digest"]
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -205,7 +226,8 @@ def test_a_pack_in_a_git_checkout_is_listed_by_git(tmp_path):
                     "codefyui-plugin.json"], check=True)
     walked = content_hash.content_identity([root], cache_dir=None)
     listed = content_hash.content_identity([root], cache_dir=None,
-                                           use_git=True)
+                                           use_git=True,
+                                           skips=content_hash.PACK_SKIPS)
     # Tracked and untracked files count, what .gitignore excludes does not.
     assert walked["files"] == 5
     assert listed["files"] == 4 and listed["digest"] is not None

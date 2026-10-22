@@ -122,7 +122,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 | `python`、`platform` | Python 版本與實作；作業系統、核心版本、機器架構與 macOS 版本。 |
 | `libraries`、`torch_build` | 已安裝的 `torch`、`torchvision`、`numpy` 與 `mlx` 版本；torch 的建置 commit，以及 CUDA、HIP 與 cuDNN 版本。 |
 | `accelerators`、`devices` | CUDA、ROCm、MPS 與 MLX 是否可用、每張 CUDA 卡的名稱與 compute capability、`pynvml` 能讀到時的 NVIDIA 驅動程式版本；伺服器的預設裝置與提供的裝置清單。 |
-| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision`、`revision_kind`、`immutable` 與 `content_sha256`。從儲存庫安裝的套件記錄其 commit（`git-sha`，`immutable: true`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`；只有 checkout 乾淨（`codefyui.dirty` 為 `false`）時才是 `immutable`。連結的本機套件沒有不可變的 revision：它的 `revision` 是收集指紋時其檔案的摘要（`content-sha256`，`immutable: false`），能識別檔案但無法還原檔案，路徑也不會記錄。`content_sha256` 是每個可讀取目錄之套件的這份摘要（依排序後的相對路徑合併每個檔案位元組的 sha256，略過[節點來源](#node-provenance)列出的檔案；位於 git checkout 內的套件目錄以 `git ls-files` 列出，因此計入已追蹤的檔案，以及未被 `.gitignore` 排除的未追蹤檔案），所以安裝後被原地修改的套件會改變摘要；目錄無法讀取時為 `null`。 |
+| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision`、`revision_kind`、`immutable` 與 `content_sha256`。從儲存庫安裝的套件記錄其 commit（`git-sha`，`immutable: true`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`；只有 checkout 乾淨（`codefyui.dirty` 為 `false`）時才是 `immutable`。連結的本機套件沒有不可變的 revision：它的 `revision` 是收集指紋時其檔案的摘要（`content-sha256`，`immutable: false`），能識別檔案但無法還原檔案，路徑也不會記錄。`content_sha256` 是每個可讀取目錄之套件的這份摘要（依排序後的相對路徑合併每個檔案位元組的 sha256，略過名為 `.git`、`.hg`、`.svn`、`__pycache__`、`node_modules`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`.ipynb_checkpoints`、`.venv`、`venv`、`env`、`.tox`、`.nox`、`build`、`dist` 與 `*.egg-info` 的目錄，以及名為 `.DS_Store`、`Thumbs.db`、`*.pyc` 與 `*.pyo` 的檔案，也就是版本控制、快取、虛擬環境、建置產物與檔案管理員的中繼資料；位於 git checkout 內的套件目錄改以 `git ls-files` 列出，因此計入已追蹤的檔案，以及未被 `.gitignore` 排除的未追蹤檔案；未安裝 git、目錄不在 checkout 內，或 git 超過 10 秒未回應時，改為走訪目錄），所以安裝後被原地修改的套件會改變摘要；目錄無法讀取時為 `null`。 |
 | `custom_nodes`、`optional_packages` | 每個啟用的自訂節點檔案的 sha256；每個 Package Center pip 套件的已安裝版本（未安裝為 `null`）。 |
 | `env` | 一份固定清單中、會影響數值或裝置選擇的環境變數值，例如 `CUBLAS_WORKSPACE_CONFIG`、`CUDA_VISIBLE_DEVICES` 與 `ONEDNN_MAX_CPU_ISA`。不讀取其他環境變數。 |
 
@@ -145,7 +145,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 
 識別雜湊不是內容雜湊：保持大小不變、且落在同一個時間戳刻度內的修改，或會重設修改時間的複製，都可能讓它與內容不一致。只在兩筆紀錄的 `content.method` 相同時比較 `content.digest`。
 
-兩種識別走訪相同的檔案。走訪會跟隨目錄的符號連結，因此類別資料夾連結到另一顆磁碟的資料集資料夾，會以連結到的檔案識別；連回走訪目前所在目錄的連結（迴圈）不會跟隨，並以 note 說明。走訪會略過名為 `.git`、`.hg`、`.svn`、`__pycache__`、`node_modules`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`.ipynb_checkpoints`、`.venv`、`venv`、`env`、`.tox`、`.nox`、`build`、`dist` 與 `*.egg-info` 的目錄，以及名為 `.DS_Store`、`Thumbs.db`、`*.pyc` 與 `*.pyo` 的檔案：版本控制、快取、虛擬環境、建置產物與檔案管理員的中繼資料會自行變動，不屬於資料。環境指紋的套件摘要（`content_sha256`）略過相同的名稱。位於 git checkout 內的套件目錄改以 `git ls-files` 列出（已追蹤的檔案，以及未被 `.gitignore` 排除的未追蹤檔案）；未安裝 git、目錄不在 checkout 內，或 git 超過 10 秒未回應時，改為走訪目錄。
+兩種識別走訪相同的檔案。走訪會跟隨目錄的符號連結，因此類別資料夾連結到另一顆磁碟的資料集資料夾，會以連結到的檔案識別；連回走訪目前所在目錄的連結（迴圈）不會跟隨，並以 note 說明。走訪只略過版本控制目錄（`.git`、`.hg`、`.svn`）、`__pycache__`、工具快取（`node_modules`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`.ipynb_checkpoints`）與 `*.pyc` / `*.pyo` 檔；其餘檔案都依節點的載入器讀取的方式雜湊，因此名為 `build` 或 `env` 的類別資料夾也屬於資料集。較長的產生內容清單只適用於套件目錄（參閱[執行環境](#run-environment)中的 `plugins`）。
 
 不使用此選項時不記錄任何東西，儲存的 `options` 不含 `provenance` 鍵，run 的事件與結果也不變。紀錄在每個節點完成後，依它的參數與輸出收集，不改變節點的行為。在 worker 上由 run 子行程收集，再由控制面儲存。
 
