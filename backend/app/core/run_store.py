@@ -609,6 +609,11 @@ def _insert_fingerprint(conn: sqlite3.Connection,
     return digest
 
 
+def _no_provenance_table(exc: sqlite3.OperationalError) -> bool:
+    """Whether *exc* is SQLite saying ``exec_run_provenance`` is missing."""
+    return "no such table" in str(exc) and "exec_run_provenance" in str(exc)
+
+
 @dataclass
 class RunStore:
     """Typed CRUD over the four ``exec_*`` tables.
@@ -1148,7 +1153,7 @@ class RunStore:
         kind = str(record.get("kind") or "")
         stamp = utc_now_iso()
 
-        def _write(conn: sqlite3.Connection) -> int:
+        def _insert(conn: sqlite3.Connection) -> int:
             with transaction(conn):
                 if conn.execute("SELECT 1 FROM exec_runs WHERE id = ?",
                                 (run_id,)).fetchone() is None:
@@ -1161,14 +1166,36 @@ class RunStore:
                      _dumps(json_safe(record)), stamp),
                 ).rowcount
 
+        def _write(conn: sqlite3.Connection) -> int:
+            try:
+                return _insert(conn)
+            except sqlite3.OperationalError as exc:
+                if not _no_provenance_table(exc):
+                    raise
+            from .migrations import PROVENANCE_TABLE_DDL
+
+            conn.executescript(PROVENANCE_TABLE_DDL)
+            return _insert(conn)
+
         return await self.db.run(_write) > 0
 
     async def list_provenance(self, run_id: str) -> list[dict[str, Any]]:
-        """A run's provenance records, in the order they were recorded."""
+        """A run's provenance records, in the order they were recorded.
+
+        ``[]`` when the table is missing (a development database migrated
+        past 017 while 017 was empty, see
+        ``migrations.PROVENANCE_TABLE_DDL``): such a run recorded nothing.
+        """
         def _select(conn: sqlite3.Connection) -> list[str]:
-            return [row["provenance"] for row in conn.execute(
-                "SELECT provenance FROM exec_run_provenance WHERE run_id = ? "
-                "ORDER BY recorded_at, rowid", (run_id,))]
+            try:
+                return [row["provenance"] for row in conn.execute(
+                    "SELECT provenance FROM exec_run_provenance "
+                    "WHERE run_id = ? ORDER BY recorded_at, rowid",
+                    (run_id,))]
+            except sqlite3.OperationalError as exc:
+                if _no_provenance_table(exc):
+                    return []
+                raise
 
         return [_loads(raw) for raw in await self.db.run(_select)]
 

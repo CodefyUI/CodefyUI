@@ -122,7 +122,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 | `python`、`platform` | Python 版本與實作；作業系統、核心版本、機器架構與 macOS 版本。 |
 | `libraries`、`torch_build` | 已安裝的 `torch`、`torchvision`、`numpy` 與 `mlx` 版本；torch 的建置 commit，以及 CUDA、HIP 與 cuDNN 版本。 |
 | `accelerators`、`devices` | CUDA、ROCm、MPS 與 MLX 是否可用、每張 CUDA 卡的名稱與 compute capability、`pynvml` 能讀到時的 NVIDIA 驅動程式版本；伺服器的預設裝置與提供的裝置清單。 |
-| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision`、`revision_kind`、`immutable` 與 `content_sha256`。從儲存庫安裝的套件記錄其 commit（`git-sha`，`immutable: true`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`；只有 checkout 乾淨（`codefyui.dirty` 為 `false`）時才是 `immutable`。連結的本機套件沒有不可變的 revision：它的 `revision` 是收集指紋時其檔案的摘要（`content-sha256`，`immutable: false`），能識別檔案但無法還原檔案，路徑也不會記錄。`content_sha256` 是每個可讀取目錄之套件的這份摘要（依排序後的相對路徑合併每個檔案位元組的 sha256，略過 `__pycache__`、版本控制目錄與 `.pyc` 檔），所以安裝後被原地修改的套件會改變摘要；目錄無法讀取時為 `null`。 |
+| `plugins` | 每個啟用的套件：`source_kind`、`source`、`ref`、`version`、`revision`、`revision_kind`、`immutable` 與 `content_sha256`。從儲存庫安裝的套件記錄其 commit（`git-sha`，`immutable: true`）。內建套件隨 checkout 一起發佈，因此其 revision 是 CodefyUI 的 commit（`codefyui-commit`），source 為 `plugins/<id>`；只有 checkout 乾淨（`codefyui.dirty` 為 `false`）時才是 `immutable`。連結的本機套件沒有不可變的 revision：它的 `revision` 是收集指紋時其檔案的摘要（`content-sha256`，`immutable: false`），能識別檔案但無法還原檔案，路徑也不會記錄。`content_sha256` 是每個可讀取目錄之套件的這份摘要（依排序後的相對路徑合併每個檔案位元組的 sha256，略過[節點來源](#node-provenance)列出的檔案；位於 git checkout 內的套件目錄以 `git ls-files` 列出，因此計入已追蹤的檔案，以及未被 `.gitignore` 排除的未追蹤檔案），所以安裝後被原地修改的套件會改變摘要；目錄無法讀取時為 `null`。 |
 | `custom_nodes`、`optional_packages` | 每個啟用的自訂節點檔案的 sha256；每個 Package Center pip 套件的已安裝版本（未安裝為 `null`）。 |
 | `env` | 一份固定清單中、會影響數值或裝置選擇的環境變數值，例如 `CUBLAS_WORKSPACE_CONFIG`、`CUDA_VISIBLE_DEVICES` 與 `ONEDNN_MAX_CPU_ISA`。不讀取其他環境變數。 |
 
@@ -144,6 +144,8 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 - `"content"`：同上，再加上**內容雜湊**（`content.method: "sha256"`）：每個檔案位元組的 sha256，依排序後的相對路徑合併。單一檔案的摘要就是 `sha256sum` 印出的值。雜湊是增量的：每個檔案的雜湊依其路徑、大小、修改時間與 inode 保存在 `<user data>/cache/content-hashes/`，這些值未變的檔案不會再讀一次，因此大型資料集只有第一次 run 會完整讀取。快取不會放在資料集裡，遺失快取只代表要重新讀取檔案。依同一規則，原地改寫但大小、修改時間與 inode 都不變的檔案，會沿用先前的雜湊。
 
 識別雜湊不是內容雜湊：保持大小不變、且落在同一個時間戳刻度內的修改，或會重設修改時間的複製，都可能讓它與內容不一致。只在兩筆紀錄的 `content.method` 相同時比較 `content.digest`。
+
+兩種識別走訪相同的檔案。走訪會跟隨目錄的符號連結，因此類別資料夾連結到另一顆磁碟的資料集資料夾，會以連結到的檔案識別；連回走訪目前所在目錄的連結（迴圈）不會跟隨，並以 note 說明。走訪會略過名為 `.git`、`.hg`、`.svn`、`__pycache__`、`node_modules`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`.ipynb_checkpoints`、`.venv`、`venv`、`env`、`.tox`、`.nox`、`build`、`dist` 與 `*.egg-info` 的目錄，以及名為 `.DS_Store`、`Thumbs.db`、`*.pyc` 與 `*.pyo` 的檔案：版本控制、快取、虛擬環境、建置產物與檔案管理員的中繼資料會自行變動，不屬於資料。環境指紋的套件摘要（`content_sha256`）略過相同的名稱。位於 git checkout 內的套件目錄改以 `git ls-files` 列出（已追蹤的檔案，以及未被 `.gitignore` 排除的未追蹤檔案）；未安裝 git、目錄不在 checkout 內，或 git 超過 10 秒未回應時，改為走訪目錄。
 
 不使用此選項時不記錄任何東西，儲存的 `options` 不含 `provenance` 鍵，run 的事件與結果也不變。紀錄在每個節點完成後，依它的參數與輸出收集，不改變節點的行為。在 worker 上由 run 子行程收集，再由控制面儲存。
 
@@ -176,7 +178,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 }
 ```
 
-`source.path` 一定不是絕對路徑，而是相對於找到檔案的 CodefyUI 目錄，該目錄由 `source.location` 指出（`models`、`files`、`data`、`project`、`working-dir`、`hf-cache`、`packs`）；不在這些目錄下的檔案只記錄檔名，`location` 為 `"external"`。節點未指定檔案時 `content` 為 `null`。檔案不存在或無法讀取（`unreadable` 計數），或走訪在 200,000 個檔案處停止（`truncated`）時，`content.digest` 為 `null`。`reused` 與 `hashed`（僅內容模式）分別計算雜湊來自快取的檔案數，以及這次 run 讀取的檔案數。`GET /api/runs/{run_id}` 以 `provenance` 回傳這些紀錄，Runs 面板在 run 詳細資訊的「資料與模型」下顯示，紀錄會隨 run 一起刪除。
+`source.path` 一定不是絕對路徑，而是相對於找到檔案的 CodefyUI 目錄，該目錄由 `source.location` 指出（`models`、`files`、`data`、`project`、`working-dir`、`hf-cache`、`packs`）；不在這些目錄下的檔案只記錄檔名，`location` 為 `"external"`。檔案系統根目錄（`/`、`C:\`）或家目錄不算這些目錄，因此從 `/` 啟動的伺服器（systemd unit 預設的工作目錄、容器的 `WORKDIR /`）同樣把外部檔案記為 `external`。節點未指定檔案時 `content` 為 `null`。任一輸入不存在、檔案或目錄無法讀取（`unreadable` 計數），或走訪在 200,000 個檔案處停止（`truncated`）時，`content.digest` 為 `null`；`notes` 列出不存在、無法讀取或未跟隨的項目。外掛註冊的 provider 也得到相同結構：它沒有提供的鍵為 `null`。`reused` 與 `hashed`（僅內容模式）分別計算雜湊來自快取的檔案數，以及這次 run 讀取的檔案數。`GET /api/runs/{run_id}` 以 `provenance` 回傳這些紀錄，Runs 面板在 run 詳細資訊的「資料與模型」下顯示，紀錄會隨 run 一起刪除。
 
 ## 執行輸出與狀態 {/* #execution-outputs-and-state */}
 

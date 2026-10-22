@@ -97,4 +97,14 @@ describe('RunProvenance', () => {
     expect(screen.getAllByText('content not identified')).toHaveLength(2);
     expect(screen.getByText('?:x.csv')).toBeInTheDocument();
   });
+
+  it('renders a partial record from a plugin provider without crashing', () => {
+    // A provider registered by a plugin, or an older server, may send only
+    // some keys; the row still renders with the facts it has.
+    const partial = { node_id: 'plugin', node_type: 'PluginLoader', rows: 3 } as unknown as NodeProvenance;
+    render(<RunProvenance records={[partial]} />);
+    expect(screen.getByText('plugin')).toHaveAttribute('title', '');
+    expect(screen.getByText('content not identified')).toBeInTheDocument();
+    expect(screen.getByText('3 rows')).toBeInTheDocument();
+  });
 });

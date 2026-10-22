@@ -31,9 +31,18 @@ rare enough that the trade is the right one for the large-dataset case
 this exists for; ``refresh=True`` re-reads everything.
 
 Every function here returns facts and never raises: a path that does not
-exist is ``exists: False``, an unreadable file is counted in
-``unreadable`` and leaves ``digest`` ``None`` (a digest over the files that
-could be read would claim to identify a tree it did not see).
+exist is ``exists: False`` (with several paths, a missing one is a note),
+an unreadable file or directory is counted in ``unreadable``, and any of
+them leaves ``digest`` ``None`` (a digest over the inputs that could be
+read would claim to identify inputs it did not see). ``notes`` says what
+was missing, unreadable or not followed.
+
+A walk follows directory symlinks (a dataset folder that links its class
+folders from another disk is made of those files), never a link back into
+its own path, and skips version control, caches, virtual environments,
+build output and desktop metadata (:data:`SKIPPED_DIRS`,
+:data:`SKIPPED_DIR_SUFFIXES`, :data:`SKIPPED_FILES`,
+:data:`SKIPPED_SUFFIXES`).
 """
 
 from __future__ import annotations
@@ -55,23 +64,46 @@ logger = logging.getLogger(__name__)
 #: drive root picked by mistake, not an operating limit.
 WALK_CAP = 200_000
 
-#: Directory names a walk never enters: version control, caches and
-#: editor state. They are not content a dataset or a pack is made of, and
-#: ``__pycache__`` changes with every import.
+#: Directory names a walk never enters: version control, caches, editor
+#: state, virtual environments and build output. They are not content a
+#: dataset or a pack is made of, and they change on their own
+#: (``__pycache__`` with every import, a ``.venv`` with every
+#: ``pip install``); a ``.venv`` inside a linked pack checkout would also
+#: be gigabytes read at every run start.
 SKIPPED_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__",
                           "node_modules", ".mypy_cache", ".pytest_cache",
-                          ".ruff_cache", ".ipynb_checkpoints"})
+                          ".ruff_cache", ".ipynb_checkpoints", ".venv",
+                          "venv", "env", ".tox", ".nox", "build", "dist"})
+
+#: Directory name suffixes a walk never enters (``<name>.egg-info``).
+SKIPPED_DIR_SUFFIXES = (".egg-info",)
 
 #: File suffixes a walk leaves out for the same reason.
 SKIPPED_SUFFIXES = (".pyc", ".pyo")
 
+#: File names a walk leaves out: desktop metadata the file manager writes.
+SKIPPED_FILES = frozenset({".DS_Store", "Thumbs.db"})
+
+#: Seconds ``git ls-files`` may take before a pack is walked instead.
+GIT_TIMEOUT = 10.0
+
 #: Bytes read per ``read`` call while hashing.
 _CHUNK = 1 << 20
 
-#: One lock per process for the cache files: two threads of one process
-#: hashing the same root must not interleave their writes. Two processes
-#: may still race; the loser's entries are simply recomputed next time.
-_CACHE_LOCK = threading.Lock()
+#: One lock per cache file, held only while that file is loaded or merged
+#: and saved, never while content is read: hashing a large dataset must
+#: not stall the hashing of an unrelated root (every run start hashes the
+#: enabled packs). ``_LOCKS_GUARD`` guards the dict itself.
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_lock(key: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = _LOCKS[key] = threading.Lock()
+        return lock
 
 
 def default_cache_dir() -> Path:
@@ -84,36 +116,157 @@ def default_cache_dir() -> Path:
 # ── walking ───────────────────────────────────────────────────────────────
 
 
-def _walk(root: Path) -> tuple[list[tuple[str, Path]], bool]:
-    """``([(relative posix path, absolute path)], truncated)`` under *root*.
+def _skipped_dir(name: str) -> bool:
+    return name in SKIPPED_DIRS or name.endswith(SKIPPED_DIR_SUFFIXES)
 
-    A file *root* is its own single entry, named by its file name. Sorted,
-    so the order is the same on every filesystem.
+
+def _skipped_file(name: str) -> bool:
+    return name in SKIPPED_FILES or name.endswith(SKIPPED_SUFFIXES)
+
+
+class _Listing:
+    """What a walk found: ``entries`` (sorted ``(relative posix path,
+    path)``), ``truncated``, ``unreadable`` (directories that could not be
+    listed) and ``notes``."""
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, Path]] = []
+        self.truncated = False
+        self.unreadable = 0
+        self.notes: list[str] = []
+
+    def add(self, rel: str, path: Path) -> bool:
+        """Add one file; False (and ``truncated``) once the cap is hit."""
+        if len(self.entries) >= WALK_CAP:
+            self.truncated = True
+            return False
+        self.entries.append((rel, path))
+        return True
+
+
+def _dir_key(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino
+
+
+def _walk_dir(directory: Path, prefix: str, listing: _Listing,
+              ancestors: tuple[tuple[int, int], ...]) -> None:
+    """Add the files under *directory*, following directory symlinks.
+
+    A dataset folder often links its class folders from elsewhere
+    (``train/cats -> /mnt/x/cats``); those files are the dataset. A link
+    back to a directory on the current path (a loop) is not followed, and
+    a note says so; a directory that cannot be listed counts as
+    ``unreadable``. Names are visited in sorted order, so the listing is
+    the same on every run.
     """
-    if root.is_file():
-        return [(root.name, root)], False
-    entries: list[tuple[str, Path]] = []
-    truncated = False
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIPPED_DIRS)
-        for name in filenames:
-            if name.endswith(SKIPPED_SUFFIXES):
+    key = _dir_key(directory)
+    if key is None or key in ancestors:
+        listing.notes.append(
+            f"not followed (a symlink loop): {prefix.rstrip('/') or '.'}")
+        return
+    ancestors = ancestors + (key,)
+    try:
+        with os.scandir(directory) as scan:
+            children = sorted((entry.name, entry) for entry in scan)
+    except OSError as exc:
+        listing.unreadable += 1
+        listing.notes.append(
+            f"unreadable directory: {prefix.rstrip('/') or '.'} "
+            f"({type(exc).__name__})")
+        return
+    for name, entry in children:
+        try:
+            is_dir = entry.is_dir()  # follows a symlink
+        except OSError:
+            is_dir = False
+        if is_dir:
+            if _skipped_dir(name):
                 continue
-            if len(entries) >= WALK_CAP:
-                truncated = True
-                break
-            path = Path(dirpath) / name
-            entries.append((path.relative_to(root).as_posix(), path))
-        if truncated:
+            _walk_dir(Path(entry.path), f"{prefix}{name}/", listing,
+                      ancestors)
+        elif not _skipped_file(name):
+            if not listing.add(f"{prefix}{name}", Path(entry.path)):
+                return
+        if listing.truncated:
+            return
+
+
+def _git_listing(root: Path) -> _Listing | None:
+    """The files of *root* as git sees them, or None (not a checkout, no
+    git, too slow, or git lists nothing).
+
+    Tracked files plus untracked files that are not ignored
+    (``git ls-files --cached --others --exclude-standard``): what a pack
+    author's ``.gitignore`` excludes (a virtual environment, build output,
+    downloaded weights) is not the pack's code. A listed path that is a
+    directory (a submodule, a linked directory) is walked; a tracked file
+    deleted from the work tree is left out.
+    """
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        done = subprocess.run(
+            [git, "-C", str(root), "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard"],
+            capture_output=True, timeout=GIT_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    names = sorted({name for name in
+                    done.stdout.decode("utf-8", "surrogateescape").split("\0")
+                    if name})
+    if not names:
+        return None
+    listing = _Listing()
+    for rel in names:
+        parts = rel.split("/")
+        if any(_skipped_dir(part) for part in parts[:-1]) \
+                or _skipped_file(parts[-1]):
+            continue
+        path = root / rel
+        if path.is_dir():
+            if _skipped_dir(parts[-1]):
+                continue
+            _walk_dir(path, f"{rel}/", listing, (_dir_key(root) or (0, 0),))
+        elif path.exists():
+            listing.add(rel, path)
+        if listing.truncated:
             break
-    entries.sort()
-    return entries, truncated
+    listing.entries.sort()
+    return listing
+
+
+def _walk(root: Path, *, use_git: bool = False) -> _Listing:
+    """The files under *root*: a file *root* is its own single entry, named
+    by its file name. With *use_git*, a directory inside a git checkout is
+    listed by git (:func:`_git_listing`) when it can be."""
+    if root.is_file():
+        listing = _Listing()
+        listing.add(root.name, root)
+        return listing
+    if use_git:
+        listing = _git_listing(root)
+        if listing is not None:
+            return listing
+    listing = _Listing()
+    _walk_dir(root, "", listing, ())
+    listing.entries.sort()
+    return listing
 
 
 def _empty(method: str) -> dict[str, Any]:
     return {"method": method, "exists": False, "digest": None, "files": 0,
             "bytes": 0, "latest_mtime": None, "truncated": False,
-            "unreadable": 0}
+            "unreadable": 0, "notes": []}
 
 
 def _iso(ts: float | None) -> str | None:
@@ -122,45 +275,66 @@ def _iso(ts: float | None) -> str | None:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
+def _missing(result: dict[str, Any], root: Path) -> None:
+    result["missing"] = True
+    result["notes"].append(f"missing: {root.name}")
+
+
+def _finish(result: dict[str, Any], lines: list[str],
+            latest: float | None) -> None:
+    """Set ``exists``, ``latest_mtime`` and ``digest``.
+
+    The digest is ``None`` unless every input was seen: an input that is
+    missing, a file or directory that could not be read, or a walk that
+    stopped at :data:`WALK_CAP` leaves it ``None``, because a digest over
+    the part that could be read would claim to identify inputs it did not
+    see.
+    """
+    missing = result.pop("missing", False)
+    result["latest_mtime"] = _iso(latest)
+    if (result["exists"] and not missing and not result["truncated"]
+            and not result["unreadable"]):
+        result["digest"] = hashlib.sha256(
+            "\n".join(lines).encode("utf-8")).hexdigest()
+
+
 # ── the stat identity ─────────────────────────────────────────────────────
 
 
-def stat_identity(paths: Iterable[Path | str]) -> dict[str, Any]:
+def stat_identity(paths: Iterable[Path | str], *,
+                  use_git: bool = False) -> dict[str, Any]:
     """The ``"stat"`` identity of one or more files or directories.
 
     ``digest`` is the sha256 of the sorted ``relative path, size,
     mtime_ns`` lines; ``files`` / ``bytes`` / ``latest_mtime`` summarise
     them. No content is read. Several *paths* are combined under their own
     names (``<name>/<relative path>``) so the same files under two roots
-    are two identities.
+    are two identities. *use_git* as for :func:`content_identity`.
     """
     result = _empty("stat")
     lines: list[str] = []
     latest: float | None = None
-    any_exists = False
-    for raw in _roots(paths):
-        root = Path(raw)
+    for root in _roots(paths):
         if not root.exists():
-            lines.append(f"{root.name}\0missing")
+            _missing(result, root)
             continue
-        any_exists = True
-        entries, truncated = _walk(root)
-        result["truncated"] = result["truncated"] or truncated
-        for rel, path in entries:
+        result["exists"] = True
+        listing = _walk(root, use_git=use_git)
+        result["truncated"] = result["truncated"] or listing.truncated
+        result["unreadable"] += listing.unreadable
+        result["notes"].extend(listing.notes)
+        for rel, path in listing.entries:
             try:
                 st = path.stat()
             except OSError:
                 result["unreadable"] += 1
+                result["notes"].append(f"unreadable: {root.name}/{rel}")
                 continue
             result["files"] += 1
             result["bytes"] += st.st_size
             latest = st.st_mtime if latest is None else max(latest, st.st_mtime)
             lines.append(f"{root.name}/{rel}\0{st.st_size}\0{st.st_mtime_ns}")
-    result["exists"] = any_exists
-    result["latest_mtime"] = _iso(latest)
-    if any_exists and not result["truncated"]:
-        result["digest"] = hashlib.sha256(
-            "\n".join(lines).encode("utf-8")).hexdigest()
+    _finish(result, lines, latest)
     return result
 
 
@@ -176,23 +350,40 @@ def _roots(paths: Iterable[Path | str]) -> list[Path]:
 # ── the content identity ──────────────────────────────────────────────────
 
 
+def _read_cache_file(path: Path) -> dict[str, list[Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("files"), dict):
+        return data["files"]
+    return {}
+
+
 class _HashCache:
-    """The per-root JSON file of ``{abs path: [size, mtime_ns, ino, sha256]}``."""
+    """The per-root JSON file of ``{abs path: [size, mtime_ns, ino, sha256]}``.
+
+    Loaded once before the files are read, and merged into the file on
+    disk at :meth:`save`: the file is read again under the lock and this
+    call's new entries (and removals) are applied to what is there, so a
+    concurrent hash of the same root in another thread or process keeps
+    the entries it wrote. Neither load nor save holds the lock while a
+    dataset file is read.
+    """
 
     def __init__(self, cache_dir: Path | None, root: Path) -> None:
         self.path: Path | None = None
+        self.key = ""
         self.entries: dict[str, list[Any]] = {}
-        self.dirty = False
+        self.fresh: dict[str, list[Any]] = {}
+        self.keep: set[str] | None = None
         if cache_dir is None:
             return
-        key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()
-        self.path = cache_dir / f"{key[:32]}.json"
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        if isinstance(data, dict) and isinstance(data.get("files"), dict):
-            self.entries = data["files"]
+        self.key = hashlib.sha256(
+            str(root.resolve()).encode("utf-8")).hexdigest()[:32]
+        self.path = cache_dir / f"{self.key}.json"
+        with _cache_lock(self.key):
+            self.entries = _read_cache_file(self.path)
 
     def lookup(self, path: Path, st: os.stat_result) -> str | None:
         entry = self.entries.get(str(path))
@@ -203,27 +394,35 @@ class _HashCache:
         return None
 
     def store(self, path: Path, st: os.stat_result, digest: str) -> None:
-        self.entries[str(path)] = [st.st_size, st.st_mtime_ns, st.st_ino,
-                                   digest]
-        self.dirty = True
+        self.fresh[str(path)] = [st.st_size, st.st_mtime_ns, st.st_ino,
+                                 digest]
 
     def keep_only(self, paths: set[str]) -> None:
-        stale = [p for p in self.entries if p not in paths]
-        for p in stale:
-            del self.entries[p]
-        self.dirty = self.dirty or bool(stale)
+        """Drop the entries of files this tree no longer has, at save."""
+        self.keep = set(paths)
 
     def save(self) -> None:
-        if self.path is None or not self.dirty:
+        if self.path is None:
+            return
+        stale = (self.keep is not None
+                 and any(p not in self.keep for p in self.entries))
+        if not self.fresh and not stale:
             return
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(
-                f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps({"schema": 1, "files": self.entries},
-                                      separators=(",", ":")),
-                           encoding="utf-8")
-            os.replace(tmp, self.path)
+            with _cache_lock(self.key):
+                merged = _read_cache_file(self.path)
+                merged.update(self.fresh)
+                if self.keep is not None:
+                    merged = {p: e for p, e in merged.items()
+                              if p in self.keep}
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.path.with_name(
+                    f"{self.path.name}.{os.getpid()}."
+                    f"{threading.get_ident()}.tmp")
+                tmp.write_text(json.dumps({"schema": 1, "files": merged},
+                                          separators=(",", ":")),
+                               encoding="utf-8")
+                os.replace(tmp, self.path)
         except OSError:
             logger.debug("could not write the content-hash cache %s",
                          self.path, exc_info=True)
@@ -242,7 +441,8 @@ def _sha256_file(path: Path) -> str | None:
 
 def content_identity(paths: Iterable[Path | str], *,
                      cache_dir: Path | None | bool = True,
-                     refresh: bool = False) -> dict[str, Any]:
+                     refresh: bool = False,
+                     use_git: bool = False) -> dict[str, Any]:
     """The ``"sha256"`` identity of one or more files or directories.
 
     One file alone: ``digest`` is that file's own sha256, the value
@@ -252,7 +452,10 @@ def content_identity(paths: Iterable[Path | str], *,
 
     *cache_dir* ``True`` uses :func:`default_cache_dir`; ``None`` or
     ``False`` disables the cache. *refresh* ignores cached digests (and
-    rewrites them).
+    rewrites them). *use_git* lists a directory inside a git checkout by
+    ``git ls-files`` (tracked and untracked, not ignored files) when git
+    answers within :data:`GIT_TIMEOUT`, and walks it otherwise; it is for
+    pack directories, whose ``.gitignore`` says what is not code.
     """
     result = _empty("sha256")
     result["reused"] = 0
@@ -268,51 +471,49 @@ def content_identity(paths: Iterable[Path | str], *,
     lines: list[str] = []
     single: str | None = None
     latest: float | None = None
-    any_exists = False
     for root in roots:
         if not root.exists():
-            lines.append(f"{root.name}\0missing")
+            _missing(result, root)
             continue
-        any_exists = True
-        entries, truncated = _walk(root)
-        result["truncated"] = result["truncated"] or truncated
-        with _CACHE_LOCK:
-            cache = _HashCache(directory, root)
-            seen: set[str] = set()
-            for rel, path in entries:
-                try:
-                    st = path.stat()
-                except OSError:
-                    result["unreadable"] += 1
-                    continue
-                seen.add(str(path))
-                digest = None if refresh else cache.lookup(path, st)
+        result["exists"] = True
+        listing = _walk(root, use_git=use_git)
+        result["truncated"] = result["truncated"] or listing.truncated
+        result["unreadable"] += listing.unreadable
+        result["notes"].extend(listing.notes)
+        cache = _HashCache(directory, root)
+        seen: set[str] = set()
+        for rel, path in listing.entries:
+            try:
+                st = path.stat()
+            except OSError:
+                result["unreadable"] += 1
+                result["notes"].append(f"unreadable: {root.name}/{rel}")
+                continue
+            seen.add(str(path))
+            digest = None if refresh else cache.lookup(path, st)
+            if digest is None:
+                digest = _sha256_file(path)
                 if digest is None:
-                    digest = _sha256_file(path)
-                    if digest is None:
-                        result["unreadable"] += 1
-                        continue
-                    cache.store(path, st, digest)
-                    result["hashed"] += 1
-                else:
-                    result["reused"] += 1
-                result["files"] += 1
-                result["bytes"] += st.st_size
-                latest = (st.st_mtime if latest is None
-                          else max(latest, st.st_mtime))
-                lines.append(f"{root.name}/{rel}\0{digest}")
-                single = digest
-            if not truncated:
-                cache.keep_only(seen)
-            cache.save()
-    result["exists"] = any_exists
-    result["latest_mtime"] = _iso(latest)
-    if any_exists and not result["truncated"] and not result["unreadable"]:
-        if len(roots) == 1 and roots[0].is_file() and single is not None:
-            result["digest"] = single
-        else:
-            result["digest"] = hashlib.sha256(
-                "\n".join(lines).encode("utf-8")).hexdigest()
+                    result["unreadable"] += 1
+                    result["notes"].append(f"unreadable: {root.name}/{rel}")
+                    continue
+                cache.store(path, st, digest)
+                result["hashed"] += 1
+            else:
+                result["reused"] += 1
+            result["files"] += 1
+            result["bytes"] += st.st_size
+            latest = (st.st_mtime if latest is None
+                      else max(latest, st.st_mtime))
+            lines.append(f"{root.name}/{rel}\0{digest}")
+            single = digest
+        if not listing.truncated and not listing.unreadable:
+            cache.keep_only(seen)
+        cache.save()
+    _finish(result, lines, latest)
+    if (result["digest"] is not None and len(roots) == 1
+            and roots[0].is_file() and single is not None):
+        result["digest"] = single
     return result
 
 

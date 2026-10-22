@@ -669,6 +669,15 @@ CREATE TABLE exec_run_provenance (
 );
 """
 
+#: Migration 017's table, created when it is missing (#344). A development
+#: database that ran a wave-d build with 017 still empty is at
+#: ``user_version`` 18 or later without the table, and no migration will
+#: add it; ``RunStore`` creates it on first use with this statement. A
+#: released build always has the table from 017, so there it is a no-op.
+PROVENANCE_TABLE_DDL = MIGRATION_017.replace(
+    "CREATE TABLE exec_run_provenance",
+    "CREATE TABLE IF NOT EXISTS exec_run_provenance", 1)
+
 # ── Migration 018: study budgets and plugin-owned studies (#343) ──────────
 #
 # - ``studies.owner``: the plugin that submitted the study through

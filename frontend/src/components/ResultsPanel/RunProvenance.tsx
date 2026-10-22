@@ -6,10 +6,13 @@ import styles from './RunsPanel.module.css';
 const SHORT = 12;
 
 function sourceLabel(record: NodeProvenance): string {
+  // Optional chaining throughout: a plugin's provider or an older server
+  // may send a partial record, which must not take the run detail down.
   const { source } = record;
-  const name = source.name ?? '';
-  const where = source.path !== null ? `${source.location ?? '?'}:${source.path}` : '';
-  const subset = source.subset ? `/${source.subset}` : '';
+  const name = source?.name ?? '';
+  const path = source?.path ?? null;
+  const where = path !== null ? `${source?.location ?? '?'}:${path}` : '';
+  const subset = source?.subset ? `/${source.subset}` : '';
   const split = record.split ? ` [${record.split}]` : '';
   return [name + subset, where].filter(Boolean).join(' ') + split;
 }
@@ -32,18 +35,19 @@ export function RunProvenance({ records }: { records: NodeProvenance[] | undefin
       <div className={styles.sectionHeader}>{t('runs.detail.provenance')}</div>
       <div className={styles.artifactList}>
         {records.map((record) => {
-          const { content, revision } = record;
+          const { content } = record;
+          const resolved = record.revision?.resolved ?? null;
           const digest = content?.digest ?? null;
           const isContent = content?.method === 'sha256';
           return (
             <div key={record.node_id} className={styles.artifactRow}>
               <span className={styles.artifactKind}>{record.node_type}</span>
-              <span className={styles.artifactPath} title={[sourceLabel(record), ...record.notes].join('\n')}>
+              <span className={styles.artifactPath} title={[sourceLabel(record), ...(record.notes ?? [])].join('\n')}>
                 {sourceLabel(record) || record.node_id}
               </span>
-              <span title={revision.resolved ?? undefined}>
-                {revision.resolved
-                  ? t('runs.detail.provenance.revision', { revision: revision.resolved.slice(0, SHORT) })
+              <span title={resolved ?? undefined}>
+                {resolved
+                  ? t('runs.detail.provenance.revision', { revision: resolved.slice(0, SHORT) })
                   : t('runs.detail.provenance.noRevision')}
               </span>
               <span

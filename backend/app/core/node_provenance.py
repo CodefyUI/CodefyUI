@@ -102,15 +102,23 @@ def blank_record(node_id: str, node_type: str, kind: str,
     }
 
 
-def _content(paths: list[Path], mode: str) -> dict[str, Any]:
-    return content_hash.identity(paths, mode)
+def _set_content(record: dict[str, Any], paths: list[Path],
+                 mode: str) -> None:
+    """Fill ``record["content"]``; the walk's notes (a missing input, an
+    unreadable file, a symlink loop) join the record's ``notes``."""
+    content = content_hash.identity(paths, mode)
+    record["notes"].extend(content.pop("notes", None) or [])
+    record["content"] = content
 
 
 def locate(path: Path | str) -> tuple[str, str]:
     """``(location, path relative to it)`` for *path*, never absolute.
 
     The first CodefyUI directory containing it wins, most specific first;
-    outside every one: ``("external", <file name>)``.
+    outside every one: ``("external", <file name>)``. A directory that is a
+    filesystem root (``/``, ``C:\\``) or the home directory never counts,
+    so the working directory of a server started from ``/`` does not turn
+    an absolute path into a relative one.
     """
     from ..config import settings
 
@@ -128,6 +136,7 @@ def locate(path: Path | str) -> tuple[str, str]:
         ("data", settings.MODELS_DIR.parent),
         ("working-dir", Path.cwd()),
     ]
+    home = _home()
     for label, root in roots:
         if root is None:
             continue
@@ -135,10 +144,24 @@ def locate(path: Path | str) -> tuple[str, str]:
             resolved_root = Path(root).resolve()
         except OSError:
             continue
+        # A filesystem root or the home directory is no CodefyUI directory:
+        # a path relative to it is the absolute path minus its first
+        # separator (a server started from "/", a container's WORKDIR /,
+        # MODELS_DIR /models), which would publish the user's layout.
+        if resolved_root == Path(resolved_root.anchor) or (
+                home is not None and resolved_root == home):
+            continue
         if target == resolved_root or target.is_relative_to(resolved_root):
             relative = target.relative_to(resolved_root).as_posix()
             return label, relative or "."
     return "external", target.name
+
+
+def _home() -> Path | None:
+    try:
+        return Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
 
 
 def _packs_cache() -> Path | None:
@@ -196,7 +219,7 @@ def _file_record(record: dict[str, Any], path: Path | None,
         record["notes"].append("no file selected")
         return
     _set_path(record, path)
-    record["content"] = _content([path], mode)
+    _set_content(record, [path], mode)
 
 
 def csv_reader(params: dict[str, Any], outputs: dict[str, Any] | None,
@@ -229,7 +252,7 @@ def torchvision_dataset(params: dict[str, Any],
     record["source"].update(type="torchvision", name=name)
     record["split"] = split
     _set_path(record, owned[0] if len(owned) == 1 else root)
-    record["content"] = _content([Path(p) for p in owned], mode)
+    _set_content(record, [Path(p) for p in owned], mode)
     record["rows"] = _rows(_output(outputs, "dataset"))
     record["notes"].append(
         "torchvision datasets carry no revision; the content identity "
@@ -250,7 +273,7 @@ def image_folder_dataset(params: dict[str, Any],
         record["notes"].append("no folder selected")
     else:
         _set_path(record, root)
-        record["content"] = _content([root], mode)
+        _set_content(record, [root], mode)
     record["rows"] = _rows(_output(outputs, "dataset"))
     return record
 
@@ -310,7 +333,7 @@ def huggingface_dataset(params: dict[str, Any],
                     if isinstance(entry, dict) and entry.get("filename")})
     if files:
         _set_path(record, files[0].parent)
-        record["content"] = _content(files, mode)
+        _set_content(record, files, mode)
     else:
         record["notes"].append("the dataset has no local cache files")
     record["rows"] = _rows(wrapped)
@@ -332,7 +355,7 @@ def kaggle_dataset(params: dict[str, Any], outputs: dict[str, Any] | None,
             record["revision"].update(resolved=found.group(1),
                                       kind="kaggle-version")
         _set_path(record, root)
-        record["content"] = _content([Path(root)], mode)
+        _set_content(record, [Path(root)], mode)
     record["rows"] = _rows(dataset)
     return record
 
@@ -380,7 +403,7 @@ def hf_text_generate(params: dict[str, Any],
     if _HEX40.match(snapshot.name):
         record["revision"].update(resolved=snapshot.name, kind="hf-commit")
     _set_path(record, snapshot)
-    record["content"] = _content([snapshot], mode)
+    _set_content(record, [snapshot], mode)
     return record
 
 
@@ -397,8 +420,9 @@ def _catalog_revision(repo_id: str) -> str | None:
     return None
 
 
-#: Node type -> provider. A provider returns a record (``node_id`` and
-#: ``node_type`` are filled in by :func:`describe`); it may raise, which
+#: Node type -> provider. A provider returns a record, or the part of one
+#: it knows (:func:`describe` lays it over :func:`blank_record` and fills
+#: in ``node_id``, ``node_type`` and ``mode``); it may raise, which
 #: :func:`describe` turns into a record that says so.
 PROVIDERS: dict[str, Provider] = {
     "CSVReader": csv_reader,
@@ -437,20 +461,48 @@ def _with_defaults(node_type: str, params: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _overlay(record: dict[str, Any], produced: Any) -> None:
+    """Lay a provider's result over a blank record, so a plugin provider
+    that returns only some keys still gives a record with every key.
+
+    ``source`` and ``revision`` are merged key by key; ``content`` is kept
+    only when it is a mapping, ``notes`` only when it is a list; any other
+    key replaces the blank value.
+    """
+    if not isinstance(produced, dict):
+        record["notes"].append("the provider returned no record")
+        return
+    for key, value in produced.items():
+        if key in ("source", "revision"):
+            if isinstance(value, dict):
+                record[key].update(
+                    {k: v for k, v in value.items() if k in record[key]})
+        elif key == "content":
+            record["content"] = value if isinstance(value, dict) else None
+        elif key == "notes":
+            if isinstance(value, list):
+                record["notes"] = [str(note) for note in value]
+        else:
+            record[key] = value
+
+
 def describe(node_id: str, node_type: str, params: dict[str, Any],
              outputs: dict[str, Any] | None, mode: str) -> dict[str, Any] | None:
     """The record for one finished node, or None (no provider). Never raises."""
     provider = PROVIDERS.get(node_type)
     if provider is None:
         return None
+    record = blank_record(node_id, node_type,
+                          _KINDS.get(node_type, "dataset"), mode)
     try:
-        record = provider(_with_defaults(node_type, params), outputs, mode)
+        produced = provider(_with_defaults(node_type, params), outputs, mode)
     except Exception as exc:  # noqa: BLE001 -- a fact, never a failure
         logger.info("provenance of node %s (%s) not collected: %s",
                     node_id, node_type, exc)
-        record = blank_record(node_id, node_type,
-                              _KINDS.get(node_type, "dataset"), mode)
         record["notes"].append(f"not collected: {type(exc).__name__}: {exc}")
+    else:
+        _overlay(record, produced)
+    record["schema_version"] = SCHEMA_VERSION
     record["node_id"] = node_id
     record["node_type"] = node_type
     record["mode"] = mode

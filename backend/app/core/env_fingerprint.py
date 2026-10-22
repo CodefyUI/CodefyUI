@@ -299,8 +299,10 @@ def _plugin_identity(plugin_id: str, entry: dict[str, Any],
       could not be read, a builtin pack outside a git checkout).
 
     ``content_sha256`` is the digest of the pack's files for every kind
-    (``content_hash.content_identity``, incremental, skipping
-    ``__pycache__`` and VCS directories), so a pack edited in place after
+    (``content_hash.content_identity``, incremental, skipping VCS, cache,
+    virtual-environment and build directories; a pack inside a git
+    checkout is listed by ``git ls-files``, so what its ``.gitignore``
+    excludes is left out), so a pack edited in place after
     it was installed is visible as such; ``None`` when unreadable.
     ``immutable`` says whether ``revision`` names something the code can
     be recovered from later: True for a git commit (a builtin pack's only
@@ -349,7 +351,7 @@ def _pack_content(directory: Path | None) -> str | None:
 
         if not directory.is_dir():
             return None
-        return content_identity([directory]).get("digest")
+        return content_identity([directory], use_git=True).get("digest")
     except Exception:  # noqa: BLE001 -- a fact, never a failure
         return None
 

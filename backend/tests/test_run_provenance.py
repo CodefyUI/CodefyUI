@@ -20,6 +20,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -119,6 +122,166 @@ def test_an_unwritable_cache_only_costs_a_reread(tmp_path):
     blocker.write_text("x")
     result = content_hash.content_identity([root], cache_dir=blocker)
     assert result["digest"] is not None and result["hashed"] == 2
+
+
+def _symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform does not allow symlinks here")
+
+
+def test_a_symlinked_class_folder_is_part_of_the_identity(tmp_path):
+    # ImageFolderDataset roots often link their class folders from another
+    # disk (train/cats -> /mnt/x/cats); those files are the dataset.
+    first, second = tmp_path / "x" / "cats", tmp_path / "y" / "cats"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "1.png").write_bytes(b"AAAA")
+    (second / "1.png").write_bytes(b"BBBB")
+    ds1, ds2 = tmp_path / "ds1", tmp_path / "ds2"
+    ds1.mkdir()
+    ds2.mkdir()
+    _symlink(ds1 / "cats", first)
+    _symlink(ds2 / "cats", second)
+    one = content_hash.content_identity([ds1], cache_dir=None)
+    two = content_hash.content_identity([ds2], cache_dir=None)
+    assert one["files"] == two["files"] == 1
+    assert one["digest"] is not None and one["digest"] != two["digest"]
+    assert content_hash.stat_identity([ds1])["files"] == 1
+
+
+def test_a_symlink_loop_is_not_followed_and_says_so(tmp_path):
+    root = _tree(tmp_path / "t")
+    _symlink(root / "a" / "back", root)
+    result = content_hash.content_identity([root], cache_dir=None)
+    assert result["files"] == 2 and result["digest"] is not None
+    assert result["notes"] == ["not followed (a symlink loop): a/back"]
+    assert content_hash.content_identity(
+        [root], cache_dir=None)["digest"] == result["digest"]
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid")
+                                        and os.geteuid() == 0),
+                    reason="needs POSIX permissions and a non-root user")
+def test_an_unreadable_directory_leaves_no_digest(tmp_path):
+    root = _tree(tmp_path / "t")
+    locked = root / "locked"
+    locked.mkdir()
+    (locked / "f.txt").write_text("x")
+    locked.chmod(0)
+    try:
+        result = content_hash.content_identity([root], cache_dir=None)
+        stat = content_hash.stat_identity([root])
+    finally:
+        locked.chmod(0o755)
+    for answer in (result, stat):
+        assert answer["unreadable"] == 1 and answer["digest"] is None
+        assert answer["notes"][0].startswith("unreadable directory: locked")
+
+
+def test_generated_content_is_not_hashed(tmp_path):
+    root = _pack(tmp_path / "pack")
+    for name in (".venv", "venv", "env", ".tox", ".nox", "build", "dist",
+                 "my_pack.egg-info", "node_modules"):
+        (root / name / "lib").mkdir(parents=True)
+        (root / name / "lib" / "big.so").write_bytes(b"\0" * 10)
+    (root / ".DS_Store").write_bytes(b"finder")
+    (root / "Thumbs.db").write_bytes(b"explorer")
+    result = content_hash.content_identity([root], cache_dir=None)
+    assert result["files"] == 2  # the manifest and nodes.py
+    assert content_hash.stat_identity([root])["files"] == 2
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_pack_in_a_git_checkout_is_listed_by_git(tmp_path):
+    root = _pack(tmp_path / "pack")
+    (root / ".gitignore").write_text("weights/\n", encoding="utf-8")
+    (root / "weights").mkdir()
+    (root / "weights" / "model.bin").write_bytes(b"\0" * 64)
+    (root / "untracked.py").write_text("Y = 2\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "nodes.py",
+                    "codefyui-plugin.json"], check=True)
+    walked = content_hash.content_identity([root], cache_dir=None)
+    listed = content_hash.content_identity([root], cache_dir=None,
+                                           use_git=True)
+    # Tracked and untracked files count, what .gitignore excludes does not.
+    assert walked["files"] == 5
+    assert listed["files"] == 4 and listed["digest"] is not None
+    assert listed["digest"] == content_hash.content_identity(
+        [root], cache_dir=None, use_git=True)["digest"]
+    # Outside a checkout, use_git walks.
+    plain = _pack(tmp_path / "plain")
+    assert content_hash.content_identity([plain], cache_dir=None,
+                                         use_git=True)["files"] == 2
+
+
+def test_hashing_one_root_does_not_wait_for_another(tmp_path, monkeypatch):
+    # The cache lock is per cache file and never held while files are read:
+    # a first content hash of a large dataset must not stall the pack hash
+    # of every other run start.
+    big = _tree(tmp_path / "big")
+    small = _pack(tmp_path / "pack")
+    cache = tmp_path / "cache"
+    reading = threading.Event()
+    release = threading.Event()
+    real = content_hash._sha256_file
+
+    def slow(path: Path) -> str | None:
+        if big in path.parents:
+            reading.set()
+            assert release.wait(30)
+        return real(path)
+
+    monkeypatch.setattr(content_hash, "_sha256_file", slow)
+    worker = threading.Thread(target=content_hash.content_identity,
+                              args=([big],), kwargs={"cache_dir": cache})
+    results: list[dict[str, Any]] = []
+    other = threading.Thread(target=lambda: results.append(
+        content_hash.content_identity([small], cache_dir=cache)))
+    worker.start()
+    try:
+        assert reading.wait(30)
+        other.start()
+        other.join(15)
+        # The pack finished while the big tree is still being read.
+        assert not other.is_alive() and worker.is_alive()
+        assert results[0]["digest"] is not None
+    finally:
+        release.set()
+        worker.join(30)
+        other.join(30)
+
+
+def test_concurrent_saves_of_one_cache_keep_both_entries(tmp_path):
+    root = _tree(tmp_path / "t")
+    cache = tmp_path / "cache"
+    first = content_hash._HashCache(cache, root)
+    second = content_hash._HashCache(cache, root)
+    a, b = root / "a" / "x.txt", root / "b.txt"
+    first.store(a, a.stat(), "1" * 64)
+    second.store(b, b.stat(), "2" * 64)
+    first.save()
+    second.save()
+    merged = content_hash._HashCache(cache, root)
+    assert merged.lookup(a, a.stat()) == "1" * 64
+    assert merged.lookup(b, b.stat()) == "2" * 64
+
+
+def test_any_missing_or_unreadable_input_leaves_no_digest(tmp_path):
+    present = _tree(tmp_path / "t")
+    both = content_hash.content_identity([present, tmp_path / "gone"],
+                                         cache_dir=None)
+    assert both["exists"] is True and both["files"] == 2
+    assert both["digest"] is None and both["notes"] == ["missing: gone"]
+    assert content_hash.stat_identity(
+        [present, tmp_path / "gone"])["digest"] is None
+    _symlink(present / "dangling.txt", tmp_path / "nowhere")
+    for answer in (content_hash.stat_identity([present]),
+                   content_hash.content_identity([present], cache_dir=None)):
+        assert answer["unreadable"] == 1 and answer["digest"] is None
+        assert answer["notes"] == ["unreadable: t/dangling.txt"]
 
 
 # ── 2. hook 5: pack identity ──────────────────────────────────────────────
@@ -446,6 +609,53 @@ def test_a_provider_that_fails_still_gives_a_record(monkeypatch):
     assert prov.describe("x", "NotProvided", {}, None, "content") is None
 
 
+def test_a_partial_provider_record_gets_every_key(monkeypatch):
+    # A plugin's provider may return only what it knows; the stored record
+    # still has every key, so the Runs panel can render it.
+    monkeypatch.setitem(prov.PROVIDERS, "PluginLoader",
+                        lambda params, outputs, mode: {
+                            "rows": 3, "source": {"name": "mine",
+                                                  "bogus": 1},
+                            "content": "not a mapping", "notes": "nope"})
+    record = prov.describe("p", "PluginLoader", {}, None, "identity")
+    _keys(record)
+    assert record["rows"] == 3 and record["content"] is None
+    assert record["source"]["name"] == "mine" and record["notes"] == []
+    monkeypatch.setitem(prov.PROVIDERS, "PluginLoader",
+                        lambda params, outputs, mode: None)
+    empty = prov.describe("p", "PluginLoader", {}, None, "identity")
+    _keys(empty)
+    assert empty["notes"] == ["the provider returned no record"]
+
+
+def test_a_filesystem_root_working_dir_never_makes_a_path_relative(
+        data_dirs, tmp_path, monkeypatch):
+    # A server started from "/" (a systemd unit's default WorkingDirectory,
+    # a container's WORKDIR /) must not record the absolute path minus "/".
+    target = tmp_path / "someone" / "data.csv"
+    target.parent.mkdir()
+    target.write_text("a\n1\n")
+    monkeypatch.chdir(Path(target.resolve().anchor))
+    assert prov.locate(target) == ("external", "data.csv")
+    monkeypatch.setattr(settings, "MODELS_DIR",
+                        Path(target.resolve().anchor) / "models")
+    assert prov.locate(target) == ("external", "data.csv")
+
+
+def test_the_home_directory_never_makes_a_path_relative(data_dirs, tmp_path,
+                                                        monkeypatch):
+    home = tmp_path / "home"
+    target = home / "secret" / "data.csv"
+    target.parent.mkdir(parents=True)
+    target.write_text("a\n1\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.chdir(home)
+    assert prov.locate(target) == ("external", "data.csv")
+    # A directory below the home directory is still a root.
+    monkeypatch.chdir(home / "secret")
+    assert prov.locate(target) == ("working-dir", "data.csv")
+
+
 # ── 5. option, store, service, API ────────────────────────────────────────
 
 
@@ -496,6 +706,19 @@ async def test_the_store_keeps_one_record_per_node_and_drops_them_with_the_run(
     assert await store.delete_run(run.id)
     assert db._conn.execute(
         "SELECT COUNT(*) FROM exec_run_provenance").fetchone()[0] == 0
+
+
+async def test_a_database_without_the_provenance_table_still_serves_runs(
+        store, db):
+    # A development database migrated by a wave-d build while migration 017
+    # was still empty is past 017 without the table.
+    run = await store.create_run(graph_snapshot={"nodes": [], "edges": []},
+                                 options={}, provenance=RunProvenance())
+    db._conn.execute("DROP TABLE exec_run_provenance")
+    assert await store.list_provenance(run.id) == []
+    record = {"node_id": "n", "node_type": "CSVReader", "kind": "dataset"}
+    assert await store.record_provenance(run.id, record)
+    assert await store.list_provenance(run.id) == [record]
 
 
 async def test_a_worker_runs_own_environment_replaces_the_hello_one(store):
