@@ -7,6 +7,8 @@ import {
   expandSweepRange,
   previewSweepVariants,
   SweepInputError,
+  nodeWithId,
+  sweepParamLabel,
   sweepParamTitle,
 } from './sweepParams';
 
@@ -191,6 +193,11 @@ describe('sweepParamTitle', () => {
       .toBe('Train · rate');
   });
 
+  it('adds the node id when asked, for two columns that would read the same (#841)', () => {
+    expect(sweepParamTitle({ node_id: 'opt-plain', param: 'rate' }, definitions,
+      [node('opt-plain', 'Train', { label: 'Optimizer' })], true)).toBe('Optimizer (opt-plain) · rate');
+  });
+
   it('gives no title when the open graph cannot vouch for the address', () => {
     // A sweep may come from another graph: an id that is absent, duplicated,
     // or on a node whose type has no such param says nothing about this one.
@@ -199,5 +206,67 @@ describe('sweepParamTitle', () => {
     expect(sweepParamTitle({ node_id: 'dup', param: 'rate' }, definitions, nodes)).toBeNull();
     expect(sweepParamTitle({ node_id: 'n1', param: 'momentum' }, definitions, nodes)).toBeNull();
     expect(sweepParamTitle({ node_id: 'other', param: 'rate' }, definitions, nodes)).toBeNull();
+  });
+});
+
+describe('sweep parameter labels (#841)', () => {
+  it('names a node by its label and id, or its id alone when they match', () => {
+    expect(nodeWithId('Optimizer', 'opt-plain')).toBe('Optimizer (opt-plain)');
+    expect(nodeWithId('opt-plain', 'opt-plain')).toBe('opt-plain');
+    expect(nodeWithId('', 'opt-plain')).toBe('opt-plain');
+  });
+
+  it('tells two branches\' parameters apart', () => {
+    const [plain, decay] = eligibleSweepParams([definition('Train')], [
+      node('opt-plain', 'Train', { label: 'Optimizer' }),
+      node('opt-decay', 'Train', { label: 'Optimizer' }),
+    ]).filter((entry) => entry.param.name === 'rate');
+    expect(sweepParamLabel(plain)).toBe('Optimizer (opt-plain) · rate');
+    expect(sweepParamLabel(decay)).toBe('Optimizer (opt-decay) · rate');
+  });
+});
+
+describe('sweepParams edge arms', () => {
+  it('names an unlabelled node by its id', () => {
+    const [first] = eligibleSweepParams([definition('Train')], [node('n7', 'Train', { label: '' })]);
+    expect(first.nodeLabel).toBe('n7');
+  });
+
+  it('expands a one-point range to its minimum', () => {
+    expect(expandSweepRange({ min: 0.3, max: 0.9, count: 1, scale: 'linear', type: 'float' })).toEqual([0.3]);
+  });
+
+  it('expands a log range with exact end points', () => {
+    const values = expandSweepRange({ min: 0.001, max: 1, count: 4, scale: 'log', type: 'float' });
+    expect(values).toHaveLength(4);
+    expect(values[0]).toBe(0.001);
+    expect(values[1]).toBeCloseTo(0.01);
+    expect(values[2]).toBeCloseTo(0.1);
+    expect(values[3]).toBe(1);
+  });
+
+  it('rounds a negative int range half away from zero', () => {
+    // -3, -2.5, -2, -1.5, -1 rounds to -3, -3, -2, -2, -1.
+    expect(expandSweepRange({ min: -3, max: -1, count: 5, scale: 'linear', type: 'int' })).toEqual([-3, -2, -1]);
+  });
+
+  it('refuses a param with neither values nor a range', () => {
+    expect(refusal(() => previewSweepVariants('grid', [{ node_id: 'a', param: 'x' }], null)))
+      .toEqual({ code: 'emptyDomain', vars: { address: 'a.x' } });
+  });
+
+  it('keeps the total unknown once a long range made it so', () => {
+    const long = { node_id: 'a', param: 'rate', range: { min: 0, max: 1, count: 40, scale: 'linear' as const, type: 'float' as const } };
+    const short = { node_id: 'c', param: 'rate', range: { min: 0, max: 1, count: 2, scale: 'linear' as const, type: 'float' as const } };
+    expect(previewSweepVariants('grid', [long, { node_id: 'b', param: 'x', values: [1, 2] }, short], null)).toEqual({
+      totalCombinations: null,
+      variantCount: null,
+      warnings: [{ limit: 'values', index: 0, count: 40 }],
+    });
+  });
+
+  it('refuses a random sweep with no sample count', () => {
+    expect(refusal(() => previewSweepVariants('random', [{ node_id: 'a', param: 'x', values: [1] }], null))?.code)
+      .toBe('samples');
   });
 });

@@ -79,6 +79,7 @@ from ..core.run_store import (
     MetricRecord,
     RunRecord,
 )
+from ..core.scheduling import QueueReason
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ async def _queue_positions(service: RunService,
 
 def _run_payload(record: RunRecord, *, queue_position: int | None,
                  active: bool, last_cursor: int | None = None,
-                 queue_reason: str | None = None,
+                 queue_reason: QueueReason | None = None,
                  final_metrics: dict[str, float] | None = None,
                  metric_producers: dict[str, list[str | None]] | None = None,
                  worker_status: dict[str, Any] | None = None,
@@ -216,8 +217,16 @@ def _run_payload(record: RunRecord, *, queue_position: int | None,
     payload["worker_status"] = worker_status
     payload["queue_position"] = queue_position
     # Why a queued run is not starting beyond its place in line (#772):
-    # "waiting for worker X to reconnect". None otherwise.
-    payload["queue_reason"] = queue_reason
+    # "waiting for worker X to reconnect". None otherwise. The sentence is
+    # English, for the API and the CLI; ``queue_reason_code`` and
+    # ``queue_reason_params`` say the same for a client to word in its own
+    # language (#841, ``scheduling.QueueReason``).
+    payload["queue_reason"] = None if queue_reason is None \
+        else queue_reason.text
+    payload["queue_reason_code"] = None if queue_reason is None \
+        else queue_reason.code
+    payload["queue_reason_params"] = None if queue_reason is None \
+        else queue_reason.params_dict()
     payload["active"] = active
     payload["final_metrics"] = final_metrics or {}
     payload["metric_producers"] = metric_producers or {}
@@ -426,7 +435,7 @@ async def list_runs(
         "runs": [
             _run_payload(record,
                          queue_position=positions.get(record.id),
-                         queue_reason=service.queue_reason(record.id),
+                         queue_reason=service.queue_wait(record.id),
                          active=service.is_active(record.id),
                          final_metrics=finals.get(record.id),
                          metric_producers=producers.get(record.id),
@@ -458,7 +467,7 @@ async def get_run(run_id: str, request: Request):
     payload = _run_payload(
         record,
         queue_position=positions.get(record.id),
-        queue_reason=service.queue_reason(record.id),
+        queue_reason=service.queue_wait(record.id),
         active=service.is_active(run_id),
         last_cursor=await service.store.latest_cursor(run_id),
         final_metrics=finals.get(record.id),

@@ -44,6 +44,7 @@ import re
 import secrets
 import sqlite3
 import string
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -161,11 +162,39 @@ def name_taken_message(name: str) -> str:
             "re-key token for it")
 
 
+#: Revoked worker credentials remembered for :meth:`WorkerStore.revoked`.
+MAX_REVOKED = 256
+
+
 class WorkerStore:
-    """The two enrollment tables over one :class:`Database`."""
+    """The two enrollment tables over one :class:`Database`.
+
+    It also remembers, in memory and since this server started, the hash of
+    each worker credential it revoked (a Remove, a re-key) and why, so a
+    refused handshake that presents one can be listed under that worker's
+    name in the Workers panel (#840).
+    """
 
     def __init__(self, db: Database) -> None:
         self.db = db
+        self._revoked: OrderedDict[str, tuple[str, str]] = OrderedDict()
+
+    def _remember_revoked(self, token_hash: str | None, name: str,
+                          why: str) -> None:
+        if not token_hash:
+            return
+        self._revoked.pop(token_hash, None)
+        self._revoked[token_hash] = (name, why)
+        while len(self._revoked) > MAX_REVOKED:
+            self._revoked.popitem(last=False)
+
+    def revoked(self, worker_token: str | None) -> tuple[str, str] | None:
+        """``(worker name, why)`` when *worker_token* is a credential this
+        server revoked since it started (``why``: ``removed`` or
+        ``rekeyed``), else None."""
+        if not worker_token:
+            return None
+        return self._revoked.get(hash_secret(worker_token))
 
     # ── enrollment tokens ─────────────────────────────────────────────────
 
@@ -232,7 +261,8 @@ class WorkerStore:
         token_hash = hash_secret(token.strip())
         worker_token = mint_worker_token()
 
-        def _enroll(conn: sqlite3.Connection) -> bool:
+        def _enroll(conn: sqlite3.Connection) -> tuple[bool, str | None]:
+            """``(re-keyed, the replaced credential's hash or None)``."""
             with transaction(conn):
                 now = utc_now_iso()
                 row = conn.execute(
@@ -259,7 +289,8 @@ class WorkerStore:
                         f"enrollment token {row['id']} re-keys worker "
                         f"{bound} only; start the agent with --name {bound}")
                 existing = conn.execute(
-                    "SELECT 1 FROM workers WHERE id = ?", (name,)).fetchone()
+                    "SELECT token_hash FROM workers WHERE id = ?",
+                    (name,)).fetchone()
                 if (existing is not None or held_elsewhere) and bound != name:
                     raise NameTaken(name_taken_message(name))
                 conn.execute(
@@ -284,9 +315,13 @@ class WorkerStore:
                             name, row["id"],
                             " (re-keyed: its old worker token no longer "
                             "works)" if existing is not None else "")
-                return existing is not None
+                if existing is None:
+                    return False, None
+                return True, existing["token_hash"]
 
-        rekeyed = await self.db.run(_enroll)
+        rekeyed, old_hash = await self.db.run(_enroll)
+        if old_hash is not None:
+            self._remember_revoked(old_hash, name, "rekeyed")
         return worker_token, rekeyed
 
     # ── workers ───────────────────────────────────────────────────────────
@@ -343,14 +378,23 @@ class WorkerStore:
     async def delete_worker(self, name: str) -> bool:
         """Revoke *name*'s credential by deleting its row, and its device
         policies (#788) with it."""
-        def _delete(conn: sqlite3.Connection) -> bool:
+        def _delete(conn: sqlite3.Connection) -> str | None:
             with transaction(conn):
                 conn.execute("DELETE FROM worker_device_policies "
                              "WHERE worker = ?", (name,))
-                return conn.execute("DELETE FROM workers WHERE id = ?",
-                                    (name,)).rowcount > 0
+                row = conn.execute(
+                    "SELECT token_hash FROM workers WHERE id = ?",
+                    (name,)).fetchone()
+                if row is None:
+                    return None
+                conn.execute("DELETE FROM workers WHERE id = ?", (name,))
+                return row["token_hash"] or ""
 
-        return await self.db.run(_delete)
+        token_hash = await self.db.run(_delete)
+        if token_hash is None:
+            return False
+        self._remember_revoked(token_hash, name, "removed")
+        return True
 
     async def list_workers(self) -> list[KnownWorker]:
         def _list(conn: sqlite3.Connection) -> list[KnownWorker]:

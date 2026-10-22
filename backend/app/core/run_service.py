@@ -310,6 +310,8 @@ from .scheduling import (
     RESERVED_SLOT,
     LocalScheduler,
     Placement,
+    REASON_BUDGET_RAISED,
+    QueueReason,
     Scheduler,
     SlotKey,
     WorkerScheduler,
@@ -1614,15 +1616,19 @@ def _size(nbytes: int) -> str:
     return f"{max(1, round(nbytes / 1024 ** 2))} MiB"
 
 
-def _raised_note(budget: "mem.Budget | None") -> str | None:
+def _raised_note(budget: "mem.Budget | None") -> QueueReason | None:
     """What a waiting run's reason adds when its accepted estimate was
     raised to a measured peak (#794), or None."""
     if budget is None or not budget.raised_from:
         return None
     where = f" (run {budget.from_run[:8]})" if budget.from_run else ""
-    return (f"memory budget raised from the accepted estimate, "
-            f"{_size(budget.raised_from)}, to {_size(budget.bytes)}: an "
-            f"earlier run of its graph{where} peaked above the estimate")
+    return QueueReason(
+        REASON_BUDGET_RAISED,
+        {"from": _size(budget.raised_from), "to": _size(budget.bytes),
+         "run": budget.from_run[:8] if budget.from_run else None},
+        f"memory budget raised from the accepted estimate, "
+        f"{_size(budget.raised_from)}, to {_size(budget.bytes)}: an "
+        f"earlier run of its graph{where} peaked above the estimate")
 
 
 def _adopted_budget(facts: Mapping[str, Any]) -> "mem.Budget | None":
@@ -1810,6 +1816,9 @@ class _ActiveRun:
     adopted_at: str | None = None
     #: An adopted ``s3`` run's ``execution_facts.worker_s3`` (#793, #791).
     resume_s3: dict[str, Any] | None = None
+    #: The executor's ``error_reason`` (#841): the code of the error it
+    #: reported, stored with it by ``_finalize``.
+    error_reason: dict[str, Any] | None = None
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -2063,15 +2072,17 @@ class RunService:
                 return index
         return None  # pragma: no cover - as above
 
-    def queue_reason(self, run_id: str) -> str | None:
+    def queue_wait(self, run_id: str) -> QueueReason | None:
         """Why a waiting run cannot start, beyond a busy slot, or None.
 
-        The scheduler's word (``WorkerScheduler.explain``, #772): "waiting
-        for worker X to reconnect", "worker X is draining". None for a run
-        that is not waiting, or that waits only for its turn.
+        The scheduler's word (``WorkerScheduler.explain_reason``, #772,
+        #841): "waiting for worker X to reconnect", "worker X is draining",
+        as English text plus a code and parameters the Runs list words in
+        the viewer's language. None for a run that is not waiting, or that
+        waits only for its turn.
         """
         entry = self._pending_by_id.get(run_id)
-        explain = getattr(self._scheduler, "explain", None)
+        explain = getattr(self._scheduler, "explain_reason", None)
         if entry is None or explain is None:
             return None
         note = _raised_note(entry.memory_budget)
@@ -2081,9 +2092,15 @@ class RunService:
             logger.debug("could not explain run %s's wait", run_id,
                          exc_info=True)
             reason = None
-        if note and reason:
-            return f"{reason}; {note}"
-        return reason or note
+        if note is None:
+            return reason
+        if reason is None:
+            return note
+        # Both: the reason keeps its code, the raise rides along (#794).
+        return QueueReason(reason.code,
+                           {**reason.params_dict(),
+                            "raised": note.params_dict()},
+                           f"{reason.text}; {note.text}")
 
     def queue_snapshot(self) -> dict[str, list[str]]:
         """``{queue_key: [run_id, ...]}`` in service order. Waiting runs only.
@@ -2764,7 +2781,9 @@ class RunService:
         """The FIFO a submitted run joins, or ``RunSubmitError``.
 
         Without a target, or with ``target.worker == "local"``: the
-        resolved device, exactly as before #772. On a worker the device is
+        resolved device, exactly as before #772; a ``local`` run with
+        ``target.devices`` must name devices this server has (#839). On a
+        worker the device is
         the WORKER's to resolve, so the key is ``<worker>/<device as
         asked>`` (``gpu-box/cuda:1``, ``gpu-box/cuda``) and ``any/<device>``
         for ``any``; :data:`WORKER_QUEUE_SEPARATOR` cannot occur in a device
@@ -2791,6 +2810,17 @@ class RunService:
         """
         worker_id, devices = entry_target(options)
         if worker_id == TARGET_WORKER_LOCAL:
+            if devices:
+                # An explicit set is a promise about hardware (#839): one this
+                # server lacks is refused, as a worker's is, instead of the
+                # run landing on the CPU while its row names the set. A run
+                # without ``target.devices`` keeps its 3.0 fallback.
+                offered = _local_device_values()
+                missing = [d for d in devices if d not in offered]
+                if missing:
+                    raise RunSubmitError(
+                        f"this server does not offer {', '.join(missing)} "
+                        f"(it offers {', '.join(offered)})")
             return _local_queue_key(options.get("device"))
         if options.get("lane") == LANE_INTERACTIVE:
             raise RunSubmitError(WORKER_REFUSES_INTERACTIVE)
@@ -3862,6 +3892,9 @@ class RunService:
         # ``interrupted`` (#772) falls through with its error: nobody here
         # asked for the stop -- the run's worker went away, or ended it on
         # its own -- and the error says which.
+        reason = getattr(outcome, "error_reason", None)
+        if isinstance(reason, dict) and outcome.error:
+            active.error_reason = reason
         return status, outcome.error
 
     async def _finalize(
@@ -3898,8 +3931,12 @@ class RunService:
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
         elif status == STATUS_FAILED:
-            await self._emit(active.run_id, EVENT_RUN_FAILED,
-                             {"error": error or "run failed"})
+            failed: dict[str, Any] = {"error": error or "run failed"}
+            if error is not None and active.error_reason is not None:
+                # A coded worker error (#841): only worker runs have one,
+                # so a run with no target carries the one key as before.
+                failed.update(active.error_reason)
+            await self._emit(active.run_id, EVENT_RUN_FAILED, failed)
         else:
             reason = (STOP_REASON_INTERRUPTED if status == STATUS_INTERRUPTED
                       else STOP_REASON_CANCELLED)
@@ -3911,8 +3948,11 @@ class RunService:
         # landed, which is how a cancel racing a completion is resolved
         # (#119): the loser simply did not write, instead of a succeeded run
         # being filed forever as cancelled by a late writer.
-        landed = await self.store.mark_finished(active.run_id, status,
-                                                error=error)
+        landed = await self.store.mark_finished(
+            active.run_id, status, error=error,
+            error_reason=(active.error_reason
+                          if error is not None and status != STATUS_SUCCEEDED
+                          else None))
         if not landed:
             logger.info(
                 "run %s was already terminal when %s was reported",
@@ -4491,7 +4531,7 @@ class RunService:
         return CancelOutcome(run_id=run_id, status=record.status,
                              cancelled=False)
 
-    async def fail_queued_for_worker(self, worker_id: str, error: str, *,
+    async def fail_queued_for_worker(self, worker_id: str, error: Any, *,
                                      instances: bool = False) -> list[str]:
         """Fail every run still waiting for *worker_id* (#780: the worker
         was removed, so nothing will ever place them). Running runs are not
@@ -4499,7 +4539,10 @@ class RunService:
         *instances*: also every run naming one of its instances (#845,
         ``<worker_id>.<instance>``; its credential was revoked), whether
         the registry still lists that instance or not. One pass over the
-        waiting runs. Returns the run ids that were failed."""
+        waiting runs. Returns the run ids that were failed.
+
+        *error* is the text, or a coded message (``workers.removed_message``,
+        #841) whose code is stored with it."""
         failed: list[str] = []
         for run_id, waiting in list(self._pending_by_id.items()):
             target = entry_target(waiting.options)[0]
@@ -4517,17 +4560,24 @@ class RunService:
             logger.warning("%d queued run(s) failed: %s", len(failed), error)
         return failed
 
-    async def _fail_waiting(self, entry: _QueuedRun, error: str) -> bool:
-        """File an already-dequeued run ``failed`` with *error*. True when
-        the guarded write landed (the row was still ``queued``)."""
+    async def _fail_waiting(self, entry: _QueuedRun, error: Any) -> bool:
+        """File an already-dequeued run ``failed`` with *error* (text, or a
+        coded message whose code is stored with it, #841). True when the
+        guarded write landed (the row was still ``queued``)."""
+        from .workers import reason_dict
+
+        error_reason = reason_dict(error)
+        error = str(error)
         run_id = entry.run_id
         landed = await self.store.mark_finished(
-            run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,))
+            run_id, STATUS_FAILED, error=error, expected=(STATUS_QUEUED,),
+            error_reason=error_reason)
         # After the write: one that raised leaves the run queued with its
         # secrets, for a retry (#790).
         self._run_secrets.pop(run_id, None)
         if landed:
-            await self._emit(run_id, EVENT_RUN_FAILED, {"error": error})
+            await self._emit(run_id, EVENT_RUN_FAILED,
+                             {"error": error, **(error_reason or {})})
         entry.close()
         if landed:
             await self._notify_terminal(run_id, STATUS_FAILED)
@@ -4905,10 +4955,11 @@ class RunService:
             # when it next connects (an untracked run).
             if on_a_worker(entry.placement) and self._workers is not None:
                 worker_id = entry.placement.worker_id
+                from .workers import shutdown_not_connected
+
                 self._workers.end_waiting(
                     worker_id, entry.run_id,
-                    f"this server is shutting down and worker {worker_id} "
-                    "is not connected")
+                    shutdown_not_connected(worker_id))
         try:
             tasks = [entry.task for entry in active if entry.task is not None]
             if not tasks:

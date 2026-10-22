@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import { fetchDevices, type DeviceInfo } from '../api/rest';
+import { gibFigure } from '../utils/formatBytes';
 import { useI18n } from '../i18n';
 
 export interface DeviceOptions {
@@ -40,8 +41,6 @@ function loadDeviceOptions(): Promise<DeviceOptions> {
   return _pending;
 }
 
-const GIB = 1024 ** 3;
-
 /**
  * "10.2 / 16.0 GiB free" for an accelerator whose memory the server could
  * read (#767), else null. CPU is left out: system RAM is not what decides
@@ -52,8 +51,8 @@ function memoryText(d: DeviceInfo): string | null {
   const m = d.memory;
   if (d.value === 'cpu' || !m || m.total_bytes == null || m.free_bytes == null) return null;
   return useI18n.getState().t('toolbar.device.memory', {
-    free: (m.free_bytes / GIB).toFixed(1),
-    total: (m.total_bytes / GIB).toFixed(1),
+    free: gibFigure(m.free_bytes),
+    total: gibFigure(m.total_bytes),
   });
 }
 

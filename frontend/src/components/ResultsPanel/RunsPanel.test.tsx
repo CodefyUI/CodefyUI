@@ -5,6 +5,8 @@ import {
   RunsPanel,
   formatDuration,
   formatElapsed,
+  errorCode,
+  formatLoss,
   formatStarted,
   deviceMemoryEntries,
   requestedDeviceNote,
@@ -18,7 +20,7 @@ import { formatBytes } from '../../utils/formatBytes';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary, SweepDetail, SweepState } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
-import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
+import { _resetRunStoreForTesting, useRunStore, type RunDetail, type RunLogLine } from '../../store/runStore';
 import { isAnyModalOpen } from '../../store/modalState';
 import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
 import { useTabStore } from '../../store/tabStore';
@@ -251,12 +253,49 @@ describe('RunsPanel — the table', () => {
     expect(set).toHaveAttribute('title', 'cuda:2 -> cuda:0 in this run\ncuda:0 -> cuda:1 in this run');
     // A local run is not renumbered.
     expect(within(rowOf('l')).getByText('cpu')).not.toHaveAttribute('title');
-    // Queued: position as before, and why it waits beside the worker.
+    // Queued: an `any` run says which line it holds (#841), and why it
+    // waits on a line of its own under the row.
     const waiting = rowOf('a');
     expect(within(waiting).getByText('Any available')).toBeInTheDocument();
-    expect(within(waiting).getByText(/Queue #1/)).toBeInTheDocument();
+    expect(within(waiting).getByText(/Any queue #1/)).toBeInTheDocument();
     const reason = within(waiting).getByText('waiting for a worker that offers cuda');
-    expect(reason.parentElement).toHaveAttribute('title', 'waiting for a worker that offers cuda');
+    expect(reason).toHaveClass(styles.queueReason);
+    expect(reason.parentElement).toBe(waiting);
+  });
+
+  it('words a queue reason in the active language and says which line a run holds (#841)', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    await renderPanel([
+      makeRun({
+        id: 'named', name: 'queued-meow-2', status: 'queued', worker_id: 'meow-e2e',
+        queue_key: 'meow-e2e/cuda:0', queue_position: 1, started_at: null, finished_at: null,
+        queue_reason: 'worker meow-e2e is draining',
+        queue_reason_code: 'worker_draining', queue_reason_params: { worker: 'meow-e2e' },
+      }),
+      makeRun({
+        id: 'any', name: 'any-cuda-3', status: 'queued', worker_id: 'any',
+        queue_key: 'any/cuda', queue_position: 1, started_at: null, finished_at: null,
+        queue_reason: 'waiting for a worker that offers cuda: meow-e2e is draining',
+        queue_reason_code: 'any_unavailable',
+        queue_reason_params: { devices: 'cuda', draining: ['meow-e2e'], skipped: [] },
+      }),
+    ]);
+    expect(within(rowOf('named')).getByText('worker meow-e2e 排空中')).toHaveClass(styles.queueReason);
+    expect(within(rowOf('any')).getByText('等待提供 cuda 的 worker：meow-e2e 排空中')).toBeInTheDocument();
+    // Both are first in line, in different lines.
+    const named = within(rowOf('named')).getByText(/佇列第 1 位/);
+    expect(named).toHaveAttribute('title', t('runs.queuePositionTitle', { queue: 'meow-e2e/cuda:0' }));
+    const any = within(rowOf('any')).getByText(/任一可用佇列第 1 位/);
+    expect(any).toHaveAttribute('title', t('runs.queuePositionTitle', { queue: 'any/cuda' }));
+  });
+
+  it('shows a loss below 1e-3 in scientific notation, the whole value on hover (#841)', async () => {
+    await renderPanel([
+      makeRun({ id: 'tiny', name: 'tiny', final_metrics: { train_loss: 0.0000712 } }),
+      makeRun({ id: 'zero', name: 'zero', final_metrics: { train_loss: 0 } }),
+    ]);
+    expect(within(rowOf('tiny')).getByText('7.12e-5')).toHaveAttribute('title', '0.0000712');
+    expect(within(rowOf('zero')).getByText('0.0000')).toBeInTheDocument();
   });
 
   it('shows each run\'s memory budget, and a dash without one (#788)', async () => {
@@ -279,7 +318,7 @@ describe('RunsPanel — the table', () => {
       makeRun({ id: 'q', name: 'q', status: 'queued', queue_reason: null, started_at: null, finished_at: null }),
       makeRun({ id: 'r', name: 'r', status: 'running', queue_reason: 'stale', finished_at: null }),
     ]);
-    expect(within(rowOf('q')).getByText('This server')).not.toHaveAttribute('title');
+    expect(rowOf('q').querySelector(`.${styles.queueReason}`)).toBeNull();
     expect(within(rowOf('r')).queryByText('stale')).toBeNull();
   });
 
@@ -699,6 +738,101 @@ describe('RunsPanel — detail view', () => {
     );
   });
 
+  // #841 (U22): a worker run has a process of its own, so the server-process
+  // note was wrong for it.
+  const openWorkerWithMemory = async (peak: Record<string, unknown>) => {
+    const recorded = {
+      ...liveRun, worker_id: 'mac-local', queue_key: 'mac-local/mps:0',
+      execution_facts: { peak_memory: peak },
+    };
+    api.getRun.mockResolvedValue({ ...recorded, last_cursor: 4 });
+    await renderPanel([recorded]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    return screen.getByTestId('run-peak-memory');
+  };
+
+  it('gives a worker MPS reading no server-process note', async () => {
+    const chip = await openWorkerWithMemory({ mps: { held_bytes: 24 * 1024 ** 2, exact: false } });
+    expect(chip.getAttribute('title')).toBe(
+      t('runs.detail.memoryHeldDevice', { device: 'mps', held: formatBytes(24 * 1024 ** 2) }),
+    );
+  });
+
+  it('notes a shared card on a worker in words of its own', async () => {
+    const chip = await openWorkerWithMemory({ 'cuda:0': { allocated_bytes: 1024 ** 3, exact: false } });
+    expect(chip.getAttribute('title')).toBe([
+      t('runs.detail.peakMemoryDevice', { device: 'cuda:0', allocated: formatBytes(1024 ** 3) }),
+      t('runs.detail.peakMemoryApproximateWorker'),
+    ].join('\n'));
+  });
+
+  it('says the log is loading until its first page is in (#841)', async () => {
+    let release: (page: rest.RunEventsPage) => void = () => {};
+    api.getRunEvents.mockReset();
+    api.getRunEvents
+      .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }))
+      .mockResolvedValue({ run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 5 });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    await screen.findByTestId('loss-chart');
+    expect(detail.getByText(t('runs.detail.loadingLog'))).toBeInTheDocument();
+    expect(detail.queryByText(t('runs.detail.noLog'))).toBeNull();
+    await act(async () => {
+      release({ run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 5 });
+    });
+    expect(await detail.findByText(t('runs.detail.noLog'))).toBeInTheDocument();
+  });
+
+  it('says why the log is empty when its first page fails (#848 review)', async () => {
+    api.getRunEvents.mockReset();
+    api.getRunEvents.mockRejectedValue(new Error('events endpoint down'));
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    expect(await detail.findByText(/events endpoint down/)).toBeInTheDocument();
+    expect(detail.getByText(t('runs.detail.noLog'))).toBeInTheDocument();
+    expect(detail.queryByText(t('runs.detail.loadingLog'))).toBeNull();
+  });
+
+  it('words a worker run ending in the active language (#841)', async () => {
+    const gone = makeRun({
+      id: 'r1', name: 'long-meow-5', status: 'interrupted', worker_id: 'meow-e2e',
+      error: 'worker meow-e2e went away: after reconnecting it did not report this run as still running',
+      execution_facts: { error_reason: { code: 'worker_gone', params: { worker: 'meow-e2e', reason: {
+        code: 'alive_missing', params: {}, text: 'after reconnecting it did not report this run as still running',
+      } } } },
+    });
+    const ts = '2026-08-01T10:00:00.000000Z';
+    api.getRun.mockResolvedValue({ ...gone, last_cursor: 3 });
+    api.getRunEvents.mockReset();
+    api.getRunEvents.mockResolvedValue({
+      run_id: 'r1', status: 'interrupted', active: false, cursor: 3,
+      events: [
+        { cursor: 1, type: 'run_warning', ts, payload: {
+          detail: 'worker meow-e2e reconnected; the run continues',
+          code: 'worker_reconnected', params: { worker: 'meow-e2e' },
+        } },
+        { cursor: 2, type: 'execution_error', ts, payload: {
+          error: 'worker meow-e2e is not connected', code: 'worker_not_connected', params: { worker: 'meow-e2e' },
+        } },
+        // English with no code stays as the server wrote it.
+        { cursor: 3, type: 'run_warning', ts, payload: { detail: 'worker meow-e2e reconnected; the run continues' } },
+      ],
+    });
+    useI18n.setState({ locale: 'zh-TW' });
+    await renderPanel([gone]);
+    fireEvent.click(rowOf('r1'));
+    const detail = within(await screen.findByTestId('run-detail'));
+    expect(await detail.findByText(/worker meow-e2e 已離開：重新連線後沒有回報這個 run 仍在執行/)).toBeInTheDocument();
+    expect(await detail.findByText(t('runs.log.warning', { detail: 'worker meow-e2e 已重新連線；run 繼續執行' })))
+      .toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.failed', { error: 'worker meow-e2e 未連線' }))).toBeInTheDocument();
+    expect(detail.getByText(t('runs.log.warning', { detail: 'worker meow-e2e reconnected; the run continues' })))
+      .toBeInTheDocument();
+  });
+
   it('renders every lifecycle line of the log tail', async () => {
     const ts = '2026-08-01T10:00:00.000000Z';
     api.getRunEvents.mockReset();
@@ -792,7 +926,7 @@ describe('RunsPanel — detail view', () => {
     expect(detail.getByText('cuda:0')).toBeInTheDocument();
 
     await waitFor(() =>
-      expect(detail.getByText(t('runs.log.node', { node: 'abcdef12', status: 'completed' })))
+      expect(detail.getByText(t('runs.log.node', { node: 'abcdef1234', status: 'completed' })))
         .toBeInTheDocument(),
     );
   });
@@ -983,7 +1117,7 @@ describe('RunsPanel — detail edge cases', () => {
     const chart = await screen.findByTestId('loss-chart');
     // Two lines, each labelled with the node that produced it -- not one
     // line zig-zagging between two nodes' values.
-    expect(chart.getAttribute('data-series')).toBe('loss @head-alp,loss @head-bet');
+    expect(chart.getAttribute('data-series')).toBe('loss @head-alpha1,loss @head-beta22');
   });
 
   it('keeps the detail open when its run leaves the filtered list', async () => {
@@ -1366,6 +1500,22 @@ describe('RunsPanel — sweeps', () => {
     expect(screen.queryByRole('button', { name: /^Stop sweep$/ })).toBeNull();
   });
 
+  it('leaves the focus alone when it is outside the panel as the view switches', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    try {
+      await renderPanel([]);
+      outside.focus();
+      await act(async () => {
+        await useSweepStore.getState().openSweep('s1');
+      });
+      await screen.findByTestId('sweep-detail');
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+
   it('replaces run detail with sweep detail, and Back puts the focus on New sweep', async () => {
     api.listRuns.mockResolvedValue(listing([makeRun({ id: 'child', name: 'child', sweep_id: 's1', sweep_variant: 0 })]));
     await act(async () => {
@@ -1521,5 +1671,72 @@ describe('RunsPanel helpers', () => {
     expect(requestedDeviceNote(makeRun({ id: 'a', queue_key: 'cpu', options: { device: '' } })))
       .toBeNull();
     expect(requestedDeviceNote(null)).toBeNull();
+  });
+
+  it('formats a loss in four decimals, or scientifically below 1e-3', () => {
+    expect(formatLoss(0.05637)).toBe('0.0564');
+    expect(formatLoss(0)).toBe('0.0000');
+    expect(formatLoss(-0.0002)).toBe('-2.00e-4');
+    expect(formatLoss(0.001)).toBe('0.0010');
+  });
+
+  it("reads an error's code off the row, else off the event that reported it (#848 review)", () => {
+    const removed = { code: 'worker_removed', params: { worker: 'box' } };
+    const line = (detail: string, coded?: typeof removed): RunLogLine => ({
+      cursor: 1, ts: 't', kind: 'failed', tone: 'error', detail, coded,
+    });
+    const queued = makeRun({ id: 'q', status: 'failed', error: 'worker box was removed', execution_facts: null });
+    // A run that never started: only the event has the code.
+    expect(errorCode(queued, [line('other'), line('worker box was removed', removed)])).toEqual(removed);
+    expect(errorCode(queued, [line('other', removed)])).toBeUndefined();
+    expect(errorCode(queued, [{ ...line('worker box was removed', removed), kind: 'warning' }])).toBeUndefined();
+    // The row's own code wins.
+    const started = { ...queued, execution_facts: { error_reason: { code: 'worker_gone', params: {} } } };
+    expect(errorCode(started, [line('worker box was removed', removed)])).toEqual({ code: 'worker_gone', params: {} });
+  });
+});
+
+describe('RunsPanel — edge states', () => {
+  const detailOf = (overrides: Partial<RunDetail> = {}): RunDetail => ({
+    runId: 'gone', status: 'failed', row: null, series: {}, log: [], artifacts: [],
+    cursor: 1, loading: false, logLoading: false, error: null, ...overrides,
+  });
+
+  it('renders a log line with no time, node or status, and its detail', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'listed' })]);
+    act(() => {
+      useRunStore.setState({
+        selectedRunId: 'gone',
+        detail: detailOf({ log: [{ cursor: 1, ts: '', kind: 'node', tone: 'error', detail: 'boom' }] }),
+      });
+    });
+    const detail = within(screen.getByTestId('run-detail'));
+    // Neither the list nor the detail has a row: the header names it unnamed.
+    expect(detail.getByText(t('runs.unnamed'))).toBeInTheDocument();
+    expect(detail.getByText(/: boom$/)).toBeInTheDocument();
+    expect(detail.getByText('-')).toBeInTheDocument();
+  });
+
+  it('renders no detail for a selection whose detail is not there', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'listed' })]);
+    act(() => {
+      useRunStore.setState({ selectedRunId: 'a', detail: null });
+    });
+    expect(screen.queryByTestId('run-detail')).toBeNull();
+  });
+
+  it('dashes the final loss of a row from a server that sends no metrics map', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'old', final_metrics: undefined as never })]);
+    expect(within(rowOf('a')).getAllByText('-').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('names an unnamed run in the delete confirmation', async () => {
+    await renderPanel([makeRun({ id: 'a', name: null })]);
+    fireEvent.click(within(rowOf('a')).getByText(t('runs.action.delete')));
+    await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+    expect(useDialogStore.getState().active).toMatchObject({
+      message: t('runs.delete.message', { name: t('runs.unnamed') }),
+    });
+    await act(async () => { useDialogStore.getState().close(false); });
   });
 });

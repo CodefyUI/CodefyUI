@@ -28,10 +28,10 @@ Run 依它的 target 交給 worker：**Run** 旁的**排入佇列...**、`cdui r
 1. **在 GPU 伺服器上安裝與控制面相同版本的 CodefyUI。** 先在控制面用 `cdui --version` 查看版本，然後在 GPU 伺服器上執行：
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | CODEFYUI_RELEASE_TAG=3.0.2 bash
+   curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | CODEFYUI_RELEASE_TAG=<version> bash
    ```
 
-   請換成 `cdui --version` 印出的版本。版本不同的 agent 連線時會被拒絕（[讓 worker 保持同步](#keeping-workers-in-sync)）。需要特定 CUDA 或 ROCm 版本的 PyTorch 時，見 [GPU 與裝置設定](/getting-started/gpu-device)（`cdui install --gpu <選項>`）。
+   把 `<version>` 換成 `cdui --version` 印出的版本（例如 `3.1.0`）。版本不同的 agent 連線時會被拒絕（[讓 worker 保持同步](#keeping-workers-in-sync)）。需要特定 CUDA 或 ROCm 版本的 PyTorch 時，見 [GPU 與裝置設定](/getting-started/gpu-device)（`cdui install --gpu <選項>`）。
 2. **讓 GPU 伺服器連得到控制面**，方式見[連到控制面](#reaching-the-control-plane)。使用 SSH 方式時，略過接下來兩步：控制面會自己啟動 agent。
 3. **產生 token。** 開啟 **Workers**（**Settings → 執行 → Workers → 管理**，或 Runs 面板標題列的 **Workers**），按 **新增 worker**，停在 **另一台機器**。位址欄預設為此頁面使用的位址；若是 `127.0.0.1` 或 `localhost`，請改選伺服器的其他位址，或輸入 worker 連得到的位址。選擇 token 的有效期限（預設 24 小時）與可供幾個 agent 使用（預設 1），再按 **產生 token**。
 
@@ -52,7 +52,7 @@ Enrollment token 只顯示一次，伺服器只保存它的雜湊值。已用完
 
 **重新啟動。** `cdui agent start --control <url>` 會找到已存的憑證並用它重新連線，不需要 token。伺服器重啟後也記得已加入的 worker：在它連線前列為 `offline`，指定它的 run 會在佇列中等待。`cdui agent forget <url>` 刪除已存的憑證，下次啟動時重新加入。
 
-**移除 worker。** Workers 面板的 **移除** 會撤銷該 worker 的憑證、中斷它的連線（執行中的 run 立即以 `interrupted` 結束，包括正在等它重新連線的 run；佇列中的 run 失敗）並從清單移除；之後它的 agent 都會被拒絕。
+**移除 worker。** Workers 面板的 **移除** 會撤銷該 worker 的憑證、中斷它的連線（執行中的 run 立即以 `interrupted` 結束，包括正在等它重新連線的 run；佇列中的 run 失敗）並從清單移除。之後它的 agent 都會被拒絕：仍以該憑證執行的 agent 會收到憑證已被撤銷的通知，說明後停止（結束代碼 2），這次嘗試也會列在 **被拒的連線** 下（同一憑證每小時最多一次）。因其他原因被拒的 token（該位址上是另一個控制面或資料庫、代理伺服器、伺服器重啟前的 session token）會繼續重試，並依 token 種類給出建議。重新核發後，worker 的舊憑證也以同樣方式被拒。
 
 **重新核發憑證。** 名稱一經加入即被占用：一般 token 無法再次加入該名稱（伺服器回 `409`）。要讓某個 worker 換新憑證（重灌機器、遺失憑證檔），請按它卡片上的 **重新核發**：在那裡產生的 token 只能加入該 worker，指令也會帶上它的 `--name`。使用後舊憑證即失效。若該機器上還留有舊憑證檔，請先在那裡執行 `cdui agent forget <url>`。
 
@@ -117,7 +117,7 @@ Agent 每次連線都會檢查 proxy 的憑證（[信任](#trust-between-agent-a
 | 金鑰檔 | 選填；伺服器機器上的私鑰（ssh 的 `-i`）。留空則使用你的 ssh 設定與 agent。 |
 | 遠端主機上的 cdui | 遠端啟動器的路徑；留空代表 `~/CodefyUI/cdui`，也就是 `install.sh` 放置的位置。 |
 
-按 **新增並連線**。Worker 卡片上會多一行 **SSH 通道**：ssh 執行中但 agent 尚未連線時為 **連線中**，連上後為 **已連線**，等待重試時為 **失敗** 並附上 ssh 或 agent 最後輸出的幾行（金鑰被拒、未知主機、找不到 `cdui`），停用時為 **已停止**。**最近的 ssh 輸出** 可看到更多輸出。
+按 **新增並連線**。Worker 卡片上會多一行 **SSH 通道**：ssh 執行中但 agent 尚未連線時為 **連線中**，連上後為 **已連線**，等待重試時，或遇到重試也無法解決的失敗而等你按 **重試** 時（見下文），為 **失敗** 並附上原因與 ssh 或 agent 最後輸出的幾行（金鑰被拒、未知主機、找不到 `cdui`），停用時為 **已停止**。**最近的 ssh 輸出** 可看到更多輸出。
 
 **實際執行的內容。** 每個啟用中的 SSH worker，控制面都會維持一個像這樣的程序：
 
@@ -128,13 +128,13 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
     "sh -c '... ~/CodefyUI/cdui agent start --uds ~/.codefyui-ssh/3f9a12c4-18000/sock --foreground --control http://cp-3f9a12c4.invalid:18000 --name gpu-box'"
 ```
 
-每次連線前，控制面會先另開一個短暫的 ssh，在遠端主機上建立 `~/.codefyui-ssh/<id>-<槽位>/`（權限 `0700`，`~/.codefyui-ssh` 也是），刪掉中斷的連線留下的 socket，並回報這個資料夾的完整路徑（`-R` 需要它）。轉送的遠端端點是這個資料夾裡的 Unix socket，所以兩台機器都需要 OpenSSH 6.7 以上，遠端 sshd 也必須允許 `AllowStreamLocalForwarding`（預設允許）；遠端主機不需要其他東西。`<id>` 是這個控制面的實例 ID（八個十六進位字元，存在它的使用者資料夾的 `ssh-instance-id`），所以在同一台 GPU 伺服器上使用同一個帳號的兩個控制面，不會共用資料夾、socket、憑證或 agent。轉送的本機端點（上例的 `/tmp/cdui-ssh-k2j4/s`）是控制面只為這個 worker 開的監聽端點：私有暫存資料夾裡的 Unix socket（Windows 上則是 `127.0.0.1` 的臨時連接埠），絕不是伺服器自己的連接埠。槽位編號取自 `CODEFYUI_SSH_REMOTE_PORT_RANGE`（`18000-18100`）並隨 worker 保存：它決定狀態資料夾，也是 agent 存放憑證所用的位址（`--control http://cp-<id>.invalid:<槽位>`，這個名稱不會解析到任何地方）；agent 連的是 socket（`--uds`）。遠端指令會先把 `~/.local/bin` 加到 PATH：非互動式的 ssh shell 不會讀取你的 shell 設定檔。ssh 結束後，控制面會在 2 秒後重新啟動它，間隔逐次加倍到最多一分鐘；控制面自己重啟後也會重新連線。若遠端 sshd 根本不允許轉送（`AllowStreamLocalForwarding no`、`DisableForwarding yes`；明確拒絕，或連續三次轉送失敗），通道會停在 **失敗** 並顯示原因，不再自動重試；請伺服器管理者允許轉送到 Unix socket 後按 **重試**。通道列也會顯示遠端 agent 的 PID：在遠端主機上 agent 的命令列是 `python .../scripts/dev.py agent start --uds ...`，可用 `pgrep -af 'agent start'` 找到它。
+每次連線前，控制面會先另開一個短暫的 ssh，在遠端主機上建立 `~/.codefyui-ssh/<id>-<槽位>/`（權限 `0700`，`~/.codefyui-ssh` 也是），刪掉中斷的連線留下的 socket，並回報這個資料夾的完整路徑（`-R` 需要它）。轉送的遠端端點是這個資料夾裡的 Unix socket，所以兩台機器都需要 OpenSSH 6.7 以上，遠端 sshd 也必須允許 `AllowStreamLocalForwarding`（預設允許）；遠端主機不需要其他東西。`<id>` 是這個控制面的實例 ID（八個十六進位字元，存在它的使用者資料夾的 `ssh-instance-id`），所以在同一台 GPU 伺服器上使用同一個帳號的兩個控制面，不會共用資料夾、socket、憑證或 agent。轉送的本機端點（上例的 `/tmp/cdui-ssh-k2j4/s`）是控制面只為這個 worker 開的監聽端點：私有暫存資料夾裡的 Unix socket（Windows 上則是 `127.0.0.1` 的臨時連接埠），絕不是伺服器自己的連接埠。槽位編號取自 `CODEFYUI_SSH_REMOTE_PORT_RANGE`（`18000-18100`）並隨 worker 保存：它決定狀態資料夾，也是 agent 存放憑證所用的位址（`--control http://cp-<id>.invalid:<槽位>`，這個名稱不會解析到任何地方）；agent 連的是 socket（`--uds`）。遠端指令會先把 `~/.local/bin` 加到 PATH：非互動式的 ssh shell 不會讀取你的 shell 設定檔。ssh 結束後，控制面會在 2 秒後重新啟動它，間隔逐次加倍到最多一分鐘；控制面自己重啟後也會重新連線。若遠端 sshd 根本不允許轉送（`AllowStreamLocalForwarding no`、`DisableForwarding yes`；明確拒絕，或連續三次轉送失敗），通道會停在 **失敗** 並顯示原因，不再自動重試；請伺服器管理者允許轉送到 Unix socket 後按 **重試**。重試也無法解決的失敗同樣如此：主機金鑰驗證失敗，或遠端 shell 無法在指定路徑執行 `cdui`（連線以結束代碼 127 或 126 結束）。ssh 登入被拒（`Permission denied`）或主機名稱無法解析則可能自行恢復（之後才解鎖的 ssh-agent、之後才連上的 VPN 或網路）：通道會照同樣的間隔繼續重試並顯示原因，直到這類失敗不間斷持續 10 分鐘才停止。每個失敗的通道都會顯示 **重試**，按下即立刻重新嘗試；它不會取消你對該 worker 設定的排空（只有 **停用** 後再 **啟用** 才會取消排空）。**最近的 ssh 輸出** 只保留最後一次嘗試的內容。agent 真正執行後，通道列也會顯示遠端 agent 的 PID：在遠端主機上 agent 的命令列是 `python .../scripts/dev.py agent start --uds ...`，可用 `pgrep -af 'agent start'` 找到它。
 
 **憑證。** 每次啟動都會經由 ssh 的標準輸入送出一次性的 enrollment token（有效 10 分鐘），不會出現在任何命令列上，所以兩台機器的 `ps` 都看不到它。第一次啟動時 worker 會加入；agent 會把 worker 憑證以 `http://cp-<id>.invalid:<槽位>` 這個位址存在遠端主機上，之後每次啟動都用它重新連線，token 則不會被使用。Worker 加入後，token 會綁定到它，只能用來重新核發這個 worker 的憑證。這個 worker 第一次使用某個槽位時，會先對該位址執行 `cdui agent forget`，所以其他 worker 或其他控制面留下的憑證不會被送出。若仍送出了這種憑證（agent 回報控制面拒絕了它，或 agent 回報憑證屬於另一個 worker 名稱），控制面會先執行 `cdui agent forget` 再重新啟動 agent，讓它重新加入。所有通道都從控制面自己的位址連入，因此經由通道的加入嘗試會依 SSH worker 分開限速，彼此之間以及與那台機器上的 agent 互不影響。
 
 **連線中斷。** 若連線不是因停用而結束（筆電睡眠、網路中斷），遠端 agent 與它的 run 會繼續執行；這些 run 在控制面上以 `disconnected` 等待並保留事件，如同[連線中斷時](#when-the-connection-drops)所述。控制面會以相同的槽位重新啟動 ssh，轉送會回到同一個 socket 路徑，遠端腳本發現 agent 仍在執行，就會接上它而不另啟一個（通道列會顯示重新接上的 PID）。Agent 會自行經由新的通道重新連線，它的 run 也會繼續。若在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內沒有新的連線接上，agent 會停止。遠端腳本把 agent 的 PID 與日誌存在遠端主機的 `~/.codefyui-ssh/<id>-<槽位>/`，與 socket 放在一起。
 
-**停用、啟用、刪除。** **停用** 會先讓 worker 停止接新 run，再結束它的 ssh 連線；之後即使有 agent 以它的名稱連線，停用中的 worker 仍維持不接新 run。停用會經由連線通知遠端 agent 停止（沒有連線時則另開一個短暫的 ssh），agent 會停止仍在執行的 run；若有需要，請先排空並等它完成。Agent 會要求每個 run 停止並給它 10 秒寬限：在寬限內停下的 run 以 `cancelled` 結束，超過寬限而被它終止的 run 以 `interrupted` 結束。Agent 會上傳 transfer run 寫出的檔案（它的中斷檢查點），回報每個 run 如何結束後才退出；控制面最多等它 60 秒再結束 ssh，屆時仍未回報的 run 會立即以 `interrupted` 結束，不必等 `CODEFYUI_WORKER_RESUME_GRACE_S`。移除也以同樣方式停止它。伺服器關閉時，會在伺服器自己的 run 收尾的同時停止所有 SSH worker（不是先停 SSH worker），SSH worker 總共最多 25 秒。`cdui stop` 約 2 秒後就會強制結束伺服器：agent 已先收到停止通知，ssh 連線會在它們結束後自行結束，但屆時尚未回報的 run 會在下次啟動時標為 `interrupted`。舊版留在 `~/.codefyui-ssh/<槽位>/` 舊配置、以 TCP 連接埠連線的遠端 agent，會在下一次連線的準備步驟中，確認沒有連線接著它之後被停止（仍有連線接著時只回報）。**啟用** 會重新啟動連線。**刪除**（尚未連線的 worker）與 **移除**（已連線的 worker）效果相同：結束連線、刪除 SSH 項目，並如[移除 worker](#adding-a-worker) 所述撤銷該 worker，所以之後可以用同一個名稱再新增。兩者也會清理遠端主機，停用則不會（啟用會沿用已存的憑證）：回應之後，控制面在背景再開一個短暫的 ssh，若 agent 仍在執行就先停止它，再刪除它為 `http://cp-<id>.invalid:<槽位>` 存的憑證（`cdui agent forget`），並刪除 `~/.codefyui-ssh/<id>-<槽位>/`。只會動到這個控制面自己的槽位，不會碰其他控制面的；清理完成前，其他 SSH worker 也不會使用這個槽位。若仍有連線接在那裡，或 agent 停不下來，兩者都會保留。若遠端主機約一分鐘內沒有回應，伺服器日誌會列出留下的東西；要手動清除，請在遠端主機執行 `cdui agent forget http://cp-<id>.invalid:<槽位>` 與 `rm -r ~/.codefyui-ssh/<id>-<槽位>`。
+**停用、啟用、刪除。** **停用** 會先讓 worker 停止接新 run，再結束它的 ssh 連線；之後即使有 agent 以它的名稱連線，停用中的 worker 仍維持不接新 run。停用會經由連線通知遠端 agent 停止（沒有連線時則另開一個短暫的 ssh），agent 會停止仍在執行的 run；若有需要，請先排空並等它完成。Agent 會要求每個 run 停止並給它 10 秒寬限：在寬限內停下的 run 以 `cancelled` 結束，超過寬限而被它終止的 run 以 `interrupted` 結束。Agent 會上傳 transfer run 寫出的檔案（它的中斷檢查點），回報每個 run 如何結束後才退出；控制面最多等它 60 秒再結束 ssh，屆時仍未回報的 run 會立即以 `interrupted` 結束，不必等 `CODEFYUI_WORKER_RESUME_GRACE_S`。移除也以同樣方式停止它。伺服器關閉時，會在伺服器自己的 run 收尾的同時停止所有 SSH worker（不是先停 SSH worker），SSH worker 總共最多 25 秒。`cdui stop` 約 2 秒後就會強制結束伺服器：agent 已先收到停止通知，ssh 連線會在它們結束後自行結束，但屆時尚未回報的 run 會在下次啟動時標為 `interrupted`。舊版留在 `~/.codefyui-ssh/<槽位>/` 舊配置、以 TCP 連接埠連線的遠端 agent，會在下一次連線的準備步驟中，確認沒有連線接著它之後被停止（仍有連線接著時只回報）。**啟用** 會重新啟動連線。在 Workers 面板中，停用的 worker 顯示為 **已停用**，不提供排空／取消排空；停用有 run 在執行的 worker、刪除與移除都要按第二次，卡片會先說明那一下會做什麼。**刪除**（尚未連線的 worker）與 **移除**（連線過的 worker，離線時也一樣）效果相同：結束連線、刪除 SSH 項目，並如[移除 worker](#adding-a-worker) 所述撤銷該 worker，所以之後可以用同一個名稱再新增。兩者也會清理遠端主機，停用則不會（啟用會沿用已存的憑證）：回應之後，控制面在背景再開一個短暫的 ssh，若 agent 仍在執行就先停止它，再刪除它為 `http://cp-<id>.invalid:<槽位>` 存的憑證（`cdui agent forget`），並刪除 `~/.codefyui-ssh/<id>-<槽位>/`。只會動到這個控制面自己的槽位，不會碰其他控制面的；清理完成前，其他 SSH worker 也不會使用這個槽位。若仍有連線接在那裡，或 agent 停不下來，兩者都會保留。若遠端主機約一分鐘內沒有回應，伺服器日誌會列出留下的東西；要手動清除，請在遠端主機執行 `cdui agent forget http://cp-<id>.invalid:<槽位>` 與 `rm -r ~/.codefyui-ssh/<id>-<槽位>`。
 
 **安全性。**
 
@@ -159,7 +159,7 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
 
 ## 儲存 {/* #storage */}
 
-不使用資料夾中檔案的 run（純 tensor 的圖，或 Dataset、HuggingFaceDataset 節點下載到自己快取的圖）可以在任何 worker 上執行。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端（有設定時，改經由 [S3 或 MinIO bucket](#storage-s3)）。有共用資料夾的 worker 優先。
+不使用資料夾中檔案的 run（純 tensor 的圖、Dataset、HuggingFaceDataset 節點下載到自己快取的圖，或讀取 `data/samples/iris.csv` 這類內建範例的圖；每個安裝都有內建範例，worker 讀自己的那份）可以在任何 worker 上執行。節點參數中的相對路徑在每台機器上都從安裝目錄的 `backend/` 讀取，與伺服器相同：不論 `cdui agent start` 在哪個目錄啟動（經 SSH 時是家目錄），它都會在那裡運作。啟動 agent 時給的設定若是相對路徑（例如 `CODEFYUI_MODELS_DIR=models`），仍代表啟動時所在的目錄：agent 會在切換目錄前把它轉成絕對路徑。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端（有設定時，改經由 [S3 或 MinIO bucket](#storage-s3)）。有共用資料夾的 worker 優先。
 
 | Run | 有 `data` 掛載的 worker | 沒有掛載的 worker |
 | --- | --- | --- |

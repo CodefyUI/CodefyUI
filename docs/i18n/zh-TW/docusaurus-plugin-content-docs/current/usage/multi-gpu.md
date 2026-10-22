@@ -24,9 +24,9 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 
 工具列 **Run** 旁的下拉鍵會開啟選單，其中的**排入佇列...**會把目前分頁的圖送出為 queued run（與 `cdui run` 相同的 `POST /api/runs`）：
 
-- **目標**：**本伺服器**、每個已連線的 worker 及其狀態與裝置（排空中的 worker 會列出但不能選），以及有 worker 連線後出現的**任一可用**。
-- **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。
-- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。在 worker 上，錄製的輸出保存在 worker 上，對話框會加以說明。
+- **目標**：**本伺服器**、伺服器知道的每個 worker 及其狀態與裝置、有 worker 連線後出現的**任一可用**，以及伺服器知道任何 worker 後出現的**單次 worker**（單次 worker 池，見[單次 worker](/usage/remote-workers#one-shot-workers)）。排給離線或已中斷連線的 worker 的 run 會在佇列中等它連上；排空中或已停用的 worker 會列出但不能選。共用憑證中已離開的執行個體不會列出。完全沒有 worker 時，對話框會說明，並提供開啟 Workers 面板的連結。
+- **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。除非分頁指定了裝置，worker 與任一可用都從第一個可用的加速器開始，不受設定中為本伺服器選的裝置影響；**新增掃描** 對話框也一樣。
+- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。在 worker 上，錄製的輸出保存在 worker 上，對話框會加以說明；目標為單次 worker 或單次 worker 池時，錄製節點輸出會關閉並停用，因為它的 agent 在 run 結束後就會退出。
 
 **排入佇列**會送出 run、關閉對話框，並在 Runs 分頁開啟它。伺服器拒絕時，訊息會顯示在對話框內。
 
@@ -66,11 +66,11 @@ cdui run train.json --target any --device cuda
 {"graph": {...}, "options": {"target": {"worker": "gpu-box", "devices": ["cuda:2", "cuda:3"]}}}
 ```
 
-- **`local`**（預設）是這台伺服器。在這裡 run 只在一個裝置上執行：帶裝置集合時，它占用集合中每個裝置的 slot，因此不會有其他 run 被放到這些裝置上，並在第一個裝置上執行。
+- **`local`**（預設）是這台伺服器。在這裡 run 只在一個裝置上執行：帶裝置集合時，它占用集合中每個裝置的 slot，因此不會有其他 run 被放到這些裝置上，並在第一個裝置上執行。集合中的每個裝置都必須是這台伺服器有的，否則送出時回應 `400`（`this server does not offer cuda:0 (it offers cpu, mps:0)`）。沒有帶集合的 run 維持原本的退回行為：在沒有 CUDA 的機器上 `--device cuda` 會在 CPU 上執行。這種退回，以及節點的 **device** 指定了機器沒有的裝置時，都會以 kind 為 `device_fallback` 的 `run_warning` 記在 run 的事件紀錄中，Runs 面板會顯示。
 - **worker 名稱**把 run 送到該 worker。該 worker 必須在伺服器啟動後連線過並提供這些裝置，否則送出會以 `400` 失敗。目前離線的 worker 不會造成拒絕：run 會等它重新連線。
 - **`any`** 依名稱順序選第一個已連線、未排空且有空 slot 的 worker，這台伺服器排最後。CUDA 裝置集合超過一張卡、或是 `cuda:0` 以外單張卡的 `any` run，只會在 worker 上執行，因為只有 worker 會為該 run 把集合從 `cuda:0` 重新編號（見下文）；伺服器見過的 worker 都不提供整個集合時，送出會以 `400` 被拒絕。
 
-**run 內的裝置名稱。** worker 上的 run 只看得到自己的卡，並依你列出的順序從 0 重新編號。以 `--devices cuda:2,cuda:0` 為例，run 的 `cuda:0` 是機器的 `cuda:2`，run 的 `cuda:1` 是機器的 `cuda:0`。**device** 參數為 `auto` 的節點跟隨 run 的裝置（第一張卡）；要把節點放到集合中的另一張卡，把它的 **device** 設為那張卡在 run 內的名稱，此例為 `cuda:1`。run 會把對應關係記在 `execution_facts` 的 `visible_devices` 與 `device_aliases`。請參閱[裝置後端](/advanced/device-backends#addressing-one-card-out-of-several)。
+**run 內的裝置名稱。** worker 上的 run 只看得到自己的卡，並依你列出的順序從 0 重新編號。以 `--devices cuda:2,cuda:0` 為例，run 的 `cuda:0` 是機器的 `cuda:2`，run 的 `cuda:1` 是機器的 `cuda:0`。**device** 參數為 `auto` 的節點跟隨 run 的裝置（第一張卡）；要把節點放到集合中的另一張卡，把它的 **device** 設為那張卡在 run 內的名稱，此例為 `cuda:1`。設定面板中節點的 **device** 清單會在 **run 裝置集合內的名稱**下列出這些 run 內名稱（`cuda:0` 起，最多到已知 worker 中卡最多者的張數），因此沒有 GPU 的控制面也能把節點指定到 worker run 集合中的卡；清單不會列出 worker 自己的卡號，因為帶裝置集合的 run 看不到那些編號。圖中存著、但這台伺服器沒有的裝置會照原值顯示，並註明在這裡執行時會退回其他裝置。節點指定了 run 沒有的卡時也會退回，`device_fallback` 警告會列出 run 的卡以及它們是 worker 的哪張卡（`Node train (TrainingLoop) is set to device cuda:1; this run has 1 card (cuda:0 = the worker's cuda:1), so when it executes, it runs on cuda:0.`）。run 會把對應關係記在 `execution_facts` 的 `visible_devices` 與 `device_aliases`。請參閱[裝置後端](/advanced/device-backends#addressing-one-card-out-of-several)。
 
 **Sweep 與 study。** `POST /api/sweeps` 與 `POST /api/studies` 會把 `options.target` 傳給每個子 run。使用 `"target": {"worker": "any"}` 且不帶 `devices` 時，每個子 run 取下一個符合 sweep 裝置種類的空 slot，所以在兩個各有一張卡的 agent 上，四個 variant 的 sweep 會同時跑兩個；worker 上帶種子的子 run 各在自己的程序中，可以並行。單一 run 會被拒絕的 target，會讓整個 sweep 或 study 在排入任何東西之前以 `400` 被拒絕。每個 variant 與 attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。**新增掃描**對話框有與 **Queue on...** 相同的目標與裝置選擇器：本伺服器、已連線的 worker 加上裝置集合，或任一可用加上裝置種類。維持本伺服器與分頁的裝置時，sweep 會像以往一樣送出，不帶 target。sweep 檢視會顯示每個 variant 的 Worker 與裝置。study 請透過 API 設定 `target`。請參閱[執行佇列：Sweep](./run-queue#sweeps)。
 
@@ -135,17 +135,17 @@ worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 
 
 從 Runs 面板標題列的 **Workers**，或 **Settings → 執行 → Workers → 管理**開啟。開啟期間每 5 秒更新一次，每個 worker 會顯示：
 
-- 狀態（**Online**、心跳延遲或節點型別與伺服器不同時為 **Degraded**、**Draining**、**Disconnected**）、版本以及是否與伺服器相同、環境摘要、節點型別是否與伺服器相同（以及哪些不同）、上次連線被拒的原因、mount 標籤（見[遠端 Worker：儲存](/usage/remote-workers#storage)），以及上次心跳距今多久；
-- 每個裝置在最近一次心跳時的可用與總記憶體、slot 的已占用 / 上限，以及 CUDA 或 MPS 卡接收 run 的方式（**獨佔** 或 **依記憶體共用**，見[共用一張卡](#sharing-a-card)），共用卡另有記憶體長條；
+- 狀態（**Online**、心跳延遲或節點型別與伺服器不同時為 **Degraded** 並在旁說明原因、**Draining**、**Disconnected**，以及你停用的 SSH worker 為 **已停用**）、版本以及是否與伺服器相同、環境摘要、節點型別是否與伺服器相同（以及哪些不同）、上次連線被拒的原因、mount 標籤（見[遠端 Worker：儲存](/usage/remote-workers#storage)），以及上次心跳距今多久；
+- 每個裝置在最近一次心跳時的可用與總記憶體（GiB；worker 離開期間標示為「最後回報時」）、slot 的已占用 / 上限，以及 CUDA 或 MPS 卡接收 run 的方式（**獨佔** 或 **依記憶體共用**，見[共用一張卡](#sharing-a-card)），共用卡另有記憶體長條；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
 
 伺服器拒絕過（例如版本不同）且沒有卡片的 agent，會列在 **被拒的連線** 下並附上原因（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。
 
-**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 的 worker 下方說明原因。**新增 worker** 會產生另一台機器用的加入指令，或顯示上面那段同機指令與其參數。**重新核發** 讓 worker 換新憑證，**移除** 會撤銷憑證、中斷連線，並讓佇列中等它的 run 失敗（[遠端 Worker](/usage/remote-workers)）。
+**排空**讓新的 run 不再被放到該 worker，它正在執行的 run 則會跑完；**取消排空**恢復原狀。worker 正在排空或離線時，queued run 會等待，Runs 面板會在該 run 下方的一行說明原因；能提供其裝置的 worker 全都在排空中時，`any` run 也會說明。**新增 worker** 會產生另一台機器用的加入指令，或顯示上面那段同機指令與其參數；伺服器只監聽 `127.0.0.1`（其他機器連不到）時，它會直接開在 **透過 SSH**。**重新核發** 讓已加入的 worker 換新憑證（以 session token 連線的同機 agent 與 SSH worker 沒有可換的憑證，所以不提供），**移除** 會撤銷憑證、中斷連線，並讓佇列中等它的 run 失敗；對 SSH worker 還會結束 ssh 連線，並刪除該項目與它在遠端主機上保存的內容（[遠端 Worker](/usage/remote-workers)）。移除 worker、刪除 SSH worker，以及停用有 run 在執行的 SSH worker，都要按第二次，卡片會先說明那一下會做什麼。停用的 SSH worker 在這裡與 **排入佇列...** 中都顯示為 **已停用**，在後者無法選取。
 
 ## 畫布的行為 {/* #the-canvas */}
 
-畫布上的 **Run** 一律在伺服器程序內、以圖的裝置（否則為 Settings 中的裝置）執行，從不送到 worker。它跳過佇列，所以即使某張卡的上限是 1，它仍可能與 queued run 共用那張卡。它會在多次點擊之間保留分頁的快取輸出與模型權重，並為 Inspector 記錄輸出，這些 worker run 都做不到。要把分頁中的圖交給 worker，請使用[排入佇列...](#queue-on)。
+畫布上的 **Run** 一律在伺服器程序內、以圖的裝置（否則為 Settings 中的裝置）執行，從不送到 worker。它跳過佇列，所以即使某張卡的上限是 1，它仍可能與 queued run 共用那張卡。它會在多次點擊之間保留分頁的快取輸出與模型權重，這是 worker run 做不到的，並為 Inspector 記錄輸出（worker run 只有在 `record_outputs` 時才會記錄）。要把分頁中的圖交給 worker，請使用[排入佇列...](#queue-on)。
 
 ## Runs 面板中的峰值記憶體 {/* #peak-memory */}
 

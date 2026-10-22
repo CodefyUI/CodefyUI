@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { formatBytes } from './formatBytes';
+import { formatBytes, gibFigure } from './formatBytes';
+
+describe('gibFigure', () => {
+  it('prints GiB with one decimal and no unit, as the device lists use it', () => {
+    expect(gibFigure(24 * 1024 ** 3)).toBe('24.0');
+    expect(gibFigure(5.94 * 1024 ** 3)).toBe('5.9');
+    expect(gibFigure(0)).toBe('0.0');
+  });
+});
 
 describe('formatBytes', () => {
   it('reads an empty store as zero bytes, not as an empty string', () => {

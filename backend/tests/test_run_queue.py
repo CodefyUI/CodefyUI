@@ -242,6 +242,11 @@ def fake_devices(monkeypatch):
     # workstation whose current device is not 0.
     monkeypatch.setattr(run_service_module, "_current_cuda_index",
                         lambda: 0)
+    # A local device set must name devices this server has (#839): the
+    # fake box has four cards and MPS, like the strings this file uses.
+    monkeypatch.setattr(
+        run_service_module, "_local_device_values",
+        lambda: ["cpu", "cuda:0", "cuda:1", "cuda:2", "cuda:3", "mps:0"])
 
 
 @pytest.fixture

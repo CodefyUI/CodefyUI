@@ -245,6 +245,19 @@ async def test_no_worker_within_the_grace_ends_the_run_saying_why(
         assert record.error == (
             "worker box went away: it did not reconnect with the run within "
             "300 s after this server restarted")
+        # Coded for the Runs panel (#841): the adoption warning, and the
+        # reason the run ended.
+        assert record.execution_facts["error_reason"] == {
+            "code": "worker_gone", "params": {"worker": "box", "reason": {
+                "code": "no_reconnect_after_restart",
+                "params": {"seconds": 300},
+                "text": "it did not reconnect with the run within 300 s "
+                        "after this server restarted"}}}
+        warnings = [e.payload for e in await second.service.store.get_events(
+            run_id) if e.type == "run_warning"]
+        assert [(w["code"], w["params"]) for w in warnings
+                if w.get("code") == "worker_adopted"] == [
+            ("worker_adopted", {"worker": "box", "seconds": 300})]
         assert second.service._slots == {}
         assert second.registry._adopted == {}
         events = await second.service.store.get_events(run_id)

@@ -75,6 +75,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from . import memory_admission as mem
+from .coded_text import freeze, thaw
 from .mounts import holds_mount
 from .transfer import refusal as transfer_refusal
 from .transfer import transferable
@@ -447,6 +448,48 @@ def entry_target(options: Mapping[str, Any]) -> tuple[str, list[str] | None]:
     return (target.get("worker") or TARGET_LOCAL), target.get("devices")
 
 
+#: Codes of :class:`QueueReason` (#841). The Runs list words each one in
+#: the viewer's language from its ``params``; an unknown code falls back to
+#: the English ``text``.
+REASON_WORKER_RECONNECT = "worker_reconnect"
+REASON_WORKER_DRAINING = "worker_draining"
+REASON_WORKER_NO_MOUNT = "worker_no_mount"
+REASON_ANY_NO_WORKER = "any_no_worker"
+REASON_ANY_NO_WORKER_MOUNT = "any_no_worker_mount"
+REASON_ANY_UNAVAILABLE = "any_unavailable"
+#: Wave D (#788, #790, #794).
+REASON_ONE_SHOT_START = "one_shot_start"
+REASON_ONE_SHOT_TAKEN = "one_shot_taken"
+REASON_ONE_SHOT_RUN_ID = "one_shot_run_id"
+REASON_ONE_SHOT_POOL = "one_shot_pool"
+REASON_MEMORY_NO_BUDGET = "memory_no_budget"
+REASON_MEMORY_WAIT = "memory_wait"
+#: Only the raise of an accepted estimate (#794); beside another reason
+#: the raise rides in that reason's ``params.raised``.
+REASON_BUDGET_RAISED = "budget_raised"
+
+
+@dataclass(frozen=True, eq=False)
+class QueueReason:
+    """Why a waiting run cannot start, beyond a busy slot (#772, #841).
+
+    Immutable: *params* is frozen (``coded_text.freeze``) on construction,
+    and ``eq=False`` keeps it hashable by identity; :meth:`params_dict`
+    is the plain copy the API sends.
+    """
+
+    code: str
+    params: Mapping[str, Any]
+    #: The English sentence: ``queue_reason`` in the API and the CLI.
+    text: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "params", freeze(self.params))
+
+    def params_dict(self) -> dict[str, Any]:
+        return thaw(self.params)
+
+
 class WorkerScheduler:
     """Placement across this process and the connected workers (#772).
 
@@ -597,8 +640,18 @@ class WorkerScheduler:
 
     def explain(self, entry: QueuedEntry,
                 taken: Mapping[SlotKey, int] | None = None) -> str | None:
-        """Why *entry* is waiting, when it is not just a busy slot.
-        *taken* is the slot counts it is judged against (memory, #788)."""
+        """Why *entry* is waiting, when it is not just a busy slot: the
+        English sentence of :meth:`explain_reason`."""
+        reason = self.explain_reason(entry, taken)
+        return None if reason is None else reason.text
+
+    def explain_reason(self, entry: QueuedEntry,
+                       taken: Mapping[SlotKey, int] | None = None
+                       ) -> QueueReason | None:
+        """Why *entry* is waiting, as a code, its parameters and the
+        English sentence (#841): the Runs list words the code in the
+        viewer's language, the API and CLI keep the sentence. *taken* is
+        the slot counts it is judged against (memory, #788)."""
         taken = taken or {}
         worker_id, devices = entry_target(entry.options)
         if worker_id == TARGET_LOCAL:
@@ -612,48 +665,81 @@ class WorkerScheduler:
                 return one_shot_busy(worker)
             if worker is None or not worker.online:
                 if worker is not None and _one_shot(worker):
-                    return (f"waiting for one-shot worker {worker_id} to "
-                            "start (cdui agent start --one-shot)")
-                return f"waiting for worker {worker_id} to reconnect"
+                    return QueueReason(
+                        REASON_ONE_SHOT_START, {"worker": worker_id},
+                        f"waiting for one-shot worker {worker_id} to "
+                        "start (cdui agent start --one-shot)")
+                return QueueReason(
+                    REASON_WORKER_RECONNECT, {"worker": worker_id},
+                    f"waiting for worker {worker_id} to reconnect")
             if worker.draining:
-                return f"worker {worker_id} is draining"
+                return QueueReason(
+                    REASON_WORKER_DRAINING, {"worker": worker_id},
+                    f"worker {worker_id} is draining")
             if not reaches(worker, entry):
-                return no_mount(worker_id, mount or "",
-                                transfer_refusal(getattr(entry, "needs",
-                                                         None)))
+                why_not = transfer_refusal(getattr(entry, "needs", None))
+                return QueueReason(
+                    REASON_WORKER_NO_MOUNT,
+                    {"worker": worker_id, "mount": mount or "",
+                     "transfer": why_not or None},
+                    no_mount(worker_id, mount or "", why_not))
             return self._memory_wait(entry.options, entry_budget(entry),
                                      taken)
         wanted = ", ".join(devices) if devices else requested
         if entry_pool(entry.options) == POOL_ONE_SHOT:
-            return (f"waiting for a one-shot worker that offers {wanted} "
-                    "(cdui agent start --one-shot)")
+            return QueueReason(
+                REASON_ONE_SHOT_POOL, {"devices": wanted},
+                f"waiting for a one-shot worker that offers {wanted} "
+                "(cdui agent start --one-shot)")
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount,
                                   transfer=entry_transfers(entry)):
             if mount is not None and not entry_transfers(entry):
-                return (f"waiting for a worker that offers {wanted} and "
-                        f"has the `{mount}` mount")
-            return f"waiting for a worker that offers {wanted}"
+                return QueueReason(
+                    REASON_ANY_NO_WORKER_MOUNT,
+                    {"devices": wanted, "mount": mount},
+                    f"waiting for a worker that offers {wanted} and "
+                    f"has the `{mount}` mount")
+            return QueueReason(
+                REASON_ANY_NO_WORKER, {"devices": wanted},
+                f"waiting for a worker that offers {wanted}")
         if not self.can_serve_any(requested, devices, connected_only=True,
                                   mount=mount, usable_only=True,
+                                  accepting_only=True,
                                   transfer=entry_transfers(entry)):
             # The workers the first check counted and this one did not:
             # the same predicate as ``can_serve_any`` (``reaches`` is its
-            # mount/transfer rule), so the list is never empty.
-            skipped = sorted(
-                w.name for w in self._registry.workers()
-                if w.online and _skipped_by_any(w) and reaches(w, entry)
-                and _serves(w.device_values(), requested, devices))
-            return (f"waiting for a worker that offers {wanted}: "
-                    f"{', '.join(skipped)} "
-                    f"{'is' if len(skipped) == 1 else 'are'} skipped by "
-                    "`any` (node types missing, or not reported)")
+            # mount/transfer rule), so the two lists are never both empty.
+            # Draining (#841): an `any` run behind a draining worker said
+            # nothing at all, while a run naming it said "is draining".
+            able = [w for w in self._registry.workers()
+                    if w.online and reaches(w, entry)
+                    and _serves(w.device_values(), requested, devices)]
+            draining = sorted(w.name for w in able
+                              if _draining(w) and not _skipped_by_any(w))
+            skipped = sorted(w.name for w in able if _skipped_by_any(w))
+            parts = []
+            if draining:
+                parts.append(f"{', '.join(draining)} "
+                             f"{'is' if len(draining) == 1 else 'are'} "
+                             "draining")
+            if skipped:
+                parts.append(f"{', '.join(skipped)} "
+                             f"{'is' if len(skipped) == 1 else 'are'} "
+                             "skipped by `any` (node types missing, or not "
+                             "reported)")
+            return QueueReason(
+                REASON_ANY_UNAVAILABLE,
+                {"devices": wanted, "draining": draining, "skipped": skipped},
+                f"waiting for a worker that offers {wanted}: "
+                + "; ".join(parts))
         return None
 
     def can_serve_any(self, requested: str, devices: list[str] | None,
                       *, connected_only: bool = False,
                       mount: str | None = None,
                       usable_only: bool = False,
+                      accepting_only: bool = False,
                       transfer: bool = False) -> bool:
         """Whether this process or a worker could ever run it.
 
@@ -666,7 +752,8 @@ class WorkerScheduler:
         worker counts only when it holds that mount, or, with *transfer*
         (#785), when it speaks the transfer backend; this process always
         does. *usable_only* leaves out the workers ``any`` skips (#781:
-        one that lacks node types, or reported no catalog).
+        one that lacks node types, or reported no catalog);
+        *accepting_only* the draining ones (#841), which take no new run.
         """
         if not renumbered_on_a_worker(devices) \
                 and _serves(self._local_devices(), requested, devices):
@@ -677,6 +764,7 @@ class WorkerScheduler:
                    and (mount is None or holds_mount(w, mount)
                         or (transfer and ships_files(w)))
                    and not (usable_only and _skipped_by_any(w))
+                   and not (accepting_only and _draining(w))
                    and _serves(w.device_values(), requested, devices)
                    for w in self._registry.workers())
 
@@ -807,10 +895,9 @@ class WorkerScheduler:
         need = mem.footprint(budget, device)
         total, room, account = self.room(worker, device)
         if total is None:
-            return False, False, f"{device} on {worker.id} has no memory total reported"
+            return False, False, mem.no_total_reported(device, worker.id)
         if total < need:
-            return False, False, (f"{device} on {worker.id} has "
-                                  f"{mem.format_gib(total)} in total")
+            return False, False, mem.total_too_small(device, worker.id, total)
         slot = slot_for(worker, device)
         held = self._budget.held(slot, taken)
         if held >= RESERVED_SLOT:
@@ -925,7 +1012,7 @@ class WorkerScheduler:
 
     def _memory_wait(self, options: Mapping[str, Any],
                      budget: int | None,
-                     taken: Mapping[SlotKey, int]) -> str | None:
+                     taken: Mapping[SlotKey, int]) -> QueueReason | None:
         """Why a run for a named worker waits for memory, or None (it waits
         for its turn, or for a card admitted by count)."""
         places, _ = self.places(options)
@@ -934,8 +1021,11 @@ class WorkerScheduler:
             return None
         if budget is None:
             worker, device = places[0][0]
-            return mem.no_budget_message(f"{device} on {worker.id}",
-                                         waiting=True)
+            return QueueReason(
+                REASON_MEMORY_NO_BUDGET,
+                {"device": device, "worker": worker.id},
+                mem.no_budget_message(f"{device} on {worker.id}",
+                                      waiting=True))
         reasons = []
         for place in places:
             for worker, device in place:
@@ -946,17 +1036,30 @@ class WorkerScheduler:
                         reasons.append(why)
         if not reasons:
             return None
-        return "waiting for memory: " + mem.needs_message(
-            budget, reasons, places[0][0][1])
+        device = places[0][0][1]
+        context = mem.context_bytes(device)
+        return QueueReason(
+            REASON_MEMORY_WAIT,
+            {"need": mem.format_gib(budget),
+             "context": mem.format_gib(context) if context else None,
+             "reasons": [mem.coded_payload(why) for why in reasons]},
+            "waiting for memory: " + mem.needs_message(budget, reasons,
+                                                       device))
 
 
-def one_shot_busy(worker: Any) -> str:
+def one_shot_busy(worker: Any) -> QueueReason:
     """Why a run naming one-shot *worker* waits although it is there (#790)."""
     if worker.one_shot_claim is not None:
-        return (f"one-shot worker {worker.name} already took run "
-                f"{worker.one_shot_claim}; start another one-shot agent")
-    return (f"one-shot worker {worker.name} takes only run "
-            f"{worker.one_shot_run_id} (--run-id)")
+        return QueueReason(
+            REASON_ONE_SHOT_TAKEN,
+            {"worker": worker.name, "run": worker.one_shot_claim},
+            f"one-shot worker {worker.name} already took run "
+            f"{worker.one_shot_claim}; start another one-shot agent")
+    return QueueReason(
+        REASON_ONE_SHOT_RUN_ID,
+        {"worker": worker.name, "run": worker.one_shot_run_id},
+        f"one-shot worker {worker.name} takes only run "
+        f"{worker.one_shot_run_id} (--run-id)")
 
 
 def no_mount(worker_id: str, mount: str, why_not_transfer: str | None = None
@@ -981,6 +1084,10 @@ def _report(worker: Any, device: str) -> Any:
         except ValueError:
             continue
     return None
+
+
+def _draining(worker: Any) -> bool:
+    return bool(getattr(worker, "draining", False))
 
 
 def _skipped_by_any(worker: Any) -> bool:

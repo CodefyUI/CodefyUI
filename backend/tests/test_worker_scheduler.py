@@ -693,3 +693,62 @@ def test_the_skipped_list_names_only_workers_that_could_take_the_run(
     assert scheduler.explain(entry) == (
         "waiting for a worker that offers cuda: a-box is skipped by `any` "
         "(node types missing, or not reported)")
+
+
+# ── reason codes (#841) ───────────────────────────────────────────────────
+
+
+def test_an_any_run_behind_a_draining_worker_says_so():
+    """U5 of the 3.1.0 audit: a run naming a draining worker said "worker X
+    is draining", an ``any`` run waiting for the same card said nothing."""
+    scheduler = _scheduler(_worker("meow", "cpu", "cuda:0", draining=True))
+    entry = _Entry("r1", "any/cuda", _target("any", "cuda"))
+    assert scheduler.place(entry, {}) is None
+    reason = scheduler.explain_reason(entry)
+    assert (reason.code, reason.params_dict()) == ("any_unavailable", {
+        "devices": "cuda", "draining": ["meow"], "skipped": []})
+    assert reason.text == scheduler.explain(entry) == (
+        "waiting for a worker that offers cuda: meow is draining")
+    # A worker that can take it makes it a plain wait for a slot again.
+    other = _scheduler(_worker("meow", "cpu", "cuda:0", draining=True),
+                       _worker("zed", "cuda:0"))
+    assert other.explain_reason(entry) is None
+
+
+def test_draining_and_skipped_workers_are_both_named():
+    scheduler = _scheduler(_worker("b-box", "cuda:0", draining=True),
+                           _worker("c-box", "cuda:0", draining=True),
+                           _cataloged("a-box", "cuda:0"))
+    reason = scheduler.explain_reason(
+        _Entry("r1", "any/cuda", _target("any", "cuda")))
+    assert reason.params_dict() == {"devices": "cuda",
+                             "draining": ["b-box", "c-box"],
+                             "skipped": ["a-box"]}
+    assert reason.text == (
+        "waiting for a worker that offers cuda: b-box, c-box are draining; "
+        "a-box is skipped by `any` (node types missing, or not reported)")
+
+
+def test_every_reason_carries_a_code_and_params(data_label):
+    scheduler = _scheduler(_worker("box", "cpu", draining=True),
+                           _mounted(_worker("bare", "cpu")))
+
+    def reason(entry: _Entry) -> tuple[str, dict[str, Any]]:
+        found = scheduler.explain_reason(entry)
+        return found.code, found.params_dict()
+
+    assert reason(_Entry("r", "box/cpu", _target("box"))) == (
+        "worker_draining", {"worker": "box"})
+    assert reason(_Entry("r", "gone/cpu", _target("gone"))) == (
+        "worker_reconnect", {"worker": "gone"})
+    code, params = reason(_NeedyEntry("r", "bare/cpu", _target("bare"),
+                                      NEEDS_DATA))
+    assert (code, params["worker"], params["mount"]) == (
+        "worker_no_mount", "bare", "data")
+    assert reason(_Entry("r", "any/cuda", _target("any", "cuda"))) == (
+        "any_no_worker", {"devices": "cuda"})
+    assert reason(_NeedyEntry("r", "any/cuda", _target("any", "cuda"),
+                              NEEDS_DATA)) == (
+        "any_no_worker_mount", {"devices": "cuda", "mount": "data"})
+    assert scheduler.explain_reason(
+        _Entry("r", "cpu", {"device": "cpu"})) is None

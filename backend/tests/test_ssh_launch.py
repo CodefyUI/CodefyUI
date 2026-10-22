@@ -259,19 +259,253 @@ def test_the_stop_grace_outlasts_the_agents_own_shutdown(tmp_path):
 
 async def test_a_failing_ssh_is_retried_with_its_error_surfaced(
         launcher, fake_ssh, monkeypatch):
-    monkeypatch.setenv("FAKE_SSH_MODE", "fail")
+    monkeypatch.setenv("FAKE_SSH_MODE", "down")
     await launcher.add(_entry())
     await _until(lambda: len(_all_calls(fake_ssh)) >= 3
                  and launcher.describe("gpu-box")["state"] == "failed",
                  "ssh was not retried")
     view = launcher.describe("gpu-box")
     assert view["gave_up"] is False
-    assert "Permission denied (publickey)" in view["last_error"]
+    assert "Connection refused" in view["last_error"]
     assert view["exit_code"] == 255
     assert view["attempts"] >= 3
-    assert any("Permission denied" in line for line in view["tail"])
-    # Each attempt minted a new token and deleted the unspent one before.
-    assert len(await launcher.store.list_enrollments()) <= 1
+    # The last attempt's output only, not one line per attempt (#840).
+    assert view["tail"] == [
+        "ssh: connect to host gpu-box port 22: Connection refused"]
+
+
+@pytest.mark.parametrize("mode, words", [
+    ("fail", "the host refused the login"),
+    ("nohost", "the host name does not resolve"),
+])
+async def test_a_failure_that_may_heal_is_retried_with_its_reason(
+        launcher, fake_ssh, monkeypatch, mode, words):
+    """#840 review: a refused login (an ssh-agent not unlocked yet) or a
+    name that does not resolve (no network yet) can heal by itself: the
+    loop keeps retrying, the card says why and when it will stop."""
+    monkeypatch.setenv("FAKE_SSH_MODE", mode)
+    await launcher.add(_entry())
+    await _until(lambda: len(_all_calls(fake_ssh)) >= 3,
+                 "the failure was not retried")
+    view = launcher.describe("gpu-box")
+    assert view["gave_up"] is False and view["state"] == "failed"
+    assert words in view["last_error"]
+    assert "Retrying; it stops if this lasts 10 min" in view["last_error"]
+    assert view["exit_code"] == 255
+    assert len(view["tail"]) == 1
+
+
+@pytest.mark.parametrize("mode, words", [
+    ("fail", "the host refused the login"),
+    ("nohost", "the host name does not resolve"),
+])
+async def test_a_failure_that_lasts_stops_the_retries(
+        launcher, fake_ssh, monkeypatch, mode, words):
+    """#840: once it has lasted LASTING_GIVE_UP_S without a break, the loop
+    stops with the reason, also for a worker that was up before; Retry
+    starts it again."""
+    monkeypatch.setattr(ssh_launch, "LASTING_GIVE_UP_S", 0.3)
+    monkeypatch.setenv("FAKE_SSH_MODE", mode)
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the retries never stopped")
+    view = launcher.describe("gpu-box")
+    assert view["state"] == "failed" and view["retry_at"] is None
+    assert words in view["last_error"] and "press Retry" in view["last_error"]
+    assert view["exit_code"] == 255
+    assert len(_all_calls(fake_ssh)) >= 2
+    assert len(view["tail"]) == 1
+    monkeypatch.setenv("FAKE_SSH_MODE", "hold")
+    await launcher.set_enabled("gpu-box", True)
+    await _until(lambda: _tokens(fake_ssh), "Retry did not start it")
+    assert launcher.describe("gpu-box")["gave_up"] is False
+
+
+async def test_a_break_in_the_failure_restarts_its_window(
+        launcher, fake_ssh, monkeypatch):
+    """Only an unbroken run of lasting failures ends the retries: a session
+    that came up, or another failure, starts the window again."""
+    launch = ssh_launch.SshLaunch(_entry(), launcher)
+    lines = ["ssh: Could not resolve hostname gpu-box: nodename nor "
+             "servname provided"]
+    assert launch._permanent(255, lines, "x") is True
+    first = launch._lasting_since
+    assert first is not None and not launch.gave_up
+    assert launch._permanent(255, ["Connection refused"], "y") is False
+    assert launch._lasting_since is None
+    assert launch._permanent(255, lines, "x", was_up=True) is False
+    assert launch._lasting_since is None
+
+
+async def test_a_host_that_fails_before_the_session_is_backed_off(
+        launcher, fake_ssh, monkeypatch):
+    """A new slot's pending forget used to retry every 2 s forever while
+    the prepare step kept failing; the backoff now doubles (#840)."""
+    waits = []
+    real = ssh_launch._first_of
+
+    async def spy(stop, wake, timeout):
+        waits.append(timeout)
+        return await real(stop, wake, timeout)
+
+    monkeypatch.setattr(ssh_launch, "_first_of", spy)
+    monkeypatch.setenv("FAKE_SSH_MODE", "nohost")
+    await launcher.add(_entry())
+    await _until(lambda: len(waits) >= 4, "it was not retried")
+    assert waits[:4] == [0.05, 0.1, 0.2, 0.4]
+
+
+async def test_retry_cuts_the_backoff_short(launcher, fake_ssh, monkeypatch):
+    """Retry on an entry still retrying (a long backoff ahead) tries again
+    at once."""
+    monkeypatch.setattr(ssh_launch, "BACKOFF_MIN_S", 30.0)
+    monkeypatch.setenv("FAKE_SSH_MODE", "nohost")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["retry_at"],
+                 "it never waited to retry")
+    assert len(_all_calls(fake_ssh)) == 1
+    launch = launcher.launches["gpu-box"]
+    assert launch._lasting_since is not None
+    monkeypatch.setenv("FAKE_SSH_MODE", "hold")
+    await launcher.set_enabled("gpu-box", True)
+    # A lasting failure gets its whole window again (#840 review).
+    assert launch._lasting_since is None
+    await _until(lambda: _tokens(fake_ssh), "Retry did not try again now")
+
+
+async def test_retry_keeps_a_drain_the_user_set(launcher, fake_ssh):
+    """#840 review: Retry (Enable on an entry that is enabled already) does
+    not undrain the worker; only Enable after Disable does."""
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    launcher.registry.drained.clear()
+    await launcher.set_enabled("gpu-box", True)
+    assert launcher.registry.drained == {}
+
+
+async def test_retry_during_an_attempt_leaves_no_wake_behind(
+        launcher, fake_ssh):
+    """#840 review: a Retry while a session runs has no backoff to cut
+    short; a wake left set would skip the backoff after a later drop."""
+    await launcher.add(_entry())
+    await _until(lambda: _tokens(fake_ssh), "ssh never ran")
+    launch = launcher.launches["gpu-box"]
+    await launcher.set_enabled("gpu-box", True)
+    assert not launch._wake.is_set()
+
+
+async def test_a_silent_session_reports_its_exit_status(
+        launcher, fake_ssh, monkeypatch):
+    """#840 review: a session that wrote nothing says how ssh exited, not
+    the prepare step's line still on the card."""
+    monkeypatch.setenv("FAKE_SSH_MODE", "silent")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["exit_code"] == 3,
+                 "the session never ended")
+    view = launcher.describe("gpu-box")
+    assert view["last_error"] == "ssh exited with status 3"
+    # The card still shows the last output (the prepare step's).
+    assert any("codefyui-ssh: dir" in line for line in view["tail"])
+
+
+def test_only_a_new_step_replaces_the_tail(launcher):
+    """#840 review: the prepare step and the session each start the tail
+    over; another one-shot (a stop) adds to it, never wipes a failure."""
+    launch = ssh_launch.SshLaunch(_entry(), launcher)
+    launch._begin_tail()
+    launch._add_tail(["ssh: connect to host gpu-box port 22: refused"])
+    launch._add_tail(["stopped the remote agent"])
+    assert list(launch.tail) == [
+        "ssh: connect to host gpu-box port 22: refused",
+        "stopped the remote agent"]
+    launch._begin_tail()
+    assert len(launch.tail) == 2
+    launch._add_tail(["new attempt"])
+    assert list(launch.tail) == ["new attempt"]
+    assert launch._step_lines == ["new attempt"]
+
+
+async def test_a_host_key_that_does_not_verify_stops_at_once(
+        launcher, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_SSH_MODE", "hostkey")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the retries never stopped")
+    view = launcher.describe("gpu-box")
+    assert "the host key does not verify" in view["last_error"]
+    assert len(_all_calls(fake_ssh)) == 1
+
+
+async def test_a_missing_cdui_stops_the_retries_without_a_pid(
+        launcher, fake_ssh, monkeypatch):
+    """#840: a wrong cdui path exits 127; the pid the remote script
+    printed was an agent that never ran."""
+    monkeypatch.setenv("FAKE_SSH_MODE", "nocdui")
+    await launcher.add(_entry())
+    await _until(lambda: launcher.describe("gpu-box")["gave_up"],
+                 "the retries never stopped")
+    view = launcher.describe("gpu-box")
+    assert view["remote_pid"] is None
+    assert "cannot run" in view["last_error"]
+    assert "not found" in view["last_error"]
+    assert "agent pid" not in view["last_error"]
+    assert view["exit_code"] == 127
+    assert len(_calls(fake_ssh)) == 1
+
+
+async def test_a_prepare_step_that_exits_127_is_retried(
+        launcher, fake_ssh, monkeypatch):
+    """#840 review: 127 / 126 means a wrong cdui only in the session; the
+    prepare step never runs cdui, so its 127 is retried as any failure."""
+    monkeypatch.setenv("FAKE_SSH_MODE", "prepare127")
+    await launcher.add(_entry())
+    await _until(lambda: len(_all_calls(fake_ssh)) >= 3,
+                 "the prepare failure was not retried")
+    view = launcher.describe("gpu-box")
+    assert view["gave_up"] is False
+    assert "cannot run" not in (view["last_error"] or "")
+    assert view["exit_code"] == 127
+
+
+def test_the_failures_a_retry_does_not_fix():
+    entry = _entry()
+    kind, reason = ssh_launch.classify_failure(
+        255, ["Host key verification failed."], entry, session=False)
+    assert (kind, reason.startswith("the host key")) == (
+        ssh_launch.FAILURE_FINAL, True)
+    kind, reason = ssh_launch.classify_failure(126, [], entry, session=True)
+    assert kind == ssh_launch.FAILURE_FINAL and "not executable" in reason
+    assert ssh_launch.classify_failure(127, [], entry, session=False) is None
+    assert ssh_launch.classify_failure(
+        255, ["alice@x: Permission denied (publickey)."], entry,
+        session=True)[0] == ssh_launch.FAILURE_LASTING
+    assert ssh_launch.classify_failure(
+        255, ["ssh: connect to host x port 22: Connection timed out"],
+        entry, session=True) is None
+
+
+
+@pytest.mark.parametrize("line, kind", [
+    ("alice@gpu-box: Permission denied (publickey).", "lasting"),
+    ("Permission denied (publickey,password).", "lasting"),
+    ("bob@10.0.0.7: Permission denied (publickey,gssapi-keyex,"
+     "gssapi-with-mic,keyboard-interactive).", "lasting"),
+    ("ssh: Could not resolve hostname gpu-box: Name or service not known",
+     "lasting"),
+    ("Host key verification failed.", "final"),
+    # A remote program's words are not ssh's (#840 review): uv in the
+    # agent's log, a Python traceback, a shell.
+    ("error: failed to open file `/home/a/.cache/uv/x`: Permission denied "
+     "(os error 13)", None),
+    ("2026-10-18 04:00:00,000 ERROR app.agent: Permission denied "
+     "(publickey) is what ssh said", None),
+    ("PermissionError: [Errno 13] Permission denied: '/data'", None),
+    ("sh: 1: /home/a/cdui: Permission denied", None),
+])
+def test_only_ssh_s_own_lines_are_read_as_its_failures(line, kind):
+    found = ssh_launch.classify_failure(1, ["some other line", line],
+                                        _entry(), session=True)
+    assert (found[0] if found else None) == kind
 
 
 def test_the_backoff_doubles_up_to_a_minute():
@@ -1585,8 +1819,10 @@ async def test_listing_needs_the_session_token_and_adding_too(api):
     ({"target": "-oProxyCommand=x"}, "SSH target"),
     ({"target": "a@b", "identity": "/nope/key"}, "does not exist"),
     ({"target": "a@b", "remote_cdui": "~/x; rm"}, "remote cdui"),
-    ({"target": "a@b", "name": "Bad Name"}, "worker name"),
+    # Quoted as typed, not lower-cased (#840).
+    ({"target": "a@b", "name": "Bad Name!"}, "worker name 'Bad Name!'"),
     ({"target": "a@b", "name": "local"}, "reserved"),
+    ({"target": "a@b", "name": "Local"}, "worker name 'Local' is reserved"),
 ])
 async def test_bad_ssh_workers_are_refused(api, body, message):
     async with _client() as client:

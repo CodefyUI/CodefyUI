@@ -24,6 +24,7 @@ import {
   type PackRequirement,
 } from '../../utils/packAvailability';
 import { TensorGridEditor } from '../ConfigPanel/TensorGridEditor';
+import { DeviceParamSelect, isDeviceParam } from './DeviceParamSelect';
 import { NumberInput } from './NumberInput';
 import { ScriptCodeField } from './ScriptCodeField';
 import styles from './ParamField.module.css';
@@ -294,6 +295,17 @@ export function ParamField({
           {displayLabel}
         </label>
       </div>
+    );
+  }
+
+  if (isDeviceParam(param)) {
+    return (
+      <DeviceParamSelect
+        param={param}
+        value={value}
+        onChange={onChange}
+        displayLabel={displayLabel}
+      />
     );
   }
 
