@@ -53,6 +53,7 @@ _CONCEPT_EXAMPLES = (
     "RL/GRPO-Step-GridWorld",
     "RNN/Conv1d-Sequence-Classifier",
     "RL/Reward-Model-Bradley-Terry",
+    "RL/Discounted-Returns",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -581,3 +582,36 @@ def test_the_untrained_heads_are_the_head_bradley_terry_train_starts_from():
         nn.Linear(train["hidden_dim"], 1)), train["seed"])
     for got, want in zip(head.parameters(), start.parameters()):
         assert torch.equal(got.detach().cpu(), want.detach())
+
+
+# ── Discounted returns: G_t = gamma^(9 - t) for a reward at the last step ─
+
+def test_discount_folds_one_final_reward_into_gamma_powers():
+    key = "RL/Discounted-Returns"
+    text = _notes_of(key)
+    for quoted in ("0.002 at gamma 0.5", "0.387 at gamma 0.9", "0.914 at gamma 0.99",
+                   "G_t = r_t + gamma G_{t+1}"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    for node, gamma, first in (("disc-05", 0.5, "0.002"), ("disc-09", 0.9, "0.387"),
+                               ("disc-099", 0.99, "0.914")):
+        assert _params(_graph(key), node)["gamma"] == gamma
+        returns = results[node]["returns"]
+        expected = torch.tensor([gamma ** (9 - t) for t in range(10)])
+        assert torch.allclose(returns, expected, atol=1e-6), (node, returns)
+        assert f"{results[node]['first_return']:.3f}" == first
+
+    plotted = results["concat"]["tensor"]
+    assert tuple(plotted.shape) == (3, 10)
+    assert torch.equal(plotted[2], results["disc-099"]["returns"])
+
+
+def test_the_step_cost_the_rewards_note_suggests_does_what_it_says():
+    """A -0.1 before the final 1: G_0 < 0 at gamma 0.5 and 0.9, > 0 at 0.99."""
+    from app.nodes.rl.discount_node import DiscountNode
+
+    rewards = torch.tensor([-0.1] * 9 + [1.0])
+    first = {g: DiscountNode().execute({"rewards": rewards}, {"gamma": g})["first_return"]
+             for g in (0.5, 0.9, 0.99)}
+    assert first[0.5] < 0 and first[0.9] < 0 < first[0.99], first

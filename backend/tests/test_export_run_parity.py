@@ -117,6 +117,7 @@ PARITY_EXAMPLES = (
     "Model_Architecture/TimeSeries-LSTM-RNN",
     "Model_Architecture/UNet-Segmentation-CNN",
     "Model_Architecture/ViT-ImageClassifier-Transformer",
+    "RL/Discounted-Returns",
     "RL/GRPO-Step-GridWorld",
     "RL/RLHF-Reward-and-KL",
     "RL/Reward-Hacking-Shortcut",

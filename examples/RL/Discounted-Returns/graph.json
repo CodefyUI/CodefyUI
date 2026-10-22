@@ -1,0 +1,333 @@
+{
+  "name": "Discounted returns",
+  "description": "One reward, three gammas, three returns",
+  "gallery": {
+    "section": "concepts",
+    "order": 19
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "rewards",
+      "type": "TensorInput",
+      "position": {
+        "x": 40,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "shape": "10",
+          "dtype": "float32",
+          "value_mode": "explicit",
+          "values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "disc-05",
+      "type": "Discount",
+      "position": {
+        "x": 360,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "gamma": 0.5
+        }
+      }
+    },
+    {
+      "id": "print-05",
+      "type": "Print",
+      "position": {
+        "x": 680,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "gamma 0.5: return G_t at steps 0-9"
+        }
+      }
+    },
+    {
+      "id": "disc-09",
+      "type": "Discount",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "gamma": 0.9
+        }
+      }
+    },
+    {
+      "id": "print-09",
+      "type": "Print",
+      "position": {
+        "x": 680,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "label": "gamma 0.9: return G_t at steps 0-9"
+        }
+      }
+    },
+    {
+      "id": "disc-099",
+      "type": "Discount",
+      "position": {
+        "x": 360,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "gamma": 0.99
+        }
+      }
+    },
+    {
+      "id": "print-099",
+      "type": "Print",
+      "position": {
+        "x": 680,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "label": "gamma 0.99: return G_t at steps 0-9"
+        }
+      }
+    },
+    {
+      "id": "stack",
+      "type": "Stack",
+      "position": {
+        "x": 1000,
+        "y": -150
+      },
+      "data": {
+        "params": {
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "unsqueeze",
+      "type": "Unsqueeze",
+      "position": {
+        "x": 1000,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "concat",
+      "type": "Concat",
+      "position": {
+        "x": 1320,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1640,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "title": "G_t per step: series 0 is gamma 0.5, 1 is 0.9, 2 is 0.99",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The return G_t is everything an agent collects from step t on, with each later reward shrunk by gamma once per step of delay: G_t = r_t + gamma r_{t+1} + gamma^2 r_{t+2} + ... Written as a recursion, G_t = r_t + gamma G_{t+1}, so Discount computes it in one pass from the last step back to the first. The episode here is 10 steps long and pays a single reward of 1 at the last step, so G_t = gamma^(9 - t). The first step's return is 0.002 at gamma 0.5, 0.387 at gamma 0.9 and 0.914 at gamma 0.99: gamma sets how far back a reward still reaches. A task that pays only at the end, such as an LLM answer graded once it is finished, needs gamma close to 1.\n\n回報 G_t 是代理人從第 t 步開始拿到的全部獎勵，越晚拿到的獎勵每延後一步就再乘一次 gamma：G_t = r_t + gamma r_{t+1} + gamma^2 r_{t+2} + ...。寫成遞迴就是 G_t = r_t + gamma G_{t+1}，所以 Discount 從最後一步往回算，一次就算完。這裡的 episode 有 10 步，只在最後一步給 1 的獎勵，因此 G_t = gamma^(9 - t)。第一步的回報在 gamma 0.5 時是 0.002，gamma 0.9 時是 0.387，gamma 0.99 時是 0.914：gamma 決定一個獎勵能往回傳多遠。只在最後才給分的任務，例如回答寫完才評分的 LLM，需要接近 1 的 gamma。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-rewards",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The rewards, one per step: nine zeros and a 1. Edit the values, for example a -0.1 at each of the nine steps before the 1, and rerun: the step cost pulls the first return below zero at gamma 0.5 and 0.9, while at 0.99 the final reward still outweighs it.\n\n每一步一個獎勵：九個 0 和一個 1。改一下數值，例如在 1 之前的九步都放 -0.1，再執行一次：每步的成本讓 gamma 0.5 與 0.9 的第一步回報變成負的，gamma 0.99 時最後那個獎勵仍然比較大。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "rewards",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-plot",
+      "type": "note",
+      "position": {
+        "x": 1640,
+        "y": 420
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Stack puts the gamma 0.5 and 0.9 returns into a [2, 10] tensor, Unsqueeze makes the gamma 0.99 returns [1, 10], and Concat joins them into [3, 10], which Visualize draws as three lines. Every line ends at 1 on the last step, where the reward is paid.\n\nStack 把 gamma 0.5 與 0.9 的回報合成 [2, 10] 的張量，Unsqueeze 把 gamma 0.99 的回報變成 [1, 10]，Concat 再把兩者接成 [3, 10]，Visualize 畫成三條線。每條線在最後一步都是 1，因為獎勵就在那一步給出。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "viz",
+        "boundOffset": {
+          "x": 0,
+          "y": 420
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_rewards",
+      "source": "start",
+      "target": "rewards",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_rewards_tensor_disc-05_rewards",
+      "source": "rewards",
+      "target": "disc-05",
+      "sourceHandle": "tensor",
+      "targetHandle": "rewards"
+    },
+    {
+      "id": "e_disc-05_returns_print-05_value",
+      "source": "disc-05",
+      "target": "print-05",
+      "sourceHandle": "returns",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_rewards_tensor_disc-09_rewards",
+      "source": "rewards",
+      "target": "disc-09",
+      "sourceHandle": "tensor",
+      "targetHandle": "rewards"
+    },
+    {
+      "id": "e_disc-09_returns_print-09_value",
+      "source": "disc-09",
+      "target": "print-09",
+      "sourceHandle": "returns",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_rewards_tensor_disc-099_rewards",
+      "source": "rewards",
+      "target": "disc-099",
+      "sourceHandle": "tensor",
+      "targetHandle": "rewards"
+    },
+    {
+      "id": "e_disc-099_returns_print-099_value",
+      "source": "disc-099",
+      "target": "print-099",
+      "sourceHandle": "returns",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_disc-05_returns_stack_tensor_a",
+      "source": "disc-05",
+      "target": "stack",
+      "sourceHandle": "returns",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_disc-09_returns_stack_tensor_b",
+      "source": "disc-09",
+      "target": "stack",
+      "sourceHandle": "returns",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_disc-099_returns_unsqueeze_tensor",
+      "source": "disc-099",
+      "target": "unsqueeze",
+      "sourceHandle": "returns",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_stack_tensor_concat_tensor_a",
+      "source": "stack",
+      "target": "concat",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_unsqueeze_tensor_concat_tensor_b",
+      "source": "unsqueeze",
+      "target": "concat",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_concat_tensor_viz_data",
+      "source": "concat",
+      "target": "viz",
+      "sourceHandle": "tensor",
+      "targetHandle": "data"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

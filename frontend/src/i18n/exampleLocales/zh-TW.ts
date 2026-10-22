@@ -351,6 +351,9 @@ const zhTW: ExampleTranslations = {
   'RL/Reward-Model-Bradley-Terry': {
     description: '訓練前後的 Bradley-Terry 損失',
   },
+  'RL/Discounted-Returns': {
+    description: '一個獎勵、三個 gamma、三種回報',
+  },
 };
 
 export default zhTW;
