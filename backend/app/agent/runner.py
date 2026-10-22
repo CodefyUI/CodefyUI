@@ -2,9 +2,9 @@
 
 :class:`Runner` is the agent's half of a run. For each ``assign`` it
 
-1. refuses what this wave cannot do (``record_outputs``, a device this
-   worker does not offer, a second copy of a running run, any run while
-   draining) with an immediate ``run_finished`` ``failed``;
+1. refuses what it cannot do (a device this worker does not offer, a
+   second copy of a running run, any run while draining) with an
+   immediate ``run_finished`` ``failed``;
 2. starts ``child.main`` in a ``multiprocessing`` *spawn* context with an
    explicit environment (:func:`child_environment`): the assigned CUDA
    cards as ``CUDA_VISIBLE_DEVICES`` / ``HIP_VISIBLE_DEVICES``,
@@ -25,7 +25,10 @@
    data directory of its own under the run's folder, filled with its
    inputs from the control plane (``agent.transfer``) by a task, so the
    connection keeps serving meanwhile; a cancel during the fetch ends the
-   run ``cancelled`` without a subprocess;
+   run ``cancelled`` without a subprocess. ``storage.backend == "s3"``
+   (#791) is the same run with an ``agent.s3.S3Client`` built from
+   ``storage.s3`` instead: the bytes go to and from the bucket, and a
+   ``credentials`` frame renews the client's keys (:meth:`Runner.renew`);
 3. reads the child's pipe on a thread of its own and forwards every message
    as a protocol frame, in order, stamped with the run's next ``seq``. The
    thread waits for each frame to be handed to the connection before it
@@ -48,6 +51,24 @@ Cancel is cooperative first: ``("cancel",)`` down the pipe, which the child
 turns into ``ExecutionContext.cancel()``. ``grace_s`` later the process is
 terminated, and :data:`KILL_AFTER_S` after that killed.
 
+A run with ``record_outputs`` (#789) gets ``spec["outputs_dir"]``, where its
+subprocess writes its captures when it ends. While the subprocess lives,
+reads of them go down the same pipe (:meth:`Runner.ask_child`) and come
+back as ``output_answer`` messages, which the reader thread hands to the
+waiting read instead of forwarding them; a read still waiting when the
+subprocess exits is answered from the files (``agent.outputs``). The dumps
+are held to this worker's output budget when each such run retires
+(``agent.outputs.prune_outputs``).
+
+Its subprocess reports ``finished`` with ``saving_outputs`` once its
+captures are copied off its cards, and writes them after. That
+``run_finished`` goes out at once (the control plane frees the run's
+device slot), and the subprocess gets :data:`SAVE_OUTPUTS_S` to finish
+writing and exit, a cancel's grace period notwithstanding: the cancel has
+already stopped the run. While it writes, the run is no longer listed as
+running (``running_ids``). A transfer run (#785) still reports after its
+process is gone, its uploads last.
+
 This module imports neither torch nor the engine: it runs in the agent.
 """
 
@@ -57,6 +78,8 @@ import asyncio
 import dataclasses
 import logging
 import multiprocessing
+import multiprocessing.connection
+import os
 import queue
 import re
 import shutil
@@ -81,17 +104,24 @@ KILL_AFTER_S = 5.0
 EXIT_AFTER_FINISHED_S = 10.0
 #: How often the reader checks a reported child's liveness while draining.
 DRAIN_POLL_S = 0.2
+#: Seconds a recorded run's child gets to write its outputs and exit after
+#: it reported (#789), unless ``CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S``
+#: says otherwise; then it is stopped, and the outputs are lost.
+SAVE_OUTPUTS_S = 300.0
+#: Seconds :meth:`Runner.ask_child` waits unless told: under the control
+#: plane's default wait for an answer (60 s, ``agent.outputs``).
+ASK_CHILD_TIMEOUT_S = 55.0
 #: How much of a crashed child's output ``run_finished`` carries.
 STDERR_TAIL_BYTES = 4096
 #: Per-run output file, under ``<runs_dir>/<run_id>/``.
 OUTPUT_LOG = "output.log"
 
-REFUSE_RECORD_OUTPUTS = ("record_outputs is not supported on workers yet "
-                         "(#789); submit without it")
 REFUSE_DRAINING = "this worker is draining and takes no new runs"
 REFUSE_DUPLICATE = "this worker is already running {run_id}"
 REFUSE_NO_TRANSFER = ("this agent cannot fetch input files from the control "
                       "plane (no transfer client)")
+REFUSE_NO_S3 = ("this agent cannot use the S3 bucket: boto3 is not installed "
+                "here (the `s3` extra)")
 
 _DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
 
@@ -175,6 +205,28 @@ CHILD_UNSET_ENV = ("CODEFYUI_DB_PATH", "CODEFYUI_AGENT_TOKEN",
                    "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
 
 
+def inherited_card(index: int) -> str:
+    """The ``CUDA_VISIBLE_DEVICES`` entry for this agent's ``cuda:<index>``.
+
+    The agent numbers the cards it sees by its own ``CUDA_VISIBLE_DEVICES``
+    (``core.resources``): under a batch system that sets it (SLURM gives a
+    job ``CUDA_VISIBLE_DEVICES=3`` for the card it allocated, #790), the
+    agent's ``cuda:0`` is that card. The run subprocess's own
+    ``CUDA_VISIBLE_DEVICES`` must name it the same way, so the agent's entry
+    at *index* is passed on as written (an index, a ``GPU-`` UUID, a
+    ``MIG-`` instance). Without one inherited, *index* is the card's index.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return str(index)
+    entries = []
+    for part in raw.split(","):
+        if not part.strip():
+            break  # CUDA stops at the first empty entry
+        entries.append(part.strip())
+    return entries[index] if index < len(entries) else str(index)
+
+
 def child_environment(device: str, devices: list[str],
                       data_env: tuple[dict[str, str], list[str]] | None = None
                       ) -> dict[str, Any]:
@@ -196,7 +248,8 @@ def child_environment(device: str, devices: list[str],
     aliases = device_aliases(effective)
     if aliases:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(
-            physical.split(":", 1)[1] for physical in aliases)
+            inherited_card(int(physical.split(":", 1)[1]))
+            for physical in aliases)
     elif "cuda" not in {split_device(d)[0] for d in effective}:
         env["CUDA_VISIBLE_DEVICES"] = ""
     unset = list(CHILD_UNSET_ENV)
@@ -331,13 +384,36 @@ class RunHandle:
     escalation: asyncio.Task | None = None
     #: A transfer run's outputs (#785); None for every other run.
     transfer: transfer_module.RunTransfer | None = None
+    #: An ``s3`` run's client (#791), whose credentials ``credentials``
+    #: renews; None for every other run.
+    s3: Any = None
     #: The reader thread has joined the process: it is gone and reaped, so
     #: nothing may signal its pid again (the escalation checks this).
     reaped: bool = False
     #: A cancel came while a transfer run's last uploads were going: send
     #: nothing more, say so in a warning.
     uploads_cancelled: bool = False
+    #: A run with memory budgets (#788): its ``run_started``, held until the
+    #: subprocess reports its cap in place (``memory_limit``); None once
+    #: sent, or for a run without budgets (sent at start).
+    held_started: Any = None
+    #: The child's name of each budgeted card -> this worker's (#788), so
+    #: ``execution_facts.memory_limit`` is reported in the worker's
+    #: numbering, as every other device the control plane sees.
+    budget_names: dict[str, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    #: The run records its outputs (#789): its subprocess answers reads of
+    #: them, and writes them under the run's directory when it ends.
+    record_outputs: bool = False
+    #: Reads of the run's outputs waiting for the subprocess's answer, by
+    #: request id (#789); answered None when it exits first.
+    answers: dict[str, asyncio.Future] = field(default_factory=dict)
+    #: The subprocess reported and is writing its outputs (#789): it gets
+    #: ``save_outputs_s`` to exit.
+    saving: bool = False
+    #: Its ``run_finished`` went out when it began writing (#789), not
+    #: after it exited.
+    reported_early: bool = False
     #: Set once the reader has joined the process (it is gone).
     exited: asyncio.Event = field(default_factory=asyncio.Event)
     #: Set once the run is retired (its ``run_finished`` has been sent).
@@ -365,11 +441,39 @@ class Runner:
         exit_after_finished_s: float = EXIT_AFTER_FINISHED_S,
         child_entry: Callable[..., None] = child_module.main,
         transfer: transfer_module.TransferClient | None = None,
+        s3_client: Callable[[Any], Any] | None = None,
+        outputs_max_bytes: int | None = None,
+        save_outputs_s: float | None = None,
+        cache_dir: Path | None = None,
     ) -> None:
         self.runs_dir = runs_dir
+        #: Where fetched inputs are cached by content (#785): beside
+        #: *runs_dir* unless given (an instance's runs dir is its own, its
+        #: cache the user data dir's, #845).
+        self.cache_dir = (cache_dir if cache_dir is not None
+                          else runs_dir.parent / transfer_module.CACHE_DIRNAME)
+        if save_outputs_s is None:
+            from ..config import settings
+
+            save_outputs_s = float(getattr(
+                settings, "WORKER_OUTPUTS_WRITE_TIMEOUT_S", SAVE_OUTPUTS_S))
+        self.save_outputs_s = max(0.0, float(save_outputs_s))
+        #: This worker's budget for recorded outputs (#789): the in-process
+        #: store's, ``CODEFYUI_RUN_OUTPUT_STORE_MAX_MB``, unless given.
+        if outputs_max_bytes is None:
+            from ..config import settings
+
+            outputs_max_bytes = int(settings.RUN_OUTPUT_STORE_MAX_MB) \
+                * 1024 * 1024
+        self.outputs_max_bytes = max(0, int(outputs_max_bytes))
+        self._asked = 0
         #: Fetches inputs and uploads outputs for ``transfer`` runs (#785);
         #: ``AgentConnection`` provides one when none is given.
         self.transfer = transfer
+        #: Builds an ``s3`` run's client from its ``storage.s3`` (#791);
+        #: None (the default) builds an ``agent.s3.S3Client`` when boto3 is
+        #: installed. Tests pass a fake.
+        self.s3_client = s3_client
         self.offered_devices = {canonical_device(d) for d in offered_devices}
         #: ``--mount`` label -> directory on this machine (#782), sent in
         #: ``hello.mounts``.
@@ -387,6 +491,13 @@ class Runner:
         self.draining = False
         #: Grace a run gets when the agent itself stops (``cdui agent stop``).
         self.shutdown_grace_s = 10.0
+        #: The control plane understands ``run_facts`` (#344): set by the
+        #: connection from ``welcome``. A run subprocess started meanwhile
+        #: reports its own fingerprint and provenance records.
+        self.run_facts = False
+        #: This agent's fingerprint document (``agent.facts``), whose device
+        #: facts a run subprocess's own fingerprint takes (#344).
+        self.host_fingerprint: dict[str, Any] | None = None
         self.runs: dict[str, RunHandle] = {}
         #: Runs refused at assignment whose ``run_finished`` is still to be
         #: acknowledged: they have no handle to retire their directory.
@@ -399,7 +510,10 @@ class Runner:
     # ── queries ───────────────────────────────────────────────────────────
 
     def running_ids(self) -> list[str]:
-        return list(self.runs)
+        """The runs still running: not one whose subprocess reported and
+        is only writing its outputs (#789)."""
+        return [run_id for run_id, handle in list(self.runs.items())
+                if not handle.reported_early]
 
     def take_refused(self, run_id: str) -> bool:
         """True (once) when *run_id* was refused at assignment."""
@@ -423,10 +537,12 @@ class Runner:
             raise AssignmentRefused(REFUSE_DRAINING)
         if frame.run_id in self.runs:
             raise AssignmentRefused(REFUSE_DUPLICATE.format(run_id=frame.run_id))
-        if frame.options.get("record_outputs"):
-            raise AssignmentRefused(REFUSE_RECORD_OUTPUTS)
-        if _transfers(frame) and self.transfer is None:
+        if _transfers(frame) and frame.storage.backend == "transfer" \
+                and self.transfer is None:
             raise AssignmentRefused(REFUSE_NO_TRANSFER)
+        if _transfers(frame) and frame.storage.backend == "s3" \
+                and (frame.storage.s3 is None or not self.speaks_s3()):
+            raise AssignmentRefused(REFUSE_NO_S3)
         offered = self.offered_devices
         devices = list(frame.devices)
         canonical_set = [canonical_device(device) for device in devices]
@@ -454,6 +570,11 @@ class Runner:
             raise AssignmentRefused(
                 f"device {frame.device!r} is not the first device of the "
                 f"assigned set {devices}")
+        for budgeted in frame.memory_budgets:
+            if canonical_device(budgeted) not in (canonical_set or [device]):
+                raise AssignmentRefused(
+                    f"memory budget for {budgeted!r}, which is not an "
+                    f"assigned device ({canonical_set or [device]})")
         named = device if kind == "cuda" else frame.device.strip().lower()
         return child_device(named, canonical_set), canonical_set
 
@@ -467,12 +588,7 @@ class Runner:
         try:
             device, devices = self._check(frame)
         except AssignmentRefused as exc:
-            logger.warning("run %s refused: %s", frame.run_id, exc)
-            if frame.run_id not in self.runs:  # never talk over a live run
-                self._refused.add(frame.run_id)
-                await self.send(wp.RunFinished(
-                    run_id=frame.run_id, seq=1, status=wp.FINISHED_FAILED,
-                    error=str(exc)))
+            await self.refuse(frame.run_id, str(exc))
             return
         if _transfers(frame):
             # The fetch can take minutes: a task of its own, so this
@@ -496,6 +612,18 @@ class Runner:
             await self._abandon(frame.run_id, f"could not start the run "
                                               f"subprocess: {exc}")
 
+    async def refuse(self, run_id: str, reason: str) -> None:
+        """Refuse an assignment: its ``run_finished`` ``failed`` with
+        *reason*, and no ``run_started``. A run already running here is
+        never talked over."""
+        logger.warning("run %s refused: %s", run_id, reason)
+        if run_id in self.runs:
+            return
+        self._refused.add(run_id)
+        await self.send(wp.RunFinished(run_id=run_id, seq=1,
+                                       status=wp.FINISHED_FAILED,
+                                       error=reason))
+
     async def _abandon(self, run_id: str, error: str) -> None:
         """Fail a run whose start went wrong part-way, and clean it up."""
         handle = self.runs.pop(run_id, None)
@@ -511,6 +639,34 @@ class Runner:
         seq = handle.next_seq() if handle is not None else 1
         await self.send(wp.RunFinished(run_id=run_id, seq=seq,
                                        status=wp.FINISHED_FAILED, error=error))
+
+    def speaks_s3(self) -> bool:
+        """Whether this agent can run ``s3`` assignments (#791): what its
+        ``hello`` lists as the ``s3`` capability."""
+        if self.s3_client is not None:
+            return True
+        from . import s3 as s3_module
+
+        return s3_module.client_available()
+
+    def _new_s3_client(self, access: Any) -> Any:
+        if self.s3_client is not None:
+            return self.s3_client(access)
+        from . import s3 as s3_module
+
+        cache = self.transfer.cache if self.transfer is not None else \
+            transfer_module.InputCache(self.cache_dir)
+        return s3_module.S3Client(access, cache)
+
+    def renew(self, run_id: str, access: Any) -> bool:
+        """New credentials for *run_id*'s bucket (``credentials``, #791).
+        False when it is not an ``s3`` run here (any more)."""
+        handle = self.runs.get(run_id)
+        if handle is None or handle.s3 is None:
+            return False
+        handle.s3.update_access(access)
+        logger.info("run %s: S3 credentials renewed", run_id)
+        return True
 
     def available_mounts(self) -> dict[str, str]:
         """The configured mounts whose directory exists now (#782).
@@ -566,7 +722,7 @@ class Runner:
         start it (#785). Never raises: a failure, or a cancel while
         fetching, ends the run here with its ``run_finished``."""
         storage = frame.storage
-        assert storage is not None and self.transfer is not None
+        assert storage is not None
         loop = asyncio.get_running_loop()
         run_dir = self.runs_dir / frame.run_id
 
@@ -579,11 +735,15 @@ class Runner:
             return handle.cancel_requested
 
         try:
+            if storage.backend == "s3":
+                client = handle.s3 = self._new_s3_client(storage.s3)
+            else:
+                client = self.transfer
             run_dir.mkdir(parents=True, exist_ok=True)
             root = await asyncio.to_thread(transfer_module.run_data_root,
                                            run_dir, _own_data_root())
             placed = await asyncio.to_thread(
-                transfer_module.prepare_inputs, self.transfer,
+                transfer_module.prepare_inputs, client,
                 list(storage.inputs or []), root, progress, cancelled)
         except transfer_module.TransferCancelled:
             await self._end_unstarted(handle, wp.FINISHED_CANCELLED, None)
@@ -599,7 +759,7 @@ class Runner:
             await self._end_unstarted(handle, wp.FINISHED_CANCELLED, None)
             return
         handle.transfer = transfer_module.RunTransfer(
-            run_id=frame.run_id, root=root, client=self.transfer,
+            run_id=frame.run_id, root=root, client=client,
             max_upload_bytes=storage.max_upload_bytes, inputs=placed,
             stop=lambda: handle.uploads_cancelled,
             retry_window_s=lambda: self.upload_window_s)
@@ -644,7 +804,25 @@ class Runner:
             "run_id": frame.run_id, "graph": frame.graph,
             "options": frame.options, "device": device,
             "env": env, "log_path": str(log_path), "mount": mount,
+            "run_facts": self.run_facts,
+            "host_fingerprint": self.host_fingerprint,
         }
+        record = bool(frame.options.get("record_outputs"))
+        if record:
+            # Where the subprocess writes its captures when it ends (#789).
+            from .outputs import outputs_dir
+
+            spec["outputs_dir"] = str(outputs_dir(self.runs_dir,
+                                                  frame.run_id))
+        budget_names: dict[str, str] = {}
+        if frame.memory_budgets:
+            # As the child numbers its cards (#788): it sees only the set.
+            for name in frame.memory_budgets:
+                budget_names[child_device(
+                    canonical_device(name), devices or [frame.device])] = name
+            spec["memory_budgets"] = {
+                child: frame.memory_budgets[name]
+                for child, name in budget_names.items()}
         events_in, events_out = self._ctx.Pipe(duplex=False)
         control_in, control_out = self._ctx.Pipe(duplex=False)
         process = self._ctx.Process(
@@ -668,16 +846,109 @@ class Runner:
         else:
             handle.process, handle.events_in = process, events_in
             handle.control_out = control_out
+        handle.budget_names = budget_names
+        handle.record_outputs = record
         self.runs[frame.run_id] = handle
         logger.info("run %s started in pid %s (device %s, devices %s)",
                     frame.run_id, process.pid, device, devices or "-")
-        await self.send(wp.RunStarted(run_id=frame.run_id,
-                                      seq=handle.next_seq(), pid=process.pid,
-                                      execution_facts=facts))
+        started = wp.RunStarted(run_id=frame.run_id, seq=1, pid=process.pid,
+                                execution_facts=facts)
+        if frame.memory_budgets:
+            # Sent once the subprocess has capped its allocator (#788):
+            # ``run_started`` is what moves the budget to ``running``.
+            handle.held_started = started
+        else:
+            await self.send(_numbered(handle, started))
         handle.reader = threading.Thread(
             target=self._read, args=(handle, self._loop),
             name=f"run-reader-{frame.run_id}", daemon=True)
         handle.reader.start()
+
+    # ── recorded outputs (#789) ───────────────────────────────────────────
+
+    def _recording(self, run_id: str) -> RunHandle | None:
+        """*run_id*'s handle when its subprocess records outputs and can
+        still be asked (#789), else None."""
+        handle = self.runs.get(run_id)
+        if handle is None or not handle.record_outputs \
+                or handle.process is None or handle.reaped \
+                or handle.control_out is None:
+            return None
+        return handle
+
+    async def ask_child(self, run_id: str, op: str, params: dict[str, Any],
+                        timeout_s: float = ASK_CHILD_TIMEOUT_S
+                        ) -> tuple[int, str, bool] | None:
+        """``(status, body text, final)`` for one read of *run_id*'s
+        outputs, answered by its run subprocess; None when there is no
+        subprocess to ask (never started, or gone, or it exited before
+        answering): the files answer then. Cancelling it forgets it."""
+        handle = self._recording(run_id)
+        if handle is None:
+            return None
+        self._asked += 1
+        request_id = f"c{self._asked}"
+        future = asyncio.get_running_loop().create_future()
+        handle.answers[request_id] = future
+        try:
+            try:
+                handle.control_out.send((child_module.MSG_FETCH, request_id,
+                                         op, run_id, params))
+            except (OSError, ValueError):
+                return None  # the subprocess is going: the files answer
+            try:
+                return await asyncio.wait_for(asyncio.shield(future),
+                                              timeout_s)
+            except asyncio.TimeoutError:
+                import json
+
+                return 504, json.dumps({"detail": (
+                    f"the run subprocess did not answer within "
+                    f"{timeout_s:g} s")}), False
+        finally:
+            handle.answers.pop(request_id, None)
+
+    def child_drop(self, run_id: str) -> bool:
+        """Empty a running recorded run's store (``delete`` /
+        ``drop_outputs``, #789); later captures start it again, as in the
+        control plane's store. False when no such subprocess runs."""
+        handle = self._recording(run_id)
+        if handle is None:
+            return False
+        try:
+            handle.control_out.send((child_module.MSG_DROP_OUTPUTS, run_id))
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def _take_answer(self, handle: RunHandle, message: Any,
+                     loop: asyncio.AbstractEventLoop) -> bool:
+        """Reader thread: True when *message* answers a read (#789), which
+        is then handed to it instead of becoming a frame."""
+        if not (isinstance(message, tuple) and len(message) == 5
+                and message[0] == child_module.MSG_OUTPUT_ANSWER):
+            return False
+        _, request_id, status, text, final = message
+        try:
+            loop.call_soon_threadsafe(self._resolve_answer, handle,
+                                      request_id, (status, text, final))
+        except RuntimeError:  # the loop is gone: nobody waits
+            pass
+        return True
+
+    @staticmethod
+    def _resolve_answer(handle: RunHandle, request_id: str,
+                        answer: Any) -> None:
+        future = handle.answers.get(request_id)
+        if future is not None and not future.done():
+            future.set_result(answer)
+
+    @staticmethod
+    def _release_answers(handle: RunHandle) -> None:
+        """The subprocess is gone: reads still waiting go to the files."""
+        for future in list(handle.answers.values()):
+            if not future.done():
+                future.set_result(None)
 
     # ── cancel ────────────────────────────────────────────────────────────
 
@@ -732,8 +1003,18 @@ class Runner:
         """The child reported: give it ``exit_after_finished_s`` to exit.
 
         Runs on the loop (the reader schedules it). An escalation already
-        in flight (a cancel's) is left to finish the job.
+        in flight (a cancel's) is left to finish the job, except for a
+        child writing its outputs (#789): its run has stopped, so it gets
+        ``save_outputs_s`` instead.
         """
+        if handle.saving and not handle.stopping_now:
+            if handle.escalation is not None:
+                handle.escalation.cancel()
+            handle.escalation = asyncio.create_task(
+                self._escalate(handle, self.save_outputs_s,
+                               "is still writing its outputs"),
+                name=f"exit:{handle.run_id}")
+            return
         if handle.escalation is None or handle.escalation.done():
             handle.escalation = asyncio.create_task(
                 self._escalate(handle, self.exit_after_finished_s,
@@ -773,12 +1054,20 @@ class Runner:
         handle.process.kill()
 
     async def shutdown(self, grace_s: float | None = None) -> None:
-        """Stop every run (cooperatively, then by force) and wait for them."""
+        """Stop every run (cooperatively, then by force) and wait for them.
+
+        A child writing a recorded run's outputs (#789) is not stopped: its
+        run has ended, and it gets the rest of ``save_outputs_s`` to finish
+        (``_watch_exit``), so a graceful stop waits up to that long. A run
+        stopped here that then writes its outputs gets the same.
+        """
         if grace_s is None:
             grace_s = self.shutdown_grace_s
         self.draining = True
         handles = list(self.runs.values())
         for handle in handles:
+            if handle.saving and handle.finished:
+                continue
             await self.cancel(handle.run_id, grace_s)
         for handle in handles:
             await handle.done.wait()
@@ -817,8 +1106,28 @@ class Runner:
             frame = wp.Artifact(run_id=run_id, seq=1, **message[1])
         elif kind == child_module.MSG_WARNING:
             frame = wp.RunWarning(run_id=run_id, seq=1, **message[1])
+        elif kind == child_module.MSG_MEMORY_LIMIT:
+            started, handle.held_started = handle.held_started, None
+            if started is None:
+                return None
+            limits = message[1] if isinstance(message[1], dict) else {}
+            frame = started.model_copy(update={"execution_facts": {
+                **(started.execution_facts or {}),
+                "memory_limit": {handle.budget_names.get(name, name): limit
+                                 for name, limit in limits.items()}}})
         elif kind == child_module.MSG_FINISHED:
             frame = self._reported_end(handle, message[1], 1)
+        elif kind == child_module.MSG_ENVIRONMENT:
+            report = message[1] if isinstance(message[1], dict) else {}
+            document, digest = report.get("fingerprint"), report.get("digest")
+            frame = wp.RunFacts(
+                run_id=run_id, seq=1, numerics=report.get("numerics"),
+                fingerprint=(wp.FingerprintReport(document=document,
+                                                  digest=digest)
+                             if isinstance(document, dict) and digest
+                             else None))
+        elif kind == child_module.MSG_PROVENANCE:
+            frame = wp.RunFacts(run_id=run_id, seq=1, provenance=message[1])
         else:
             logger.debug("run %s: ignoring pipe message %r", run_id, kind)
             return None
@@ -848,17 +1157,20 @@ class Runner:
             uploader.start()
         while True:
             try:
-                message = handle.events_in.recv()
+                message = _next_message(handle)
             except (EOFError, OSError):
                 break
             except Exception:  # noqa: BLE001 -- an unpicklable message
                 logger.warning("run %s: unreadable pipe message",
                                handle.run_id, exc_info=True)
                 continue
+            if self._take_answer(handle, message, loop):
+                continue
             if outbox is not None:
                 if isinstance(message, tuple) and message \
                         and message[0] == child_module.MSG_FINISHED:
                     handle.finished = True
+                    handle.saving = _saving(message)
                     finish_message = message
                     break
                 outbox.put(message)
@@ -874,9 +1186,15 @@ class Runner:
             if isinstance(frame, wp.RunFinished):
                 # Held until the child has exited: the control plane frees
                 # the run's device slot on run_finished, and the next run
-                # must not start next to this one's CUDA context.
+                # must not start next to this one's CUDA context. Except a
+                # child that has moved its captures off its cards and is
+                # writing them (#789): its report goes now, so the slot is
+                # not held for the disk.
                 handle.finished = True
                 reported = frame
+                if _saving(message):
+                    handle.saving = handle.reported_early = True
+                    self._forward(loop, frame)
                 break
             self._forward(loop, frame)
         if reported is not None or finish_message is not None:
@@ -884,9 +1202,13 @@ class Runner:
                 loop.call_soon_threadsafe(self._watch_exit, handle)
             except RuntimeError:  # the loop is gone: nobody to escalate
                 pass
-            self._drain(handle)
+            self._drain(handle, loop)
         handle.process.join()
         handle.reaped = True
+        try:
+            loop.call_soon_threadsafe(self._release_answers, handle)
+        except RuntimeError:
+            pass
         if outbox is not None and uploader is not None:
             # How the run ended is decided now, from the flags as they are;
             # it is numbered after the last upload.
@@ -919,7 +1241,11 @@ class Runner:
             logger.warning("run %s: dropped %d pipe message(s) the subprocess "
                            "sent after reporting", handle.run_id,
                            handle.discarded)
-        self._forward(loop, reported)
+        if handle.reported_early:
+            # Reported already (#789), when it began writing its outputs.
+            logger.info("run %s: wrote its recorded outputs", handle.run_id)
+        else:
+            self._forward(loop, reported)
         for end in (handle.events_in, handle.control_out):
             try:
                 end.close()
@@ -1029,17 +1355,22 @@ class Runner:
             for frame in self._artifact_frames(handle, body, warning):
                 forward(frame)
 
-    def _drain(self, handle: RunHandle) -> None:
+    def _drain(self, handle: RunHandle,
+               loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Read and drop the pipe until EOF or the process exits. Blocking.
 
         After ``finished`` nothing the child sends is forwarded, but it is
         still read, so a child still writing cannot block on a full pipe
-        while the escalation waits for it to exit.
+        while the escalation waits for it to exit. An answer to a read of
+        the run's outputs (#789) still reaches its read.
         """
         while True:
             try:
                 if handle.events_in.poll(DRAIN_POLL_S):
-                    handle.events_in.recv()
+                    message = handle.events_in.recv()
+                    if loop is not None \
+                            and self._take_answer(handle, message, loop):
+                        continue
                     handle.discarded += 1
                     logger.debug("run %s: dropped a pipe message sent after "
                                  "reporting", handle.run_id)
@@ -1104,16 +1435,51 @@ class Runner:
         self.runs.pop(handle.run_id, None)
         if handle.escalation is not None and not handle.escalation.done():
             handle.escalation.cancel()
+        self._release_answers(handle)
         handle.done.set()
         task = asyncio.ensure_future(asyncio.to_thread(
-            self._retire_files, handle.log_path.parent))
+            self._retire_files, handle.log_path.parent,
+            handle.record_outputs))
         self._housekeeping.add(task)
         task.add_done_callback(self._housekeeping.discard)
 
-    def _retire_files(self, run_dir: Path) -> None:
-        """Mark *run_dir* finished and apply retention. Blocking."""
+    def _retire_files(self, run_dir: Path, recorded: bool = False) -> None:
+        """Mark *run_dir* finished and apply retention, and for a recorded
+        run this worker's output budget (#789). Blocking."""
         mark_finished(run_dir)
         prune_run_dirs(self.runs_dir, self.keep_last)
+        if recorded:
+            from .outputs import prune_outputs
+
+            prune_outputs(self.runs_dir, self.outputs_max_bytes,
+                          keep=run_dir.name)
+
+
+def _next_message(handle: RunHandle) -> Any:
+    """The child's next pipe message; ``EOFError`` once there is none left.
+
+    Waits on the pipe and on the process at once (#856): the pipe's EOF
+    alone does not say the child is gone on Windows. A spawned child there
+    takes its pipe ends over (``DuplicateHandle``) only once it has
+    unpickled its arguments, so one stopped while it still starts up
+    leaves a copy of its writing end in this process, and the read would
+    never end.
+    """
+    conn = handle.events_in
+    if not conn.poll(0):
+        ready = multiprocessing.connection.wait(
+            [conn, handle.process.sentinel])
+        # Gone: what it sent before exiting is still readable.
+        if conn not in ready and not conn.poll(0):
+            raise EOFError("the run subprocess exited")
+    return conn.recv()
+
+
+def _saving(message: Any) -> bool:
+    """A ``finished`` message whose child writes its outputs next (#789)."""
+    return (isinstance(message, tuple) and len(message) > 1
+            and isinstance(message[1], dict)
+            and bool(message[1].get("saving_outputs")))
 
 
 def _numbered(handle: RunHandle, frame: Any) -> Any:
@@ -1137,8 +1503,10 @@ def _own_data_root() -> Path | None:
 
 
 def _transfers(frame: wp.Assign) -> bool:
-    """Whether *frame* assigns a run through the transfer backend (#785)."""
-    return frame.storage is not None and frame.storage.backend == "transfer"
+    """Whether *frame* assigns a run whose files a backend ships: the
+    transfer backend (#785) or the S3 bucket (#791)."""
+    return frame.storage is not None \
+        and frame.storage.backend in ("transfer", "s3")
 
 
 async def _drop(frame: Any) -> None:  # pragma: no cover - placeholder sink

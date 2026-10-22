@@ -7,12 +7,19 @@ import {
   defaultDevices,
   defaultKind,
   deviceKind,
+  estimateOptions,
   localDeviceChoices,
+  parseMemoryGib,
   refusesRuns,
   shownStatus,
   sshDisabled,
   sshManaged,
+  targetableWorkers,
   toggleDevice,
+  sharedAwaitingReport,
+  sharedWithoutTotal,
+  usesSharedDevice,
+  TARGET_ONE_SHOT,
   workerDeviceChoices,
   type DeviceChoice,
 } from './queueTargets';
@@ -83,6 +90,15 @@ describe('workerDeviceChoices / connectedWorkers', () => {
     expect(sshManaged({ ...plain, ssh_enabled: null }, { enabled: true })).toBe(false);
     expect([shownStatus(plain), shownStatus(off), shownStatus(on)]).toEqual(['online', 'disabled', 'online']);
   });
+
+  it('never offers an instance of a shared credential that left (#845)', () => {
+    const list = [
+      { ...worker('gpu.1', 'online', []), instance_of: 'gpu', instance: '1' },
+      { ...worker('gpu.2', 'offline', []), instance_of: 'gpu', instance: '2' },
+      worker('gpu', 'offline', []),
+    ];
+    expect(targetableWorkers(list).map((w) => w.name)).toEqual(['gpu.1', 'gpu']);
+  });
 });
 
 describe('defaultDevices', () => {
@@ -134,9 +150,86 @@ describe('anyKinds / defaultKind', () => {
     expect(anyKinds([choice('cpu'), choice('mps')], [])).toEqual(['cpu', 'mps']);
   });
 
+  it('leaves out a one-shot worker, which any never picks (#790)', () => {
+    const oneShot = { ...worker('s', 'online', [['cuda:0', 'cuda']]), one_shot: { run_id: null, took: null } };
+    expect(anyKinds([choice('cpu')], [oneShot])).toEqual(['cpu']);
+  });
+
   it('starts from the graph device kind, else the first accelerator, else CPU', () => {
     expect(defaultKind(['cpu', 'cuda'], 'cuda:1')).toBe('cuda');
     expect(defaultKind(['cpu', 'cuda'], 'auto')).toBe('cuda');
     expect(defaultKind(['cpu'], 'mps')).toBe('cpu');
+  });
+
+  it('knows when a run may land on a device shared by memory (#788)', () => {
+    const box = worker('box', 'online', [['cuda:0', 'cuda'], ['cuda:1', 'cuda']]);
+    box.memory_budget = true;
+    box.devices[1].policy = 'shared';
+    const old = worker('old', 'online', [['cuda:0', 'cuda']]);
+    old.devices[0].policy = 'shared';
+    expect(usesSharedDevice('box', box, ['cuda:1'], [box], 'cuda')).toBe(true);
+    expect(usesSharedDevice('box', box, ['cuda:0'], [box], 'cuda')).toBe(false);
+    expect(usesSharedDevice('old', old, ['cuda:0'], [old], 'cuda')).toBe(false);
+    expect(usesSharedDevice('local', null, ['cuda:0'], [box], 'cuda')).toBe(false);
+    expect(usesSharedDevice('any', null, [], [old, box], 'cuda')).toBe(true);
+    expect(usesSharedDevice('any', null, [], [box], 'cpu')).toBe(false);
+  });
+
+  it('asks for a budget for the one-shot pool only where a one-shot worker shares the kind (#788, #790)', () => {
+    const shared = (name: string, oneShot: boolean) => {
+      const w = worker(name, 'online', [['cuda:0', 'cuda']]);
+      w.memory_budget = true;
+      w.devices[0].policy = 'shared';
+      return oneShot ? { ...w, one_shot: { run_id: null, took: null } } : w;
+    };
+    const job = shared('job', true);
+    const box = shared('box', false);
+    expect(usesSharedDevice(TARGET_ONE_SHOT, null, [], [job], 'cuda')).toBe(true);
+    expect(usesSharedDevice(TARGET_ONE_SHOT, null, [], [box], 'cuda')).toBe(false);
+    // `any` never lands on a one-shot worker.
+    expect(usesSharedDevice('any', null, [], [job], 'cuda')).toBe(false);
+  });
+
+  it('names the shared MPS devices that report no memory total, only when none does (#788)', () => {
+    const box = worker('box', 'online', [['cuda:0', 'cuda'], ['cuda:1', 'cuda'], ['mps', 'mps']]);
+    box.memory_budget = true;
+    for (const device of box.devices) device.policy = 'shared';
+    box.devices[1].memory = { total_bytes: 8 * 1024 ** 3, free_bytes: null, source: 'nvml' };
+    // MPS: no total ever, so no field. A CUDA card without one yet is only
+    // waiting for its first report (review 2, item 10): the field stays.
+    expect(sharedWithoutTotal('box', box, ['mps'], [box], 'mps')).toEqual(['mps']);
+    expect(sharedWithoutTotal('box', box, ['cuda:0'], [box], 'cuda')).toEqual([]);
+    expect(sharedAwaitingReport('box', box, ['cuda:0'], [box], 'cuda')).toEqual(['cuda:0']);
+    expect(sharedAwaitingReport('box', box, ['mps'], [box], 'mps')).toEqual([]);
+    // With cuda:1 (which has a total): admission can judge.
+    expect(sharedWithoutTotal('box', box, ['cuda:0', 'cuda:1'], [box], 'cuda')).toEqual([]);
+    expect(sharedAwaitingReport('box', box, ['cuda:0', 'cuda:1'], [box], 'cuda')).toEqual([]);
+    expect(sharedWithoutTotal('any', null, [], [box], 'mps')).toEqual(['mps']);
+    // The ledger's total counts too.
+    box.devices[2].admission = {
+      by_memory: true, total_bytes: 16 * 1024 ** 3, free_bytes: null, reserved_bytes: 0, running_bytes: 0,
+      headroom_bytes: null, runs: [],
+    };
+    expect(sharedWithoutTotal('box', box, ['mps'], [box], 'mps')).toEqual([]);
+    expect(sharedWithoutTotal('local', null, [], [box], 'cuda')).toEqual([]);
+  });
+
+  it('says what the memory history is kept by: device kind and count (#788)', () => {
+    expect(estimateOptions('box', ['cuda:1', 'cuda:0'], 'cuda')).toEqual({
+      device: 'cuda:1', target: { devices: ['cuda:1', 'cuda:0'] },
+    });
+    expect(estimateOptions('any', [], 'cuda')).toEqual({ device: 'cuda', target: { devices: null } });
+    expect(estimateOptions(TARGET_ONE_SHOT, ['cuda:0'], 'mps')).toEqual({ device: 'mps', target: { devices: null } });
+    expect(estimateOptions('box', [], 'cpu')).toEqual({ device: 'cpu', target: { devices: null } });
+  });
+
+  it('reads a memory budget field (#788)', () => {
+    expect(parseMemoryGib('  ')).toBeNull();
+    expect(parseMemoryGib('6')).toBe(6);
+    expect(parseMemoryGib('2.5')).toBe(2.5);
+    expect(parseMemoryGib('.5')).toBe(0.5);
+    for (const bad of ['0', '-1', '1e3', 'abc', '4097', '1.2.3']) {
+      expect(parseMemoryGib(bad)).toBeUndefined();
+    }
   });
 });

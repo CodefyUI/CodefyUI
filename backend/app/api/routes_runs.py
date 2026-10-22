@@ -6,6 +6,7 @@ any connection: submit from one client, close it, and query status, events
 and metrics from another.
 
     POST   /api/runs                     submit  -> {run_id, status}
+    POST   /api/runs/estimate            default memory budget for a graph (#788)
     GET    /api/runs                     list (newest first, + queue position)
     GET    /api/runs/{id}                one row + last event cursor + environment
     DELETE /api/runs/{id}                drop a FINISHED run and its children
@@ -14,7 +15,7 @@ and metrics from another.
     GET    /api/runs/{id}/metrics        series as JSON or CSV
     GET    /api/runs/{id}/artifacts      checkpoints and other recorded files
     POST   /api/runs/{id}/artifacts/upload          a worker's output (#785)
-    GET    /api/runs/{id}/artifacts/{aid}/download  an uploaded output
+    GET    /api/runs/{id}/artifacts/{aid}/download  an uploaded output (#785, #791)
 
 The upload route is the one POST here that does not take the session token
 alone: a worker agent (#785, the ``transfer`` storage backend) sends its
@@ -45,16 +46,25 @@ import asyncio
 import csv
 import io
 import json
+import logging
+import math
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, ValidationError
 
 from ..config import settings
+from ..core import memory_admission as mem
+from ..core import memory_estimate
 from ..core.auth import TOKEN_HEADER, constant_time_equals, session_token
 from ..core.run_service import (
     RunService,
@@ -70,6 +80,8 @@ from ..core.run_store import (
     RunRecord,
 )
 from ..core.scheduling import QueueReason
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -192,8 +204,13 @@ def _run_payload(record: RunRecord, *, queue_position: int | None,
                  final_metrics: dict[str, float] | None = None,
                  metric_producers: dict[str, list[str | None]] | None = None,
                  worker_status: dict[str, Any] | None = None,
+                 queued_budget: dict[str, Any] | None = None,
                  ) -> dict[str, Any]:
     payload = asdict(record)
+    # A waiting run's current memory budget (#794): an accepted estimate,
+    # or the measured one it was raised to. ``execution_facts.
+    # memory_budget`` takes over once it starts. None otherwise.
+    payload["queued_budget"] = queued_budget
     # Where an active worker run's worker stands (#783): connected, or
     # disconnected since ``disconnected_at`` (Unix seconds) and waiting for
     # it until ``resume_deadline``. None for every other run.
@@ -309,6 +326,69 @@ async def submit_run(request: Request):
     return {"run_id": result.run_id, "status": result.status}
 
 
+class EstimateRequest(BaseModel):
+    """``{graph}``: the graph a run would submit."""
+
+    graph: dict[str, Any]
+    #: The run's ``device`` and ``target.devices`` (#788): the history is per
+    #: device kind and count. Absent: one CPU, which has no history.
+    options: dict[str, Any] | None = None
+
+
+@router.post("/estimate")
+async def estimate_memory(body: EstimateRequest, request: Request
+                          ) -> dict[str, Any]:
+    """The memory budget a run of *graph* would get by default (#788, #794).
+
+    - ``suggested_gib``, ``source``, ``peak_bytes``, ``from_run``: the
+      default the server applies to a run that declares no budget, only
+      ever ``source: "history"``: the last peak of a succeeded run of the
+      same graph (structural hash) on the same kind and number of devices,
+      times 1.2 (``peak_bytes``, ``from_run``). All null when there is no
+      such run.
+    - ``confidence``: ``measured`` (history), ``medium`` or ``low`` (the
+      static estimate's), or null.
+    - ``history``: up to five earlier peaks of the graph, newest first,
+      ``{run_id, peak_bytes, finished_at}``.
+    - ``static_estimate_bytes`` and ``static``: the estimate from the
+      graph's parameter counts and batch size, with its breakdown; null
+      when the graph has no model to count. ``estimate_gib``: that
+      estimate in GiB (rounded up) when its confidence is ``medium``, for
+      the dialog to offer; null otherwise. The server never applies it: a
+      run carries it only when submitted with ``target.memory_gib`` and
+      ``target.memory_source: "estimate"``.
+
+    What the Queue on... and New sweep dialogs offer as
+    ``target.memory_gib`` for a shared card. 400 for a malformed graph.
+    """
+    service = _get_service(request)
+    try:
+        estimate = await service.explain_memory(body.graph, body.options)
+    except RunSubmitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    suggestion = estimate.suggestion
+    static = estimate.static
+    response: dict[str, Any] = {
+        "suggested_gib": None, "source": None, "peak_bytes": None,
+        "from_run": None, "confidence": estimate.confidence,
+        "history": estimate.history,
+        "static_estimate_bytes": None if static is None else static.bytes,
+        "estimate_gib": (
+            math.ceil(static.bytes / mem.GIB * 100) / 100
+            if static is not None
+            and static.confidence == memory_estimate.CONFIDENCE_MEDIUM
+            else None),
+        "static": None if static is None else static.describe(),
+    }
+    if suggestion is not None:
+        budget = suggestion.budget
+        response.update({
+            "suggested_gib": round(budget.bytes / mem.GIB, 2),
+            "source": budget.source, "peak_bytes": suggestion.peak_bytes,
+            "from_run": budget.from_run})
+    return response
+
+
 @router.get("")
 async def list_runs(
     request: Request,
@@ -359,7 +439,8 @@ async def list_runs(
                          active=service.is_active(record.id),
                          final_metrics=finals.get(record.id),
                          metric_producers=producers.get(record.id),
-                         worker_status=service.worker_status(record.id))
+                         worker_status=service.worker_status(record.id),
+                         queued_budget=service.queued_budget(record.id))
             for record in records
         ],
         "total": total,
@@ -377,6 +458,10 @@ async def get_run(run_id: str, request: Request):
     the server recorded one. Only here, not on the list: a list row carries
     the digest and the small ``execution_facts``, and a poll of fifty rows
     must not ship fifty copies of the same few kilobytes.
+
+    And ``provenance``: the run's node provenance records (#344, the
+    ``provenance`` option; ``core.node_provenance``), in the order they
+    were recorded. An empty list for a run without the option.
     """
     service = _get_service(request)
     record = await _require_run(service, run_id)
@@ -392,6 +477,7 @@ async def get_run(run_id: str, request: Request):
         final_metrics=finals.get(record.id),
         metric_producers=producers.get(record.id),
         worker_status=service.worker_status(run_id),
+        queued_budget=service.queued_budget(run_id),
     )
     # How the run ended on its worker after it had ended here (#783),
     # ``{status, error, worker_id, at}``, or None.
@@ -401,6 +487,7 @@ async def get_run(run_id: str, request: Request):
     payload["fingerprint"] = (
         None if record.fingerprint_digest is None
         else await service.store.get_fingerprint(record.fingerprint_digest))
+    payload["provenance"] = await service.store.list_provenance(run_id)
     return payload
 
 
@@ -428,6 +515,8 @@ async def delete_run(run_id: str, request: Request):
     ``<data root>/runs/<run_id>``): what the worker uploaded for the run
     has no index but these rows, so it goes with them. A writer node's file
     a worker placed in this server's data folders stays, as a local run's.
+    The same holds for a run's objects in the S3 bucket (#791,
+    ``runs/<run_id>/``): they go, but the writer nodes' ``output/``.
 
     Captured OUTPUTS are a different matter and DO go: ``RunOutputStore``
     keys its in-memory tensors by the same run id, so leaving them behind
@@ -441,22 +530,66 @@ async def delete_run(run_id: str, request: Request):
         raise HTTPException(
             status_code=409,
             detail=f"run '{run_id}' is queued or running; cancel it first")
+    # Read before the rows cascade away: where the run wrote in an S3
+    # bucket (#791), whose objects then go with it.
+    s3_rows = await service.store.s3_objects(run_id)
     deleted = await service.store.delete_run(run_id)
     if not deleted:
         # The row existed at _require_run and is gone now: another client
         # deleted it in between. Same answer as if we had lost the race by a
         # little more, which is what a 404 already means here.
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
-    outputs = getattr(request.app.state, "run_output_store", None)
-    if outputs is not None:
-        await outputs.delete_run(run_id)
     from ..core.run_store import WORKER_ANY, WORKER_LOCAL
     from ..core.transfer import remove_run_files
+
+    outputs = getattr(request.app.state, "run_output_store", None)
+    if outputs is not None:
+        # A worker run's captures are on its worker (#789): one this store
+        # retains is dropped there by ``delete_run``; one it does not (after
+        # a restart of this server) is told here.
+        retained = await outputs.remote_holder(run_id) is not None
+        await outputs.delete_run(run_id)
+        registry = getattr(request.app.state, "worker_registry", None)
+        if not retained and registry is not None \
+                and record.worker_id not in (WORKER_LOCAL, WORKER_ANY) \
+                and (record.options or {}).get("record_outputs"):
+            registry.outputs.drop(run_id, record.worker_id)
 
     if record.worker_id not in (WORKER_LOCAL, WORKER_ANY):
         # What a worker uploaded for the run (#785) has no other index.
         await asyncio.to_thread(remove_run_files, run_id)
-    return {"run_id": run_id, "deleted": True}
+    answer: dict[str, Any] = {"run_id": run_id, "deleted": True}
+    if s3_rows:
+        # As retention does (#791): the run's objects but a writer node's
+        # files (``output/``), from the bucket and prefix the rows
+        # recorded. Never fails the delete (the rows are gone); what stays
+        # is logged and said in ``warning``.
+        warning = await _remove_s3_objects(run_id, s3_rows)
+        if warning is not None:
+            answer["warning"] = warning
+    return answer
+
+
+async def _remove_s3_objects(run_id: str, rows: list[Any]) -> str | None:
+    """Remove a deleted run's S3 objects (#791); why some stay, or None."""
+    from ..core import s3
+
+    reason = None
+    places = [(r, False, bucket, prefix)
+              for r, bucket, prefix in s3.locations(rows)]
+    if not s3.client_available():
+        reason = s3.unconfigured() or "boto3 is not installed"
+    elif not places:
+        reason = "CODEFYUI_S3_BUCKET is not set"
+    else:
+        _, failed = await asyncio.to_thread(s3.remove_runs_objects, places)
+        if failed:
+            return "the run's files in the S3 bucket stay: " + "; ".join(failed)
+    if reason is None:
+        return None
+    logger.warning("run %s deleted, but its S3 objects stay: %s", run_id,
+                   reason)
+    return f"the run's files in the S3 bucket stay: {reason}"
 
 
 @router.post("/{run_id}/cancel")
@@ -647,8 +780,11 @@ async def get_run_artifacts(
     ``path`` is where the file is on this server. A file a worker wrote
     under a shared mount (#782) is stored relative to it and reported here
     translated: ``backend`` is ``mount``, ``mount_label`` names the mount
-    and ``relative_path`` is the stored path. Every other row is ``local``
-    with its absolute path and no ``relative_path``. ``worker_id`` names
+    and ``relative_path`` is the stored path. A file a worker uploaded is
+    ``transfer`` (#785: ``path`` on this server) or ``s3`` (#791: ``path``
+    is its ``s3://<bucket>/<key>`` URI, ``relative_path`` the key and
+    ``bucket`` the bucket; ``bucket`` is null on every other row). Every
+    other row is ``local`` with its absolute path and no ``relative_path``. ``worker_id`` names
     the worker whose run wrote the file (``local``: this server).
     """
     service = _get_service(request)
@@ -660,9 +796,10 @@ async def get_run_artifacts(
             {"id": record.id, "kind": record.kind, "path": record.path,
              "meta": record.meta, "created_at": record.created_at,
              "backend": record.backend, "mount_label": record.mount_label,
-             "worker_id": record.worker_id,
+             "worker_id": record.worker_id, "bucket": record.bucket,
              "relative_path": (record.stored_path
-                               if record.backend in ("mount", "transfer")
+                               if record.backend in ("mount", "transfer",
+                                                     "s3")
                                else None)}
             for record in artifacts
         ],
@@ -685,6 +822,43 @@ async def _uploader(request: Request) -> str | None:
         raise HTTPException(status_code=403,
                             detail=f"Missing or invalid {TOKEN_HEADER} header")
     return name
+
+
+def _agent_uploads(request: Request, worker: str, running_on: str) -> bool:
+    """Whether *worker*'s token may upload for a run on *running_on* (#845).
+
+    The run must be on the credential's worker or one of its instances,
+    and the request must come from the agent process running it: the
+    agents of one credential (its own, its instances) share its token, so
+    the token alone would let any of them write into another's run. Each
+    agent sends its ``instance_id``
+    (:data:`~app.core.worker_protocol.INSTANCE_HEADER`), which only that
+    process and this server know; after a restart, before the agent is
+    back, it is checked against the hash the run recorded. A run whose
+    agent this server cannot name (nothing recorded, no registry) is
+    accepted on the token for the credential's own worker, never for an
+    instance."""
+    import hmac
+
+    from ..core import worker_protocol as wp
+    from ..core.worker_handshake import instance_id_hash
+
+    name, instance = wp.instance_parts(running_on)
+    if name != worker:
+        return False
+    registry = getattr(request.app.state, "worker_registry", None)
+    lookup = (None if registry is None
+              else getattr(registry, "holder", None) or registry.get)
+    holder = None if lookup is None else lookup(running_on)
+    presented = request.headers.get(wp.INSTANCE_HEADER)
+    current = getattr(holder, "instance_id", None)
+    if current:
+        return constant_time_equals(presented, current)
+    recorded = getattr(holder, "instance_hash", None)
+    if recorded:
+        return bool(presented) and hmac.compare_digest(
+            instance_id_hash(presented) or "", recorded)
+    return instance is None
 
 
 @router.post("/{run_id}/artifacts/upload")
@@ -717,10 +891,14 @@ async def upload_run_artifact(run_id: str, request: Request):
     service = _get_service(request)
     worker = await _uploader(request)
     running_on = service.running_on(run_id)
-    if running_on is None or (worker is not None and running_on != worker):
+    if running_on is None or (worker is not None and not _agent_uploads(
+            request, worker, running_on)):
         raise HTTPException(status_code=409, detail=(
             f"run '{run_id}' is not running on "
-            f"{'a worker' if worker is None else f'worker {worker}'}"))
+            f"{'a worker' if worker is None else f'worker {worker}'}"
+            + ("" if running_on is None or worker is None else
+               " (or this request is not from the agent process running "
+               "it)")))
 
     def destination_dir(fields: dict[str, str]) -> Path:
         place = fields.get("place") or transfer.PLACE_RUN
@@ -780,13 +958,18 @@ async def upload_run_artifact(run_id: str, request: Request):
 @router.get("/{run_id}/artifacts/{artifact_id}/download")
 async def download_run_artifact(run_id: str, artifact_id: int,
                                 request: Request):
-    """Download a file a worker uploaded for the run (#785).
+    """Download a file a worker uploaded for the run (#785, #791).
 
     Only ``transfer`` rows: their file is under this run's own directory,
     which a worker cannot point anywhere else. Any other row names a path
     a node or a plugin wrote, which this open read must not serve (400).
     A TensorBoard directory is not a file (400): point TensorBoard at the
     row's ``path`` instead.
+
+    And ``s3`` rows (#791), whose key is under the run's own prefix:
+    streamed from the bucket through this server, or, with
+    ``CODEFYUI_S3_DOWNLOAD=presign``, a 307 to a pre-signed URL the browser
+    fetches from the bucket itself. 503 when the bucket cannot be reached.
     """
     from ..core import transfer
 
@@ -797,6 +980,9 @@ async def download_run_artifact(run_id: str, artifact_id: int,
     if record is None:
         raise HTTPException(status_code=404,
                             detail=f"artifact {artifact_id} not found")
+    if record.backend == "s3":
+        return await _download_s3(run_id, record.stored_path or "",
+                                  record.bucket)
     if record.backend != "transfer":
         raise HTTPException(status_code=400, detail=(
             "only files a worker uploaded can be downloaded here; this one "
@@ -808,3 +994,43 @@ async def download_run_artifact(run_id: str, artifact_id: int,
         raise HTTPException(status_code=400, detail="not a file (a directory)")
     return FileResponse(path=path, filename=path.name,
                         media_type="application/octet-stream")
+
+
+async def _download_s3(run_id: str, key: str, bucket: str | None) -> Response:
+    """Serve one of *run_id*'s objects in the S3 bucket (#791): *bucket*
+    and the key's prefix are the ones the row recorded."""
+    from ..core import s3
+
+    if not s3.owns_key(run_id, key):
+        raise HTTPException(status_code=404, detail="the file is gone")
+    bucket = bucket or settings.S3_BUCKET
+    reason = None
+    if not s3.client_available():
+        reason = s3.unconfigured() or "boto3 is not installed"
+    elif not bucket:
+        reason = "CODEFYUI_S3_BUCKET is not set"
+    if reason is not None:
+        raise HTTPException(status_code=503, detail=(
+            f"the run's file is in an S3 bucket this server cannot reach: "
+            f"{reason}"))
+    name = s3.filename(key)
+    try:
+        head = await asyncio.to_thread(s3.head, key, bucket)
+        if head is None:
+            if await asyncio.to_thread(s3.is_folder, key, bucket):
+                raise HTTPException(status_code=400,
+                                    detail="not a file (a directory)")
+            raise HTTPException(status_code=404, detail="the file is gone")
+        if settings.S3_DOWNLOAD == "presign":
+            url = await asyncio.to_thread(s3.presigned_url, key, name,
+                                          bucket)
+            return RedirectResponse(url, status_code=307)
+        chunks = await asyncio.to_thread(s3.open_stream, key, bucket)
+    except s3.S3Unavailable as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"the S3 bucket: {exc}") from None
+    headers = {"Content-Disposition": s3.content_disposition(name)}
+    if head.get("ContentLength") is not None:
+        headers["Content-Length"] = str(head["ContentLength"])
+    return StreamingResponse(chunks, media_type="application/octet-stream",
+                             headers=headers)

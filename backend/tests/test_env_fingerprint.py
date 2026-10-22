@@ -55,7 +55,7 @@ TOP_LEVEL_KEYS = {
 def test_every_documented_key_is_present_with_the_schema_version():
     fingerprint = fpmod.collect_fingerprint()
     assert set(fingerprint) == TOP_LEVEL_KEYS
-    assert fingerprint["schema_version"] == fpmod.SCHEMA_VERSION == 1
+    assert fingerprint["schema_version"] == fpmod.SCHEMA_VERSION == 2
     assert set(fingerprint["codefyui"]) == {
         "version", "commit", "dirty", "commit_source"}
     assert set(fingerprint["libraries"]) == {
@@ -133,7 +133,9 @@ def test_plugin_identities_are_honest_about_what_has_a_revision(monkeypatch):
     assert "off" not in plugins                      # disabled: not loaded
     assert plugins["remote-pack"] == {
         "source_kind": "github_url", "source": "o/remote", "ref": "v1",
-        "version": "1.0.0", "revision": "a" * 40, "revision_kind": "git-sha"}
+        "version": "1.0.0", "revision": "a" * 40, "revision_kind": "git-sha",
+        # Not installed in this test, so its files cannot be read.
+        "immutable": True, "content_sha256": None}
     # A builtin pack ships inside the checkout: its revision IS the
     # checkout's commit, and its source a repo-relative path.
     deep = plugins["deep"]
@@ -141,10 +143,15 @@ def test_plugin_identities_are_honest_about_what_has_a_revision(monkeypatch):
     assert deep["revision"] == fingerprint["codefyui"]["commit"]
     assert deep["revision_kind"] == (
         "codefyui-commit" if deep["revision"] else None)
+    assert deep["immutable"] is (bool(deep["revision"])
+                                 and fingerprint["codefyui"]["dirty"] is False)
     # A linked pack has no immutable revision, and its path is withheld.
+    # Its directory does not exist here, so nothing identifies its code.
     assert plugins["linked"]["source"] is None
     assert plugins["linked"]["revision"] is None
     assert plugins["linked"]["revision_kind"] is None
+    assert plugins["linked"]["immutable"] is False
+    assert plugins["linked"]["content_sha256"] is None
     assert str(Path.home()) not in json.dumps(fingerprint)
 
 
@@ -623,6 +630,48 @@ def test_the_catalog_hash_does_not_depend_on_this_machines_devices(
     monkeypatch.setattr(device_utils, "device_options",
                         lambda name, options: ["cpu", "cuda:0", "cuda:1"])
     assert node_catalog(nodes).hash == cpu_box
+
+
+def test_the_catalog_cache_never_answers_for_a_dead_registry():
+    """#863: the cache was keyed by ``id(registry)``, and a registry made
+    right after another was freed gets the same address and generation
+    (CPython reuses the freed block at once), so it was handed the dead
+    one's catalog. Keyed on the object now. No ``gc.collect()`` here: it
+    changes the allocator's pattern and hides the reuse this reproduces."""
+    from app.core.node_registry import NodeRegistry, node_catalog
+
+    class Other(BaseNode):
+        NODE_NAME = "CatalogOther"
+        CATEGORY = "Test"
+
+        @classmethod
+        def define_inputs(cls):
+            return []
+
+        @classmethod
+        def define_outputs(cls):
+            return []
+
+        def execute(self, inputs, params):
+            return {}
+
+    reused = 0
+    for _ in range(30):
+        first = NodeRegistry()
+        first.register(_CatalogNode)
+        first_hash = node_catalog(first).hash
+        address = id(first)
+        first = None                     # freed now: refcount, not gc
+        second = NodeRegistry()
+        second.register(Other)           # the same generation `first` had
+        reused += id(second) == address
+        assert node_catalog(second).hash != first_hash
+        assert node_catalog(second).node_types == ("CatalogOther",)
+        second = None
+    # The old key collided whenever the address was reused, which the
+    # allocator does nearly every time; the test is meaningful only when
+    # it happened at least once.
+    assert reused > 0
 
 
 def test_a_broken_definition_hashes_instead_of_failing():

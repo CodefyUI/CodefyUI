@@ -12,7 +12,9 @@ coordinator (#343); 008 records where each run executes (#769); 009 is
 worker enrollment (#780); 010 says where each artifact's file lives
 (#782); 011 records a worker's environment (#781); 012 the SSH workers
 the control plane launches (#784); 013 is the transfer backend's content
-index (#785).
+index (#785); 014 records the S3 bucket of an artifact (#791); 015 the
+per-device admission policies and each run's graph hash (#788); 016
+whether an enrolled worker's own last agent was one-shot (#845).
 """
 
 from __future__ import annotations
@@ -518,7 +520,7 @@ CREATE TABLE worker_enrollments (
 #   ``mount`` (``path`` is relative to the mount ``mount_label`` names),
 #   ``transfer`` (#785: ``path`` is the key the worker's upload was stored
 #   under, relative to this server's data root, ``core.transfer.key_path``);
-#   ``s3`` (#791) is reserved.
+#   ``s3`` (#791: ``path`` is the object key in the S3 bucket, ``core.s3``).
 # - ``mount_label``: the mount's label, for ``mount`` rows; else NULL.
 # - ``worker_id``: the worker whose run produced the file (``local`` for
 #   this process), so a path from another machine is never read as one of
@@ -590,11 +592,123 @@ CREATE TABLE file_hashes (
 );
 """
 
+# ── Migration 014: the S3 bucket of an artifact (#791) ────────────────────
+#
+# An ``s3`` row (``backend = 's3'``) names its object by key (``path``); the
+# bucket goes here, so a row keeps naming its object after
+# ``CODEFYUI_S3_BUCKET`` changes (its key carries the prefix of its time).
+# NULL for every other row, and for every row from before: no row written
+# by 3.1.0 is an ``s3`` row, so nothing is backfilled.
+MIGRATION_014 = """
+ALTER TABLE exec_run_artifacts ADD COLUMN bucket TEXT;
+"""
+
+# ── Migration 015: per-device admission policy (#788) ─────────────────────
+#
+# How a worker's card admits runs: ``exclusive`` (the count limit, one run
+# per card, as before) or ``shared`` (memory admission: runs declare a
+# budget and share the card while their budgets fit). Keyed by worker NAME
+# and device as that worker numbers it (``cuda:1``), so it applies to a
+# same-host worker known only in memory as well as to an enrolled one, and
+# survives both a reconnect and a restart of this server. No row:
+# ``exclusive``. Revoking a worker deletes its rows.
+MIGRATION_015 = """
+CREATE TABLE worker_device_policies (
+  worker      TEXT NOT NULL,                -- the worker name
+  device      TEXT NOT NULL,                -- canonical, the worker's numbering
+  policy      TEXT NOT NULL,                -- 'exclusive' | 'shared'
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (worker, device)
+);
+
+-- The graph a run executed, as memory_admission.graph_hash gives it, for a
+-- run that targets a worker (#788). The default memory budget of a run that
+-- declares none is the last peak of a succeeded run of the same graph; the
+-- index makes that lookup a seek, newest first.
+ALTER TABLE exec_runs ADD COLUMN graph_hash TEXT;
+CREATE INDEX idx_exec_runs_graph_hash
+  ON exec_runs(graph_hash, status, finished_at)
+  WHERE graph_hash IS NOT NULL;
+"""
+
+# ── Migration 016: a one-shot worker known before it reconnects (#845) ────
+#
+# ``workers.one_shot`` is 1 when the credential's own agent (``--name``,
+# no ``--instance``) last said ``hello.one_shot`` (#790), and 0 when it
+# was a regular agent. Instances of the credential (``--instance``) never
+# write it: they are known in memory only, and a credential used only by
+# instances stays 0 (feed an array through the one-shot pool, not by
+# naming the credential). A server that restarted loads it with the row
+# (``WorkerRegistry.load_known``), so a run naming the worker before its
+# next agent dials in is timed by ``CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S``
+# like any run waiting for a one-shot worker. NULL: never reported (every
+# row from before), read as 0.
+MIGRATION_016 = """
+ALTER TABLE workers ADD COLUMN one_shot INTEGER;
+"""
+
+# ── Migration 017: node provenance (#344, hook 4) ────────────────────────
+#
+# What data and which weights a run read, one row per node that read them,
+# for a run submitted with the ``provenance`` option
+# (``core.node_provenance``). ``provenance`` is the node's record as JSON
+# (source, revision, content identity, row count; unknown facts are
+# explicit nulls). The primary key keeps one row per node: a replayed
+# worker frame rewrites the row it already wrote. Deleted with its run
+# (CASCADE), like the run's metrics and artifacts; the run's environment
+# fingerprint is the part that outlives it.
+MIGRATION_017 = """
+CREATE TABLE exec_run_provenance (
+  run_id      TEXT NOT NULL REFERENCES exec_runs(id) ON DELETE CASCADE,
+  node_id     TEXT NOT NULL,
+  node_type   TEXT NOT NULL,
+  kind        TEXT NOT NULL,                -- 'dataset' | 'model'
+  provenance  TEXT NOT NULL,                -- JSON, node_provenance's record
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, node_id)
+);
+"""
+
+#: Migration 017's table, created when it is missing (#344). A development
+#: database that ran a wave-d build with 017 still empty is at
+#: ``user_version`` 18 or later without the table, and no migration will
+#: add it; ``RunStore`` creates it on first use with this statement. A
+#: released build always has the table from 017, so there it is a no-op.
+PROVENANCE_TABLE_DDL = MIGRATION_017.replace(
+    "CREATE TABLE exec_run_provenance",
+    "CREATE TABLE IF NOT EXISTS exec_run_provenance", 1)
+
+# ── Migration 018: study budgets and plugin-owned studies (#343) ──────────
+#
+# - ``studies.owner``: the plugin that submitted the study through
+#   ``/api/plugins/{plugin_id}/jobs`` (``routes_plugin_jobs``), or NULL for
+#   a study submitted to ``/api/studies``. A plugin lists and controls only
+#   its own studies there; ``/api/studies`` shows every study. A plugin's
+#   idempotency keys are stored as ``plugin:<id>:<key>`` so two plugins
+#   cannot collide on a key.
+# - ``studies.halt``: JSON ``{budget, limit, used, unfinished_repetitions,
+#   at}`` for a study that a server-enforced budget stopped (status
+#   ``halted``); NULL otherwise, and cleared by a resume.
+# - ``study_attempts.stop_reason``: the budget the coordinator stopped the
+#   attempt's child for (``max_run_seconds`` or ``max_active_seconds``),
+#   written BEFORE the cancel is sent, so the harvest of the child knows a
+#   cancelled child was the study's own decision. NULL otherwise.
+MIGRATION_018 = """
+ALTER TABLE studies ADD COLUMN owner TEXT;
+ALTER TABLE studies ADD COLUMN halt TEXT;
+ALTER TABLE study_attempts ADD COLUMN stop_reason TEXT;
+CREATE INDEX idx_studies_owner ON studies(owner, created_at)
+  WHERE owner IS NOT NULL;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
                          MIGRATION_010, MIGRATION_011,
-                         MIGRATION_012, MIGRATION_013]
+                         MIGRATION_012, MIGRATION_013,
+                         MIGRATION_014, MIGRATION_015,
+                         MIGRATION_016, MIGRATION_017,
+                         MIGRATION_018]
 
 
 def _is_comment_only(statement: str) -> bool:

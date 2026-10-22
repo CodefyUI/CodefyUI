@@ -1,19 +1,25 @@
-import { Suspense, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
+import {
+  Suspense, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  DevicePolicy,
   SshWorker,
   TunnelState,
   WorkerDevice,
+  WorkerDeviceAdmission,
   WorkerInfo,
   WorkerNodeCatalog,
+  WorkerOneShot,
   WorkerRejection,
   WorkerStatus,
 } from '../../api/workers';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
 import { friendlyError } from '../../utils/errorMessages';
 import { gibFigure } from '../../utils/formatBytes';
+import { formatGiB } from '../../utils/formatGiB';
 import { shownStatus, sshDisabled, sshManaged } from '../Toolbar/queueTargets';
 import { relativeTime } from '../SourceControl/scm';
 import { trapTab } from '../shared/focusTrap';
@@ -60,14 +66,98 @@ function RunLinks({ runIds }: { runIds: string[] }) {
   );
 }
 
+/** The device kinds a policy can be set for (#788). */
+const SHAREABLE_KINDS: ReadonlySet<string> = new Set(['cuda', 'mps']);
+
+/** Percent of *total* that *part* is, clamped to 0..100. */
+function share(part: number, total: number): number {
+  return Math.max(0, Math.min(100, (part / total) * 100));
+}
+
+/**
+ * A shared card's memory (#788): in use on the card now (any process,
+ * other users' jobs included), promised to runs that have not started yet,
+ * and what a new budget may take, with the budgets in words beside it.
+ */
+function AdmissionBar({ admission }: { admission: WorkerDeviceAdmission }) {
+  const { t } = useI18n();
+  const { total_bytes: total, free_bytes: free, headroom_bytes: headroom } = admission;
+  const context = admission.context_bytes ?? 0;
+  // The largest budget that fits: a run also holds its CUDA context.
+  const fits = headroom === null ? null : Math.max(headroom - context, 0);
+  const line = t('workers.admission.line', {
+    headroom: fits === null ? '-' : formatGiB(fits),
+    running: formatGiB(admission.running_bytes),
+    reserved: formatGiB(admission.reserved_bytes),
+  });
+  return (
+    <div className={styles.admission}>
+      {total !== null && total > 0 && (
+        <div className={styles.bar} role="img" aria-label={line}>
+          <span
+            className={styles.barUsed}
+            style={{ width: `${share(free === null ? 0 : total - free, total)}%` }}
+            title={free === null ? undefined : t('workers.admission.used', { amount: formatGiB(total - free) })}
+          />
+          <span
+            className={styles.barReserved}
+            style={{ width: `${share(admission.reserved_bytes, total)}%` }}
+            title={t('workers.admission.reserved', { amount: formatGiB(admission.reserved_bytes) })}
+          />
+          <span
+            className={styles.barHeadroom}
+            style={{ width: `${share(headroom ?? 0, total)}%` }}
+            title={t('workers.admission.headroom', { amount: formatGiB(fits ?? 0) })}
+          />
+        </div>
+      )}
+      <span className={styles.fact}>{line}</span>
+      {context > 0 && (
+        <span className={styles.fact}>{t('workers.admission.context', { amount: formatGiB(context) })}</span>
+      )}
+      {admission.runs.length > 0 && <RunLinks runIds={admission.runs} />}
+    </div>
+  );
+}
+
 /**
  * One device of a worker. *stale*: the worker is away, so its memory
- * figures are the last ones it reported, not current.
+ * figures are the last ones it reported, not current (#840).
  */
-function DeviceRow({ device, stale }: { device: WorkerDevice; stale: boolean }) {
+function DeviceRow({ device, workerId, stale, enforces = true }: {
+  device: WorkerDevice;
+  workerId: string;
+  stale: boolean;
+  /** This worker's agent enforces memory budgets (#788); `false` from a server that says it cannot. */
+  enforces?: boolean;
+}) {
   const { t } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[workerId]));
+  const setPolicy = useWorkerStore((s) => s.setPolicy);
   const memory = device.memory;
   const hasMemory = memory != null && memory.free_bytes !== null && memory.total_bytes !== null;
+  const shareable = device.policy !== undefined && SHAREABLE_KINDS.has(device.kind);
+  const admission = device.admission ?? null;
+  const peers = device.same_card ?? [];
+  const peerName = (peer: { worker: string; device: string }) =>
+    peer.worker === 'local'
+      ? t('workers.device.sameCard.local', { device: peer.device })
+      : `${peer.worker} ${peer.device}`;
+  const list = (names: string[]) => names.reduce((all, name) => t('workers.device.sameCard.more', { list: all, peer: name }));
+  // Other online workers offering the card with another policy: the card
+  // admits by count, the stricter policy (#842).
+  const otherPolicy = device.policy === undefined ? [] : peers.filter(
+    (peer) => peer.worker !== 'local' && peer.online !== false && peer.policy != null && peer.policy !== device.policy,
+  );
+  const byCount = admission === null || !admission.by_memory;
+  // Another online offerer whose agent cannot enforce budgets makes the
+  // card admit by count (#842): name it rather than this worker's agent.
+  const peersWithout = peers.filter(
+    (peer) => peer.worker !== 'local' && peer.online !== false && peer.memory_budget === false,
+  );
+  // The CPU and Apple GPU of one machine are not matched by a card UUID.
+  const machineWide = device.kind === 'cpu' || device.kind === 'mps';
+  const limitedBy = device.slots?.limited_by ?? null;
   return (
     <li className={styles.device}>
       <span className={styles.deviceName}>
@@ -76,10 +166,22 @@ function DeviceRow({ device, stale }: { device: WorkerDevice; stale: boolean }) 
           <span className={styles.muted}> {device.name}</span>
         )}
       </span>
-      {device.slots && (
-        <span className={styles.fact}>
-          {t('workers.device.slots', { taken: device.slots.taken, limit: device.slots.limit })}
-        </span>
+      {device.slots && byCount && (
+        limitedBy === null
+          ? (
+            <span className={styles.fact}>
+              {t('workers.device.slots', { taken: device.slots.taken, limit: device.slots.limit })}
+            </span>
+          )
+          : (
+            <span className={styles.fact} title={t('workers.device.slotsLimitedBy.title')}>
+              {t('workers.device.slotsLimitedBy', {
+                taken: device.slots.taken,
+                limit: device.slots.limit,
+                peer: peerName(limitedBy),
+              })}
+            </span>
+          )
       )}
       {hasMemory && (
         <span className={stale ? styles.muted : styles.fact} title={memory.source}>
@@ -89,7 +191,52 @@ function DeviceRow({ device, stale }: { device: WorkerDevice; stale: boolean }) 
           })}
         </span>
       )}
+      {shareable && (
+        // Never disabled: a disabled control drops the focus to the page,
+        // where the dialog's Escape and Tab trap cannot hear it.
+        <select
+          className={styles.policy}
+          value={device.policy}
+          aria-label={t('workers.policy.aria', { device: device.value })}
+          aria-disabled={busy}
+          title={t('workers.policy.title')}
+          onChange={(event) => {
+            if (!busy) void setPolicy(workerId, device.value, event.target.value as DevicePolicy);
+          }}
+        >
+          <option value="exclusive">{t('workers.policy.exclusive')}</option>
+          <option value="shared">{t('workers.policy.shared')}</option>
+        </select>
+      )}
+      {peers.length > 0 && (
+        <span
+          className={styles.sameCard}
+          title={t(machineWide ? 'workers.device.sameMachine.title' : 'workers.device.sameCard.title')}
+        >
+          {t(machineWide ? 'workers.device.sameMachine' : 'workers.device.sameCard', {
+            peers: list(peers.map(peerName)),
+          })}
+        </span>
+      )}
+      {otherPolicy.length > 0 && (
+        <span className={`${styles.warn} ${styles.admission}`}>
+          {t(device.policy === 'shared' ? 'workers.device.policyDiffers' : 'workers.device.policyDiffersHere', {
+            peers: list(otherPolicy.map(peerName)),
+          })}
+        </span>
+      )}
       {device.running && <RunLinks runIds={device.running} />}
+      {admission !== null && (
+        admission.by_memory
+          ? <AdmissionBar admission={admission} />
+          : otherPolicy.length === 0 && (
+            <span className={`${styles.warn} ${styles.admission}`}>
+              {!enforces || peersWithout.length === 0
+                ? t('workers.admission.notEnforced')
+                : t('workers.admission.peerNotEnforced', { peers: list(peersWithout.map(peerName)) })}
+            </span>
+          )
+      )}
     </li>
   );
 }
@@ -340,8 +487,122 @@ function DegradedLine({ reasons }: { reasons: string[] }) {
   return <span className={styles.warn}>{words.join('; ')}</span>;
 }
 
-function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey }: {
+/**
+ * A one-shot worker's run (#790): the run it took, else what it waits for,
+ * or that it left without one.
+ */
+function OneShotLine({ oneShot, away }: { oneShot: WorkerOneShot; away: boolean }) {
+  const { t } = useI18n();
+  if (oneShot.took !== null) return <RunLinks runIds={[oneShot.took]} />;
+  if (away) return <span className={styles.muted}>{t('workers.oneShot.none')}</span>;
+  if (oneShot.run_id === null) return <span className={styles.muted}>{t('workers.oneShot.waiting')}</span>;
+  return (
+    <span className={styles.muted} title={oneShot.run_id}>
+      {t('workers.oneShot.waitingFor', { id: oneShot.run_id.slice(0, RUN_ID_SHORT_LENGTH) })}
+    </span>
+  );
+}
+
+/** Instances of a shared credential (#845) with an agent connected first. */
+function byActivity(instances: readonly WorkerInfo[]): WorkerInfo[] {
+  return [...instances].sort((a, b) => Number(AWAY_STATUSES.has(a.status)) - Number(AWAY_STATUSES.has(b.status)));
+}
+
+/** An instance that left (#845): no agent connected, nothing in flight. */
+function hasLeft(worker: WorkerInfo): boolean {
+  return AWAY_STATUSES.has(worker.status) && worker.running.length === 0;
+}
+
+/**
+ * One line for an instance that left (#845): which one, how its run went,
+ * when it was last heard from. A SLURM array leaves many; a full card
+ * each would bury the live ones.
+ */
+function LeftInstanceRow({ worker, now, onRemoved }: {
   worker: WorkerInfo;
+  now: number;
+  onRemoved: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const busy = useWorkerStore((s) => Boolean(s.busy[worker.id]));
+  const remove = useWorkerStore((s) => s.remove);
+  return (
+    <li className={styles.leftInstance} aria-label={worker.name}>
+      <span className={styles.workerName} title={worker.id}>{worker.instance ?? worker.id}</span>
+      <span className={`${styles.chip} ${styles.chip_offline}`}>{t('workers.instance.left')}</span>
+      {worker.one_shot && <OneShotLine oneShot={worker.one_shot} away />}
+      <span className={styles.muted} title={t('workers.heartbeat')}>
+        {worker.last_heartbeat_at === null
+          ? t('workers.heartbeat.never')
+          : relativeTime(worker.last_heartbeat_at, locale, now) || '-'}
+      </span>
+      <span className={styles.spacer} />
+      <button
+        type="button"
+        className={`${styles.btn} ${styles.danger}`}
+        aria-disabled={busy}
+        title={t('workers.instance.remove.title')}
+        onClick={() => {
+          if (busy) return;
+          void remove(worker.id).then(() => {
+            if (document.activeElement === document.body) onRemoved();
+          });
+        }}
+      >
+        {t('workers.remove')}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * The instances of one credential (#845): how many, how many are connected
+ * and running, then a card for each. Open by default; a large array can
+ * be folded away.
+ */
+function InstanceList({ instances, children }: { instances: readonly WorkerInfo[]; children: ReactNode }) {
+  const { t } = useI18n();
+  const connected = instances.filter((w) => !AWAY_STATUSES.has(w.status)).length;
+  const running = instances.filter((w) => w.running.length > 0).length;
+  return (
+    <details className={styles.instances} open>
+      <summary>{t('workers.instances.summary', { count: instances.length, connected, running })}</summary>
+      <div className={styles.instanceList}>{children}</div>
+    </details>
+  );
+}
+
+/**
+ * Instances whose credential has no card of its own (#845): same-host
+ * agents on the session token, whose name nobody enrolled.
+ */
+function InstanceGroup({ name, instances, children }: {
+  name: string;
+  instances: readonly WorkerInfo[];
+  children: ReactNode;
+}) {
+  const { t } = useI18n();
+  return (
+    <article className={styles.card} aria-label={name}>
+      <header className={styles.cardHeader}>
+        <h3 className={styles.workerName}>{name}</h3>
+        <span className={`${styles.chip} ${styles.chip_neutral}`} title={t('workers.instances.title')}>
+          {t('workers.instances')}
+        </span>
+      </header>
+      <InstanceList instances={instances}>{children}</InstanceList>
+    </article>
+  );
+}
+
+function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onRekey, instances = [], children }: {
+  worker: WorkerInfo;
+  /**
+   * The instances of this worker's credential (#845), shown in the card
+   * as *children*; empty for a worker no instance shares.
+   */
+  instances?: readonly WorkerInfo[];
+  children?: ReactNode;
   /** Its name's last refused handshake, if the server remembers one (#781). */
   rejection: WorkerRejection | undefined;
   /** Its SSH tunnel, when this server starts it over ssh (#784). */
@@ -372,6 +633,13 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const onDevices = new Set(worker.devices.flatMap((d) => d.running ?? []));
   const workerRuns = worker.running.filter((id) => !onDevices.has(id));
   const digest = worker.fingerprint_digest;
+  /** One of a shared credential's instances (#845), listed in its card. */
+  const instance = worker.instance_of ? worker.instance ?? worker.id : null;
+  /**
+   * The credential of instances whose own agent is not connected (#845):
+   * the card is their header, and its own last facts would only mislead.
+   */
+  const shared = instances.length > 0 && AWAY_STATUSES.has(worker.status);
   // A disabled SSH worker says so whatever its connection reads (#840):
   // Enable brings it back, so Drain / Undrain are not offered meanwhile.
   // From the worker itself too (`ssh_enabled`), so it holds while the SSH
@@ -382,8 +650,14 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   const away = AWAY_STATUSES.has(worker.status);
   // Whatever the status reads (draining, disabled), a reason is shown (#840).
   const reasons = worker.degraded_reasons ?? [];
-  const showDrain = !disabled;
-  const showRekey = canRekey(worker, ssh);
+  // A one-shot worker takes one run and leaves: nothing to drain (#790).
+  const showDrain = !disabled && !worker.one_shot;
+  // An instance has no credential of its own to re-key (#845).
+  const showRekey = instance === null && canRekey(worker, ssh);
+  // A credential with instances says what revoking it does, asked or not.
+  let removeTitle: TranslationKey = 'workers.remove.title';
+  if (instances.length > 0) removeTitle = 'workers.instances.remove.title';
+  else if (confirming && !away) removeTitle = 'workers.remove.confirmTitle';
 
   useLayoutEffect(() => {
     // The card is mounted whenever this runs (it renders the buttons).
@@ -429,20 +703,33 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
   return (
     <article
       ref={cardRef}
-      className={styles.card}
+      className={instance === null ? styles.card : `${styles.card} ${styles.nested}`}
       aria-label={worker.name}
       tabIndex={-1}
       onFocus={onFocus}
       onBlur={onBlur}
     >
       <header className={styles.cardHeader}>
-        <h3 className={styles.workerName}>{worker.name}</h3>
-        <span className={`${styles.chip} ${known ? styles[`chip_${status}`] : styles.chip_neutral}`}>
-          {known ? t(`workers.status.${status}` as 'workers.status.online') : status}
-        </span>
+        {instance === null
+          ? <h3 className={styles.workerName}>{worker.name}</h3>
+          : <h4 className={styles.workerName} title={worker.id}>{instance}</h4>}
+        {shared ? (
+          <span className={`${styles.chip} ${styles.chip_neutral}`} title={t('workers.instances.title')}>
+            {t('workers.instances.credential')}
+          </span>
+        ) : (
+          <span className={`${styles.chip} ${known ? styles[`chip_${status}`] : styles.chip_neutral}`}>
+            {known ? t(`workers.status.${status}` as 'workers.status.online') : status}
+          </span>
+        )}
         {worker.plain_http && (
           <span className={`${styles.chip} ${styles.chip_degraded}`} title={t('workers.plainHttp.title')}>
             {t('workers.plainHttp')}
+          </span>
+        )}
+        {worker.one_shot && (
+          <span className={`${styles.chip} ${styles.chip_neutral}`} title={t('workers.oneShot.title')}>
+            {t('workers.oneShot')}
           </span>
         )}
         <span className={styles.spacer} />
@@ -468,16 +755,23 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
             {t('workers.rekey')}
           </button>
         )}
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.danger}`}
-          aria-disabled={busy}
-          title={t(confirming && !away ? 'workers.remove.confirmTitle' : 'workers.remove.title')}
-          onClick={() => void removeWorker()}
-          onBlur={() => setConfirming(false)}
-        >
-          {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
-        </button>
+        {/*
+          A live instance (#845) is not removed on its own: its agent would
+          only reconnect. It goes once it left (its line), or with its
+          credential.
+        */}
+        {instance === null && (
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.danger}`}
+            aria-disabled={busy}
+            title={t(removeTitle)}
+            onClick={() => void removeWorker()}
+            onBlur={() => setConfirming(false)}
+          >
+            {t(confirming ? 'workers.remove.confirm' : 'workers.remove')}
+          </button>
+        )}
       </header>
       {confirming && (
         <p className={styles.confirmNote} role="alert">
@@ -485,6 +779,12 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           {worker.running.length > 0 && ` ${t('workers.remove.confirmRuns', { count: worker.running.length })}`}
         </p>
       )}
+      {shared ? rejection && (
+        <dl className={styles.facts}>
+          <dt>{t('workers.rejected')}</dt>
+          <dd><RejectionLine rejection={rejection} now={now} /></dd>
+        </dl>
+      ) : (
       <dl className={styles.facts}>
         {ssh && (
           <>
@@ -514,6 +814,12 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
             <dd><RejectionLine rejection={rejection} now={now} /></dd>
           </>
         )}
+        {worker.one_shot && (
+          <>
+            <dt>{t('workers.oneShot.run')}</dt>
+            <dd><OneShotLine oneShot={worker.one_shot} away={AWAY_STATUSES.has(worker.status)} /></dd>
+          </>
+        )}
         <dt>{t('workers.mounts')}</dt>
         <dd>
           {mounts.length === 0
@@ -535,11 +841,21 @@ function WorkerCard({ worker, rejection, ssh, serverVersion, now, onRemoved, onR
           </>
         )}
       </dl>
-      <ul className={styles.devices}>
-        {worker.devices.map((device) => (
-          <DeviceRow key={device.value} device={device} stale={away} />
-        ))}
-      </ul>
+      )}
+      {!shared && (
+        <ul className={styles.devices}>
+          {worker.devices.map((device) => (
+            <DeviceRow
+              key={device.value}
+              device={device}
+              workerId={worker.id}
+              stale={away}
+              enforces={worker.memory_budget !== false}
+            />
+          ))}
+        </ul>
+      )}
+      {instances.length > 0 && <InstanceList instances={instances}>{children}</InstanceList>}
     </article>
   );
 }
@@ -615,7 +931,16 @@ function WorkersDialog() {
   } else if (workers.length === 0 && refusedOnly.length === 0 && sshOnly.length === 0 && error === null) {
     content = <p className={styles.muted}>{t('workers.empty')}</p>;
   } else {
-    content = workers.map((worker) => (
+    // A shared credential's instances (#845) are listed in its card, or
+    // under a header of their own when the credential has none.
+    const instancesOf = new Map<string, WorkerInfo[]>();
+    for (const worker of workers) {
+      if (!worker.instance_of) continue;
+      const group = instancesOf.get(worker.instance_of);
+      if (group) group.push(worker);
+      else instancesOf.set(worker.instance_of, [worker]);
+    }
+    const card = (worker: WorkerInfo, children?: ReactNode) => (
       <WorkerCard
         key={worker.id}
         worker={worker}
@@ -625,11 +950,38 @@ function WorkersDialog() {
         now={now}
         onRemoved={() => closeRef.current?.focus()}
         onRekey={(workerId) => setAdding({ rekey: workerId })}
-      />
-    ));
+        instances={worker.instance_of ? [] : instancesOf.get(worker.id)}
+      >
+        {children}
+      </WorkerCard>
+    );
+    // A card for each live instance, one line for each that left.
+    const instanceCards = (group: readonly WorkerInfo[] | undefined) => {
+      if (!group) return undefined;
+      const left = group.filter(hasLeft);
+      return (
+        <>
+          {byActivity(group.filter((w) => !hasLeft(w))).map((w) => card(w))}
+          {left.length > 0 && (
+            <ul className={styles.leftInstances} aria-label={t('workers.instances.left', { count: left.length })}>
+              {left.map((w) => (
+                <LeftInstanceRow key={w.id} worker={w} now={now} onRemoved={() => closeRef.current?.focus()} />
+              ))}
+            </ul>
+          )}
+        </>
+      );
+    };
+    const tops = workers.filter((w) => !w.instance_of);
+    const topIds = new Set(tops.map((w) => w.id));
     content = (
       <>
-        {content}
+        {tops.map((worker) => card(worker, instanceCards(instancesOf.get(worker.id))))}
+        {[...instancesOf.entries()].filter(([name]) => !topIds.has(name)).map(([name, group]) => (
+          <InstanceGroup key={`instances:${name}`} name={name} instances={group}>
+            {instanceCards(group)}
+          </InstanceGroup>
+        ))}
         {sshOnly.map((entry) => <SshOnlyCard key={`ssh:${entry.id}`} entry={entry} />)}
       </>
     );

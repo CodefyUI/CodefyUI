@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
+from typing import Literal
 from platformdirs import user_data_dir
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 # Let the handful of ops not yet implemented for Apple MPS fall back to CPU
@@ -163,6 +164,28 @@ class Settings(BaseSettings):
     # carries on. Five minutes is Kubernetes' pod eviction timeout. 0 ends
     # the runs at once, as before #783.
     WORKER_RESUME_GRACE_S: float = 300.0
+    # MiB a run's CUDA context takes on a card shared by memory (#788),
+    # outside its allocator cap: admission reserves a run's budget plus
+    # this. Measured on an RTX PRO 6000 (torch 2.11, cuBLAS loaded):
+    # ~650 MiB; rounded up.
+    EXECUTION_CUDA_CONTEXT_MIB: int = 768
+    # Seconds a run waits for a one-shot worker (#790: ``target.pool:
+    # "one-shot"``, or ``target.worker`` naming a one-shot worker) before it
+    # fails. The GitHub runner rule: a job stays queued until a matching
+    # runner comes online, and fails after 24 h. 0 waits forever. Runs that
+    # wait for anything else are not timed.
+    WORKER_ONE_SHOT_QUEUE_TIMEOUT_S: float = 86400.0
+    # Seconds a read of a worker run's recorded outputs (#789: the
+    # Inspector, ``/api/execution/outputs/*``) waits for the worker's
+    # answer before it is answered 504. The worker reads its own disk and
+    # computes stats there; a minute covers a 2 GiB tensor's on a slow one.
+    WORKER_OUTPUT_FETCH_TIMEOUT_S: float = 60.0
+    # Seconds a worker's run subprocess gets to write a recorded run's
+    # outputs to the worker's disk after it reported the run's end (#789).
+    # Read by the worker's agent; a write still going then is stopped and
+    # its outputs are lost. A graceful agent stop waits for writes in
+    # progress up to this long.
+    WORKER_OUTPUTS_WRITE_TIMEOUT_S: float = 300.0
     # ── Sweeps (#140) ──────────────────────────────────────────────────
     # Hard ceiling on the variants ONE sweep may compile. A sweep is queued
     # unattended, and every variant is a full graph snapshot plus a real
@@ -341,6 +364,41 @@ class Settings(BaseSettings):
     # The most a run's inputs may add up to (bytes). A run over it can use
     # only a worker with the mount; with none, it is refused at submit.
     TRANSFER_MAX_INPUT_BYTES: int = 2 * 1024 * 1024 * 1024
+
+    # ── S3 / MinIO artifact backend (#791) ─────────────────────────────
+    # The alternative to the transfer backend above for a worker without
+    # the mount: the worker reads the run's inputs from, and writes what the
+    # run produces to, this bucket directly; this server stores only the
+    # object keys. Off by default; needs boto3 (the `s3` extra) here and on
+    # the worker, and a worker whose agent lacks it gets the transfer
+    # backend. TRANSFER_MAX_INPUT_BYTES caps the inputs here too. See
+    # core/s3.py.
+    S3_ENABLED: bool = False
+    # Empty: AWS S3 in S3_REGION. MinIO: its API address, http://host:9000.
+    S3_ENDPOINT_URL: str = ""
+    S3_REGION: str = "us-east-1"
+    S3_BUCKET: str = ""
+    # Prepended to every key (`codefyui/` -> `codefyui/runs/<run_id>/...`).
+    S3_PREFIX: str = ""
+    # `path` for most MinIO setups; `auto` lets boto3 choose.
+    S3_ADDRESSING_STYLE: Literal["auto", "path", "virtual"] = "auto"
+    # This server's own credentials. In memory only (#251): never written
+    # to SQLite or a log. With STS (below) a worker gets temporary ones
+    # limited to its run's keys; with `static` it gets these.
+    S3_ACCESS_KEY_ID: str = ""
+    S3_SECRET_ACCESS_KEY: SecretStr = SecretStr("")
+    # What a worker is given: `sts` (AssumeRole with a session policy for
+    # the run's keys, refreshed while the run lasts), `static` (the keys
+    # above), `auto` (STS, else static, with a warning in the log).
+    S3_CREDENTIALS: Literal["auto", "sts", "static"] = "auto"
+    # AWS needs a role to assume; MinIO ignores it.
+    S3_STS_ROLE_ARN: str = ""
+    S3_STS_DURATION_S: int = Field(default=3600, ge=900, le=43200)
+    # How GET /api/runs/{id}/artifacts/{aid}/download serves an S3 file:
+    # `proxy` streams it through this server; `presign` redirects to a
+    # pre-signed URL the browser fetches from the bucket itself.
+    S3_DOWNLOAD: Literal["proxy", "presign"] = "proxy"
+    S3_PRESIGN_TTL_S: int = Field(default=900, ge=1, le=604800)
 
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"

@@ -20,7 +20,7 @@ import builtins
 
 import pytest
 
-from app.api import routes_execution_outputs
+from app.core import output_queries
 from app.core.cache import ExecutionCache
 from app.core.graph_engine import (
     CaptureAlias,
@@ -217,8 +217,9 @@ async def test_an_installed_presets_card_reads_its_inner_port(
             "float() on a tensor that tracks gradients")
         return builtins.float(value)
 
+    # The value read lives in core.output_queries since #789.
     monkeypatch.setattr(
-        routes_execution_outputs, "float", untracked_float, raising=False)
+        output_queries, "float", untracked_float, raising=False)
     nodes = [
         _node("start", "Start"),
         _node("img", "TensorCreate", shape="1,1,8,8", fill="ones"),

@@ -6,6 +6,7 @@ import {
   fetchWorkerList,
   fetchWorkers,
   removeWorker,
+  setDevicePolicy,
   setSshWorkerEnabled,
   undrainWorker,
   WorkersApiError,
@@ -23,6 +24,7 @@ vi.mock('../api/workers', async (importOriginal) => ({
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
+  setDevicePolicy: vi.fn(),
   fetchSshWorkers: vi.fn(),
   setSshWorkerEnabled: vi.fn(),
   deleteSshWorker: vi.fn(),
@@ -251,6 +253,15 @@ describe('workerStore', () => {
     expect(useWorkerStore.getState().busy).toEqual({});
   });
 
+  it('removes a revoked credential together with its instances (#845)', async () => {
+    useWorkerStore.setState({ workers: [
+      worker('gpu'), worker('gpu.1', { instance_of: 'gpu', instance: '1' }),
+      worker('box.1', { instance_of: 'box', instance: '1' }),
+    ] });
+    await useWorkerStore.getState().remove('gpu');
+    expect(useWorkerStore.getState().workers.map((w) => w.id)).toEqual(['box.1']);
+  });
+
   it('ignores a remove while another action on the worker is in flight', async () => {
     useWorkerStore.setState({ busy: { w1: true } });
     await useWorkerStore.getState().remove('w1');
@@ -384,6 +395,29 @@ describe('workerStore', () => {
       'Could not delete zz: plain',
     ]);
     expect(useWorkerStore.getState().ssh).toHaveLength(1);
+  });
+
+  it('sets a device policy, replacing the worker with the answer, and toasts a failure (#788)', async () => {
+    useWorkerStore.setState({ workers: [worker('w1'), worker('w2')] });
+    vi.mocked(setDevicePolicy).mockResolvedValueOnce(worker('w1', { memory_budget: true }));
+    await useWorkerStore.getState().setPolicy('w1', 'cuda:0', 'shared');
+    expect(setDevicePolicy).toHaveBeenCalledWith('w1', 'cuda:0', 'shared');
+    expect(useWorkerStore.getState().workers.map((w) => w.memory_budget)).toEqual([true, undefined]);
+
+    // An answer older than a list already applied is dropped.
+    let answer: (value: WorkerInfo) => void = () => {};
+    vi.mocked(setDevicePolicy).mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const pending = useWorkerStore.getState().setPolicy('w2', 'cuda:0', 'shared');
+    await useWorkerStore.getState().refresh();
+    answer(worker('w2', { memory_budget: true }));
+    await pending;
+    expect(useWorkerStore.getState().workers.map((w) => w.id)).toEqual(['w1']);
+
+    vi.mocked(setDevicePolicy).mockRejectedValueOnce(new Error('nope'));
+    await useWorkerStore.getState().setPolicy('w1', 'cuda:0', 'exclusive');
+    expect(useToastStore.getState().toasts.map((t) => t.message)).toEqual([
+      'Could not change how w1 admits runs: nope',
+    ]);
   });
 });
 

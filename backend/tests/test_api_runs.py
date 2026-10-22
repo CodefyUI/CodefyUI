@@ -1182,6 +1182,49 @@ async def test_delete_also_purges_the_run_s_captured_outputs(client):
         delattr(app.state, "run_output_store")
 
 
+async def test_delete_drops_a_worker_run_s_outputs_on_its_worker(
+        client, run_app, monkeypatch):
+    """A worker run's captures are on its worker (#789): deleting the run
+    stops retaining it here and tells the worker, whether this server
+    retained it (``on_remote_drop``) or only its record says so (after a
+    restart)."""
+    from types import SimpleNamespace
+
+    told: list[tuple[str, str]] = []
+    outputs = RunOutputStore(max_runs=4)
+    outputs.on_remote_drop = lambda run, worker: told.append((run, worker))
+    registry_drops: list[tuple[str, str]] = []
+    monkeypatch.setattr(app.state, "run_output_store", outputs,
+                        raising=False)
+    monkeypatch.setattr(app.state, "worker_registry", SimpleNamespace(
+        outputs=SimpleNamespace(drop=lambda run, worker: registry_drops
+                                .append((run, worker)))), raising=False)
+
+    async def worker_run(record: bool = True) -> str:
+        row = await run_app.store.create_run(
+            graph_snapshot=_graph(), options={"record_outputs": record},
+            status="running", worker_id="box")
+        await run_app.store.mark_finished(row.id, "succeeded")
+        return row.id
+
+    retained = await worker_run()
+    await outputs.add_remote(retained, "box")
+    assert (await client.delete(f"/api/runs/{retained}")).status_code == 200
+    assert await outputs.remote_holder(retained) is None
+    assert await outputs.list_runs() == []
+    assert told == [(retained, "box")] and registry_drops == []
+
+    after_restart = await worker_run()
+    assert (await client.delete(f"/api/runs/{after_restart}")
+            ).status_code == 200
+    assert registry_drops == [(after_restart, "box")]
+
+    unrecorded = await worker_run(record=False)
+    assert (await client.delete(f"/api/runs/{unrecorded}")).status_code == 200
+    assert registry_drops == [(after_restart, "box")]
+    assert told == [(retained, "box")]
+
+
 async def test_delete_works_when_no_output_store_is_wired(client):
     """The store is optional on app.state (httpx's ASGITransport skips the
     lifespan), so its absence must not turn a delete into a 500."""

@@ -78,6 +78,95 @@ function gone(reason: { code: string; params: Record<string, unknown>; text: str
   };
 }
 
+describe('queueReasonText: Wave D codes (#788, #790, #794)', () => {
+  const card = (code: string, params: Record<string, unknown>, text = 'card sentence') => ({ code, params, text });
+
+  it('words the one-shot reasons as the server does, and in zh-TW', () => {
+    expect(reason('one_shot_start', { worker: 'slurm' }))
+      .toBe('waiting for one-shot worker slurm to start (cdui agent start --one-shot)');
+    expect(reason('one_shot_taken', { worker: 'slurm', run: 'r0' }))
+      .toBe('one-shot worker slurm already took run r0; start another one-shot agent');
+    expect(reason('one_shot_run_id', { worker: 'slurm', run: 'r7' }))
+      .toBe('one-shot worker slurm takes only run r7 (--run-id)');
+    expect(reason('one_shot_pool', { devices: 'cuda' }))
+      .toBe('waiting for a one-shot worker that offers cuda (cdui agent start --one-shot)');
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(reason('one_shot_start', { worker: 'slurm' })).toBe('等待單次 worker slurm 啟動（cdui agent start --one-shot）');
+    expect(reason('one_shot_pool', { devices: 'cuda' })).toBe('等待提供 cuda 的單次 worker（cdui agent start --one-shot）');
+    // Missing parameters keep the server's sentence.
+    expect(reason('one_shot_taken', { worker: 'slurm' })).toBe('server sentence');
+    expect(reason('one_shot_run_id', { run: 'r7' })).toBe('server sentence');
+  });
+
+  it('words a memory wait card by card, and a missing budget', () => {
+    expect(reason('memory_no_budget', { device: 'cuda:0', worker: 'box' })).toBe(
+      'cuda:0 on box is shared by memory and this run has no memory budget: it takes one once a run of the same '
+      + 'graph on the same devices reports its peak, or cancel it and queue it again with target.memory_gib');
+    expect(reason('memory_no_budget', { worker: 'box' })).toBe('server sentence');
+    expect(reason('memory_wait', {
+      need: '6.0 GiB', context: null,
+      reasons: [card('does_not_fit', { device: 'cuda:0', worker: 'box', free: '4.0 GiB', runs: ['r1', 'r2'] })],
+    })).toBe('waiting for memory: needs 6.0 GiB, cuda:0 on box has 4.0 GiB free (runs r1, r2)');
+    expect(reason('memory_wait', {
+      need: '6.0 GiB', context: '0.8 GiB',
+      reasons: [
+        card('does_not_fit', { device: 'cuda:0', worker: 'a', free: '4.0 GiB', runs: [] }),
+        card('no_total_reported', { device: 'cuda:1', worker: 'a' }),
+        card('total_too_small', { device: 'cuda:2', worker: 'a', total: '4.0 GiB' }),
+        card('held_without_budget', { device: 'cuda:3', worker: 'a' }),
+        card('reserved_for_a_set', { device: 'cuda:4', worker: 'a' }),
+        card('no_total', { device: 'cuda:5', worker: 'a' }),
+      ],
+    })).toBe('waiting for memory: needs 6.0 GiB (+0.8 GiB CUDA context), cuda:0 on a has 4.0 GiB free; '
+      + 'cuda:1 on a has no memory total reported; cuda:2 on a has 4.0 GiB in total; '
+      + 'cuda:3 on a is held by a run without a memory budget (a run on this server, or one started before the '
+      + 'card was shared) until it ends; cuda:4 on a is reserved for an earlier run that waits for its whole device '
+      + 'set; cuda:5 on a reports no memory total, so it cannot admit by memory');
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(reason('memory_wait', {
+      need: '6.0 GiB', context: '0.8 GiB',
+      reasons: [card('does_not_fit', { device: 'cuda:0', worker: 'box', free: '4.0 GiB', runs: ['r1'] }),
+        card('other', {}, 'plain text')],
+    })).toBe('等待記憶體：需要 6.0 GiB（另加 0.8 GiB CUDA context），box 的 cuda:0 可用 4.0 GiB（run r1）；plain text');
+  });
+
+  it("keeps the server's sentence for a memory wait it cannot word", () => {
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [] })).toBe('server sentence');
+    expect(reason('memory_wait', { reasons: [card('no_total', { device: 'cuda:0', worker: 'a' })] }))
+      .toBe('server sentence');
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: 'x' })).toBe('server sentence');
+    // A card reason that is not an object, or names no card or worker.
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [3] })).toBe('server sentence');
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [{ text: 'as sent' }] }))
+      .toBe('waiting for memory: needs 6.0 GiB, as sent');
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [card('no_total', { device: 'cuda:0' })] }))
+      .toBe('waiting for memory: needs 6.0 GiB, card sentence');
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [card('total_too_small', { device: 'd', worker: 'w' })] }))
+      .toBe('waiting for memory: needs 6.0 GiB, card sentence');
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [card('does_not_fit', { device: 'd', worker: 'w' })] }))
+      .toBe('waiting for memory: needs 6.0 GiB, card sentence');
+    expect(reason('memory_wait', { need: '6.0 GiB', reasons: [card('eclipse', { device: 'd', worker: 'w' })] }))
+      .toBe('waiting for memory: needs 6.0 GiB, card sentence');
+  });
+
+  it('words a raised estimate alone or beside another reason (#794)', () => {
+    expect(reason('budget_raised', { from: '1.0 GiB', to: '2.4 GiB', run: 'r1' })).toBe(
+      'memory budget raised from the accepted estimate, 1.0 GiB, to 2.4 GiB: an earlier run of its graph (run r1) '
+      + 'peaked above the estimate');
+    expect(reason('budget_raised', { from: '10 MiB', to: '58 MiB', run: null })).toBe(
+      'memory budget raised from the accepted estimate, 10 MiB, to 58 MiB: an earlier run of its graph peaked above '
+      + 'the estimate');
+    expect(reason('budget_raised', { from: '10 MiB' })).toBe('server sentence');
+    expect(reason('worker_draining', { worker: 'box', raised: { from: '1.0 GiB', to: '2.4 GiB', run: null } })).toBe(
+      'worker box is draining; memory budget raised from the accepted estimate, 1.0 GiB, to 2.4 GiB: an earlier '
+      + 'run of its graph peaked above the estimate');
+    expect(reason('worker_draining', { worker: 'box', raised: 'odd' })).toBe('server sentence');
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(reason('worker_draining', { worker: 'box', raised: { from: '1.0 GiB', to: '2.4 GiB', run: 'r1' } })).toBe(
+      'worker box 排空中；記憶體預算已從接受的估計值 1.0 GiB 調高到 2.4 GiB：同一張圖較早的 run（r1）峰值超過估計值');
+  });
+});
+
 describe('workerMessageText', () => {
   it('words a worker message by its code, in both languages', () => {
     const { message, coded } = gone(reasonOf('alive_missing',
@@ -128,6 +217,32 @@ describe('workerMessageText', () => {
     ];
     for (const [reason, chinese] of cases) {
       const { message, coded } = gone(reason);
+      expect(workerMessageText(message, coded, t)).toBe(`worker box 已離開：${chinese}`);
+    }
+  });
+
+  it('words the adoption, shutdown and S3 messages (#791, #793)', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    expect(workerMessageText('english', { code: 'worker_adopted', params: { worker: 'box', seconds: 300 } }, t))
+      .toBe('本伺服器在 run 於 worker box 上執行時重新啟動；run 仍在該機器上執行，最多等待 300 秒讓 worker 重新連線');
+    expect(workerMessageText('english', { code: 'worker_adopted', params: { worker: 'box' } }, t)).toBe('english');
+    expect(workerMessageText('english', { code: 'worker_lost_after_restart', params: { worker: 'box' } }, t))
+      .toBe('本伺服器已重新啟動，而 worker box 上已沒有這個 run');
+    expect(workerMessageText('english', { code: 'worker_s3_transfer_failed', params: { worker: 'box', error: 'denied' } }, t))
+      .toBe('無法把這個 run 的輸入檔案傳送到 S3 bucket：denied');
+    expect(workerMessageText('english', { code: 'worker_s3_transfer_failed', params: { worker: 'box' } }, t))
+      .toBe('english');
+    expect(workerMessageText('english', { code: 'worker_storage_fallback', params: { worker: 'box' } }, t))
+      .toBe('worker box 無法使用 S3 bucket（它的 agent 沒有 boto3）；這個 run 的檔案改經由本伺服器傳送');
+    const cases: Array<[ReturnType<typeof reasonOf>, string]> = [
+      [reasonOf('no_reconnect_after_restart', 'it did not reconnect', { seconds: 300 }),
+        '本伺服器重新啟動後，它未在 300 秒內帶著這個 run 重新連線'],
+      [reasonOf('no_reconnect_after_restart', 'it did not reconnect'), 'it did not reconnect'],
+      [reasonOf('shutdown_not_connected', 'shutting down', { worker: 'box' }), '本伺服器正在關閉，而 worker box 未連線'],
+      [reasonOf('shutdown_not_connected', 'shutting down'), 'shutting down'],
+    ];
+    for (const [why, chinese] of cases) {
+      const { message, coded } = gone(why);
       expect(workerMessageText(message, coded, t)).toBe(`worker box 已離開：${chinese}`);
     }
   });

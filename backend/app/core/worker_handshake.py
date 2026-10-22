@@ -13,6 +13,9 @@ testable without one:
   reason names both); a malformed or reserved name.
 - :func:`identity_refusal`: why this credential may not register under the
   name the ``hello`` uses (#780).
+- :func:`one_shot_refusal`: why a one-shot agent (#790) may not take a
+  name another agent process holds; :func:`same_agent` decides who that
+  is, after a restart of this server too (#845).
 - :func:`check_catalog`: how the worker's node catalog compares with this
   server's (``node_registry.node_catalog``). Equal hashes: ``match``.
   Different: ``mismatch``, with the node types this server has and the
@@ -38,6 +41,8 @@ loads it on every connection.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 from dataclasses import dataclass
@@ -103,7 +108,20 @@ def refusal(frame: Any, *, control_version: str) -> str | None:
                 "digits and '-', at most 63 characters")
     if frame.name in wp.RESERVED_WORKER_NAMES:
         return f"worker name {frame.name!r} is reserved"
+    if frame.instance is not None and not frame.one_shot:
+        # Several agents on one credential are for batch jobs that each
+        # take one run (#845); regular agents keep one name per credential.
+        return ("--instance is for one-shot agents (--one-shot) only; a "
+                "regular agent connects under its own name")
     return None
+
+
+def instance_id_hash(instance_id: str | None) -> str | None:
+    """How an agent process's ``hello.instance_id`` is recorded (#845):
+    its sha256 hex, so the stored form cannot be replayed as the id."""
+    if not instance_id:
+        return None
+    return hashlib.sha256(instance_id.encode("utf-8")).hexdigest()
 
 
 def identity_refusal(hello: wp.Hello, *, credential: str,
@@ -115,14 +133,27 @@ def identity_refusal(hello: wp.Hello, *, credential: str,
     And a connection may replace a live one under the same name only if it
     authenticated the same way: the session token cannot take over an
     enrolled worker's name, nor a worker token a live same-host agent's.
+
+    ``hello.name`` may already be an instance's worker id (#845,
+    ``<name>.<instance>``, as ``ws_worker`` rewrites it): the credential
+    must then name the part before the separator, and the session token
+    may not open instances under an enrolled worker's name.
     """
     from .workers import CREDENTIAL_SESSION
 
-    if enrolled_as is not None and hello.name != enrolled_as:
+    name, instance = wp.instance_parts(hello.name)
+    if enrolled_as is not None and name != enrolled_as:
         return (f"this worker token belongs to worker {enrolled_as!r}, not "
-                f"{hello.name!r}; start the agent with --name {enrolled_as}, "
-                f"or enroll {hello.name!r} with a new token")
-    existing = registry.get(hello.name)
+                f"{name!r}; start the agent with --name {enrolled_as}, "
+                f"or enroll {name!r} with a new token")
+    if instance is not None and credential == CREDENTIAL_SESSION:
+        base = registry.get(name)
+        if base is not None and base.enrolled:
+            return (f"worker {name!r} is enrolled; its instances connect "
+                    "with its worker token, not the session token")
+    # The placeholder of runs adopted after a restart counts (#845): its
+    # one-shot run belongs to the agent process that took it.
+    existing = getattr(registry, "holder", registry.get)(hello.name)
     if existing is None:
         return None
     if credential == CREDENTIAL_SESSION and existing.enrolled:
@@ -131,7 +162,49 @@ def identity_refusal(hello: wp.Hello, *, credential: str,
     if existing.online and existing.credential not in (None, credential):
         return (f"a worker named {hello.name!r} is connected with another "
                 "kind of credential; stop it first")
-    return None
+    return one_shot_refusal(hello, existing)
+
+
+def one_shot_refusal(hello: wp.Hello, existing: Any) -> str | None:
+    """Why *hello* may not take over *existing*'s name because one of the
+    two is a one-shot agent (#790), or None.
+
+    A regular worker's reconnect replaces the old connection, and its runs
+    move over. Between two DIFFERENT agent processes (``instance_id``) that
+    would hand one agent's run to another that does not have it, which then
+    ends ``interrupted``: two batch jobs started with the same credential.
+    So while the name is connected, or still has runs in flight, only the
+    same agent (:func:`same_agent`) may take it back.
+    """
+    if not (hello.one_shot or getattr(existing, "one_shot", False)):
+        return None
+    if not (existing.online or existing.running):
+        return None
+    if same_agent(hello, existing):
+        return None
+    state = "connected" if existing.online else "its run is in flight"
+    return (f"worker {hello.name!r} is busy: another agent holds the name "
+            f"({state}). One one-shot agent per worker name at a time; "
+            "start concurrent jobs on one credential with --instance, each "
+            "with an instance id of its own")
+
+
+def same_agent(hello: wp.Hello, existing: Any) -> bool:
+    """Whether *hello* comes from the agent process that holds *existing*
+    (#790): the same ``instance_id``. After a restart of this server the
+    holder of an adopted one-shot run knows only the id's hash, recorded
+    when the run started (#845, ``Worker.instance_hash``); a known worker
+    loaded from the database, or a placeholder, has no ``instance_id``.
+    Every agent on one credential holds the same worker token, so the
+    token alone cannot tell them apart."""
+    if not hello.instance_id:
+        return False
+    current = getattr(existing, "instance_id", None)
+    if current is not None:
+        return hello.instance_id == current
+    recorded = getattr(existing, "instance_hash", None)
+    return recorded is not None and hmac.compare_digest(
+        instance_id_hash(hello.instance_id) or "", recorded)
 
 
 # ── the node catalog ──────────────────────────────────────────────────────

@@ -3,6 +3,8 @@
     GET    /api/workers                      every known worker (open read)
     POST   /api/workers/{id}/drain           no new runs on it (session token)
     POST   /api/workers/{id}/undrain         take new runs again (session token)
+    PUT    /api/workers/{id}/devices/{device}/policy
+                                             exclusive | shared (token; #788)
     DELETE /api/workers/{id}                 revoke + disconnect + forget (token)
     POST   /api/workers/enrollments          a new enrollment token (token)
     GET    /api/workers/enrollments          the enrollment tokens (token)
@@ -39,13 +41,39 @@ device report cannot be parsed. ``same_host: true`` marks a worker on this
 machine (its ``hello.machine_id`` equals this server's). A device of such a
 worker that is physically one of this server's (``cpu``, ``mps:0``, a CUDA
 card with a matching UUID) carries ``shared_with: "local"``, otherwise
-``null``: its ``slots`` ARE this server's slot for that card (the same
-counter, under this server's limit), so a panel adding up usage must count
-it once. The list's ``local`` field describes this server the same way
+``null``.
+
+Physical devices (#842): every device entry (the ``local`` ones too)
+carries ``same_card``, the other offerers of that physical device
+(``[{"worker", "device", "policy", "online", "memory_budget"}]``,
+``worker`` ``local`` for this server, whose ``policy`` and
+``memory_budget`` are null; ``[]`` for a device nobody else
+offers): a CUDA card with the same UUID, and the ``cpu`` and ``mps:0`` of
+one machine (a same-host worker's and this server's, or two agents that
+report the same machine id). Their ``slots`` are the device's: the runs on every
+offerer, under the smallest cap among the online ones, with
+``limited_by: {"worker", "device"}`` when that cap is another offerer's
+(absent otherwise), so a panel adding up usage must count the device
+once. A card some online offerer keeps ``exclusive`` admits by count:
+``admission.by_memory`` is false on the others. The list's
+``local`` field describes this server the same way
 (``{"id": "local", "devices": [{"value", "kind", "slots"}]}``; ``null``
 without a run service; its ``mounts`` is this server's own label and path,
 #782), so a Workers panel can draw this server beside its
 workers.
+
+Memory admission (#788): every worker device entry carries ``policy``
+(``exclusive``, the default, or ``shared``) and, for a shared one,
+``admission``: ``{"by_memory", "total_bytes", "free_bytes",
+"reserved_bytes", "running_bytes", "headroom_bytes", "runs"}``. The budgets
+promised on the card (reserved: assigned, not started; running: started
+with their cap in place), what a new budget may take, and the runs holding
+budgets there. ``by_memory`` is false when the policy is ``shared`` but the
+worker's agent does not enforce budgets (no ``memory_budget`` capability):
+its card then admits by count. A worker entry's ``memory_budget`` says
+whether its agent enforces budgets. ``PUT .../policy`` with ``{"policy":
+"shared"}`` stores the policy (``worker_device_policies``) and reschedules;
+it is accepted for a CUDA or MPS device the worker reports.
 
 Handshake validation (#781): each worker entry carries ``node_catalog``
 (``{"status": "match" | "mismatch" | "unknown", "hash", "missing",
@@ -76,6 +104,7 @@ from pydantic import BaseModel, Field
 from ..config import settings
 from ..core import tls_fingerprint as tls_fp
 from ..core import ssh_launch
+from ..core import memory_admission as mem
 from ..core import worker_protocol as wp
 from ..core import worker_store as ws_store
 from ..core.api_keys import require_session_token
@@ -93,7 +122,12 @@ from ..core.mounts import (
 )
 from ..core.scheduling import LOCAL_WORKER_ID, slot_for
 from ..core.worker_protocol import canonical_device
-from ..core.workers import CREDENTIAL_SESSION, REKEYED, removed_message
+from ..core.workers import (
+    CREDENTIAL_SESSION,
+    REKEYED,
+    policy_owner,
+    removed_message,
+)
 from ..core.workers import removed as worker_removed
 
 logger = logging.getLogger(__name__)
@@ -175,7 +209,7 @@ def worker_name_problem(typed: str, name: str) -> str | None:
     return None
 
 
-def _describe(worker: Any, service: Any,
+def _describe(worker: Any, service: Any, registry: Any = None,
               launcher: Any = None) -> dict[str, Any]:
     """``worker.describe()`` with each device's slot usage filled in.
 
@@ -200,20 +234,59 @@ def _describe(worker: Any, service: Any,
             value = None
         device["shared_with"] = (LOCAL_WORKER_ID if value in shared
                                  else None)
+        device["same_card"] = _same_card(registry, worker.id, value)
         device["slots"] = (None if service is None or value is None
                            else service.slot_usage(slot_for(worker, value)))
+        device["policy"] = (registry.device_policy(worker.id, value)
+                            if registry is not None and value is not None
+                            else mem.POLICY_EXCLUSIVE)
+        # The scheduler's own figures (``WorkerScheduler.admission``): what
+        # this panel shows is what admission decides on.
+        device["admission"] = (
+            service.card_admission(worker, value)
+            if device["policy"] == mem.POLICY_SHARED and service is not None
+            else None)
+    entry["memory_budget"] = wp.CAPABILITY_MEMORY_BUDGET in (
+        getattr(worker, "capabilities", None) or ())
     ssh = getattr(launcher, "entries", {}).get(entry["id"])
     entry["ssh_enabled"] = None if ssh is None else bool(ssh.enabled)
     return entry
 
 
-def _describe_local(service: Any) -> dict[str, Any] | None:
+def _same_card(registry: Any, worker_id: str,
+               value: str | None) -> list[dict[str, Any]]:
+    """The other offerers of the physical device (#842), as
+    ``[{"worker", "device", "policy", "online"}]``; ``worker`` ``local``
+    is this server, whose ``policy`` is None (its runs admit by count)."""
+    peers = getattr(registry, "card_peers", None)
+    if peers is None or value is None:
+        return []
+    entries = []
+    for peer_id, device in peers(worker_id, value):
+        local = peer_id == LOCAL_WORKER_ID
+        peer = None if local else registry.get(peer_id)
+        entries.append({
+            "worker": peer_id, "device": device,
+            "policy": None if local else registry.device_policy(peer_id,
+                                                                device),
+            "online": registry.slot_online((peer_id, device)),
+            # Whether its agent enforces memory budgets (#788); None for
+            # this server. A peer without it makes the card admit by count.
+            "memory_budget": None if local else (
+                peer is not None and wp.CAPABILITY_MEMORY_BUDGET
+                in (getattr(peer, "capabilities", None) or ()))})
+    return entries
+
+
+def _describe_local(service: Any,
+                    registry: Any = None) -> dict[str, Any] | None:
     if service is None:
         return None
     return {"id": LOCAL_WORKER_ID, "mounts": control_plane_mounts(),
             "devices": [{
         "value": value, "kind": value.split(":")[0],
         "slots": service.slot_usage((LOCAL_WORKER_ID, value)),
+        "same_card": _same_card(registry, LOCAL_WORKER_ID, value),
     } for value in service.local_devices()]}
 
 
@@ -222,18 +295,19 @@ async def list_workers(request: Request) -> dict[str, Any]:
     registry = _registry(request)
     service = _service(request)
     launcher = getattr(request.app.state, "ssh_launcher", None)
-    return {"workers": [_describe(w, service, launcher)
+    return {"workers": [_describe(w, service, registry, launcher)
                         for w in registry.workers()],
-            "local": _describe_local(service),
+            "local": _describe_local(service, registry),
             "rejections": registry.rejections()}
 
 
 def _set_draining(request: Request, worker_id: str,
                   draining: bool) -> dict[str, Any]:
-    worker = _registry(request).drain(worker_id, draining)
+    registry = _registry(request)
+    worker = registry.drain(worker_id, draining)
     if worker is None:
         raise HTTPException(404, f"no worker named {worker_id!r}")
-    return _describe(worker, _service(request),
+    return _describe(worker, _service(request), registry,
                      getattr(request.app.state, "ssh_launcher", None))
 
 
@@ -245,6 +319,49 @@ async def drain_worker(request: Request, worker_id: str) -> dict[str, Any]:
 @router.post("/{worker_id}/undrain")
 async def undrain_worker(request: Request, worker_id: str) -> dict[str, Any]:
     return _set_draining(request, worker_id, False)
+
+
+class PolicyRequest(BaseModel):
+    policy: str = Field(..., max_length=20)
+
+
+@router.put("/{worker_id}/devices/{device}/policy")
+async def set_device_policy(request: Request, worker_id: str, device: str,
+                            body: PolicyRequest) -> dict[str, Any]:
+    """Set how *worker_id*'s *device* admits runs (#788): ``exclusive``
+    (by count, the default) or ``shared`` (by memory budget). Stored, so
+    it survives a reconnect and a restart; runs already on the card are
+    not touched. Answers the worker's entry."""
+    registry = _registry(request)
+    worker = registry.get(worker_id)
+    if worker is None:
+        raise HTTPException(404, f"no worker named {worker_id!r}")
+    if body.policy not in mem.POLICIES:
+        raise HTTPException(422, f"policy must be one of "
+                                 f"{', '.join(mem.POLICIES)}")
+    try:
+        value = canonical_device(device)
+    except ValueError:
+        raise HTTPException(422, f"unknown device {device!r}") from None
+    if not worker.offers(value):
+        raise HTTPException(404, f"worker {worker_id} does not report "
+                                 f"{value}")
+    if value.split(":")[0] not in mem.SHAREABLE_KINDS:
+        raise HTTPException(422, f"{value} cannot be shared by memory: only "
+                                 "a CUDA or MPS device can")
+    store = getattr(request.app.state, "worker_store", None)
+    if store is not None:
+        # An instance's card admits as its credential's does (#845): set
+        # on one instance, it is set for the credential and all of them.
+        await store.set_device_policy(policy_owner(worker_id), value,
+                                      body.policy)
+    registry.set_device_policy(worker_id, value, body.policy)
+    service = _service(request)
+    if service is not None and body.policy == mem.POLICY_SHARED:
+        # A run that waits for this card and has no budget yet (submitted
+        # while it was exclusive) gets its graph's default now.
+        await service.refresh_budgets()
+    return _describe(worker, service, registry)
 
 
 # ── enrollment (#780) ─────────────────────────────────────────────────────
@@ -601,25 +718,41 @@ async def disable_ssh_worker(request: Request, name: str) -> dict[str, Any]:
 
 
 async def _revoke_worker(request: Request, worker_id: str,
-                         *, ssh: bool = False) -> tuple[bool, Any, list[Any]]:
+                         *, ssh: bool = False) -> tuple[bool, bool, list[str]]:
     """Revoke *worker_id*'s credential, drop it from the registry (its runs
-    end ``interrupted``) and fail its queued runs. Returns (revoked, the
-    registry's removed worker or None, the failed run ids). *ssh*: the
-    worker's SSH entry was deleted, which its runs' reason says."""
+    end ``interrupted``) and fail its queued runs. Returns (revoked,
+    whether the registry dropped anything, the failed run ids). *ssh*: the
+    worker's SSH entry was deleted, which its runs' reason says.
+
+    Revoking a credential also drops its instances (#845), which
+    authenticated with the token just revoked, and fails the runs queued
+    for any of them, listed or not (an instance that left the list, or
+    has not reconnected since a restart). Without a revoked credential (a
+    same-host worker on the session token) its instances are left alone:
+    they did not use it."""
     store = getattr(request.app.state, "worker_store", None)
     revoked = False
     if store is not None:
         revoked = await store.delete_worker(worker_id)
     registry = getattr(request.app.state, "worker_registry", None)
-    dropped = None
+    dropped = False
+    instances: list[str] = []
     if registry is not None:
-        dropped = registry.forget(worker_id,
-                                  worker_removed(revoked=revoked, ssh=ssh))
+        registry.forget_policies(worker_id)
+        why = worker_removed(revoked=revoked, ssh=ssh)
+        dropped = registry.forget(worker_id, why) is not None
+        if revoked:
+            instances = registry.forget_instances(worker_id, why)
+            dropped = dropped or bool(instances)
     if revoked:
-        logger.info("worker %s: credential revoked", worker_id)
+        logger.info("worker %s: credential revoked%s", worker_id,
+                    f" ({len(instances)} instance(s) removed)"
+                    if instances else "")
     service = _service(request)
-    failed = [] if service is None else await service.fail_queued_for_worker(
-        worker_id, removed_message(worker_id))
+    failed: list[str] = []
+    if service is not None:
+        failed = await service.fail_queued_for_worker(
+            worker_id, removed_message(worker_id), instances=revoked)
     return revoked, dropped, failed
 
 
@@ -653,9 +786,23 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
     Its running runs end ``interrupted`` (the socket closes), and the runs
     still queued for it fail at once: nothing would ever place them. An SSH
     worker's session is ended and its row deleted first, so it does not
-    come back; its remote clean-up follows in the background.
+    come back; its remote clean-up follows in the background. An
+    instance of a shared credential (#845) is only taken off the list,
+    and only once it left (409 while it is connected or has a run in
+    flight); removing the credential removes all of them.
     """
-    _registry(request)
+    registry = _registry(request)
+    name, instance = wp.instance_parts(worker_id)
+    held = None if instance is None else registry.get(worker_id)
+    if held is not None and (held.online or held.running):
+        # A live instance (#845) is not removed on its own: its agent,
+        # holding a valid token, would only reconnect, and its run would
+        # end. It leaves the list when its agent exits, or with its
+        # credential.
+        raise HTTPException(409, (
+            f"instance {worker_id} is connected or has a run in flight; "
+            "it can be removed once its agent has left. To disconnect "
+            f"every instance, remove the credential {name!r}"))
     launcher = getattr(request.app.state, "ssh_launcher", None)
     outcome: dict[str, Any] = {}
 
@@ -668,8 +815,8 @@ async def remove_worker(request: Request, worker_id: str) -> dict[str, Any]:
                                              before_cleanup=revoke))
     if "result" not in outcome:
         await revoke()
-    revoked, removed, failed = outcome["result"]
-    if removed is None and not revoked and not ssh_removed:
+    revoked, dropped, failed = outcome["result"]
+    if not dropped and not revoked and not ssh_removed:
         raise HTTPException(404, f"no worker named {worker_id!r}")
     return {"id": worker_id, "revoked": revoked, "failed_runs": failed}
 

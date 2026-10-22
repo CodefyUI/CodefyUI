@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { submitRun } from '../../api/rest';
+import { estimateMemory, submitRun, type MemoryEstimate } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { useRunStore } from '../../store/runStore';
 import { useSweepStore } from '../../store/sweepStore';
@@ -10,7 +10,17 @@ import { useWorkerStore } from '../../store/workerStore';
 import { isRunSeed } from '../../utils/graphSettings';
 import { useToastStore } from '../../store/toastStore';
 import { MAX_RUN_NAME_LENGTH, storableRunName, tabDefaultName } from '../../utils/runName';
+import {
+  TARGET_ANY,
+  TARGET_ONE_SHOT,
+  estimateOptions,
+  parseMemoryGib,
+  sharedAwaitingReport,
+  sharedWithoutTotal,
+  usesSharedDevice,
+} from './queueTargets';
 import { TargetSelector, useRunTargetChoice } from './TargetSelector';
+import { MemoryEstimateHint } from './MemoryEstimateHint';
 import styles from './QueueRunDialog.module.css';
 
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -66,6 +76,9 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   const [seed, setSeed] = useState(() => (tab.seed == null ? '' : String(tab.seed)));
   const [deterministic, setDeterministic] = useState(tab.deterministic);
   const [recordOutputs, setRecordOutputs] = useState(tab.recordOutputs);
+  // Node provenance (#344): off unless asked for, so a queued run stores
+  // the options row it always did.
+  const [provenance, setProvenance] = useState<'off' | 'identity' | 'content'>('off');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,6 +98,64 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
   // accelerator unless the tab names a device (#840).
   const choice = useRunTargetChoice(graphDevice, { workerDevice: tab.graphDevice ?? 'auto' });
   const isWorker = choice.isWorker;
+  // A one-shot agent exits when its run ends, so nothing it recorded could
+  // be read (#789): the server refuses it, and the box is off here.
+  const oneShot = choice.target === TARGET_ONE_SHOT || Boolean(choice.worker?.one_shot);
+  const records = recordOutputs && !oneShot;
+
+  // Memory admission (#788): a budget matters only where the run may land
+  // on a device shared by memory. The suggestion is looked up when that is
+  // so, again whenever the device kind or count changes (the history is
+  // kept per both), and fills the field until the user types in it. A
+  // shared device with no memory total (MPS) cannot take a budget at all:
+  // the dialog says so instead.
+  const sharedAt = usesSharedDevice(choice.target, choice.worker, choice.selected, choice.online, choice.kind);
+  const noTotal = sharedAt
+    ? sharedWithoutTotal(choice.target, choice.worker, choice.selected, choice.online, choice.kind)
+    : [];
+  const shared = sharedAt && noTotal.length === 0;
+  // A CUDA card that has not reported its memory yet keeps the field.
+  const awaiting = shared
+    ? sharedAwaitingReport(choice.target, choice.worker, choice.selected, choice.online, choice.kind)
+    : [];
+  const [memoryText, setMemoryText] = useState<string | null>(null);
+  const [wait, setWait] = useState(false);
+  const [estimate, setEstimate] = useState<MemoryEstimate | 'loading' | null>(null);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const shape = estimateOptions(choice.target, choice.selected, choice.kind);
+  const shapeKey = `${shape.device.split(':')[0]} x${shape.target.devices?.length ?? 1}`;
+  const shapeJson = JSON.stringify(shape);
+  const [estimatedFor, setEstimatedFor] = useState<string | null>(null);
+  // The answer for the shape asked last wins; an earlier one landing late
+  // is dropped.
+  const askedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!shared || estimatedFor === shapeKey) return;
+    setEstimatedFor(shapeKey);
+    setEstimate('loading');
+    setEstimateError(null);
+    askedFor.current = shapeKey;
+    // Without secrets: the estimate needs what the graph computes, never a
+    // session key (the server scrubs them anyway).
+    const graph = useTabStore.getState().getSerializedGraph();
+    estimateMemory(graph, JSON.parse(shapeJson)).then(
+      (result) => {
+        if (askedFor.current === shapeKey) setEstimate(result);
+      },
+      (err: unknown) => {
+        if (askedFor.current !== shapeKey) return;
+        setEstimate({ suggested_gib: null, source: null, peak_bytes: null, from_run: null });
+        setEstimateError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  }, [shared, shapeKey, shapeJson, estimatedFor]);
+  const suggested = estimate !== null && estimate !== 'loading' ? estimate : null;
+  // The measured default (#788) first; else a usable static estimate
+  // (#794), which the server never applies on its own: it goes with the run
+  // only as a declared budget marked as an estimate.
+  const offered = suggested?.suggested_gib ?? suggested?.estimate_gib ?? null;
+  const offersEstimate = suggested?.suggested_gib == null && suggested?.estimate_gib != null;
+  const memoryValue = memoryText ?? (offered === null ? '' : String(offered));
 
   const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -114,18 +185,34 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       setError(t('queueRun.error.seed'));
       return;
     }
+    const memoryGib = shared ? parseMemoryGib(memoryValue) : null;
+    if (memoryGib === undefined) {
+      setError(t('queueRun.error.memory'));
+      return;
+    }
     // No device: the picker says so beside the devices.
     const resolved = choice.resolve();
     if (resolved === null) return;
+    // A measured suggestion left as it is goes unsaid: the server derives
+    // the same default and keeps where it came from (the run it was
+    // measured on). An estimate left as it is is sent, marked as one.
+    const acceptedEstimate = memoryText === null && offersEstimate && memoryGib !== null;
+    const declared = memoryText !== null || acceptedEstimate ? memoryGib : null;
+    const target = {
+      ...resolved.target,
+      ...(declared !== null ? { memory_gib: declared } : {}),
+      ...(acceptedEstimate ? { memory_source: 'estimate' } : {}),
+      ...(shared && wait && choice.target !== TARGET_ANY ? { wait: true } : {}),
+    };
     const store = useTabStore.getState();
     // The run needs the session key in memory, as a sweep's children do:
     // RunService removes it before persisting the snapshot.
     const graph = store.getSerializedGraph({ keepSecrets: true });
     const active = store.getActiveTab();
     const options = {
-      target: resolved.target,
+      target,
       device: resolved.device,
-      record_outputs: !isWorker && recordOutputs,
+      record_outputs: records,
       verbose: active.verboseMode,
       graph_id: active.graphId,
       weights_persistent: active.weightsPersistent,
@@ -134,6 +221,7 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
       // Sent even when blank: `seed: null` is an unseeded run, said outright.
       seed: seedValue,
       ...(deterministic ? { deterministic: true } : {}),
+      ...(provenance !== 'off' ? { provenance } : {}),
     };
     const runName = storableRunName(name) || tabDefaultName(active) || null;
     setSubmitting(true);
@@ -192,6 +280,35 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
               }}
             />
 
+            {shared && (
+              <div className={styles.memory}>
+                <label className={styles.field}>
+                  {t('queueRun.memory')}
+                  <input
+                    inputMode="decimal"
+                    value={memoryValue}
+                    onChange={(event) => setMemoryText(event.target.value)}
+                  />
+                </label>
+                <MemoryEstimateHint estimate={estimate} error={estimateError} />
+                {awaiting.length > 0 && (
+                  <p className={styles.hint}>{t('queueRun.memory.awaitingReport', { devices: awaiting.join(', ') })}</p>
+                )}
+                <p className={styles.hint}>{t('queueRun.memory.hint')}</p>
+                {choice.target !== TARGET_ANY && (
+                  <label className={styles.check}>
+                    <input type="checkbox" checked={wait} onChange={(event) => setWait(event.target.checked)} />
+                    {t('queueRun.memory.wait')}
+                  </label>
+                )}
+              </div>
+            )}
+            {noTotal.length > 0 && (
+              <p className={styles.hint} role="note">
+                {t('queueRun.memory.noTotal', { devices: noTotal.join(', ') })}
+              </p>
+            )}
+
             <div className={styles.pair}>
               <label className={styles.field}>
                 {t('queueRun.name')}
@@ -219,13 +336,26 @@ export function QueueRunDialog({ onClose }: QueueRunDialogProps) {
             <label className={styles.check}>
               <input
                 type="checkbox"
-                checked={!isWorker && recordOutputs}
-                disabled={isWorker}
+                checked={records}
+                disabled={oneShot}
                 onChange={(event) => setRecordOutputs(event.target.checked)}
               />
               {t('queueRun.recordOutputs')}
             </label>
-            {isWorker && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
+            {oneShot && <p className={styles.hint}>{t('queueRun.recordOutputsOneShot')}</p>}
+            {isWorker && records && <p className={styles.hint}>{t('queueRun.recordOutputsWorker')}</p>}
+            <label className={styles.field}>
+              {t('queueRun.provenance')}
+              <select
+                value={provenance}
+                onChange={(event) => setProvenance(event.target.value as typeof provenance)}
+              >
+                <option value="off">{t('queueRun.provenance.off')}</option>
+                <option value="identity">{t('queueRun.provenance.identity')}</option>
+                <option value="content">{t('queueRun.provenance.content')}</option>
+              </select>
+            </label>
+            {provenance !== 'off' && <p className={styles.hint}>{t('queueRun.provenance.hint')}</p>}
             {error !== null && <div className={styles.error} role="alert">{error}</div>}
           </div>
 

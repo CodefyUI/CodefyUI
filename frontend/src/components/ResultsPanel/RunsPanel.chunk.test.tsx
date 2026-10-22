@@ -4,6 +4,7 @@ import * as rest from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { _resetRunStoreForTesting } from '../../store/runStore';
 import { _resetSweepStoreForTesting, useSweepStore } from '../../store/sweepStore';
+import { useToastStore } from '../../store/toastStore';
 import { settle } from '../../test/utils';
 import { RunsPanel } from './RunsPanel';
 
@@ -27,6 +28,7 @@ vi.mock('../../api/rest', async (importOriginal) => {
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
+  useToastStore.setState({ toasts: [] });
   _resetRunStoreForTesting();
   _resetSweepStoreForTesting();
 });
@@ -42,5 +44,19 @@ describe('RunsPanel when the New sweep chunk cannot load', () => {
     await waitFor(() => expect(useSweepStore.getState().newSweepOpen).toBe(false));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByRole('button', { name: 'New sweep' })).toBeInTheDocument();
+  });
+
+  it('says so in an error toast', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    render(<RunsPanel panelHeight={400} />);
+    const t = useI18n.getState().t;
+    fireEvent.click(await screen.findByRole('button', { name: t('sweeps.new.title') }));
+    await waitFor(() => expect(useToastStore.getState().toasts).toHaveLength(1));
+    expect(useToastStore.getState().toasts[0]).toMatchObject({
+      message: t('lazyChunk.failed'),
+      type: 'error',
+    });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

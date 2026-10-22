@@ -1010,6 +1010,8 @@ const zhTW: NodeTranslations = {
       checkpoint_every_steps: '每 N 個優化器步存一個週期檢查點（0 = 關閉）。步數里程碑快照是研究能力湧現的原料；單 epoch 的跑法裡每 epoch 檢查點永遠不會觸發（#298）。每個檔案存的是已完成的 epoch 數，從它續訓會重跑存檔當下那個 epoch。檔案大小警告同 checkpoint_every。',
       deterministic: '要求 PyTorch 使用決定性的運算核心。沒有決定性實作的運算會發出警告，而不會讓執行失敗。',
       tensorboard: '同時把指標寫成 TensorBoard 事件檔，放在這次執行專屬的資料夾裡。用 `tensorboard --logdir <路徑>` 開啟；該路徑會列在這次執行的產出檔案中。',
+      strategy:
+        'single：在單一程序中訓練（預設）。ddp：在排入 worker、指派兩張以上 GPU 的執行中，每張卡一個程序，以 DistributedDataParallel 一起訓練同一個模型；batch_size 是每張卡的批次大小。其他情況（畫布、這台伺服器、只有一張卡、匯出的腳本）ddp 會在單一程序中訓練，並留下提示。',
     },
     outputs: {
       optimizer:

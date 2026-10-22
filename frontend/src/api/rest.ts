@@ -212,6 +212,12 @@ export interface RunSummary {
    */
   execution_facts?: Record<string, unknown> | null;
   /**
+   * The run's node provenance records (#344), on `GET /api/runs/{id}`
+   * only: list rows do not carry them. `[]` for a run without the
+   * `provenance` option; absent from an older server.
+   */
+  provenance?: NodeProvenance[];
+  /**
    * 1-based place in this run's OWN device queue (#123).
    *
    * `null` is a real answer, not zero: the run is not queued, or the queue
@@ -261,6 +267,12 @@ export interface RunSummary {
    */
   queue_reason?: string | null;
   /**
+   * A waiting run's current memory budget (#794): an accepted estimate, or
+   * the measured one it was raised to; `null` otherwise (a running run's is
+   * `execution_facts.memory_budget`). Optional: an older server omits it.
+   */
+  queued_budget?: { bytes: number; source: string; from_run?: string; raised_from?: number } | null;
+  /**
    * `queue_reason` as a code and its parameters (#841), which the Runs list
    * words in the active language; `null` when there is no reason. Optional:
    * a server before #841 does not send them, and the English sentence is
@@ -273,6 +285,42 @@ export interface RunSummary {
    * every other run. Optional: a server before #783 does not send it.
    */
   worker_status?: RunWorkerStatus | null;
+}
+
+/**
+ * One node's record of the data or weights it read (#344), for a run
+ * submitted with the `provenance` option. Every key is always present; a
+ * fact that is not known is `null`. `content.method` says what the digest
+ * is: `sha256` is the content, `stat` is path, size and modified time
+ * hashed together.
+ */
+export interface NodeProvenance {
+  schema_version: number;
+  node_id: string;
+  node_type: string;
+  kind: 'dataset' | 'model';
+  mode: 'identity' | 'content';
+  source: {
+    type: string | null;
+    name: string | null;
+    location: string | null;
+    path: string | null;
+    subset: string | null;
+  };
+  split: string | null;
+  revision: { requested: string | null; resolved: string | null; kind: string | null };
+  content: {
+    method: 'stat' | 'sha256';
+    digest: string | null;
+    exists: boolean;
+    files: number;
+    bytes: number;
+    latest_mtime: string | null;
+    truncated: boolean;
+    unreadable: number;
+  } | null;
+  rows: number | null;
+  notes: string[];
 }
 
 /** A single run, as `GET /api/runs/{id}` returns it — the row plus a cursor. */
@@ -374,6 +422,85 @@ export async function deleteRun(
 export interface RunTarget {
   worker: string;
   devices?: string[];
+  /** The run's memory budget per device, for a card shared by memory (#788). */
+  memory_gib?: number;
+  /** Wait when the budget does not fit a shared card now (#788). */
+  wait?: boolean;
+  /** `one-shot`: any one-shot worker, and nothing else (#790). */
+  pool?: 'one-shot';
+}
+
+/**
+ * `POST /api/runs/estimate` (#788, #794): the budget a run of the graph gets
+ * by default. `source: 'history'`: the last peak of the same graph on the
+ * same kind and number of devices (`options.device`,
+ * `options.target.devices`) times 1.2. `source: 'estimate'`: no such run;
+ * a static estimate from the graph's parameter counts and batch size
+ * (`static`), never a measured peak. All null when there is neither; a
+ * `low` confidence static estimate is reported in `static` and never used
+ * as the default.
+ */
+export interface MemoryEstimate {
+  suggested_gib: number | null;
+  source: string | null;
+  peak_bytes: number | null;
+  from_run: string | null;
+  /** `measured` (history), `medium` / `low` (the static estimate's), or null. */
+  confidence?: string | null;
+  /** Earlier peaks of the graph on these devices, newest first. */
+  history?: { run_id: string; peak_bytes: number; finished_at: string | null }[];
+  static_estimate_bytes?: number | null;
+  /**
+   * The static estimate in GiB (rounded up) when it is usable (`medium`),
+   * for the dialog to offer; the server never applies it on its own (#794).
+   */
+  estimate_gib?: number | null;
+  static?: StaticMemoryEstimate | null;
+}
+
+/** How a static memory estimate was reached (#794). */
+export interface StaticMemoryEstimate {
+  bytes: number;
+  confidence: string;
+  parameters: number;
+  trainable_parameters: number;
+  training: boolean;
+  optimizer: string | null;
+  /** Bytes held per parameter, in float32 units: weights + gradients + optimizer state. */
+  multiplier: number;
+  batch_size: number;
+  eval_batch_size: number;
+  precision: string;
+  weights_bytes: number;
+  activation_bytes: number;
+  workspace_bytes: number;
+  models: {
+    type: string;
+    parameters: number;
+    activations_known: boolean;
+    probe_input: number[][] | null;
+    /** The graph does not give this model's input size: the probe's is a guess. */
+    shape_guessed?: boolean;
+  }[];
+  /** Model node types the estimate could not count. */
+  uncounted: string[];
+  notes: string[];
+  batch_assumed: boolean;
+  /** The pass the activation term is mostly from: `training` (at `batch_size`), `evaluation` (at `eval_batch_size`), or `none`. */
+  activation_phase: string;
+}
+
+export async function estimateMemory(
+  graph: Record<string, unknown>,
+  options: Record<string, unknown>,
+): Promise<MemoryEstimate> {
+  const res = await apiFetch(`${BASE_URL}/runs/estimate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph, options }),
+  });
+  if (!res.ok) return detailError(res, 'Memory estimate failed');
+  return res.json();
 }
 
 export interface SubmitRunRequest {
@@ -733,19 +860,24 @@ export interface RunArtifact {
   meta: Record<string, unknown> | null;
   created_at: string;
   /**
-   * `local` (an absolute path), `mount` (a file on a shared mount) or
-   * `transfer` (a worker uploaded it to this server, #785: downloadable
-   * from `/api/runs/{id}/artifacts/{artifact_id}/download`).
+   * `local` (an absolute path), `mount` (a file on a shared mount),
+   * `transfer` (a worker uploaded it to this server, #785) or `s3` (a
+   * worker uploaded it to the S3 bucket, #791: `path` is its `s3://` URI).
+   * The last two download from
+   * `/api/runs/{id}/artifacts/{artifact_id}/download`.
    */
   backend?: string;
   mount_label?: string | null;
   /**
    * The stored path under `mount_label`, for a `mount` row; the key under
-   * this server's data root, for a `transfer` row.
+   * this server's data root, for a `transfer` row; the object key, for an
+   * `s3` row.
    */
   relative_path?: string | null;
   /** The worker whose run wrote the file; `local` is this server. */
   worker_id?: string;
+  /** The bucket of an `s3` row (#791); `null` on every other row. */
+  bucket?: string | null;
 }
 
 /**
@@ -1083,9 +1215,10 @@ export async function renameGraph(from: string, to: string) {
 
 /**
  * Advice the export route sends beside the script (#557); the script is the
- * same with or without it. `absolute_path` is the only code so far: a file
- * param whose absolute path ties the script to this computer. A client skips
- * any code it does not know.
+ * same with or without it. `absolute_path`: a file param whose absolute path
+ * ties the script to this computer. `ddp_strategy` (#792): a TrainingLoop
+ * with strategy=ddp, which the script trains in one process (`param` is
+ * `strategy`, `value` is `ddp`). A client skips any code it does not know.
  */
 export interface ExportWarning {
   code: string;

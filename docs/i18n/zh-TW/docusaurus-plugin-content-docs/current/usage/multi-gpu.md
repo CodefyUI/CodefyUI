@@ -1,12 +1,12 @@
 ---
 sidebar_position: 3.6
 title: 多 GPU 執行
-description: 在多 GPU 的機器上使用 CodefyUI——何時排入佇列而不是按 Run、在同一台機器上啟動 worker agent、選擇裝置或裝置集合、slot 與上限、Workers 面板、畫布的行為、峰值記憶體，以及目前的限制。
+description: 在多 GPU 的機器上使用 CodefyUI——何時排入佇列而不是按 Run、在同一台機器上啟動 worker agent、選擇裝置或裝置集合、用多張卡訓練同一個模型、slot 與上限、Workers 面板、畫布的行為、峰值記憶體，以及目前的限制。
 ---
 
 # 多 GPU 執行
 
-CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行；指定 worker agent 為目標時，則在該 worker 的子程序中執行，並使用目標的裝置。在有多張 GPU 的機器上，這帶來兩件事：多個 run 同時執行，每張卡一個（若你允許，也可以更多）；以及單一 run 看得到多張卡。本頁是操作說明；設計見[執行架構](/advanced/execution-architecture)，佇列順序與選項的參考見[執行佇列](./run-queue)。
+CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行；指定 worker agent 為目標時，則在該 worker 的子程序中執行，並使用目標的裝置。在有多張 GPU 的機器上，這帶來三件事：多個 run 同時執行，每張卡一個（若你允許，也可以更多）；單一 run 看得到多張卡；以及 `TrainingLoop` 能在這些卡上訓練同一個模型。本頁是操作說明；設計見[執行架構](/advanced/execution-architecture)，佇列順序與選項的參考見[執行佇列](./run-queue)。
 
 ## 直接執行或排入佇列 {/* #run-or-queue */}
 
@@ -16,7 +16,7 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 | 在哪裡執行 | 一律在伺服器程序內 | 伺服器程序內，或 `target` 指定的 worker |
 | 是否等待空出的卡 | 否：立即開始（最多兩個，每個分頁一個） | 是：加入其裝置的佇列 |
 | 裝置 | 一個：圖的裝置，否則為 Settings 的裝置 | 一個裝置，或 worker 上的一組裝置集合 |
-| 在多次點擊間保留權重與快取、為 Inspector 擷取輸出 | 是 | 否（只有 `record_outputs` 才擷取輸出，且只限伺服器本身） |
+| 在多次點擊間保留權重與快取、為 Inspector 擷取輸出 | 是 | 否（只有 `record_outputs` 才擷取輸出；worker 會保存它們，Inspector 向 worker 讀取） |
 
 建構與除錯圖時用 **Run**。耗時長的工作、想放在特定卡上的工作，以及需要不只一張卡的工作，請排入佇列。
 
@@ -24,9 +24,9 @@ CodefyUI **伺服器**是一個程序。**run** 預設在這個程序內執行�
 
 工具列 **Run** 旁的下拉鍵會開啟選單，其中的**排入佇列...**會把目前分頁的圖送出為 queued run（與 `cdui run` 相同的 `POST /api/runs`）：
 
-- **目標**：**本伺服器**、伺服器知道的每個 worker 及其狀態與裝置，以及有 worker 連線後出現的**任一可用**。排給離線或已中斷連線的 worker 的 run 會在佇列中等它連上；排空中或已停用的 worker 會列出但不能選。完全沒有 worker 時，對話框會說明，並提供開啟 Workers 面板的連結。
+- **目標**：**本伺服器**、伺服器知道的每個 worker 及其狀態與裝置、有 worker 連線後出現的**任一可用**，以及伺服器知道任何 worker 後出現的**單次 worker**（單次 worker 池，見[單次 worker](/usage/remote-workers#one-shot-workers)）。排給離線或已中斷連線的 worker 的 run 會在佇列中等它連上；排空中或已停用的 worker 會列出但不能選。共用憑證中已離開的執行個體不會列出。完全沒有 worker 時，對話框會說明，並提供開啟 Workers 面板的連結。
 - **裝置**：本伺服器只能選一個裝置；worker 可選同一種類的一組裝置，依 worker 列出裝置的順序排列，勾選 CUDA 卡時會顯示它在 run 內的名稱（`cuda:2 -> cuda:0 in this run`）；任一可用則選裝置種類（CPU、CUDA GPU、Apple MPS）。除非分頁指定了裝置，worker 與任一可用都從第一個可用的加速器開始，不受設定中為本伺服器選的裝置影響；**新增掃描** 對話框也一樣。
-- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。目標為 worker 或任一可用時，錄製節點輸出會停用。
+- **名稱**、**亂數種子**、**確定性演算法**與**錄製節點輸出**的初始值取自分頁設定。在 worker 上，錄製的輸出保存在 worker 上，對話框會加以說明；目標為單次 worker 或單次 worker 池時，錄製節點輸出會關閉並停用，因為它的 agent 在 run 結束後就會退出。
 
 **排入佇列**會送出 run、關閉對話框，並在 Runs 分頁開啟它。伺服器拒絕時，訊息會顯示在對話框內。
 
@@ -74,6 +74,27 @@ cdui run train.json --target any --device cuda
 
 **Sweep 與 study。** `POST /api/sweeps` 與 `POST /api/studies` 會把 `options.target` 傳給每個子 run。使用 `"target": {"worker": "any"}` 且不帶 `devices` 時，每個子 run 取下一個符合 sweep 裝置種類的空 slot，所以在兩個各有一張卡的 agent 上，四個 variant 的 sweep 會同時跑兩個；worker 上帶種子的子 run 各在自己的程序中，可以並行。單一 run 會被拒絕的 target，會讓整個 sweep 或 study 在排入任何東西之前以 `400` 被拒絕。每個 variant 與 attempt 都會回報 `worker_id`、`devices` 與 `queue_key`。**新增掃描**對話框有與 **Queue on...** 相同的目標與裝置選擇器：本伺服器、已連線的 worker 加上裝置集合，或任一可用加上裝置種類。維持本伺服器與分頁的裝置時，sweep 會像以往一樣送出，不帶 target。sweep 檢視會顯示每個 variant 的 Worker 與裝置。study 請透過 API 設定 `target`。請參閱[執行佇列：Sweep](./run-queue#sweeps)。
 
+## 用多張卡訓練同一個模型 {/* #ddp */}
+
+`TrainingLoop` 在單一程序中訓練。把它的 **strategy**（在 **Advanced** 底下）設為 `ddp`，再把這張圖排入裝置集合有兩張以上 CUDA 卡的 worker，訓練迴圈就會以 PyTorch 的 `DistributedDataParallel` 在這些卡上訓練同一個模型：
+
+```bash
+cdui run train.json --target gpu-box --devices cuda:0,cuda:1
+```
+
+run 子程序會為每張卡啟動一個程序，稱為 **rank**：rank *k* 在 run 的 `cuda:k` 上訓練。各 rank 透過 worker 上 run 目錄裡的一個檔案找到彼此，並只經由 loopback 介面以 NCCL 溝通（PyTorch 沒有 NCCL 時改用 `gloo`）：worker 不會開啟任何其他機器能連到的連接埠（除非 agent 的環境已設定，否則各 rank 的 `GLOO_SOCKET_IFNAME` 與 `NCCL_SOCKET_IFNAME` 會設為 `lo`，`OMP_NUM_THREADS` 設為 1）。run 的其他部分都不變：在 Runs 面板中它仍是一個 run，只有一份事件紀錄、一組指標與一個結果。
+
+- **資料。** 每個 rank 從訓練迴圈收到的每個 DataLoader（`dataloader` 與 `val_dataloader`）讀取自己的那一份：透過 `DistributedSampler` 取資料集的 *N* 分之一，批次大小是 DataLoader 的 `batch_size`。因此 `batch_size` 以每張卡計算，一次優化器更新會平均 *N* 個批次的梯度：兩張卡、`batch_size` 32 的訓練等同一張卡、`batch_size` 64。訓練迴圈的 Config 面板會顯示 `effective_batch_size`。開啟 `shuffle` 時，順序每個 epoch 都會改變，且每個 rank 都相同；有設定種子的 run，每次執行的順序也相同。資料集大小不是 *N* 的倍數時，最後一份會重複幾筆樣本，讓每個 rank 跑相同數量的批次；驗證時這些重複的樣本不會計入 `val_loss`、`val_accuracy` 與 `val_loss_step`，所以每筆驗證樣本只算一次。資料集必須是 map-style（可以用索引存取），DataLoader 也必須使用它自己的 sampler；iterable 資料集或自訂 sampler 會讓 run 失敗並附上說明。
+- **隨機性。** 有設定種子的 run，rank *k* 以 run 的種子加 *k* 來初始化它的亂數產生器，所以 dropout 遮罩與資料增強在各 rank 之間不同，就像同一個程序裡不同批次之間不同一樣；rank 0 的種子與單一程序的 run 完全相同。唯一的例外是打亂順序：使用 rank 0 的順序，並分享給每個 rank。
+- **權重。** 每個 rank 都從 rank 0 的權重開始，每次反向傳播都會在各 rank 之間平均梯度，所以每一步之後所有 rank 的權重都相同。`accumulate_steps`、`grad_clip_norm`、`precision`、`max_steps` 與學習率排程器的行為都和單卡相同。
+- **回報的內容。** `train_loss` 是所有 rank 批次損失的平均；`val_loss` 與 `val_accuracy` 以所有 rank 各自那一份驗證集計算；`train_loss_batch` 與 `val_loss_step` 也是各 rank 的平均。即時進度條顯示 rank 0 最新的批次。Config 面板與 `metrics` 輸出會多出 `strategy: ddp`、`world_size` 與 `backend`。**峰值記憶體**會列出每一張卡。
+- **rank 0 就是這個 run。** rank 0 執行整張圖，只有它的事件、指標與檔案會送到伺服器：檢查點（`checkpoint_every`、`checkpoint_every_steps` 與中斷檢查點）以及 TensorBoard 檔案只由 rank 0 寫一次，在單卡上也能載入。其他 rank 只執行訓練迴圈和餵資料給它的節點，並在 rank 0 到達訓練迴圈後才開始，所以第一次使用才下載的資料集只會下載一次。但這些節點仍會在每個 rank 上執行：在記憶體中建立或前處理的資料集會被建立 *N* 次，用掉 *N* 倍的主記憶體；而且每個 rank 必須在 rank 0 之後 30 分鐘內（rank 在訓練迴圈第一個集體通訊中等待的時間）到達訓練迴圈，否則 run 會因集體通訊逾時而失敗。訓練迴圈之後的節點（評估、`ModelSaver`）只在 rank 0 上以訓練好的模型執行。每個 rank 在 worker 上各有自己的輸出紀錄：run 的紀錄就是 rank 0 的，rank *k* 的則是旁邊的 `output-rank<k>.log`。
+- **停止。** **Stop** 會送到每個 rank。各 rank 在每個批次之後一起決定是否停止，因此會停在同一個批次，並由 rank 0 寫入中斷檢查點。
+- **失敗。** 任何一個 rank 失敗或結束，run 就以 `failed` 結束並附上該 rank 的錯誤，例如 `DDP rank 1 of 2 failed: ...`，其他 rank 會被停止。run 要等每個 rank 都結束後才回報，所以回報時它的卡都已經釋放。
+- **記憶體預算。** 在[依記憶體共用](#sharing-a-card)的卡上，每個 rank 都受它自己那張卡的預算限制，在集合中其他有預算的卡上則完全不能配置：用 `device` 參數固定到集合中另一張卡的節點，會在第一次配置記憶體時失敗，而不會在另一個 rank 受限的卡上用掉預算之外的記憶體。**峰值記憶體**回報的是每張卡上任一 rank 用到的最大值。
+
+`ddp` 無法套用時，訓練迴圈會在自己的裝置上以單一程序訓練，與 `single` 完全相同，並在 Runs 面板（種類為 `ddp_not_available` 的警告）與節點的紀錄中說明：畫布上的 **Run**、在這台伺服器上的 run（即使帶裝置集合）、在 worker 上只用一張卡或 CPU 的 run、位於 block 或 preset 內的 `TrainingLoop`，以及匯出的 Python 腳本（**匯出為 Python** 會對這種訓練迴圈發出警告）。同一張圖中的兩個 `ddp` 訓練迴圈必須依序執行，也就是一個迴圈的模型接到下一個；在以 `ddp` 訓練的 run 中，位於不同分支的兩個會讓 run 在開始前就失敗。
+
 ## Slot 與上限 {/* #slots-and-limits */}
 
 **slot** 是一台機器上的一個裝置。加速器的每個 slot 一次容納一個 run，CPU 容納兩個，其餘依送出順序等待。裝置集合 run 需要集合中每個裝置都有空 slot，並一次全部占用；它在佇列最前面等待時會保留這些 slot，所以一連串單卡 run 無法讓它餓死。
@@ -84,14 +105,38 @@ cdui run train.json --target any --device cuda
 CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 ```
 
-同一台機器上的 worker，對實體上相同的每張卡（以卡的 UUID 比對）共用這台伺服器的 slot，因此在上限為 1 時，伺服器上的 run 與該 worker 上的 run 不會同時拿到同一張卡。這種卡套用伺服器的上限，針對它的 `worker/device` 覆寫會被忽略並發出警告。提高上限會讓多個 run 共用一張卡的記憶體，但沒有任何機制檢查它們是否放得下。細節見[執行佇列：設定](./run-queue#configuration)。
+由多個提供者共用的卡算作一張卡：同一台機器上的 worker 與這台伺服器（以卡的 UUID 比對），或提供同一張卡的兩個 worker（同一台 GPU 伺服器上的兩個 agent，例如一個 SSH worker 與一個 enroll 的 agent）。經由每個提供者的 run 都計入這張卡，套用線上提供者中最小的上限（同一台機器上的 worker 若沒有自己的 `<worker>/<device>` 覆寫，就使用這台伺服器對這張卡的上限，所以 `cuda:0=2` 會提高它），因此伺服器上的 run 與那些 worker 上的 run 不會超過上限拿到同一張卡。依記憶體共用的卡只有一份帳本，且只有在每個提供它的線上 worker 都設為共用時才依記憶體接收 run。Workers 面板會在這種卡上標示「與 ... 是同一張實體卡」並指出採用哪個提供者的上限；被較小上限壓低的覆寫會在 worker 連線時記錄警告。提高上限會讓多個 run 共用一張卡的記憶體，但沒有任何機制檢查它們是否放得下。若要依記憶體共用 worker 的卡，請見[共用一張卡](#sharing-a-card)。細節見[執行佇列：設定](./run-queue#configuration)。
+
+## 共用一張卡 {/* #sharing-a-card */}
+
+worker 的卡預設一次只接收一個 run（**獨佔**）。要讓多個 run 共用，在 [Workers 面板](#the-workers-panel)把該卡設為 **依記憶體共用**。這個設定依 worker 與卡儲存，重新連線與伺服器重啟後都會保留。只有 CUDA 與 MPS 卡可以共用，而且只能在 worker 上：這台伺服器上的 run 與這裡所有其他 run 共用一個程序，沒有辦法把它限制在預算內。
+
+送到共用卡的 run 要宣告**記憶體預算**，單位是 GiB、針對其裝置集合中的每張卡：`target.memory_gib`，或[排入佇列...](#queue-on)中的 **記憶體預算** 欄位。若同一張圖先前在相同張數的卡上有成功結束的 run，欄位會預先填入它的 CUDA 峰值再加 20%（兩張卡的 run 的每卡峰值，不代表同一張圖在一張卡上的用量；MPS 沒有峰值，只有結束時驅動程式持有的量，所以 MPS 的 run 要自行宣告預算）。這個實測值也是伺服器套用在未宣告預算的 run 上的預設值。「同一張圖」指的是執行時的圖：節點類型、影響記憶體用量或選擇資料的參數（包括 `Dataset` 節點的 `name`），以及連線，含拓撲結構。節點 id 與位置、顯示用的標籤、seed、執行多久（`epochs`、`max_steps`、`lr`），以及資料載入器的 worker 行程數都不算在內，因此換個 seed 或增加 epochs 重跑時，仍會找到先前的峰值。本伺服器不認得的節點類型（只安裝在 worker 上的外掛）的參數也算在內：儲存的圖不含這些參數，但 key 含。共用的 MPS 裝置不回報記憶體總量，因此無法依預算接收 run：對話框會在欄位的位置說明這一點，伺服器也會拒絕該 run，直到這張卡改回獨佔。尚未回報記憶體的 CUDA 卡則保留欄位，並說明預算會在 worker 下一次心跳回報後才判斷。
+
+沒有這樣的 run 時，欄位會填入**靜態估計值**，在對話框中標為**估計值**，不會當成峰值呈現：圖中模型的每個參數以 4 bytes 計；若圖會訓練，再加上每個可訓練參數為訓練占用的量（梯度與優化器狀態：Adam 多 12 bytes，帶 momentum 的 SGD 多 8 bytes，一般 SGD 多 4 bytes；RMSprop 啟用 momentum 或 `centered` 時各多一份狀態），在 bf16/fp16 autocast 下再加每個權重 2 bytes 的副本；加上依圖中 batch size 一個訓練步驟的激活，或以評估節點自己的 batch 跑一次評估的激活（取較大者）；以上總和再加 20% 給配置器保留；最後加 128 MiB 給 CUDA 函式庫的工作區。對話框會列出每一項，加總即為該數值。伺服器在 PyTorch 的 `meta` 裝置上建立每個模型來計算參數量（只有形狀、不占記憶體，在獨立的執行緒中執行並有時間上限），並用一個 `meta` 輸入跑一次前向傳遞來估計激活，輸入形狀取自模型的第一層與圖中的資料節點（在提供資料的節點上明確設定的 `image_size` 或 `seq_len`，或已知的資料集；預設值不會決定尺寸）。超過時間上限的建立會被放棄，對話框不提供估計值；已有實測峰值時則完全不建立估計。在內建的訓練範例上，峰值超過 1 GiB 的 run，估計值為實測峰值的 1.2 到 1.8 倍；小型範例的峰值大多是固定開銷，估計值最多多出 0.25 GiB。必須略過或猜測部分圖的估計會以**粗估**顯示並附上原因，欄位保持空白：無法計算的模型節點（例如外掛提供的節點）、推不出模型激活的輸入形狀、圖中沒有給出輸入尺寸（循環網路或自適應池化的 CNN 可接受任何尺寸，預設尺寸只是猜測），或圖中沒有 batch size。
+
+伺服器不會自行套用靜態估計值。未修改的實測建議值不會送出：伺服器會套用同一個預設值，Runs 面板的預算欄也會標出它來自哪個 run。未修改的估計值會作為 run 宣告的預算送出，並標記為估計值（`target.memory_source: "estimate"`），預算欄標為「（估）」。若送出估計值時（不論來自對話框、API 或 CLI）此圖已有更大的實測峰值，預算會改為該峰值再加 20%。若這樣的 run 還在等待時，同一張圖的另一個 run 以更大的峰值成功結束，等待中 run 的預算也會同樣調高，Runs 面板中的原因與預算欄都會說明；若調高後的預算比 run 能用的每張卡都大，run 會以此原因失敗，而不是永遠等待。你自行輸入的預算不會被更改。在預算下記憶體不足的 run 會說明預算的來源（自行輸入、實測或估計），並請你宣告更大的 `target.memory_gib`。沒有實測峰值也沒有宣告預算時，伺服器會拒絕該 run 並要求填寫預算。sweep 或 study 會在寫入任何 run 之前整批檢查，每個 run 依它自己的 `target.wait`：只要其中一個 run 會被拒（沒有預算、預算比它能用的每張卡都大，或在 `wait: false` 時目前放不下），整個 sweep 或 study 就會被拒；圖還沒有實測峰值時，sweep 要自行宣告預算。
+
+```json
+{"options": {"target": {"worker": "gpu-box", "devices": ["cuda:0"], "memory_gib": 6}}}
+```
+
+伺服器為每張卡維護一份帳本：worker 心跳回報的總記憶體與可用記憶體（可用量計入卡上所有程序，包括其他使用者的工作）、已指派但尚未開始的 run 的預算（**已保留**），以及已開始的 run 的預算（**執行中**）。CUDA 卡上的 run 還會占用自己的 CUDA context（cuBLAS handle、已載入的 kernel），下面的上限管不到這部分，所以伺服器把每個 run 算成預算加上 `CODEFYUI_EXECUTION_CUDA_CONTEXT_MIB`（預設 768 MiB；在一張 CUDA 12 的卡上實測約 650 MiB）。這個總和不超過 `min(free - reserved, total - reserved - running)` 時就放得下，拒絕訊息也會兩者都列出：`needs 6.0 GiB (+0.8 GiB CUDA context), ...`。worker 會在 run 開始前把它的配置器限制在預算內（`torch.cuda.set_per_process_memory_fraction`），所以超出預算的 run 只會讓自己記憶體不足，同一張卡上的其他 run 繼續執行。
+
+預算放不下時：
+
+- 指定 worker 的 run 會立即被拒並說明原因：`needs 12.0 GiB, cuda:1 on gpu-box has 6.3 GiB free (runs a1b2c3d4, c3d4e5f6)`。加上 `target.wait: true`（對話框中的 **目前放不下時在佇列中等待**）則改為等待；
+- `any` 的 run 會等到有卡放得下，除非它的預算比每張候選卡都大（拒絕），或 `target.wait` 為 `false`（拒絕而不等待）。送往 one-shot pool（`target.pool`）的 run 以同樣方式判斷，候選卡是 one-shot worker 的卡；
+- 等待記憶體的 run，Runs 面板會在它的 worker 下方說明。
+
+沒有預算的 run 不會被送到共用卡；共用卡上沒有預算的 run（同機 worker 卡上的畫布 run，或在該卡改為共用之前就開始的 run）會獨佔該卡直到結束。Runs 面板的 **預算** 欄顯示每個 run 的預算，Workers 面板則畫出每張共用卡的記憶體：使用中、已保留，以及新預算可用的量（已扣除 CUDA context）。在卡為獨佔時排入等待的 run，會在該卡改為共用時取得其圖的預設預算，或之後在同一張圖於相同張數的卡上成功執行時取得；在那之前它會繼續等待，Runs 面板會說明（想早點開始，可以取消後帶著預算重新排入）。依預算准入的 run 不會在無法限制它的 agent 上啟動：若 worker 在這段期間以舊版 agent 重新連線，該 run 會失敗並說明原因。伺服器重啟後接手的 run（[遠端 Worker](/usage/remote-workers)）一開始就會在它的卡上重新以執行中計入其預算。
 
 ## Workers 面板 {/* #the-workers-panel */}
 
 從 Runs 面板標題列的 **Workers**，或 **Settings → 執行 → Workers → 管理**開啟。開啟期間每 5 秒更新一次，每個 worker 會顯示：
 
 - 狀態（**Online**、心跳延遲或節點型別與伺服器不同時為 **Degraded** 並在旁說明原因、**Draining**、**Disconnected**，以及你停用的 SSH worker 為 **已停用**）、版本以及是否與伺服器相同、環境摘要、節點型別是否與伺服器相同（以及哪些不同）、上次連線被拒的原因、mount 標籤（見[遠端 Worker：儲存](/usage/remote-workers#storage)），以及上次心跳距今多久；
-- 每個裝置在最近一次心跳時的可用與總記憶體（GiB；worker 離開期間標示為「最後回報時」），以及 slot 的已占用 / 上限；
+- 每個裝置在最近一次心跳時的可用與總記憶體（GiB；worker 離開期間標示為「最後回報時」）、slot 的已占用 / 上限，以及 CUDA 或 MPS 卡接收 run 的方式（**獨佔** 或 **依記憶體共用**，見[共用一張卡](#sharing-a-card)），共用卡另有記憶體長條；
 - 它正在執行的 run，每個都連到 Runs 面板中的該 run。
 
 伺服器拒絕過（例如版本不同）且沒有卡片的 agent，會列在 **被拒的連線** 下並附上原因（[遠端 Worker，讓 worker 保持同步](/usage/remote-workers#keeping-workers-in-sync)）。
@@ -100,7 +145,7 @@ CODEFYUI_RUN_QUEUE_MAX_CONCURRENT="cuda:0=2,gpu-box/cuda:1=3" cdui start
 
 ## 畫布的行為 {/* #the-canvas */}
 
-畫布上的 **Run** 一律在伺服器程序內、以圖的裝置（否則為 Settings 中的裝置）執行，從不送到 worker。它跳過佇列，所以即使某張卡的上限是 1，它仍可能與 queued run 共用那張卡。它會在多次點擊之間保留分頁的快取輸出與模型權重，並為 Inspector 記錄輸出，這些 worker run 都做不到。要把分頁中的圖交給 worker，請使用[排入佇列...](#queue-on)。
+畫布上的 **Run** 一律在伺服器程序內、以圖的裝置（否則為 Settings 中的裝置）執行，從不送到 worker。它跳過佇列，所以即使某張卡的上限是 1，它仍可能與 queued run 共用那張卡。它會在多次點擊之間保留分頁的快取輸出與模型權重，這是 worker run 做不到的，並為 Inspector 記錄輸出（worker run 只有在 `record_outputs` 時才會記錄）。要把分頁中的圖交給 worker，請使用[排入佇列...](#queue-on)。
 
 ## Runs 面板中的峰值記憶體 {/* #peak-memory */}
 
@@ -108,10 +153,11 @@ run 結束後，詳細資訊標題會顯示 CUDA 的**峰值記憶體**（配置
 
 ## 限制 {/* #limits */}
 
-- **單一 run 不會跨卡訓練。** 裝置集合讓一個 run 看得到多張卡，節點也可以用 run 內名稱固定到這些卡上，但目前還沒有 `DistributedDataParallel` 策略（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
-- **沒有依記憶體的准入。** run 以每個 slot 的數量准入；不會因為卡上記憶體不足而拒絕 run，塞太滿的卡會以記憶體不足錯誤失敗（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）。請參閱[訓練記憶體](/advanced/training-memory)。
+- **只有 `ddp` 能讓多張卡訓練同一個模型，且限於同一個 worker。** 裝置集合讓一個 run 看得到多張卡，節點也可以用 run 內名稱固定到這些卡上；`strategy: ddp` 的 `TrainingLoop` 會在這些卡上一起訓練（[用多張卡訓練同一個模型](#ddp)）。沒有多機訓練，也沒有分片（FSDP）或模型平行的策略。這個版本發布前，尚未在有多張 GPU 的硬體上測試真正的多卡 NCCL 訓練：此策略是以 CPU 與單張 CUDA 卡上的 `gloo`，以及單張卡上的 NCCL 驗證。
+- **只有 worker 有依記憶體的准入。** 這台伺服器上的卡以每個 slot 的數量准入：不會因為卡上記憶體不足而拒絕 run，塞太滿的卡會以記憶體不足錯誤失敗。worker 的卡可以[依記憶體共用](#sharing-a-card)。請參閱[訓練記憶體](/advanced/training-memory)。
+- **帳本計算的是預算，不是 run 實際用量。** 執行中的 run 以它的預算計算，可用記憶體則來自 worker 的心跳（每 10 秒一次），針對整張卡：其他使用者的工作在兩次心跳之間占用的記憶體，要到下一次心跳才看得到，也不會量測每個 run 的用量。
 - **機器之間是明文 HTTP。** 遠端 worker 以控制面提供的協定加入與連線；沒有 TLS proxy 或 SSH 通道時，它的 token 與 run 的輸入會以明文經過網路（[遠端 Worker：信任](/usage/remote-workers#trust-between-agent-and-control-plane)）。
-- **worker 上不擷取輸出**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)），也不保留權重：每個 worker run 都從頭開始。
+- **擷取的輸出保存在 worker 上**（`record_outputs`，[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）：只有 worker 連線時 Inspector 才能讀取。不保留權重：每個 worker run 都從頭開始。
 - **長時間斷線會結束 run。** 失去連線的 worker 會在 `CODEFYUI_WORKER_RESUME_GRACE_S`（5 分鐘）內繼續它的 run；超過後它們以 `interrupted` 結束（[遠端 Worker：連線中斷時](/usage/remote-workers#when-the-connection-drops)）。
 
 ## 另請參閱 {/* #see-also */}

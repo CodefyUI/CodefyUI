@@ -126,7 +126,6 @@ def test_a_new_runner_marks_leftover_directories(tmp_path):
 
 
 @pytest.mark.parametrize("assign, reason", [
-    (_assign("r1", options={"record_outputs": True}), "record_outputs"),
     (_assign("r1", devices=["cuda:0"], device="cuda:0"), "not offered"),
     (_assign("r1", device="tpu:0"), "unknown device"),
     (_assign("r1", device="cuda:0"), "not offered"),
@@ -331,6 +330,41 @@ async def test_cancel_escalates_to_terminate_and_reports_interrupted(tmp_path):
     assert await runner.cancel("deaf1") is False  # gone: nothing to cancel
 
 
+async def test_a_cancel_while_the_subprocess_starts_is_reported(tmp_path):
+    """A cancel right after ``assign``, before the child said anything
+    (#856): the subprocess is stopped while it still starts up, and the
+    run still ends with a ``run_finished``, promptly, on every OS."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.deaf_child,
+                     kill_after_s=2.0)
+    await runner.assign(_assign("early1"))
+    handle = runner.runs["early1"]
+    started = time.monotonic()
+    assert await runner.cancel("early1", grace_s=0)
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=45)
+    assert time.monotonic() - started < 30
+    assert finished.status == "interrupted"
+    assert not handle.process.is_alive()
+    await asyncio.wait_for(handle.done.wait(), 15)
+    assert "early1" not in runner.runs
+    seqs = [f.seq for f in sink.of("early1")]
+    assert seqs == list(range(1, len(seqs) + 1))
+
+
+async def test_a_cooperative_cancel_before_the_first_event_ends_cancelled(
+        tmp_path):
+    """The ``cancel`` reaches the child before it listens (#856): it is
+    read once the child does, and the run ends ``cancelled``."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.slow_graph_child)
+    await runner.assign(_assign("early2", graph=h.slow_graph()))
+    assert await runner.cancel("early2", grace_s=60)
+    finished = await sink.wait_for(
+        lambda f: isinstance(f, wp.RunFinished), timeout=90)
+    assert finished.status == "cancelled"
+
+
 async def test_a_crash_while_stopping_is_still_a_crash(tmp_path):
     sink = h.FrameSink()
     runner = _runner(tmp_path, sink, child_entry=h.crash_on_cancel_child)
@@ -435,3 +469,50 @@ async def test_agent_never_imports_torch_and_child_events_match_in_process(
     local = await h.in_process_events(h.tensor_graph(), h.TENSOR_OPTIONS)
     assert worker == local
     assert len(local) == 8  # running + completed for each of four nodes
+
+
+# ── memory budgets (#788) ─────────────────────────────────────────────────
+
+
+async def test_run_started_waits_for_the_memory_cap(tmp_path):
+    """A budgeted run's ``run_started`` goes out once the subprocess says
+    its cap is set, carrying what was applied; the budget reaches the child
+    in the child's own numbering (its set starts at cuda:0), and the report
+    comes back in the worker's (cuda:1, as placed)."""
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.budget_child,
+                     offered_devices={"cpu", "cuda:0", "cuda:1"})
+    gib6 = 6 * 1024 ** 3
+    await runner.assign(_assign("b1", device="cuda:1", devices=["cuda:1"],
+                                memory_budgets={"cuda:1": gib6}))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    started, end = sink.of("b1")
+    assert isinstance(started, wp.RunStarted) and started.seq == 1
+    assert started.execution_facts["memory_limit"] == {"cuda:1": {
+        "budget_bytes": gib6, "total_bytes": 16 * 1024 ** 3,
+        "fraction": 0.375, "seen_as": "cuda:0"}}
+    assert started.execution_facts["visible_devices"] == "1"
+    assert end is finished and finished.seq == 2
+    assert finished.status == "succeeded"
+
+
+async def test_a_run_whose_cap_failed_never_reports_started(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.uncapped_child,
+                     offered_devices={"cuda:0"})
+    await runner.assign(_assign("b2", device="cuda:0", devices=["cuda:0"],
+                                memory_budgets={"cuda:0": 1024}))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert sink.of("b2") == [finished]
+    assert finished.status == "failed" and finished.seq == 1
+
+
+async def test_a_budget_for_a_card_outside_the_set_is_refused(tmp_path):
+    sink = h.FrameSink()
+    runner = _runner(tmp_path, sink, child_entry=h.budget_child,
+                     offered_devices={"cuda:0", "cuda:1"})
+    await runner.assign(_assign("b3", device="cuda:0", devices=["cuda:0"],
+                                memory_budgets={"cuda:1": 1024}))
+    finished = await sink.wait_for(lambda f: isinstance(f, wp.RunFinished))
+    assert finished.status == "failed"
+    assert "not an assigned device" in finished.error

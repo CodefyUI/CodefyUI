@@ -127,6 +127,9 @@ class KnownWorker:
     last_seen_at: str | None
     #: Its last connection's environment fingerprint digest (#781).
     fingerprint_digest: str | None = None
+    #: Its own last agent was one-shot (#845, migration 016); its
+    #: instances (``--instance``) never set it.
+    one_shot: bool = False
 
 
 def _loads(raw: str | None, default: Any) -> Any:
@@ -342,12 +345,14 @@ class WorkerStore:
                     mounts: dict[str, str] | None = None,
                     devices: list[dict[str, Any]] | None = None,
                     machine_id: str | None = None,
-                    fingerprint_digest: Any = KEEP) -> None:
+                    fingerprint_digest: Any = KEEP,
+                    one_shot: bool | None = None) -> None:
         """Record that *name* was seen now, with the facts it reported.
         A None fact leaves the stored one, except *fingerprint_digest*: a
         ``hello`` passes it always, and its None (the agent reported no
         fingerprint) clears the stored digest rather than keep a stale one
-        (#781); :data:`KEEP`, the default, leaves it."""
+        (#781); :data:`KEEP`, the default, leaves it. *one_shot* (#845):
+        whether the agent that said ``hello`` is one-shot."""
         def _touch(conn: sqlite3.Connection) -> None:
             sets, values = ["last_seen_at = ?"], [utc_now_iso()]
             for column, value in (("platform", platform),
@@ -362,15 +367,21 @@ class WorkerStore:
             if fingerprint_digest is not KEEP:
                 sets.append("fingerprint_digest = ?")
                 values.append(fingerprint_digest)
+            if one_shot is not None:
+                sets.append("one_shot = ?")
+                values.append(1 if one_shot else 0)
             conn.execute(f"UPDATE workers SET {', '.join(sets)} WHERE id = ?",
                          (*values, name))
 
         await self.db.run(_touch)
 
     async def delete_worker(self, name: str) -> bool:
-        """Revoke *name*'s credential by deleting its row."""
+        """Revoke *name*'s credential by deleting its row, and its device
+        policies (#788) with it."""
         def _delete(conn: sqlite3.Connection) -> str | None:
             with transaction(conn):
+                conn.execute("DELETE FROM worker_device_policies "
+                             "WHERE worker = ?", (name,))
                 row = conn.execute(
                     "SELECT token_hash FROM workers WHERE id = ?",
                     (name,)).fetchone()
@@ -396,7 +407,8 @@ class WorkerStore:
                 devices=_loads(row["devices_json"], []),
                 created_at=row["created_at"],
                 last_seen_at=row["last_seen_at"],
-                fingerprint_digest=row["fingerprint_digest"]) for row in rows]
+                fingerprint_digest=row["fingerprint_digest"],
+                one_shot=bool(row["one_shot"])) for row in rows]
 
         return await self.db.run(_list)
 
@@ -407,6 +419,38 @@ class WorkerStore:
                                 (name,)).fetchone() is not None
 
         return await self.db.run(_exists)
+
+    # ── device admission policies (#788, migration 015) ──────────────────
+
+    async def list_device_policies(self) -> list[tuple[str, str, str]]:
+        """Every stored ``(worker, device, policy)``, by worker then device."""
+        def _list(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+            rows = conn.execute(
+                "SELECT worker, device, policy FROM worker_device_policies "
+                "ORDER BY worker, device").fetchall()
+            return [(row["worker"], row["device"], row["policy"])
+                    for row in rows]
+
+        return await self.db.run(_list)
+
+    async def set_device_policy(self, worker: str, device: str,
+                                policy: str) -> None:
+        """Store *worker*'s *device* policy. ``exclusive``, the default, is
+        stored as no row."""
+        def _set(conn: sqlite3.Connection) -> None:
+            if policy == "exclusive":
+                conn.execute("DELETE FROM worker_device_policies "
+                             "WHERE worker = ? AND device = ?",
+                             (worker, device))
+                return
+            conn.execute(
+                "INSERT INTO worker_device_policies (worker, device, policy, "
+                "updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (worker, device) "
+                "DO UPDATE SET policy = excluded.policy, "
+                "updated_at = excluded.updated_at",
+                (worker, device, policy, utc_now_iso()))
+
+        await self.db.run(_set)
 
     # ── SSH workers (#784, migration 012) ─────────────────────────────────
 

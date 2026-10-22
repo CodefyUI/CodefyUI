@@ -11,6 +11,7 @@ import {
   InvalidSliceError,
   PayloadTooLargeError,
   StatsNotCapturedError,
+  WorkerUnreachableError,
 } from './executionOutputs';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -123,6 +124,26 @@ describe('fetchOutput', () => {
     mockFetch(400, { detail: 'bad slice' });
     await expect(fetchOutput('r', 'n', 'p')).rejects.toBeInstanceOf(InvalidSliceError);
   });
+
+  it.each([503, 504])(
+    "throws WorkerUnreachableError with the server's detail on %i (#789)",
+    async (status) => {
+      const detail = "worker 'box' is not connected";
+      for (const read of [
+        () => fetchOutput('r', 'n', 'p'),
+        () => listRunOutputs('r'),
+        () => fetchStepIndex('r', 'n'),
+        () => fetchGradIndex('r', 'n'),
+        () => fetchPortStats('r', 'n', 'p'),
+      ]) {
+        mockFetch(status, { detail });
+        const err = await read().catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(WorkerUnreachableError);
+        expect((err as Error).message).toBe(detail);
+        expect((err as Error).name).toBe('WorkerUnreachableError');
+      }
+    },
+  );
 
   it('throws PayloadTooLargeError on 413', async () => {
     mockFetch(413, { detail: 'too big' });
@@ -287,6 +308,13 @@ describe('fetchPortStats', () => {
     expect(err).toBeInstanceOf(NoValueError);
     expect(err).not.toBeInstanceOf(StatsNotCapturedError);
     expect(json).not.toHaveBeenCalled();
+  });
+
+  it('throws a plain Error with the detail on any other failure', async () => {
+    mockFetch(500, { detail: 'boom' });
+    const err = await fetchPortStats('r', 'n', 'p').catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(WorkerUnreachableError);
+    expect((err as Error).message).toBe('fetchPortStats failed: boom');
   });
 });
 

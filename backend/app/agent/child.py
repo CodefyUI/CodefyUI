@@ -16,9 +16,22 @@ the same order, which is what makes a worker run's event log byte-identical
 to a local one's.
 
 What the child never does: open SQLite (it has no ``RunStore``; the agent
-does not even pass ``CODEFYUI_DB_PATH``), record outputs (refused at
-assignment time until #789), touch a ``NodeStateStore`` (a worker run is
-isolated, ``weights_persistent=False``).
+does not even pass ``CODEFYUI_DB_PATH``), touch a ``NodeStateStore`` (a
+worker run is isolated, ``weights_persistent=False``).
+
+Recorded outputs (#789): a run with ``options.record_outputs`` captures
+into a ``RunOutputStore`` of this process's own, exactly as a run on the
+control plane does (:class:`LiveOutputs`). When the run ends its captures
+are copied off its cards into this process's memory and the store is
+emptied (``output_queries.capture_slots``); then it reports ``finished``
+(with ``saving_outputs``), and only then writes the copies to
+``spec["outputs_dir"]`` (``output_queries.write_slots``), so the agent can
+serve them after this process exits. Reporting first means a cancelled
+run's grace period covers only the copy, and the control plane frees the
+run's device slot without waiting for the disk; the agent gives the write
+its own time limit (``Runner.save_outputs_s``). Until this process exits it
+answers the agent's reads itself: from the store while the run goes, from
+the copies while they are written, from the files after.
 
 Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
 
@@ -29,7 +42,31 @@ Pipe messages, child -> agent (tuples, pickled by ``multiprocessing``):
   file is under it, with ``mount_label`` naming it; else absolute, with
   ``mount_label`` None.
 - ``("warning", {"kind", "detail", "node_id"})``
-- ``("finished", {"status", "error", "peak_memory"})``, last.
+- ``("output_answer", request_id, status, body_text, final)``: the answer
+  to a ``fetch`` (#789), the read's HTTP status and JSON body text;
+  ``final`` once it came from the files.
+- ``("finished", {"status", "error", "peak_memory"})``, last (an
+  ``output_answer`` may still follow it); with ``"saving_outputs": True``
+  when the run's captures are written next (#789), so the process lives
+  on until they are.
+- ``("environment", {"fingerprint", "digest", "numerics"})``, once,
+  after discovery and before the graph runs, when ``spec["run_facts"]``
+  (#344): this process's own fingerprint (``env_fingerprint``, with the
+  device facts of ``spec["host_fingerprint"]``, the agent's) and its torch
+  numerics switches. ``fingerprint`` / ``digest`` are None when it could
+  not be collected.
+- ``("provenance", record)``: one node's provenance record (#344,
+  ``core.node_provenance``), for a run with the ``provenance`` option and
+  ``spec["run_facts"]``.
+- ``("memory_limit", {device: {"budget_bytes", "total_bytes",
+  "fraction"}})``, FIRST, for a run with memory budgets (#788,
+  ``spec["memory_budgets"]``, as this process numbers its cards): each
+  card's caching allocator is capped with
+  ``set_per_process_memory_fraction(budget / total)`` before anything
+  else touches torch, so a run that outgrows its budget runs out of memory
+  alone. The agent sends ``run_started`` on this message. A cap that
+  cannot be set fails the run before it starts (``finished`` with no
+  ``memory_limit``).
 
 Paths on a shared mount (#782) are mapped at exactly two places, both fed
 by the assignment (``spec["mount"]``, built once by ``Runner.storage_plan``):
@@ -39,8 +76,17 @@ paths (an upload's bare name, ``models/x.pt``) resolve unchanged and the
 graph is never rewritten; out, every artifact path goes through
 :func:`artifact_location`, the one place a path becomes relative.
 
-Agent -> child: ``("cancel",)``. The pipe closing means the agent is gone,
-which is treated as a cancel: nobody is left to report to.
+A run whose graph has a top-level ``TrainingLoop`` with ``strategy: ddp``
+and whose device set has two or more CUDA cards (#792) is executed by
+``agent.ddp`` instead: this process starts one rank process per card and
+relays rank 0's messages, so the agent sees the same messages in the same
+order as for any other run (:func:`run_spec`).
+
+Agent -> child: ``("cancel",)``; for a recorded run (#789) also
+``("fetch", request_id, op, run_id, params)`` (a read of its outputs, see
+``core.output_queries.dispatch``) and ``("drop_outputs", run_id)``. The
+pipe closing means the agent is gone, which is treated as a cancel: nobody
+is left to report to.
 """
 
 from __future__ import annotations
@@ -55,7 +101,13 @@ MSG_METRICS = "metrics"
 MSG_ARTIFACT = "artifact"
 MSG_WARNING = "warning"
 MSG_FINISHED = "finished"
+MSG_MEMORY_LIMIT = "memory_limit"
 MSG_CANCEL = "cancel"
+MSG_FETCH = "fetch"
+MSG_DROP_OUTPUTS = "drop_outputs"
+MSG_OUTPUT_ANSWER = "output_answer"
+MSG_ENVIRONMENT = "environment"
+MSG_PROVENANCE = "provenance"
 
 Send = Callable[[tuple], None]
 
@@ -71,7 +123,7 @@ def main(spec: dict[str, Any], events_out: Any, control_in: Any) -> None:
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    run_assignment(spec, _safe_sender(events_out), control_in)
+    run_spec(spec, _safe_sender(events_out), control_in)
     try:
         events_out.close()
     except OSError:
@@ -121,11 +173,16 @@ def _safe_sender(conn: Any) -> Send:
 
     A sink must not raise into the engine: a run whose reader vanished
     is stopped by the control listener (EOF is a cancel), not by a
-    ``BrokenPipeError`` surfacing as a node failure.
+    ``BrokenPipeError`` surfacing as a node failure. Locked: the answers to
+    reads of the run's outputs (#789) are sent from other threads, and two
+    writers must not interleave one message's bytes.
     """
+    lock = threading.Lock()
+
     def send(message: tuple) -> None:
         try:
-            conn.send(message)
+            with lock:
+                conn.send(message)
         except (BrokenPipeError, EOFError, OSError):
             pass
 
@@ -196,9 +253,11 @@ def artifact_location(path: str, mount: dict[str, Any] | None
 
 
 def _pipe_sinks(send: Send, cap_bytes: int | None = None,
-                mount: dict[str, Any] | None = None) -> Any:
+                mount: dict[str, Any] | None = None, *,
+                provenance: bool = False) -> Any:
     """A ``RunSinks`` whose callables write pipe messages. *mount* is the
-    run's ``{"label", "root"}`` (#782), or None."""
+    run's ``{"label", "root"}`` (#782), or None. *provenance*: node
+    provenance records go to the pipe too (#344); else none is collected."""
     import logging
 
     from ..config import settings
@@ -245,20 +304,326 @@ def _pipe_sinks(send: Send, cap_bytes: int | None = None,
         send((MSG_WARNING, {"kind": signal.kind, "detail": signal.detail,
                             "node_id": signal.node_id}))
 
+    async def record_provenance(record: dict[str, Any]) -> None:
+        try:
+            wired = wire_payload(record, 0)  # 0: no cap; a row, not an event
+        except (TypeError, ValueError, RecursionError) as exc:
+            log.warning("a provenance record could not be encoded: %s", exc)
+            return
+        send((MSG_PROVENANCE, wired))
+
     return RunSinks(emit=emit, record_metrics=record_metrics,
-                    record_artifact=record_artifact, warn=warn)
+                    record_artifact=record_artifact, warn=warn,
+                    record_provenance=record_provenance if provenance
+                    else None)
 
 
-def _listen_for_cancel(control_in: Any, context: Any) -> None:
-    """Thread body: cancel the run on a ``cancel`` message or a closed pipe."""
+def report_environment(spec: dict[str, Any], send: Send) -> None:
+    """Send this process's fingerprint and numerics (#344). Never raises.
+
+    After discovery, so the plugins and custom nodes in the document are
+    the ones this run loaded, and before the graph runs, so the numerics
+    are the ones it starts with (a node can change them, as on the control
+    plane).
+    """
+    document = digest = numerics = None
+    try:
+        from ..core.env_fingerprint import (
+            collect_fingerprint,
+            fingerprint_digest,
+            numerics_settings,
+        )
+
+        numerics = numerics_settings()
+        document = collect_fingerprint(host=spec.get("host_fingerprint"))
+        digest = fingerprint_digest(document)
+    except Exception:  # noqa: BLE001 -- a fact, never a failure
+        import logging
+        import traceback
+
+        logging.getLogger(__name__).warning(
+            "could not collect this run's environment fingerprint")
+        traceback.print_exc()
+        document = digest = None
+    send((MSG_ENVIRONMENT, {"fingerprint": document, "digest": digest,
+                            "numerics": numerics}))
+
+
+def _listen_for_cancel(control_in: Any, context: Any,
+                       outputs: "LiveOutputs | None" = None) -> None:
+    """Thread body: cancel the run on a ``cancel`` message or a closed pipe;
+    hand reads of a recorded run's outputs to *outputs* (#789)."""
     while True:
         try:
             message = control_in.recv()
         except (EOFError, OSError):
             context.cancel()
             return
-        if isinstance(message, tuple) and message and message[0] == MSG_CANCEL:
+        if not isinstance(message, tuple) or not message:
+            continue
+        if message[0] == MSG_CANCEL:
             context.cancel()
+        elif outputs is not None and message[0] == MSG_FETCH \
+                and len(message) == 5:
+            outputs.answer(*message[1:])
+        elif outputs is not None and message[0] == MSG_DROP_OUTPUTS \
+                and len(message) == 2:
+            outputs.drop(message[1])
+
+
+#: Seconds a read waits for the run's loop to look its store up (#789):
+#: a loop that is going away never runs the lookup.
+LOOP_CALL_TIMEOUT_S = 10.0
+
+
+class _LoopReader:
+    """The live store, read from another thread: each call runs on the
+    run's event loop (the store's lock lives there). With no loop (before
+    the run starts), or once the run has ended (*outputs*' ``closing``,
+    set before its loop shuts down), it holds nothing. A lookup the loop
+    does not run within :data:`LOOP_CALL_TIMEOUT_S` fails the read, so a
+    reading thread never outlives the run waiting on it."""
+
+    def __init__(self, store: Any, loop: Any,
+                 outputs: "LiveOutputs | None" = None) -> None:
+        self._store = store
+        self._loop = loop
+        self._outputs = outputs
+
+    async def _call(self, name: str, *args: Any) -> Any:
+        import asyncio
+
+        loop = self._loop
+        if loop is None or loop.is_closed() or (
+                self._outputs is not None and self._outputs.closing):
+            return None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                getattr(self._store, name)(*args), loop)
+        except RuntimeError:  # the loop closed in between
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future),
+                                          LOOP_CALL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            future.cancel()
+            raise TimeoutError("the run's event loop did not answer") \
+                from None
+
+    async def has_run(self, run_id: str) -> bool:
+        return bool(await self._call("has_run", run_id))
+
+    async def list_ports(self, run_id: str) -> Any:
+        return await self._call("list_ports", run_id)
+
+    async def get_with_version(self, run_id: str, node_id: str,
+                               port: str) -> Any:
+        return await self._call("get_with_version", run_id, node_id, port)
+
+    async def get(self, run_id: str, node_id: str, port: str) -> Any:
+        return await self._call("get", run_id, node_id, port)
+
+
+class LiveOutputs:
+    """A recorded run's captures in this process, and the reads of them
+    (#789). Reads run on a small pool of their own, each on its own event
+    loop, so serialising a large tensor never holds up the run's loop:
+    only the store lookups hop to it.
+
+    When the run ends: :meth:`prepare` (on the run's loop, before
+    ``finished``) copies the captures to the CPU and empties the store;
+    :meth:`save` (after ``finished``) writes the copies. A ``drop`` at any
+    point empties what is held and stops a write in progress.
+    """
+
+    def __init__(self, store: Any, run_id: str, directory: str | None,
+                 send: Send) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.store = store
+        self.run_id = run_id
+        self.directory = directory
+        self.send = send
+        #: The run's event loop, once it runs.
+        self.loop: Any = None
+        #: The reader once the run has ended: over the in-memory copies
+        #: (:meth:`prepare`), then over the files (:meth:`save`). Reads of
+        #: it are ``final``.
+        self.disk: Any = None
+        #: The copies :meth:`save` writes; None when there is nothing to.
+        self._entries: list[dict[str, Any]] | None = None
+        #: Set by a ``drop`` after the run ended: nothing more is kept.
+        self.dropped = False
+        #: Set once the run has ended, before its loop shuts down: the
+        #: live store is no longer read (#789).
+        self.closing = False
+        #: ``drop`` calls so far: one landing while :meth:`prepare` copies
+        #: discards the copy.
+        self._drops = 0
+        self._pool = ThreadPoolExecutor(2, thread_name_prefix="outputs")
+
+    def answer(self, request_id: str, op: str, run_id: str,
+               params: dict[str, Any]) -> None:
+        self._pool.submit(self._answer, request_id, op, run_id,
+                          dict(params or {}))
+
+    def _answer(self, request_id: str, op: str, run_id: str,
+                params: dict[str, Any]) -> None:
+        from ..core import output_queries as q
+
+        disk = None if self.dropped else self.disk
+        reader = disk if disk is not None else _LoopReader(self.store,
+                                                           self.loop, self)
+        status, text = q.answer_read(reader, op, run_id, params)
+        self.send((MSG_OUTPUT_ANSWER, request_id, status, text,
+                   disk is not None))
+
+    def drop(self, run_id: str) -> None:
+        """``drop_outputs`` / ``delete`` (agent thread): forget the
+        captures, wherever they are now; a later read answers 404."""
+        import asyncio
+
+        self._drops += 1
+        if self.disk is not None:
+            # The run has ended: what is held is the copies or the files
+            # (the agent deletes those), never captured into again.
+            self.dropped = True
+            self.disk, self._entries = None, None
+            return
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self.store.delete_run(run_id),
+                                             loop)
+        except RuntimeError:
+            pass
+
+    def _not_kept(self, exc: BaseException) -> None:
+        import logging
+        import traceback
+
+        logging.getLogger(__name__).warning(
+            "the recorded outputs could not be kept: %s", exc)
+        traceback.print_exc()
+
+    async def prepare(self) -> None:
+        """On the run's loop when it has ended: copy the captures to the
+        CPU, empty the store (off the run's cards), and read the copies
+        from now on. A failure is a ``warning`` for the run, never its
+        end."""
+        if not self.directory:
+            return
+        import asyncio
+
+        from ..core import output_queries as q
+
+        try:
+            if not await self.store.has_run(self.run_id):
+                return  # recorded nothing: there is nothing to keep
+            drops = self._drops
+            slots = await self.store.snapshot(self.run_id)
+            entries = await asyncio.to_thread(q.capture_slots, slots)
+            del slots
+            if self._drops == drops:
+                # The copies answer before the store is emptied, so no read
+                # in between finds nothing (a 404 reads as expired).
+                self._entries = entries
+                self.disk = q.MemoryRunReader(self.run_id, entries)
+            await self.store.delete_run(self.run_id)
+            _release_cards()
+        except Exception as exc:  # noqa: BLE001 -- reported, the run stands
+            self._not_kept(exc)
+            self.send((MSG_WARNING, {
+                "kind": "outputs_not_kept",
+                "detail": (f"the outputs this run recorded could not be "
+                           f"kept on the worker, so they cannot be read "
+                           f"after it ends: {type(exc).__name__}: {exc}"),
+                "node_id": None}))
+
+    @property
+    def saving(self) -> bool:
+        """:meth:`save` has copies to write."""
+        return self._entries is not None and not self.dropped
+
+    def save(self) -> None:
+        """Write the copies :meth:`prepare` took, then read the files.
+        Blocking; after ``finished``, so a failure is logged (the run's
+        output log) and the reads answer 404 once this process exits."""
+        entries = self._entries
+        if entries is None or self.dropped or not self.directory:
+            return
+        from pathlib import Path
+
+        from ..core import output_queries as q
+
+        directory = Path(self.directory)
+        try:
+            index = q.write_slots(self.run_id, entries, directory,
+                                  abandoned=lambda: self.dropped)
+        except Exception as exc:  # noqa: BLE001 -- logged; nothing to fail
+            self._not_kept(exc)
+            return
+        finally:
+            # Written or not, nothing is left to write; the copies still
+            # answer (until this process exits) unless the files do now.
+            self._entries = None
+        if index is not None and not self.dropped:
+            self.disk = q.DiskRunReader(directory)
+
+
+def _release_cards() -> None:
+    """Give the run's cards back what its caching allocator still holds,
+    once its captures are copied off them (#789). Its CUDA context stays
+    until this process exits."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    try:
+        if torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+        mps = getattr(torch, "mps", None)
+        if mps is not None and torch.backends.mps.is_available():
+            mps.empty_cache()
+    except Exception:  # noqa: BLE001 -- best effort
+        pass
+
+
+def apply_memory_budgets(budgets: dict[str, int]) -> dict[str, Any]:
+    """Cap each card's allocator to its budget (#788). Imports torch.
+
+    *budgets* maps a device as THIS process numbers it (``cuda:0`` is the
+    first card of its ``CUDA_VISIBLE_DEVICES``) to bytes. The fraction is
+    of the card's total memory, clamped to 1. Returns what was applied, for
+    ``run_started``'s ``execution_facts.memory_limit``. Raises
+    ``RuntimeError`` when a cap cannot be set: a run admitted to a shared
+    card must not run uncapped.
+    """
+    import torch
+
+    applied: dict[str, Any] = {}
+    for device, budget in budgets.items():
+        kind, _, index = str(device).partition(":")
+        try:
+            if kind == "cuda":
+                card = int(index or 0)
+                total = int(torch.cuda.get_device_properties(card).total_memory)
+                fraction = min(1.0, budget / total)
+                torch.cuda.set_per_process_memory_fraction(fraction, card)
+            elif kind == "mps":
+                total = int(torch.mps.recommended_max_memory())
+                fraction = min(1.0, budget / total)
+                torch.mps.set_per_process_memory_fraction(fraction)
+            else:
+                raise ValueError(f"{kind} has no allocator to cap")
+        except Exception as exc:  # noqa: BLE001 -- re-raised with context
+            raise RuntimeError(
+                f"could not cap {device}'s memory to its budget of "
+                f"{budget} bytes: {type(exc).__name__}: {exc}") from exc
+        applied[str(device)] = {"budget_bytes": int(budget),
+                                "total_bytes": total,
+                                "fraction": round(fraction, 6)}
+    return applied
 
 
 def _normalised_graph(graph: dict[str, Any]) -> dict[str, Any]:
@@ -288,47 +653,91 @@ def run_cards(spec: dict[str, Any]) -> dict[str, str] | None:
 
 
 def run_assignment(spec: dict[str, Any], send: Send,
-                   control_in: Any = None, *, discover: bool = True) -> None:
+                   control_in: Any = None, *, discover: bool = True,
+                   listener: Callable[..., None] | None = None,
+                   prepare: Callable[[Any], None] | None = None) -> None:
     """Discover nodes, execute the run, send ``finished``. Never raises.
 
     ``discover=False`` keeps the node registry as it is (tests that run
     this in a process whose registry is already populated).
+
+    Rank 0 of a ``ddp`` run (``agent.ddp``, #792) passes the other two:
+    *listener* replaces :func:`_listen_for_cancel` as the body of the
+    thread that reads *control_in* (same arguments), and *prepare* is
+    called with the run's context before the graph executes (it joins the
+    process group); an exception from it fails the run.
     """
     status, error, peak_memory = "failed", None, None
+    outputs: LiveOutputs | None = None
     try:
         import asyncio
 
         from ..core.executors import ExecutionRequest, InProcessExecutor
         from ..core.runtime import initialize_runtime
 
+        # Before discovery: a node module that touches the card at import
+        # must already find it capped (#788).
+        budgets = spec.get("memory_budgets") or {}
+        if budgets:
+            send((MSG_MEMORY_LIMIT, apply_memory_budgets(budgets)))
+
         # The same discovery the server's lifespan runs: built-in, custom
         # and plugin nodes, presets. Payloads depend on the registry (media
         # detection), so a worker must see the node set the server sees.
         if discover:
             initialize_runtime()
+        run_facts = bool(spec.get("run_facts"))
+        if run_facts:
+            report_environment(spec, send)
         run_id = spec["run_id"]
         options = dict(spec.get("options") or {})
         context = build_context(run_id, options, spec.get("device") or "cpu")
+        outputs = None
+        if options.get("record_outputs"):
+            from ..core.run_output_store import RunOutputStore
+
+            # This run's alone, so no budget evicts within it (a run
+            # exceeding the budget exceeds it in the control plane's store
+            # too); the agent holds the dumps to the budget (#789).
+            outputs = LiveOutputs(RunOutputStore(max_bytes=0), run_id,
+                                  spec.get("outputs_dir"), send)
         if control_in is not None:
-            threading.Thread(target=_listen_for_cancel,
-                             args=(control_in, context),
+            threading.Thread(target=listener or _listen_for_cancel,
+                             args=(control_in, context, outputs),
                              name="cancel-listener", daemon=True).start()
+        if prepare is not None:
+            prepare(context)
         request = ExecutionRequest(
             run_id=run_id,
             graph=_normalised_graph(spec["graph"]),
             options=options,
             context=context,
             session=None,
-            output_store=None,
-            record_outputs=False,
-            sinks=_pipe_sinks(send, mount=spec.get("mount")),
+            output_store=None if outputs is None else outputs.store,
+            record_outputs=outputs is not None,
+            sinks=_pipe_sinks(send, mount=spec.get("mount"),
+                              provenance=run_facts),
             explicit_metric_nodes=set(),
         )
-        # This process runs this one run and nothing else, so its peak
-        # memory figures are exact (#770).
-        outcome = asyncio.run(
-            InProcessExecutor(exclusive_process=True, worker_run=True,
-                              run_cards=run_cards(spec)).run(request))
+
+        async def execute() -> Any:
+            if outputs is not None:
+                outputs.loop = asyncio.get_running_loop()
+            # This process runs this one run and nothing else, so its peak
+            # memory figures are exact (#770).
+            try:
+                result = await InProcessExecutor(
+                    exclusive_process=True, worker_run=True,
+                    run_cards=run_cards(spec)).run(request)
+                if outputs is not None:
+                    await outputs.prepare()
+            finally:
+                if outputs is not None:
+                    # Before the loop shuts down: reads stop asking it.
+                    outputs.closing = True
+            return result
+
+        outcome = asyncio.run(execute())
         status, error = outcome.status, outcome.error
         peak_memory = getattr(outcome, "peak_memory", None)
     except BaseException as exc:  # noqa: BLE001 -- reported, then we exit
@@ -336,5 +745,28 @@ def run_assignment(spec: dict[str, Any], send: Send,
         import traceback
 
         traceback.print_exc()
-    send((MSG_FINISHED, {"status": status, "error": error,
-                         "peak_memory": peak_memory}))
+    saving = outputs is not None and outputs.saving
+    report: dict[str, Any] = {"status": status, "error": error,
+                              "peak_memory": peak_memory}
+    if saving:
+        report["saving_outputs"] = True
+    send((MSG_FINISHED, report))
+    if saving:
+        outputs.save()
+
+
+def run_spec(spec: dict[str, Any], send: Send, control_in: Any) -> None:
+    """Execute *spec*: across several processes when its ``ddp`` loops can
+    use the run's cards (``agent.ddp.plan_for``, #792), else here."""
+    from . import ddp
+
+    try:
+        plan = ddp.plan_for(spec)
+    except ValueError as exc:
+        send((MSG_FINISHED, {"status": "failed", "error": str(exc),
+                             "peak_memory": None}))
+        return
+    if plan is None:
+        run_assignment(spec, send, control_in)
+    else:
+        ddp.launch(spec, plan, send, control_in)

@@ -735,8 +735,11 @@ async def test_a_submission_that_created_no_run_is_lost_and_retried(
     assert len(lost) == 1 and "stamp" in lost[0]["payload"]["error"]
 
 
-async def test_the_run_budget_fails_a_study_that_would_exceed_it(
+async def test_the_run_budget_halts_a_study_that_would_exceed_it(
         client, store, monkeypatch):
+    """A lost submission used the only run of ``max_runs: 1``: the study
+    halts (durable, inspectable), a resume without a raised budget is a
+    409, and one with ``max_runs: 2`` finishes it."""
     original = RunService.submit
     failures = {"left": 1}
 
@@ -749,9 +752,34 @@ async def test_the_run_budget_fails_a_study_that_would_exceed_it(
     monkeypatch.setattr(RunService, "submit", broken)
     created = await client.post("/api/studies", json=_body(
         [("A", 1.0)], repetitions=1, budget={"max_runs": 1}))
-    final = await _wait_status(client, created.json()["study_id"], "failed")
-    assert "budget.max_runs (1)" in final["error"]
-    assert len(await _study_runs(store, final["study_id"])) == 0
+    study_id = created.json()["study_id"]
+    halted = await _wait_status(client, study_id, "halted")
+    assert halted["error"] is None
+    assert halted["halt"]["budget"] == "max_runs"
+    assert halted["halt"]["limit"] == 1 and halted["halt"]["used"] == 1
+    assert halted["halt"]["unfinished_repetitions"] == 1
+    assert halted["budget_usage"]["exhausted"] == "max_runs"
+    assert halted["finished_at"]
+    assert len(await _study_runs(store, study_id)) == 0
+    events = await _events(client, study_id)
+    assert events[-1]["type"] == "study_halted"
+    assert events[-1]["payload"]["halt"]["budget"] == "max_runs"
+
+    refused = await client.post(f"/api/studies/{study_id}/resume")
+    assert refused.status_code == 409
+    assert "budget.max_runs (1) is used up" in refused.json()["detail"]
+    resumed = await client.post(f"/api/studies/{study_id}/resume", json={
+        "budget": {"max_runs": 2}})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["halt"] is None
+    final = await _wait_status(client, study_id, "succeeded")
+    assert final["budget"]["max_runs"] == 2
+    assert len(await _study_runs(store, study_id)) == 1
+    resume = next(e for e in await _events(client, study_id)
+                  if e["type"] == "study_resumed")
+    assert resume["payload"]["budget_from"]["max_runs"] == 1
+    assert resume["payload"]["budget_to"]["max_runs"] == 2
+    assert resume["payload"]["halt"]["budget"] == "max_runs"
 
 
 async def test_a_child_cancelled_outside_the_study_interrupts_it(

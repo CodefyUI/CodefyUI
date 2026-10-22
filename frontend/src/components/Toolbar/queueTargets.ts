@@ -10,6 +10,12 @@ import type { WorkerDevice, WorkerInfo } from '../../api/workers';
 /** `target.worker` for this server, and for "wherever there is room". */
 export const TARGET_LOCAL = 'local';
 export const TARGET_ANY = 'any';
+/** The picker's value for the one-shot pool (#790): `target.pool`, not a
+ * worker. The `:` keeps it apart from every worker name. */
+export const TARGET_ONE_SHOT = 'pool:one-shot';
+/** The device kinds a one-shot pool run can ask for: any, since the worker
+ * that will take it may not exist yet. */
+export const ONE_SHOT_KINDS = ['cpu', 'cuda', 'mps'];
 
 /** One device a target offers: a concrete id (`cpu`, `cuda:1`, `mps`). */
 export interface DeviceChoice {
@@ -60,6 +66,14 @@ export function workerDeviceChoices(worker: WorkerInfo): DeviceChoice[] {
  * (persisted, #780) until it dials in; neither can take a run. */
 export function connectedWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
   return workers.filter((w) => w.status !== 'disconnected' && w.status !== 'offline');
+}
+
+/** The workers a run can name in the dialog: every worker the server lists
+ * (#840: a run for one that is `offline` or `disconnected` waits until it
+ * connects), except an instance of a shared credential (#845) that left,
+ * which never comes back under its id. */
+export function targetableWorkers(workers: readonly WorkerInfo[]): WorkerInfo[] {
+  return workers.filter((w) => !(w.instance_of && w.status === 'offline'));
 }
 
 /**
@@ -137,9 +151,129 @@ export function toggleDevice(selected: readonly string[], value: string, order: 
 export function anyKinds(local: readonly DeviceChoice[], workers: readonly WorkerInfo[]): string[] {
   const offered = new Set<string>([
     ...local.map((c) => c.kind),
-    ...connectedWorkers(workers).flatMap((w) => workerDeviceChoices(w).map((c) => c.kind)),
+    // `any` never places a run on a one-shot worker (#790).
+    ...connectedWorkers(workers)
+      .filter((w) => !w.one_shot)
+      .flatMap((w) => workerDeviceChoices(w).map((c) => c.kind)),
   ]);
   return ['cpu', ...ACCELERATORS.filter((kind) => offered.has(kind))];
+}
+
+/** A device shared by memory on a worker whose agent enforces budgets (#788). */
+function sharedByMemory(worker: WorkerInfo, device: WorkerDevice): boolean {
+  return device.policy === 'shared' && worker.memory_budget === true;
+}
+
+/**
+ * The devices shared by memory (#788) a run sent where the picker points
+ * could land on: the chosen worker's chosen devices; for `any`, the devices
+ * of the chosen kind on connected workers that are not one-shot; for the
+ * one-shot pool (#790), those on connected one-shot workers.
+ */
+function sharedCandidates(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): WorkerDevice[] {
+  if (target === TARGET_ANY || target === TARGET_ONE_SHOT) {
+    const pool = target === TARGET_ONE_SHOT;
+    return online
+      .filter((w) => Boolean(w.one_shot) === pool)
+      .flatMap((w) => w.devices.filter((d) => deviceKind(d.value) === kind && sharedByMemory(w, d)));
+  }
+  if (worker === null) return [];
+  return worker.devices.filter((d) => selected.includes(d.value) && sharedByMemory(worker, d));
+}
+
+/**
+ * Whether a run sent where the picker points could land on a device shared
+ * by memory (#788), so its memory budget matters.
+ */
+export function usesSharedDevice(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): boolean {
+  return sharedCandidates(target, worker, selected, online, kind).length > 0;
+}
+
+/** A device's memory total as the server last reported it, or null. */
+function memoryTotal(device: WorkerDevice): number | null {
+  return device.admission?.total_bytes ?? device.memory?.total_bytes ?? null;
+}
+
+/**
+ * The shared MPS devices the run could land on when none of the devices it
+ * could land on reports a memory total: an MPS card reports none, so
+ * admission by budget can never judge a budget against it and the server
+ * refuses such a run whatever its budget; the dialog says so instead of
+ * offering the field. Empty when one of them reports a total, or when one
+ * is not MPS ({@link sharedAwaitingReport}).
+ */
+export function sharedWithoutTotal(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): string[] {
+  const devices = sharedCandidates(target, worker, selected, online, kind);
+  if (devices.some((d) => memoryTotal(d) !== null)) return [];
+  return devices.length > 0 && devices.every((d) => deviceKind(d.value) === 'mps') ? devices.map((d) => d.value) : [];
+}
+
+/**
+ * The shared devices other than MPS the run could land on that have not
+ * reported a memory total yet (a CUDA card before its worker's first
+ * memory heartbeat), when none of the candidates has: the field stays, and
+ * the dialog says the budget is judged once the report arrives.
+ */
+export function sharedAwaitingReport(
+  target: string,
+  worker: WorkerInfo | null,
+  selected: readonly string[],
+  online: readonly WorkerInfo[],
+  kind: string,
+): string[] {
+  const devices = sharedCandidates(target, worker, selected, online, kind);
+  if (devices.some((d) => memoryTotal(d) !== null)) return [];
+  return devices.filter((d) => deviceKind(d.value) !== 'mps').map((d) => d.value);
+}
+
+/**
+ * A memory budget field's text as `target.memory_gib` (#788): `null` for a
+ * blank field (the server's default applies), `undefined` for text that is
+ * not a number above 0 and at most {@link MAX_MEMORY_GIB}.
+ */
+export const MAX_MEMORY_GIB = 4096;
+
+export function parseMemoryGib(raw: string): number | null | undefined {
+  const text = raw.trim();
+  if (text === '') return null;
+  if (!/^\d*\.?\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  return value > 0 && value <= MAX_MEMORY_GIB ? value : undefined;
+}
+
+/**
+ * What a run's memory history is kept by (#788): its `device` and how many
+ * devices it uses (`target.devices`), as `POST /api/runs/estimate` takes
+ * them. A worker's chosen set; one device of the kind for `any` and the
+ * one-shot pool.
+ */
+export function estimateOptions(
+  target: string,
+  selected: readonly string[],
+  kind: string,
+): { device: string; target: { devices: string[] | null } } {
+  if (target === TARGET_ANY || target === TARGET_ONE_SHOT || selected.length === 0) {
+    return { device: kind, target: { devices: null } };
+  }
+  return { device: selected[0], target: { devices: [...selected] } };
 }
 
 /** The kind an `any` run starts with: the graph device's kind when it is

@@ -143,6 +143,47 @@ def test_every_reason_keeps_its_english_and_names_its_code():
     assert gone_message("box", "x").text == "worker box went away: x"
 
 
+def test_wave_d_messages_keep_their_english_and_name_their_codes():
+    """The adoption (#793), shutdown and S3 (#791) messages, coded in the
+    #841 scheme; their English is what they said before."""
+    from app.core.workers import (
+        adopted_message,
+        lost_after_restart_message,
+        no_reconnect_after_restart,
+        s3_transfer_failed_message,
+        shutdown_not_connected,
+        storage_fallback_message,
+    )
+
+    cases = [
+        (adopted_message("box", 300), "worker_adopted",
+         {"worker": "box", "seconds": 300},
+         "this server restarted while the run was executing on worker box; "
+         "the run keeps running there and waits up to 300 s for the worker "
+         "to reconnect"),
+        (lost_after_restart_message("box"), "worker_lost_after_restart",
+         {"worker": "box"},
+         "this server restarted and worker box no longer has the run"),
+        (no_reconnect_after_restart(300), "no_reconnect_after_restart",
+         {"seconds": 300},
+         "it did not reconnect with the run within 300 s after this server "
+         "restarted"),
+        (shutdown_not_connected("box"), "shutdown_not_connected",
+         {"worker": "box"},
+         "this server is shutting down and worker box is not connected"),
+        (s3_transfer_failed_message("box", "denied"),
+         "worker_s3_transfer_failed", {"worker": "box", "error": "denied"},
+         "cannot send this run's input files to the S3 bucket: denied"),
+        (storage_fallback_message("box"), "worker_storage_fallback",
+         {"worker": "box"},
+         "worker box cannot use the S3 bucket (its agent has no boto3); "
+         "this run's files go through this server instead"),
+    ]
+    for message, code, params, text in cases:
+        assert (message.code, message.reason_dict()["params"], message.text) \
+            == (code, params, text)
+
+
 def test_reasons_are_immutable_and_hashable():
     """#848 review: the module constants are shared by every run, so their
     parameters cannot be changed through one, nested values included, and

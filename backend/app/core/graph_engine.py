@@ -41,6 +41,7 @@ from .device_utils import DEVICE_PARAM_OPTIONS, DEVICE_PATTERN
 from .node_base import BaseNode, ParamType
 from .node_registry import registry
 from .param_defaults import fill_missing_params
+from .run_output_store import CaptureAlias  # noqa: F401 -- defined there (#789), named here
 from .seeding import deterministic_scope, seed_rngs
 from .step_trace import Step
 from .type_system import is_compatible
@@ -2692,30 +2693,6 @@ _CONTAINER_RANK_STATUS: dict[int, str] = {
 }
 
 
-@dataclass(frozen=True)
-class CaptureAlias:
-    """What a recorded run keeps under a port no node of its own produced.
-
-    A preset card, a block instance and a bypassed node never run --
-    expansion and bypass resolution replace them -- but the canvas draws
-    their ports, and every reader of ``/api/execution/outputs`` asks for
-    those (#553). This names the port whose capture holds the value, and the
-    route follows it. The value is not stored a second time: the store
-    measures every slot against its byte budget, so a copy would count a
-    tensor twice and evict other runs early. An alias itself measures 0
-    bytes.
-
-    It always names a port that RAN, never another alias, so one step
-    reaches the value, and it is written only after that port's value. The
-    two writes take the store's lock one at a time, so a run dropped between
-    them -- evicted, or deleted mid-run -- comes back holding the alias
-    alone, and reading it answers 404. That is the truth: the value is gone.
-    """
-
-    node_id: str
-    port: str
-
-
 def aliases_by_target(
     output_aliases: dict[tuple[str, str], tuple[str, str]],
 ) -> dict[tuple[str, str], list[tuple[str, str]]]:
@@ -2756,6 +2733,7 @@ async def execute_graph(
         Callable[[str, str, str, dict[str, Any] | None], Any] | None
     ) = None,
     on_expanded: Callable[[list[dict]], Any] | None = None,
+    record_artifacts: bool | None = None,
 ) -> dict[str, Any]:
     """Execute the graph with parallel levels, cancellation, error recovery, and caching.
 
@@ -2807,6 +2785,11 @@ async def execute_graph(
             that has to know what a node inside a container declares (its
             media ports, say) reads it here rather than expanding the graph
             a second time.
+        record_artifacts: What ``context.can_record_artifacts()`` answers
+            during the run. Left None it is whether ``on_signal`` is given.
+            A rank other than 0 of a ``ddp`` run (#792) passes False with an
+            ``on_signal`` that forwards warnings only: nothing it logs as an
+            artifact lands anywhere, so no node must write such a file.
 
     A container's own terminal frame (completed, cached, interrupted) carries
     the values on its drawn output ports, read from the nodes inside it that
@@ -3126,7 +3109,9 @@ async def execute_graph(
         # A fact about THIS run, not a request: whether anything durable is
         # listening. Nodes read it through ``can_record_artifacts`` before
         # creating a file they would otherwise orphan.
-        context.signals_recorded = on_signal is not None
+        context.signals_recorded = (on_signal is not None
+                                    if record_artifacts is None
+                                    else bool(record_artifacts))
     deliver_lock = asyncio.Lock()
 
     def _signal_node_id(node_id: str | None) -> str | None:

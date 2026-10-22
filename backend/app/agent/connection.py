@@ -13,7 +13,11 @@ Per connection:
 2. if runs survived a previous connection, send ``run_alive``;
 3. send a ``heartbeat`` every ``welcome.heartbeat_s`` seconds, with a fresh
    device reading and the running run ids;
-4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`.
+4. dispatch ``assign`` / ``cancel`` / ``drain`` to the :class:`Runner`, and
+   ``fetch_output`` / ``cancel_fetch`` / ``drop_outputs`` (#789) to
+   :class:`~app.agent.outputs.AgentOutputs`, which handles each in a task
+   of its own, answering a read with ``output_answer`` frames (the body
+   cut into parts).
 
 Runs do not depend on the connection. While it is down, their subprocesses
 keep running and every frame they produce is written to the run's spool
@@ -34,6 +38,15 @@ match a fingerprint the user pinned (``--ca-fingerprint``) ends the agent
 pin, a certificate the system CAs do not accept is logged as an error, with
 the cause, and retried with the usual backoff (a proxy being repaired, a
 CA bundle being updated).
+
+A ``--one-shot`` agent (#790, :class:`~app.agent.one_shot.OneShot`) says so
+in ``hello``, takes the first run it is assigned (refusing any other),
+and stops once the control plane has acknowledged that run's
+``run_finished``. A control plane whose ``welcome`` does not list the
+``one_shot`` capability is refused like a ``reject``. With ``--instance``
+(#845) it also says ``hello.instance`` and is registered as
+``<name>.<instance>``; a control plane without the ``instances``
+capability is refused the same way.
 """
 
 from __future__ import annotations
@@ -42,6 +55,7 @@ import asyncio
 import inspect
 import logging
 import platform
+import secrets
 import ssl
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -52,6 +66,8 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from ..core import worker_protocol as wp
 from ..core.machine_identity import machine_identity
 from .facts import AgentFacts
+from .one_shot import OneShot
+from .outputs import AgentOutputs
 from .runner import Runner, mark_finished
 from .spool import SpoolStore
 from .trust import ControlPlaneTrust, TrustError, untrusted_message
@@ -202,20 +218,34 @@ class AgentConnection:
         on_trusted: Callable[[str], None] | None = None,
         facts: AgentFacts | None = None,
         uds: str | None = None,
+        one_shot: OneShot | None = None,
+        instance: str | None = None,
         worker_credential: bool = False,
     ) -> None:
         self.runner = runner
+        #: ``--one-shot`` (#790): this agent's one run, or None.
+        self.one_shot = one_shot
+        #: ``--instance`` (#845, ``hello.instance``): this one-shot agent is
+        #: one of several on the credential of *name*, or None.
+        self.instance = instance
+        #: Random per agent process (#790, ``hello.instance_id``). It is
+        #: also what tells it apart from the other agents holding
+        #: the same worker token (#845), so it is never logged.
+        self.instance_id = secrets.token_hex(16)
         runner.send = self.send_frame
         if runner.transfer is None:
             # The transfer backend's HTTP side (#785): the same control
             # plane and token as this socket, read per request.
-            from .transfer import CACHE_DIRNAME, InputCache, TransferClient
+            from .transfer import InputCache, TransferClient
 
             runner.transfer = TransferClient(
                 base_url=lambda: self._resolve(self._control_url),
                 token=lambda: self._resolve(self._token),
-                cache=InputCache(runner.runs_dir.parent / CACHE_DIRNAME),
-                ssl_context=self._http_tls, uds=uds)
+                cache=InputCache(runner.cache_dir),
+                ssl_context=self._http_tls, uds=uds,
+                # Its uploads say which agent process sends them (#845):
+                # the agents of one credential share its token.
+                instance_id=self.instance_id)
         #: Every run's frames not acknowledged yet (#783).
         self.spools = spools if spools is not None else SpoolStore(
             runner.runs_dir)
@@ -254,6 +284,22 @@ class AgentConnection:
         self.worker_id: str | None = None
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
+        #: Recorded outputs (#789): reads of them, answered here.
+        self.outputs = AgentOutputs(runner, self.send_answer)
+
+    async def send_answer(self, request_id: str, status: int, text: str,
+                          final: bool) -> None:
+        """One read's answer as ``output_answer`` frames (#789): the body
+        in parts of at most ``OUTPUT_ANSWER_PART_CHARS``, so no frame
+        outgrows a socket's message limit, each part its own frame so
+        heartbeats and run frames go out in between."""
+        size = wp.OUTPUT_ANSWER_PART_CHARS
+        parts = [text[i:i + size] for i in range(0, len(text), size)] or [""]
+        for number, part in enumerate(parts):
+            if not await self.send_frame(wp.OutputAnswer(
+                    request_id=request_id, status=status, part=number,
+                    parts=len(parts), body=part, final=final)):
+                return  # the connection is gone; the control plane says so
 
     def _http_tls(self) -> ssl.SSLContext | None:
         """The TLS context the transfer backend's HTTP requests use (#785):
@@ -285,6 +331,8 @@ class AgentConnection:
         run_id = getattr(frame, "run_id", None)
         seq = getattr(frame, "seq", None)
         line = _encode_or_warn(frame)
+        if self.one_shot is not None:
+            self.one_shot.sent(frame)
         async with self._send_lock:
             if run_id is None or seq is None:
                 return await self._send_raw(frame, line)
@@ -322,7 +370,8 @@ class AgentConnection:
         """``run_alive`` for every run still running or still spooled."""
         last: dict[str, int] = {}
         for handle in list(self.runner.runs.values()):
-            last[handle.run_id] = handle.seq
+            if not handle.reported_early:  # only writing its outputs (#789)
+                last[handle.run_id] = handle.seq
         for spool in self.spools.spools():
             if spool.pending or spool.run_id in last:
                 last[spool.run_id] = max(last.get(spool.run_id, 0),
@@ -389,6 +438,23 @@ class AgentConnection:
         Running runs are stopped before this returns, either way.
         """
         backoff = self.backoff_min_s
+        code = 0
+        done_watch = None
+        if self.one_shot is not None:
+            done_watch = asyncio.create_task(self.one_shot.wait_done(
+                stop, lambda: self.runner.upload_window_s),
+                name="agent-one-shot")
+        try:
+            code = await self._loop(stop, backoff)
+        finally:
+            if done_watch is not None:
+                done_watch.cancel()
+                await asyncio.gather(done_watch, return_exceptions=True)
+        await self.runner.shutdown()
+        self.outputs.close()
+        return code
+
+    async def _loop(self, stop: asyncio.Event, backoff: float) -> int:
         code = 0
         while not stop.is_set():
             welcomed = False
@@ -475,7 +541,6 @@ class AgentConnection:
             except asyncio.TimeoutError:
                 pass
             backoff = min(next_backoff(backoff), BACKOFF_MAX_S)
-        await self.runner.shutdown()
         return code
 
     async def _trusted(self) -> None:
@@ -517,10 +582,16 @@ class AgentConnection:
                              digest=facts.fingerprint_digest)),
             node_catalog_hash=facts.node_catalog_hash,
             node_types=list(facts.node_types),
-            capabilities=list(wp.CAPABILITIES),
+            capabilities=wp.agent_capabilities(self.runner.speaks_s3()),
             devices=await self._device_reports(), platform=platform_facts(),
             mounts=await asyncio.to_thread(self.runner.available_mounts),
-            machine_id=await asyncio.to_thread(machine_identity))
+            machine_id=await asyncio.to_thread(machine_identity),
+            one_shot=self.one_shot is not None,
+            one_shot_run_id=(None if self.one_shot is None
+                             else self.one_shot.run_id),
+            one_shot_taken=(None if self.one_shot is None
+                            else self.one_shot.taken),
+            instance_id=self.instance_id, instance=self.instance)
         await ws.send(wp.encode_frame(hello))
         raw = await asyncio.wait_for(ws.recv(), timeout=WELCOME_TIMEOUT_S)
         frame = wp.decode_control_frame(raw)
@@ -532,6 +603,16 @@ class AgentConnection:
             raise AgentRejected(
                 f"protocol version {frame.protocol_version} on the control "
                 f"plane, {wp.PROTOCOL_VERSION} here; update so both match")
+        if self.one_shot is not None \
+                and wp.CAPABILITY_ONE_SHOT not in frame.capabilities:
+            raise AgentRejected(
+                "the control plane does not support one-shot workers "
+                "(--one-shot); update it to this version")
+        if self.instance is not None \
+                and wp.CAPABILITY_INSTANCES not in frame.capabilities:
+            raise AgentRejected(
+                "the control plane does not support one-shot instances "
+                "(--instance); update it to this version")
         return frame
 
     async def _serve(self, ws: Any, stop: asyncio.Event) -> bool:
@@ -544,7 +625,13 @@ class AgentConnection:
             # A transfer upload rides out an outage this long (#785).
             self.runner.upload_window_s = welcome.resume_grace_s
         self.runner.draining = False
-        shared = wp.shared_capabilities(wp.CAPABILITIES, welcome.capabilities)
+        shared = wp.shared_capabilities(
+            wp.agent_capabilities(self.runner.speaks_s3()),
+            welcome.capabilities)
+        # Runs started from now on report their own facts (#344) only to a
+        # control plane that reads them.
+        self.runner.run_facts = wp.CAPABILITY_RUN_FACTS in shared
+        self.runner.host_fingerprint = self.facts.fingerprint
         logger.info("connected as %s (worker id %s; capabilities %s)",
                     self.name, welcome.worker_id, ", ".join(shared) or "none")
         tasks = [
@@ -608,6 +695,12 @@ class AgentConnection:
 
     async def _dispatch(self, frame: Any) -> None:
         if isinstance(frame, wp.Assign):
+            if self.one_shot is not None:
+                refusal = self.one_shot.refusal(frame.run_id)
+                if refusal is not None:
+                    await self.runner.refuse(frame.run_id, refusal)
+                    return
+                self.one_shot.take(frame.run_id)
             await self.runner.assign(frame)
         elif isinstance(frame, wp.Cancel):
             if not await self.runner.cancel(frame.run_id, frame.grace_s):
@@ -618,11 +711,24 @@ class AgentConnection:
         elif isinstance(frame, wp.Ack):
             done = await asyncio.to_thread(self.spools.ack, frame.run_id,
                                            frame.seq)
+            if done and self.one_shot is not None:
+                self.one_shot.acked(frame.run_id)
             if done and self.runner.take_refused(frame.run_id):
                 # A refused assignment has no handle to mark its directory
                 # for retention; a run that started is marked when it ends.
                 await asyncio.to_thread(
                     mark_finished, self.runner.runs_dir / frame.run_id)
+        elif isinstance(frame, wp.Credentials):
+            if not self.runner.renew(frame.run_id, frame.s3):
+                logger.info("credentials for unknown run %s", frame.run_id)
+        elif isinstance(frame, wp.FetchOutput):
+            # Tasks of their own: reading a large capture or deleting a
+            # run's files must not hold up the cancels and acks behind it.
+            self.outputs.start(frame)
+        elif isinstance(frame, wp.CancelFetch):
+            self.outputs.cancel(frame.request_id)
+        elif isinstance(frame, wp.DropOutputs):
+            self.outputs.start_drop(frame.run_id)
         elif isinstance(frame, wp.Reject):
             raise AgentRejected(frame.reason)
         else:

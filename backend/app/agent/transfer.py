@@ -258,11 +258,20 @@ class TransferClient:
     batch: a run's fetches, or a run's uploads. Without one, a call opens
     its own."""
 
+    #: ``artifact.backend`` of what it uploads.
+    backend = "transfer"
+
     def __init__(self, *, base_url: Any, token: Any, cache: InputCache,
                  timeout_s: float = TIMEOUT_S,
                  ssl_context: Callable[[], Any] | None = None,
-                 uds: str | None = None) -> None:
+                 uds: str | None = None,
+                 instance_id: str | None = None) -> None:
         self._base_url = base_url
+        #: The agent's ``hello.instance_id`` (#845), sent with every
+        #: request: the control plane takes an upload for a run only from
+        #: the agent process running it, not from another agent holding
+        #: the same token (the credential's own agent, or an instance).
+        self.instance_id = instance_id
         self._token = token
         self.cache = cache
         self.timeout_s = timeout_s
@@ -280,7 +289,12 @@ class TransferClient:
         from .connection import TOKEN_HEADER
 
         token = _resolve(self._token)
-        return {TOKEN_HEADER: token} if token else {}
+        headers = {TOKEN_HEADER: token} if token else {}
+        if self.instance_id:
+            from ..core.worker_protocol import INSTANCE_HEADER
+
+            headers[INSTANCE_HEADER] = self.instance_id
+        return headers
 
     def _client(self) -> Any:
         import httpx
@@ -364,61 +378,92 @@ class TransferClient:
         checksum = sha256_file(path)
         own = client is None
         http = self._client() if own else client
-        started = time.monotonic()
-        deadline: float | None = None
-        try:
-            last: Exception | None = None
-            attempt = 0
-            while True:
-                attempt += 1
-                outage = False
-                if cancelled():
-                    raise TransferError("the uploads were cancelled")
+
+        def attempt() -> str:
+            try:
+                with open(path, "rb") as handle:
+                    response = http.post(
+                        url, headers=self._headers(),
+                        data={"kind": kind, "name": name, "place": place,
+                              "sha256": checksum},
+                        files={"file": (path.name, handle,
+                                        "application/octet-stream")})
+            except Exception as exc:  # noqa: BLE001 -- httpx and OS errors
+                raise RetryableUpload(TransferError(
+                    f"uploading {name}: {exc}"), outage=True) from None
+            status = response.status_code
+            if status == 200:
                 try:
-                    with open(path, "rb") as handle:
-                        response = http.post(
-                            url, headers=self._headers(),
-                            data={"kind": kind, "name": name, "place": place,
-                                  "sha256": checksum},
-                            files={"file": (path.name, handle,
-                                            "application/octet-stream")})
-                    status = response.status_code
-                    if status == 200:
-                        return str(response.json()["path"])
-                    error = TransferError(
-                        f"uploading {name}: HTTP {status} "
-                        f"{_detail(response)}")
-                    if status < 500 and status not in OUTAGE_STATUSES:
-                        raise error
-                    last = error
-                    outage = status in OUTAGE_STATUSES
-                except TransferError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 -- httpx and OS errors
-                    last = TransferError(f"uploading {name}: {exc}")
-                    outage = True
-                if fail_fast:
-                    break
-                if not outage:
-                    if attempt >= ATTEMPTS:
-                        break
-                    _sleep(RETRY_PAUSE_S * attempt, cancelled)
-                    continue
-                if deadline is None:
-                    deadline = retry_until() if retry_until is not None \
-                        else started + UPLOAD_RETRY_WINDOW_S
-                if attempt >= ATTEMPTS and time.monotonic() >= deadline:
-                    break
-                if attempt == ATTEMPTS:
-                    logger.warning("%s; retrying for up to %.0f s more", last,
-                                   max(0.0, deadline - time.monotonic()))
-                pause = min(RETRY_PAUSE_S * 2 ** (attempt - 1),
-                            UPLOAD_MAX_PAUSE_S)
-                _sleep(pause, cancelled)
-            raise last or TransferError(f"uploading {name} failed")
+                    return str(response.json()["path"])
+                except Exception as exc:  # noqa: BLE001 -- a proxy's page
+                    # Not the control plane's answer (#785: retried as an
+                    # outage, like any other request that did not reach it).
+                    raise RetryableUpload(TransferError(
+                        f"uploading {name}: {exc}"), outage=True) from None
+            error = TransferError(f"uploading {name}: HTTP {status} "
+                                  f"{_detail(response)}")
+            if status < 500 and status not in OUTAGE_STATUSES:
+                raise error
+            raise RetryableUpload(error, outage=status in OUTAGE_STATUSES)
+
+        try:
+            return retry_upload(attempt, name, cancelled=cancelled,
+                                retry_until=retry_until, fail_fast=fail_fast)
         finally:
             if own:
                 http.close()
+
+
+class RetryableUpload(Exception):
+    """One upload attempt that failed in a way worth trying again:
+    *outage* (the other end is away: no connection, or
+    :data:`OUTAGE_STATUSES`) gets the long window, anything else the
+    :data:`ATTEMPTS` quick retries."""
+
+    def __init__(self, error: TransferError, *, outage: bool) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.outage = outage
+
+
+def retry_upload(attempt: Callable[[], str], name: str, *,
+                 cancelled: Callable[[], bool] = lambda: False,
+                 retry_until: Callable[[], float] | None = None,
+                 fail_fast: bool = False) -> str:
+    """Run *attempt* (one upload; the key, ``TransferError`` for a refusal,
+    :class:`RetryableUpload` otherwise) until it succeeds, under the retry
+    rules ``TransferClient.upload`` documents. Shared by the transfer and
+    the S3 backend (#791)."""
+    started = time.monotonic()
+    deadline: float | None = None
+    last: Exception | None = None
+    tries = 0
+    while True:
+        tries += 1
+        if cancelled():
+            raise TransferError("the uploads were cancelled")
+        try:
+            return attempt()
+        except RetryableUpload as failed:
+            last, outage = failed.error, failed.outage
+        if fail_fast:
+            break
+        if not outage:
+            if tries >= ATTEMPTS:
+                break
+            _sleep(RETRY_PAUSE_S * tries, cancelled)
+            continue
+        if deadline is None:
+            deadline = retry_until() if retry_until is not None \
+                else started + UPLOAD_RETRY_WINDOW_S
+        if tries >= ATTEMPTS and time.monotonic() >= deadline:
+            break
+        if tries == ATTEMPTS:
+            logger.warning("%s; retrying for up to %.0f s more", last,
+                           max(0.0, deadline - time.monotonic()))
+        pause = min(RETRY_PAUSE_S * 2 ** (tries - 1), UPLOAD_MAX_PAUSE_S)
+        _sleep(pause, cancelled)
+    raise last or TransferError(f"uploading {name} failed")
 
 
 def _sleep(seconds: float, cancelled: Callable[[], bool]) -> None:
@@ -531,6 +576,12 @@ class RunTransfer:
         return self._window_end is not None \
             and time.monotonic() >= self._window_end
 
+    @property
+    def backend(self) -> str:
+        """``artifact.backend`` of what this run uploads: its client's
+        (``s3`` for ``agent.s3.S3Client``, #791), else ``transfer``."""
+        return str(getattr(self.client, "backend", "transfer"))
+
     def _session(self) -> Any:
         if self._http is None:
             self._http = self.client.session()
@@ -608,7 +659,7 @@ class RunTransfer:
             logger.warning("run %s: could not upload %s: %s", self.run_id,
                            path, exc)
             return body, (f"{kind} {path.name} stays on worker: {exc}")
-        return {**body, "path": key, "backend": "transfer",
+        return {**body, "path": key, "backend": self.backend,
                 "mount_label": None}, None
 
     def _inside_root(self, path: Path) -> bool:
@@ -670,7 +721,7 @@ class RunTransfer:
             return None, f"output {name} stays on worker: {exc}"
         return {"kind": OUTPUT_KIND, "path": key, "meta": {"name": name},
                 "node_id": None, "mount_label": None,
-                "backend": "transfer"}, None
+                "backend": self.backend}, None
 
 
 def is_interrupt_checkpoint(body: dict[str, Any]) -> bool:

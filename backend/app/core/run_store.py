@@ -62,7 +62,7 @@ from uuid import uuid4
 
 from ..config import settings
 from .db import Database, transaction, utc_now_iso
-from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKENDS, translate
+from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_S3, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
 from .project import git_provenance
 from .worker_protocol import TARGET_ANY, TARGET_LOCAL
@@ -118,10 +118,14 @@ ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 WORKER_LOCAL = TARGET_LOCAL
 #: The worker id an ``any`` run carries until it is placed (#772).
 WORKER_ANY = TARGET_ANY
+#: How many of a graph's newest succeeded runs ``peak_history`` reads
+#: for one that reported a peak (#788).
+PEAK_LOOKUP_ROWS = 20
 
-#: SQL: an artifact row that is not a ``transfer`` row (#785), whose file
-#: retention removes with its run's directory instead.
-_NOT_TRANSFER = "(backend IS NULL OR backend != 'transfer')"
+#: SQL: an artifact row that is neither a ``transfer`` row (#785), whose
+#: file retention removes with its run's directory instead, nor an ``s3``
+#: row (#791), whose object goes with the run's prefix in the bucket.
+_NOT_TRANSFER = "(backend IS NULL OR backend NOT IN ('transfer', 's3'))"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
@@ -132,7 +136,7 @@ _RUN_COLUMNS = (
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
 _ARTIFACT_COLUMNS = ("id, run_id, kind, path, meta, created_at, backend, "
-                     "mount_label, worker_id")
+                     "mount_label, worker_id, bucket")
 
 #: Last value of every series in ONE run, by index seeks only — see
 #: ``RunStore.latest_metrics`` for why this is not a ``GROUP BY``.
@@ -550,18 +554,21 @@ class ArtifactRecord:
     mount_label: str | None = None
     stored_path: str | None = None
     worker_id: str = WORKER_LOCAL
+    #: The S3 bucket of an ``s3`` row (#791); None for every other row.
+    bucket: str | None = None
 
     @classmethod
     def build(cls, *, id: int, run_id: str, kind: str, stored_path: str,
               meta: Any, created_at: str, backend: str | None,
               mount_label: str | None,
-              worker_id: str | None = None) -> "ArtifactRecord":
+              worker_id: str | None = None,
+              bucket: str | None = None) -> "ArtifactRecord":
         backend = backend or BACKEND_LOCAL
         return cls(id=id, run_id=run_id, kind=kind,
-                   path=translate(backend, mount_label, stored_path),
+                   path=translate(backend, mount_label, stored_path, bucket),
                    meta=meta, created_at=created_at, backend=backend,
                    mount_label=mount_label, stored_path=stored_path,
-                   worker_id=worker_id or WORKER_LOCAL)
+                   worker_id=worker_id or WORKER_LOCAL, bucket=bucket)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ArtifactRecord":
@@ -569,7 +576,7 @@ class ArtifactRecord:
                          stored_path=row["path"], meta=_loads(row["meta"]),
                          created_at=row["created_at"], backend=row["backend"],
                          mount_label=row["mount_label"],
-                         worker_id=row["worker_id"])
+                         worker_id=row["worker_id"], bucket=row["bucket"])
 
 
 @dataclass(frozen=True)
@@ -668,6 +675,11 @@ def _insert_fingerprint(conn: sqlite3.Connection,
     return digest
 
 
+def _no_provenance_table(exc: sqlite3.OperationalError) -> bool:
+    """Whether *exc* is SQLite saying ``exec_run_provenance`` is missing."""
+    return "no such table" in str(exc) and "exec_run_provenance" in str(exc)
+
+
 @dataclass
 class RunStore:
     """Typed CRUD over the four ``exec_*`` tables.
@@ -696,6 +708,7 @@ class RunStore:
         study_attempt_id: str | None = None,
         worker_id: str = WORKER_LOCAL,
         devices: list[str] | None = None,
+        graph_hash: str | None = None,
     ) -> RunRecord:
         """Insert a run and return its row.
 
@@ -722,6 +735,9 @@ class RunStore:
         worker's name, or ``any``) and the REQUESTED ``target.devices``
         list, or None for a run that named a single ``device``.
         ``mark_running`` replaces both with the placement of a worker run.
+
+        *graph_hash* (``memory_admission.graph_hash``, #788) is what
+        :meth:`peak_history` finds the run by.
         """
         if status not in RUN_STATUSES:
             raise ValueError(
@@ -770,6 +786,7 @@ class RunStore:
             record.study_id, record.study_attempt_id,
             record.worker_id,
             None if record.devices is None else _dumps(record.devices),
+            graph_hash,
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
@@ -777,8 +794,8 @@ class RunStore:
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
                 "plugin_pins, sweep_id, sweep_variant, study_id, "
-                "study_attempt_id, worker_id, devices) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "study_attempt_id, worker_id, devices, graph_hash) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
@@ -1048,6 +1065,82 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def peak_history(
+        self, graph_hash: str, limit: int = 5,
+    ) -> list[tuple[str, Any, Any]]:
+        """``(run_id, finished_at, peak_memory)`` of up to *limit* newest
+        succeeded runs whose ``graph_hash`` is *graph_hash* and that
+        reported a peak (#788, #794), newest first: the history ``POST
+        /api/runs/estimate`` lists, and (its first row) the default budget
+        (``memory_admission.history_suggestion``).
+
+        A seek on ``idx_exec_runs_graph_hash``, newest first; only the
+        newest :data:`PEAK_LOOKUP_ROWS` runs of the graph are read, so a
+        graph that never reports a peak (a CPU run) costs a bounded scan."""
+        def _lookup(conn: sqlite3.Connection) -> list[tuple[str, Any, Any]]:
+            rows = conn.execute(
+                "SELECT id, finished_at, json_extract(execution_facts, "
+                "'$.peak_memory') AS peak FROM exec_runs INDEXED BY "
+                "idx_exec_runs_graph_hash WHERE graph_hash = ? AND status = ? "
+                "ORDER BY finished_at DESC LIMIT ?",
+                (graph_hash, STATUS_SUCCEEDED, PEAK_LOOKUP_ROWS)).fetchall()
+            found = [(row["id"], row["finished_at"], _loads(row["peak"]))
+                     for row in rows if row["peak"] is not None]
+            return found[:max(0, int(limit))]
+
+        return await self.db.run(_lookup)
+
+    async def mark_stop_requested(self, run_id: str, reason: str) -> bool:
+        """Record that a stop was asked of an active worker run (#793) as
+        ``execution_facts.stop_requested``: a restarted server adopting
+        the run asks its worker again. False when the run has no facts
+        document or is no longer active."""
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET execution_facts = json_set("
+                "execution_facts, '$.stop_requested', ?) WHERE id = ? AND "
+                "execution_facts IS NOT NULL AND status IN (?, ?)",
+                (reason, run_id, STATUS_RUNNING, STATUS_DISCONNECTED),
+            ).rowcount
+
+        return await self.db.run(_update) > 0
+
+    async def checkpoint_worker_run(
+        self, run_id: str, points: Iterable[MetricPoint], seq: int,
+    ) -> bool:
+        """Write a worker run's buffered *points* and its acknowledged *seq*
+        (``execution_facts.worker_resume.last_seq``) in ONE transaction
+        (#793): either both are durable or neither is. True when the seq
+        landed (the run has a ``worker_resume`` record); False leaves
+        nothing written. Raises like :meth:`log_metrics` on a bad write.
+        """
+        rows = [
+            (run_id, p.node_id, p.name, p.step,
+             p.value if math.isfinite(p.value) else None,
+             p.ts or utc_now_iso())
+            for p in points
+        ]
+
+        def _write(conn: sqlite3.Connection) -> bool:
+            with transaction(conn):
+                landed = conn.execute(
+                    "UPDATE exec_runs SET execution_facts = json_set("
+                    "execution_facts, '$.worker_resume.last_seq', ?) "
+                    "WHERE id = ? AND json_type(execution_facts, "
+                    "'$.worker_resume') = 'object'",
+                    (int(seq), run_id),
+                ).rowcount > 0
+                if not landed:
+                    return False
+                if rows:
+                    conn.executemany(
+                        "INSERT INTO exec_run_metrics (run_id, node_id, "
+                        "name, step, value, ts) VALUES (?, ?, ?, ?, ?, ?)",
+                        rows)
+                return True
+
+        return await self.db.run(_write)
+
     async def record_fingerprint(self, fingerprint: dict[str, Any],
                                  digest: str | None = None) -> str:
         """Store an environment document without a run; returns its digest.
@@ -1059,6 +1152,118 @@ class RunStore:
         """
         return await self.db.run(lambda conn: _insert_fingerprint(
             conn, fingerprint, digest, utc_now_iso()))
+
+    async def record_run_environment(
+        self, run_id: str, *, fingerprint: dict[str, Any] | None,
+        digest: str | None, numerics: dict[str, Any] | None,
+        source: str,
+    ) -> bool:
+        """The environment a run's executing process reported (#344).
+
+        For a worker run: its run subprocess's own fingerprint, which
+        replaces the one the worker's ``hello`` described at ``_begin``
+        (the subprocess loaded the code and plugins on disk when it
+        started, which may be newer than the agent's). One transaction:
+        the document goes into ``exec_run_fingerprints``, the row points
+        at it, and ``execution_facts`` gets ``fingerprint_source`` =
+        *source* and, when given, ``resolved.numerics``.
+
+        False, and nothing written, when the run is gone or has no facts
+        document (the same rule as :meth:`update_execution_facts`).
+        """
+        stamp = utc_now_iso()
+
+        def _write(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                row = conn.execute(
+                    "SELECT execution_facts FROM exec_runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+                if row is None or row["execution_facts"] is None:
+                    return 0
+                facts = _loads(row["execution_facts"])
+                if not isinstance(facts, dict):
+                    return 0
+                stored_digest = None
+                if fingerprint is not None:
+                    stored_digest = _insert_fingerprint(conn, fingerprint,
+                                                        digest, stamp)
+                    facts["fingerprint_source"] = source
+                if numerics is not None:
+                    resolved = facts.get("resolved")
+                    if not isinstance(resolved, dict):
+                        resolved = {}
+                    resolved["numerics"] = numerics
+                    facts["resolved"] = resolved
+                return conn.execute(
+                    "UPDATE exec_runs SET execution_facts = ?, "
+                    "fingerprint_digest = COALESCE(?, fingerprint_digest) "
+                    "WHERE id = ?",
+                    (_dumps(facts), stored_digest, run_id),
+                ).rowcount
+
+        return await self.db.run(_write) > 0
+
+    async def record_provenance(self, run_id: str,
+                                record: dict[str, Any]) -> bool:
+        """Store one node's provenance record (#344, ``node_provenance``).
+
+        Keyed by ``(run_id, node_id)``: a second record for the same node
+        (a replayed worker frame) replaces the first. False when the run
+        does not exist or the record names no node.
+        """
+        node_id = record.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            return False
+        node_type = str(record.get("node_type") or "")
+        kind = str(record.get("kind") or "")
+        stamp = utc_now_iso()
+
+        def _insert(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                if conn.execute("SELECT 1 FROM exec_runs WHERE id = ?",
+                                (run_id,)).fetchone() is None:
+                    return 0
+                return conn.execute(
+                    "INSERT OR REPLACE INTO exec_run_provenance "
+                    "(run_id, node_id, node_type, kind, provenance, "
+                    "recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (run_id, node_id, node_type, kind,
+                     _dumps(json_safe(record)), stamp),
+                ).rowcount
+
+        def _write(conn: sqlite3.Connection) -> int:
+            try:
+                return _insert(conn)
+            except sqlite3.OperationalError as exc:
+                if not _no_provenance_table(exc):
+                    raise
+            from .migrations import PROVENANCE_TABLE_DDL
+
+            conn.executescript(PROVENANCE_TABLE_DDL)
+            return _insert(conn)
+
+        return await self.db.run(_write) > 0
+
+    async def list_provenance(self, run_id: str) -> list[dict[str, Any]]:
+        """A run's provenance records, in the order they were recorded.
+
+        ``[]`` when the table is missing (a development database migrated
+        past 017 while 017 was empty, see
+        ``migrations.PROVENANCE_TABLE_DDL``): such a run recorded nothing.
+        """
+        def _select(conn: sqlite3.Connection) -> list[str]:
+            try:
+                return [row["provenance"] for row in conn.execute(
+                    "SELECT provenance FROM exec_run_provenance "
+                    "WHERE run_id = ? ORDER BY recorded_at, rowid",
+                    (run_id,))]
+            except sqlite3.OperationalError as exc:
+                if _no_provenance_table(exc):
+                    return []
+                raise
+
+        return [_loads(raw) for raw in await self.db.run(_select)]
 
     async def get_fingerprint(self, digest: str) -> dict[str, Any] | None:
         """The environment document a ``fingerprint_digest`` names, or None.
@@ -1165,6 +1370,34 @@ class RunStore:
 
         return await self.db.run(_update) > 0
 
+    async def list_worker_runs_in_flight(
+        self, *, closing_types: Iterable[str] = (),
+    ) -> list[RunRecord]:
+        """Rows a worker agent was executing when this process's
+        predecessor stopped (#793): ``running`` or ``disconnected``, placed
+        on a worker (neither ``local``, ``any`` nor a pre-MIGRATION_008
+        NULL), started. A row whose log already ends with one of
+        *closing_types* is left out: its run finished, and only the row
+        write was lost. Oldest start first.
+        """
+        closing = tuple(closing_types)
+        closed = ("" if not closing else
+                  " AND COALESCE((SELECT e.type FROM exec_run_events e "
+                  "WHERE e.run_id = exec_runs.id ORDER BY e.cursor DESC "
+                  f"LIMIT 1), '') NOT IN ({','.join('?' * len(closing))})")
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs "
+                "WHERE status IN (?, ?) AND started_at IS NOT NULL "
+                "AND worker_id IS NOT NULL AND worker_id NOT IN (?, ?)"
+                f"{closed} ORDER BY started_at, id",
+                (STATUS_RUNNING, STATUS_DISCONNECTED, WORKER_LOCAL,
+                 WORKER_ANY, *closing),
+            ).fetchall()
+
+        return [RunRecord.from_row(row) for row in await self.db.run(_select)]
+
     async def interrupt_active_runs(
         self,
         *,
@@ -1172,14 +1405,16 @@ class RunStore:
         closing_event: str | None = None,
         closing_payload: Any = None,
         closing_types: Iterable[str] = (),
+        keep: Iterable[str] = (),
     ) -> int:
         """Crash recovery: retire rows no process is driving any more.
 
         Call once at startup. Every active state is covered by default —
-        nothing resumes a ``running`` or ``disconnected`` row after a restart
-        (adopting a worker's runs is #793), and a ``queued``
-        row would otherwise wait forever on a scheduler that lost its queue.
-        Narrow it with *statuses* if a caller can genuinely re-adopt one.
+        nothing resumes a ``running`` row of this process after a restart,
+        and a ``queued`` row would otherwise wait forever on a scheduler
+        that lost its queue. Narrow it with *statuses* if a caller can
+        genuinely re-adopt one; *keep* names rows the caller adopts (a
+        worker's runs, #793), which are left as they are.
         Idempotent: a second call finds nothing.
 
         *statuses* is validated against ACTIVE_STATUSES, not the full
@@ -1209,17 +1444,20 @@ class RunStore:
         marks = ",".join("?" * len(wanted))
         encoded = None if closing_payload is None else _dumps(closing_payload)
         already_closed = frozenset(closing_types)
+        kept = tuple(keep)
+        spared = ("" if not kept else
+                  f" AND id NOT IN ({','.join('?' * len(kept))})")
 
         def _retire(conn: sqlite3.Connection) -> int:
             with transaction(conn):
                 run_ids = [row[0] for row in conn.execute(
-                    f"SELECT id FROM exec_runs WHERE status IN ({marks})",
-                    wanted,
+                    f"SELECT id FROM exec_runs WHERE status IN ({marks})"
+                    f"{spared}", (*wanted, *kept),
                 ).fetchall()]
                 retired = conn.execute(
                     "UPDATE exec_runs SET status = ?, finished_at = ? "
-                    f"WHERE status IN ({marks})",
-                    (STATUS_INTERRUPTED, stamp, *wanted),
+                    f"WHERE status IN ({marks}){spared}",
+                    (STATUS_INTERRUPTED, stamp, *wanted, *kept),
                 ).rowcount
                 if closing_event is None:
                     return retired
@@ -1616,10 +1854,31 @@ class RunStore:
 
     # ── artifacts ─────────────────────────────────────────────────────────
 
+    async def has_artifact(self, run_id: str, kind: str, path: str, *,
+                           meta: Any = None,
+                           before: str | None = None) -> bool:
+        """Whether *run_id* already has a *kind* row for *path* (as stored:
+        a mount or transfer row's relative path) with the same *meta*,
+        written before *before* (a UTC ISO stamp; None: any time). What a
+        restarted server's replay of an artifact frame the previous process
+        had already recorded looks like (#793)."""
+        encoded = None if meta is None else _dumps(_json_safe(meta))
+        sql = ("SELECT 1 FROM exec_run_artifacts WHERE run_id = ? AND "
+               "kind = ? AND path = ? AND meta IS ?")
+        params: list[Any] = [run_id, kind, path, encoded]
+        if before is not None:
+            sql += " AND created_at < ?"
+            params.append(before)
+
+        def _select(conn: sqlite3.Connection) -> Any:
+            return conn.execute(sql + " LIMIT 1", params).fetchone()
+
+        return await self.db.run(_select) is not None
+
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
         backend: str = BACKEND_LOCAL, mount_label: str | None = None,
-        worker_id: str = WORKER_LOCAL,
+        worker_id: str = WORKER_LOCAL, bucket: str | None = None,
     ) -> ArtifactRecord:
         """Register a file a run produced. *kind* is an open vocabulary.
 
@@ -1627,7 +1886,9 @@ class RunStore:
         copy, so the returned record always equals what a re-read gives.
         A ``mount`` row (#782) stores *path* relative to the mount
         *mount_label* names; the record returned carries this server's path
-        for it, as :meth:`list_artifacts` does. *worker_id* is the worker
+        for it, as :meth:`list_artifacts` does. An ``s3`` row (#791) records
+        its *bucket* (ignored for every other backend). *worker_id* is the
+        worker
         whose run wrote the file (``local``: this process).
         """
         if backend not in BACKENDS:
@@ -1641,11 +1902,11 @@ class RunStore:
         def _insert(conn: sqlite3.Connection) -> int:
             cur = conn.execute(
                 "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
-                "created_at, backend, mount_label, worker_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_at, backend, mount_label, worker_id, bucket) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, kind, path, encoded, created_at, backend,
                  mount_label if backend == BACKEND_MOUNT else None,
-                 worker_id),
+                 worker_id, bucket if backend == BACKEND_S3 else None),
             )
             # lastrowid is Optional in the driver's typing; after a
             # successful single-row INSERT it is always the new rowid.
@@ -1656,7 +1917,8 @@ class RunStore:
             id=artifact_id, run_id=run_id, kind=kind, stored_path=path,
             meta=meta, created_at=created_at, backend=backend,
             mount_label=mount_label if backend == BACKEND_MOUNT else None,
-            worker_id=worker_id)
+            worker_id=worker_id,
+            bucket=bucket if backend == BACKEND_S3 else None)
 
     async def list_artifacts(
         self, run_id: str, *, kind: str | None = None,
@@ -1673,6 +1935,19 @@ class RunStore:
             return conn.execute(sql, params).fetchall()
 
         return [ArtifactRecord.from_row(r) for r in await self.db.run(_select)]
+
+    async def s3_objects(self, run_id: str) -> list[tuple[str, str | None,
+                                                         str]]:
+        """``(run_id, bucket, key)`` of *run_id*'s ``s3`` rows (#791): only
+        those two columns, through the ``run_id`` index; empty for a run
+        that wrote nothing to a bucket."""
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                "SELECT DISTINCT bucket, path FROM exec_run_artifacts "
+                "WHERE run_id = ? AND backend = 's3'", (run_id,)).fetchall()
+
+        return [(run_id, row["bucket"], row["path"])
+                for row in await self.db.run(_select)]
 
     # ── retention ─────────────────────────────────────────────────────────
 
@@ -1912,13 +2187,52 @@ class RunStore:
                         f"{where_clause} AND worker_id IS NOT NULL "
                         "AND worker_id NOT IN (?, ?)",
                         (*params, WORKER_LOCAL, WORKER_ANY)).fetchall()]
+                # A worker run that wrote to the S3 bucket (#791): its
+                # objects go with it, the same way, from the bucket and
+                # prefix its rows recorded.
+                interrupted = {
+                    row["id"]: row["status"] == STATUS_INTERRUPTED
+                    for row in conn.execute(
+                        "SELECT id, status FROM exec_runs WHERE "
+                        f"{where_clause} AND EXISTS (SELECT 1 FROM "
+                        "exec_run_artifacts a WHERE a.run_id = exec_runs.id "
+                        "AND a.backend = 's3')",
+                        params).fetchall()}
+                s3_rows = [
+                    (row["run_id"], row["bucket"], row["path"])
+                    for run_id in interrupted
+                    for row in conn.execute(
+                        "SELECT DISTINCT run_id, bucket, path FROM "
+                        "exec_run_artifacts WHERE run_id = ? "
+                        "AND backend = 's3'", (run_id,)).fetchall()]
+                s3_runs = (interrupted, s3_rows)
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
-                return deleted, doomed_paths, doomed_logdirs, worker_runs
+                return (deleted, doomed_paths, doomed_logdirs, worker_runs,
+                        s3_runs)
 
-        deleted, doomed_paths, doomed_logdirs, worker_runs = \
+        deleted, doomed_paths, doomed_logdirs, worker_runs, s3_runs = \
             await self.db.run(_prune)
+        if s3_runs[0]:
+            from . import s3
+
+            interrupted, s3_rows = s3_runs
+            if s3.configured():
+                places = [(run_id, interrupted[run_id], bucket, prefix)
+                          for run_id, bucket, prefix in s3.locations(s3_rows)]
+                removed, _ = await asyncio.to_thread(s3.remove_runs_objects,
+                                                     places)
+                if removed:
+                    logger.info("run retention: removed the S3 objects of "
+                                "%d worker run(s): %s", len(removed),
+                                ", ".join(removed))
+            else:
+                logger.warning(
+                    "run retention: %d run(s) had files in an S3 bucket, "
+                    "which this server can no longer reach (%s); their "
+                    "objects stay", len(s3_runs[0]),
+                    s3.unconfigured())
         if worker_runs:
             from .transfer import remove_run_files
 

@@ -159,7 +159,7 @@ ssh -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
 
 ## 儲存 {/* #storage */}
 
-不使用資料夾中檔案的 run（純 tensor 的圖、Dataset、HuggingFaceDataset 節點下載到自己快取的圖，或讀取 `data/samples/iris.csv` 這類內建範例的圖；每個安裝都有內建範例，worker 讀自己的那份）可以在任何 worker 上執行。節點參數中的相對路徑在每台機器上都從安裝目錄的 `backend/` 讀取，與伺服器相同：不論 `cdui agent start` 在哪個目錄啟動（經 SSH 時是家目錄），它都會在那裡運作。啟動 agent 時給的設定若是相對路徑（例如 `CODEFYUI_MODELS_DIR=models`），仍代表啟動時所在的目錄：agent 會在切換目錄前把它轉成絕對路徑。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端。有共用資料夾的 worker 優先。
+不使用資料夾中檔案的 run（純 tensor 的圖、Dataset、HuggingFaceDataset 節點下載到自己快取的圖，或讀取 `data/samples/iris.csv` 這類內建範例的圖；每個安裝都有內建範例，worker 讀自己的那份）可以在任何 worker 上執行。節點參數中的相對路徑在每台機器上都從安裝目錄的 `backend/` 讀取，與伺服器相同：不論 `cdui agent start` 在哪個目錄啟動（經 SSH 時是家目錄），它都會在那裡運作。啟動 agent 時給的設定若是相對路徑（例如 `CODEFYUI_MODELS_DIR=models`），仍代表啟動時所在的目錄：agent 會在切換目錄前把它轉成絕對路徑。會讀取上傳檔或寫出檔案的 run，需要兩者之一：兩台機器共用的資料夾，或經由 agent 連線搬運檔案的 transfer 後端（有設定時，改經由 [S3 或 MinIO bucket](#storage-s3)）。有共用資料夾的 worker 優先。
 
 | Run | 有 `data` 掛載的 worker | 沒有掛載的 worker |
 | --- | --- | --- |
@@ -210,6 +210,60 @@ cdui agent start --mount data=/nas/codefyui/data
 
 輸入與輸出送往 agent 連線的同一個位址，帶著它的 worker token，並做相同的憑證檢查（釘選的憑證對它們同樣生效）：沒有 TLS 時，它們會以明文經過網路。在 proxy 後方時，它的請求大小上限必須容得下最大的輸出（[部署](./deployment#workers-behind-this-proxy)）。
 
+### S3 或 MinIO bucket {/* #storage-s3 */}
+
+實驗室若已有 MinIO，或使用 S3，可以讓 bucket 取代控制面作為檔案存放處：worker 從 bucket 下載 run 的輸入，並把 run 寫出的檔案上傳到 bucket，控制面只保存物件的 key。如此 run 的檔案不會經過控制面的網路連線，唯一的例外是每個輸入檔，由控制面放進 bucket 一次。
+
+它處理的 run 與 transfer 後端相同（在檔案欄位中選取的上傳檔，總大小在 `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` 以內），對象是沒有共用資料夾的 worker；啟用時由它取代 transfer 後端。有共用資料夾的 worker 仍然優先。
+
+**設定方式。**
+
+1. 在控制面與每台要使用 bucket 的 worker 上，把 boto3 安裝進 CodefyUI 的環境：在安裝資料夾執行 `uv pip install --python backend/.venv/bin/python boto3`，開發用的 checkout 則用 `uv pip install -e "backend[s3]"`。沒有 boto3 的 agent 不會提供 S3（agent 的 log 會列出連線時使用的 capabilities），仍會收到 transfer 後端的 run，每個這樣的 run 會記下一則 `storage_fallback` 警告。
+2. 建立 bucket，以及一個可讀寫它的 CodefyUI 使用者。使用 MinIO 的 client：`mc mb lab/codefyui`，接著 `mc admin user add lab codefyui <secret>` 與 `mc admin policy attach lab readwrite --user codefyui`。
+3. 以 bucket 的設定啟動控制面：
+
+```bash
+export CODEFYUI_S3_ENABLED=1
+export CODEFYUI_S3_ENDPOINT_URL=http://minio.lab:9000   # AWS S3 則留空
+export CODEFYUI_S3_BUCKET=codefyui
+export CODEFYUI_S3_ADDRESSING_STYLE=path                # 多數 MinIO 環境
+export CODEFYUI_S3_ACCESS_KEY_ID=codefyui
+export CODEFYUI_S3_SECRET_ACCESS_KEY=<secret>
+cdui start
+```
+
+伺服器 log 會顯示 `S3 artifact backend on: bucket codefyui at http://minio.lab:9000 (credentials: auto)`，或說明後端為何關閉（沒有 bucket，或缺少 boto3）。Worker 不需要自己的設定：bucket、它的位址與憑證會隨每個 run 送達。控制面與每台 worker 都必須能以同一個位址連到 bucket。
+
+**檔案放在哪裡。** 放在 `CODEFYUI_S3_PREFIX` 之下（預設為空；設為 `codefyui/` 會把所有東西放在該資料夾下）：
+
+- `inputs/<sha256>`：run 讀取的上傳檔。第一次有 run 需要它時由控制面放入，以內容命名，同一個檔案不會上傳兩次。Worker 從這裡把它下載到 transfer 後端使用的同一個 `agent-cache`。
+- `runs/<run id>/<kind>/<name>`：run 記錄為 artifact 的每個檔案（週期 checkpoint 是 `runs/<run id>/checkpoint/<name>.pt`，TensorBoard 資料夾逐檔上傳），以及放在 `runs/<run id>/output/` 下、run 寫在 `models/`、`media/` 或 `output/` 中的其他檔案，保留它在那裡的路徑（ModelSaver 的 `iris/model.pt` 會是 `runs/<run id>/output/models/iris/model.pt`）。Agent 的上傳方式與 transfer 後端相同：與 run 並行、中斷 checkpoint 最後上傳、在回報 run 結束之前完成，並以相同的重試度過斷線。暫時憑證過期時也以同樣方式重試，直到新憑證送達（MinIO 對過期憑證回應 `InvalidAccessKeyId`；只有已到或超過期限的暫時憑證遇到這個回應才會重試）。被 bucket 拒絕的檔案（`AccessDenied`、bucket 不存在）會留在 worker 上，並附上 `transfer_failed` 警告。
+
+`GET /api/runs/{id}/artifacts` 以 `backend: "s3"` 列出它們，`path` 為 `s3://<bucket>/<key>`，`relative_path` 為 key。在執行任務面板中，**複製路徑** 會複製 `s3://` 位址（給 `mc` 或 `aws s3` 使用），**下載** 則取得檔案：預設經由控制面轉送（`CODEFYUI_S3_DOWNLOAD=proxy`），設為 `presign` 時會把瀏覽器導向有效 `CODEFYUI_S3_PRESIGN_TTL_S` 秒的預先簽署 URL，資料直接從 bucket 傳到瀏覽器（此時瀏覽器必須自己連得到 bucket 的位址）。與 transfer 後端不同，寫檔節點的檔案不會放進控制面的 `models/` 資料夾：本機 run 要讀它之前，請先下載。
+
+**憑證。** `CODEFYUI_S3_CREDENTIALS` 決定 worker 拿到什麼：
+
+- `sts`：向 endpoint 的 STS 取得暫時憑證（`AssumeRole`），附帶 session policy，只允許寫入 `runs/<run id>/` 之下，以及讀取該 run 的輸入，有效期為 `CODEFYUI_S3_STS_DURATION_S`（預設一小時）。只要 run 還在執行，控制面會在過期前送出新的憑證。MinIO 用一般使用者的 key 就能發出這種憑證；AWS 則需要可 assume 的 role（`CODEFYUI_S3_STS_ROLE_ARN`）。無法取得憑證的 run 會在送出之前失敗。
+- `static`：控制面自己的 key。請給 CodefyUI 一個只能存取這個 bucket 的使用者。
+- `auto`（預設）：先用 `sts`，STS 拒絕時改用控制面自己的 key，並在伺服器 log 留下警告；之後 10 分鐘內，或在 S3 設定變更之前，不再向 STS 要求。
+
+憑證隨 run 的指派送出，與它的機密參數相同（[Agent 與控制面之間的信任](#trust-between-agent-and-control-plane)）：控制面位址是一般的 `http://` 時不會加密。Agent 只把它們放在記憶體中，不寫入檔案或 log，run 的子程序也拿不到。控制面從環境變數讀取自己的 key，不寫入任何資料庫或 log。
+
+**清理。** Run 保留機制與 **刪除** 會移除 run 在 `runs/<run id>/` 下的物件，並中止它未完成的上傳，但保留 `output/`（寫檔節點的檔案會保留，與 transfer 後端把它們留在資料夾中相同），以及保留機制移除以 `interrupted` 結束的 run 時，它的 `checkpoint/`。當時連不上的 bucket 會記錄在 log 中，物件保留不動；**刪除** 時回應的 `warning` 也會說明。沒有任何 run 資料列指向的東西（保留下來的 `output/` 資料夾、`inputs/`、已終止的 worker 留下的上傳）交給 bucket 的 lifecycle 規則處理。在 AWS S3 上：
+
+```json
+{"Rules": [
+  {"ID": "codefyui-abandoned-uploads", "Status": "Enabled", "Filter": {"Prefix": "runs/"},
+   "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}},
+  {"ID": "codefyui-inputs", "Status": "Enabled", "Filter": {"Prefix": "inputs/"},
+   "Expiration": {"Days": 30}}
+]}
+```
+
+（`aws s3api put-bucket-lifecycle-configuration --bucket codefyui --lifecycle-configuration file://rules.json`；若設定了 `CODEFYUI_S3_PREFIX`，prefix 要加在它之下）。MinIO 不接受 `AbortIncompleteMultipartUpload`：它會在 24 小時後自行移除未完成的上傳（`mc admin config get lab api` 會顯示 `stale_uploads_expiry`），因此只需要過期規則：`mc ilm rule add lab/codefyui --prefix "inputs/" --expire-days 30`。過期的輸入檔會由下一個需要它的 run 重新上傳。
+
+每筆資料列會記下它的 bucket，key 也帶著當時的 prefix，因此之後變更 `CODEFYUI_S3_BUCKET` 或 `CODEFYUI_S3_PREFIX` 只影響新的 run：先前 run 的檔案仍在原處列出、下載與移除（控制面的 key 必須仍能存取舊的 bucket）。
+
 ## 讓 worker 保持同步 {/* #keeping-workers-in-sync */}
 
 Worker 必須執行與控制面相同的 CodefyUI 版本，也應該認得相同的節點。Agent 每次連線時，控制面都會檢查這兩項。
@@ -223,7 +277,7 @@ Worker 必須執行與控制面相同的 CodefyUI 版本，也應該認得相同
 
 要解除降級，請在 worker 上安裝相同的外掛與套件（`cdui plugin install ...`、Package Center、相同的自訂節點檔）並重新啟動 agent：它只在啟動時回報節點。輔助程序失敗的 worker 不會回報節點目錄：它的卡片會顯示警告，`any` 會略過它，指定它的 run 則不經檢查直接送出（agent 的 log 會說明輔助程序失敗的原因）。目前還沒有把控制面的外掛組合複製到 worker 的指令。
 
-**環境指紋。** 同一個輔助程序也會收集 worker 的[環境指紋](/advanced/api-reference#run-environment)（CodefyUI commit、Python、torch build、加速器、外掛版本、影響數值的環境變數）。Workers 面板顯示它的摘要，worker 執行的每個 run 都會記錄這個摘要（重新連線時未回報指紋的 worker 會顯示「未回報」，不會沿用舊的摘要），所以 Runs 面板會指出實際執行它的環境。指紋描述的是 agent 的環境，也就是它的 run 子程序所繼承的環境，在 run 的裝置集合縮小 `CUDA_VISIBLE_DEVICES` 之前。
+**環境指紋。** 同一個輔助程序也會收集 worker 的[環境指紋](/advanced/api-reference#run-environment)（CodefyUI commit、Python、torch build、加速器、外掛版本、影響數值的環境變數）。Workers 面板顯示它的摘要，worker 執行的每個 run 開始時都會記錄這個摘要（重新連線時未回報指紋的 worker 會顯示「未回報」，不會沿用舊的摘要）。接著 run 子程序回報它所載入之程式碼、外掛與自訂節點的指紋並取而代之（`execution_facts.fingerprint_source: "worker-run"`），所以 agent 啟動後 checkout 或外掛有變動的 worker，記錄的是實際執行的內容，而不是 agent 當時看到的內容。兩者描述的都是 agent 所見的機器裝置，在 run 的裝置集合縮小 `CUDA_VISIBLE_DEVICES` 之前，所以沒有任何變動時兩個摘要相同。子程序也會回報它的 torch 數值設定（`execution_facts.resolved.numerics`）。見[執行環境](/advanced/api-reference#run-environment)。
 
 ## 連線中斷時 {/* #when-the-connection-drops */}
 
@@ -231,9 +285,11 @@ Worker 的連線關閉，或連續錯過三次心跳（30 秒）時，即視為�
 
 - **Worker 在寬限時間內重新連線**（`CODEFYUI_WORKER_RESUME_GRACE_S`，5 分鐘）：它依序補送控制面尚未記錄的事件，run 回到 `running`，並留下類型為 `worker_reconnected` 的 `run_warning`。事件紀錄沒有缺漏，也沒有重複。
 - **沒有重新連線**：run 以 `interrupted` 結束，名額釋放。如果 worker 之後回來且 run 仍在執行，會被要求立即停止，讓這張卡留給下一個 run；run 在 worker 上的結束方式會記錄為 run 的 `late_result`（`{status, error, worker_id, at}`，見 `GET /api/runs/{id}` 與 `execution_facts`），狀態與事件紀錄維持原樣。
-- **控制面在這段期間重新啟動**：run 會在啟動時以 `interrupted` 結束，與其他執行中的 run 相同。
+- **控制面在這段期間重新啟動**：重新啟動的控制面會接手這個 run，如下所述。
 
-`CODEFYUI_WORKER_RESUME_GRACE_S` 由控制面讀取；設為 `0` 則 worker 一斷線就結束它的 run。SSH worker 的 agent 也以同樣的寬限時間決定何時不再等待通道（[連線中斷](#connecting-over-ssh)）。
+**控制面重新啟動時。** 控制面若沒有先停止它的 run 就結束（被強制結束、當機、筆電斷電），worker 上的 run 會繼續執行：子程序照常進行，agent 也會保留它們的事件。控制面下次啟動時會接手每一個這樣的 run，而不是把它結束。這個 run 會顯示為 `disconnected`，並留下類型為 `worker_disconnected`、說明伺服器已重新啟動的 `run_warning`；它會重新占用原本的名額，事件紀錄也沿用同一份。它的 worker 重新連線（SSH worker 的通道由控制面自己重新啟動）且仍有這個 run 時，run 會回到 `running`，從控制面最後確認的位置接續：停止前最後約一秒內的事件可能出現兩次，但不會缺漏。若 worker 未在 `CODEFYUI_WORKER_RESUME_GRACE_S`（從重新啟動起算）內重新連線，run 會以 `interrupted` 結束，原因為 `it did not reconnect with the run within 300 s after this server restarted`；若 worker 重新連線時已沒有這個 run（它的 agent 也重新啟動過），run 會立即結束。Transfer run 的上傳會在重新啟動後繼續，之前已收到的檔案仍屬於這個 run。`s3` run 的 worker 手上的憑證由先前的程序核發，因此它一重新連線就會收到新的憑證，之後照常續期。在控制面自身執行的 run、仍在佇列中等待的 run，以及由 CodefyUI 3.1.0 啟動的 worker run（它沒有記錄接續的位置），則與以前一樣以 `interrupted` 結束。在 worker 離線期間按下的停止會跨越重新啟動保留，worker 回來時再送出。被接手的 run 仍在等 worker 時若正常關閉控制面，這個 run 會立即以 `interrupted` 結束；在關閉的寬限時間內沒有停下的 worker run 也會以 `interrupted` 結束；worker 下次連線時會被要求停止它。正常關閉（`systemctl stop`、Windows 上的 Ctrl+C）仍會停止 worker 上的 run（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)），所以不會留下需要接手的 run。
+
+`CODEFYUI_WORKER_RESUME_GRACE_S` 由控制面讀取；設為 `0` 則 worker 一斷線就結束它的 run，重新啟動的控制面也不會接手任何 run。SSH worker 的 agent 也以同樣的寬限時間決定何時不再等待通道（[連線中斷](#connecting-over-ssh)）。
 
 ## Agent 與控制面之間的信任 {/* #trust-between-agent-and-control-plane */}
 
@@ -336,14 +392,56 @@ journalctl -u codefyui-agent -f
 
 `--foreground` 是必要的，理由與伺服器相同：沒有它時，`cdui agent start` 會啟動背景 agent 後就結束，而 systemd 會把 `Type=exec` 服務主程序的結束視為服務結束。因版本不同而被拒的 agent 會以錯誤結束，`Restart=on-failure` 會每 5 秒重試一次直到你更新；更新期間請先 `systemctl stop codefyui-agent`。請保留 `KillMode=mixed`：它讓 agent 自己停止它的 run，執行中的 run 會以 `cancelled` 結束（訓練迴圈會寫下中斷 checkpoint）；使用 systemd 的預設值時，run 子程序會直接收到 SIGTERM，run 會以 `failed` 結束，錯誤為 `run subprocess exited with code -15`。SSH worker 不需要 unit：控制面會讓它的 agent 持續執行。
 
+## 單次 worker：SLURM 與 ssh {/* #one-shot-workers */}
+
+`cdui agent start --one-shot` 只接**一個 run**，回報後就結束，類似以 `--ephemeral` 啟動的 GitHub runner。在批次 job 或 `ssh` 指令中啟動它：由批次系統決定 job 拿到哪台機器與哪張 GPU，CodefyUI 負責送出圖並記錄結果。
+
+```bash
+cdui agent start --one-shot --control https://codefyui.example.com
+```
+
+- **哪些 run 會送到它。** **任一可用** 不會把 run 送到單次 worker。只有指名該 worker（`"target": {"worker": "<名稱>"}`）或單次 worker 池的 run 會送到它：**Queue on...** 中的 **單次 worker**，或在 `POST /api/runs` 中使用 `"target": {"pool": "one-shot"}`（並以 `device` 指定需要的裝置類型，例如 `cuda`）。池中的 run 不會因為沒有 worker 而被拒絕：它會等待提供該裝置的單次 worker，`queue_reason` 會說明，並在 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S`（預設 24 小時，`0` 表示一直等）後失敗。池中的 run 依裝置類型各排一列，先送出的先處理。`--run-id <id>` 讓 agent 只接該 run，不論它在佇列中的哪個位置；該 run 必須在池中等待或指名此 worker，否則 agent 連線時就會被拒絕。
+- **不錄製輸出。** 開啟 **錄製節點輸出** 的 run 送往單次 worker 池或單次 worker 時會被拒絕：agent 在 run 結束時就會退出，檢視器永遠無法讀取它錄製的資料。
+- **結束碼。** `0`：run 成功且控制面已記錄。`1`：run 失敗、被取消或以 `interrupted` 結束，或結果無法送達。`2`：控制面拒絕這個 agent（版本不同、名稱被另一個 agent 占用、`--run-id` 指的 run 不是在等它），或參數錯誤。`3`：agent 在 run 送達前被停止（SIGTERM、Ctrl-C、job 的時間上限）。`4`：無法啟動（加入失敗，或 `--mount` 被拒）。agent 接了 run 之後才被拒絕（控制面拒絕它重新連線）為 `1`：run 的結果沒有被記錄。
+- **連線中斷。** run 會繼續執行，agent 會像一般 agent 一樣重新連線（[連線中斷時](#when-the-connection-drops)）。它要等控制面確認收到 run 的結束才會退出；若 run 結束後 `CODEFYUI_WORKER_RESUME_GRACE_S` 內仍未確認，它仍會以 `1` 退出，並把結果留在暫存檔，交給之後使用同一個 user-data 資料夾的 agent 補送。
+- **結束之後。** Workers 面板以 **單次** 標記並顯示 **離線**，**單次 run** 連到它接的 run（或說明它未接 run 就結束）。下一個 job 以同一名稱啟動的 agent 會接下一個 run。控制面會記下該 worker 自己的上一個 agent 是單次 agent，所以控制面重新啟動後，指名它的 run 立即依 `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` 計時，不必等它的下一個 agent 連線。執行個體（見下方）不會寫入這項紀錄：請透過單次池（`target.pool: "one-shot"`）把 run 交給 array，不要用指名憑證的 run。指名執行個體（`<名稱>.<ID>`）的 run 一律依此計時。
+- **同一名稱一次一個 agent。** 憑證綁定 worker 名稱，所以用同一份憑證啟動的兩個 job 會共用名稱。單次 worker 連線中或它的 run 仍在進行時，以同一名稱連線的另一個 agent 會被拒絕，結束碼 `2`。要同時執行多個 job，請使用執行個體（見下一點）。
+- **執行個體：一張憑證給多個 job。** `--instance [ID]`（僅限單次 agent）讓 agent 成為共用同一張憑證與同一個 user-data 資料夾的多個 agent 之一，例如 SLURM array 的各個 task。它以 `<名稱>.<ID>` 登記；不給值時，`ID` 在 array task 中為 `<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>`，在其他 job 中為 `SLURM_JOB_ID`，否則為 16 個隨機十六進位字元；在 job step（`srun`）中會再加上 `-<SLURM_STEP_ID>-<SLURM_PROCID>`，所以 `srun -n 4` 的各個 task 各有自己的 ID。每個執行個體都是獨立的單次 worker：只接一個 run（池中的 run，或指名 `<名稱>.<ID>` 的 run）；它占用名稱與 run 的期間，其他執行個體都拿不走，控制面重新啟動後也一樣。憑證上的設定適用於每個執行個體：**Drain**、每張卡的裝置准入策略（透過執行個體設定的策略會存在憑證上），以及 `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` 中的 `<名稱>/<裝置>` 上限（`<名稱>.<ID>/<裝置>` 可為單一執行個體另行設定）。執行個體不會改動憑證本身的紀錄（它的裝置、單次旗標），所以憑證的一般 agent 可以與它的執行個體同時連線。Workers 面板把執行個體列在憑證的卡片內（**共用憑證**，並顯示幾個已連線、幾個執行中）：仍在執行的各有一張卡片，已離開的各占一行。在憑證上按 **移除** 會撤銷憑證，所有執行個體都會中斷連線，正在執行的 run 以 `interrupted` 結束，等待任一執行個體的 run 則會失敗。執行個體要等它離開後才有 **移除**，而且只會把那一行從清單移除；已連線（或仍有 run 在進行）的執行個體無法單獨移除，因為它的 agent 會以手上的 token 重新連線。同時啟動、帶著 enrollment token 且尚未存有憑證的 task 會在 user-data 資料夾中取得一個鎖：第一個 task 加入（token 只需一次使用次數），其他 task 使用它存下的憑證。在不支援檔案鎖的檔案系統上（以 `noflock` 掛載的 Lustre、部分 NFS），agent 會記錄一則警告並在沒有鎖的情況下繼續：請先完成一次加入再啟動 array，並讓每個 task 使用不同的 ID。執行個體把 run 的檔案放在 `<user data>/agent-instances/<ID>/`，結束時刪除，所以它沒能送達的結果之後不會由其他 agent 補送。被強制終止的執行個體（`SIGKILL`、OOM killer、節點重新開機）會留下這個資料夾；下一個啟動的執行個體會在沒有 agent 占用該 ID、且資料夾內 24 小時沒有變動時刪除它。若以同一個 user-data 資料夾中仍在執行的執行個體 ID 再啟動一個 agent，它會在動到該資料夾之前以 `2` 結束。面板為每張憑證保留最近 50 個已結束的執行個體，直到控制面重新啟動。
+- 它永遠在前景執行，不寫 pidfile，所以不會與同一台機器上的背景 agent 衝突。沒有批次系統的時間上限時，沒有 run 送達的 agent 不會自行結束：若 `ssh` 指令不能一直等待，請用 `timeout` 包住。
+
+### SLURM {/* #slurm */}
+
+先以 **Add worker** 產生 enrollment token（一次使用次數即可），再送出 job。下方 array 的所有 task 同時以同一張憑證執行，各自是一個執行個體（`slurm.<array job>-<task>`）。user-data 資料夾必須位於每個節點都共用的檔案系統上，家目錄通常就是：
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=codefyui-run
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=04:00:00
+#SBATCH --array=0-3
+#SBATCH --output=codefyui-%A_%a.log
+
+module load cuda/12.4          # 依叢集的模組名稱
+export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent"   # 所有 task 共用
+CDUI="$HOME/CodefyUI/cdui"
+CONTROL=https://codefyui.example.com
+
+# 最先啟動的 task 用 token 加入；其他 task 與之後的 job 都沿用已存的憑證。
+"$CDUI" agent start --one-shot --instance --control "$CONTROL" \
+    --name slurm --token "$CODEFYUI_ENROLL_TOKEN"
+```
+
+先以 **Queue on... → 單次 worker** 排入 run（或以同一目標建立 **New sweep**：每個 task 接一個 variant），再用 `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch` 送出。SLURM 會把分配到的 GPU 設在 `CUDA_VISIBLE_DEVICES`，agent 以 `cuda:0` 提供那張卡。到達 job 的時間上限時 SLURM 會送出 SIGTERM：agent 會停止它的 run（`interrupted`，訓練迴圈會寫出中斷檢查點）並以 `1` 退出。要從腳本執行某個特定的 run，傳入它的 id：`cdui agent start --one-shot --run-id <run id> ...`；直接用 `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'` 也是這個寫法。
+
 ## 限制 {/* #limits */}
 
 - **畫布在控制面執行。** **Run** 一律在那裡執行，連同它的快取與持久化權重；要把分頁的圖送到 worker，請使用**排入佇列...**。
-- **Worker 上不擷取輸出。** 目標為 worker 的 run 不接受 `record_outputs`（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)）；要為 Inspector 擷取輸出，請以控制面為目標。Worker run 每次也都從新的權重開始。
-- **沒有依記憶體的准入。** Run 與在控制面上一樣，以每個裝置名額的數量准入；沒有任何機制檢查 run 是否放得進卡的記憶體（[#788](https://github.com/CodefyUI/CodefyUI/issues/788)）。
-- **一個 run，一台機器。** Run 只使用一個 worker 的裝置；沒有跨卡或跨機器的 `DistributedDataParallel`（[#792](https://github.com/CodefyUI/CodefyUI/issues/792)）。
+- **擷取的輸出保存在 worker 上。** 開啟**錄製節點輸出**時，worker run 的擷取資料保存在 worker 上，Inspector 經由它的連線讀取，因此只有 worker 連線時才能讀取（[#789](https://github.com/CodefyUI/CodefyUI/issues/789)，[執行架構：Worker 上的錄製輸出](/advanced/execution-architecture#recorded-outputs-on-a-worker)）。Worker run 每次都從新的權重開始。
+- **依記憶體准入需逐卡開啟。** Run 與在控制面上一樣，以每個裝置名額的數量准入，除非該卡設為 **依記憶體共用**（[多 GPU：共用一張卡](/usage/multi-gpu#sharing-a-card)）。
+- **一個 run，一台機器。** Run 只使用一個 worker 的裝置。`strategy: ddp` 的 `TrainingLoop` 會在該 worker 的多張卡上訓練（[多 GPU 執行](/usage/multi-gpu#ddp)）；沒有跨機器的訓練。
 - **以 Linux 為主。** Worker 在 Linux 上開發與測試；macOS 可用，Windows 盡力支援。
-- **控制面重新啟動會結束 worker 上的 run。** 它停止時正在執行的 run 會以 `interrupted` 結束，與本機 run 相同（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)）。
+- **正常停止控制面會結束 worker 上的 run。** 關閉時會停止 worker 上正在執行的 run，與停止本機 run 相同（[執行佇列：伺服器停止時](./run-queue#when-the-server-stops)）；只有在沒有停止它們就結束的控制面，才會在下次啟動時接手（[連線中斷時](#when-the-connection-drops)）。
 
 ## 設定 {/* #settings */}
 
@@ -353,15 +451,29 @@ journalctl -u codefyui-agent -f
 | --- | --- | --- |
 | `CODEFYUI_EXTRA_ALLOWED_HOSTS` | *（空）* | Worker（或瀏覽器）連線用的主機名稱，例如 `gpu-gw.lan:8000` |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | 斷線 worker 的 run 等待它的秒數；`0` 立即結束 |
+| `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S` | `60` | 讀取 worker run 錄製輸出時等待 worker 回覆的秒數，逾時回 `504` |
+| `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` | `86400` | run 等待單次 worker 的秒數，逾時即失敗（[單次 worker](#one-shot-workers)）；`0` 表示一直等 |
 | `CODEFYUI_TLS_CERT_FILE` | *（空）* | Proxy 的憑證（PEM，leaf 在前），讓新增 worker 對話框顯示它的指紋 |
 | `CODEFYUI_MOUNT_LABEL` | `data` | 控制面資料夾的 label |
 | `CODEFYUI_TRANSFER_ENABLED` | `1` | `0` 關閉 transfer 後端 |
 | `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` | 2 GiB | 一個 run 經由傳送的輸入檔總大小上限 |
 | `CODEFYUI_MAX_UPLOAD_SIZE` | 500 MB | Worker 可上傳的單一輸出檔上限；所有檔案上傳都適用同一上限 |
+| `CODEFYUI_S3_ENABLED` | `0` | `1` 讓沒有共用資料夾的 worker 上的 run 經由 S3 或 MinIO bucket 傳送檔案（[S3 或 MinIO bucket](#storage-s3)） |
+| `CODEFYUI_S3_ENDPOINT_URL` | *（空）* | Bucket 的 API 位址，例如 `http://minio.lab:9000`；AWS S3 則留空 |
+| `CODEFYUI_S3_REGION` | `us-east-1` | Bucket 的 region |
+| `CODEFYUI_S3_BUCKET` | *（空）* | Bucket |
+| `CODEFYUI_S3_PREFIX` | *（空）* | 加在每個 key 前面，例如 `codefyui/` |
+| `CODEFYUI_S3_ADDRESSING_STYLE` | `auto` | 多數 MinIO 環境用 `path`，或 `virtual` |
+| `CODEFYUI_S3_ACCESS_KEY_ID`、`CODEFYUI_S3_SECRET_ACCESS_KEY` | *（空）* | 控制面存取 bucket 的 key，只保存在記憶體中 |
+| `CODEFYUI_S3_CREDENTIALS` | `auto` | Worker 拿到的憑證：`sts`（暫時、只限它的 run）、`static`（上面的 key）或 `auto`（先 STS，否則用上面的 key） |
+| `CODEFYUI_S3_STS_ROLE_ARN` | *（空）* | AWS 上要 assume 的 role；MinIO 會忽略 |
+| `CODEFYUI_S3_STS_DURATION_S` | `3600` | 暫時憑證的有效秒數（900 到 43200）；到期前會送出新的 |
+| `CODEFYUI_S3_DOWNLOAD` | `proxy` | Bucket 中檔案的 **下載**：`proxy` 經由控制面轉送，`presign` 導向預先簽署的 URL |
+| `CODEFYUI_S3_PRESIGN_TTL_S` | `900` | 預先簽署下載 URL 的有效秒數 |
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | SSH worker 的槽位編號：決定 worker 在遠端主機上的狀態資料夾（`~/.codefyui-ssh/<id>-<槽位>/`，通道的 socket 就在裡面），也是它存放憑證所用的位址 |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | 設為 `yes` 時要求主機已在 `known_hosts` 中 |
 
-在 worker 上，未給 `--token` 時由 `CODEFYUI_AGENT_TOKEN` 提供 token（[CLI 指令：環境變數](/getting-started/cli-commands#environment-variables)）。
+在 worker 上，`CODEFYUI_RUN_OUTPUT_STORE_MAX_MB`（2048）限制它保留的錄製輸出，`CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S`（300）是 run 結束後其子程序寫出錄製輸出的時間上限（正常的 `cdui agent stop` 最多等待這麼久讓寫入完成）；未給 `--token` 時由 `CODEFYUI_AGENT_TOKEN` 提供 token（[CLI 指令：環境變數](/getting-started/cli-commands#environment-variables)）。
 
 ## 另請參閱 {/* #see-also */}
 

@@ -805,13 +805,17 @@ def test_the_connection_gives_the_runner_a_client(tmp_path):
     from app.agent.connection import AgentConnection
 
     runner = Runner(runs_dir=tmp_path / "agent-runs", offered_devices={"cpu"})
-    AgentConnection(runner=runner, name="w", version="0",
-                    control_url=lambda: "http://cp:1", token="t",
-                    probe_devices=lambda: [])
+    connection = AgentConnection(runner=runner, name="w", version="0",
+                                 control_url=lambda: "http://cp:1",
+                                 token="t", probe_devices=lambda: [])
     assert isinstance(runner.transfer, tr.TransferClient)
     assert runner.transfer.cache.root == tmp_path / "agent-cache"
     assert runner.transfer._url("/x") == "http://cp:1/x"
-    assert runner.transfer._headers() == {"X-CodefyUI-Token": "t"}
+    # Every agent says which process it is (#845): the agents of one
+    # credential share its token, and uploads are bound to the run's.
+    assert runner.transfer._headers() == {
+        "X-CodefyUI-Token": "t",
+        "X-CodefyUI-Worker-Instance": connection.instance_id}
 
 
 def test_file_transfers_verify_the_control_plane_like_the_socket(tmp_path):
@@ -891,3 +895,31 @@ async def test_uploads_never_hold_up_the_subprocess_and_a_late_cancel_stops_them
     assert finished.status == "succeeded"
     assert client.uploads == [("checkpoint", "p1.pt")]
     await _until(lambda: "u1" not in runner.runs)
+
+
+
+def test_a_200_that_is_not_the_control_planes_answer_is_retried(
+        tmp_path, monkeypatch):
+    """#785's rule, kept by the shared retry loop (#791): a 200 whose body
+    is not the upload's JSON (a proxy's page) is an outage, retried."""
+    client, server, clock = _outage(tmp_path, monkeypatch, failures=0)
+    source = tmp_path / "ck.pt"
+    source.write_bytes(b"weights")
+    real = client._client
+    pages = [2]
+
+    def proxied() -> Any:
+        inner = real()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if pages[0] > 0:
+                pages[0] -= 1
+                return httpx.Response(200, text="<html>proxy</html>")
+            return inner._transport.handle_request(request)
+
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(client, "_client", proxied)
+    key = client.upload("run-1", "checkpoint", "ck.pt", source)
+    assert server.uploads[key] == b"weights"
+    assert pages == [0] and clock.now == 1.0 + 2.0

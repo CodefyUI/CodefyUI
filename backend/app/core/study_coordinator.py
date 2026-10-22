@@ -14,12 +14,35 @@ How it is driven
 Deterministically, by one function: :meth:`StudyCoordinator.tick`. A tick
 reads the study and its attempts, reconciles them with the child runs
 (``_reconcile``), and then does whatever the study's status calls for:
-submit the next pending attempts up to ``budget.max_parallel_runs``, settle
-the study when every repetition is done, or settle a cancel. Ticks for one
-study are serialised by a per-study ``asyncio.Lock``. A tick is triggered by
-the submit, by every child reaching a terminal status (the Run Service's
-terminal listener), by ``cancel`` / ``resume``, and by every ``GET`` of the
-study (read repair, as sweeps do). Nothing polls on a timer.
+enforce the budgets, submit the next pending attempts up to
+``budget.max_parallel_runs``, settle the study when every repetition is
+done, or settle a cancel. Ticks for one study are serialised by a per-study
+``asyncio.Lock``. A tick is triggered by the submit, by every child reaching
+a terminal status (the Run Service's terminal listener), by ``cancel`` /
+``resume``, and by every ``GET`` of the study (read repair, as sweeps do).
+The one timer is the budget timer: a study with ``max_run_seconds`` or
+``max_active_seconds`` and a child in flight is ticked again when the next
+of those limits can be reached (and every ``_BUDGET_POLL_S`` while a child
+has yet to start), so a time budget is enforced with nobody watching.
+
+Budgets
+-------
+Every limit is enforced here, on the server (#343 increment 4):
+
+- ``max_parallel_runs`` caps the children in flight;
+- ``max_runs`` caps the attempts ever submitted, retries included;
+- ``max_run_seconds`` caps one child's execution time. The coordinator
+  records ``stop_reason`` on the attempt and then cancels the child; it
+  ends ``timed_out``, a result like ``failed`` (the repetition is not
+  re-run and its variant is not ranked), and the study goes on;
+- ``max_active_seconds`` caps the summed execution time of every child.
+
+When ``max_runs`` or ``max_active_seconds`` runs out with repetitions still
+unfinished, scheduling stops (``max_active_seconds`` also stops the children
+in flight, which read ``cancelled`` and are re-run by a resume) and, once no
+child is left in flight, the study becomes ``halted``: a durable state whose
+``halt`` record names the budget, its limit and what was used, with every
+result so far kept. ``resume`` with a raised budget continues it.
 
 Submission order is repetition-major: every variant's repetition 0, then
 every variant's repetition 1, and so on, so a partially-run study already
@@ -63,7 +86,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from uuid import uuid4
 
 from .run_service import (
@@ -76,6 +99,7 @@ from .run_service import (
     _Broadcast,
     _swallow_task_result,
 )
+from .db import utc_now_iso
 from .run_store import STATUS_DISCONNECTED, TERMINAL_STATUSES
 from .secret_params import (
     SecretVault,
@@ -93,22 +117,30 @@ from .study_store import (
     ATTEMPT_RUNNING,
     ATTEMPT_SUBMITTING,
     RESUME_AUTO,
+    STOP_MAX_ACTIVE_SECONDS,
+    STOP_MAX_RUN_SECONDS,
     STUDY_ACTIVE,
     STUDY_CANCEL_REQUESTED,
     STUDY_CANCELLED,
     STUDY_FAILED,
+    STUDY_HALTED,
     STUDY_INTERRUPTED,
     STUDY_QUEUED,
     STUDY_RESUMABLE,
     STUDY_RUNNING,
     STUDY_SUCCEEDED,
     AttemptRecord,
+    BUDGET_MAX_ACTIVE_SECONDS,
+    BUDGET_MAX_RUNS,
     IdempotencyConflict,
     NewVariant,
+    RevisionConflict,
     StudyEventRecord,
     StudyRecord,
     StudyStateError,
     StudyStore,
+    attempt_seconds,
+    budget_usage,
     current_attempts,
     rank_study,
 )
@@ -117,6 +149,16 @@ logger = logging.getLogger(__name__)
 
 #: How long ``shutdown`` waits for in-flight ticks before cancelling them.
 _SHUTDOWN_TICK_GRACE_S = 5.0
+#: How often a study with a time budget is ticked while one of its children
+#: has been submitted but has not started (the start has no event of its
+#: own). Also the longest the budget timer ever waits.
+_BUDGET_POLL_S = 1.0
+#: The shortest budget-timer delay, so a limit already reached does not
+#: spin the loop while its child drains.
+_BUDGET_MIN_DELAY_S = 0.05
+#: How often a stop the study already sent for a budget is sent again while
+#: its child is still active (a cancel lost to a restart or an error).
+_STOP_RESEND_S = 10.0
 
 
 def repetition_seed(study_seed: int, repetition: int) -> int:
@@ -149,6 +191,9 @@ class StudySpec:
     #: AS SUBMITTED (None when the server chose one) and graphs omitted;
     #: the scrubbed graphs are folded in by ``request_digest``.
     identity: dict[str, Any]
+    #: The plugin submitting it through its jobs routes; None = core. The
+    #: idempotency key is already scoped (``scoped_idempotency_key``).
+    owner: str | None = None
 
 
 def request_digest(identity: dict[str, Any],
@@ -178,9 +223,18 @@ def _child_name(study: StudyRecord, label: str, repetition: int) -> str:
 class StudyCoordinator:
     """Owns every study's scheduling in this process. One per app."""
 
-    def __init__(self, service: RunService, store: StudyStore) -> None:
+    def __init__(self, service: RunService, store: StudyStore, *,
+                 clock: Callable[[], float] = time.time) -> None:
         self.service = service
         self.store = store
+        #: Wall-clock seconds, the scale of the stored ``started_at`` stamps
+        #: the time budgets are measured from.
+        self._clock = clock
+        #: The pending budget timer of each study (one at most).
+        self._timers: dict[str, asyncio.TimerHandle] = {}
+        #: When a budget stop was last sent, by attempt id (in memory: after
+        #: a restart every stop is sent again once).
+        self._stops_sent: dict[str, float] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._signals: dict[str, _Broadcast] = {}
         self._secrets: dict[tuple[str, int], SecretVault] = {}
@@ -188,11 +242,26 @@ class StudyCoordinator:
         #: ``(study id, variant index)``; a child submitted without one (a
         #: study resumed after a restart) has them computed at submit.
         self._needs: dict[tuple[str, int], Any] = {}
+        #: Each child's default memory budget and history key, as
+        #: ``check_batch_budgets`` derived them at creation (#788, #794), in
+        #: memory like ``_needs``.
+        self._budgets: dict[tuple[str, int], Any] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
+        #: Studies :meth:`recover` left active because a child was adopted
+        #: after the restart (#793): the restart policy (``resume_policy:
+        #: auto``) still applies once they stop on account of the restart.
+        self._restarted: set[str] = set()
+        #: ``interrupted`` studies whose auto-resume a used-up budget refused
+        #: while a child was still active: they halt once none is.
+        self._halt_pending: set[str] = set()
         service.add_terminal_listener(self._on_terminal)
 
     # ── plumbing ─────────────────────────────────────────────────────────
+
+    def now(self) -> float:
+        """The clock the budgets are measured with (epoch seconds)."""
+        return self._clock()
 
     def _lock(self, study_id: str) -> asyncio.Lock:
         lock = self._locks.get(study_id)
@@ -237,6 +306,9 @@ class StudyCoordinator:
         ``RunService.shutdown`` so a child retired by the shutdown does not
         make a tick submit a replacement into a closing queue."""
         self._closed = True
+        for handle in self._timers.values():
+            handle.cancel()
+        self._timers.clear()
         pending = [task for task in self._tasks if not task.done()]
         if pending:
             _done, still = await asyncio.wait(
@@ -247,6 +319,7 @@ class StudyCoordinator:
                 await asyncio.gather(*still, return_exceptions=True)
         self._secrets.clear()
         self._needs.clear()
+        self._budgets.clear()
 
     # ── submission ───────────────────────────────────────────────────────
 
@@ -282,9 +355,14 @@ class StudyCoordinator:
                 return existing, False
         # Every child inherits options.target; refuse what the run service
         # would refuse for any of them (a worker it has never seen, a device
-        # nobody offers, record_outputs on a worker) before any row exists.
+        # nobody offers, record_outputs on an agent too old for it) before
+        # any row exists.
+        variant_graphs = [graph for _label, _ops, graph in spec.variants]
         variant_needs = self.service.check_placeable_batch(
-            (graph for _label, _ops, graph in spec.variants), spec.options)
+            variant_graphs, spec.options)
+        # A child a shared card's memory admission would refuse (#788).
+        variant_budgets = await self.service.check_batch_budgets(
+            variant_graphs, spec.options)
         study, created = await self.store.create_study(
             name=spec.name, objective=spec.objective,
             repetitions=spec.repetitions, seed=spec.seed,
@@ -293,13 +371,17 @@ class StudyCoordinator:
             idempotency_key=spec.idempotency_key, request_digest=digest,
             variants=scrubbed,
             repetition_seeds=[repetition_seed(spec.seed, r)
-                              for r in range(spec.repetitions)])
+                              for r in range(spec.repetitions)],
+            owner=spec.owner)
         if created:
             for index, vault in enumerate(vaults):
                 if vault:
                     self._secrets[(study.id, index)] = vault
             for index, needs in enumerate(variant_needs):
                 self._needs[(study.id, index)] = needs
+            for index, child in enumerate(variant_budgets):
+                if child.budget is not None or child.digest is not None:
+                    self._budgets[(study.id, index)] = child
             self._notify(study.id)
             study = await self.tick(study.id) or study
         return study, created
@@ -309,24 +391,43 @@ class StudyCoordinator:
     async def tick(self, study_id: str) -> StudyRecord | None:
         """Reconcile one study and advance it. Returns the row after."""
         async with self._lock(study_id):
-            return await self._tick_locked(study_id)
+            study = await self._tick_locked(study_id)
+        if study_id in self._restarted:
+            study = await self._after_restart(study_id) or study
+        return study
 
     async def _tick_locked(self, study_id: str) -> StudyRecord | None:
         study = await self.store.get_study(study_id)
         if study is None:
+            handle = self._timers.pop(study_id, None)
+            if handle is not None:
+                handle.cancel()
             return None
         if await self._reconcile(study_id):
             self._notify(study_id)
         study = await self._advance(study)
+        if study_id in self._halt_pending:
+            await self._halt_used_up_locked(study_id)
         self._notify(study_id)
-        return study
+        # The row as stored: the reconcile and the budget stops above bump
+        # the revision, and a reader acting with ``expected_revision`` must
+        # see the one they produced.
+        return await self.store.get_study(study_id) or study
 
     async def _advance(self, study: StudyRecord) -> StudyRecord:
+        study = await self._advance_status(study)
+        await self._arm_budget_timer(study)
+        return study
+
+    async def _advance_status(self, study: StudyRecord) -> StudyRecord:
         if study.status in (STUDY_QUEUED, STUDY_RUNNING):
             attempts = await self.store.list_attempts(study.id)
             current = current_attempts(attempts)
+            # A child the study stopped itself (a budget) is not "stopped
+            # outside the study".
             stopped = [a for a in current.values()
-                       if a.status in (ATTEMPT_CANCELLED, ATTEMPT_INTERRUPTED)]
+                       if a.status in (ATTEMPT_CANCELLED, ATTEMPT_INTERRUPTED)
+                       and a.stop_reason is None]
             if stopped:
                 # A child stopped outside the study (someone cancelled the
                 # run itself, or the server is going away). Do not paper over
@@ -351,10 +452,20 @@ class StudyCoordinator:
                     await self.store.add_attempt(
                         attempt, "the previous submission never created a "
                                  "run")
+            halted = await self._enforce_budgets(study)
+            if halted is not None:
+                return halted
             study = await self._schedule(study)
             if study.status == STUDY_RUNNING:
                 study = await self._settle_if_done(study)
             return study
+        if study.status not in (STUDY_CANCEL_REQUESTED, STUDY_SUCCEEDED):
+            # A study that no longer schedules (interrupted by a sibling
+            # stopped outside it, halted) can still have children in
+            # flight: its time budgets bind them all the same. A cancel is
+            # already stopping every child, and those must end `cancelled`
+            # (a resume re-runs them), not `timed_out`.
+            await self._enforce_time_limits(study, self._clock())
         if study.status == STUDY_CANCEL_REQUESTED:
             current = current_attempts(await self.store.list_attempts(study.id))
             if not any(a.status in ATTEMPT_ACTIVE for a in current.values()):
@@ -403,15 +514,8 @@ class StudyCoordinator:
             if active >= parallel:
                 break
             if max_runs is not None and used >= max_runs:
-                if active == 0:
-                    unfinished = sum(1 for a in current.values()
-                                     if a.status not in ATTEMPT_FINAL)
-                    return await self.store.transition(
-                        study.id, to=STUDY_FAILED, expected=(STUDY_RUNNING,),
-                        event_type="study_failed",
-                        error=(f"budget.max_runs ({max_runs}) is used up "
-                               f"with {unfinished} repetition(s) "
-                               "unfinished")) or study
+                # The next tick's budget check halts the study once the
+                # children in flight have ended.
                 break
             if labels is None:
                 labels = {v.index: v.label
@@ -444,6 +548,7 @@ class StudyCoordinator:
             return True
         self._notify(study.id)
         options = {**study.options, "seed": attempt.seed}
+        child = self._budgets.get((study.id, attempt.variant_index))
         try:
             result = await self.service.submit(
                 graph, options=options,
@@ -451,7 +556,9 @@ class StudyCoordinator:
                 run_id=run_id, study_id=study.id,
                 study_attempt_id=attempt.id,
                 needs=self._needs.get((study.id, attempt.variant_index),
-                                      NEEDS_UNKNOWN))
+                                      NEEDS_UNKNOWN),
+                memory_budget=getattr(child, "budget", None),
+                graph_digest=getattr(child, "digest", None))
         except RunSubmitError as exc:
             await self.store.mark_lost(
                 attempt.id, f"the run service refused the child: {exc}")
@@ -525,9 +632,13 @@ class StudyCoordinator:
             elif child.status in TERMINAL_STATUSES:
                 terminal.append(child.id)
             elif child.status in (ATTEMPT_RUNNING, STATUS_DISCONNECTED) \
-                    and attempt.status == ATTEMPT_QUEUED:
+                    and (attempt.status == ATTEMPT_QUEUED
+                         or (attempt.started_at is None
+                             and child.started_at is not None)):
                 # A ``disconnected`` child (#783) started too: its worker
                 # is away, and the attempt stays running while it waits.
+                # An attempt confirmed ``running`` at submit gets the
+                # child's start time here, which the time budgets read.
                 await self.store.mark_started(attempt.id, child.started_at)
                 changed = True
         if terminal and await self.store.harvest_runs(terminal):
@@ -536,18 +647,26 @@ class StudyCoordinator:
 
     # ── cancel / resume ──────────────────────────────────────────────────
 
-    async def cancel(self, study_id: str) -> tuple[StudyRecord, list[str]]:
+    async def cancel(
+        self, study_id: str, *, expected_revision: int | None = None,
+    ) -> tuple[StudyRecord, list[str]]:
         """Stop scheduling and ask every active child to stop.
 
         Completed attempts are retained; never-submitted ones stay
         ``pending`` so a resume picks them up. Returns the study and the
         run ids a cancel was delivered to. Raises ``KeyError`` for an
-        unknown study and ``StudyStateError`` for a succeeded one.
+        unknown study, ``StudyStateError`` for a succeeded one, and
+        ``RevisionConflict`` when *expected_revision* is given and the
+        study has moved past it.
         """
         async with self._lock(study_id):
             study = await self.store.get_study(study_id)
             if study is None:
                 raise KeyError(study_id)
+            if expected_revision is not None \
+                    and study.revision != expected_revision:
+                raise RevisionConflict(study_id, expected_revision,
+                                       study.revision)
             if study.status == STUDY_SUCCEEDED:
                 raise StudyStateError(
                     f"study {study_id} already succeeded; there is nothing "
@@ -581,22 +700,233 @@ class StudyCoordinator:
             return study, delivered
 
     async def resume(self, study_id: str, *,
-                     reason: str = "explicit resume") -> StudyRecord:
-        """Reopen an interrupted, cancelled or failed study and schedule it.
+                     reason: str = "explicit resume",
+                     budget: dict[str, Any] | None = None,
+                     expected_revision: int | None = None) -> StudyRecord:
+        """Reopen an interrupted, cancelled, failed or halted study and
+        schedule it, with *budget* replacing its budget when given.
 
-        Raises ``KeyError`` / ``StudyStateError`` like :meth:`cancel`.
+        Raises ``KeyError`` / ``StudyStateError`` / ``RevisionConflict``
+        like :meth:`cancel`, and ``StudyStateError`` when the budget it
+        would resume with is already used up (a halted study needs a raised
+        budget, or it would halt again at once).
         """
         async with self._lock(study_id):
+            study = await self.store.get_study(study_id)
+            if study is None:
+                raise KeyError(study_id)
+            if expected_revision is not None \
+                    and study.revision != expected_revision:
+                raise RevisionConflict(study_id, expected_revision,
+                                       study.revision)
             await self._reconcile(study_id)
-            await self.store.resume(study_id, reason=reason)
+            await self._check_resume_budget(study, budget or study.budget)
+            await self.store.resume(study_id, reason=reason, budget=budget)
             return await self._tick_locked(study_id) or (
                 await self.store.get_study(study_id))  # type: ignore[return-value]
+
+    async def _check_resume_budget(self, study: StudyRecord,
+                                   budget: dict[str, Any]) -> None:
+        """Refuse a resume whose budget is already used up (lock held)."""
+        if study.status not in STUDY_RESUMABLE:
+            return            # the store raises the state error
+        variants = await self.store.list_variants(study.id)
+        total = len(variants) * study.repetitions
+        max_runs = budget.get("max_runs")
+        if max_runs is not None and max_runs < total:
+            raise StudyStateError(
+                f"budget.max_runs ({max_runs}) is below the {total} runs the "
+                "study schedules")
+        attempts = await self.store.list_attempts(study.id)
+        current = current_attempts(attempts)
+        to_run = sum(1 for a in current.values()
+                     if a.status not in ATTEMPT_FINAL
+                     and a.status not in ATTEMPT_ACTIVE)
+        if not to_run:
+            return
+        usage = budget_usage(budget, attempts, now=self._clock())
+        if max_runs is not None and usage["runs"]["used"] >= max_runs:
+            raise StudyStateError(
+                f"budget.max_runs ({max_runs}) is used up: "
+                f"{usage['runs']['used']} attempts were submitted and "
+                f"{to_run} repetition(s) remain; resume with a higher "
+                "budget.max_runs")
+        max_active = budget.get("max_active_seconds")
+        if max_active is not None \
+                and usage["active_seconds"]["used"] >= max_active:
+            raise StudyStateError(
+                f"budget.max_active_seconds ({max_active:g}) is used up: "
+                f"{usage['active_seconds']['used']:g} s were spent and "
+                f"{to_run} repetition(s) remain; resume with a higher "
+                "budget.max_active_seconds")
+
+    # ── budgets ──────────────────────────────────────────────────────────
+
+    async def _enforce_budgets(self, study: StudyRecord) -> StudyRecord | None:
+        """Apply ``max_run_seconds`` to every child in flight, then halt the
+        study when ``max_runs`` or ``max_active_seconds`` is used up.
+
+        Returns the study when the budget stopped scheduling (``halted``,
+        or still ``running`` while children drain), None when scheduling
+        may go on. Lock held.
+        """
+        usage = await self._enforce_time_limits(study, self._clock())
+        exhausted = usage["exhausted"]
+        if exhausted is None:
+            return None
+        current = current_attempts(await self.store.list_attempts(study.id))
+        if any(a.status in ATTEMPT_ACTIVE for a in current.values()):
+            return study      # halts once the children in flight have ended
+        return await self._halt(study, usage, expected=(STUDY_QUEUED,
+                                                        STUDY_RUNNING))
+
+    async def _enforce_time_limits(self, study: StudyRecord,
+                                   now: float) -> dict[str, Any]:
+        """Stop every child past ``max_run_seconds``, and every active
+        child once ``max_active_seconds`` is used up; re-send the stops
+        still outstanding. Returns the budget usage. Lock held, any status:
+        a child in flight is bound by the time budgets whether or not the
+        study still schedules.
+        """
+        attempts = await self.store.list_attempts(study.id)
+        current = current_attempts(attempts)
+        await self._resend_stops(study, current, now)
+        max_run = study.budget.get("max_run_seconds")
+        if max_run is not None:
+            for attempt in current.values():
+                if attempt.status == ATTEMPT_RUNNING \
+                        and attempt.stop_reason is None \
+                        and attempt_seconds(attempt, now) >= max_run:
+                    await self._stop_child(study, attempt,
+                                           STOP_MAX_RUN_SECONDS)
+        usage = budget_usage(study.budget, attempts, now=now)
+        if usage["exhausted"] == BUDGET_MAX_ACTIVE_SECONDS:
+            for attempt in current.values():
+                if attempt.status in ATTEMPT_ACTIVE \
+                        and attempt.stop_reason is None:
+                    await self._stop_child(study, attempt,
+                                           STOP_MAX_ACTIVE_SECONDS)
+        return usage
+
+    async def _halt(self, study: StudyRecord, usage: dict[str, Any], *,
+                    expected: tuple[str, ...],
+                    reason: str | None = None) -> StudyRecord:
+        """Move *study* (with no child in flight) to ``halted`` on the
+        budget ``usage`` reports exhausted, with the ranking so far."""
+        exhausted = usage["exhausted"]
+        key = "runs" if exhausted == BUDGET_MAX_RUNS else "active_seconds"
+        halt = {"budget": exhausted, "limit": usage[key]["limit"],
+                "used": usage[key]["used"],
+                "unfinished_repetitions": usage["unfinished_repetitions"],
+                "at": utc_now_iso()}
+        attempts = await self.store.list_attempts(study.id)
+        current = current_attempts(attempts)
+        variants = await self.store.list_variants(study.id)
+        ranking = rank_study(len(variants), study.repetitions, attempts,
+                             direction=study.objective["direction"])
+        moved = await self.store.transition(
+            study.id, to=STUDY_HALTED, expected=expected,
+            event_type="study_halted", halt=halt, payload={
+                **({"reason": reason} if reason else {}),
+                "completed_repetitions_kept": sum(
+                    1 for a in current.values() if a.status in ATTEMPT_FINAL),
+                "ranking": [{key_: row[key_] for key_ in (
+                    "variant_index", "rank", "tie", "tied_with", "mean",
+                    "std", "count", "eligible")} for row in ranking]})
+        return moved or study
+
+    async def _stop_child(self, study: StudyRecord, attempt: AttemptRecord,
+                          reason: str) -> None:
+        """Record *reason* on the attempt, then cancel its child."""
+        marked = await self.store.request_stop(attempt.id, reason)
+        if marked is None or attempt.run_id is None:
+            return
+        await self._send_stop(study, attempt, reason)
+
+    async def _resend_stops(self, study: StudyRecord,
+                            current: dict[tuple[int, int], AttemptRecord],
+                            now: float) -> None:
+        """Cancel again every active child the study already stopped, at
+        most every ``_STOP_RESEND_S``: a cancel that failed, or that reached
+        a process that restarted since, is never left unsent."""
+        for attempt in current.values():
+            if attempt.status not in ATTEMPT_ACTIVE:
+                self._stops_sent.pop(attempt.id, None)
+            elif attempt.stop_reason \
+                    and attempt.run_id is not None \
+                    and now - self._stops_sent.get(attempt.id, -1e18) \
+                    >= _STOP_RESEND_S:
+                await self._send_stop(study, attempt, attempt.stop_reason)
+
+    async def _send_stop(self, study: StudyRecord, attempt: AttemptRecord,
+                         reason: str) -> None:
+        self._stops_sent[attempt.id] = self._clock()
+        try:
+            await self.service.cancel(attempt.run_id)
+        except Exception:
+            logger.warning("study %s: could not stop run %s (%s)", study.id,
+                           attempt.run_id, reason, exc_info=True)
+
+    async def _arm_budget_timer(self, study: StudyRecord) -> None:
+        """Tick *study* again when its next time limit can be reached."""
+        handle = self._timers.pop(study.id, None)
+        if handle is not None:
+            handle.cancel()
+        if self._closed:
+            return
+        max_run = study.budget.get("max_run_seconds")
+        max_active = study.budget.get("max_active_seconds")
+        if max_run is None and max_active is None:
+            return
+        now = self._clock()
+        attempts = await self.store.list_attempts(study.id)
+        active = [a for a in current_attempts(attempts).values()
+                  if a.status in ATTEMPT_ACTIVE]
+        if not active:
+            return
+        delays: list[float] = []
+        # A child without a start time has no event of its own for it.
+        if any(a.status != ATTEMPT_RUNNING or a.started_at is None
+               for a in active):
+            delays.append(_BUDGET_POLL_S)
+        # Children the study already stopped are draining: only the stop
+        # re-send needs them.
+        if any(a.stop_reason for a in active):
+            delays.append(_STOP_RESEND_S)
+        running = [a for a in active if a.status == ATTEMPT_RUNNING
+                   and a.started_at is not None and a.stop_reason is None]
+        if max_run is not None:
+            delays += [max_run - attempt_seconds(a, now) for a in running]
+        if max_active is not None and running:
+            used = budget_usage(study.budget, attempts,
+                                now=now)["active_seconds"]["used"]
+            if used < max_active:
+                delays.append((max_active - used) / len(running))
+            else:
+                delays.append(0.0)
+        if not delays:
+            return
+        delay = max(_BUDGET_MIN_DELAY_S, min(delays))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - always called from a task
+            return
+        self._timers[study.id] = loop.call_later(delay, self._schedule_tick,
+                                                 study.id)
 
     # ── startup ──────────────────────────────────────────────────────────
 
     async def recover(self) -> int:
         """STARTUP ONLY, after ``RunService.recover_interrupted``: settle
-        every study the previous process left active. Returns how many."""
+        every study the previous process left active. Returns how many.
+
+        A study with a child the run service adopted (#793: a worker run
+        that waits for its worker to come back) is not settled: that child
+        is still active, so the study carries on as any study with an
+        active child does, and its ticks decide what follows when the
+        child ends (a success counts; an ``interrupted`` child interrupts
+        the study, which then waits for a resume).
+        """
         settled = 0
         for study_id in await self.store.list_study_ids(STUDY_ACTIVE):
             async with self._lock(study_id):
@@ -604,46 +934,134 @@ class StudyCoordinator:
                 if study is None or study.status not in STUDY_ACTIVE:
                     continue
                 await self._reconcile(study_id)
-                current = current_attempts(
-                    await self.store.list_attempts(study_id))
-                if study.status == STUDY_CANCEL_REQUESTED:
-                    await self.store.transition(
-                        study_id, to=STUDY_CANCELLED,
-                        expected=(STUDY_CANCEL_REQUESTED,),
-                        event_type="study_cancelled",
-                        payload={"reason": "the server restarted while the "
-                                           "cancel was in progress"})
-                elif current and all(a.status in ATTEMPT_FINAL
-                                     for a in current.values()):
-                    if study.status == STUDY_QUEUED:
-                        study = await self.store.transition(
-                            study_id, to=STUDY_RUNNING,
-                            expected=(STUDY_QUEUED,),
-                            event_type="study_started") or study
-                    await self._settle_if_done(study)
+                adopted = await self._has_adopted_child(study_id)
+                if adopted:
+                    logger.info("study %s carries on: a child of it was "
+                                "taken over from its worker", study_id)
+                    if study.status == STUDY_CANCEL_REQUESTED:
+                        # The cancel may not have reached the adopted
+                        # child before the restart: ask again.
+                        await self._cancel_active_children(study_id)
+                    self._restarted.add(study_id)
+                    # A sibling retired by the restart interrupts it now,
+                    # a finished cancel settles it, as any tick would.
+                    await self._advance(study)
                 else:
-                    await self.store.transition(
-                        study_id, to=STUDY_INTERRUPTED,
-                        expected=STUDY_ACTIVE,
-                        event_type="study_interrupted", payload={
-                            "reason": "the server restarted; resume the "
-                                      "study to continue it",
-                            "attempts": [
-                                {"attempt_id": a.id, "run_id": a.run_id,
-                                 "status": a.status}
-                                for a in current.values()
-                                if a.status == ATTEMPT_INTERRUPTED]})
-                settled += 1
-            study = await self.store.get_study(study_id)
-            if study is not None and study.status == STUDY_INTERRUPTED \
-                    and study.resume_policy == RESUME_AUTO:
-                await self.resume(
-                    study_id, reason="resume_policy is auto; resumed after "
-                                     "a server restart")
+                    await self._settle_recovered(study_id, study)
+                    settled += 1
+            if adopted:
+                await self._after_restart(study_id)
+            else:
+                await self._auto_resume(study_id)
         if settled:
             logger.warning("settled %d study(ies) left active by the previous "
                            "process", settled)
         return settled
+
+    async def _cancel_active_children(self, study_id: str) -> None:
+        current = current_attempts(await self.store.list_attempts(study_id))
+        for attempt in current.values():
+            if attempt.status in ATTEMPT_ACTIVE and attempt.run_id:
+                await self.service.cancel(attempt.run_id)
+
+    async def _after_restart(self, study_id: str) -> StudyRecord | None:
+        """For a study :meth:`recover` left active (#793): once it is no
+        longer active with an adopted child, apply the restart policy: an
+        ``interrupted`` study with ``resume_policy: auto`` resumes itself,
+        as it would have at startup."""
+        async with self._lock(study_id):
+            study = await self.store.get_study(study_id)
+            if study is not None and study.status in STUDY_ACTIVE \
+                    and await self._has_adopted_child(study_id):
+                return None
+            self._restarted.discard(study_id)
+        await self._auto_resume(study_id)
+        return await self.store.get_study(study_id)
+
+    async def _has_adopted_child(self, study_id: str) -> bool:
+        """Whether an active attempt of *study_id* has a child the run
+        service is driving (at startup, only adopted runs are)."""
+        current = current_attempts(await self.store.list_attempts(study_id))
+        return any(a.status in ATTEMPT_ACTIVE and a.run_id is not None
+                   and self.service.is_active(a.run_id)
+                   for a in current.values())
+
+    async def _settle_recovered(self, study_id: str,
+                                study: StudyRecord) -> None:
+        """The restart policy for one study left active (lock held)."""
+        current = current_attempts(await self.store.list_attempts(study_id))
+        if study.status == STUDY_CANCEL_REQUESTED:
+            await self.store.transition(
+                study_id, to=STUDY_CANCELLED,
+                expected=(STUDY_CANCEL_REQUESTED,),
+                event_type="study_cancelled",
+                payload={"reason": "the server restarted while the "
+                                   "cancel was in progress"})
+        elif current and all(a.status in ATTEMPT_FINAL
+                             for a in current.values()):
+            if study.status == STUDY_QUEUED:
+                study = await self.store.transition(
+                    study_id, to=STUDY_RUNNING,
+                    expected=(STUDY_QUEUED,),
+                    event_type="study_started") or study
+            await self._settle_if_done(study)
+        else:
+            await self.store.transition(
+                study_id, to=STUDY_INTERRUPTED,
+                expected=STUDY_ACTIVE,
+                event_type="study_interrupted", payload={
+                    "reason": "the server restarted; resume the "
+                              "study to continue it",
+                    "attempts": [
+                        {"attempt_id": a.id, "run_id": a.run_id,
+                         "status": a.status}
+                        for a in current.values()
+                        if a.status == ATTEMPT_INTERRUPTED]})
+
+    async def _auto_resume(self, study_id: str) -> None:
+        study = await self.store.get_study(study_id)
+        if study is not None and study.status == STUDY_INTERRUPTED \
+                and study.resume_policy == RESUME_AUTO:
+            try:
+                await self.resume(
+                    study_id, reason="resume_policy is auto; resumed after "
+                                     "a server restart")
+            except StudyStateError as exc:
+                # The budget is used up (or the study moved meanwhile). Never
+                # raise out of recover(): a study that cannot go on halts,
+                # where a raised budget resumes it.
+                logger.warning("study %s: not resumed after the restart: %s",
+                               study_id, exc)
+                await self._halt_used_up(study_id)
+
+    async def _halt_used_up(self, study_id: str) -> None:
+        """An ``interrupted`` study whose budget is used up -> ``halted``."""
+        async with self._lock(study_id):
+            await self._halt_used_up_locked(study_id)
+
+    async def _halt_used_up_locked(self, study_id: str) -> None:
+        """Lock held. A child the restart adopted (#793) may still be in
+        flight: as ``_enforce_budgets`` does, a used-up
+        ``max_active_seconds`` stops it, a used-up ``max_runs`` lets it
+        finish, and the study halts only once no child is active."""
+        study = await self.store.get_study(study_id)
+        if study is None or study.status != STUDY_INTERRUPTED:
+            self._halt_pending.discard(study_id)
+            return
+        usage = await self._enforce_time_limits(study, self._clock())
+        if usage["exhausted"] is None:
+            # Refused for another reason: it waits as it is.
+            self._halt_pending.discard(study_id)
+            return
+        current = current_attempts(await self.store.list_attempts(study_id))
+        if any(a.status in ATTEMPT_ACTIVE for a in current.values()):
+            self._halt_pending.add(study_id)
+            await self._arm_budget_timer(study)
+            return
+        self._halt_pending.discard(study_id)
+        await self._halt(study, usage, expected=(STUDY_INTERRUPTED,),
+                         reason="resume_policy is auto, but the budget is "
+                                "used up; raise it to resume")
 
     # ── events ───────────────────────────────────────────────────────────
 

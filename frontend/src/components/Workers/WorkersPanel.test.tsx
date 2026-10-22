@@ -9,9 +9,11 @@ import {
   fetchSshWorkers,
   fetchWorkers,
   removeWorker,
+  setDevicePolicy,
   setSshWorkerEnabled,
   undrainWorker,
   type SshWorker,
+  type WorkerCardPeer,
   type WorkerInfo,
 } from '../../api/workers';
 import { useI18n } from '../../i18n';
@@ -29,6 +31,7 @@ vi.mock('../../api/workers', async (importOriginal) => ({
   drainWorker: vi.fn(),
   undrainWorker: vi.fn(),
   removeWorker: vi.fn(),
+  setDevicePolicy: vi.fn(),
   fetchEnrollments: vi.fn(),
   createEnrollment: vi.fn(),
   deleteEnrollment: vi.fn(),
@@ -93,6 +96,11 @@ async function openPanel(workers: WorkerInfo[] = [worker('gpu-box')]) {
 }
 
 const t = useI18n.getState().t;
+
+/** A card's own facts list, not one of a nested instance card's (#845). */
+function ownFacts(card: HTMLElement): Element | null {
+  return Array.from(card.children).find((child) => child.tagName === 'DL') ?? null;
+}
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
@@ -240,6 +248,170 @@ describe('WorkersPanel', () => {
     const near = within(dialog).getByRole('article', { name: 'near' });
     expect(within(far).getByText('Plain HTTP')).toHaveAttribute('title', expect.stringMatching(/unencrypted/));
     expect(within(near).queryByText('Plain HTTP')).toBeNull();
+  });
+
+  it('badges a one-shot worker and says what became of its run (#790)', async () => {
+    const dialog = await openPanel([
+      worker('waiting', { one_shot: { run_id: null, took: null } }),
+      worker('pinned', { one_shot: { run_id: 'abcdef0123456789', took: null } }),
+      worker('took', { status: 'offline', one_shot: { run_id: null, took: 'run-12345678-abcd' } }),
+      worker('idle', { status: 'offline', one_shot: { run_id: null, took: null } }),
+      worker('regular', { one_shot: null }),
+    ]);
+    const card = (name: string) => within(within(dialog).getByRole('article', { name }));
+    expect(card('waiting').getByText('One-shot')).toHaveAttribute('title', expect.stringMatching(/exactly one run/));
+    expect(card('waiting').getByText('One-shot run').nextElementSibling).toHaveTextContent('waiting for a run');
+    expect(card('pinned').getByText('waiting for run abcdef01')).toHaveAttribute('title', 'abcdef0123456789');
+    expect(card('took').getByRole('button', { name: 'run-1234' })).toBeInTheDocument();
+    expect(card('took').getByText('Offline')).toBeInTheDocument();
+    expect(card('idle').getByText('left without a run')).toBeInTheDocument();
+    expect(card('regular').queryByText('One-shot')).toBeNull();
+    // Nothing to drain on a worker that takes one run and leaves.
+    expect(card('waiting').queryByRole('button', { name: 'Drain' })).toBeNull();
+    expect(card('regular').getByRole('button', { name: 'Drain' })).toBeInTheDocument();
+    expect(card('regular').queryByText('One-shot run')).toBeNull();
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(card('took').getByText('單次')).toBeInTheDocument();
+    expect(card('idle').getByText('未接 run 就結束')).toBeInTheDocument();
+  });
+
+  it('groups the instances of a shared credential under it (#845)', async () => {
+    const instance = (id: string, extra: Partial<WorkerInfo> = {}) => worker(`gpu.${id}`, {
+      instance_of: 'gpu', instance: id, one_shot: { run_id: null, took: null }, ...extra,
+    });
+    const dialog = await openPanel([
+      worker('gpu', { status: 'offline', enrolled: true, one_shot: { run_id: null, took: null }, devices: [
+        { value: 'cuda:0', kind: 'cuda', index: 0, name: 'stale', memory: null },
+      ] }),
+      instance('4821-1', { status: 'offline', one_shot: { run_id: null, took: 'run-aaaaaaaa' } }),
+      instance('4821-2', { running: ['run-bbbbbbbb'], one_shot: { run_id: null, took: 'run-bbbbbbbb' } }),
+      instance('4821-3'),
+      worker('box'),
+    ]);
+    const credential = within(dialog).getByRole('article', { name: 'gpu' });
+    // The credential is the group's header: its own stale facts are not shown.
+    expect(within(credential).getByText('Shared credential')).toHaveAttribute(
+      'title', expect.stringMatching(/--instance/));
+    expect(within(credential).queryByText('stale')).toBeNull();
+    expect(ownFacts(credential)).toBeNull();
+    expect(within(credential).getByText('Instances: 3 (2 connected, 1 running)')).toBeInTheDocument();
+    const cards = within(credential).getAllByRole('article');
+    // A card for each live one, connected first; each shows its instance id,
+    // the full id as its tooltip.
+    expect(cards.map((card) => card.getAttribute('aria-label'))).toEqual(['gpu.4821-2', 'gpu.4821-3']);
+    // One line for each that left: its id, how its run went, when last seen.
+    const leftList = within(credential).getByRole('list', { name: '1 instance(s) that left' });
+    const left = within(within(leftList).getByRole('listitem', { name: 'gpu.4821-1' }));
+    expect(left.getByText('4821-1')).toHaveAttribute('title', 'gpu.4821-1');
+    expect(left.getByText('Left')).toBeInTheDocument();
+    expect(left.getByRole('button', { name: 'run-aaaa' })).toBeInTheDocument();
+    expect(left.getByTitle('Last heartbeat')).toHaveTextContent(/ago|now/);
+    expect(left.getByRole('button', { name: 'Remove' })).toHaveAttribute(
+      'title', 'Remove this instance, which left, from the list; the credential stays enrolled');
+    const second = within(cards[0]);
+    expect(second.getByRole('heading', { name: '4821-2' })).toHaveAttribute('title', 'gpu.4821-2');
+    expect(second.getByText('Online')).toBeInTheDocument();
+    // A live instance has no credential to re-key, nothing to drain, and
+    // no Remove of its own: its agent would only reconnect.
+    expect(second.queryByRole('button', { name: 'Re-key' })).toBeNull();
+    expect(second.queryByRole('button', { name: 'Drain' })).toBeNull();
+    expect(second.queryByRole('button', { name: 'Remove' })).toBeNull();
+    act(() => useI18n.setState({ locale: 'zh-TW' }));
+    expect(within(credential).getByText('共用憑證')).toBeInTheDocument();
+    expect(within(credential).getByText('執行個體：3 個（2 個已連線，1 個執行中）')).toBeInTheDocument();
+    expect(left.getByText('已離開')).toBeInTheDocument();
+    expect(within(credential).getByRole('list', { name: '1 個已離開的執行個體' })).toBeInTheDocument();
+    act(() => useI18n.setState({ locale: 'en' }));
+    // Removing the credential revokes it for every instance: asked twice while one is connected.
+    const revoke = within(credential).getAllByRole('button', { name: 'Remove' })[0];
+    expect(revoke).toHaveAttribute('title', expect.stringMatching(/every instance disconnects/));
+    await act(async () => fireEvent.click(revoke));
+    expect(removeWorker).not.toHaveBeenCalled();
+    expect(revoke).toHaveTextContent('Confirm remove');
+    expect(revoke).toHaveAttribute('title', expect.stringMatching(/every instance disconnects/));
+    await act(async () => fireEvent.click(revoke));
+    expect(removeWorker).toHaveBeenCalledWith('gpu');
+    // A worker no instance shares is a card of its own, as before.
+    const box = within(dialog).getByRole('article', { name: 'box' });
+    expect(within(box).queryByText(/Instances:/)).toBeNull();
+    expect(within(box).getByRole('button', { name: 'Re-key' })).toBeInTheDocument();
+  });
+
+  it('lists instances whose name has no card under a header of their own (#845)', async () => {
+    vi.mocked(fetchWorkerList).mockImplementation(async () => ({
+      workers: await fetchWorkers(),
+      rejections: [{ name: 'gpu', reason: 'version mismatch', at: NOW_S - 10, peer: null }],
+    }));
+    const dialog = await openPanel([
+      worker('gpu', { status: 'offline', enrolled: true }),
+      worker('gpu.9', { instance_of: 'gpu', instance: '9' }),
+      worker('lab.1', { instance_of: 'lab', instance: '1', status: 'offline', one_shot: { run_id: null, took: null } }),
+      worker('lab.2', { instance_of: 'lab', instance: '2', one_shot: { run_id: null, took: null } }),
+    ]);
+    const group = within(dialog).getByRole('article', { name: 'lab' });
+    expect(within(group).getByText('Instances')).toHaveAttribute('title', expect.stringMatching(/SLURM array/));
+    expect(within(group).getByText('Instances: 2 (1 connected, 0 running)')).toBeInTheDocument();
+    expect(within(group).getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['lab.2']);
+    // One that left goes at once; the credential's card is not asked about.
+    const left = within(within(group).getByRole('listitem', { name: 'lab.1' })).getByRole('button', { name: 'Remove' });
+    // While its removal is in flight, a second press does nothing.
+    act(() => useWorkerStore.setState({ busy: { 'lab.1': true } }));
+    await act(async () => fireEvent.click(left));
+    expect(removeWorker).not.toHaveBeenCalled();
+    act(() => useWorkerStore.setState({ busy: {} }));
+    // A removal that failed keeps the row, and the focus on its button.
+    vi.mocked(removeWorker).mockRejectedValueOnce(new Error('boom'));
+    left.focus();
+    await act(async () => fireEvent.click(left));
+    expect(removeWorker).toHaveBeenCalledWith('lab.1');
+    expect(left).toHaveFocus();
+    // Removed, its row goes, and the focus goes back into the dialog.
+    await act(async () => fireEvent.click(left));
+    expect(within(group).queryByRole('listitem', { name: 'lab.1' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
+    // A shared credential's own refused handshake still shows in its card.
+    const credential = within(dialog).getByRole('article', { name: 'gpu' });
+    expect(within(credential).getByText('Shared credential')).toBeInTheDocument();
+    expect(ownFacts(credential)).toHaveTextContent('version mismatch');
+  });
+
+  it('shows a connected credential with instances as itself (#845)', async () => {
+    const dialog = await openPanel([
+      worker('gpu', { enrolled: true }),
+      worker('gpu.1', { instance_of: 'gpu', instance: '1', status: 'offline', last_heartbeat_at: 0 }),
+    ]);
+    const credential = within(dialog).getByRole('article', { name: 'gpu' });
+    expect(within(credential).queryByText('Shared credential')).toBeNull();
+    expect(within(credential).getAllByText('Online')).toHaveLength(1);
+    expect(ownFacts(credential)).toHaveTextContent('Version');
+    expect(within(credential).getByText('Instances: 1 (0 connected, 0 running)')).toBeInTheDocument();
+    // Only the instance id shows when the server sent none apart.
+    const left = within(within(credential).getByRole('listitem', { name: 'gpu.1' }));
+    expect(left.getByText('1')).toHaveAttribute('title', 'gpu.1');
+    // Not a one-shot worker as the server reports it: no run line.
+    expect(left.queryByText('left without a run')).toBeNull();
+    expect(left.getByTitle('Last heartbeat')).toHaveTextContent(/^-$/);
+  });
+
+  it('keeps a card for an instance that dropped with its run in flight (#845)', async () => {
+    const dialog = await openPanel([
+      worker('gpu.5', { instance_of: 'gpu', instance: '5', status: 'disconnected', running: ['run-cccccccc'] }),
+    ]);
+    expect(within(dialog).getByRole('article', { name: 'gpu.5' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('listitem', { name: 'gpu.5' })).toBeNull();
+  });
+
+  it('names an instance by its id when the server sent no instance part (#845)', async () => {
+    const dialog = await openPanel([
+      worker('gpu.7', { instance_of: 'gpu', instance: null }),
+      worker('gpu.8', { instance_of: 'gpu', instance: null, status: 'offline', last_heartbeat_at: null,
+        one_shot: { run_id: null, took: null } }),
+    ]);
+    expect(within(dialog).getByRole('heading', { name: 'gpu.7' })).toHaveAttribute('title', 'gpu.7');
+    const left = within(within(dialog).getByRole('listitem', { name: 'gpu.8' }));
+    expect(left.getByText('gpu.8')).toHaveAttribute('title', 'gpu.8');
+    expect(left.getByText('left without a run')).toBeInTheDocument();
+    expect(left.getByTitle('Last heartbeat')).toHaveTextContent('never');
   });
 
   it('shows a status this build does not know as sent, in a neutral chip', async () => {
@@ -716,6 +888,236 @@ describe('WorkersPanel', () => {
     expect(dialog).toHaveAccessibleName('Workers');
     expect(within(dialog).getByText('線上')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '排空' })).toBeInTheDocument();
+  });
+
+  // ── memory admission (#788) ──
+
+  const GIB = 1024 ** 3;
+
+  function sharedBox(extra: Partial<WorkerInfo> = {}): WorkerInfo {
+    return worker('gpu-box', {
+      memory_budget: true,
+      devices: [
+        {
+          value: 'cuda:0', kind: 'cuda', index: 0, name: 'RTX',
+          memory: { total_bytes: 16 * GIB, free_bytes: 12 * GIB, source: 'nvml' },
+          slots: { limit: 1, taken: 2 },
+          policy: 'shared',
+          admission: {
+            by_memory: true, total_bytes: 16 * GIB, free_bytes: 12 * GIB,
+            reserved_bytes: 2 * GIB, running_bytes: 6 * GIB, headroom_bytes: 8 * GIB,
+            runs: ['run-aaaaaaaa-1', 'run-bbbbbbbb-2'],
+          },
+        },
+        {
+          value: 'cuda:1', kind: 'cuda', index: 1, name: 'RTX',
+          memory: null, slots: { limit: 1, taken: 0 }, policy: 'exclusive', admission: null,
+        },
+        { value: 'cpu', kind: 'cpu', index: null, name: 'cpu', memory: null, policy: 'exclusive' },
+      ],
+      ...extra,
+    });
+  }
+
+  it('shows how each card admits runs, and a shared card\'s ledger', async () => {
+    const dialog = await openPanel([sharedBox()]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    const shared = within(card).getByRole('combobox', { name: 'How cuda:0 admits runs' });
+    expect(shared).toHaveValue('shared');
+    expect(within(card).getByRole('combobox', { name: 'How cuda:1 admits runs' })).toHaveValue('exclusive');
+    // The CPU has no policy to set.
+    expect(within(card).queryByRole('combobox', { name: 'How cpu admits runs' })).toBeNull();
+    // A shared card shows its budgets instead of a slot count.
+    expect(within(card).queryByText('Slots 2 / 1')).toBeNull();
+    expect(within(card).getByText('Slots 0 / 1')).toBeInTheDocument();
+    const line = '8.0 GiB fits a new budget; budgets: 6.0 GiB running, 2.0 GiB reserved';
+    expect(within(card).getByText(line)).toBeInTheDocument();
+    const bar = within(card).getByRole('img', { name: line });
+    const [used, reserved, headroom] = Array.from(bar.children) as HTMLElement[];
+    expect(used.style.width).toBe('25%');
+    expect(used).toHaveAttribute('title', '4.0 GiB in use on the card (every process)');
+    expect(reserved.style.width).toBe('12.5%');
+    expect(headroom.style.width).toBe('50%');
+    expect(within(card).getByRole('button', { name: 'run-bbbb' })).toBeInTheDocument();
+  });
+
+  it('takes the CUDA context off what a new budget may be, and says so', async () => {
+    const box = sharedBox();
+    box.devices[0].admission = { ...box.devices[0].admission!, context_bytes: GIB / 2 };
+    const dialog = await openPanel([box]);
+    const card = within(dialog).getByRole('article', { name: 'gpu-box' });
+    expect(within(card).getByText('7.5 GiB fits a new budget; budgets: 6.0 GiB running, 2.0 GiB reserved'))
+      .toBeInTheDocument();
+    expect(within(card).getByText('each run also holds 0.5 GiB of CUDA context beyond its budget'))
+      .toBeInTheDocument();
+    const [, , headroom] = Array.from(within(card).getByRole('img').children) as HTMLElement[];
+    expect(headroom).toHaveAttribute('title', '7.5 GiB fits a new budget');
+  });
+
+  it('draws what it knows of a card that reports part of its memory', async () => {
+    const box = sharedBox();
+    box.devices[0].admission = {
+      by_memory: true, total_bytes: 16 * GIB, free_bytes: null, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: null, runs: [],
+    };
+    box.devices[1].admission = {
+      by_memory: true, total_bytes: null, free_bytes: null, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: null, runs: [],
+    };
+    box.devices[1].policy = 'shared';
+    const dialog = await openPanel([box]);
+    const bars = within(dialog).getAllByRole('img');
+    expect(bars).toHaveLength(1);
+    const [used, , headroom] = Array.from(bars[0].children) as HTMLElement[];
+    expect(used.style.width).toBe('0%');
+    expect(used).not.toHaveAttribute('title');
+    expect(headroom.style.width).toBe('0%');
+    expect(within(dialog).getAllByText('- fits a new budget; budgets: 0.0 GiB running, 0.0 GiB reserved')).toHaveLength(2);
+  });
+
+  it('says when the agent cannot enforce budgets', async () => {
+    const box = sharedBox({ memory_budget: false });
+    box.devices[0].admission = { ...box.devices[0].admission!, by_memory: false };
+    const dialog = await openPanel([box]);
+    expect(within(dialog).getByText(/cannot enforce memory budgets/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('img')).toBeNull();
+  });
+
+  it('changes a policy, and ignores a change while an action is in flight', async () => {
+    vi.mocked(setDevicePolicy).mockReset().mockResolvedValue(sharedBox());
+    const dialog = await openPanel([sharedBox()]);
+    const select = within(dialog).getByRole('combobox', { name: 'How cuda:1 admits runs' });
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'shared' } });
+    });
+    expect(setDevicePolicy).toHaveBeenCalledWith('gpu-box', 'cuda:1', 'shared');
+    act(() => useWorkerStore.setState({ busy: { 'gpu-box': true } }));
+    expect(select).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.change(select, { target: { value: 'exclusive' } });
+    expect(setDevicePolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it('words the policies in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const dialog = await openPanel([sharedBox()]);
+    expect(within(dialog).getByRole('combobox', { name: 'cuda:0 接收 run 的方式' })).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('option', { name: '依記憶體共用' })).toHaveLength(2);
+  });
+
+  // ── one physical card, several offerers (#842) ──
+
+  function cardWorker(id: string, peers: WorkerCardPeer[] | undefined) {
+    return worker(id, {
+      devices: [
+        { value: 'cuda:0', kind: 'cuda', index: 0, name: 'RTX PRO 6000', memory: null,
+          slots: { taken: 1, limit: 1 }, same_card: peers },
+        { value: 'cpu', kind: 'cpu', index: null, name: '', memory: null, slots: { taken: 0, limit: 2 }, same_card: [] },
+      ],
+    });
+  }
+
+  it('says when two workers offer one physical card, and names this server', async () => {
+    const dialog = await openPanel([
+      cardWorker('meow-e2e', [{ worker: 'meow-join', device: 'cuda:0' }]),
+      cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0' }, { worker: 'local', device: 'cuda:1' }]),
+      cardWorker('lone', undefined),
+    ]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    const note = within(first).getByText('Same physical card as meow-join cuda:0');
+    expect(note).toHaveAttribute('title', expect.stringContaining('card UUID'));
+    // Both read the card's own slots.
+    expect(within(first).getByText('Slots 1 / 1')).toBeInTheDocument();
+    const second = within(dialog).getByRole('article', { name: 'meow-join' });
+    expect(within(second).getByText('Same physical card as meow-e2e cuda:0, this server (cuda:1)'))
+      .toBeInTheDocument();
+    // No note for a card nobody else offers, or from an older server.
+    const lone = within(dialog).getByRole('article', { name: 'lone' });
+    expect(within(lone).queryByText(/Same physical card/)).toBeNull();
+  });
+
+  it('names the offerer whose limit a shared card takes (#842)', async () => {
+    const box = cardWorker('meow-e2e', [{ worker: 'meow-join', device: 'cuda:0', policy: 'exclusive', online: true }]);
+    box.devices[0].slots = { taken: 0, limit: 1, limited_by: { worker: 'meow-join', device: 'cuda:0' } };
+    const here = cardWorker('near', [{ worker: 'local', device: 'cuda:1', policy: null, online: true }]);
+    here.devices[0].slots = { taken: 1, limit: 1, limited_by: { worker: 'local', device: 'cuda:1' } };
+    const dialog = await openPanel([box, here]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    const slots = within(first).getByText('Slots 0 / 1 (limit of meow-join cuda:0)');
+    expect(slots).toHaveAttribute('title', expect.stringContaining('smallest limit'));
+    const second = within(dialog).getByRole('article', { name: 'near' });
+    expect(within(second).getByText('Slots 1 / 1 (limit of this server (cuda:1))')).toBeInTheDocument();
+    // Same policy everywhere, or only this server besides: no policy note.
+    expect(within(dialog).queryByText(/keeps this card Exclusive|shares this card by memory/)).toBeNull();
+  });
+
+  it('says when the workers offering one card disagree on its policy (#842)', async () => {
+    const shared = cardWorker('meow-e2e', [
+      { worker: 'meow-join', device: 'cuda:0', policy: 'exclusive', online: true },
+      { worker: 'gone', device: 'cuda:0', policy: 'exclusive', online: false },
+    ]);
+    shared.devices[0].policy = 'shared';
+    shared.devices[0].admission = {
+      by_memory: false, total_bytes: 16 * GIB, free_bytes: 15 * GIB, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: 15 * GIB, runs: [],
+    };
+    const exclusive = cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0', policy: 'shared', online: true }]);
+    exclusive.devices[0].policy = 'exclusive';
+    exclusive.devices[0].admission = null;
+    const dialog = await openPanel([shared, exclusive]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    expect(within(first).getByText(
+      'meow-join cuda:0 keeps this card Exclusive, so it admits runs by count. Set every worker offering it to Shared by memory to share it.',
+    )).toBeInTheDocument();
+    // The policy note replaces the "agent cannot enforce" one, and the
+    // card shows its count, since it admits by count.
+    expect(within(first).queryByText(/cannot enforce memory budgets/)).toBeNull();
+    expect(within(first).getByText('Slots 1 / 1')).toBeInTheDocument();
+    const second = within(dialog).getByRole('article', { name: 'meow-join' });
+    expect(within(second).getByText(
+      'meow-e2e cuda:0 shares this card by memory, but the card admits runs by count while this worker keeps it Exclusive.',
+    )).toBeInTheDocument();
+  });
+
+  it('names the peer whose agent cannot enforce budgets (#842)', async () => {
+    const box = cardWorker('meow-e2e', [
+      { worker: 'meow-join', device: 'cuda:0', policy: 'shared', online: true, memory_budget: false },
+      { worker: 'local', device: 'cuda:0', policy: null, online: true, memory_budget: null },
+    ]);
+    box.memory_budget = true;
+    box.devices[0].policy = 'shared';
+    box.devices[0].admission = {
+      by_memory: false, total_bytes: null, free_bytes: null, reserved_bytes: 0,
+      running_bytes: 0, headroom_bytes: null, runs: [],
+    };
+    const own = cardWorker('old-agent', []);
+    own.memory_budget = false;
+    own.devices[0].policy = 'shared';
+    own.devices[0].admission = { ...box.devices[0].admission };
+    const dialog = await openPanel([box, own]);
+    const first = within(dialog).getByRole('article', { name: 'meow-e2e' });
+    expect(within(first).getByText(
+      'meow-join cuda:0 cannot enforce memory budgets (its agent is older), so this card admits runs by count. Update that agent to share it.',
+    )).toBeInTheDocument();
+    expect(within(first).queryByText(/This worker's agent cannot enforce/)).toBeNull();
+    const second = within(dialog).getByRole('article', { name: 'old-agent' });
+    expect(within(second).getByText(/This worker's agent cannot enforce/)).toBeInTheDocument();
+  });
+
+  it('words a shared CPU as the same machine, not the same card (#842)', async () => {
+    const box = cardWorker('meow-e2e', []);
+    box.devices[1].same_card = [{ worker: 'meow-join', device: 'cpu', policy: 'exclusive', online: true }];
+    const dialog = await openPanel([box]);
+    const note = within(dialog).getByText('Same machine as meow-join cpu');
+    expect(note).toHaveAttribute('title', expect.stringContaining('one machine'));
+    expect(within(dialog).queryByText(/Same physical card as meow-join cpu/)).toBeNull();
+  });
+
+  it('words the shared physical card in zh-TW', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const dialog = await openPanel([
+      cardWorker('meow-join', [{ worker: 'meow-e2e', device: 'cuda:0' }, { worker: 'local', device: 'cuda:0' }]),
+    ]);
+    expect(within(dialog).getByText('與 meow-e2e cuda:0、這台伺服器（cuda:0） 是同一張實體卡')).toBeInTheDocument();
   });
 
   // ── SSH workers (#784) ──

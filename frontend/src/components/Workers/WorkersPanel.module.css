@@ -177,6 +177,53 @@
   box-shadow: var(--focus-ring);
 }
 
+/* An instance of a shared credential (#845), inside the credential's card. */
+.nested {
+  padding: var(--sp-2);
+  background: var(--surface-panel);
+}
+
+.instances {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.instances > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.instanceList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding-left: var(--sp-3);
+  border-left: 2px solid var(--border-base);
+}
+
+/* Instances that left (#845): one line each, under the live ones' cards. */
+.leftInstances {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.leftInstance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+}
+
 .cardHeader {
   display: flex;
   flex-wrap: wrap;
@@ -244,6 +291,59 @@
 
 .fact {
   color: var(--text-secondary);
+}
+
+/* One physical card offered by several workers (#842). */
+.sameCard {
+  color: var(--text-secondary);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
+/* ── memory admission (#788) ── */
+
+.policy {
+  padding: 0 var(--sp-1);
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+/* A row of its own under the device's facts. */
+.admission {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+  min-width: 0;
+}
+
+.bar {
+  display: flex;
+  flex: 0 1 16em;
+  min-width: 6em;
+  height: 0.6em;
+  overflow: hidden;
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+}
+
+.barUsed {
+  background: var(--text-muted);
+}
+
+.barReserved {
+  background: var(--status-warning);
+}
+
+.barHeadroom {
+  background: var(--status-success);
+  opacity: 0.6;
 }
 
 .runLinks {

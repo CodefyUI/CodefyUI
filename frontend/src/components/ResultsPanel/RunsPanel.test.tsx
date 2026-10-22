@@ -26,6 +26,7 @@ import { SWEEP_POLL_MS, _resetSweepStoreForTesting, useSweepStore } from '../../
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useWorkerStore } from '../../store/workerStore';
+import { useStudyStore } from '../../store/studyStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import type { NodeDefinition } from '../../types';
@@ -295,6 +296,21 @@ describe('RunsPanel — the table', () => {
     ]);
     expect(within(rowOf('tiny')).getByText('7.12e-5')).toHaveAttribute('title', '0.0000712');
     expect(within(rowOf('zero')).getByText('0.0000')).toBeInTheDocument();
+  });
+
+  it('shows each run\'s memory budget, and a dash without one (#788)', async () => {
+    await renderPanel([
+      makeRun({
+        id: 'b', name: 'shared', worker_id: 'gpu-box',
+        execution_facts: { memory_budget: { bytes: 6 * 1024 ** 3, source: 'declared', devices: ['cuda:0'] } },
+      }),
+      makeRun({ id: 'n', name: 'plain' }),
+    ]);
+    expect(screen.getByRole('columnheader', { name: 'Budget' })).toBeInTheDocument();
+    expect(within(rowOf('b')).getByText('6.0 GiB'))
+      .toHaveAttribute('title', 'Memory budget per device, declared at submit');
+    const dash = within(rowOf('n')).getAllByText('-').find((cell) => cell.className.includes('colBudget'));
+    expect(dash).not.toHaveAttribute('title');
   });
 
   it('shows no reason for a queued run the server gave none, nor for a running one', async () => {
@@ -856,6 +872,26 @@ describe('RunsPanel — detail view', () => {
     expect(detail.getByText(t('runs.log.stopped', { reason: '' }))).toBeInTheDocument();
   });
 
+  // #344: the detail's own records (list rows carry none).
+  it('lists the data and models the run read from its detail', async () => {
+    api.getRun.mockResolvedValue({
+      ...liveRun,
+      last_cursor: 4,
+      provenance: [{
+        schema_version: 1, node_id: 'csv', node_type: 'CSVReader', kind: 'dataset',
+        mode: 'identity',
+        source: { type: 'file', name: null, location: 'files', path: 'iris.csv', subset: null },
+        split: null, revision: { requested: null, resolved: null, kind: null },
+        content: null, rows: 3, notes: [],
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const section = within(await screen.findByTestId('run-provenance'));
+    expect(section.getByText('files:iris.csv')).toBeInTheDocument();
+    expect(section.getByText(t('runs.detail.provenance.rows', { rows: 3 }))).toBeInTheDocument();
+  });
+
   it('shows no peak memory for a CPU run (null) or one that recorded none', async () => {
     const cpu = { ...liveRun, execution_facts: { peak_memory: null } };
     api.getRun.mockResolvedValue({ ...cpu, last_cursor: 4 });
@@ -1005,6 +1041,22 @@ describe('RunsPanel — detail view', () => {
     expect(link).toHaveAttribute('download');
     // Still a path on this server, so it can be copied too.
     expect(screen.getByTitle(t('runs.detail.copyPath'))).toBeInTheDocument();
+  });
+
+  it('offers a download for a file a worker put in the S3 bucket (#791)', async () => {
+    api.getRunArtifacts.mockResolvedValue({
+      run_id: 'r1',
+      artifacts: [{
+        id: 13, kind: 'output', path: 's3://lab/runs/r1/output/models/best.pt',
+        meta: null, created_at: '2026-10-15T00:00:00Z', backend: 's3',
+        relative_path: 'runs/r1/output/models/best.pt', worker_id: 'gpu-box-1',
+      }],
+    });
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    const link = await screen.findByTitle(t('runs.detail.download'));
+    expect(link).toHaveAttribute('href', '/api/runs/r1/artifacts/13/download');
+    expect(screen.getByText('s3://lab/runs/r1/output/models/best.pt')).toBeInTheDocument();
   });
 
   it('offers no download for a transfer row known only by an event-log key', async () => {
@@ -1399,6 +1451,16 @@ describe('RunsPanel — sweeps', () => {
     fireEvent.click(button);
     expect(useWorkerStore.getState().panelOpen).toBe(true);
     useWorkerStore.setState({ panelOpen: false });
+  });
+
+  it('opens the Studies panel from its header button (#343)', async () => {
+    useStudyStore.setState({ panelOpen: false });
+    await renderPanel([]);
+    const button = screen.getByRole('button', { name: 'Studies' });
+    expect(button).toHaveAttribute('title', expect.stringContaining('durable studies'));
+    fireEvent.click(button);
+    expect(useStudyStore.getState().panelOpen).toBe(true);
+    useStudyStore.setState({ panelOpen: false });
   });
 
   it('opens a compact New Sweep dialog and restores focus when it closes', async () => {

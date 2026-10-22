@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
@@ -90,9 +91,15 @@ class TransferredArtifactSignal(ArtifactSignal):
     """An ``ArtifactSignal`` for a file a worker uploaded to this server
     (#785): ``path`` is the key the upload answered with
     (``core.transfer.key_location``). ``RunService`` stores a ``transfer``
-    row. A subclass, like :class:`MountedArtifactSignal`."""
+    row. A subclass, like :class:`MountedArtifactSignal`. ``backend`` is
+    ``s3`` (#791) for a file a worker uploaded to the run's bucket instead:
+    ``path`` is then its object key, ``bucket`` the bucket and ``prefix``
+    the run's key prefix it was assigned (both recorded with the row, so a
+    later settings change does not lose the object)."""
 
     backend: str = "transfer"
+    bucket: str | None = None
+    prefix: str | None = None
 
 
 @dataclass
@@ -124,6 +131,22 @@ class RunSinks:
     #: row's ``disconnected`` <-> ``running``. None: nothing records it.
     record_worker_connection: (
         Callable[[bool], Awaitable[Any]] | None) = None
+    #: ``record_worker_seq(seq)`` before a worker run's frames up to *seq*
+    #: are acknowledged (#793): make what they carried durable (the metric
+    #: buffer) and persist *seq*, so a restarted server resumes the stream
+    #: after it. None: nothing is persisted.
+    record_worker_seq: Callable[[int], Awaitable[Any]] | None = None
+    #: Store one node's provenance record (#344, ``core.node_provenance``)
+    #: for a run with the ``provenance`` option. None: nothing records it,
+    #: and the executor collects none.
+    record_provenance: (
+        Callable[[dict[str, Any]], Awaitable[Any]] | None) = None
+    #: ``record_environment(document, numerics)``: the environment the
+    #: run's worker subprocess reported (#344): its fingerprint document
+    #: (or None) and its torch numerics switches. None: nothing records it.
+    record_environment: (
+        Callable[[dict[str, Any] | None, dict[str, Any] | None],
+                 Awaitable[Any]] | None) = None
 
 
 @dataclass
@@ -153,6 +176,18 @@ class ExecutionRequest:
     #: ``run_needs.needs`` of a worker run (#782): which storage backend
     #: its assignment uses (#785). None for a run here.
     needs: dict[str, Any] | None = None
+    #: A worker run adopted after a restart of this server (#793): the
+    #: last frame its previous process recorded. ``WorkerExecutor`` sends
+    #: no ``assign`` and waits for the worker to report the run
+    #: (``WorkerRegistry.adopt``). None: a run that starts now.
+    resume_seq: int | None = None
+    #: An adopted ``s3`` run's ``execution_facts.worker_s3`` (bucket,
+    #: prefix, input keys, #791): its worker is issued new credentials.
+    resume_s3: dict[str, Any] | None = None
+    #: Where the run's memory budget came from (#794): ``declared``,
+    #: ``history`` or ``estimate`` (``memory_admission.SOURCE_*``), for the
+    #: note an out-of-memory failure under that budget gets. None: no budget.
+    memory_budget_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -272,9 +307,21 @@ class InProcessExecutor:
         session = request.session
         media_ports = declared_media_ports(graph["nodes"])
         on_progress = _progress_bridge(request, media_ports)
+        on_inner_status = _inner_status_bridge(request, on_progress,
+                                               media_ports)
+        recorder = _provenance_recorder(request)
+
         async def on_expanded(expanded: list[dict[str, Any]]) -> None:
+            # The nodes inside blocks and preset cards declare media too:
+            # read once, from the node list the run executes (#559).
             media_ports.update(declared_media_ports(expanded))
+            if recorder is not None:
+                recorder.add(expanded)
             await self._warn_device_fallbacks(request, expanded)
+
+        if recorder is not None:
+            on_progress, on_inner_status = _observed(
+                recorder, on_progress, on_inner_status)
 
         try:
             # The RUN-level baseline (``seeding.seed_rngs``): anything that
@@ -292,10 +339,7 @@ class InProcessExecutor:
                 graph["nodes"],
                 graph["edges"],
                 on_progress=on_progress,
-                on_inner_status=_inner_status_bridge(
-                    request, on_progress, media_ports),
-                # The nodes inside blocks and preset cards declare media too:
-                # read once, from the node list the run executes (#559).
+                on_inner_status=on_inner_status,
                 on_expanded=on_expanded,
                 on_signal=_signal_bridge(request),
                 context=request.context,
@@ -329,6 +373,39 @@ class InProcessExecutor:
             logger.warning("run %s failed: %s", request.run_id, exc,
                            exc_info=True)
             return ExecutionOutcome(STATUS_FAILED, str(exc))
+
+
+def _provenance_recorder(request: ExecutionRequest) -> Any:
+    """A ``ProvenanceRecorder`` for a run with the ``provenance`` option
+    and a sink to report into (#344), else None."""
+    from .node_provenance import MODES, ProvenanceRecorder
+
+    mode = request.options.get("provenance")
+    sink = request.sinks.record_provenance
+    if mode not in MODES or sink is None:
+        return None
+    return ProvenanceRecorder(request.graph.get("nodes") or [], mode, sink)
+
+
+def _observed(recorder: Any, on_progress: Callable[..., Any],
+              on_inner_status: Callable[..., Any],
+              ) -> tuple[Callable[..., Any], Callable[..., Any]]:
+    """The two status bridges, each followed by *recorder*: a node's
+    status event goes out first, then its provenance is described."""
+
+    async def progress(node_id: str, status: str,
+                       result: dict[str, Any] | None,
+                       inner_node_id: str | None = None) -> None:
+        await on_progress(node_id, status, result,
+                          inner_node_id=inner_node_id)
+        await recorder.observe(node_id, status, result)
+
+    async def inner(node_id: str, container_id: str, status: str,
+                    result: dict[str, Any] | None) -> None:
+        await on_inner_status(node_id, container_id, status, result)
+        await recorder.observe(node_id, status, result)
+
+    return progress, inner
 
 
 # ── peak memory (#770) ────────────────────────────────────────────────────
@@ -633,11 +710,70 @@ CANCEL_POLL_S = 0.2
 WARNING_WORKER_DISCONNECTED = "worker_disconnected"
 WARNING_WORKER_RECONNECTED = "worker_reconnected"
 
+#: ``execution_facts`` key of an ``s3`` worker run's bucket, prefix and
+#: input keys (#793): a restarted server re-issues its credentials.
+WORKER_S3_KEY = "worker_s3"
+
 #: A worker run's frames are acknowledged (``ack``, #783) once this many
 #: are recorded, or :data:`ACK_INTERVAL_S` after the first unacknowledged
 #: one, whichever comes first; and always on ``run_finished``.
 ACK_EVERY = 64
 ACK_INTERVAL_S = 1.0
+
+#: An ``s3`` run's temporary credentials are renewed once this share of
+#: their remaining lifetime has passed (#791), never sooner than
+#: :data:`REFRESH_MIN_S`; a failed renewal is retried every
+#: :data:`REFRESH_RETRY_S` until it succeeds.
+REFRESH_AT = 2 / 3
+REFRESH_MIN_S = 5.0
+REFRESH_RETRY_S = 60.0
+
+
+@dataclass
+class _S3Run:
+    """An ``s3`` run's storage on this side (#791): the bucket and prefix
+    its rows record, and the latest credentials sent (re-sent after a
+    reconnect)."""
+
+    bucket: str
+    prefix: str
+    access: Any
+    renewed: bool = False
+
+
+def _with_budget_note(outcome: ExecutionOutcome, placement: Any,
+                      source: str | None = None) -> ExecutionOutcome:
+    """A failed run that ran out of memory under a budget (#788) says so:
+    the cap is the run's own, and raising it is the fix the generic advice
+    does not mention. The note follows where the budget came from
+    (*source*, #794): a ``history`` budget was given by default from an
+    earlier run's peak, an ``estimate`` one was a static estimate the user
+    accepted; either way a larger ``target.memory_gib`` is the fix."""
+    budget = getattr(placement, "memory_budget", None)
+    error = outcome.error
+    if outcome.status != STATUS_FAILED or not budget or not error \
+            or "out of memory" not in error.lower():
+        return outcome
+    from .memory_admission import format_gib
+
+    devices = ", ".join(getattr(placement, "budget_devices", ()) or ())
+    if source == "history":
+        return replace(outcome, error=(
+            f"{error}\n\nThis run was capped to the memory budget it was "
+            f"given by default, {format_gib(budget)} on {devices} (its "
+            "graph's last measured peak plus 20%): declare a larger "
+            "target.memory_gib, or make the run need less."))
+    if source == "estimate":
+        return replace(outcome, error=(
+            f"{error}\n\nThis run was capped to {format_gib(budget)} on "
+            f"{devices}, a static estimate of its memory (no earlier run of "
+            "its graph had reported a peak): the estimate was too low; "
+            "declare a larger target.memory_gib, or make the run need "
+            "less."))
+    return replace(outcome, error=(
+        f"{error}\n\nThis run was capped to its memory budget of "
+        f"{format_gib(budget)} on {devices} (target.memory_gib): raise the "
+        "budget, or make the run need less."))
 
 
 class WorkerExecutor:
@@ -680,6 +816,16 @@ class WorkerExecutor:
     ``interrupted``, or ``cancelled`` when a stop had been asked (a user's
     Stop stays the user's).
 
+    A run adopted after a restart of this server (``request.resume_seq``,
+    #793) is not assigned again: the registry already holds it, detached
+    (``WorkerRegistry.adopt``). The run gets a ``worker_disconnected``
+    warning saying the server restarted, its row reads ``disconnected``,
+    and from there it is a run whose worker dropped: the worker's
+    reconnect brings it back, the replay continues after ``resume_seq``,
+    or the grace ends it. Before each ``ack`` the frames it covers are
+    made durable (``sinks.record_worker_seq``), which is what lets a
+    restarted server resume the stream after the persisted seq.
+
     Before ``assign``, a degraded worker (its node catalog differs from
     this server's, #781) must have every node type the graph uses, else
     the run fails with ``worker_handshake.catalog_refusal``'s message and
@@ -691,12 +837,19 @@ class WorkerExecutor:
     """
 
     def __init__(self, registry: "WorkerRegistry",
-                 content_index: Any = None) -> None:
+                 content_index: Any = None,
+                 on_started: Callable[[str], Any] | None = None) -> None:
         self._registry = registry
+        #: Called with the run id on its ``run_started`` (#788): a run
+        #: admitted by memory has its cap in place, so the ledger moves its
+        #: budget from reserved to running.
+        self._on_started = on_started
         #: ``core.transfer.ContentIndex``: the inputs' hashes for a run
         #: that uses the transfer backend (#785). None: no such run is
         #: assigned (it fails with a message instead).
         self._content_index = content_index
+        #: The ``s3`` runs in flight (#791), by run id.
+        self._s3_runs: dict[str, _S3Run] = {}
 
     async def _send(self, worker_id: str, frame: Any) -> bool:
         """Send *frame* to *worker_id*'s current connection. False if none."""
@@ -709,13 +862,10 @@ class WorkerExecutor:
     async def run(self, request: ExecutionRequest) -> ExecutionOutcome:
         from . import worker_protocol as wp
         from .workers import (
-            WORKER_DISCONNECTED,
-            WORKER_GONE,
-            WORKER_RECONNECTED,
-            gone_message,
             not_connected_message,
+            s3_transfer_failed_message,
+            storage_fallback_message,
             transfer_failed_message,
-            unreachable_message,
         )
 
         placement = request.placement
@@ -723,6 +873,8 @@ class WorkerExecutor:
             return ExecutionOutcome(STATUS_FAILED,
                                     "a worker run needs a placement")
         worker_id = placement.worker_id
+        if request.resume_seq is not None:
+            return await self._resume(request, worker_id)
         worker = self._registry.get(worker_id)
         if worker is None or not worker.online:
             message = not_connected_message(worker_id)
@@ -733,31 +885,159 @@ class WorkerExecutor:
         refusal = await self._catalog_refusal(request, worker)
         if refusal is not None:
             return ExecutionOutcome(STATUS_FAILED, refusal)
+        if placement.memory_budget and wp.CAPABILITY_MEMORY_BUDGET not in (
+                getattr(worker, "capabilities", None) or ()):
+            # Admitted to a shared card by its budget, but the worker that is
+            # connected now (an older agent that reconnected) cannot cap it:
+            # never run it uncapped beside the card's other runs (#788).
+            return ExecutionOutcome(STATUS_FAILED, (
+                f"worker {worker_id} no longer enforces memory budgets (its "
+                f"agent reconnected without the memory_budget capability), so "
+                f"this run, admitted to a shared card by its budget, was not "
+                f"started; update the agent, or set the card to Exclusive, "
+                f"and queue the run again"))
+        if request.record_outputs and wp.CAPABILITY_RECORD_OUTPUTS not in (
+                getattr(worker, "capabilities", None) or ()):
+            # Only an agent that keeps the captures can be asked for them
+            # (#789); the submit-time check could not see this one's.
+            return ExecutionOutcome(STATUS_FAILED, (
+                f"worker {worker_id} cannot record outputs: its agent does "
+                f"not support it; update the agent, or queue the run without "
+                f"Record outputs or on this server"))
+        if request.record_outputs and getattr(worker, "one_shot", False):
+            from .run_service import ONE_SHOT_REFUSES_RECORD_OUTPUTS
+
+            return ExecutionOutcome(STATUS_FAILED,
+                                    ONE_SHOT_REFUSES_RECORD_OUTPUTS)
         devices = list(placement.devices)
         storage = assignment_storage(worker)
-        if uses_transfer(worker, request.needs):
+        backend = storage_backend(worker, request.needs)
+        if backend is not None:
             try:
-                storage = await transfer_storage(
-                    storage.mount, request.needs, self._content_index)
+                if backend == "s3":
+                    storage = await s3_storage(
+                        storage.mount, request.run_id, request.needs,
+                        self._content_index)
+                else:
+                    storage = await transfer_storage(
+                        storage.mount, request.needs, self._content_index)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- TransferRefused, I/O
-                message = transfer_failed_message(worker_id, exc)
+                message = (s3_transfer_failed_message(worker_id, exc)
+                           if backend == "s3"
+                           else transfer_failed_message(worker_id, exc))
                 return ExecutionOutcome(STATUS_FAILED, message.text,
                                         error_reason=_reason_of(message))
+            if backend == "transfer" and _s3_skipped(worker):
+                from . import s3
+                await _warning(request, s3.WARNING_STORAGE_FALLBACK,
+                               storage_fallback_message(worker_id))
+        input_keys: list[str] = []
+        if storage.s3 is not None:
+            self._s3_runs[request.run_id] = _S3Run(
+                bucket=storage.s3.bucket, prefix=storage.s3.prefix,
+                access=storage.s3)
+            input_keys = [i.key for i in storage.inputs or [] if i.key]
+            # What a restarted server needs to issue the run's worker new
+            # credentials after adopting it (#793): before the assign, so a
+            # crash right after it still finds them.
+            await _record_facts(request, {WORKER_S3_KEY: {
+                "bucket": storage.s3.bucket, "prefix": storage.s3.prefix,
+                "input_keys": input_keys}})
         run = self._registry.open_run(worker, request.run_id)
+        assign = wp.Assign(
+            run_id=request.run_id, graph=request.graph,
+            options=request.options, device=devices[0],
+            devices=devices, storage=storage,
+            memory_budgets=({device: placement.memory_budget
+                             for device in placement.budget_devices}
+                            if placement.memory_budget else {}))
+        return await self._serve(request, worker_id, run, devices,
+                                 assign=(worker, assign),
+                                 s3_input_keys=input_keys)
+
+    async def _resume(self, request: ExecutionRequest,
+                      worker_id: str) -> ExecutionOutcome:
+        """A run adopted after a restart of this server (#793).
+
+        Its recorded outputs, if any, are still recording on its worker:
+        retained here again from now on (#789), once its worker still has
+        it.
+        """
+        from .workers import adopted_message, lost_after_restart_message
+
+        run = self._registry.claim_adopted(request.run_id)
+        if run is None:
+            message = lost_after_restart_message(worker_id)
+            await _worker_gone_warning(request, message)
+            return self._gone(request, message)
+        await _retain_outputs(request, worker_id)
+        grace = getattr(self._registry, "resume_grace_s", 0)
+        await _warning(request, WARNING_WORKER_DISCONNECTED,
+                       adopted_message(worker_id, grace))
+        await _record_connection(request, False)
+        s3_reissue = None
+        resume_s3 = request.resume_s3
+        if isinstance(resume_s3, Mapping) and resume_s3.get("bucket"):
+            s3_reissue = [k for k in resume_s3.get("input_keys") or []
+                          if isinstance(k, str)]
+            self._s3_runs[request.run_id] = _S3Run(
+                bucket=str(resume_s3["bucket"]),
+                prefix=str(resume_s3.get("prefix") or ""), access=None)
+        return await self._serve(request, worker_id, run,
+                                 list(request.placement.devices),
+                                 resume_seq=request.resume_seq or 0,
+                                 s3_reissue=s3_reissue)
+
+    async def _serve(self, request: ExecutionRequest, worker_id: str,
+                     run: Any, devices: list[str], *, assign: Any = None,
+                     resume_seq: int = 0,
+                     s3_input_keys: list[str] | None = None,
+                     s3_reissue: list[str] | None = None) -> ExecutionOutcome:
+        """Send *assign* (``(worker, frame)``; none for an adopted run),
+        then turn the run's inbox into sink calls until it ends."""
+        from . import worker_protocol as wp
+        from .workers import (
+            WORKER_DISCONNECTED,
+            WORKER_GONE,
+            WORKER_RECONNECTED,
+            gone_message,
+            unreachable_message,
+        )
+
         watcher: asyncio.Task | None = None
+        refresher: asyncio.Task | None = None
         acks: _Acks | None = None
         finished = False
         try:
-            await worker.send(wp.Assign(
-                run_id=request.run_id, graph=request.graph,
-                options=request.options, device=devices[0],
-                devices=devices, storage=storage))
+            if assign is not None:
+                target, frame = assign
+                await target.send(frame)
+                # The agent has it: a one-shot worker's claim stays (#790).
+                assigned = getattr(self._registry, "one_shot_assigned", None)
+                if assigned is not None:
+                    assigned(worker_id, request.run_id)
             watcher = asyncio.create_task(
                 self._forward_cancel(request, worker_id),
                 name=f"cancel-watch:{request.run_id}")
-            acks = _Acks(self, request, worker_id, run.inbox)
+            state = self._s3_runs.get(request.run_id)
+            if s3_reissue is not None and state is not None:
+                # An adopted s3 run (#793): its credentials were issued by
+                # the previous process; fresh ones go out once the worker
+                # is back, then are renewed as for any run.
+                refresher = asyncio.create_task(
+                    self._reissue_credentials(request, worker_id,
+                                              s3_reissue),
+                    name=f"s3-credentials:{request.run_id}")
+            elif state is not None and state.access is not None \
+                    and state.access.expires_at is not None:
+                refresher = asyncio.create_task(
+                    self._refresh_credentials(request, worker_id,
+                                              s3_input_keys or []),
+                    name=f"s3-credentials:{request.run_id}")
+            acks = _Acks(self, request, worker_id, run.inbox,
+                         recorded=resume_seq)
             while True:
                 try:
                     item = run.inbox.get_nowait()
@@ -783,7 +1063,9 @@ class WorkerExecutor:
                 if outcome is not None:
                     finished = True
                     await acks.flush()
-                    return outcome
+                    return _with_budget_note(
+                        outcome, request.placement,
+                        request.memory_budget_source)
                 if acks.recorded - acks.acked >= ACK_EVERY:
                     await acks.flush()
         except asyncio.CancelledError:
@@ -805,6 +1087,9 @@ class WorkerExecutor:
         finally:
             if watcher is not None:
                 watcher.cancel()
+            if refresher is not None:
+                refresher.cancel()
+            self._s3_runs.pop(request.run_id, None)
             if acks is not None:
                 acks.cancel_timer()
             self._registry.close_run(worker_id, request.run_id,
@@ -832,6 +1117,11 @@ class WorkerExecutor:
         # Its replay starts after the last ack it got; tell it what this
         # side already has, and repeat a stop it may never have received.
         await acks.resend()
+        state = self._s3_runs.get(request.run_id)
+        if state is not None and state.renewed and state.access is not None:
+            # New credentials may have gone to the dropped connection (#791).
+            await self._send_quietly(worker_id, wp.Credentials(
+                run_id=request.run_id, s3=state.access))
         if request.context.should_stop():
             await self._send(worker_id, wp.Cancel(run_id=request.run_id))
 
@@ -899,6 +1189,78 @@ class WorkerExecutor:
             logger.warning("run %s: could not forward the stop to worker %s",
                            request.run_id, worker_id, exc_info=True)
 
+    async def _send_quietly(self, worker_id: str, frame: Any) -> bool:
+        """:meth:`_send`, a failed send (the socket closed after the online
+        check) being False rather than an exception."""
+        try:
+            return await self._send(worker_id, frame)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- a reconnect re-sends
+            logger.debug("worker %s: %s not sent", worker_id,
+                         getattr(frame, "type", frame), exc_info=True)
+            return False
+
+    async def _renewed_access(self, request: ExecutionRequest,
+                              input_keys: list[str]) -> Any:
+        """New credentials for the run, asked for every
+        :data:`REFRESH_RETRY_S` until they come (#791)."""
+        from . import s3
+
+        while True:
+            try:
+                return await asyncio.to_thread(s3.issue_access,
+                                               request.run_id, input_keys)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- STS refused, network
+                logger.warning("run %s: could not renew its S3 credentials "
+                               "(%s); trying again in %.0f s",
+                               request.run_id, exc, REFRESH_RETRY_S)
+                await asyncio.sleep(REFRESH_RETRY_S)
+
+    async def _reissue_credentials(self, request: ExecutionRequest,
+                                   worker_id: str,
+                                   input_keys: list[str]) -> None:
+        """Watcher task of an adopted ``s3`` run (#793): the credentials
+        the worker holds came from the previous process and may expire
+        before the run ends. New ones are issued now and sent once the
+        worker is back (a reconnect re-sends them too), then renewed as
+        :meth:`_refresh_credentials` does. Never raises but a cancel."""
+        from . import worker_protocol as wp
+
+        state = self._s3_runs[request.run_id]
+        fresh = await self._renewed_access(request, input_keys)
+        state.access, state.renewed = fresh, True
+        while not await self._send_quietly(worker_id, wp.Credentials(
+                run_id=request.run_id, s3=fresh)):
+            await asyncio.sleep(CANCEL_POLL_S)
+        if fresh.expires_at is not None:
+            await self._refresh_credentials(request, worker_id, input_keys)
+
+    async def _refresh_credentials(self, request: ExecutionRequest,
+                                   worker_id: str,
+                                   input_keys: list[str]) -> None:
+        """Watcher task of an ``s3`` run with temporary credentials (#791):
+        new ones are asked for once :data:`REFRESH_AT` of the current ones'
+        remaining lifetime has passed (a refusal retried every
+        :data:`REFRESH_RETRY_S`) and go out as ``credentials``, for as long
+        as the run lasts. A send that fails (the worker is away, or its
+        socket closed under the send) is tried again until it goes; a
+        reconnect re-sends the latest too (:meth:`_reconnected`). Never
+        raises but a cancel."""
+        from . import worker_protocol as wp
+
+        state = self._s3_runs[request.run_id]
+        while state.access.expires_at is not None:
+            left = state.access.expires_at - time.time()
+            await asyncio.sleep(max(REFRESH_MIN_S, left * REFRESH_AT))
+            fresh = await self._renewed_access(request, input_keys)
+            state.access, state.renewed = fresh, True
+            while not await self._send_quietly(worker_id, wp.Credentials(
+                    run_id=request.run_id, s3=fresh)):
+                await asyncio.sleep(CANCEL_POLL_S)
+
     async def _deliver(self, request: ExecutionRequest, frame: Any,
                        devices: list[str]) -> ExecutionOutcome | None:
         """Hand one frame to the sinks; the outcome on ``run_finished``."""
@@ -906,6 +1268,12 @@ class WorkerExecutor:
 
         sinks = request.sinks
         if isinstance(frame, wp.RunStarted):
+            if self._on_started is not None:
+                self._on_started(request.run_id)
+            if request.placement is not None:
+                # Started there: only now does a recorded run hold outputs
+                # on its worker to retain (#789).
+                await _retain_outputs(request, request.placement.worker_id)
             if frame.execution_facts and sinks.record_execution_facts:
                 try:
                     await sinks.record_execution_facts(frame.execution_facts)
@@ -923,10 +1291,14 @@ class WorkerExecutor:
                 MetricPoint(name=p.name, value=p.value, step=p.step,
                             node_id=p.node_id) for p in frame.points])
         elif isinstance(frame, wp.Artifact):
-            if frame.backend == "transfer":
+            if frame.backend in ("transfer", "s3"):
+                state = self._s3_runs.get(request.run_id) \
+                    if frame.backend == "s3" else None
                 signal: ArtifactSignal = TransferredArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
-                    node_id=frame.node_id)
+                    node_id=frame.node_id, backend=frame.backend,
+                    bucket=state.bucket if state else None,
+                    prefix=state.prefix if state else None)
             elif frame.mount_label:
                 signal = MountedArtifactSignal(
                     kind=frame.kind, path=frame.path, meta=frame.meta,
@@ -940,10 +1312,37 @@ class WorkerExecutor:
             await sinks.warn(WarningSignal(kind=frame.kind,
                                            detail=frame.detail,
                                            node_id=frame.node_id))
+        elif isinstance(frame, wp.RunFacts):
+            await self._run_facts(request, frame)
         elif isinstance(frame, wp.RunFinished):
             return self._outcome(frame, devices,
                                  stop_asked=request.context.should_stop())
         return None
+
+    @staticmethod
+    async def _run_facts(request: ExecutionRequest, frame: Any) -> None:
+        """A ``run_facts`` frame (#344): the subprocess's environment to
+        ``record_environment``, a provenance record to
+        ``record_provenance``. Observability: a failure is logged."""
+        from .worker_handshake import verified_fingerprint
+
+        sinks = request.sinks
+        try:
+            if (frame.fingerprint is not None or frame.numerics is not None) \
+                    and sinks.record_environment is not None:
+                document, _ = verified_fingerprint(
+                    frame.fingerprint, worker=request.placement.worker_id
+                    if request.placement is not None else "?")
+                await sinks.record_environment(document, frame.numerics)
+            if frame.provenance is not None \
+                    and sinks.record_provenance is not None:
+                await sinks.record_provenance(frame.provenance)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- observability
+            logger.warning("run %s: could not record what its worker "
+                           "reported about it", request.run_id,
+                           exc_info=True)
 
     @staticmethod
     def _outcome(frame: Any, devices: list[str], *,
@@ -983,20 +1382,52 @@ def assignment_storage(worker: Any) -> Any:
         relative_artifacts=not getattr(worker, "same_host", False))
 
 
-def uses_transfer(worker: Any, needs: Any) -> bool:
-    """Whether a run with *needs* goes to *worker* through the transfer
-    backend (#785): it needs the mount, *worker* does not hold it, and the
-    backend can serve it, and the worker speaks it (its ``transfer``
-    capability, #781). The scheduler placed it there for that reason
-    (``scheduling.reaches``); a run that fits neither is assigned the
-    mount as before."""
+def storage_backend(worker: Any, needs: Any) -> str | None:
+    """The backend that ships a run's files to *worker* (#785, #791):
+    ``s3`` or ``transfer`` when the run needs the mount, *worker* does not
+    hold it, the run fits (``needs["transfer"]``) and the worker speaks one
+    (``scheduling.no_mount_backend``, S3 first). The scheduler placed it
+    there for that reason (``scheduling.reaches``). None: the run is
+    assigned the mount as before."""
     from .mounts import holds_mount
-    from .scheduling import speaks_transfer
+    from .scheduling import no_mount_backend
     from .transfer import transferable
 
     mount = needs.get("mount") if isinstance(needs, Mapping) else None
-    return bool(mount) and not holds_mount(worker, mount) \
-        and transferable(needs) and speaks_transfer(worker)
+    if not mount or holds_mount(worker, mount) or not transferable(needs):
+        return None
+    return no_mount_backend(worker)
+
+
+def _s3_skipped(worker: Any) -> bool:
+    """S3 is on here, but *worker*'s agent did not list it (#791)."""
+    from . import s3
+    from .worker_protocol import CAPABILITY_S3
+
+    return s3.enabled() and CAPABILITY_S3 not in (
+        getattr(worker, "capabilities", None) or ())
+
+
+async def s3_storage(label: str, run_id: str, needs: Mapping[str, Any],
+                     content_index: Any) -> Any:
+    """``assign.storage`` for an ``s3`` run (#791): the inputs named by
+    content hash (as for ``transfer``) and by the object each was put in
+    (``s3.ensure_inputs``, which uploads one the bucket lacks), and the
+    bucket with the credentials the worker uses (``s3.issue_access``)."""
+    from . import s3
+    from . import worker_protocol as wp
+    from .transfer import TransferRefused
+
+    inputs = list(needs.get("inputs") or [])
+    if inputs and content_index is None:
+        raise TransferRefused("this server has no content index")
+    manifest = await content_index.manifest(inputs) if inputs else []
+    entries = await asyncio.to_thread(s3.ensure_inputs, manifest)
+    access = await asyncio.to_thread(
+        s3.issue_access, run_id, [e["key"] for e in entries])
+    return wp.Storage(
+        backend="s3", mount=label, relative_artifacts=False,
+        inputs=[wp.TransferInput(**entry) for entry in entries], s3=access)
 
 
 async def transfer_storage(label: str, needs: Mapping[str, Any],
@@ -1016,6 +1447,16 @@ async def transfer_storage(label: str, needs: Mapping[str, Any],
         backend="transfer", mount=label, relative_artifacts=False,
         inputs=[wp.TransferInput(**entry) for entry in manifest],
         max_upload_bytes=int(settings.MAX_UPLOAD_SIZE))
+
+
+async def _retain_outputs(request: ExecutionRequest, worker_id: str) -> None:
+    """A recorded worker run's captures are on *worker_id* (#789): the
+    output store retains the run by id, so the outputs routes ask that
+    worker and the store's retention evicts the run as its own. Called
+    once the run has started there (``run_started``, or an adopted run
+    its worker still has), never for one that failed before."""
+    if request.record_outputs and request.output_store is not None:
+        await request.output_store.add_remote(request.run_id, worker_id)
 
 
 def _reason_of(message: Any) -> dict[str, Any] | None:
@@ -1051,6 +1492,20 @@ async def _warning(request: ExecutionRequest, kind: str,
                        message)
 
 
+async def _record_facts(request: ExecutionRequest,
+                        patch: dict[str, Any]) -> None:
+    record = request.sinks.record_execution_facts
+    if record is None:
+        return
+    try:
+        await record(patch)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- the run goes on; adoption degrades
+        logger.warning("run %s: could not record %s", request.run_id,
+                       ", ".join(patch), exc_info=True)
+
+
 async def _record_connection(request: ExecutionRequest,
                              connected: bool) -> None:
     record = request.sinks.record_worker_connection
@@ -1072,19 +1527,24 @@ _ACK_DUE = object()
 class _Acks:
     """When to acknowledge a worker run's frames, and doing it (#783).
 
-    The seq stays in memory; a restarted control plane has no run to
-    resume yet (#793).
+    Before an ack goes out, ``sinks.record_worker_seq`` makes the frames it
+    covers durable and persists the seq (#793): the agent forgets what is
+    acknowledged, so a restarted server must have all of it, and knows
+    where to resume (*recorded*, for an adopted run). No ack goes out when
+    that fails. A frame recorded after the last persisted seq is delivered
+    again after a restart.
     """
 
     def __init__(self, executor: WorkerExecutor, request: ExecutionRequest,
-                 worker_id: str, inbox: asyncio.Queue) -> None:
+                 worker_id: str, inbox: asyncio.Queue, *,
+                 recorded: int = 0) -> None:
         self._executor = executor
         self._request = request
         self._worker_id = worker_id
         self._inbox = inbox
         #: Highest seq handed to the sinks, and highest acknowledged.
-        self.recorded = 0
-        self.acked = 0
+        self.recorded = recorded
+        self.acked = recorded
         self._timer: asyncio.TimerHandle | None = None
 
     def delivered(self, seq: int) -> None:
@@ -1103,8 +1563,31 @@ class _Acks:
         self.cancel_timer()
         if self.recorded <= self.acked:
             return
-        self.acked = self.recorded
-        await self._send(self.acked)
+        seq = self.recorded
+        if not await self._persist(seq):
+            # Not acknowledged: the agent keeps the frames, so a restart
+            # that resumes after the stored seq still finds them. The next
+            # frame (or run_finished) tries again.
+            return
+        self.acked = seq
+        await self._send(seq)
+
+    async def _persist(self, seq: int) -> bool:
+        """``sinks.record_worker_seq(seq)``. False when it failed (logged):
+        the frames up to *seq* must then not be acknowledged."""
+        record = self._request.sinks.record_worker_seq
+        if record is None:
+            return True
+        try:
+            await record(seq)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- retried at the next ack
+            logger.warning("run %s: could not persist seq %d; not "
+                           "acknowledging it yet", self._request.run_id, seq,
+                           exc_info=True)
+            return False
+        return True
 
     async def resend(self) -> None:
         """Repeat the last ack (its first may not have reached the agent)."""

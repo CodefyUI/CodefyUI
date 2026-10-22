@@ -695,6 +695,7 @@ describe('NewSweepDialog: target (#777)', () => {
     await openSettled();
     expect(within(target()).getAllByRole('option').map((o) => o.textContent)).toEqual([
       'This server', 'gpu-box (Online): cuda:0, cuda:1', 'Any available',
+      'A one-shot worker (cdui agent start --one-shot)',
     ]);
     expect(screen.getByText('Every variant runs on this server, on this device.')).toBeInTheDocument();
     fireEvent.change(target(), { target: { value: 'any' } });

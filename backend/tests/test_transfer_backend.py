@@ -28,7 +28,7 @@ from app.core.executors import (
     TransferredArtifactSignal,
     WorkerExecutor,
     transfer_storage,
-    uses_transfer,
+    storage_backend,
 )
 from app.core.run_store import RunStore
 from app.core.scheduling import Placement
@@ -1034,15 +1034,15 @@ async def test_transfer_storage_without_inputs_needs_no_index(data_root):
 
 def test_only_a_shippable_run_on_a_worker_without_the_mount_transfers(
         data_root):
-    assert not uses_transfer(_worker("mute", "cpu"), SHIPPABLE)
+    assert storage_backend(_worker("mute", "cpu"), SHIPPABLE) is None
     bare = _speaking(_worker("bare", "cpu"))
     nas = _worker("nas", "cpu")
     nas.mounts = {"data": "/n"}
-    assert uses_transfer(bare, SHIPPABLE)
-    assert not uses_transfer(nas, SHIPPABLE)
-    assert not uses_transfer(bare, NOT_SHIPPABLE)
-    assert not uses_transfer(bare, {"mount": None})
-    assert not uses_transfer(bare, None)
+    assert storage_backend(bare, SHIPPABLE) == "transfer"
+    assert storage_backend(nas, SHIPPABLE) is None
+    assert storage_backend(bare, NOT_SHIPPABLE) is None
+    assert storage_backend(bare, {"mount": None}) is None
+    assert storage_backend(bare, None) is None
 
 
 async def test_a_transferred_row_must_be_one_of_the_runs_own_keys(

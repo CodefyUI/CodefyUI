@@ -13,12 +13,14 @@ import {
   type RunLogLine,
   type RunStatusFilter,
 } from '../../store/runStore';
+import { useStudyStore } from '../../store/studyStore';
 import { useSweepStore } from '../../store/sweepStore';
 import { useWorkerStore } from '../../store/workerStore';
 import type { RunSummary } from '../../api/rest';
-import { deviceAliasLines, runDevice, runDevices, runWorker, runWorkerLabel } from '../../utils/runPlacement';
+import { deviceAliasLines, runBudget, runDevice, runDevices, runWorker, runWorkerLabel } from '../../utils/runPlacement';
 import { codedMessage, queueReasonText, workerMessageText, type CodedMessage } from '../../utils/runReasons';
 import { LossChart } from './LossChart';
+import { RunProvenance } from './RunProvenance';
 import { SweepDetail } from './SweepDetail';
 import { lazyRetry } from '../shared/lazyRetry';
 import styles from './RunsPanel.module.css';
@@ -585,10 +587,12 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
                   >
                     {t('runs.detail.copyPath')}
                   </button>
-                  {artifact.backend === 'transfer' && typeof artifact.id === 'number' && (
-                    // Uploaded here by a worker without the shared mount
-                    // (#785): the server serves the file itself, by row id
-                    // (an event-log key like `cursor:7` names no row).
+                  {(artifact.backend === 'transfer' || artifact.backend === 's3')
+                    && typeof artifact.id === 'number' && (
+                    // Uploaded by a worker without the shared mount, here
+                    // (#785) or to the S3 bucket (#791): the server serves
+                    // the file, by row id (an event-log key like `cursor:7`
+                    // names no row).
                     <a
                       className={styles.rowBtn}
                       href={`/api/runs/${encodeURIComponent(detail.runId)}/artifacts/${artifact.id}/download`}
@@ -604,6 +608,9 @@ function RunDetailView({ chartHeight, parentRef, closeRef }: {
           </div>
         )}
       </div>
+
+      {/* The detail's own copy: list rows do not carry the records. */}
+      <RunProvenance records={detail.row?.provenance} />
 
       <div className={styles.detailSection}>
         <div className={styles.sectionHeader}>{t('runs.detail.log')}</div>
@@ -830,6 +837,14 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             >
               {t('workers.open')}
             </button>
+            <button
+              type="button"
+              className={styles.rowBtn}
+              title={t('studies.openTitle')}
+              onClick={() => useStudyStore.getState().openPanel()}
+            >
+              {t('studies.open')}
+            </button>
             <span className={styles.countText}>
               {t('runs.showing', { shown: runs.length, total })}
             </span>
@@ -856,6 +871,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
             <span role="columnheader" className={styles.colDevice}>
               {t('runs.col.devices')}
             </span>
+            <span role="columnheader" className={styles.colBudget}>
+              {t('runs.col.budget')}
+            </span>
             <span role="columnheader" className={styles.colStarted}>
               {t('runs.col.started')}
             </span>
@@ -880,6 +898,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const expanded = selectedRunId === run.id;
               const toggle = () => void select(expanded ? null : run.id);
               const workerName = runWorkerLabel(run, t);
+              const budget = runBudget(run, t);
               // Why a queued run waits beyond its place in line (#772), or
               // how long a running one has waited for its worker (#783).
               const queueReason = run.status === 'queued'
@@ -925,6 +944,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                         {` ${position.text}`}
                       </span>
                     )}
+                  </span>
+                  <span className={`${styles.mono} ${styles.colBudget}`} title={budget?.title}>
+                    {budget?.text ?? '-'}
                   </span>
                   <span className={`${styles.mono} ${styles.colStarted}`}>
                     {formatStarted(run.started_at, clock)}

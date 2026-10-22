@@ -159,7 +159,7 @@ The control plane holds the queue and records every event, so a run on a worker 
 
 ## Storage {/* #storage */}
 
-A run that uses no files in the data folder (a pure-tensor graph, one whose Dataset or HuggingFaceDataset nodes download into a cache of their own, or one that reads a bundled sample such as `data/samples/iris.csv`, which every install has and a worker reads from its own) runs on any worker. A relative path in a node parameter is read from the install's `backend/` folder on every machine, as on the server: `cdui agent start` works there whichever directory it was started in (the home directory over SSH). A relative path in a setting given to the agent at start, such as `CODEFYUI_MODELS_DIR=models`, still means that directory: the agent makes it absolute before it changes directory. A run that reads uploads or writes files needs one of two things: a folder both machines share, or the transfer backend, which moves the files over the agent's connection. A worker with the shared folder is preferred.
+A run that uses no files in the data folder (a pure-tensor graph, one whose Dataset or HuggingFaceDataset nodes download into a cache of their own, or one that reads a bundled sample such as `data/samples/iris.csv`, which every install has and a worker reads from its own) runs on any worker. A relative path in a node parameter is read from the install's `backend/` folder on every machine, as on the server: `cdui agent start` works there whichever directory it was started in (the home directory over SSH). A relative path in a setting given to the agent at start, such as `CODEFYUI_MODELS_DIR=models`, still means that directory: the agent makes it absolute before it changes directory. A run that reads uploads or writes files needs one of two things: a folder both machines share, or the transfer backend, which moves the files over the agent's connection (or, when one is configured, through an [S3 or MinIO bucket](#storage-s3) instead). A worker with the shared folder is preferred.
 
 | Run | Worker with the `data` mount | Worker without it |
 | --- | --- | --- |
@@ -210,6 +210,60 @@ A run this cannot serve is refused at submit when it names a worker without the 
 
 Inputs and outputs go to the same address as the agent's connection, with its worker token and the same certificate check (a pinned certificate is pinned for them too): without TLS they cross the network unencrypted. Behind a proxy, its request size limit must allow the largest output ([Deployment](./deployment#workers-behind-this-proxy)).
 
+### An S3 or MinIO bucket {/* #storage-s3 */}
+
+If the lab already runs MinIO, or uses S3, the bucket can take the control plane's place as the file store: the worker downloads the run's inputs from the bucket and uploads what the run writes to it, and the control plane keeps only the object keys. The run's files then never cross the control plane's network link, apart from each input, which the control plane puts in the bucket once.
+
+It serves the same runs as the transfer backend (uploads picked in a file field, within `CODEFYUI_TRANSFER_MAX_INPUT_BYTES`) on a worker without the shared folder, and while it is on it takes their place. A worker with the shared folder is still preferred.
+
+**Setting it up.**
+
+1. Install boto3 into CodefyUI's environment on the control plane and on every worker that should use the bucket: `uv pip install --python backend/.venv/bin/python boto3` from the install folder, or in a development checkout `uv pip install -e "backend[s3]"`. An agent without it does not offer S3 (the agent's log lists the capabilities it connected with) and keeps getting the transfer backend; each such run logs a `storage_fallback` warning.
+2. Create the bucket and a user for CodefyUI that can read and write it. With MinIO's client: `mc mb lab/codefyui`, then `mc admin user add lab codefyui <secret>` and `mc admin policy attach lab readwrite --user codefyui`.
+3. Start the control plane with the bucket's settings:
+
+```bash
+export CODEFYUI_S3_ENABLED=1
+export CODEFYUI_S3_ENDPOINT_URL=http://minio.lab:9000   # leave empty for AWS S3
+export CODEFYUI_S3_BUCKET=codefyui
+export CODEFYUI_S3_ADDRESSING_STYLE=path                # most MinIO setups
+export CODEFYUI_S3_ACCESS_KEY_ID=codefyui
+export CODEFYUI_S3_SECRET_ACCESS_KEY=<secret>
+cdui start
+```
+
+The server log then says `S3 artifact backend on: bucket codefyui at http://minio.lab:9000 (credentials: auto)`, or why the backend is off (no bucket, or boto3 missing). Workers need no setting of their own: the bucket, its address and the credentials come with each run. The control plane and every worker must reach the bucket at that same address.
+
+**Where the files go.** Under `CODEFYUI_S3_PREFIX` (empty by default; `codefyui/` puts everything under that folder):
+
+- `inputs/<sha256>`: an upload a run reads, put there by the control plane the first time a run needs it and named by its content, so the same file is never uploaded twice. The worker downloads it from there into the same `agent-cache` the transfer backend uses.
+- `runs/<run id>/<kind>/<name>`: every file the run records as an artifact (a periodic checkpoint is `runs/<run id>/checkpoint/<name>.pt`, a TensorBoard folder goes file by file) and, under `runs/<run id>/output/`, every other file the run wrote under `models/`, `media/` or `output/`, at its path there (ModelSaver's `iris/model.pt` is `runs/<run id>/output/models/iris/model.pt`). The agent uploads them as it does for the transfer backend: beside the run, the interrupt checkpoint last, before the run's end is reported, with the same retries through an outage. Expired temporary credentials are retried the same way until new ones arrive (MinIO answers `InvalidAccessKeyId` for them; that answer is retried only for temporary credentials at or past their expiry). A file the bucket refuses (`AccessDenied`, no such bucket) stays on the worker with a `transfer_failed` warning.
+
+`GET /api/runs/{id}/artifacts` lists them with `backend: "s3"`, `path` set to `s3://<bucket>/<key>` and `relative_path` to the key. In the Runs panel, **Copy path** copies the `s3://` address (for `mc` or `aws s3`) and **Download** gets the file: through the control plane by default (`CODEFYUI_S3_DOWNLOAD=proxy`), or, with `presign`, by redirecting the browser to a pre-signed URL valid for `CODEFYUI_S3_PRESIGN_TTL_S` seconds, so the bytes go from the bucket to the browser (which must then reach the bucket's address itself). Unlike the transfer backend, a writer node's file is not placed in the control plane's `models/` folder: download it before a local run reads it.
+
+**Credentials.** `CODEFYUI_S3_CREDENTIALS` decides what a worker gets:
+
+- `sts`: temporary credentials from the endpoint's STS (`AssumeRole`), with a session policy that allows writing only under `runs/<run id>/` and reading only the run's inputs, valid for `CODEFYUI_S3_STS_DURATION_S` (an hour by default). The control plane sends new ones before they expire for as long as the run lasts. MinIO issues them for an ordinary user's keys; AWS needs a role to assume (`CODEFYUI_S3_STS_ROLE_ARN`). A run whose credentials cannot be issued fails before it is sent.
+- `static`: the control plane's own keys. Give CodefyUI a user that can reach this bucket only.
+- `auto` (the default): `sts`, and the control plane's own keys when STS refuses, with a warning in the server log; STS is then not asked again for 10 minutes, or until the S3 settings change.
+
+The credentials travel in the run's assignment, like its secret parameters ([Trust between agent and control plane](#trust-between-agent-and-control-plane)): over a plain `http://` control plane address they are not encrypted. The agent keeps them in memory, never in a file or its log, and the run's subprocess does not get them. The control plane reads its keys from its environment and writes them to no database or log.
+
+**Clean-up.** Run retention and **Delete** remove a run's objects under `runs/<run id>/` and abort its unfinished uploads, keeping `output/` (writer nodes' files stay, as the transfer backend leaves them in the data folders) and, when retention removes a run that ended `interrupted`, its `checkpoint/`. A bucket the control plane cannot reach then is logged and its objects stay; for **Delete** the answer also says so in `warning`. What no run row names (kept `output/` folders, `inputs/`, uploads left by a worker that died) is for the bucket's lifecycle rules. On AWS S3:
+
+```json
+{"Rules": [
+  {"ID": "codefyui-abandoned-uploads", "Status": "Enabled", "Filter": {"Prefix": "runs/"},
+   "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}},
+  {"ID": "codefyui-inputs", "Status": "Enabled", "Filter": {"Prefix": "inputs/"},
+   "Expiration": {"Days": 30}}
+]}
+```
+
+(`aws s3api put-bucket-lifecycle-configuration --bucket codefyui --lifecycle-configuration file://rules.json`, with the prefixes under `CODEFYUI_S3_PREFIX` if it is set). MinIO refuses `AbortIncompleteMultipartUpload`: it removes unfinished uploads by itself after 24 hours (`mc admin config get lab api` shows `stale_uploads_expiry`), so only the expiry rule is needed, `mc ilm rule add lab/codefyui --prefix "inputs/" --expire-days 30`. An expired input is uploaded again by the next run that needs it.
+
+Each row records its bucket, and its key carries the prefix of its time, so a `CODEFYUI_S3_BUCKET` or `CODEFYUI_S3_PREFIX` changed later applies to new runs only: earlier runs' files still list, download and get removed where they are (the control plane's keys must still reach the old bucket).
+
 ## Keeping workers in sync {/* #keeping-workers-in-sync */}
 
 A worker must run the same CodefyUI version as the control plane, and it should know the same nodes. The control plane checks both every time the agent connects.
@@ -223,7 +277,7 @@ A worker must run the same CodefyUI version as the control plane, and it should 
 
 To clear it, install the same plugins and packs on the worker (`cdui plugin install ...`, the Package Center, the same custom node files) and restart the agent: it reports its nodes only when it starts. A worker whose helper failed reports no catalog: its card warns about it, `any` skips it, and a run that names it is sent without the check (the agent's log says why the helper failed). No command copies the control plane's plugin set to a worker yet.
 
-**Environment fingerprint.** The same helper collects the worker's [environment fingerprint](/advanced/api-reference#run-environment) (CodefyUI commit, Python, torch build, accelerators, plugin revisions, numerics-relevant environment variables). The Workers panel shows its digest, and every run the worker executes records that digest (a worker that reconnects without one shows "not reported", never an older digest), so the Runs panel names the environment that actually ran it. The fingerprint describes the agent's environment as its run subprocesses inherit it, before a run's device set narrows `CUDA_VISIBLE_DEVICES`.
+**Environment fingerprint.** The same helper collects the worker's [environment fingerprint](/advanced/api-reference#run-environment) (CodefyUI commit, Python, torch build, accelerators, plugin revisions, numerics-relevant environment variables). The Workers panel shows its digest, and every run the worker executes records that digest when it starts (a worker that reconnects without one shows "not reported", never an older digest). The run subprocess then reports the fingerprint of the code, plugins and custom nodes it loaded, which replaces it (`execution_facts.fingerprint_source: "worker-run"`), so a worker whose checkout or plugins changed after its agent started records what actually ran, not what the agent saw. Both describe the machine's devices as the agent sees them, before a run's device set narrows `CUDA_VISIBLE_DEVICES`, so the two digests are equal when nothing changed. The subprocess also reports its torch numerics switches (`execution_facts.resolved.numerics`). See [Run environment](/advanced/api-reference#run-environment).
 
 ## When the connection drops {/* #when-the-connection-drops */}
 
@@ -231,9 +285,11 @@ A worker is disconnected when its connection closes or it misses three heartbeat
 
 - **The worker reconnects within the grace** (`CODEFYUI_WORKER_RESUME_GRACE_S`, 5 minutes): it sends the events the control plane has not recorded, in order, and the run is `running` again with a `run_warning` of kind `worker_reconnected`. Its event log has no gap and no duplicate.
 - **It does not**: the run ends `interrupted` and its slots are freed. If the worker comes back later and still has the run, it is told to stop it at once, so the card is free for the next run; how the run ended there is recorded as `late_result` on the run (`{status, error, worker_id, at}`, in `GET /api/runs/{id}` and in `execution_facts`), and its status and event log stay as they were.
-- **The control plane restarts meanwhile**: the run ends `interrupted` at startup, like every other run that was executing.
+- **The control plane restarts meanwhile**: the restarted control plane takes the run over, as described below.
 
-`CODEFYUI_WORKER_RESUME_GRACE_S` is read by the control plane; `0` ends a disconnected worker's runs at once. An SSH worker's agent uses the same grace to decide when to stop waiting for its tunnel ([A dropped session](#connecting-over-ssh)).
+**When the control plane restarts.** A control plane that stops without stopping its runs (killed, crashed, a laptop that loses power) leaves its worker runs executing: their subprocesses keep going and the agent keeps their events. At its next start the control plane takes every such run over instead of ending it. The run reads `disconnected`, with a `run_warning` of kind `worker_disconnected` saying the server restarted, holds its slots again, and keeps the same event log. When its worker reconnects (an SSH worker's tunnel is started again by the control plane itself) and still has the run, the run is `running` again and continues where the control plane last confirmed it: the events of up to the last second before the stop may appear twice, and none is missing. A worker that does not reconnect within `CODEFYUI_WORKER_RESUME_GRACE_S`, counted from the restart, ends the run `interrupted` with the reason `it did not reconnect with the run within 300 s after this server restarted`; a worker that reconnects without the run (its agent restarted too) ends it at once. A transfer run's uploads continue after the restart, and the files received before it stay with the run. An `s3` run's worker is issued new credentials as soon as it reconnects, since the ones it holds came from the previous process, and they are renewed as usual from then on. Runs that executed in the control plane itself, runs still waiting in the queue, and worker runs started by CodefyUI 3.1.0 (which did not record where to resume) end `interrupted` as before. A Stop asked while the worker was away is remembered across the restart and sent when the worker is back. A graceful shutdown while a taken-over run still waits for its worker ends that run `interrupted` at once, and a worker run that does not stop within the shutdown's grace also ends `interrupted`; the worker is told to stop it when it next connects. A graceful shutdown (`systemctl stop`, Ctrl+C on Windows) still stops the worker runs ([Run Queue, When the server stops](./run-queue#when-the-server-stops)), so nothing is left to take over.
+
+`CODEFYUI_WORKER_RESUME_GRACE_S` is read by the control plane; `0` ends a disconnected worker's runs at once, and a restarted control plane then takes none over. An SSH worker's agent uses the same grace to decide when to stop waiting for its tunnel ([A dropped session](#connecting-over-ssh)).
 
 ## Trust between agent and control plane {/* #trust-between-agent-and-control-plane */}
 
@@ -336,14 +392,57 @@ journalctl -u codefyui-agent -f
 
 `--foreground` is required for the same reason as the server's: without it `cdui agent start` starts a background agent and exits, and systemd treats the exit of a `Type=exec` service's main process as the service ending. An agent refused for a version mismatch exits with an error, and `Restart=on-failure` retries it every 5 s until you update; `systemctl stop codefyui-agent` while you update avoids that. Keep `KillMode=mixed`: it lets the agent stop its runs itself, so a run in progress ends `cancelled` (a training loop writes its interrupt checkpoint); with systemd's default the run subprocesses get SIGTERM directly and the run ends `failed` with `run subprocess exited with code -15`. An SSH worker needs no unit: the control plane keeps its agent running.
 
+## One-shot workers: SLURM and ssh {/* #one-shot-workers */}
+
+`cdui agent start --one-shot` takes **exactly one run**, reports it and exits, like a GitHub runner started with `--ephemeral`. Start it inside a batch job or an `ssh` command: the batch system decides which machine and which GPU the job gets, and CodefyUI sends the graph and records the result.
+
+```bash
+cdui agent start --one-shot --control https://codefyui.example.com
+```
+
+- **Which runs reach it.** **Any available** never sends a run to a one-shot worker. A run reaches it when it names the worker (`"target": {"worker": "<name>"}`) or the one-shot pool: **A one-shot worker** in **Queue on...**, or `"target": {"pool": "one-shot"}` in `POST /api/runs` (with `device` set to the kind it needs, such as `cuda`). A pool run is never refused for want of a worker: it waits for a one-shot worker that offers its device, with `queue_reason` saying so, and fails after `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` (24 hours by default, `0` waits forever). Pool runs wait in one line per device kind, oldest first. `--run-id <id>` makes the agent take only that run, wherever it is in its line; the run must be waiting in the pool or name the worker, otherwise the agent is refused when it connects.
+- **No recorded outputs.** A run with **Record node outputs** is refused for the one-shot pool and for a one-shot worker: the agent exits when the run ends, so the Inspector could never read what it recorded.
+- **Exit code.** `0`: the run succeeded and the control plane recorded it. `1`: it failed, was cancelled or ended `interrupted`, or its outcome could not be delivered. `2`: the control plane refused the agent (another version, a name another agent holds, a `--run-id` that does not wait for it) or a flag is wrong. `3`: the agent was stopped (SIGTERM, Ctrl-C, the job's time limit) before a run arrived. `4`: it could not start (enrollment failed, or `--mount` was refused). A refusal after the agent took its run (a reconnect the control plane refused) is `1`: the run's outcome was not recorded.
+- **A dropped connection.** The run keeps going and the agent reconnects, as any agent does ([When the connection drops](#when-the-connection-drops)). It exits only once the control plane has acknowledged the run's end; if that has not happened within `CODEFYUI_WORKER_RESUME_GRACE_S` after the run ended, it exits anyway with `1` and leaves the result spooled for a later agent with the same user-data folder.
+- **Afterwards.** The Workers panel lists it with a **One-shot** badge and **Offline** status, and **One-shot run** links to the run it took (or says it left without one). The next job's agent under the same name takes the next run. The control plane records that the worker's own last agent was one-shot, so after a restart of the control plane a run naming it is timed by `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` at once, before its next agent connects. Instances (below) do not set this record: feed an array through the one-shot pool (`target.pool: "one-shot"`), not with runs naming the credential. A run naming an instance (`<name>.<ID>`) is always timed this way.
+- **One agent per name at a time.** The credential names the worker, so two jobs started with the same credential would share a name. While a one-shot worker is connected, or its run is in flight, another agent under its name is refused with exit code `2`. For jobs that run at the same time, use instances (below).
+- **Instances: several jobs on one credential.** `--instance [ID]` (one-shot agents only) makes the agent one of several sharing the credential and the user-data folder, such as the tasks of a SLURM array. It registers as `<name>.<ID>`; without a value, `ID` is `<SLURM_ARRAY_JOB_ID>-<SLURM_ARRAY_TASK_ID>` in an array task, `SLURM_JOB_ID` in another job, and 16 random hex characters elsewhere; inside a job step (`srun`) `-<SLURM_STEP_ID>-<SLURM_PROCID>` follows, so the tasks of `srun -n 4` get IDs of their own. Each instance is a one-shot worker of its own: it takes one run (a pool run, or one naming `<name>.<ID>`), and no other instance can take its name or its run while it holds them, also after a restart of the control plane. What is set on the credential applies to every instance: **Drain**, the device admission policy of each card (a policy set through an instance is stored for the credential), and a `<name>/<device>` cap in `CODEFYUI_RUN_QUEUE_MAX_CONCURRENT` (a `<name>.<ID>/<device>` entry overrides it for one instance). An instance never changes the credential's own entry (its devices, its one-shot flag), so the credential's regular agent can stay connected beside its instances. The Workers panel lists the instances inside the credential's card (**Shared credential**, with how many are connected and running): a card for each live one, and one line for each that left. **Remove** on the credential revokes it, so every instance disconnects, the runs they execute end `interrupted`, and the runs queued for any of them fail. An instance has **Remove** only once it left, and it only takes the line off the list; a connected instance (or one with a run in flight) cannot be removed on its own, since its agent would reconnect with the token it holds. Tasks that start together with an enrollment token and no stored credential take a lock in the user-data folder: the first enrolls (one use is enough) and the others use the credential it stored. On a file system without file locks (Lustre mounted `noflock`, some NFS) the agent logs a warning and goes on without locks: enroll once before starting the array, and give each task its own ID. An instance keeps its run's files in `<user data>/agent-instances/<ID>/` and deletes them when it exits, so a result it could not deliver is not sent later by another agent. One that was killed (`SIGKILL`, the OOM killer, a node reboot) leaves the folder; the next instance to start deletes it once no agent holds that ID and nothing in it changed for 24 hours. A second agent started with the ID of one still running in the same user-data folder exits `2` before it touches that folder. The panel keeps the 50 most recent instances that left per credential, until the control plane restarts.
+- It is always in the foreground and writes no pidfile, so it never conflicts with a background agent on the same machine. Without the batch system's time limit, nothing ends an agent that no run reaches: wrap an `ssh` command in `timeout` if it must not wait forever.
+
+### SLURM {/* #slurm */}
+
+Generate an enrollment token with **Add worker** (one use is enough), then submit jobs. Every task of the array below runs at the same time on one credential, each as an instance (`slurm.<array job>-<task>`). The user-data folder must be on a filesystem every node shares, as the home directory usually is:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=codefyui-run
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=04:00:00
+#SBATCH --array=0-3
+#SBATCH --output=codefyui-%A_%a.log
+
+module load cuda/12.4          # what your cluster calls it
+export CODEFYUI_USER_DATA_DIR="$HOME/.codefyui-agent"   # one for every task
+CDUI="$HOME/CodefyUI/cdui"
+CONTROL=https://codefyui.example.com
+
+# The first task to start enrolls with the token; the other tasks, and every
+# later job, use the stored credential.
+"$CDUI" agent start --one-shot --instance --control "$CONTROL" \
+    --name slurm --token "$CODEFYUI_ENROLL_TOKEN"
+```
+
+Submit it with `CODEFYUI_ENROLL_TOKEN=abcdef.0123456789abcdef sbatch codefyui.sbatch`, after queueing runs with **Queue on... → A one-shot worker** (or **New sweep** with the same target: each task takes one variant). SLURM sets `CUDA_VISIBLE_DEVICES` to the GPU it allocated; the agent offers that card as `cuda:0`. At the job's time limit SLURM sends SIGTERM: the agent stops its run (`interrupted`, a training loop writes its interrupt checkpoint) and exits `1`. To run one specific run from a script, pass its id: `cdui agent start --one-shot --run-id <run id> ...`, which is also the form for a plain `ssh gpu-box 'cd ~/CodefyUI && ./cdui agent start --one-shot --run-id ...'`.
+
 ## Limits {/* #limits */}
 
 - **The canvas runs on the control plane.** **Run** always executes there, with its cache and persistent weights; to send the tab's graph to a worker, use **Queue on...**.
-- **No captured outputs on a worker.** `record_outputs` is refused for a run on a worker ([#789](https://github.com/CodefyUI/CodefyUI/issues/789)); target the control plane to capture outputs for the Inspector. A worker run also starts with fresh weights every time.
-- **No memory admission.** Runs are admitted by count per device slot, as on the control plane; nothing checks that a run fits a card's memory ([#788](https://github.com/CodefyUI/CodefyUI/issues/788)).
-- **One run, one machine.** A run uses the devices of one worker; there is no `DistributedDataParallel` across cards or machines ([#792](https://github.com/CodefyUI/CodefyUI/issues/792)).
+- **Captured outputs stay on the worker.** With **Record node outputs**, a worker run's captures are kept on the worker and the Inspector reads them over its connection, so they are readable only while it is connected ([#789](https://github.com/CodefyUI/CodefyUI/issues/789), [Execution Architecture, Recorded outputs on a worker](/advanced/execution-architecture#recorded-outputs-on-a-worker)). A worker run starts with fresh weights every time.
+- **Memory admission is opt-in per card.** Runs are admitted by count per device slot, as on the control plane, unless the card is set to **Shared by memory** ([Multi-GPU, Sharing a card](/usage/multi-gpu#sharing-a-card)).
+- **One run, one machine.** A run uses the devices of one worker. A `TrainingLoop` with `strategy: ddp` trains across the cards of that worker ([Multi-GPU Execution](/usage/multi-gpu#ddp)); there is no training across machines.
 - **Linux first.** Workers are developed and tested on Linux; macOS works, and Windows is best effort.
-- **The control plane restarting ends worker runs.** Runs executing when it stops end `interrupted`, as local runs do ([Run Queue, When the server stops](./run-queue#when-the-server-stops)).
+- **A graceful stop of the control plane ends worker runs.** A shutdown stops the runs executing on workers, as it stops local ones ([Run Queue, When the server stops](./run-queue#when-the-server-stops)); only a control plane that dies without stopping them takes them over at its next start ([When the connection drops](#when-the-connection-drops)).
 
 ## Settings {/* #settings */}
 
@@ -353,15 +452,29 @@ On the control plane:
 | --- | --- | --- |
 | `CODEFYUI_EXTRA_ALLOWED_HOSTS` | *(empty)* | Host names the worker (or a browser) dials, such as `gpu-gw.lan:8000` |
 | `CODEFYUI_WORKER_RESUME_GRACE_S` | `300` | Seconds a disconnected worker's runs wait for it; `0` ends them at once |
+| `CODEFYUI_WORKER_OUTPUT_FETCH_TIMEOUT_S` | `60` | Seconds a read of a worker run's recorded outputs waits for the worker before it answers `504` |
+| `CODEFYUI_WORKER_ONE_SHOT_QUEUE_TIMEOUT_S` | `86400` | Seconds a run waits for a one-shot worker before it fails ([One-shot workers](#one-shot-workers)); `0` waits forever |
 | `CODEFYUI_TLS_CERT_FILE` | *(empty)* | The proxy's certificate (PEM, leaf first), so the Add worker dialog can show its fingerprint |
 | `CODEFYUI_MOUNT_LABEL` | `data` | The label of the control plane's data folder |
 | `CODEFYUI_TRANSFER_ENABLED` | `1` | `0` turns the transfer backend off |
 | `CODEFYUI_TRANSFER_MAX_INPUT_BYTES` | 2 GiB | The most a run's transferred inputs may add up to |
 | `CODEFYUI_MAX_UPLOAD_SIZE` | 500 MB | The largest single output a worker may upload; the same limit applies to every file upload |
+| `CODEFYUI_S3_ENABLED` | `0` | `1` sends the files of a run on a worker without the shared folder through an S3 or MinIO bucket ([An S3 or MinIO bucket](#storage-s3)) |
+| `CODEFYUI_S3_ENDPOINT_URL` | *(empty)* | The bucket's API address, such as `http://minio.lab:9000`; empty for AWS S3 |
+| `CODEFYUI_S3_REGION` | `us-east-1` | The bucket's region |
+| `CODEFYUI_S3_BUCKET` | *(empty)* | The bucket |
+| `CODEFYUI_S3_PREFIX` | *(empty)* | Put in front of every key, such as `codefyui/` |
+| `CODEFYUI_S3_ADDRESSING_STYLE` | `auto` | `path` for most MinIO setups, or `virtual` |
+| `CODEFYUI_S3_ACCESS_KEY_ID`, `CODEFYUI_S3_SECRET_ACCESS_KEY` | *(empty)* | The control plane's keys for the bucket, kept in memory only |
+| `CODEFYUI_S3_CREDENTIALS` | `auto` | What a worker gets: `sts` (temporary, limited to its run), `static` (the keys above) or `auto` (STS, else the keys above) |
+| `CODEFYUI_S3_STS_ROLE_ARN` | *(empty)* | The role to assume, for AWS; MinIO ignores it |
+| `CODEFYUI_S3_STS_DURATION_S` | `3600` | How long temporary credentials last (900 to 43200); new ones are sent before then |
+| `CODEFYUI_S3_DOWNLOAD` | `proxy` | **Download** of a file in the bucket: `proxy` streams it through the control plane, `presign` redirects to a pre-signed URL |
+| `CODEFYUI_S3_PRESIGN_TTL_S` | `900` | How long a pre-signed download URL is valid |
 | `CODEFYUI_SSH_REMOTE_PORT_RANGE` | `18000-18100` | Slot numbers for SSH workers: each names a worker's state directory on its remote host (`~/.codefyui-ssh/<id>-<slot>/`, where the tunnel's socket is) and the address its credential is stored under |
 | `CODEFYUI_SSH_STRICT_HOST_KEY_CHECKING` | `accept-new` | `yes` requires a host already in `known_hosts` |
 
-On the worker, `CODEFYUI_AGENT_TOKEN` supplies the token when `--token` is not given ([CLI Commands, Environment variables](/getting-started/cli-commands#environment-variables)).
+On the worker, `CODEFYUI_RUN_OUTPUT_STORE_MAX_MB` (2048) bounds the recorded outputs it keeps, `CODEFYUI_WORKER_OUTPUTS_WRITE_TIMEOUT_S` (300) is how long a recorded run's subprocess may take to write them after the run ends (a graceful `cdui agent stop` waits for a write in progress up to that long), and `CODEFYUI_AGENT_TOKEN` supplies the token when `--token` is not given ([CLI Commands, Environment variables](/getting-started/cli-commands#environment-variables)).
 
 ## See also {/* #see-also */}
 

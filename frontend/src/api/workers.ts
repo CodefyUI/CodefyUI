@@ -29,6 +29,34 @@ export interface WorkerDeviceMemory {
 export interface WorkerDeviceSlots {
   limit: number;
   taken: number;
+  /**
+   * The offerer whose limit a card several workers share takes (the
+   * smallest among the online ones, #842); absent when it is this slot's
+   * own. `worker` is `local` for this server.
+   */
+  limited_by?: { worker: string; device: string };
+}
+
+/** How a worker's card admits runs (#788): by count, or by memory budget. */
+export type DevicePolicy = 'exclusive' | 'shared';
+
+/**
+ * A shared card's ledger (#788): the budgets promised on it (reserved:
+ * assigned, not started; running: started with the cap in place), what a
+ * new budget may take (`headroom_bytes`), and the runs holding budgets.
+ * `by_memory` is false when the worker's agent cannot enforce budgets: the
+ * card then admits by count.
+ */
+export interface WorkerDeviceAdmission {
+  by_memory: boolean;
+  total_bytes: number | null;
+  free_bytes: number | null;
+  reserved_bytes: number;
+  running_bytes: number;
+  headroom_bytes: number | null;
+  /** The CUDA context each run holds beyond its budget; 0 off CUDA. */
+  context_bytes?: number;
+  runs: string[];
 }
 
 export interface WorkerDevice {
@@ -41,6 +69,28 @@ export interface WorkerDevice {
   slots?: WorkerDeviceSlots;
   /** Run ids on this device, when the server reports them per device. */
   running?: string[];
+  /** `exclusive` (the default) or `shared` (#788); absent from an older server. */
+  policy?: DevicePolicy;
+  /** A shared card's ledger; `null` for an exclusive one (#788). */
+  admission?: WorkerDeviceAdmission | null;
+  /**
+   * The other offerers of this physical card, matched by UUID (#842):
+   * `worker` is a worker id, or `local` for this server. Empty, or absent
+   * from an older server, for a card nobody else offers.
+   */
+  same_card?: WorkerCardPeer[];
+}
+
+/** One other offerer of a physical card (#842). */
+export interface WorkerCardPeer {
+  worker: string;
+  device: string;
+  /** How that offerer admits runs; `null` for this server (by count). */
+  policy?: DevicePolicy | null;
+  /** That offerer can take runs now (this server always). */
+  online?: boolean;
+  /** Its agent enforces memory budgets (#788); `null` for this server. */
+  memory_budget?: boolean | null;
 }
 
 /**
@@ -107,6 +157,28 @@ export interface WorkerInfo {
   node_catalog?: WorkerNodeCatalog;
   /** Why `status` reads `degraded`: `node_catalog`, `heartbeat` (#781). */
   degraded_reasons?: string[];
+  /** Its agent enforces memory budgets, so its cards can be shared (#788). */
+  memory_budget?: boolean;
+  /**
+   * A `cdui agent start --one-shot` worker (#790): `run_id` is the one run
+   * it takes (`--run-id`), `took` the run it took. `null` (or absent) for a
+   * regular worker.
+   */
+  one_shot?: WorkerOneShot | null;
+  /**
+   * One of several one-shot agents sharing a credential (#845, `cdui agent
+   * start --one-shot --instance`): the credential's worker name. Its `id`
+   * is `<instance_of>.<instance>`. `null` (or absent) otherwise.
+   */
+  instance_of?: string | null;
+  /** {@link WorkerInfo.instance_of}'s other half: this agent's instance id. */
+  instance?: string | null;
+}
+
+/** {@link WorkerInfo.one_shot}. */
+export interface WorkerOneShot {
+  run_id: string | null;
+  took: string | null;
 }
 
 /** `GET /api/workers`: the workers and each name's last refused handshake. */
@@ -204,6 +276,22 @@ export function drainWorker(workerId: string): Promise<WorkerInfo> {
 /** Let the worker take new runs again. */
 export function undrainWorker(workerId: string): Promise<WorkerInfo> {
   return setDraining(workerId, 'undrain');
+}
+
+/** Set how the worker's *device* admits runs (#788); answers the worker. */
+export async function setDevicePolicy(
+  workerId: string,
+  device: string,
+  policy: DevicePolicy,
+): Promise<WorkerInfo> {
+  const path = `${encodeURIComponent(workerId)}/devices/${encodeURIComponent(device)}/policy`;
+  const res = await apiFetch(`${BASE_URL}/${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ policy }),
+  });
+  if (!res.ok) throw await failure(res, 'Policy change failed');
+  return res.json();
 }
 
 /** Revoke the worker's credential, disconnect it and forget it (#780). */

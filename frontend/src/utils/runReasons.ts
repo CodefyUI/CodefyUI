@@ -34,11 +34,89 @@ function blocked(list: string[], one: 'runs.reason.drainingOne' | 'runs.reason.s
   return t(list.length === 1 ? one : many, { names: list.join(', ') });
 }
 
+/** One shared card's reason in a memory wait (#788), or its text. */
+function cardText(source: unknown, t: Translate): string | null {
+  const value = record(source);
+  if (!value) return null;
+  const fallback = text(value.text);
+  const coded = codedMessage(value);
+  if (!coded) return fallback;
+  const device = text(coded.params.device);
+  const worker = text(coded.params.worker);
+  if (!device || !worker) return fallback;
+  switch (coded.code) {
+    case 'no_total_reported':
+      return t('runs.reason.card.noTotalReported', { device, worker });
+    case 'total_too_small': {
+      const total = text(coded.params.total);
+      return total ? t('runs.reason.card.totalTooSmall', { device, worker, total }) : fallback;
+    }
+    case 'held_without_budget':
+      return t('runs.reason.card.heldWithoutBudget', { device, worker });
+    case 'reserved_for_a_set':
+      return t('runs.reason.card.reservedForSet', { device, worker });
+    case 'no_total':
+      return t('runs.reason.card.noTotal', { device, worker });
+    case 'does_not_fit': {
+      const free = text(coded.params.free);
+      const runs = names(coded.params.runs);
+      if (!free || !runs) return fallback;
+      return runs.length === 0
+        ? t('runs.reason.card.doesNotFit', { device, worker, free })
+        : t('runs.reason.card.doesNotFitRuns', { device, worker, free, runs: runs.join(', ') });
+    }
+    default:
+      return fallback;
+  }
+}
+
+/** A waiting run's memory reason (#788): what it needs, then why each card cannot take it. */
+function memoryWaitText(params: Record<string, unknown>, t: Translate): string | null {
+  const need = text(params.need);
+  if (!need || !Array.isArray(params.reasons) || params.reasons.length === 0) return null;
+  const parts = params.reasons.map((reason) => cardText(reason, t));
+  if (parts.some((part) => part === null)) return null;
+  const context = text(params.context);
+  return t('runs.reason.memoryWait', {
+    need: context ? t('runs.reason.memoryNeedContext', { need, context }) : need,
+    reasons: (parts as string[]).reduce((a, b) => t('runs.reason.memoryJoin', { a, b })),
+  });
+}
+
+/** The raise of an accepted estimate to a measured peak (#794), or null. */
+function raisedText(source: unknown, t: Translate): string | null {
+  const value = record(source);
+  const from = value && text(value.from);
+  const to = value && text(value.to);
+  if (!value || !from || !to) return null;
+  const run = text(value.run);
+  return run
+    ? t('runs.reason.budgetRaisedRun', { from, to, run })
+    : t('runs.reason.budgetRaised', { from, to });
+}
+
 function fromCode(code: string, params: Record<string, unknown>, t: Translate): string | null {
   const worker = text(params.worker);
   const devices = text(params.devices);
   const mount = text(params.mount);
+  const run = text(params.run);
   switch (code) {
+    case 'one_shot_start':
+      return worker && t('runs.reason.oneShotStart', { worker });
+    case 'one_shot_taken':
+      return worker && run && t('runs.reason.oneShotTaken', { worker, run });
+    case 'one_shot_run_id':
+      return worker && run && t('runs.reason.oneShotRunId', { worker, run });
+    case 'one_shot_pool':
+      return devices && t('runs.reason.oneShotPool', { devices });
+    case 'memory_no_budget': {
+      const device = text(params.device);
+      return worker && device && t('runs.reason.memoryNoBudget', { device, worker });
+    }
+    case 'memory_wait':
+      return memoryWaitText(params, t);
+    case 'budget_raised':
+      return raisedText(params, t);
     case 'worker_reconnect':
       return worker && t('runs.reason.workerReconnect', { worker });
     case 'worker_draining':
@@ -80,7 +158,12 @@ export function queueReasonText(run: ReasonFields, t: Translate): string | null 
   const code = run.queue_reason_code;
   const params = run.queue_reason_params;
   if (!code || !params || typeof params !== 'object') return fallback;
-  return fromCode(code, params, t) ?? fallback;
+  const reason = fromCode(code, params, t);
+  if (!reason) return fallback;
+  // A raised estimate (#794) rides beside another reason.
+  if (code === 'budget_raised' || params.raised === undefined) return reason;
+  const raised = raisedText(params.raised, t);
+  return raised ? t('runs.reason.withRaise', { reason, raised }) : fallback;
 }
 
 /** A worker message's code and parameters, as the server sends them beside its text. */
@@ -139,6 +222,10 @@ function reasonText(source: unknown, t: Translate): string | null {
       return worker ? t('runs.workerMsg.reason.sshStopped', { worker }) : fallback;
     case 'rekeyed':
       return t('runs.workerMsg.reason.rekeyed');
+    case 'no_reconnect_after_restart':
+      return seconds === null ? fallback : t('runs.workerMsg.reason.noReconnectAfterRestart', { seconds });
+    case 'shutdown_not_connected':
+      return worker ? t('runs.workerMsg.reason.shutdownNotConnected', { worker }) : fallback;
     default:
       return fallback;
   }
@@ -168,6 +255,16 @@ function fromWorkerCode({ code, params }: CodedMessage, t: Translate): string | 
       return error && t('runs.workerMsg.transferFailed', { worker, detail: error });
     case 'worker_removed':
       return t('runs.workerMsg.removed', { worker });
+    case 'worker_s3_transfer_failed':
+      return error && t('runs.workerMsg.s3TransferFailed', { detail: error });
+    case 'worker_storage_fallback':
+      return t('runs.workerMsg.storageFallback', { worker });
+    case 'worker_adopted': {
+      const seconds = count(params.seconds);
+      return seconds === null ? null : t('runs.workerMsg.adopted', { worker, seconds });
+    }
+    case 'worker_lost_after_restart':
+      return t('runs.workerMsg.lostAfterRestart', { worker });
     default:
       return null;
   }

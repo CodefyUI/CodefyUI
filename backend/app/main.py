@@ -54,6 +54,7 @@ from .api import (
     routes_nodes,
     routes_packs,
     routes_plugin_frontend,
+    routes_plugin_jobs,
     routes_plugins,
     routes_presets,
     routes_runs,
@@ -96,7 +97,8 @@ from .core.plugin_loader import (
 from .core.plugins.reload import rediscover_now
 from .core.plugins.service import PluginService
 from .core.preset_registry import preset_registry
-from .core.run_output_store import RunOutputStore
+from .core.port_stats import worker_stats_key
+from .core.run_output_store import MAX_RUNS as RUN_OUTPUT_STORE_MAX_RUNS, RunOutputStore
 from .core.run_service import RunService
 from .core.ssh_launch import SshLauncher
 from .core.worker_store import WorkerStore
@@ -153,8 +155,9 @@ _AUTH_EXEMPT_PREFIXES = ("/api/apps", "/api/keys")
 
 
 def _local_device_facts() -> list:
-    """This process's devices with their CUDA UUIDs, for matching a
-    same-host worker's cards to ours (#773). Called once, lazily."""
+    """This process's devices with their CUDA UUIDs, for matching
+    workers' cards to ours (#773, #842). Called once, off the event loop,
+    when the first worker needs it (``WorkerRegistry.probe_local_devices``)."""
     from .core.resources import probe_devices
 
     return probe_devices()
@@ -364,7 +367,7 @@ async def _lifespan_body(app: FastAPI):
     # Bounded by runs AND by bytes (#135) — twenty runs of MNIST batches and
     # twenty runs of 4K feature maps are three orders of magnitude apart.
     app.state.run_output_store = RunOutputStore(
-        max_runs=20,
+        max_runs=RUN_OUTPUT_STORE_MAX_RUNS,
         max_bytes=settings.RUN_OUTPUT_STORE_MAX_MB * 1024 * 1024,
     )
 
@@ -408,15 +411,26 @@ async def _lifespan_body(app: FastAPI):
     # With none connected, the run service behaves exactly as without it:
     # a run without a target is placed and executed in this process.
     worker_registry = WorkerRegistry(
-        local_devices=_local_device_facts,
+        local_devices=_local_device_facts, probe_off_loop=True,
         resume_grace_s=settings.WORKER_RESUME_GRACE_S,
-        node_catalog=node_catalog)
+        node_catalog=node_catalog,
+        output_fetch_timeout_s=settings.WORKER_OUTPUT_FETCH_TIMEOUT_S)
     app.state.worker_registry = worker_registry
+    # A worker run's recorded outputs stay on its worker (#789); this
+    # store retains them by run id, and evicting one tells the worker.
+    app.state.run_output_store.on_remote_drop = worker_registry.outputs.drop
+    # Its stats, cached once the run ended there, go when the run does.
+    _stats_cache = app.state.port_stats_cache
+    app.state.run_output_store.on_remote_forget = (
+        lambda run_id: _stats_cache.drop_prefix(
+            worker_stats_key(run_id, None, None)[:2]))
     # Enrolled workers (#780) are known before they dial in, as offline, so
     # a run can target one and wait. None enrolled: nothing changes.
     worker_store = WorkerStore(db)
     app.state.worker_store = worker_store
     worker_registry.load_known(await worker_store.list_workers())
+    # How each worker card admits runs (#788); no row: exclusive.
+    worker_registry.load_policies(await worker_store.list_device_policies())
     run_service = RunService(
         RunStore(db),
         output_store=app.state.run_output_store,
@@ -457,6 +471,19 @@ async def _lifespan_body(app: FastAPI):
         await asyncio.to_thread(sweep_incoming)
     except Exception:  # noqa: BLE001 -- housekeeping must not block startup
         logger.warning("could not sweep unfinished uploads", exc_info=True)
+    # The S3 artifact backend (#791) asked for but unusable: say why once,
+    # here, rather than only as worker runs quietly use the transfer backend.
+    from .core import s3 as s3_backend
+    s3_problem = s3_backend.problem()
+    if s3_problem is not None:
+        logger.warning("CODEFYUI_S3_ENABLED is set, but the S3 artifact "
+                       "backend is off: %s", s3_problem)
+    elif s3_backend.enabled():
+        logger.info("S3 artifact backend on: bucket %s%s (credentials: %s)",
+                    settings.S3_BUCKET,
+                    f" at {settings.S3_ENDPOINT_URL}"
+                    if settings.S3_ENDPOINT_URL else "",
+                    settings.S3_CREDENTIALS)
 
     # ── Package Center: one optional-pack install at a time ────────────
     # Same lifetime rules as the run service above: it owns an asyncio.Task
@@ -739,6 +766,7 @@ app.include_router(routes_presets.router)
 app.include_router(routes_custom_nodes.router)
 app.include_router(routes_plugins.router)
 app.include_router(routes_plugin_frontend.router)
+app.include_router(routes_plugin_jobs.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_media.router)

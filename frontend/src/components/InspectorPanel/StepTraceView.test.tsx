@@ -11,6 +11,7 @@ import {
   listRunOutputs,
   PayloadTooLargeError,
   RunDataExpiredError,
+  WorkerUnreachableError,
   type StepIndexEntry,
 } from '../../api/executionOutputs';
 import {
@@ -241,6 +242,17 @@ describe('StepTraceView', () => {
     mockOutput.mockRejectedValue(new Error('tensor boom'));
     render(<StepTraceView runId="r1" nodeId="n1" />);
     await waitFor(() => expect(screen.getByText('tensor boom')).toBeInTheDocument());
+  });
+
+  it("says a worker run's worker is out of reach, for the index and a tensor (#789)", async () => {
+    mockStepIndex.mockRejectedValue(new WorkerUnreachableError('gone'));
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText(/cannot be reached now/)).toBeInTheDocument());
+    cleanup();
+    mockStepIndex.mockResolvedValue([step({ index: 0, name: 'S', tensor_keys: ['t'] })]);
+    mockOutput.mockRejectedValue(new WorkerUnreachableError('gone'));
+    render(<StepTraceView runId="r1" nodeId="n1" />);
+    await waitFor(() => expect(screen.getByText(/cannot be reached now/)).toBeInTheDocument());
   });
 
   it("shows 'Expired' on a per-tensor RunDataExpiredError", async () => {

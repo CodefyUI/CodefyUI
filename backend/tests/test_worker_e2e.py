@@ -12,6 +12,7 @@ must agree on ``(type, node_id, status)``. A second agent without the
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import socket
 import subprocess
@@ -214,6 +215,17 @@ def _knn_graph() -> dict[str, Any]:
     }
 
 
+def _csv_graph(path: str) -> dict[str, Any]:
+    """Start -> CSVReader on *path*: a node with provenance (#344)."""
+    return {
+        "nodes": [{"id": "start", "type": "Start", "data": {"params": {}}},
+                  {"id": "csv", "type": "CSVReader",
+                   "data": {"params": {"path": path}}}],
+        "edges": [{"id": "t", "source": "start", "target": "csv",
+                   "sourceHandle": "trigger", "type": "trigger"}],
+    }
+
+
 def test_a_worker_without_a_plugin_is_degraded_and_refused_its_nodes(
         live_server, tmp_path):
     """#781 end to end: this server has the ``foundations`` pack (the test
@@ -256,6 +268,28 @@ def test_a_worker_without_a_plugin_is_degraded_and_refused_its_nodes(
         assert record["status"] == "succeeded", record
         assert record["fingerprint_digest"] == digest
         assert record["execution_facts"]["worker_id"] == "bare-box"
+        # #344: the run subprocess reported its own environment. Nothing
+        # changed since the agent started, so it is the agent's digest,
+        # and the numerics come from the process that ran the graph.
+        facts = record["execution_facts"]
+        assert facts["fingerprint_source"] == "worker-run"
+        assert "num_threads" in facts["resolved"]["numerics"]
+
+        # #344 hook 4 on a worker: the subprocess describes what it read,
+        # and the control plane stores it.
+        table = tmp_path / "rows.csv"
+        table.write_bytes(b"a,b\n1,2\n3,4\n")
+        with_provenance = client.post("/api/runs", json={
+            "graph": _csv_graph(str(table)),
+            "options": {"target": {"worker": "bare-box"},
+                        "provenance": "content"}}).json()
+        record = _wait_terminal(client, with_provenance["run_id"])
+        assert record["status"] == "succeeded", record
+        [node] = record["provenance"]
+        assert node["node_id"] == "csv" and node["rows"] == 2
+        assert node["content"]["method"] == "sha256"
+        assert node["content"]["digest"] == hashlib.sha256(
+            table.read_bytes()).hexdigest()
     finally:
         _stop_agent(client, agent, "bare-box")
     client.close()

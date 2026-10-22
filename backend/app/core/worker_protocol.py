@@ -81,12 +81,23 @@ What the frames carry
   ``artifact`` the agent uploaded to the control plane (the ``transfer``
   backend, #785) carries ``backend: "transfer"`` and the key the upload
   answered with (``runs/<run_id>/<kind>/<name>``) as its ``path``.
+- ``run_facts`` (#344, capability ``run_facts``): what the run subprocess
+  reports about itself, for ``RunSinks.record_environment`` (its own
+  fingerprint and numerics, once, before the graph runs) and
+  ``RunSinks.record_provenance`` (one node's provenance record).
 - ``assign.storage.backend == "transfer"`` (#785): the worker holds no
   directory for the control plane's mount. ``storage.inputs`` lists the
   uploads the run reads, by content hash; the agent fetches the ones its
   cache lacks over HTTP before it starts the run subprocess, reporting
   ``warning`` frames of kind ``transfer_progress`` (these may come before
   ``run_started``), and uploads what the run writes before ``run_finished``.
+- ``assign.storage.backend == "s3"`` (#791): as ``transfer``, but the
+  bytes go between the worker and an S3 / MinIO bucket. ``storage.s3``
+  carries the bucket, the run's key prefix and the credentials the agent
+  uses (short-lived when the control plane got them from STS); each
+  ``storage.inputs`` entry names its object ``key``. The artifact frames
+  carry ``backend: "s3"`` and the object key. ``credentials`` replaces a
+  running run's short-lived credentials before they expire.
 - ``run_finished.status``: ``succeeded``, ``failed`` or ``cancelled`` as an
   ``ExecutionOutcome`` reports them, or ``interrupted``: after a ``cancel``
   the subprocess ended without reporting, because the agent terminated it
@@ -96,6 +107,34 @@ What the frames carry
   rides on every unreported end.
 - A frame the agent cannot encode is replaced by a ``warning`` with the
   same ``seq`` (kind ``unserialisable_frame``), never dropped silently.
+
+Recorded outputs (#789, capability ``record_outputs``)
+------------------------------------------------------
+A run assigned with ``options.record_outputs`` keeps its captures on the
+worker: in the run subprocess's ``RunOutputStore`` while it runs, then in
+files under the run's directory there. The control plane reads them on
+demand, one read of ``/api/execution/outputs/*`` at a time:
+
+- control plane -> ``fetch_output{request_id, run_id, op, params,
+  timeout_s}``: ``op`` is the read (``list``, ``value``, ``stats``,
+  ``steps``, ``grads``, ``delete``), ``params`` its query (``node_id``,
+  ``port``, ``slice``, ``max_elements``, ``preview``, ``inner``), and
+  ``timeout_s`` how long the control plane waits for the answer (the
+  agent gives up a little sooner, so its own limits never outlast it);
+- control plane -> ``cancel_fetch{request_id}`` when it stopped waiting
+  for a read (it timed out, or the browser went away): the agent stops
+  answering it and frees its place;
+- agent -> ``output_answer{request_id, status, part, parts, body, final}``:
+  the HTTP status and JSON body text the read answers with, the body cut
+  into ``parts`` frames (``part`` 0 first) so no frame outgrows a socket's
+  message limit; ``final`` says the run has ended there (its captures
+  cannot change, so the control plane may cache what it derived);
+- control plane -> ``drop_outputs{run_id}`` when its own retention evicts
+  the run: the agent deletes the captures.
+
+These frames carry no ``seq`` and are never spooled: a read whose
+connection drops is answered by the control plane itself ("worker
+unreachable"), and the browser asks again.
 """
 
 from __future__ import annotations
@@ -104,7 +143,7 @@ import json
 import re
 from typing import Annotated, Any, Iterable, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 #: Bumped on any change a peer of the previous version would misread. Sent
 #: in ``hello`` and ``welcome``; a mismatch is refused (#781). 2: ``ack`` and
@@ -123,11 +162,55 @@ PROTOCOL_VERSION = 3
 #: ``transfer`` (#785): ``assign.storage.backend == "transfer"`` with
 #: ``inputs`` and ``max_upload_bytes``, and ``artifact.backend``; the control
 #: plane sends a run through the transfer backend only to a worker that
-#: lists it.
-CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer")
+#: lists it. ``memory_budget`` (#788): ``assign.memory_budgets``; the agent
+#: caps each listed card with ``set_per_process_memory_fraction`` in the run
+#: subprocess and sends ``run_started`` only once the cap is in place. A
+#: worker that does not list it is never given a ``shared`` card's runs.
+#: ``one_shot`` (#790): ``hello.one_shot`` (with
+#: ``one_shot_run_id`` and ``instance_id``) is understood: the control plane
+#: keeps such a worker out of ``any`` and gives it exactly one run; a
+#: one-shot agent refuses a control plane whose ``welcome`` lacks it.
+#: ``s3`` (#791): ``assign.storage.backend == "s3"`` with ``storage.s3`` and
+#: ``inputs[].key``, ``artifact.backend == "s3"``, and the ``credentials``
+#: frame. An agent lists it only when it can load an S3 client (boto3):
+#: :func:`agent_capabilities`.
+#: ``record_outputs`` (#789): ``options.record_outputs`` is honoured, and
+#: ``fetch_output`` / ``drop_outputs`` / ``output_answer`` are understood.
+#: The control plane assigns a recorded run only to a worker listing it.
+#: ``instances`` (#845): ``hello.instance``: one credential serves several
+#: concurrent one-shot agents, each registered as ``<name>.<instance>``
+#: (:func:`instance_worker_id`); a ``--instance`` agent refuses a control
+#: plane whose ``welcome`` lacks it.
+#: ``run_facts`` (#344): the agent sends ``run_facts`` frames (the run
+#: subprocess's own fingerprint and numerics, and node provenance records);
+#: an agent sends them only to a control plane whose ``welcome`` lists it.
+CAPABILITIES: tuple[str, ...] = ("ack", "mounts", "transfer",
+                                 "memory_budget", "one_shot", "s3",
+                                 "record_outputs", "instances", "run_facts")
 
 #: The capability name of the transfer storage backend (#785).
 CAPABILITY_TRANSFER = "transfer"
+#: The capability name of enforced memory budgets (#788).
+CAPABILITY_MEMORY_BUDGET = "memory_budget"
+#: The capability name of one-shot workers (#790).
+CAPABILITY_ONE_SHOT = "one_shot"
+#: ``target.pool`` value (#790): any connected one-shot worker. The only
+#: pool there is.
+POOL_ONE_SHOT = "one-shot"
+#: The capability name of the S3 artifact backend (#791).
+CAPABILITY_S3 = "s3"
+#: The capability name of recorded outputs on workers (#789).
+CAPABILITY_RECORD_OUTPUTS = "record_outputs"
+#: The capability name of one-shot instances (#845).
+CAPABILITY_INSTANCES = "instances"
+#: The capability name of ``run_facts`` frames (#344).
+CAPABILITY_RUN_FACTS = "run_facts"
+
+
+def agent_capabilities(s3_client: bool) -> list[str]:
+    """What an agent lists in ``hello``: :data:`CAPABILITIES`, without
+    ``s3`` when it has no S3 client to speak it with (*s3_client*)."""
+    return [c for c in CAPABILITIES if s3_client or c != CAPABILITY_S3]
 
 #: Where the control plane serves the protocol.
 WORKER_WS_PATH = "/ws/worker"
@@ -149,6 +232,8 @@ ARTIFACT = "artifact"
 WARNING = "warning"
 RUN_FINISHED = "run_finished"
 RUN_ALIVE = "run_alive"
+OUTPUT_ANSWER = "output_answer"
+RUN_FACTS = "run_facts"
 
 # ── frame types: control plane -> agent ──────────────────────────────────
 WELCOME = "welcome"
@@ -157,10 +242,17 @@ CANCEL = "cancel"
 DRAIN = "drain"
 REJECT = "reject"
 ACK = "ack"
+CREDENTIALS = "credentials"
+FETCH_OUTPUT = "fetch_output"
+DROP_OUTPUTS = "drop_outputs"
+CANCEL_FETCH = "cancel_fetch"
 
 AGENT_FRAME_TYPES = (HELLO, HEARTBEAT, RUN_STARTED, EVENT, METRICS, ARTIFACT,
-                     WARNING, RUN_FINISHED, RUN_ALIVE)
-CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK)
+                     WARNING, RUN_FINISHED, RUN_ALIVE, OUTPUT_ANSWER,
+                     RUN_FACTS)
+CONTROL_FRAME_TYPES = (WELCOME, ASSIGN, CANCEL, DRAIN, REJECT, ACK,
+                       CREDENTIALS, FETCH_OUTPUT, DROP_OUTPUTS,
+                       CANCEL_FETCH)
 
 #: Seconds between heartbeats unless ``welcome`` says otherwise.
 DEFAULT_HEARTBEAT_S = 10.0
@@ -184,8 +276,40 @@ TARGET_ANY = "any"
 #: under either name would collide with them in ``/api/workers/{id}``.
 RESERVED_WORKER_NAMES = frozenset({TARGET_LOCAL, TARGET_ANY, "enroll",
                                    "enrollments"})
-#: Worker names, matched with ``fullmatch`` (the ``target.worker`` alphabet).
+#: Worker names, matched with ``fullmatch``: what ``--name``, an
+#: enrollment and ``hello.name`` use.
 WORKER_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+#: ``hello.instance`` (#845): one one-shot agent among several sharing a
+#: credential (a SLURM array task's id, a job id, a random suffix).
+INSTANCE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+#: Between a credential's name and an instance in the instance's worker id.
+#: Not in :data:`WORKER_NAME_PATTERN`'s alphabet, so an instance id can
+#: never be a name some other credential enrolled.
+INSTANCE_SEPARATOR = "."
+#: Worker ids, matched with ``fullmatch`` (the ``target.worker``
+#: alphabet): a worker name, or ``<name>.<instance>`` for an instance.
+WORKER_ID_PATTERN = re.compile(
+    rf"{WORKER_NAME_PATTERN.pattern}"
+    rf"(?:\{INSTANCE_SEPARATOR}{INSTANCE_PATTERN.pattern})?")
+
+
+#: The HTTP header an instance's transfer requests carry (#845): its
+#: ``hello.instance_id``, which tells it apart from the other instances
+#: holding the same worker token.
+INSTANCE_HEADER = "X-CodefyUI-Worker-Instance"
+
+
+def instance_worker_id(name: str, instance: str | None) -> str:
+    """The worker id a ``hello`` registers under: *name*, or
+    ``<name>.<instance>`` for an instance of *name*'s credential (#845)."""
+    return name if instance is None else f"{name}{INSTANCE_SEPARATOR}{instance}"
+
+
+def instance_parts(worker_id: str) -> tuple[str, str | None]:
+    """``(name, instance)`` of a worker id; ``instance`` is None for a
+    worker that is not an instance."""
+    name, separator, instance = worker_id.partition(INSTANCE_SEPARATOR)
+    return (name, instance) if separator else (worker_id, None)
 
 _DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
 
@@ -224,7 +348,9 @@ class _Frame(BaseModel):
     # Additive growth (#781): a field this build does not know is dropped,
     # not refused, so a newer optional field never breaks an older reader.
     # A field whose meaning changes bumps PROTOCOL_VERSION instead.
-    model_config = ConfigDict(extra="ignore")
+    # No frame's input in a validation error (#791): an ``assign`` carries
+    # S3 credentials and secret params, and ``ProtocolError`` is logged.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
 
 class _RunFrame(_Frame):
@@ -308,6 +434,28 @@ class Hello(_Frame):
     #: OS id), or None. Equal to the control plane's own: the worker runs on
     #: the same machine and shares its devices (#773).
     machine_id: str | None = None
+    #: ``cdui agent start --one-shot`` (#790): this agent takes exactly one
+    #: run, reports it and exits. The control plane keeps it out of ``any``
+    #: placement; only a run naming it (``target.worker``) or the one-shot
+    #: pool (``target.pool``) goes there.
+    one_shot: bool = False
+    #: ``--run-id``: the one run this one-shot agent takes, or None (the
+    #: first one placed on it).
+    one_shot_run_id: RunId | None = None
+    #: Random per agent process, so the control plane can tell this agent
+    #: reconnecting from another agent taking the same name (#790). None
+    #: from an agent that does not say.
+    instance_id: str | None = Field(default=None, max_length=64)
+    #: The run this one-shot agent already took, on a reconnect (#790):
+    #: a control plane that restarted since has no other record of it, and
+    #: keeps it from placing a second run there.
+    one_shot_taken: RunId | None = None
+    #: ``--instance`` (#845): this one-shot agent is one of several sharing
+    #: the credential of ``name``; it registers as ``<name>.<instance>``
+    #: (:func:`instance_worker_id`). None: it is ``name`` itself. Only a
+    #: one-shot agent may send it.
+    instance: str | None = Field(
+        default=None, pattern=f"^{INSTANCE_PATTERN.pattern}$")
 
 
 class Heartbeat(_Frame):
@@ -355,9 +503,10 @@ class Artifact(_RunFrame):
     node_id: str | None = None
     mount_label: str | None = None
     #: ``transfer`` (#785): the file was uploaded to the control plane and
-    #: ``path`` is the key it is stored under there. None: a path on the
-    #: worker (absolute, or relative to ``mount_label``).
-    backend: Literal["transfer"] | None = None
+    #: ``path`` is the key it is stored under there. ``s3`` (#791): the file
+    #: was uploaded to the run's S3 bucket and ``path`` is its object key.
+    #: None: a path on the worker (absolute, or relative to ``mount_label``).
+    backend: Literal["transfer", "s3"] | None = None
 
 
 class RunWarning(_RunFrame):
@@ -365,6 +514,27 @@ class RunWarning(_RunFrame):
     kind: str
     detail: str
     node_id: str | None = None
+
+
+class RunFacts(_RunFrame):
+    """What the run subprocess reports about itself (#344).
+
+    ``fingerprint``: its own environment fingerprint, collected after it
+    loaded the code, plugins and custom nodes the run executes with (the
+    agent's ``hello`` describes the agent at its start). The control plane
+    recomputes the digest and records it as the run's
+    (``fingerprint_source: "worker-run"``). ``numerics``: its torch
+    numerics switches when the run started
+    (``execution_facts.resolved.numerics``). ``provenance``: one node's
+    provenance record (``core.node_provenance``). Any of the three may be
+    absent; the subprocess sends the first two once, before the graph
+    runs, and one frame per provided node after.
+    """
+
+    type: Literal["run_facts"] = RUN_FACTS
+    fingerprint: FingerprintReport | None = None
+    numerics: dict[str, Any] | None = None
+    provenance: dict[str, Any] | None = None
 
 
 class RunFinished(_RunFrame):
@@ -384,6 +554,30 @@ class RunFinished(_RunFrame):
 class RunAlive(_Frame):
     type: Literal["run_alive"] = RUN_ALIVE
     runs: list[RunAliveEntry] = Field(default_factory=list)
+
+
+#: A ``fetch_output`` request id: the control plane's, echoed back.
+RequestId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
+#: The reads ``fetch_output`` names (#789).
+OutputOp = Literal["list", "value", "stats", "steps", "grads", "delete"]
+#: Characters of body text per ``output_answer`` frame (#789): well under
+#: any socket's message limit (uvicorn's default is 16 MiB).
+OUTPUT_ANSWER_PART_CHARS = 1024 * 1024
+
+
+class OutputAnswer(_Frame):
+    """One part of the answer to a ``fetch_output`` (#789)."""
+
+    type: Literal["output_answer"] = OUTPUT_ANSWER
+    request_id: RequestId
+    #: The HTTP status the read answers with (200, 204, 404, 413, ...).
+    status: int = Field(ge=100, le=599)
+    part: int = Field(default=0, ge=0)
+    parts: int = Field(default=1, ge=1)
+    #: This part of the JSON body text ("" for a 204).
+    body: str = ""
+    #: The run has ended on the worker: its captures cannot change.
+    final: bool = False
 
 
 # ── control plane -> agent ────────────────────────────────────────────────
@@ -418,6 +612,31 @@ class TransferInput(_Frame):
     name: str = Field(min_length=1, max_length=1024)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     bytes: int = Field(ge=0)
+    #: ``s3`` only (#791): the object the agent downloads it from
+    #: (``<prefix>inputs/<sha256>``, uploaded by the control plane).
+    key: str | None = Field(default=None, max_length=1024)
+
+
+class S3Access(_Frame):
+    """Where an ``s3`` run's objects go, and the credentials to reach them
+    (#791). Secret fields stay out of ``repr`` and validation errors: the
+    agent holds them in memory only (#251) and never logs them."""
+
+    #: ``CODEFYUI_S3_ENDPOINT_URL``; None: AWS S3 for ``region``.
+    endpoint_url: str | None = None
+    region: str | None = None
+    bucket: str = Field(min_length=1)
+    #: The run's key prefix, ``[<CODEFYUI_S3_PREFIX>]runs/<run_id>/``: every
+    #: object the run writes goes under it.
+    prefix: str = Field(min_length=1)
+    addressing_style: Literal["auto", "path", "virtual"] = "auto"
+    access_key_id: str = Field(repr=False)
+    secret_access_key: str = Field(repr=False)
+    #: Set for temporary (STS) credentials, with :attr:`expires_at`.
+    session_token: str | None = Field(default=None, repr=False)
+    #: When temporary credentials expire (Unix time); None: static ones.
+    #: The control plane sends ``credentials`` before then.
+    expires_at: float | None = None
 
 
 class Storage(_Frame):
@@ -447,7 +666,7 @@ class Storage(_Frame):
     ``core.transfer`` (the control plane's half) and ``agent.transfer``.
     """
 
-    backend: Literal["mount", "transfer"] = "mount"
+    backend: Literal["mount", "transfer", "s3"] = "mount"
     mount: str
     dirs: dict[str, str] | None = None
     relative_artifacts: bool = True
@@ -459,6 +678,8 @@ class Storage(_Frame):
     #: ``POST /api/runs/{id}/artifacts/upload`` (its ``MAX_UPLOAD_SIZE``),
     #: so the agent does not send a file that would be refused.
     max_upload_bytes: int | None = Field(default=None, ge=0)
+    #: ``s3`` only (#791): the bucket, the run's prefix and credentials.
+    s3: S3Access | None = None
 
 
 class Assign(_Frame):
@@ -480,6 +701,13 @@ class Assign(_Frame):
     #: The control plane's mount label (and, for a same-host worker without
     #: one, its path); None from a peer before #782.
     storage: Storage | None = None
+    #: Device (as this worker numbers it, one of ``devices``) -> the run's
+    #: memory budget on it in bytes (#788): the run was admitted to a
+    #: ``shared`` card by memory. The agent caps the run subprocess's
+    #: allocator to it before the run starts, and ``run_started`` comes
+    #: after the cap is set. Empty: no budget, the card is the run's alone.
+    memory_budgets: dict[str, Annotated[int, Field(gt=0)]] = Field(
+        default_factory=dict)
 
 
 class Cancel(_Frame):
@@ -494,9 +722,52 @@ class Drain(_Frame):
     type: Literal["drain"] = DRAIN
 
 
+class Credentials(_Frame):
+    """New credentials for a running ``s3`` run (#791), sent before the
+    previous temporary ones expire; only to an agent that lists ``s3``."""
+
+    type: Literal["credentials"] = CREDENTIALS
+    run_id: RunId
+    s3: S3Access
+
+
 class Reject(_Frame):
     type: Literal["reject"] = REJECT
     reason: str
+
+
+class FetchOutput(_Frame):
+    """A read of a worker run's recorded outputs (#789); answered with
+    ``output_answer`` frames carrying the same ``request_id``. Sent only
+    to an agent listing ``record_outputs``."""
+
+    type: Literal["fetch_output"] = FETCH_OUTPUT
+    request_id: RequestId
+    run_id: RunId
+    op: OutputOp
+    #: The read's query: ``node_id``, ``port``, ``slice``,
+    #: ``max_elements``, ``preview``, ``inner``, as the route got them.
+    params: dict[str, Any] = Field(default_factory=dict)
+    #: Seconds the control plane waits for the answer; None: unsaid (the
+    #: agent assumes the default, 60).
+    timeout_s: float | None = Field(default=None, gt=0)
+
+
+class CancelFetch(_Frame):
+    """The control plane no longer waits for the answer to *request_id*
+    (#789): the agent stops working on it. Sent only to an agent listing
+    ``record_outputs``; one for a read already answered is ignored."""
+
+    type: Literal["cancel_fetch"] = CANCEL_FETCH
+    request_id: RequestId
+
+
+class DropOutputs(_Frame):
+    """The control plane no longer retains *run_id*'s captures (#789): the
+    agent deletes them."""
+
+    type: Literal["drop_outputs"] = DROP_OUTPUTS
+    run_id: RunId
 
 
 class Ack(_Frame):
@@ -514,16 +785,19 @@ class Ack(_Frame):
 
 AgentFrame = Annotated[
     Union[Hello, Heartbeat, RunStarted, Event, Metrics, Artifact, RunWarning,
-          RunFinished, RunAlive],
+          RunFinished, RunAlive, OutputAnswer, RunFacts],
     Field(discriminator="type"),
 ]
 ControlFrame = Annotated[
-    Union[Welcome, Assign, Cancel, Drain, Reject, Ack],
+    Union[Welcome, Assign, Cancel, Drain, Reject, Ack, Credentials,
+          FetchOutput, DropOutputs, CancelFetch],
     Field(discriminator="type"),
 ]
 
-_AGENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(AgentFrame)
-_CONTROL_ADAPTER: TypeAdapter[Any] = TypeAdapter(ControlFrame)
+_AGENT_ADAPTER: TypeAdapter[Any] = TypeAdapter(
+    AgentFrame, config=ConfigDict(hide_input_in_errors=True))
+_CONTROL_ADAPTER: TypeAdapter[Any] = TypeAdapter(
+    ControlFrame, config=ConfigDict(hide_input_in_errors=True))
 
 
 class ProtocolError(ValueError):
@@ -551,6 +825,15 @@ def _decode(adapter: TypeAdapter[Any], raw: str | bytes) -> Any:
         raise ProtocolError("frame is not a JSON object")
     try:
         return adapter.validate_python(data)
+    except ValidationError as exc:
+        # Locations and messages only, never the input (#791: an assign
+        # carries credentials), whatever the models' config says.
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors(include_url=False, include_input=False,
+                                    include_context=False))
+        raise ProtocolError(
+            f"invalid {data.get('type')!r} frame: {detail}") from None
     except ValueError as exc:
         raise ProtocolError(f"invalid {data.get('type')!r} frame: {exc}") from exc
 

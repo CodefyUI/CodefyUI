@@ -5,6 +5,8 @@
  */
 import type { useI18n } from '../i18n';
 import { aliasForDevice } from './deviceAliases';
+import { formatBytes } from './formatBytes';
+import { formatGiB } from './formatGiB';
 
 /** The placement fields of a run row or a sweep variant. */
 export interface RunPlacement {
@@ -12,6 +14,61 @@ export interface RunPlacement {
   devices?: string[] | null;
   queue_key?: string | null;
   options?: Record<string, unknown> | null;
+  execution_facts?: Record<string, unknown> | null;
+  queued_budget?: Record<string, unknown> | null;
+}
+
+const GIB = 1024 ** 3;
+
+/**
+ * The Budget column (#788): the memory budget a run was admitted with on a
+ * device shared by memory (`execution_facts.memory_budget`), else the one
+ * a waiting run holds now (`queued_budget`, #794: an accepted estimate, or
+ * the measured one it was raised to), else the one it asked for
+ * (`options.target.memory_gib`, which applies only if it lands on such a
+ * device), else null.
+ */
+export function runBudget(run: RunPlacement, t: Translate): { text: string; title: string } | null {
+  const budget = describedBudget(run.execution_facts?.memory_budget, t)
+    ?? describedBudget(run.queued_budget, t);
+  if (budget !== null) return budget;
+  const target = run.options?.target as { memory_gib?: unknown } | undefined;
+  if (target && typeof target.memory_gib === 'number') {
+    return { text: formatGiB(target.memory_gib * GIB), title: t('runs.budget.requested') };
+  }
+  return null;
+}
+
+/** A `Budget.describe()` document as the cell reads it, or null. */
+function describedBudget(value: unknown, t: Translate): { text: string; title: string } | null {
+  const budget = value as
+    { bytes?: unknown; source?: unknown; from_run?: unknown; raised_from?: unknown } | null | undefined;
+  if (!budget || typeof budget.bytes !== 'number') return null;
+  if (budget.source === 'estimate') {
+    // An accepted static estimate (#794), marked as one in the cell itself.
+    return {
+      text: t('runs.budget.estimateShort', { size: formatGiB(budget.bytes) }),
+      title: t('runs.budget.estimate'),
+    };
+  }
+  const fromRun = budget.source === 'history' && typeof budget.from_run === 'string'
+    ? budget.from_run
+    : null;
+  // A measured peak that replaced a lower accepted estimate while the run
+  // waited (#794) says so.
+  const raisedFrom = typeof budget.raised_from === 'number' ? budget.raised_from : null;
+  return {
+    text: formatGiB(budget.bytes),
+    title: fromRun === null
+      ? t('runs.budget.declared')
+      : raisedFrom === null
+        ? t('runs.budget.history', { run: fromRun.slice(0, 8) })
+        : t('runs.budget.raised', {
+          run: fromRun.slice(0, 8),
+          // Below a GiB in finer units: 0.1 GiB would hide the raise.
+          size: raisedFrom < GIB ? formatBytes(raisedFrom) : formatGiB(raisedFrom),
+        }),
+  };
 }
 
 type Translate = ReturnType<typeof useI18n.getState>['t'];
@@ -30,11 +87,14 @@ export function runWorker(run: RunPlacement): string {
 }
 
 /** {@link runWorker} as the Worker cell shows it: `local` and `any` in the
- * active language, a worker by its name. */
+ * active language (`any` in the one-shot pool, #790, as the pool), a worker
+ * by its name. */
 export function runWorkerLabel(run: RunPlacement, t: Translate): string {
   const worker = runWorker(run);
   if (worker === 'local') return t('runs.worker.local');
-  return worker === 'any' ? t('runs.worker.any') : worker;
+  if (worker !== 'any') return worker;
+  const target = run.options?.target as { pool?: unknown } | null | undefined;
+  return target?.pool === 'one-shot' ? t('runs.worker.oneShot') : t('runs.worker.any');
 }
 
 /**

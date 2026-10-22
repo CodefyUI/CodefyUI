@@ -268,8 +268,6 @@ async def test_a_named_worker_target_is_inherited_by_every_variant(env):
     ({"target": {"worker": "gpu-box"}}, "has not connected"),
     ({"device": "cuda:3", "target": {"worker": "any"}},
      "neither this server nor a known worker offers cuda:3"),
-    ({"record_outputs": True, "target": {"worker": "any"}},
-     "record_outputs"),
 ])
 async def test_a_target_the_service_would_refuse_is_a_400_with_no_rows(
         env, options, needle):
@@ -521,3 +519,46 @@ async def test_the_study_detail_says_where_each_child_runs(env):
         gone = [a for v in detail["variants"] for a in v["attempts"]
                 if a["run_id"] == first_a.run_id]
         assert gone and "worker_id" not in gone[0]
+
+
+async def test_a_worker_child_past_max_run_seconds_is_cancelled_there(env):
+    """The budget timer reaches a child on a worker as a ``cancel`` frame
+    (the worker terminates it after its grace); the child ends cancelled,
+    its attempt ``timed_out``, and the study goes on with the next child
+    on the same target, nobody reading the study meanwhile (#343)."""
+    service, coordinator = env
+    async with _client() as client, \
+            aconnect_ws(WS_PATH, client) as ws:
+        agent = FakeAgent(ws)
+        await agent.hello("gpu-box", ("cuda:0",))
+        response = await client.post("/api/studies", json={
+            **_study_body(repetitions=1,
+                          options={"device": "cuda",
+                                   "target": {"worker": "gpu-box"}},
+                          budget={"max_run_seconds": 0.3}),
+            "variants": [{"label": "slow", "ops": []},
+                         {"label": "fast", "ops": []}]})
+        assert response.status_code == 201, response.text
+        study_id = response.json()["study_id"]
+        slow = await agent.assignment()
+        assert slow.options["target"]["worker"] == "gpu-box"
+        await agent.send(wp.RunStarted(run_id=slow.run_id, seq=1, pid=1))
+        cancel = await agent.recv(timeout=10.0)
+        assert isinstance(cancel, wp.Cancel) and cancel.run_id == slow.run_id
+        await agent.send(wp.RunFinished(run_id=slow.run_id, seq=2,
+                                        status="cancelled"))
+        fast = await agent.assignment()
+        assert fast.options["target"]["worker"] == "gpu-box"
+        await agent.finish(fast, metric="val_loss", value=1.0)
+
+        async def _settled() -> bool:
+            study = await coordinator.store.get_study(study_id)
+            return study is not None and study.status == "succeeded"
+        await _until(_settled)
+    attempts = {a.variant_index: a
+                for a in await coordinator.store.list_attempts(study_id)}
+    assert attempts[0].status == "timed_out"
+    assert attempts[0].stop_reason == "max_run_seconds"
+    assert attempts[1].status == "succeeded"
+    record = await service.store.get_run(slow.run_id)
+    assert (record.status, record.worker_id) == ("cancelled", "gpu-box")

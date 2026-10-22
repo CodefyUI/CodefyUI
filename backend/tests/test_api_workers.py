@@ -150,9 +150,16 @@ async def test_every_device_carries_its_slots_and_this_server_is_listed(
                                  "mounts": control_plane_mounts(),
                                  "devices": [
             {"value": "cpu", "kind": "cpu",
-             "slots": {"limit": 2, "taken": 0}},
+             "slots": {"limit": 2, "taken": 0}, "same_card": []},
+            # #842: the same-host worker offers this card too.
             {"value": "cuda:0", "kind": "cuda",
-             "slots": {"limit": 1, "taken": 1}}]}
+             "slots": {"limit": 1, "taken": 1},
+             "same_card": [{"worker": "here", "device": "cuda:0",
+                            "policy": "exclusive", "online": True,
+                            "memory_budget": False}]}]}
+        assert [d["same_card"] for d in here["devices"]] == [
+            [{"worker": "local", "device": "cuda:0", "policy": None,
+              "online": True, "memory_budget": None}], []]
         async with _client() as client:
             drained = (await client.post("/api/workers/far/drain")).json()
         assert drained["devices"][1]["slots"] == {"limit": 1, "taken": 1}

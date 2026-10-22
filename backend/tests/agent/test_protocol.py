@@ -31,6 +31,12 @@ def test_every_frame_type_round_trips():
         wp.RunWarning(run_id="r1", seq=5, kind="k", detail="d"),
         wp.RunFinished(run_id="r1", seq=6, status="succeeded"),
         wp.RunAlive(runs=[wp.RunAliveEntry(run_id="r1", last_seq=6)]),
+        wp.OutputAnswer(request_id="q1", status=200, part=0, parts=2,
+                        body='{"a":', final=True),
+        wp.RunFacts(run_id="r1", seq=7, numerics={"num_threads": 4},
+                    fingerprint=wp.FingerprintReport(
+                        document={"schema_version": 2}, digest="d" * 64),
+                    provenance={"node_id": "n1"}),
     ]
     assert {f.type for f in agent_frames} == set(wp.AGENT_FRAME_TYPES)
     for frame in agent_frames:
@@ -42,6 +48,15 @@ def test_every_frame_type_round_trips():
         wp.Drain(),
         wp.Reject(reason="no"),
         wp.Ack(run_id="r1", seq=4),
+        wp.Credentials(run_id="r1", s3=wp.S3Access(
+            bucket="b", prefix="runs/r1/", access_key_id="AK",
+            secret_access_key="SK", session_token="T", expires_at=1.0)),
+        wp.FetchOutput(request_id="q1", run_id="r1", op="value",
+                       params={"node_id": "a", "port": "out"}),
+        wp.DropOutputs(run_id="r1"),
+        wp.FetchOutput(request_id="q2", run_id="r1", op="list",
+                       timeout_s=60),
+        wp.CancelFetch(request_id="q2"),
     ]
     assert {f.type for f in control_frames} == set(wp.CONTROL_FRAME_TYPES)
     for frame in control_frames:
@@ -77,3 +92,33 @@ def test_directions_do_not_mix():
         wp.decode_control_frame(wp.encode_frame(wp.Heartbeat()))
     with pytest.raises(wp.ProtocolError):
         wp.decode_agent_frame(wp.encode_frame(wp.Drain()))
+
+
+
+def test_a_bad_assign_never_shows_its_secrets_in_the_error():
+    """#791: ``ProtocolError`` is logged; an assign carries S3 credentials
+    and secret params, whatever level its validation fails at."""
+    import json as _json
+
+    secret = "TOPSECRET-KEY"
+    bad = [
+        {"type": "assign", "run_id": "r1", "graph": {"p": secret},
+         "storage": {"backend": "nope", "mount": "data",
+                     "s3": {"bucket": "b", "prefix": "p",
+                            "access_key_id": "AK",
+                            "secret_access_key": secret,
+                            "session_token": secret}}},
+        {"type": "assign", "run_id": "r1", "graph": {"p": secret},
+         "storage": {"backend": "s3", "mount": "data", "s3": secret}},
+        {"type": "assign", "run_id": "r1", "graph": {"p": secret},
+         "storage": secret},
+        {"type": "credentials", "run_id": "../x",
+         "s3": {"bucket": "b", "prefix": "p", "access_key_id": "AK",
+                "secret_access_key": secret}},
+        {"type": "nope", "secret": secret},
+    ]
+    for frame in bad:
+        with pytest.raises(wp.ProtocolError) as caught:
+            wp.decode_control_frame(_json.dumps(frame))
+        assert secret not in str(caught.value), frame
+        assert caught.value.__cause__ is None
