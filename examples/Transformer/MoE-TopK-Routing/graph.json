@@ -25,11 +25,11 @@
                 "noteContent": "routing_weights is how the gate split a token between its two picks; the pair sums to 1. Untrained, the winner takes about 0.59 -- barely a preference. A trained gate is far more decisive.\n\nrouting_weights 是 gate 把一個 token 分給兩位專家的比重，兩個加起來是 1。沒訓練過的 gate，贏家大約只拿 0.59，幾乎談不上偏好；訓練過的 gate 會果斷得多。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "print_w",
                 "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } },
-    { "id": "note-print_idx", "type": "note", "position": { "x": 540, "y": 270 },
+    { "id": "note-print_idx", "type": "note", "position": { "x": 540, "y": 230 },
       "data": { "noteKind": "text",
                 "noteContent": "expert_indices is which 2 of the 4 experts each token was routed to. Read it beside the weights above and you have the choice and the confidence behind it together.\n\nexpert_indices 是每個 token 被送到哪 2 位專家（共 4 位）。和上面的權重一起看，就同時知道它選了誰、又有多篤定。",
                 "noteColor": "#3d3d1a", "boundToNodeId": "print_idx",
-                "boundOffset": { "x": 0, "y": -250 }, "noteWidth": 300 } }
+                "boundOffset": { "x": 0, "y": -290 }, "noteWidth": 300 } }
   ],
   "edges": [
     { "id": "trig_x",  "source": "start-1", "target": "x",         "sourceHandle": "trigger", "type": "trigger" },

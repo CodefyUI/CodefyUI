@@ -209,7 +209,7 @@
       "type": "TrainingLoop",
       "position": {
         "x": 1084,
-        "y": 415
+        "y": 507
       },
       "data": {
         "params": {
@@ -354,7 +354,7 @@
       "type": "note",
       "position": {
         "x": -93,
-        "y": 1129
+        "y": 1180
       },
       "data": {
         "noteKind": "text",
@@ -363,7 +363,7 @@
         "boundToNodeId": "loss",
         "boundOffset": {
           "x": 0,
-          "y": 489
+          "y": 540
         },
         "noteWidth": 300
       }
