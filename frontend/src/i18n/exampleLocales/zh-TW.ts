@@ -356,6 +356,8 @@ const zhTW: ExampleTranslations = {
   },
   'Others/Tensor-Ops-Tour': {
     description: '對同一個網格切分、堆疊、選列、池化',
+  },
+
   // ── Built-ins added after the plugin blocks (papers, concepts, llm) ──
   'Papers/GroupNorm-Wu-2018': {
     description: '一次 2 張：BatchNorm 對上 GroupNorm',
