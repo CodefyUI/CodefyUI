@@ -1,0 +1,240 @@
+{
+  "name": "Image batch IO",
+  "description": "Write 8 images, read the folder back",
+  "gallery": {
+    "section": "concepts",
+    "order": 16
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "shapes",
+      "type": "SyntheticSegmentation",
+      "position": {
+        "x": 40,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "image_size": 32,
+          "n_samples": 8,
+          "noise": 0.0,
+          "seed": 7
+        }
+      }
+    },
+    {
+      "id": "batch",
+      "type": "DatasetBatch",
+      "position": {
+        "x": 340,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "start_index": 0
+        }
+      }
+    },
+    {
+      "id": "writer",
+      "type": "ImageWriter",
+      "position": {
+        "x": 640,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "path": "image-batch-io/shape.png",
+          "format": "PNG"
+        }
+      }
+    },
+    {
+      "id": "resize",
+      "type": "ResizeTransform",
+      "position": {
+        "x": 340,
+        "y": 720
+      },
+      "data": {
+        "params": {
+          "size": 64,
+          "interpolation": "nearest"
+        }
+      }
+    },
+    {
+      "id": "to-tensor",
+      "type": "ToTensorTransform",
+      "position": {
+        "x": 640,
+        "y": 720
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "reader",
+      "type": "ImageBatchReader",
+      "position": {
+        "x": 960,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "directory": "",
+          "pattern": "shape_*.png",
+          "resize": 224,
+          "max_images": 0,
+          "mode": "L"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1280,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "title": "Read back from disk, 64 x 64",
+          "plot_type": "image"
+        }
+      }
+    },
+    {
+      "id": "print-count",
+      "type": "Print",
+      "position": {
+        "x": 1280,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "label": "Images read"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "ImageWriter saves a batch as one PNG per image, and ImageBatchReader reads the folder back. SyntheticSegmentation draws 8 images of 32 x 32 pixels with a circle or a rectangle on each; DatasetBatch stacks them into (8, 1, 32, 32), and ImageWriter writes shape_0.png to shape_7.png into output/image-batch-io under the data folder (assets/output in a project directory). The writer's directory output feeds the reader's directory input. That edge is what makes the read wait for the write; a trigger edge would not. ResizeTransform and ToTensorTransform are the reader's preprocessing chain, so the 8 images come back as (8, 1, 64, 64).\n\nImageWriter 把一個批次的每張影像各存成一個 PNG，ImageBatchReader 再把整個資料夾讀回來。SyntheticSegmentation 產生 8 張 32 x 32 像素的影像，每張上面有圓形或矩形；DatasetBatch 把它們堆成 (8, 1, 32, 32)，ImageWriter 把 shape_0.png 到 shape_7.png 寫進資料目錄下的 output/image-batch-io（專案目錄模式下是 assets/output）。寫入節點的 directory 輸出接到讀取節點的 directory 輸入，讀取會等寫入完成，靠的就是這條邊；觸發邊做不到這件事。ResizeTransform 與 ToTensorTransform 是讀取節點的前處理鏈，所以 8 張影像讀回來是 (8, 1, 64, 64)。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-reader",
+      "type": "note",
+      "position": {
+        "x": 960,
+        "y": 800
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The reader reads every file that matches shape_*.png. Lower batch_size and run again, and the files left from the larger batch are read too; delete the folder to start clean.\n\n讀取節點會讀進所有符合 shape_*.png 的檔案。調小 batch_size 再執行一次時，先前較大批次留下的檔案也會被讀進來；要重新開始，請先刪除這個資料夾。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "reader",
+        "boundOffset": {
+          "x": 0,
+          "y": 500
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_shapes",
+      "source": "start",
+      "target": "shapes",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_resize",
+      "source": "start",
+      "target": "resize",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_shapes_dataset_batch_dataset",
+      "source": "shapes",
+      "target": "batch",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_batch_images_writer_image",
+      "source": "batch",
+      "target": "writer",
+      "sourceHandle": "images",
+      "targetHandle": "image"
+    },
+    {
+      "id": "e_resize_transform_to-tensor_transform",
+      "source": "resize",
+      "target": "to-tensor",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_to-tensor_transform_reader_transform",
+      "source": "to-tensor",
+      "target": "reader",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_writer_directory_reader_directory",
+      "source": "writer",
+      "target": "reader",
+      "sourceHandle": "directory",
+      "targetHandle": "directory"
+    },
+    {
+      "id": "e_reader_images_viz_data",
+      "source": "reader",
+      "target": "viz",
+      "sourceHandle": "images",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_reader_count_print-count_value",
+      "source": "reader",
+      "target": "print-count",
+      "sourceHandle": "count",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

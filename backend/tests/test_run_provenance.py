@@ -543,6 +543,22 @@ def test_an_image_folder_and_an_iterable_dataset(data_dirs):
     assert record["rows"] is None   # honest unknown
 
 
+
+def test_an_image_folder_read_through_a_wired_path(data_dirs):
+    """The path param is empty when the port is wired; the dataset's own
+    root names the folder that was read."""
+    folder = data_dirs / "pets" / "train" / "cat"
+    folder.mkdir(parents=True)
+    (folder / "1.png").write_bytes(b"png")
+    dataset = SimpleNamespace(root=str((data_dirs / "pets" / "train").resolve()))
+
+    record = prov.describe("f", "ImageFolderDataset",
+                           {"path": "", "split": "train"},
+                           {"dataset": dataset}, "content")
+    assert record["source"]["path"] == "pets/train"
+    assert record["content"]["files"] == 1
+    assert "no folder selected" not in record["notes"]
+
 def test_a_huggingface_dataset_records_the_resolved_commit(tmp_path,
                                                            data_dirs):
     sha = "77f3279092a1c1579b2250db8eafed0ad422088c"

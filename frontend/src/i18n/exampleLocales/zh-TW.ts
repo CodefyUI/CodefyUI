@@ -377,6 +377,9 @@ const zhTW: ExampleTranslations = {
   'Others/One-Backward-Pass': {
     description: '梯度只會到達被查過的那幾列',
   },
+  'Others/Image-Batch-IO': {
+    description: '寫入 8 張影像，再讀回整個資料夾',
+  },
 };
 
 export default zhTW;

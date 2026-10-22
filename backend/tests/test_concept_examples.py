@@ -58,6 +58,7 @@ _CONCEPT_EXAMPLES = (
     "RL/Reward-Model-Bradley-Terry",
     "RL/Discounted-Returns",
     "Others/One-Backward-Pass",
+    "Others/Image-Batch-IO",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -834,3 +835,43 @@ def test_one_backward_pass_runs_as_a_plain_forward_with_capture_off():
     results = _run_with_its_seed("Others/One-Backward-Pass")
     assert torch.equal(results["bwd"]["tensor"], results["mul"]["tensor"])
     assert tuple(results["stats"]["tensor"].shape) == (4, 2)
+
+
+# ── Image batch IO: what is written and what comes back ───────────────────
+
+def test_the_reader_takes_its_directory_from_the_writer():
+    graph = _graph("Others/Image-Batch-IO")
+    assert _feeds(graph, "writer", "image") == ("batch", "images")
+    assert _feeds(graph, "reader", "directory") == ("writer", "directory")
+    assert _feeds(graph, "reader", "transform") == ("to-tensor", "transform")
+    assert _feeds(graph, "to-tensor", "transform") == ("resize", "transform")
+    assert _params(graph, "reader")["directory"] == "", "the wire supplies it"
+
+
+@pytest.mark.parametrize("data_root", ["data", "project/assets"],
+                         ids=["plain-run", "project-directory"])
+def test_image_batch_io_writes_and_reads_what_its_note_says(
+        tmp_path, monkeypatch, data_root):
+    """8 images of (1, 32, 32) written as shape_0.png .. shape_7.png into
+    output/image-batch-io, read back as (8, 1, 64, 64). A project directory
+    moves MODELS_DIR to <project>/assets/models, so both nodes follow it."""
+    from app.config import settings
+
+    root = tmp_path / data_root
+    monkeypatch.setattr(settings, "MODELS_DIR", root / "models")
+    results = _run_with_its_seed("Others/Image-Batch-IO")
+    batch = results["batch"]["images"]
+    assert tuple(batch.shape) == (8, 1, 32, 32)
+
+    folder = root / "output" / "image-batch-io"
+    assert results["writer"]["directory"] == str(folder.resolve())
+    names = [f"shape_{i}.png" for i in range(8)]
+    assert sorted(p.name for p in folder.iterdir()) == names
+    assert [Path(p).name for p in results["writer"]["paths"]] == names
+
+    read = results["reader"]["images"]
+    assert results["reader"]["count"] == 8
+    assert tuple(read.shape) == (8, 1, 64, 64)
+    # Nearest-neighbour upsampling by 2 of what was written: each pixel
+    # becomes a 2 x 2 block, within the PNG's 8-bit rounding.
+    assert torch.allclose(read[:, :, ::2, ::2], batch, atol=1 / 255)

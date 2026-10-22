@@ -312,6 +312,7 @@ _SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
     "Classical/KFold-Cross-Validation": ("concepts", 13, None),
     "Others/Reduce-And-Switch": ("concepts", 14, None),
     "Others/Tensor-Ops-Tour": ("concepts", 15, None),
+    "Others/Image-Batch-IO": ("concepts", 16, None),
     "RNN/Conv1d-Sequence-Classifier": ("concepts", 17, None),
     "RL/Reward-Model-Bradley-Terry": ("concepts", 18, None),
     "RL/Discounted-Returns": ("concepts", 19, None),

@@ -67,8 +67,9 @@ def test_node_metadata():
     outputs = ImageFolderDatasetNode.define_outputs()
     assert [p.name for p in outputs] == ["dataset", "classes"]
     inputs = ImageFolderDatasetNode.define_inputs()
-    assert [p.name for p in inputs] == ["train_transform", "eval_transform"]
-    assert all(p.data_type is DataType.TRANSFORM for p in inputs)
+    assert [p.name for p in inputs] == ["train_transform", "eval_transform", "path"]
+    assert [p.data_type for p in inputs] == [
+        DataType.TRANSFORM, DataType.TRANSFORM, DataType.STRING]
     assert all(p.optional for p in inputs)
 
 
@@ -451,3 +452,28 @@ def test_a_dataset_with_a_missing_class_pickles_for_worker_processes(gappy: Path
     val = _run({"path": str(gappy), "split": "val"})["dataset"]
     clone = pickle.loads(pickle.dumps(val))
     assert clone.classes == ["apple", "banana", "cherry"]
+
+
+# ── a wired path ─────────────────────────────────────────────────────────
+
+
+def test_a_wired_path_overrides_the_param(tree: Path, tmp_path: Path):
+    result = _run({"path": str(tmp_path / "elsewhere"), "split": "val"},
+                  inputs={"path": str(tree)})
+    assert result["classes"] == ["cat", "dog"]
+    assert len(result["dataset"]) == 2
+
+
+def test_a_wired_path_alone_is_enough(tree: Path):
+    result = _run({"path": "", "split": "train"}, inputs={"path": str(tree)})
+    assert len(result["dataset"]) == 5
+
+
+def test_a_wired_relative_path_resolves_against_the_data_root(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+    _write_images(tmp_path / "data" / "mine" / "cat", 2)
+    result = _run({"split": "(none)"}, inputs={"path": "mine"})
+    assert result["classes"] == ["cat"]
+
