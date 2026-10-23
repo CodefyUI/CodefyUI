@@ -19,8 +19,8 @@ all of those seeds and on CI. The 20-layer residual net is the measured
 case: 0.95 training accuracy on an Apple M3, 0.92 on the Linux runner.
 
 The graphs all read MNIST, which the repository ships under
-``backend/data``, so nothing here downloads. The seven together run in
-about 15 seconds on an M3 laptop.
+``backend/data``, so nothing here downloads. The eight together run in
+about 30 seconds on an M3 laptop; GroupNorm's two batch-2 arms take half.
 """
 
 from __future__ import annotations
@@ -99,13 +99,13 @@ def _losses(results: dict, node: str) -> list[float]:
 _TESTED_HERE = (
     "Dropout-Srivastava-2014", "BatchNorm-Ioffe-2015", "ResNet-Degradation-He-2016",
     "Adam-Kingma-2015", "Label-Smoothing-Szegedy-2016", "SGDR-Loshchilov-2017",
-    "Vanishing-Gradients-Glorot-2010",
+    "Vanishing-Gradients-Glorot-2010", "GroupNorm-Wu-2018",
 )
 
 
 def test_every_paper_graph_is_registered_and_the_ones_here_exist():
     """A new reproduction joins the registry, so its note rules run; the
-    seven this file executes are on disk under the names used below."""
+    eight this file executes are on disk under the names used below."""
     from tests.test_concept_examples import _PAPER_EXAMPLES
 
     registered = {key.split("/", 1)[1] for key in _PAPER_EXAMPLES}
@@ -294,3 +294,49 @@ def test_the_deep_sigmoid_net_stalls_with_a_small_gradient():
     assert relu[-1] < 0.4 and relu[0] - relu[-1] > 1.0, measured
     assert _acc(r, "eval-test-relu") >= 0.85
     assert gn_relu > 3 * gn_sig, measured
+
+
+# ── Group Normalization (Wu & He, ECCV 2018) ───────────────────────────────
+
+def test_groupnorm_trains_at_batch_2_where_batchnorm_does_not():
+    name = "GroupNorm-Wu-2018"
+    _quoted(name, "scores 0.96 on the test set", "training loss of about 1.7",
+            "scores 0.5 to 0.7", "ends at 0.18 and scores 0.95")
+    r, _ = _run(name)
+    bn, gn, bn32 = (_acc(r, f"eval-test-{k}") for k in ("bn", "gn", "bn32"))
+    bn_loss, gn_loss = _losses(r, "train-bn")[-1], _losses(r, "train-gn")[-1]
+    measured = (bn, gn, bn32, bn_loss, gn_loss)
+
+    assert bn32 == pytest.approx(0.96, abs=0.02), measured
+    assert gn == pytest.approx(0.95, abs=0.03), measured
+    assert gn_loss == pytest.approx(0.18, abs=0.06), measured
+    # BatchNorm1d over two samples maps every feature to +1 or -1, so the
+    # batch-2 BatchNorm net is pinned as the claim: well below both others.
+    # Where it lands inside that depends on the platform's BLAS (0.70 on an
+    # M3, 0.55 to 0.59 on CI's Linux runners, 0.51 on Windows), so the note
+    # quotes the range and the test holds it to the range.
+    assert 0.45 <= bn <= 0.78, measured
+    assert bn_loss > 1.4, measured
+    assert gn > bn + 0.15 and bn32 > bn + 0.15, measured
+
+
+def test_the_groupnorm_arms_differ_only_in_their_norm_layers_and_batch():
+    graph = _graph("GroupNorm-Wu-2018")
+    by_id = {n["id"]: n for n in graph["nodes"]}
+
+    def types(arm):
+        spec = json.loads(by_id[f"model-{arm}"]["data"]["params"]["layers"])
+        return [n["type"] for n in spec["nodes"]]
+
+    norms = {"BatchNorm2d", "BatchNorm1d", "GroupNorm"}
+    assert types("bn") == types("bn32")
+    assert [t for t in types("bn") if t in norms] == ["BatchNorm2d", "BatchNorm2d", "BatchNorm1d"]
+    assert [t for t in types("gn") if t in norms] == ["GroupNorm"] * 3
+    assert [t for t in types("bn") if t not in norms] == [t for t in types("gn") if t not in norms]
+
+    loaders = {e["target"]: e["source"] for e in graph["edges"]
+               if e.get("targetHandle") == "dataloader"}
+    assert loaders == {"train-bn": "dl-train", "train-gn": "dl-train",
+                       "train-bn32": "dl-train-32"}
+    assert by_id["dl-train"]["data"]["params"]["batch_size"] == 2
+    assert by_id["dl-train-32"]["data"]["params"]["batch_size"] == 32

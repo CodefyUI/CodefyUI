@@ -6,14 +6,14 @@
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
 
     { "id": "src_input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,10,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "encoder_lstm", "type": "LSTM", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
+    { "id": "encoder_lstm", "type": "LSTM", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false } } },
     { "id": "enc_to_seq_first", "type": "Permute", "position": { "x": 550, "y": 0 }, "data": { "params": { "dims": "1,0,2" } } },
 
     { "id": "tgt_input", "type": "TensorCreate", "position": { "x": 0, "y": 310 }, "data": { "params": { "shape": "2,8,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "decoder_lstm", "type": "LSTM", "position": { "x": 270, "y": 310 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
+    { "id": "decoder_lstm", "type": "LSTM", "position": { "x": 270, "y": 310 }, "data": { "params": { "input_size": 16, "hidden_size": 32, "num_layers": 1, "batch_first": true, "bidirectional": false } } },
     { "id": "dec_to_seq_first", "type": "Permute", "position": { "x": 550, "y": 310 }, "data": { "params": { "dims": "1,0,2" } } },
 
-    { "id": "attention", "type": "MultiHeadAttention", "position": { "x": 860, "y": 150 }, "data": { "params": { "embed_dim": 32, "num_heads": 4, "dropout": 0.0, "batch_first": false } } },
+    { "id": "attention", "type": "MultiHeadAttention", "position": { "x": 860, "y": 150 }, "data": { "params": { "embed_dim": 32, "num_heads": 4, "batch_first": false } } },
     { "id": "to_batch_first", "type": "Permute", "position": { "x": 1180, "y": 150 }, "data": { "params": { "dims": "1,0,2" } } },
     { "id": "vocab_head", "type": "Linear", "position": { "x": 1430, "y": 150 }, "data": { "params": { "in_features": 32, "out_features": 64 } } },
     { "id": "print_logits", "type": "Print", "position": { "x": 1680, "y": 150 }, "data": { "params": { "label": "Decoder vocab logits (B,T,V)" } } },

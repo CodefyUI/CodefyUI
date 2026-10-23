@@ -110,6 +110,23 @@ export function PluginReviewCard({
   const pin = provenancePin(data.ref, data.sha, data.version);
 
   const facts: Fact[] = [];
+  // Where a local source is, first: it is the one fact about a folder from a
+  // USB stick that the reader can check before saying yes.
+  if (data.kind === 'local' && data.path !== null) {
+    facts.push({
+      key: 'origin',
+      node: t(
+        data.source_form === 'archive'
+          ? 'pluginCenter.review.localArchive'
+          : 'pluginCenter.review.localFolder',
+        { path: data.path },
+      ),
+    });
+  }
+  // A repository on another git host: the URL is the only name it has.
+  if (data.kind === 'git' && data.url !== null) {
+    facts.push({ key: 'origin', node: t('pluginCenter.review.gitRepo', { url: data.url }) });
+  }
   if (author !== null) {
     facts.push({ key: 'author', node: t('pluginCenter.review.author', { author }) });
   }

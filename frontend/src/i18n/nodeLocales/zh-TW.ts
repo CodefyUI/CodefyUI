@@ -612,7 +612,8 @@ const zhTW: NodeTranslations = {
     details:
       '標籤依資料夾名稱的字母順序決定，classes 輸出也照同一順序列出。split 決定要讀 path 底下哪個子目錄；類別資料夾直接放在 ' +
       'path 之下時選「(none)」。類別清單是 path 底下所有分割資料夾（train、val、valid、validation、test）中類別資料夾的排序聯集，' +
-      '所以某個分割缺少某個類別時，每個類別的編號仍與訓練集相同；執行紀錄會列出缺少的資料夾。',
+      '所以某個分割缺少某個類別時，每個類別的編號仍與訓練集相同；執行紀錄會列出缺少的資料夾。' +
+      '接上 path 時會取代 path 參數，並排在產生它的節點之後執行。',
     params: {
       path: '放置各個分割的資料夾。相對路徑會相對於同時放著 models/ 與 images/ 的資料目錄。',
       split: '要載入的子資料夾。如果類別資料夾直接放在 path 底下、沒有分割這一層，選「(none)」；這時沒有分割可以區分兩個 transform 埠，所以接了哪一個就用哪一個，兩個都接時以 train_transform 為準。',
@@ -1090,8 +1091,10 @@ const zhTW: NodeTranslations = {
   ImageWriter: {
     description: '把影像張量存成 PNG/JPEG/BMP/TIFF',
     details:
-      '副檔名跟著選定的格式走（.jpeg 與 .tif 會照原樣保留）。相對路徑會寫到資料目錄下的 output 資料夾；輸入是 (N, C, H, W) 批次張量時只存第一張。' +
-      '浮點數值視為 [0, 1] 並裁切到這個範圍，有負值時會在執行紀錄留下警告；uint8 影像視為 0-255。',
+      '副檔名跟著選定的格式走（.jpeg 與 .tif 會照原樣保留）。相對路徑會寫到資料目錄下的 output 資料夾。超過一張的 (N, C, H, W) 批次會每張各寫一個檔案，' +
+      '檔名後加上補零的編號（shape_0.png、shape_1.png……）；先前較大批次留下的檔案不會刪除。' +
+      '浮點數值視為 [0, 1] 並裁切到這個範圍，有負值時會在執行紀錄留下警告；uint8 影像視為 0-255。' +
+      '把 directory 接到 ImageBatchReader 的 directory，就能在寫完之後讀回這些檔案。',
     params: {
       path: '輸出檔案路徑',
       format: '影像格式',
@@ -1125,7 +1128,8 @@ const zhTW: NodeTranslations = {
     details:
       '符合 glob 樣式的檔案依檔名排序讀入，並全部縮放成同一個正方形尺寸才能堆疊；開不起來的影像會略過。max_images 可限制讀取張數。' +
       '接到 transform 的變換鏈（訓練資料集的 eval_transform）會取代 resize 與 [0, 1] 轉換，批次的前處理就和訓練資料完全相同；' +
-      '此時每張影像處理後的尺寸必須一致。',
+      '此時每張影像處理後的尺寸必須一致。接上 directory（ImageWriter 的 directory 輸出）時會取代 directory 參數，並在寫入之後才執行；' +
+      '規則相同，必須位於資料目錄或範例目錄之內。',
     params: {
       directory: '包含影像檔案的目錄',
       pattern: '檔案比對模式（如 *.png、*.jpg）',

@@ -45,6 +45,8 @@ import {
   emptyPluginJob,
   parseGitHubSource,
   REFUSAL_KEY,
+  selectPluginsById,
+  SOURCE_REFUSED_KEY,
   usePluginStore,
 } from './pluginStore';
 import { useNodeDefStore } from './nodeDefStore';
@@ -113,6 +115,9 @@ function inspection(partial: Partial<PluginInspection> = {}): PluginInspection {
     capabilities_added: [],
     allowed_modules_added: [],
     warnings: [],
+    path: null,
+    source_form: null,
+    digest: null,
     ...partial,
   };
 }
@@ -247,9 +252,49 @@ describe('parseGitHubSource', () => {
     }
   });
 
+  it('reads a path on the server as a local source, as typed', () => {
+    for (const path of [
+      '/srv/usb/demo', '/srv/usb/demo.zip', './demo', '../demo', '.', '..',
+      '~/demo.tgz', '~', 'file:///srv/usb/demo', 'FILE:///x', 'C:\\usb\\demo',
+      'D:/usb/demo.zip', '\\\\server\\share\\demo', '.\\demo',
+    ]) {
+      expect(parseGitHubSource(path), path).toEqual({ kind: 'local', path });
+    }
+    // Trimmed like every other shape.
+    expect(parseGitHubSource('  ./demo  ')).toEqual({ kind: 'local', path: './demo' });
+    // `owner/repo` is not a relative path: that one has to say `./`.
+    expect(parseGitHubSource('plugins/demo')).toMatchObject({ kind: 'github' });
+  });
+
+  it('reads an https repository on another git host', () => {
+    expect(parseGitHubSource('https://gitlab.com/school/ml/extras.git@v1.2')).toEqual({
+      kind: 'git', url: 'https://gitlab.com/school/ml/extras.git', ref: 'v1.2',
+    });
+    expect(parseGitHubSource('https://codeberg.org/alice/extras/')).toEqual({
+      kind: 'git', url: 'https://codeberg.org/alice/extras', ref: null,
+    });
+    expect(parseGitHubSource('https://git.school.edu:3000/a/b@feat/x')).toEqual({
+      kind: 'git', url: 'https://git.school.edu:3000/a/b', ref: 'feat/x',
+    });
+    // GitHub keeps its own reading, and a deeper GitHub URL is not a repository.
+    expect(parseGitHubSource('https://github.com/o/r')).toMatchObject({ kind: 'github' });
+    expect(parseGitHubSource('https://github.com/o/r/tree/main')).toBeNull();
+  });
+
+  it('refuses what the server would not clone', () => {
+    for (const bad of [
+      'http://gitlab.com/o/r', 'ssh://git@gitlab.com/o/r.git', 'git@gitlab.com:o/r.git',
+      'https://token@gitlab.com/o/r', 'https://gitlab.com/o', 'https://gitlab.com/o/../r',
+      'https://gitlab.com/./o/r', 'https://gitlab.com/o/r@../x', 'https://gitlab.com/o/r@-x',
+      'https://gitlab.com/o/r?ref=main',
+    ]) {
+      expect(parseGitHubSource(bad), bad).toBeNull();
+    }
+  });
+
   it('refuses anything that is neither', () => {
     for (const bad of [
-      '', '   ', 'Not A Source', 'https://gitlab.com/o/r', 'owner/', 'o/r/extra',
+      '', '   ', 'Not A Source', 'http://gitlab.com/o/r', 'owner/', 'o/r/extra',
     ]) {
       expect(parseGitHubSource(bad), bad).toBeNull();
     }
@@ -627,7 +672,7 @@ describe('pluginStore — inspect', () => {
       // Nothing was refused, so there is no code to carry: this build knows
       // on its own that the shape is not one the server could resolve.
       failure: {
-        message: 'Enter owner/repo[@ref] or a GitHub URL.',
+        message: 'Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).',
         code: null,
         detail: null,
       },
@@ -661,7 +706,7 @@ describe('pluginStore — inspect', () => {
       phase: 'error',
       source: 'owner/demo@..',
       failure: {
-        message: 'Enter owner/repo[@ref] or a GitHub URL.',
+        message: 'Enter owner/repo[@ref], a GitHub URL, https://host/owner/repo[@ref] on another git host, or a folder, .zip or .tar.gz path on the server (/abs, ./rel, ~/x, file:///x).',
         code: 'unparseable_source',
         detail: { code: 'unparseable_source' },
       },
@@ -765,6 +810,53 @@ describe('pluginStore — inspect', () => {
       "GitHub's request limit was reached. Try again later, or set "
       + 'CODEFYUI_GITHUB_TOKEN on the server.',
     );
+  });
+
+  it('says the path is empty on the server instead of showing local_not_found', async () => {
+    expect(await failureMessage(refused(404, 'local_not_found', { path: '/x' }))).toBe(
+      'Nothing at that path on the server.',
+    );
+  });
+
+  it('names the rule a refused folder or archive broke', async () => {
+    const said: Record<string, string> = {
+      not_supported: 'Only a folder, a .zip, a .tar.gz or a .tgz can be installed.',
+      too_large: 'This plugin is larger than the install limit.',
+      too_many_files: 'This plugin holds more files than the install limit.',
+      unsafe_member:
+        'This plugin contains a link, a device file or a path outside its folder.',
+      unreadable: 'The archive is damaged or could not be read.',
+      layout:
+        'The archive needs cdui.plugin.toml at its root or in its one top-level folder.',
+    };
+    for (const [reason, sentence] of Object.entries(said)) {
+      expect(await failureMessage(refused(400, 'source_refused', { reason })), reason)
+        .toBe(sentence);
+    }
+    expect(Object.keys(SOURCE_REFUSED_KEY).sort()).toEqual(Object.keys(said).sort());
+  });
+
+  it('names what to do about each failed clone', async () => {
+    expect(await failureMessage(refused(400, 'git_unavailable'))).toBe(
+      'Installing from this git host needs git on the server. Install git there '
+      + 'and restart the server.',
+    );
+    expect(await failureMessage(refused(404, 'git_not_found'))).toBe(
+      'The git host has no such repository or ref, or it needs a login.',
+    );
+    expect(await failureMessage(refused(504, 'git_timeout'))).toBe(
+      'The clone took too long. Try again later.',
+    );
+    expect(await failureMessage(refused(502, 'git_failed'))).toBe(
+      'git could not clone the repository.',
+    );
+  });
+
+  it('falls back to the general sentence for a reason this build has none for', async () => {
+    expect(await failureMessage(refused(400, 'source_refused', { reason: 'new_rule' })))
+      .toBe('This folder or archive cannot be installed.');
+    expect(await failureMessage(refused(400, 'source_refused')))
+      .toBe('This folder or archive cannot be installed.');
   });
 
   it('says it could not reach GitHub instead of showing github_unreachable', async () => {
@@ -1911,6 +2003,93 @@ describe('the refusal codes the routes can send', () => {
 });
 
 // ── the test hatch ───────────────────────────────────────────────────────
+
+describe('pluginStore — a row that is already busy, and the last refusal arms', () => {
+  beforeEach(async () => {
+    serveCatalog(catalog({
+      entries: [entry({ id: 'demo', name: 'Demo plugin', status: 'installed' })],
+    }));
+    await usePluginStore.getState().refresh();
+  });
+
+  it('reads the rows by id for the surfaces that subscribe that way', () => {
+    expect(selectPluginsById(usePluginStore.getState()).demo.name).toBe('Demo plugin');
+  });
+
+  it('sends nothing for a row that already has a request in flight', async () => {
+    usePluginStore.setState({
+      busy: { demo: true },
+      inspection: {
+        phase: 'ready', data: inspection({ plugin_id: 'demo' }), source: 'demo',
+        forPluginId: null, kind: 'install', error: null,
+      },
+    });
+
+    await usePluginStore.getState().installInspected({
+      acceptCapabilities: true, trustAuthor: false,
+    });
+    await usePluginStore.getState().update('demo');
+    await usePluginStore.getState().uninstall('demo');
+    await usePluginStore.getState().setEnabled('demo', false);
+
+    expect(api.installPlugin).not.toHaveBeenCalled();
+    expect(api.updatePlugin).not.toHaveBeenCalled();
+    expect(api.uninstallPlugin).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(api.setPluginEnabled).not.toHaveBeenCalled();
+  });
+
+  it('will not start an update while another job runs', async () => {
+    usePluginStore.setState({ job: { ...emptyPluginJob('j9', 'other'), status: 'running' } });
+
+    await usePluginStore.getState().update('demo');
+
+    expect(api.updatePlugin).not.toHaveBeenCalled();
+    expect(lastToast().type).toBe('warning');
+  });
+
+  it('answers an update the server says is busy by re-reading the catalog', async () => {
+    api.updatePlugin.mockRejectedValue(refused(409, 'busy', { job_id: 'j2' }));
+    const reads = api.listPluginCatalog.mock.calls.length;
+
+    await usePluginStore.getState().update('demo');
+
+    expect(lastToast().type).toBe('warning');
+    expect(api.listPluginCatalog.mock.calls.length).toBeGreaterThan(reads);
+  });
+
+  it('tells a remote browser and an expired session apart on an update', async () => {
+    const { t } = useI18n.getState();
+    api.updatePlugin.mockRejectedValue(new ApiError(403, 'Forbidden'));
+
+    usePluginStore.setState({ remoteInstallAllowed: false });
+    await usePluginStore.getState().update('demo');
+    expect(lastToast().message).toBe(t('packs.remoteDisabled'));
+
+    usePluginStore.setState({ remoteInstallAllowed: true });
+    await usePluginStore.getState().update('demo');
+    expect(lastToast().message).toBe(t('packs.sessionExpired'));
+  });
+
+  it('says why a locked directory stayed when the server sent no hint', async () => {
+    api.uninstallPlugin.mockRejectedValue(refused(409, 'files_locked'));
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(lastToast().type).toBe('warning');
+    expect(lastToast().message).toContain('Demo plugin');
+  });
+
+  it('answers an uninstall the server says is busy by re-reading the catalog', async () => {
+    api.uninstallPlugin.mockRejectedValue(refused(409, 'busy', { job_id: 'j2' }));
+    const reads = api.listPluginCatalog.mock.calls.length;
+
+    await usePluginStore.getState().uninstall('demo');
+
+    expect(lastToast().type).toBe('warning');
+    expect(api.listPluginCatalog.mock.calls.length).toBeGreaterThan(reads);
+  });
+});
 
 describe('_resetPluginStoreForTesting', () => {
   it('puts the store and its schedulers back to boot state', async () => {

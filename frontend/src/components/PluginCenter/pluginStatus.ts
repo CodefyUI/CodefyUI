@@ -268,6 +268,7 @@ export function currentStep(steps: JobStep[]): { index: number; step: JobStep } 
 export function originLabel(entry: PluginCatalogEntry): TranslationKey | null {
   if (entry.kind === 'builtin') return 'pluginCenter.origin.builtin';
   if (entry.source_kind === 'local') return 'pluginCenter.origin.local';
+  if (entry.source_kind === 'local_copy') return 'pluginCenter.origin.localCopy';
   if (entry.official) return 'pluginCenter.origin.official';
   return null;
 }
@@ -458,5 +459,8 @@ export function cliInstallCommand(entry: PluginCatalogEntry): string {
   const repo = entry.repo ?? '';
   const spec = repo || entry.source || entry.id;
   const ref = repo && entry.ref ? `@${entry.ref}` : '';
-  return `cdui plugin install ${spec}${ref}`;
+  // A path copied from a USB stick often has a space in it; quoted, the
+  // command still names one argument when pasted into a shell.
+  const quoted = /\s/.test(spec) ? `"${spec}"` : spec;
+  return `cdui plugin install ${quoted}${ref}`;
 }

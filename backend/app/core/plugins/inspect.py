@@ -37,14 +37,17 @@ that speaks another language is expected to key off ``has_frontend`` and
 from __future__ import annotations
 
 import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from app.core import plugin_loader
 
 from . import catalog as catalog_module
-from . import github, listing, sources
+from . import git_source, github, listing, local, sources
 from .errors import (
+    ManifestError,
     NotInstalled,
     NotUpdatable,
     PluginInstallError,
@@ -99,14 +102,22 @@ NO_UPDATE_HINTS = {
         "A linked directory is whatever is on its author's disk right now; "
         "there is nothing to fetch."
     ),
+    "local_copy": (
+        "A plugin installed from a folder or an archive has nowhere to fetch "
+        "from; install the newer copy with cdui plugin install <path> --force."
+    ),
 }
+
+
+#: The ``source_kind`` values that have a repository to fetch an update from.
+UPDATABLE_SOURCE_KINDS = frozenset({"github_url", "git_url"})
 
 
 @dataclass(frozen=True)
 class Inspection:
     """One source, read and compared against what this install already has."""
 
-    kind: Literal["builtin", "github"]
+    kind: Literal["builtin", "github", "local", "git"]
     mode: Literal["install", "update"]
     plugin_id: str
     catalog_id: str | None
@@ -139,6 +150,14 @@ class Inspection:
     capabilities_added: tuple[str, ...]
     allowed_modules_added: tuple[str, ...]
     warnings: tuple[str, ...]
+    #: A local source's absolute path, and whether it is a ``"folder"`` or
+    #: an ``"archive"``; ``None`` for every other kind.
+    path: str | None = None
+    source_form: str | None = None
+    #: sha256 of what a local source holds: the archive file, or the copied
+    #: tree (see :mod:`.local`). The install recomputes it and refuses a
+    #: mismatch, which is what pins a folder the way ``sha`` pins a commit.
+    digest: str | None = None
 
 
 def _text(value: Any) -> str:
@@ -183,7 +202,7 @@ def _installed_record(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _inspection(
     *,
-    kind: Literal["builtin", "github"],
+    kind: Literal["builtin", "github", "local", "git"],
     plugin_id: str,
     manifest: dict[str, Any],
     lockfile: dict[str, Any],
@@ -196,6 +215,9 @@ def _inspection(
     catalog_id: str | None = None,
     official: bool = False,
     consent_required: bool,
+    path: str | None = None,
+    source_form: str | None = None,
+    digest: str | None = None,
 ) -> Inspection:
     """Assemble one :class:`Inspection` from a manifest and a lockfile.
 
@@ -225,8 +247,11 @@ def _inspection(
             m for m in allowed_modules if m not in known_modules
         )
         # A built-in pack has no sha on either side, and two ``None`` is the
-        # honest "the copy on disk is the copy you installed".
-        up_to_date = (installed["sha"] or None) == (sha or None)
+        # honest "the copy on disk is the copy you installed". A local copy
+        # is pinned by its digest instead of a commit.
+        up_to_date = (installed["sha"] or entry.get("sha256") or None) == (
+            sha or digest or None
+        )
 
     warnings: list[str] = []
     if has_frontend:
@@ -265,6 +290,9 @@ def _inspection(
         capabilities_added=capabilities_added,
         allowed_modules_added=allowed_modules_added,
         warnings=tuple(warnings),
+        path=path,
+        source_form=source_form,
+        digest=digest,
     )
 
 
@@ -390,6 +418,111 @@ def inspect_github(
     )
 
 
+def _refuse_reserved_id(plugin_id: str, origin: str) -> None:
+    """Refuse an id this build reserves, for a source with no GitHub
+    repository (see :func:`~.catalog.reserved_for_copied_source`)."""
+    taken_by = catalog_module.reserved_for_copied_source(plugin_id)
+    if taken_by is not None:
+        raise ReservedPluginId(
+            f"Plugin id {plugin_id!r} is reserved by this build.",
+            plugin_id=plugin_id,
+            taken_by=taken_by,
+            hint=(
+                f"{origin} declares an id that names {taken_by}; it cannot be "
+                f"installed under that id."
+            ),
+        )
+
+
+def read_tree_manifest(root: Path, *, origin: str) -> dict[str, Any]:
+    """The validated manifest at *root*, with a missing file as a
+    :class:`~.errors.ManifestError` (so every caller that refuses a bad
+    manifest refuses a missing one the same way)."""
+    try:
+        manifest = read_manifest(root)
+    except FileNotFoundError as exc:
+        raise ManifestError(
+            f"{origin} has no {plugin_loader.MANIFEST_FILENAME} at its root."
+        ) from exc
+    validate_manifest(manifest)
+    return manifest
+
+
+def inspect_local(path_str: str, *, lockfile: dict[str, Any]) -> Inspection:
+    """Describe a plugin folder or archive on this machine's disk.
+
+    The source is copied (or unpacked) into a temporary directory and read
+    there, under the caps a GitHub tarball gets, so a refusal for size,
+    links or layout arrives here, before anybody is asked to consent. The
+    copy is thrown away; the install makes its own and checks it against
+    :attr:`Inspection.digest`.
+
+    ``consent_required`` is True: a folder somebody handed you is third-party
+    code, whatever drive it is on.
+
+    Raises :class:`~.errors.SourceRefused`, :class:`~.errors.ManifestError`,
+    ``tomllib.TOMLDecodeError`` or :class:`~.errors.ReservedPluginId`.
+    """
+    path, form = local.resolve(path_str)
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        tree = local.materialize(path, form, Path(workdir))
+        manifest = read_tree_manifest(tree.root, origin=path_str)
+    plugin_id = manifest["plugin"]["id"]
+    _refuse_reserved_id(plugin_id, path_str)
+    return _inspection(
+        kind="local",
+        plugin_id=plugin_id,
+        manifest=manifest,
+        lockfile=lockfile,
+        source=path_str,
+        consent_required=True,
+        path=path_str,
+        source_form=form,
+        digest=tree.digest,
+    )
+
+
+def inspect_git(
+    url: str,
+    ref: str,
+    *,
+    lockfile: dict[str, Any],
+    pinned_sha: str | None = None,
+) -> Inspection:
+    """Describe a repository on an HTTPS git host other than GitHub.
+
+    A shallow clone into a temporary directory (see :mod:`.git_source`), the
+    clone copied under the archive caps, and the manifest read from the
+    copy. The commit the clone landed on is the pin, like a resolved GitHub
+    ref: the install clones again and checks out exactly that commit.
+    *pinned_sha* skips to that commit for a restore.
+
+    Raises :class:`~.errors.GitUnavailable`, :class:`~.errors.GitError`,
+    :class:`~.errors.SourceRefused`, :class:`~.errors.ManifestError`,
+    ``tomllib.TOMLDecodeError`` or :class:`~.errors.ReservedPluginId`.
+    """
+    origin = url + (f"@{ref}" if ref else "")
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        sha = git_source.clone(url, ref, Path(workdir) / "clone",
+                               want_sha=pinned_sha)
+        tree = local.materialize(Path(workdir) / "clone", "folder",
+                                 Path(workdir) / "copy")
+        manifest = read_tree_manifest(tree.root, origin=origin)
+    plugin_id = manifest["plugin"]["id"]
+    _refuse_reserved_id(plugin_id, origin)
+    return _inspection(
+        kind="git",
+        plugin_id=plugin_id,
+        manifest=manifest,
+        lockfile=lockfile,
+        source=origin,
+        url=url,
+        ref=ref,
+        sha=sha,
+        consent_required=True,
+    )
+
+
 def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     """Describe whatever the user typed: a catalog name, ``owner/repo``, a URL.
 
@@ -400,6 +533,10 @@ def inspect_source(spec: str, *, lockfile: dict[str, Any]) -> Inspection:
     "official" is a claim only the catalog is entitled to make.
     """
     parsed = sources.parse_source(spec)
+    if parsed.kind == "local":
+        return inspect_local(parsed.name_or_owner, lockfile=lockfile)
+    if parsed.kind == "git":
+        return inspect_git(parsed.name_or_owner, parsed.ref, lockfile=lockfile)
     if parsed.kind != "catalog":
         return inspect_github(
             parsed.name_or_owner, parsed.repo, parsed.ref, lockfile=lockfile
@@ -453,7 +590,7 @@ def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, An
         )
     recorded = entry.get("source_kind")
     source_kind = _text(recorded)
-    if source_kind != "github_url":
+    if source_kind not in UPDATABLE_SOURCE_KINDS:
         raise NotUpdatable(
             f"Plugin {plugin_id!r} does not update from a repository.",
             plugin_id=plugin_id,
@@ -467,6 +604,37 @@ def updatable_entry(plugin_id: str, *, lockfile: dict[str, Any]) -> dict[str, An
             ),
         )
     return entry
+
+
+def _inspect_installed_git(
+    plugin_id: str, entry: dict[str, Any], *, lockfile: dict[str, Any]
+) -> Inspection:
+    """:func:`inspect_installed` for a ``git_url`` entry: clone the recorded
+    URL at the recorded ref again. ``up_to_date`` is the commit comparison
+    the GitHub road makes, and a manifest that now declares another id is
+    refused the same way."""
+    url = _text(entry.get("url"))
+    ref = _text(entry.get("ref"))
+    if sources.parse_git_url(url + (f"@{ref}" if ref else "")) != (url, ref):
+        raise NotUpdatable(
+            f"Cannot tell which repository {plugin_id!r} came from.",
+            plugin_id=plugin_id,
+            source_kind="git_url",
+            hint=f"url={entry.get('url')!r} ref={entry.get('ref')!r}",
+        )
+    found = inspect_git(url, ref, lockfile=lockfile)
+    if found.plugin_id != plugin_id:
+        raise NotUpdatable(
+            f"{plugin_id!r} now installs as {found.plugin_id!r}.",
+            plugin_id=plugin_id,
+            source_kind="git_url",
+            hint=(
+                f"Its repository renamed the plugin. Install "
+                f"{found.plugin_id!r} as a new plugin if that is what you "
+                f"want."
+            ),
+        )
+    return found
 
 
 def _record_moved_repository(
@@ -556,6 +724,8 @@ def inspect_installed(plugin_id: str, *, lockfile: dict[str, Any]) -> Inspection
     and installing the new plugin is left as the deliberate act it is.
     """
     entry = updatable_entry(plugin_id, lockfile=lockfile)
+    if entry.get("source_kind") == "git_url":
+        return _inspect_installed_git(plugin_id, entry, lockfile=lockfile)
     url = _text(entry.get("url"))
     match = _GITHUB_URL.match(url) or _GITHUB_SHORT.match(_text(entry.get("source")))
     if match is None:

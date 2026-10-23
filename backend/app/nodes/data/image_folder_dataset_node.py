@@ -70,7 +70,9 @@ class ImageFolderDatasetNode(BaseNode):
         "under `path`. The class list is the sorted union of the class folders "
         "in every split folder under `path` (train, val, valid, validation, "
         "test), so a split missing a class still gives each class the index "
-        "the training split uses; the run log names the missing folders."
+        "the training split uses; the run log names the missing folders. A "
+        "wired `path` replaces the path param and orders this node after "
+        "whatever produced it."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds an aggregate
@@ -123,6 +125,15 @@ class ImageFolderDatasetNode(BaseNode):
                 description=(
                     "Pipeline for val/test, and the fallback whenever "
                     "train_transform is unwired."
+                ),
+                optional=True,
+            ),
+            PortDefinition(
+                name="path",
+                data_type=DataType.STRING,
+                description=(
+                    "Directory holding the splits (overrides the path param "
+                    "when wired), resolved the same way."
                 ),
                 optional=True,
             ),
@@ -183,7 +194,9 @@ class ImageFolderDatasetNode(BaseNode):
     ) -> dict[str, Any]:
         from torchvision import transforms
 
-        raw_path = str(params.get("path", "") or "").strip()
+        # The wired path wins, as VideoLoad's does; the edge also orders
+        # this node after the one that wrote the folder.
+        raw_path = str(inputs.get("path") or params.get("path", "") or "").strip()
         if not raw_path:
             raise ValueError(
                 "ImageFolderDataset needs a path. Give the directory that "

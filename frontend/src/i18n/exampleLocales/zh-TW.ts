@@ -340,6 +340,46 @@ const zhTW: ExampleTranslations = {
   'plugin:stats/Stats/Iris-GroupBy-Chart': {
     description: '三根長條：平均花瓣長度',
   },
+
+  // ── Data and IO examples (feat/examples-data-io) ──
+  'Usage_Example/Augment-Then-Train': {
+    description: '訓練時旋轉數字並調整明暗',
+  },
+  'Usage_Example/Resume-From-Checkpoint': {
+    description: '10 個 epoch 後存檔，再接著訓練 10 個',
+  },
+  'Classical/KFold-Cross-Validation': {
+    description: '三份資料、三個誤差、一個平均',
+  },
+  'Others/Reduce-And-Switch': {
+    description: '選一個欄位，摺疊成一個數字',
+  },
+  'Others/Tensor-Ops-Tour': {
+    description: '對同一個網格切分、堆疊、選列、池化',
+  },
+
+  // ── Built-ins added after the plugin blocks (papers, concepts, llm) ──
+  'Papers/GroupNorm-Wu-2018': {
+    description: '一次 2 張：BatchNorm 對上 GroupNorm',
+  },
+  'RNN/Conv1d-Sequence-Classifier': {
+    description: '時間卷積用滑動視窗讀 token',
+  },
+  'RL/Reward-Model-Bradley-Terry': {
+    description: '訓練前後的 Bradley-Terry 損失',
+  },
+  'RL/Discounted-Returns': {
+    description: '一個獎勵、三個 gamma、三種回報',
+  },
+  'LLM/Data-Mix-Ratios': {
+    description: '兩個語料：照原樣混合，再 1:1 混合',
+  },
+  'Others/One-Backward-Pass': {
+    description: '梯度只會到達被查過的那幾列',
+  },
+  'Others/Image-Batch-IO': {
+    description: '寫入 8 張影像，再讀回整個資料夾',
+  },
 };
 
 export default zhTW;

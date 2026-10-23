@@ -1,0 +1,271 @@
+{
+  "name": "Data mix ratios",
+  "description": "Two corpora mixed as found, then 1:1",
+  "gallery": {
+    "section": "llm",
+    "order": 5
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "corpus-stories",
+      "type": "TextCorpusDataset",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "source": "local_file",
+          "local_path": "data/samples/mix/stories.txt",
+          "split_lines": true,
+          "max_rows": 0
+        }
+      }
+    },
+    {
+      "id": "corpus-facts",
+      "type": "TextCorpusDataset",
+      "position": {
+        "x": 40,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "source": "local_file",
+          "local_path": "data/samples/mix/facts.txt",
+          "split_lines": true,
+          "max_rows": 0
+        }
+      }
+    },
+    {
+      "id": "print-n-stories",
+      "type": "Print",
+      "position": {
+        "x": 380,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Stories: rows"
+        }
+      }
+    },
+    {
+      "id": "print-n-facts",
+      "type": "Print",
+      "position": {
+        "x": 380,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "label": "Facts: rows"
+        }
+      }
+    },
+    {
+      "id": "mix-natural",
+      "type": "DataMixDataset",
+      "position": {
+        "x": 720,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "sources": 2,
+          "weights": "",
+          "mode": "interleave",
+          "total_rows": 0,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "mix-ratio",
+      "type": "DataMixDataset",
+      "position": {
+        "x": 720,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "sources": 2,
+          "weights": "1, 1",
+          "mode": "ratio",
+          "total_rows": 60,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "print-natural",
+      "type": "Print",
+      "position": {
+        "x": 1060,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "label": "Natural mix: rows (every row once)"
+        }
+      }
+    },
+    {
+      "id": "print-ratio",
+      "type": "Print",
+      "position": {
+        "x": 1060,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "label": "1:1 mix: rows (30 from each corpus)"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Pretraining data is a mix of sources, and the mix is a choice. A corpus's share of the training tokens decides how much of the model it shapes, so a small, carefully written source such as books or Wikipedia is often repeated for several epochs while a large web crawl is cut down. The two corpora here are text files bundled with CodefyUI, read one document per line: 30 short children's stories and 6 science facts. Mixed as found (interleave, every row once) the mixture has 36 rows and 1 in 6 of them is a fact. Mixed by ratio with weights 1, 1 and 60 rows, each corpus supplies 30: every story once and every fact five times. Open a DataMixDataset's Log to read how many rows it took from each corpus.\n\n預訓練資料由好幾個來源混合而成，比例是刻意選的。一個語料在訓練 token 中佔多少，就決定它塑造模型的程度，所以書籍或維基百科這類量小而精心撰寫的來源常會重複好幾個 epoch，龐大的網路爬取資料則會被刪減。這裡的兩個語料是 CodefyUI 隨附的文字檔，每一行是一份文件：30 則短篇童話和 6 則科學知識。照原樣混合（interleave，每一列用一次）得到 36 列，其中 6 列中有 1 列是科學知識。用 ratio 模式、權重 1, 1、總共 60 列混合時，兩個語料各提供 30 列：每則童話用一次，每則知識用五次。打開 DataMixDataset 的 Log 就能看到它從每個語料取了幾列。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-files",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 540
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Both files live under backend/data/samples/mix and ship with the app, so nothing is downloaded. split_lines makes every line its own document. Point local_path at a .txt of your own to mix your text instead.\n\n兩個檔案都放在 backend/data/samples/mix，隨程式一起安裝，不需要下載。split_lines 讓每一行各自成為一份文件。把 local_path 改成你自己的 .txt，就能混合你的文字。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "corpus-facts",
+        "boundOffset": {
+          "x": 0,
+          "y": 340
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-ratio",
+      "type": "note",
+      "position": {
+        "x": 720,
+        "y": 540
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "ratio splits total_rows by the weights, then takes each corpus's rows in whole passes over a seeded shuffle, so no fact repeats before all six have been used, and shuffles the 60 rows by the seed. Set the weights to 3, 1 and rerun: 45 stories (15 of them a second time) and 15 facts. Wire a mixture into LMTokenizedDataset to train on it, the way Pretrain an LM on TinyStories trains on one corpus.\n\nratio 依權重分配 total_rows，接著以種子打亂後整輪整輪地取每個語料的列，所以六則知識全部用過之前不會有任何一則重複，最後再依種子把 60 列打亂。把權重改成 3, 1 再執行：45 則童話（其中 15 則用第二次）和 15 則知識。把混合結果接到 LMTokenizedDataset 就能拿來訓練，就像 Pretrain an LM on TinyStories 用一個語料訓練那樣。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "mix-ratio",
+        "boundOffset": {
+          "x": 0,
+          "y": 340
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_corpus-stories",
+      "source": "start",
+      "target": "corpus-stories",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_corpus-facts",
+      "source": "start",
+      "target": "corpus-facts",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_corpus-stories_num_rows_print-n-stories_value",
+      "source": "corpus-stories",
+      "target": "print-n-stories",
+      "sourceHandle": "num_rows",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_corpus-facts_num_rows_print-n-facts_value",
+      "source": "corpus-facts",
+      "target": "print-n-facts",
+      "sourceHandle": "num_rows",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_corpus-stories_dataset_mix-natural_corpus_1",
+      "source": "corpus-stories",
+      "target": "mix-natural",
+      "sourceHandle": "dataset",
+      "targetHandle": "corpus_1"
+    },
+    {
+      "id": "e_corpus-facts_dataset_mix-natural_corpus_2",
+      "source": "corpus-facts",
+      "target": "mix-natural",
+      "sourceHandle": "dataset",
+      "targetHandle": "corpus_2"
+    },
+    {
+      "id": "e_corpus-stories_dataset_mix-ratio_corpus_1",
+      "source": "corpus-stories",
+      "target": "mix-ratio",
+      "sourceHandle": "dataset",
+      "targetHandle": "corpus_1"
+    },
+    {
+      "id": "e_corpus-facts_dataset_mix-ratio_corpus_2",
+      "source": "corpus-facts",
+      "target": "mix-ratio",
+      "sourceHandle": "dataset",
+      "targetHandle": "corpus_2"
+    },
+    {
+      "id": "e_mix-natural_num_rows_print-natural_value",
+      "source": "mix-natural",
+      "target": "print-natural",
+      "sourceHandle": "num_rows",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_mix-ratio_num_rows_print-ratio_value",
+      "source": "mix-ratio",
+      "target": "print-ratio",
+      "sourceHandle": "num_rows",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

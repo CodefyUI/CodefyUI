@@ -122,8 +122,14 @@ TORCH_INDEX_URLS: dict[str, str | None] = {
     "cu124":   "https://download.pytorch.org/whl/cu124",
     "cu126":   "https://download.pytorch.org/whl/cu126",
     "cu128":   "https://download.pytorch.org/whl/cu128",
+    "cu129":   "https://download.pytorch.org/whl/cu129",
+    "cu130":   "https://download.pytorch.org/whl/cu130",
     "rocm6.1": "https://download.pytorch.org/whl/rocm6.1",
     "rocm6.2": "https://download.pytorch.org/whl/rocm6.2",
+    "rocm6.3": "https://download.pytorch.org/whl/rocm6.3",
+    "rocm6.4": "https://download.pytorch.org/whl/rocm6.4",
+    "rocm7.0": "https://download.pytorch.org/whl/rocm7.0",
+    "xpu":     "https://download.pytorch.org/whl/xpu",            # Intel GPUs
     "mps":     None,                                            # default PyPI on Apple Silicon
     "skip":    "__skip__",                                      # leave torch untouched
 }
@@ -140,7 +146,7 @@ def installable_variants(system: str | None = None) -> tuple[str, ...]:
 
     macOS ships MPS acceleration in the default wheel, so there is nothing a
     switch can do there; ROCm wheels are ``linux_x86_64`` only; the CUDA
-    indexes carry manylinux and ``win_amd64`` only. ``"mps"`` is in none of
+    and Intel ``xpu`` indexes carry manylinux and ``win_amd64`` only. ``"mps"`` is in none of
     these: it names no index anywhere (:func:`resolve_gpu_torch` has always
     refused it).
 
@@ -273,6 +279,10 @@ def recommended_cu_for_driver(driver_version: str) -> str:
         major = int(driver_version.split(".")[0])
     except (ValueError, IndexError):
         return "cu121"
+    if major >= 580:
+        return "cu130"
+    if major >= 575:
+        return "cu129"
     if major >= 560:
         return "cu128"
     if major >= 555:
@@ -291,7 +301,7 @@ def detect_gpu() -> tuple[str, str]:
 
     Mirrors ``dev.detect_gpu``: Apple Silicon first (its acceleration ships
     in the default wheel), then nvidia-smi, then rocm-smi on Linux, then
-    "CPU only". Detection failures collapse to ``("CPU only", "cpu")``
+    xpu-smi on Linux and Windows, then "CPU only". Detection failures collapse to ``("CPU only", "cpu")``
     rather than raising -- the caller is drawing a panel, not installing.
 
     The ANSWERS mirror dev.py; how the probe is started does not, and must
@@ -326,6 +336,13 @@ def detect_gpu() -> tuple[str, str]:
 
     if platform.system() == "Linux" and shutil.which("rocm-smi"):
         return ("AMD GPU (ROCm)", "rocm6.2")
+
+    # Intel: only ``xpu-smi``, which ships with the Intel GPU driver stack.
+    # ``sycl-ls`` comes with the oneAPI toolkit and is present on machines
+    # with no Intel GPU at all, so it is not evidence of one. Only a PATH
+    # lookup, nothing is run.
+    if platform.system() in ("Linux", "Windows") and shutil.which("xpu-smi"):
+        return ("Intel GPU (XPU)", "xpu")
 
     return ("CPU only", "cpu")
 

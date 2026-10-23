@@ -51,6 +51,14 @@ _CONCEPT_EXAMPLES = (
     "Transformer/Causal-Attention-From-Scratch",
     "RL/Reward-Hacking-Shortcut",
     "RL/GRPO-Step-GridWorld",
+    "Classical/KFold-Cross-Validation",
+    "Others/Reduce-And-Switch",
+    "Others/Tensor-Ops-Tour",
+    "RNN/Conv1d-Sequence-Classifier",
+    "RL/Reward-Model-Bradley-Terry",
+    "RL/Discounted-Returns",
+    "Others/One-Backward-Pass",
+    "Others/Image-Batch-IO",
 )
 
 #: Every example the gallery files under ``papers``, by its API path. They
@@ -76,10 +84,17 @@ _PAPER_EXAMPLES = (
     "Papers/DQN-CartPole",
     "Papers/PPO-CartPole",
     "Papers/QLearning-GridWorld",
+    "Papers/GroupNorm-Wu-2018",
+)
+
+#: The ``llm`` examples written to the same note rules. The others in that
+#: section predate them.
+_LLM_EXAMPLES = (
+    "LLM/Data-Mix-Ratios",
 )
 
 #: The examples the note rules below hold over.
-_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES
+_NOTED_EXAMPLES = _CONCEPT_EXAMPLES + _PAPER_EXAMPLES + _LLM_EXAMPLES
 
 
 def _graph(key: str) -> dict:
@@ -497,3 +512,366 @@ def test_the_lstm_example_tests_on_sequences_it_never_trained_on():
     for key in ("kind", "seq_len", "n_classes", "n_distractors"):
         assert train[key] == test[key], key
     assert _feeds(graph, "eval", "dataset") == ("seq-test", "dataset")
+
+
+# ── K-fold cross-validation: the three errors and their mean ──────────────
+
+def test_the_three_folds_differ_only_in_which_fold_they_hold_out():
+    graph = _graph("Classical/KFold-Cross-Validation")
+    params = [_params(graph, f"fold-{k}") for k in range(3)]
+    assert [p["fold"] for p in params] == [0, 1, 2]
+    for p in params:
+        assert {k: v for k, v in p.items() if k != "fold"} == {
+            k: v for k, v in params[0].items() if k != "fold"}
+        assert p["n_folds"] == 3
+    for k in range(3):
+        assert _feeds(graph, f"reg-{k}", "x_query") == (f"fold-{k}", "x_val")
+        assert _feeds(graph, f"metrics-{k}", "targets") == (f"fold-{k}", "y_val")
+
+
+def test_the_kfold_errors_are_the_ones_the_note_quotes():
+    """0.050, 0.030 and 0.033 per fold, 0.038 for their mean, and the
+    worst fold about 1.7 times the best."""
+    results = _run_with_its_seed("Classical/KFold-Cross-Validation")
+    mse = [results[f"metrics-{k}"]["mse"] for k in range(3)]
+    assert [f"{m:.3f}" for m in mse] == ["0.050", "0.030", "0.033"], mse
+    assert f"{max(mse) / min(mse):.1f}" == "1.7", mse
+    mean = float(results["print-mean"]["value"])
+    assert mean == pytest.approx(sum(mse) / 3)
+    assert f"{mean:.3f}" == "0.038"
+    # Every row held out exactly once, in folds of 50.
+    held_out = [len(results[f"fold-{k}"]["y_val"]) for k in range(3)]
+    assert held_out == [50, 50, 50]
+
+
+# ── Reduce and Switch: what each selector reports ─────────────────────────
+
+def _run_reduce_switch(selector: int) -> dict:
+    from app.core.execution_context import ExecutionContext
+
+    graph = _graph("Others/Reduce-And-Switch")
+    _nodes_by_id(graph)["switch"]["data"]["params"]["selector"] = selector
+    prev_cwd = Path.cwd()
+    os.chdir(_BACKEND_DIR)
+    try:
+        return asyncio.run(execute_graph(
+            graph["nodes"], graph["edges"], error_mode="fail_fast",
+            context=ExecutionContext(device="cpu", seed=graph["settings"]["seed"])))
+    finally:
+        os.chdir(prev_cwd)
+
+
+@pytest.mark.parametrize("selector,expected,skipped", [
+    (0, ("3.758", "1.0", "6.9"), "csv-sepal"),
+    (1, ("5.843", "4.3", "7.9"), "csv-petal"),
+])
+def test_the_switch_picks_the_column_the_note_says(selector, expected, skipped):
+    graph = _graph("Others/Reduce-And-Switch")
+    assert _params(graph, "switch")["selector"] == 0, "the note starts on petal length"
+    results = _run_reduce_switch(selector)
+    got = (f"{float(results['mean']['result']):.3f}",
+           f"{float(results['min']['result']):.1f}",
+           f"{float(results['max']['result']):.1f}")
+    assert got == expected
+    assert tuple(results["stack"]["result"].shape) == (150,)
+    # The unselected reader is left out of the run, as note-switch says.
+    assert skipped not in results
+
+
+# ── Tensor ops tour: the shapes and statistics the notes quote ────────────
+
+def test_the_tensor_tour_lands_on_the_numbers_its_notes_quote():
+    results = _run_with_its_seed("Others/Tensor-Ops-Tour")
+    grid = results["stats-grid"]
+    assert grid["shape"] == "(4, 6)"
+    assert grid["mean"] == pytest.approx(11.5)
+    assert f"{grid['std']:.4f}" == "6.9222"
+
+    stacked = results["stats-stack"]
+    assert stacked["shape"] == "(2, 2, 6)"
+    assert stacked["std"] == pytest.approx(grid["std"])
+
+    rows = results["rows"]["tensor"]
+    assert rows[:, 0].tolist() == [18.0, 0.0], "rows 3 and 0, in that order"
+
+    pooled = results["pool"]["tensor"]
+    assert pooled.tolist() == [[[[3.5, 5.5, 7.5], [15.5, 17.5, 19.5]]]]
+    assert results["stats-pool"]["mean"] == pytest.approx(11.5)
+    assert f"{results['stats-pool']['std']:.4f}" == "6.2183"
+
+
+# ── Training section: augmentation and resuming ───────────────────────────
+
+def _run_training_example(key: str) -> dict:
+    """``_run_with_its_seed`` for a graph outside ``_CONCEPT_EXAMPLES``."""
+    return _run_with_its_seed(key)
+
+
+def test_augmentation_goes_on_the_training_split_only():
+    from app.nodes.data.transforms._base import pipeline_is_random
+
+    graph = _graph("Usage_Example/Augment-Then-Train")
+    assert _feeds(graph, "ds-train", "train_transform") == ("normalize", "transform")
+    assert _feeds(graph, "ds-test", "eval_transform") == ("eval-normalize", "transform")
+    assert _params(graph, "ds-test")["split"] == "test"
+    assert _feeds(graph, "eval", "dataset") == ("subset-test", "train")
+
+    results = _run_training_example("Usage_Example/Augment-Then-Train")
+    assert pipeline_is_random(results["normalize"]["transform"])
+    assert not pipeline_is_random(results["eval-normalize"]["transform"])
+    # The overview note says "about 0.9"; 0.895 on this Mac.
+    assert results["eval"]["total"] == 1000
+    assert results["eval"]["accuracy"] >= 0.85, results["eval"]
+
+
+def test_the_resumed_loop_picks_up_at_the_epoch_the_checkpoint_stores(
+        tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+    graph = _graph("Usage_Example/Resume-From-Checkpoint")
+    assert _feeds(graph, "save", "epoch") == ("train-1", "epoch")
+    assert _feeds(graph, "save", "optimizer") == ("train-1", "optimizer")
+    assert _feeds(graph, "load", "model") == ("save", "model")
+    assert _feeds(graph, "train-2", "start_epoch") == ("load", "epoch")
+    assert _params(graph, "save")["path"] == _params(graph, "load")["path"]
+
+    results = _run_training_example("Usage_Example/Resume-From-Checkpoint")
+    assert (tmp_path / "models" / _params(graph, "save")["path"]).is_file()
+    assert int(results["load"]["epoch"]) == 10
+    assert int(results["train-2"]["epoch"]) == 20
+    assert tuple(results["train-2"]["losses"].shape) == (10,)
+    assert tuple(results["curve"]["tensor"].shape) == (20,)
+    assert torch.equal(results["load"]["losses"], results["train-1"]["losses"])
+# ── Conv1d sequence classifier: the numbers its notes quote ───────────────
+
+def _notes_of(key: str) -> str:
+    return "\n".join(n["data"]["noteContent"] for n in _notes(_graph(key)))
+
+
+def test_the_conv1d_classifier_learns_the_first_token_and_not_the_last():
+    """Trained with the answer first, it scores 1.00 there and about chance
+    with the answer last; the note explains the gap with the padded edge."""
+    key = "RNN/Conv1d-Sequence-Classifier"
+    text = _notes_of(key)
+    for quoted in ("from 2.20 to 0.05", "scores 1.00 on 500 sequences", "scores 0.02 there"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    losses = results["train"]["losses"].tolist()
+    first, last = results["eval"]["accuracy"], results["eval-last"]["accuracy"]
+    assert losses[0] == pytest.approx(2.20, abs=0.1), losses
+    assert losses[-1] < 0.2, losses
+    assert first == pytest.approx(1.0, abs=0.03), (first, last)
+    # Seeds 0 to 4 land between 0.02 and 0.11: chance is 0.10.
+    assert last < 0.2, (first, last)
+
+
+def test_the_conv1d_layers_are_the_ones_the_note_walks_through():
+    graph = _graph("RNN/Conv1d-Sequence-Classifier")
+    spec = json.loads(_params(graph, "model")["layers"])
+    types = [n["type"] for n in spec["nodes"]]
+    assert types == ["Input", "Embedding", "Reshape", "Conv1d", "BatchNorm1d", "ReLU",
+                     "Conv1d", "BatchNorm1d", "ReLU", "Reshape", "AdaptiveAvgPool2d",
+                     "Flatten", "Linear", "Output"]
+    train, test, last = (_params(graph, k) for k in ("seq-train", "seq-test", "seq-last"))
+    assert train["kind"] == test["kind"] == "recall_first"
+    assert last["kind"] == "recall_last"
+    assert len({train["seed"], test["seed"], last["seed"]}) == 3
+    for k in ("seq_len", "n_classes", "n_distractors"):
+        assert train[k] == test[k] == last[k], k
+
+
+# ── Reward model from preferences: Bradley-Terry before and after ─────────
+
+def test_the_bradley_terry_example_lands_where_its_note_says():
+    """Untrained: about ln 2 and a coin flip's ranking. Trained: 0.11 and
+    0.96 on the held-out pairs, the number BradleyTerryTrain reports too."""
+    key = "RL/Reward-Model-Bradley-Terry"
+    text = _notes_of(key)
+    for quoted in ("Its loss is 0.69", "it ranks 0.57", "the loss drops to 0.11",
+                   "and 0.96 of them"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    before, after = results["bt-before"], results["bt-after"]
+    assert f"{float(before['loss']):.2f}" == "0.69"
+    assert f"{before['accuracy']:.2f}" == "0.57"
+    assert f"{float(after['loss']):.2f}" == "0.11"
+    assert f"{after['accuracy']:.2f}" == "0.96"
+    assert after["accuracy"] == pytest.approx(
+        float(results["train"]["holdout_accuracy"][-1]))
+    assert tuple(after["preference_prob"].shape) == (256,)
+
+
+def test_the_untrained_heads_are_the_head_bradley_terry_train_starts_from():
+    """The note says so: same width and seed, same weights."""
+    from torch import nn
+
+    from app.core.seeding import seeded_linear_init
+
+    graph = _graph("RL/Reward-Model-Bradley-Terry")
+    rm_w, rm_l, train = (_params(graph, k) for k in ("rm-w", "rm-l", "train"))
+    assert rm_w == rm_l
+    assert (rm_w["hidden_dim"], rm_w["seed"]) == (train["hidden_dim"], train["seed"])
+
+    results = _run_with_its_seed("RL/Reward-Model-Bradley-Terry")
+    head = results["rm-w"]["model"].net
+    start = seeded_linear_init(nn.Sequential(
+        nn.Linear(16, train["hidden_dim"]), nn.ReLU(),
+        nn.Linear(train["hidden_dim"], 1)), train["seed"])
+    for got, want in zip(head.parameters(), start.parameters()):
+        assert torch.equal(got.detach().cpu(), want.detach())
+
+
+# ── Discounted returns: G_t = gamma^(9 - t) for a reward at the last step ─
+
+def test_discount_folds_one_final_reward_into_gamma_powers():
+    key = "RL/Discounted-Returns"
+    text = _notes_of(key)
+    for quoted in ("0.002 at gamma 0.5", "0.387 at gamma 0.9", "0.914 at gamma 0.99",
+                   "G_t = r_t + gamma G_{t+1}"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    for node, gamma, first in (("disc-05", 0.5, "0.002"), ("disc-09", 0.9, "0.387"),
+                               ("disc-099", 0.99, "0.914")):
+        assert _params(_graph(key), node)["gamma"] == gamma
+        returns = results[node]["returns"]
+        expected = torch.tensor([gamma ** (9 - t) for t in range(10)])
+        assert torch.allclose(returns, expected, atol=1e-6), (node, returns)
+        assert f"{results[node]['first_return']:.3f}" == first
+
+    plotted = results["concat"]["tensor"]
+    assert tuple(plotted.shape) == (3, 10)
+    assert torch.equal(plotted[2], results["disc-099"]["returns"])
+
+
+def test_the_step_cost_the_rewards_note_suggests_does_what_it_says():
+    """A -0.1 before the final 1: G_0 < 0 at gamma 0.5 and 0.9, > 0 at 0.99."""
+    from app.nodes.rl.discount_node import DiscountNode
+
+    rewards = torch.tensor([-0.1] * 9 + [1.0])
+    first = {g: DiscountNode().execute({"rewards": rewards}, {"gamma": g})["first_return"]
+             for g in (0.5, 0.9, 0.99)}
+    assert first[0.5] < 0 and first[0.9] < 0 < first[0.99], first
+
+
+# ── Data mix ratios: the counts its notes quote ───────────────────────────
+
+def test_the_data_mix_example_mixes_the_counts_its_note_gives():
+    """36 rows as found, 1 in 6 a fact; 60 rows by ratio, 30 from each."""
+    key = "LLM/Data-Mix-Ratios"
+    text = _notes_of(key)
+    for quoted in ("30 short children's stories and 6", "the mixture has 36 rows",
+                   "1 in 6 of them is a fact", "each corpus supplies 30",
+                   "every fact five times", "45 stories (15 of them a second time) and 15 facts"):
+        assert quoted in text, quoted
+
+    results = _run_with_its_seed(key)
+    assert results["corpus-stories"]["num_rows"] == 30
+    assert results["corpus-facts"]["num_rows"] == 6
+    natural, ratio = results["mix-natural"], results["mix-ratio"]
+    assert natural["num_rows"] == 36 and ratio["num_rows"] == 60
+    assert natural["__log__"].endswith("corpus_1: 30, corpus_2: 6.")
+    assert ratio["__log__"].endswith("corpus_1: 30 of 30, corpus_2: 30 of 6.")
+
+    facts = {results["corpus-facts"]["dataset"][i] for i in range(6)}
+    rows = [ratio["dataset"][i] for i in range(60)]
+    assert sum(row in facts for row in rows) == 30
+    assert all(rows.count(fact) == 5 for fact in facts)
+
+
+def test_the_3_to_1_mix_the_ratio_note_suggests_gives_45_and_15():
+    from app.nodes.llm.data_mix_dataset_node import DataMixDatasetNode
+
+    out = DataMixDatasetNode().execute(
+        {"corpus_1": [f"s{i}" for i in range(30)], "corpus_2": [f"f{i}" for i in range(6)]},
+        {"sources": 2, "weights": "3, 1", "mode": "ratio", "total_rows": 60, "seed": 0})
+    assert out["__log__"].endswith("corpus_1: 45 of 30, corpus_2: 15 of 6.")
+
+
+# ── One backward pass: the gradients the overview quotes ──────────────────
+
+def test_one_backward_pass_reaches_only_the_rows_it_looked_up():
+    """With Capture gradients on, as the note asks: the table's gradient is
+    the sum of each row's weights over its lookups, zero for unread rows."""
+    from app.core.execution_context import ExecutionContext
+    from app.core.node_state_store import NodeStateStore
+    from app.core.run_output_store import RunOutputStore
+
+    key = "Others/One-Backward-Pass"
+    text = _notes_of(key)
+    for quoted in ("[1, 1] for row 0", "[5, 5] for row 2", "[4, 4] for row 3",
+                   "zero for rows 1 and 4", "Capture gradients", "L = sum(z)"):
+        assert quoted in text, quoted
+
+    graph = _graph(key)
+    store = RunOutputStore(max_runs=2)
+    context = ExecutionContext(
+        device="cpu", seed=graph["settings"]["seed"], graph_id="one-backward-pass",
+        weights_persistent=True, node_state_store=NodeStateStore(), backward_mode=True)
+
+    async def run_and_read():
+        results = await execute_graph(
+            graph["nodes"], graph["edges"], context=context, run_id="bwd",
+            output_store=store, record_outputs=True)
+        grads = {name: await store.get("bwd", node, port) for name, node, port in (
+            ("table", "emb", "__weight_grad__weight"),
+            ("weights", "weights", "tensor__grad"),
+            ("rows", "emb", "tensor__grad"))}
+        return results, grads
+
+    results, grads = asyncio.run(run_and_read())
+    assert torch.equal(grads["table"].cpu(), torch.tensor(
+        [[1.0, 1.0], [0.0, 0.0], [5.0, 5.0], [4.0, 4.0], [0.0, 0.0]]))
+    assert torch.equal(grads["rows"].cpu(), torch.tensor([[1.0] * 2, [2.0] * 2, [3.0] * 2, [4.0] * 2]))
+    rows = results["emb"]["tensor"].detach().cpu()
+    assert torch.allclose(grads["weights"].cpu(), rows.sum(dim=1, keepdim=True))
+    assert results["stats"]["sum"] == pytest.approx(float(results["mul"]["tensor"].detach().sum()))
+
+
+def test_one_backward_pass_runs_as_a_plain_forward_with_capture_off():
+    results = _run_with_its_seed("Others/One-Backward-Pass")
+    assert torch.equal(results["bwd"]["tensor"], results["mul"]["tensor"])
+    assert tuple(results["stats"]["tensor"].shape) == (4, 2)
+
+
+# ── Image batch IO: what is written and what comes back ───────────────────
+
+def test_the_reader_takes_its_directory_from_the_writer():
+    graph = _graph("Others/Image-Batch-IO")
+    assert _feeds(graph, "writer", "image") == ("batch", "images")
+    assert _feeds(graph, "reader", "directory") == ("writer", "directory")
+    assert _feeds(graph, "reader", "transform") == ("to-tensor", "transform")
+    assert _feeds(graph, "to-tensor", "transform") == ("resize", "transform")
+    assert _params(graph, "reader")["directory"] == "", "the wire supplies it"
+
+
+@pytest.mark.parametrize("data_root", ["data", "project/assets"],
+                         ids=["plain-run", "project-directory"])
+def test_image_batch_io_writes_and_reads_what_its_note_says(
+        tmp_path, monkeypatch, data_root):
+    """8 images of (1, 32, 32) written as shape_0.png .. shape_7.png into
+    output/image-batch-io, read back as (8, 1, 64, 64). A project directory
+    moves MODELS_DIR to <project>/assets/models, so both nodes follow it."""
+    from app.config import settings
+
+    root = tmp_path / data_root
+    monkeypatch.setattr(settings, "MODELS_DIR", root / "models")
+    results = _run_with_its_seed("Others/Image-Batch-IO")
+    batch = results["batch"]["images"]
+    assert tuple(batch.shape) == (8, 1, 32, 32)
+
+    folder = root / "output" / "image-batch-io"
+    assert results["writer"]["directory"] == str(folder.resolve())
+    names = [f"shape_{i}.png" for i in range(8)]
+    assert sorted(p.name for p in folder.iterdir()) == names
+    assert [Path(p).name for p in results["writer"]["paths"]] == names
+
+    read = results["reader"]["images"]
+    assert results["reader"]["count"] == 8
+    assert tuple(read.shape) == (8, 1, 64, 64)
+    # Nearest-neighbour upsampling by 2 of what was written: each pixel
+    # becomes a 2 x 2 block, within the PNG's 8-bit rounding.
+    assert torch.allclose(read[:, :, ::2, ::2], batch, atol=1 / 255)

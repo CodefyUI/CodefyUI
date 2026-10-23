@@ -134,7 +134,7 @@ cd CodefyUI
 |---|---|
 | `--dev` / `--no-dev` | install the `[dev]` extra (pytest, pytest-asyncio, httpx, httpx-ws, trustme, tensorboard) |
 | `--gpu auto` | detect your driver and pick the matching PyTorch wheel |
-| `--gpu cpu` \| `cu118` \| `cu121` \| `cu124` \| `cu126` \| `cu128` \| `rocm6.1` \| `rocm6.2` \| `mps` \| `skip` | pick the wheel yourself; `skip` leaves an existing torch alone |
+| `--gpu cpu` \| `cu118` \| `cu121` \| `cu124` \| `cu126` \| `cu128` \| `cu129` \| `cu130` \| `rocm6.1` \| `rocm6.2` \| `rocm6.3` \| `rocm6.4` \| `rocm7.0` \| `xpu` \| `mps` \| `skip` | pick the wheel yourself; `skip` leaves an existing torch alone |
 | `--yes` / `-y` | non-interactive; same as `--gpu auto --no-dev` |
 
 With no flags on a TTY you get an interactive menu. See [GPU and Device Setup](https://docs.codefyui.com/getting-started/gpu-device) for how to choose.

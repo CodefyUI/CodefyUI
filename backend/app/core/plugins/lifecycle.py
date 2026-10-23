@@ -214,7 +214,7 @@ def uninstall_plugin(
 
         files_removed: bool | None = None
         directory: Path | None = None
-        if entry.get("source_kind") == "github_url":
+        if entry.get("source_kind") in plugin_loader.COPIED_SOURCE_KINDS:
             files_removed, failure, directory = _remove_downloaded_files(plugin_id)
             if not files_removed:
                 return _outcome(
@@ -300,6 +300,8 @@ def reinstall_command(
       :func:`~.sources.parse_source` to resolve to that same repository.
     * A linked directory gets ``cdui plugin link <path>`` while the directory
       and its manifest are still there; uninstalling never deletes it.
+    * A repository on another git host gets its ``url@ref``; a local copy
+      gets the path it was copied from while that is still there.
 
     Anything else -- a source this cannot vouch for -- gets ``None``, and the
     caller says nothing rather than print a command that would fail or
@@ -343,6 +345,27 @@ def reinstall_command(
             and (Path(path) / plugin_loader.MANIFEST_FILENAME).is_file()
         ):
             return f"cdui plugin link {_shell_quote(path)}"
+    if kind == "git_url":
+        url = entry.get("url")
+        ref = entry.get("ref") or ""
+        if not isinstance(url, str) or not isinstance(ref, str):
+            return None
+        spec = url + (f"@{ref}" if ref else "")
+        if not _resolves_as(spec, catalog, ("git", url, "", ref)):
+            return None
+        return f"cdui plugin install {_shell_quote(spec)}"
+
+    if kind == "local_copy":
+        # The folder or archive it was copied from, while that is still
+        # there. Uninstalling deleted only the copy.
+        path = entry.get("path")
+        if (
+            isinstance(path, str)
+            and Path(path).is_absolute()
+            and not _UNSAFE_PATH_CHARS.intersection(path)
+            and Path(path).exists()
+        ):
+            return f"cdui plugin install {_shell_quote(path)}"
     return None
 
 

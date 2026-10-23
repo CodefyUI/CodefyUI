@@ -77,7 +77,10 @@ class ImageBatchReaderNode(BaseNode):
         "fails to open is skipped. max_images caps how many are read. A chain "
         "wired into `transform` (the training dataset's eval_transform) replaces "
         "resize and the [0, 1] conversion, so the batch is preprocessed exactly "
-        "as the training data was; every image must then come out the same size."
+        "as the training data was; every image must then come out the same size. "
+        "A wired `directory` (ImageWriter's `directory` output) replaces the "
+        "directory param and runs this node after the writer, under the same "
+        "rule: inside the data or examples directories."
     )
 
     # #144: cacheable again -- cache_fingerprint() below folds an aggregate
@@ -139,6 +142,16 @@ class ImageBatchReaderNode(BaseNode):
                 description=TRANSFORM_INPUT_DESC,
                 optional=True,
             ),
+            PortDefinition(
+                name="directory",
+                data_type=DataType.STRING,
+                description=(
+                    "Directory to read (overrides the directory param when "
+                    "wired). Wire ImageWriter.directory here to read its "
+                    "files after it writes them."
+                ),
+                optional=True,
+            ),
         ]
 
     @classmethod
@@ -191,7 +204,10 @@ class ImageBatchReaderNode(BaseNode):
         from PIL import Image
         from torchvision import transforms
 
-        directory = params.get("directory", "")
+        # The wired directory wins, as VideoLoad's path does. The edge is
+        # also what orders this read after an upstream ImageWriter: a
+        # trigger edge does not order execution.
+        directory = str(inputs.get("directory") or params.get("directory", "") or "")
         pattern = params.get("pattern", "*.png")
         resize = params.get("resize", 224)
         max_images = params.get("max_images", 0)

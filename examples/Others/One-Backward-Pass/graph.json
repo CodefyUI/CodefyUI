@@ -1,0 +1,274 @@
+{
+  "name": "One backward pass",
+  "description": "Which embedding rows a gradient reaches",
+  "gallery": {
+    "section": "concepts",
+    "order": 21
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ids",
+      "type": "TensorInput",
+      "position": {
+        "x": 40,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "shape": "4",
+          "dtype": "int64",
+          "value_mode": "explicit",
+          "values": [
+            0,
+            2,
+            2,
+            3
+          ],
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "weights",
+      "type": "TensorInput",
+      "position": {
+        "x": 40,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "shape": "4,1",
+          "dtype": "float32",
+          "value_mode": "explicit",
+          "values": [
+            [
+              1.0
+            ],
+            [
+              2.0
+            ],
+            [
+              3.0
+            ],
+            [
+              4.0
+            ]
+          ],
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "emb",
+      "type": "Embedding",
+      "position": {
+        "x": 360,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "num_embeddings": 5,
+          "embedding_dim": 2,
+          "padding_idx": -1
+        }
+      }
+    },
+    {
+      "id": "print-rows",
+      "type": "Print",
+      "position": {
+        "x": 680,
+        "y": -400
+      },
+      "data": {
+        "params": {
+          "label": "Rows looked up, one per id [4, 2]"
+        }
+      }
+    },
+    {
+      "id": "mul",
+      "type": "Multiply",
+      "position": {
+        "x": 680,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "stats",
+      "type": "TensorStats",
+      "position": {
+        "x": 1000,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "precision": 4
+        }
+      }
+    },
+    {
+      "id": "bwd",
+      "type": "BackwardOnce",
+      "position": {
+        "x": 1320,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-out",
+      "type": "Print",
+      "position": {
+        "x": 1640,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "label": "z = row times weight [4, 2]; L is its sum"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -680,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "One backward pass, inspected. An Embedding is a table of rows, and a lookup copies row id for every id it is given. Here ids 0, 2, 2, 3 read four rows of a 5 x 2 table, each row is multiplied by its own weight (1, 2, 3, 4), and BackwardOnce marks the result z; the backward pass differentiates L = sum(z). Turn on Capture gradients (Settings > Training Behavior), run, select a node and open the Inspector's Backward tab. The Embedding's weight gradient is [1, 1] for row 0, [5, 5] for row 2 (looked up twice, with weights 2 and 3), [4, 4] for row 3, and zero for rows 1 and 4, which were never read: an update only changes the rows a batch used. The gradient on the weights node is each looked-up row's sum.\n\n檢視一次反向傳播。Embedding 是一張由列組成的表，查表時每給一個 id 就複製那一列。這裡 id 0、2、2、3 從 5 x 2 的表讀出四列，每一列乘上自己的權重（1、2、3、4），BackwardOnce 標記這個結果 z，反向傳播對 L = sum(z) 微分。打開「擷取梯度」（設定 > 訓練行為），執行，選一個節點並打開檢視器的「反向」分頁。Embedding 的權重梯度在第 0 列是 [1, 1]，第 2 列是 [5, 5]（被查了兩次，權重是 2 和 3），第 3 列是 [4, 4]，從沒被讀到的第 1、4 列是 0：一次更新只會改到這個批次用過的列。weights 節點上的梯度是每個被查到的那一列的總和。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -420,
+          "y": 0
+        },
+        "noteWidth": 360
+      }
+    },
+    {
+      "id": "note-stats",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": 480
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "TensorStats passes z through unchanged and writes its shape, min, max, mean, sum and std to the Log. The sum it reports is L, the number the backward pass starts from. With Capture gradients off, BackwardOnce is a plain pass-through and the run still prints the same values.\n\nTensorStats 讓 z 原樣通過，並把形狀、最小值、最大值、平均、總和與標準差寫到 Log。它回報的總和就是 L，也就是反向傳播的起點。關掉「擷取梯度」時，BackwardOnce 只是單純讓資料通過，執行結果印出的數值不變。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "stats",
+        "boundOffset": {
+          "x": 0,
+          "y": 480
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-emb",
+      "type": "note",
+      "position": {
+        "x": 360,
+        "y": 100
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The table starts from the run seed (0, stored in the file), so its values repeat on every run; the gradients above do not depend on them. Weight gradients need Persist weights between runs on, the default, because they are read from the module the run kept.\n\n這張表的初始值由執行種子（0，存在檔案裡）決定，所以每次執行數值都一樣；上面的梯度與這些數值無關。權重梯度需要開著「在多次執行間保留權重」（預設開啟），因為它是從執行保留下來的模組讀出來的。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "emb",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_ids",
+      "source": "start",
+      "target": "ids",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_weights",
+      "source": "start",
+      "target": "weights",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_ids_tensor_emb_tensor",
+      "source": "ids",
+      "target": "emb",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_emb_tensor_print-rows_value",
+      "source": "emb",
+      "target": "print-rows",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_emb_tensor_mul_tensor_a",
+      "source": "emb",
+      "target": "mul",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_weights_tensor_mul_tensor_b",
+      "source": "weights",
+      "target": "mul",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_mul_tensor_stats_tensor",
+      "source": "mul",
+      "target": "stats",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_stats_tensor_bwd_tensor",
+      "source": "stats",
+      "target": "bwd",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_bwd_tensor_print-out_value",
+      "source": "bwd",
+      "target": "print-out",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

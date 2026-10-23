@@ -5,7 +5,7 @@
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
     { "id": "history", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,24,1", "fill": "randn", "value": 0.0, "requires_grad": false } } },
-    { "id": "lstm", "type": "LSTM", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 1, "hidden_size": 32, "num_layers": 2, "batch_first": true, "bidirectional": false, "dropout": 0.0 } } },
+    { "id": "lstm", "type": "LSTM", "position": { "x": 270, "y": 0 }, "data": { "params": { "input_size": 1, "hidden_size": 32, "num_layers": 2, "batch_first": true, "bidirectional": false } } },
     { "id": "flat", "type": "Flatten", "position": { "x": 550, "y": 0 }, "data": { "params": { "start_dim": 1 } } },
     { "id": "predict", "type": "Linear", "position": { "x": 800, "y": 0 }, "data": { "params": { "in_features": 768, "out_features": 1 } } },
     { "id": "print_forecast", "type": "Print", "position": { "x": 1050, "y": 0 }, "data": { "params": { "label": "Next-step forecast (B,1)" } } },

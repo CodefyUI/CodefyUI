@@ -333,7 +333,7 @@
       "type": "note",
       "position": {
         "x": 340,
-        "y": -440
+        "y": -482
       },
       "data": {
         "noteKind": "text",
@@ -342,7 +342,7 @@
         "boundToNodeId": "tf-train",
         "boundOffset": {
           "x": 0,
-          "y": -440
+          "y": -482
         },
         "noteWidth": 300
       }

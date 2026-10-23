@@ -35,7 +35,7 @@
       "type": "Print",
       "position": {
         "x": 50,
-        "y": 1230
+        "y": 1313
       },
       "data": {
         "params": {
@@ -95,7 +95,7 @@
       "type": "Activation",
       "position": {
         "x": 50,
-        "y": 680
+        "y": 763
       },
       "data": {
         "params": {
@@ -138,7 +138,7 @@
       "type": "Reshape",
       "position": {
         "x": 1100,
-        "y": 680
+        "y": 763
       },
       "data": {
         "params": {
@@ -151,7 +151,7 @@
       "type": "DQN",
       "position": {
         "x": 50,
-        "y": 960
+        "y": 1043
       },
       "data": {
         "params": {

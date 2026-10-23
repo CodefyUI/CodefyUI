@@ -6,7 +6,8 @@ import packStyles from '../PackCenter/PackCenterModal.module.css';
 import styles from './PluginCenterModal.module.css';
 
 /**
- * The box you type a repository into.
+ * The box you type a source into: a repository, or a folder or archive on
+ * the server's disk.
  *
  * Installing something the catalog does not list is the one thing the Plugin
  * Center does that the Package Center has no equivalent for, and it is a
@@ -63,6 +64,7 @@ export function PluginSourceForm({
 }: PluginSourceFormProps) {
   const { t } = useI18n();
   const errorId = useId();
+  const hintId = useId();
   const [source, setSource] = useState('');
   // Typed something that is not a source. Local, because nothing was sent:
   // the store has no state for a request that was never made.
@@ -114,8 +116,9 @@ export function PluginSourceForm({
         }}
         aria-invalid={invalid || undefined}
         // `role="alert"` announces a refusal when it arrives; this is what
-        // says it again to somebody who tabs back into the field.
-        aria-describedby={refusal === null ? undefined : errorId}
+        // says it again to somebody who tabs back into the field. The hint
+        // is always part of the description: it is what the field accepts.
+        aria-describedby={refusal === null ? hintId : `${errorId} ${hintId}`}
         autoComplete="off"
         spellCheck={false}
       />
@@ -129,6 +132,10 @@ export function PluginSourceForm({
       >
         {inspecting ? t('pluginCenter.source.reviewing') : t('pluginCenter.source.review')}
       </button>
+
+      <div id={hintId} className={styles.sourceShapes}>
+        {t('pluginCenter.source.hint')}
+      </div>
 
       {refusal !== null && (
         <div id={errorId} className={styles.sourceError} role="alert">

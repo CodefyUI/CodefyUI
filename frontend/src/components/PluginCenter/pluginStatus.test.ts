@@ -6,6 +6,7 @@ import type { InspectionFailure } from '../../store/pluginStore';
 import {
   capabilityKey,
   cliInstallCommand,
+  currentStep,
   depSpec,
   httpUrl,
   isAvailableStatus,
@@ -236,6 +237,8 @@ describe('originLabel', () => {
       .toBe('pluginCenter.origin.official');
     expect(originLabel(entry({ id: 'demo', kind: 'external', source_kind: 'local' })))
       .toBe('pluginCenter.origin.local');
+    expect(originLabel(entry({ id: 'demo', kind: 'external', source_kind: 'local_copy' })))
+      .toBe('pluginCenter.origin.localCopy');
   });
 
   it('says nothing about a plain third-party repository', () => {
@@ -436,6 +439,30 @@ describe('cliInstallCommand', () => {
       .toBe('cdui plugin install owner/demo');
     expect(cliInstallCommand(entry({ id: 'demo' }))).toBe('cdui plugin install demo');
   });
+
+  it('quotes a copied folder whose path has a space in it', () => {
+    expect(cliInstallCommand(entry({
+      id: 'demo', source_kind: 'local_copy', source: '/Volumes/USB DRIVE/demo',
+    }))).toBe('cdui plugin install "/Volumes/USB DRIVE/demo"');
+    expect(cliInstallCommand(entry({
+      id: 'demo', source_kind: 'local_copy', source: '/srv/usb/demo.zip',
+    }))).toBe('cdui plugin install /srv/usb/demo.zip');
+  });
+});
+
+// ── which step the pane shows ────────────────────────────────────────────
+
+describe('currentStep', () => {
+  it('shows the running step, or the last one when none is running', () => {
+    expect(currentStep([])).toBeNull();
+    const done = { step: 'resolve', label: 'Resolving', state: 'done' as const };
+    const running = { step: 'extract', label: 'Copying', state: 'running' as const };
+    expect(currentStep([done, running])).toEqual({ index: 2, step: running });
+    const finished = { ...running, state: 'done' as const };
+    expect(currentStep([done, finished])).toEqual({ index: 2, step: finished });
+    expect(currentStep([running, { ...done, step: 'verify' }]))
+      .toEqual({ index: 1, step: running });
+  });
 });
 
 // ── the re-export ────────────────────────────────────────────────────────
@@ -446,5 +473,6 @@ describe('parseGitHubSource', () => {
       kind: 'github', owner: 'owner', repo: 'demo', ref: 'v1',
     });
     expect(parseGitHubSource('not a repo!')).toBeNull();
+    expect(parseGitHubSource('./demo')).toEqual({ kind: 'local', path: './demo' });
   });
 });

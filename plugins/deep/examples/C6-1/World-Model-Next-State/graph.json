@@ -6,9 +6,9 @@
     { "id": "state",  "type": "TensorInput", "position": { "x":  -60, "y": -120 }, "data": { "params": { "shape": "1,4", "dtype": "float32", "value_mode": "explicit", "values": [0.2, -0.5, 0.0, 1.0], "seed": 0 } } },
     { "id": "action", "type": "TensorInput", "position": { "x":  -60, "y":  120 }, "data": { "params": { "shape": "1,2", "dtype": "float32", "value_mode": "explicit", "values": [1.0, 0.0], "seed": 0 } } },
     { "id": "cat",    "type": "Concat",      "position": { "x":  240, "y":   0 }, "data": { "params": { "dim": 1 } } },
-    { "id": "fc1",    "type": "Linear",      "position": { "x":  540, "y":   0 }, "data": { "params": { "in_features": 6, "out_features": 16, "bias": true } } },
+    { "id": "fc1",    "type": "Linear",      "position": { "x":  540, "y":   0 }, "data": { "params": { "in_features": 6, "out_features": 16 } } },
     { "id": "relu",   "type": "Activation",  "position": { "x":  840, "y":   0 }, "data": { "params": { "function": "relu" } } },
-    { "id": "fc2",    "type": "Linear",      "position": { "x": 1140, "y":   0 }, "data": { "params": { "in_features": 16, "out_features": 4, "bias": true } } },
+    { "id": "fc2",    "type": "Linear",      "position": { "x": 1140, "y":   0 }, "data": { "params": { "in_features": 16, "out_features": 4 } } },
     { "id": "p_next", "type": "Print",       "position": { "x": 1440, "y":   0 }, "data": { "params": { "label": "Predicted next state (1, 4) — replaces a step of real environment" } } },
 
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },

@@ -314,7 +314,7 @@
       "type": "note",
       "position": {
         "x": 1220,
-        "y": -180
+        "y": -244
       },
       "data": {
         "noteKind": "text",
@@ -323,7 +323,7 @@
         "boundToNodeId": "rollout",
         "boundOffset": {
           "x": 0,
-          "y": -370
+          "y": -434
         },
         "noteWidth": 300
       }

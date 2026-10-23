@@ -22,6 +22,26 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Twelve built-in examples, one per group of nodes no example used before.** Training: **Augment, then train** (`ComposeTransform`, `RandomRotation`, `ColorJitter`, `RandAugment` and `ResizeTransform` wired into a Dataset's `train_transform`) and **Resume from a checkpoint** (`CheckpointSaver` → `CheckpointLoader` → `start_epoch`). Paper reproductions: **GroupNorm holds at batch 2** (Wu & He 2018; BatchNorm 0.70 vs GroupNorm 0.95 at batch size 2, with a batch-32 control at 0.96). LLM: **Data mix ratios** (`DataMixDataset` over two bundled text files, offline). Concepts: **K-fold cross-validation** (`KFoldSplit` + `LinearRegression`), **Reduce and Switch**, **Tensor ops tour** (`Split`, `Stack`, `RowSelector`, `AvgPool2d`, `TensorStats`), **Image batch IO** (`ImageWriter` → `ImageBatchReader` through a `ResizeTransform` chain), **Conv1d classifies sequences** (a temporal CNN beside the RNN examples), **Reward model from preferences** (`BradleyTerryLoss`, RLHF step 1), **Discounted returns** (`Discount` at three gammas) and **One backward pass** (`Embedding` gradients through `BackwardOnce` and `TensorStats`). Every one runs offline on a CPU in seconds, is seeded, and its test pins the numbers its overview note quotes. The gallery now holds 72 built-in examples; the new ones sit under `examples/Others/` and the existing topic folders.
+- **`ImageBatchReader` has an optional `directory` input and `ImageFolderDataset` an optional `path` input.** A wired value replaces the setting, follows the same data-directory rules, and orders the read after the node that produced the folder, which a trigger edge never did.
+- **`cdui install --gpu` and the Package Center offer the PyTorch builds `cu129`, `cu130`, `rocm6.3`, `rocm6.4`, `rocm7.0` and `xpu`** (Intel GPUs, Linux and Windows). Auto-detection recommends `cu130` for NVIDIA driver 580 or newer, `cu129` for 575 or newer, and `xpu` when `xpu-smi` is on PATH; the build picker names the hardware of each build (`cu130 (CUDA 13.0)`, `xpu (Intel GPU)`). Runs do not use Intel GPUs yet: the runtime's device list is unchanged.
+- **A plugin installs from a folder or an archive on the server's disk.** `cdui plugin install` and the Plugin Center take `/abs/path`, `./rel`, `~/x` or `file:///x`, pointing at a folder, a `.zip`, a `.tar.gz` or a `.tgz`, for a plugin handed out on a USB stick or a shared drive. It goes through the same manifest check, AST gate, consent, dependency install and staging as a GitHub install, is pinned to the sha256 that was reviewed (a folder edited between review and install is refused), and is recorded as `source_kind: "local_copy"`; Update is not offered. New refusal codes `local_not_found` and `source_refused`. See `docs/docs/usage/plugin-center.md#installing-from-a-folder-or-an-archive`.
+- **A plugin installs from any HTTPS git host** (GitLab, Gitea/Forgejo, Codeberg, Bitbucket, a self-hosted server) as `https://host/owner/repo[@ref]`. The server clones with `git` (https only, no credential prompts, submodules off, a 5-minute deadline and a size cap), installs the commit that was reviewed, records `source_kind: "git_url"`, and offers Update; github.com URLs keep using the GitHub API. New refusal codes `git_unavailable`, `git_not_found`, `git_timeout` and `git_failed`. See `docs/docs/usage/plugin-center.md#installing-from-another-git-host`.
+- **Offline pack install for machines without internet.** `cdui packs export <pack> [--items a,b] <dir>` bundles an installed pack's model files and the wheels its Python packages need for this platform; `cdui packs install <pack> --from <dir>` installs the bundle on another machine after checking it against the catalog (ids, revisions, digests), so a bundle can never add a pack or item the catalog does not know. `POST /api/packs/{id}/install` accepts `from_dir` behind the same loopback gate. See `docs/docs/usage/optional-packs.md#offline-install`.
+
+### Changed
+
+- **The Plugin Center's "Install from GitHub" box is "Install from a source"**, with a line listing the shapes it takes; a row shows "Local copy" with its path, or links the git-host URL it came from. Every plugin archive is capped at 20,000 members, and zip archives are accepted.
+- **`ImageWriter` takes a TENSOR on its `image` input**, so `TensorCreate` or `DatasetBatch` output connects. A batch of more than one image writes one file per image with a zero-padded index, and new `paths` and `directory` outputs name what was written. A batch used to save only its first image.
+
+### Fixed
+
+- **Built-in and pack examples no longer open with overlapping cards or notes.** Every example was measured on the canvas; 40 overlaps in 23 graphs are moved apart.
+- **Six example graphs saved params their nodes stopped defining** (`dropout` on GRU, LSTM and MultiHeadAttention; `alpha` on Multiply; `bias` on Linear). The deep pack's Conv2D Kernel Effects set its activation through a stale `type` key and only ran ReLU because that is the default; it now sets `function`.
+- **`TextCorpusDataset` finds bundled `data/samples/` files from any working directory and in project mode**, the rule `DocumentLoader` already applied.
+
 ## [3.2.0] — 2026-10-22
 
 3.2.0 completes the control-plane / worker split that 3.1.0 started (#764).

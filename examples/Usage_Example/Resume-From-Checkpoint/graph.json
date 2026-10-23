@@ -1,0 +1,575 @@
+{
+  "name": "Resume from a checkpoint",
+  "description": "Save after 10 epochs, train 10 more",
+  "gallery": {
+    "section": "training",
+    "order": 11
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "data",
+      "type": "SyntheticDataset",
+      "position": {
+        "x": 40,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "kind": "moons",
+          "n_samples": 600,
+          "noise": 0.25,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 340,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.25,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "TensorDataset",
+      "position": {
+        "x": 640,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "TensorDataset",
+      "position": {
+        "x": 640,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 940,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "batch_size": 32,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 640,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Linear\",\"params\":{\"in_features\":2,\"out_features\":32}},{\"id\":\"l1\",\"type\":\"ReLU\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":32,\"out_features\":2}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"eout\",\"source\":\"l2\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 940,
+        "y": 640
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 940,
+        "y": 1100
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train-1",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1260,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "epochs": 10,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "save",
+      "type": "CheckpointSaver",
+      "position": {
+        "x": 1600,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "path": "resume-demo.pt",
+          "epoch": 0
+        }
+      }
+    },
+    {
+      "id": "opt-2",
+      "type": "Optimizer",
+      "position": {
+        "x": 1940,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "load",
+      "type": "CheckpointLoader",
+      "position": {
+        "x": 2260,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "path": "resume-demo.pt",
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-epoch",
+      "type": "Print",
+      "position": {
+        "x": 2600,
+        "y": -760
+      },
+      "data": {
+        "params": {
+          "label": "Epoch stored in the checkpoint"
+        }
+      }
+    },
+    {
+      "id": "train-2",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2600,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "epochs": 20,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "curve",
+      "type": "Concat",
+      "position": {
+        "x": 2940,
+        "y": -760
+      },
+      "data": {
+        "params": {
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 3240,
+        "y": -760
+      },
+      "data": {
+        "params": {
+          "title": "Loss per epoch: 10 saved, 10 resumed",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 2940,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "batch_size": 256
+        }
+      }
+    },
+    {
+      "id": "print-acc",
+      "type": "Print",
+      "position": {
+        "x": 3240,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy after 20 epochs"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "A checkpoint holds everything a training run needs to carry on: the model's weights, the optimizer's state (for Adam, the running averages of each gradient and of its square, and the step count), the number of finished epochs, and the loss history. The first TrainingLoop trains a small MLP on two moons for 10 epochs, and CheckpointSaver writes resume-demo.pt into the models directory. CheckpointLoader reads the file back, and its epoch output goes into the second TrainingLoop's start_epoch, so that loop runs epochs 10 to 19 of a 20-epoch run. The loss curve joins the saved history to the new one, and it carries on from where the first loop stopped.\n\ncheckpoint 保存了讓訓練接著跑下去所需的一切：模型權重、optimizer 的狀態（Adam 對每個梯度與其平方的移動平均，以及步數）、已完成的 epoch 數與 loss 紀錄。第一個 TrainingLoop 在雙月牙資料上訓練一個小 MLP 10 個 epoch，CheckpointSaver 把 resume-demo.pt 寫進 models 目錄。CheckpointLoader 讀回這個檔案，它的 epoch 輸出接到第二個 TrainingLoop 的 start_epoch，於是這個迴圈執行 20 個 epoch 中的第 10 到第 19 個。loss 曲線把存下的紀錄與新的紀錄接在一起，從第一個迴圈停下的地方繼續往下走。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-save",
+      "type": "note",
+      "position": {
+        "x": 1600,
+        "y": 200
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "CheckpointSaver takes the optimizer and the epoch from TrainingLoop's own outputs, so it stores the state that actually trained and the epochs actually finished. Delete the epoch wire and the stored epoch falls back to the param, 0, and the second loop trains all 20 epochs again.\n\nCheckpointSaver 的 optimizer 與 epoch 都取自 TrainingLoop 自己的輸出，所以存下的是實際訓練過的狀態與實際完成的 epoch 數。刪掉 epoch 這條線，存下的 epoch 會退回參數值 0，第二個迴圈就會重新訓練完整的 20 個 epoch。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "save",
+        "boundOffset": {
+          "x": 0,
+          "y": 460
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-load",
+      "type": "note",
+      "position": {
+        "x": 2260,
+        "y": -820
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "In practice the two halves run at different times: training stops, and a later graph wires a fresh SequentialModel and Optimizer into CheckpointLoader. Here the loader takes the model from CheckpointSaver's pass-through output, which also makes it wait until the file is written, and a new Optimizer whose empty state the checkpoint fills in.\n\n實務上兩半會在不同時間執行：訓練停下後，之後的另一張圖把全新的 SequentialModel 與 Optimizer 接進 CheckpointLoader。這裡 loader 從 CheckpointSaver 的 pass-through 輸出取得模型，這也讓它等到檔案寫完才執行；另外接一個新的 Optimizer，它空白的狀態由 checkpoint 填回。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "load",
+        "boundOffset": {
+          "x": 0,
+          "y": -560
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_data",
+      "source": "start",
+      "target": "data",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_data_tensor_split_features",
+      "source": "data",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_data_labels_split_labels",
+      "source": "data",
+      "target": "split",
+      "sourceHandle": "labels",
+      "targetHandle": "labels"
+    },
+    {
+      "id": "e_split_x_train_ds-train_features",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "x_train",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_split_y_train_ds-train_targets",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "y_train",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_split_x_test_ds-test_features",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "x_test",
+      "targetHandle": "features"
+    },
+    {
+      "id": "e_split_y_test_ds-test_targets",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "y_test",
+      "targetHandle": "targets"
+    },
+    {
+      "id": "e_ds-train_classes_ds-test_classes",
+      "source": "ds-train",
+      "target": "ds-test",
+      "sourceHandle": "classes",
+      "targetHandle": "classes"
+    },
+    {
+      "id": "e_ds-train_dataset_dl-train_dataset",
+      "source": "ds-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train-1_model",
+      "source": "model",
+      "target": "train-1",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-1_dataloader",
+      "source": "dl-train",
+      "target": "train-1",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train-1_optimizer",
+      "source": "opt",
+      "target": "train-1",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train-1_loss_fn",
+      "source": "loss",
+      "target": "train-1",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train-1_model_save_model",
+      "source": "train-1",
+      "target": "save",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_train-1_optimizer_save_optimizer",
+      "source": "train-1",
+      "target": "save",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_train-1_losses_save_losses",
+      "source": "train-1",
+      "target": "save",
+      "sourceHandle": "losses",
+      "targetHandle": "losses"
+    },
+    {
+      "id": "e_train-1_epoch_save_epoch",
+      "source": "train-1",
+      "target": "save",
+      "sourceHandle": "epoch",
+      "targetHandle": "epoch"
+    },
+    {
+      "id": "e_save_model_opt-2_model",
+      "source": "save",
+      "target": "opt-2",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_save_model_load_model",
+      "source": "save",
+      "target": "load",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_opt-2_optimizer_load_optimizer",
+      "source": "opt-2",
+      "target": "load",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_load_epoch_print-epoch_value",
+      "source": "load",
+      "target": "print-epoch",
+      "sourceHandle": "epoch",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_load_model_train-2_model",
+      "source": "load",
+      "target": "train-2",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_load_optimizer_train-2_optimizer",
+      "source": "load",
+      "target": "train-2",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_load_epoch_train-2_start_epoch",
+      "source": "load",
+      "target": "train-2",
+      "sourceHandle": "epoch",
+      "targetHandle": "start_epoch"
+    },
+    {
+      "id": "e_dl-train_dataloader_train-2_dataloader",
+      "source": "dl-train",
+      "target": "train-2",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_loss_loss_fn_train-2_loss_fn",
+      "source": "loss",
+      "target": "train-2",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_load_losses_curve_tensor_a",
+      "source": "load",
+      "target": "curve",
+      "sourceHandle": "losses",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_train-2_losses_curve_tensor_b",
+      "source": "train-2",
+      "target": "curve",
+      "sourceHandle": "losses",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_curve_tensor_viz_data",
+      "source": "curve",
+      "target": "viz",
+      "sourceHandle": "tensor",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_train-2_model_eval_model",
+      "source": "train-2",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_ds-test_dataset_eval_dataset",
+      "source": "ds-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval_accuracy_print-acc_value",
+      "source": "eval",
+      "target": "print-acc",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

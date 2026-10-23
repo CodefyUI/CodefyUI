@@ -110,6 +110,7 @@ def pip_install_argv(
     constraints_path: Path | None,
     python: str = sys.executable,
     dry_run: bool = False,
+    extra_args: Sequence[str] = (),
 ) -> list[str]:
     """The full command line for installing *specs*.
 
@@ -124,6 +125,10 @@ def pip_install_argv(
     ``tests/test_packs_network.py`` can ask "would this pack install on this
     machine?" without mutating the venv the question is about, which is the
     only honest way to run that check against a live index.
+
+    *extra_args* go after the options and before the specs. The offline
+    bundle install passes ``--no-index --find-links <dir>`` here; they come
+    from the code, never from a request.
     """
     return [
         find_uv() or "uv",
@@ -132,6 +137,7 @@ def pip_install_argv(
         "--no-progress",
         *(["--dry-run"] if dry_run else []),
         *(["-c", str(constraints_path)] if constraints_path is not None else []),
+        *extra_args,
         *specs,
     ]
 
@@ -256,6 +262,7 @@ def run_pip(
     cwd: Path,
     tail: list[str] | None = None,
     conflict: threading.Event | None = None,
+    extra_args: Sequence[str] = (),
 ) -> int:
     """Install *specs* with uv, streaming output as ``log`` events.
 
@@ -281,7 +288,28 @@ def run_pip(
     daemon reader thread and the reader is the caller's thread after
     ``reader.join``.
     """
-    argv = pip_install_argv(specs, constraints_path=constraints_path)
+    argv = pip_install_argv(specs, constraints_path=constraints_path,
+                            extra_args=extra_args)
+    return run_argv(argv, emit=emit, cancel_check=cancel_check, cwd=cwd,
+                    tail=tail, conflict=conflict)
+
+
+def run_argv(
+    argv: Sequence[str],
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    cwd: Path,
+    tail: list[str] | None = None,
+    conflict: threading.Event | None = None,
+) -> int:
+    """Run *argv* the way :func:`run_pip` runs uv, and return its exit code.
+
+    The same environment, creation flags, streaming and cancellation. 127
+    when the executable is missing. Used for ``pip download`` by the bundle
+    export as well as for the install itself.
+    """
+    argv = list(argv)
     emit({"type": "log", "line": " ".join(argv)})
 
     try:
@@ -299,8 +327,10 @@ def run_pip(
             creationflags=creation_flags(),
         )
     except FileNotFoundError:
+        tool = Path(argv[0]).stem or argv[0]
         emit({"type": "log",
-              "line": "uv was not found on PATH; install uv and try again"})
+              "line": f"{tool} was not found on PATH; install {tool} and "
+                      f"try again"})
         return 127
 
     def _pump() -> None:

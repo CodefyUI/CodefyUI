@@ -1746,6 +1746,9 @@ describe('plugin center endpoints', () => {
       capabilities_added: ['network'],
       allowed_modules_added: ['requests'],
       warnings: [],
+      path: null,
+      source_form: null,
+      digest: null,
       ...overrides,
     };
   }
@@ -2055,6 +2058,9 @@ describe('plugin center endpoints', () => {
         capabilities_added: [],
         allowed_modules_added: [],
         warnings: [],
+        path: null,
+        source_form: null,
+        digest: null,
       });
     });
 
@@ -2083,7 +2089,7 @@ describe('plugin center endpoints', () => {
 
     it('reads a kind, a mode or a source_kind outside its union', async () => {
       mockFetch(200, inspection({
-        kind: 'local' as PluginInspection['kind'],
+        kind: 'ftp' as PluginInspection['kind'],
         mode: 'repair' as PluginInspection['mode'],
         installed: {
           sha: 'abc123', version: '1.0.0', capabilities: [], trusted_modules: [],
@@ -2099,6 +2105,46 @@ describe('plugin center endpoints', () => {
       expect(out.installed?.source_kind).toBeNull();
       // An explicit false survives: only an ABSENT switch is derived.
       expect(out.installed?.enabled).toBe(false);
+    });
+
+    it('reads a local source with its path, form and digest', async () => {
+      mockFetch(200, inspection({
+        kind: 'local', path: '/srv/usb/demo.zip', source_form: 'archive',
+        digest: 'c'.repeat(64),
+        installed: {
+          sha: null, version: '0.1.0', capabilities: [], trusted_modules: [],
+          enabled: true, source_kind: 'local_copy',
+        },
+      }));
+      const out = await inspectPluginSource('/srv/usb/demo.zip');
+      expect(out).toMatchObject({
+        kind: 'local', path: '/srv/usb/demo.zip', source_form: 'archive',
+        digest: 'c'.repeat(64),
+      });
+      expect(out.installed?.source_kind).toBe('local_copy');
+
+      mockFetch(200, inspection({ kind: 'local', source_form: 'folder' }));
+      expect((await inspectPluginSource('/srv/usb/demo')).source_form).toBe('folder');
+    });
+
+    it('reads a repository on another git host as kind git', async () => {
+      mockFetch(200, inspection({
+        kind: 'git', url: 'https://codeberg.org/a/b',
+        installed: {
+          sha: 'abc', version: '1.0.0', capabilities: [], trusted_modules: [],
+          enabled: true, source_kind: 'git_url',
+        },
+      }));
+      const out = await inspectPluginSource('https://codeberg.org/a/b');
+      expect(out.kind).toBe('git');
+      expect(out.installed?.source_kind).toBe('git_url');
+    });
+
+    it('drops a source form this build cannot name', async () => {
+      mockFetch(200, inspection({
+        kind: 'local', source_form: 'disk-image' as PluginInspection['source_form'],
+      }));
+      expect((await inspectPluginSource('/srv/usb/demo.dmg')).source_form).toBeNull();
     });
   });
 

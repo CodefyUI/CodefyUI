@@ -27,7 +27,7 @@ description: 安裝特定 LLM 節點與 GPU 後端所需的選用 Python 套件�
 | `sentence-embeddings` | `sentence-transformers` 套件和四個小型編碼器：`all-MiniLM-L6-v2`、`paraphrase-multilingual-MiniLM-L12-v2`、`bge-small-zh-v1.5`、`multilingual-e5-small` | 每個模型分別為 90 MB、470 MB、95 MB、470 MB（它們是替代選項，不是一組），另加 pip 套件 | 兩個 MiniLM 模型為 Apache-2.0；`bge` 和 `e5` 為 MIT | 整個 `TextEmbedding` 節點，以及 `WordVector` 的四個句子後端 |
 | `word-vectors` | `glove-wiki-gigaword-50.gz`，包含 400,000 個詞、50 個維度的 GloVe 詞向量表；不含 Python 套件 | 69 MB，另加儲存在旁邊、約 83 MB 的轉換表 | PDDL-1.0 | `WordVector` 的 `glove-50d` 後端 |
 | `rag` | `Qwen2.5-0.5B-Instruct`，可在 CPU 上執行的本機生成模型 | 約 1 GB | Apache-2.0 | `HFTextGenerate`，它也需要先安裝 `sentence-embeddings`：`rag` 不含 Python 套件，使用的是該套件包提供的 `transformers` 套件 |
-| `gpu-torch` | 為這台機器選取的 CUDA 或 ROCm PyTorch 版本 | 依版本而異 | PyTorch 的 BSD-3-Clause 授權 | 不新增節點。請使用 `cdui install --gpu <variant>` 安裝，而非 `cdui packs`；詳見 [GPU 與裝置設定](../getting-started/gpu-device.md) |
+| `gpu-torch` | 為這台機器選取的 CUDA、ROCm 或 Intel XPU PyTorch 版本 | 依版本而異 | PyTorch 的 BSD-3-Clause 授權 | 不新增節點。請使用 `cdui install --gpu <variant>` 安裝，而非 `cdui packs`；詳見 [GPU 與裝置設定](../getting-started/gpu-device.md) |
 
 下載量欄列出網路傳輸大小。安裝 `word-vectors` 會下載 69 MB，並寫入另一份約 83 MB 的轉換表。磁碟預檢查需要約 230 MB 可用空間；移除時會刪除這兩個檔案。
 
@@ -72,7 +72,7 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 
 部分安裝必須取代伺服器已匯入的套件。**GPU 版 PyTorch** 一律需要此模式。如果線上安裝的 constraints 偵測到 resolver 衝突，並在取代任何套件前停止，該套件也需要此模式。由 `cdui start` 管理的伺服器會記錄請求、啟動分離的輔助程式，然後關閉。輔助程式會等待伺服器結束、執行安裝、記錄結果，再使用原本的 `cdui start` 引數啟動伺服器。輔助程式不使用線上安裝的 constraints 檔，因此可在套件需要不同版本時取代 torch。
 
-**套件中心行為。** **GPU 版 PyTorch** 卡片會顯示偵測到的 GPU 和已安裝版本；如果建議版本不同，也會顯示建議版本。以下三項都成立時，卡片會顯示**安裝並重新啟動**：重新啟動模式可用、這個平台有可安裝的版本，且已安裝版本與建議版本不同。提供的版本超過一個時，按鈕前面會有版本選單。按鈕下方的說明文字為「圖執行期間無法重新啟動。」，同一個安裝的終端機命令則收合在**手動指令**底下。重新啟動模式無法使用時（包括使用 `cdui dev`），或這個平台沒有可安裝的版本時，卡片不會顯示按鈕，而會說明原因並顯示命令。已經是建議版本的機器只會看到版本資訊和命令。在 Apple Silicon 上，MPS 加速已包含在預設的 PyTorch 版本中，所以卡片只顯示版本資訊和「GPU 加速已內建於預設的 PyTorch 版本。」提供的版本：Windows 為 `cpu`、`cu118`、`cu121`、`cu124`、`cu126`、`cu128`；Linux 為上述版本再加上 `rocm6.1`、`rocm6.2`；macOS 沒有。
+**套件中心行為。** **GPU 版 PyTorch** 卡片會顯示偵測到的 GPU 和已安裝版本；如果建議版本不同，也會顯示建議版本。以下三項都成立時，卡片會顯示**安裝並重新啟動**：重新啟動模式可用、這個平台有可安裝的版本，且已安裝版本與建議版本不同。提供的版本超過一個時，按鈕前面會有版本選單。按鈕下方的說明文字為「圖執行期間無法重新啟動。」，同一個安裝的終端機命令則收合在**手動指令**底下。重新啟動模式無法使用時（包括使用 `cdui dev`），或這個平台沒有可安裝的版本時，卡片不會顯示按鈕，而會說明原因並顯示命令。已經是建議版本的機器只會看到版本資訊和命令。在 Apple Silicon 上，MPS 加速已包含在預設的 PyTorch 版本中，所以卡片只顯示版本資訊和「GPU 加速已內建於預設的 PyTorch 版本。」提供的版本：Windows 為 `cpu`、`cu118`、`cu121`、`cu124`、`cu126`、`cu128`、`cu129`、`cu130`、`xpu`；Linux 為上述版本再加上 `rocm6.1`、`rocm6.2`、`rocm6.3`、`rocm6.4`、`rocm7.0`；macOS 沒有。選單中的每個選項都會標示對應的硬體，例如 `cu130 (CUDA 13.0)` 或 `xpu (Intel GPU)`。
 
 確認「安裝 cu128 並重新啟動伺服器？」等提示後，**伺服器重新啟動中**遮罩會阻擋頁面並顯示經過秒數。另一個伺服器行程開始回應時，頁面會重新載入，接著顯示「伺服器已重新啟動，GPU 版 PyTorch 已可使用。」或「伺服器已重新啟動，但安裝 GPU 版 PyTorch 失敗：」，並附上原因或安裝程式的最後輸出。如果線上安裝因 resolver 衝突而停止，且伺服器能自行重新啟動，其活動橫幅會提供**安裝並重新啟動**；確認視窗的內容為「伺服器將重新啟動並安裝 Python 套件；模型須於重啟後再執行一次安裝下載。」否則橫幅會顯示需在伺服器停止時執行的 `uv pip install` 命令。
 
@@ -105,6 +105,32 @@ uv pip uninstall --python <path-to-venv-python> sentence-transformers
 請執行 `cdui status` 查看重新啟動狀態。其中的「重啟安裝」列會指出套件；輔助程式或它的安裝執行時顯示**收尾中**，兩者結束但未清除認領紀錄時顯示**已中斷**。完成後的一小時內，「上次重啟安裝」會顯示記錄的結果。如果安裝成功但重新啟動失敗，紀錄會保留安裝狀態、加入 `relaunch: failed` 並包含記錄檔路徑；`cdui status` 會將整體重新啟動標示為失敗。完整安裝程式輸出位於 `packs/logs/restart-<job>.log`。
 
 認領狀態為**已中斷**時，請執行 `cdui start` 刪除紀錄並啟動伺服器。狀態為**收尾中**時，`cdui start` 會拒絕啟動另一個行程，並要求查看 `cdui status`。
+
+### 離線安裝 {/* #offline-install */}
+
+沒有網路的電腦教室，可以用連網電腦做好的套件包（bundle）安裝。在連網電腦上照常安裝套件包，再匯出到一個目錄，例如 USB 隨身碟：
+
+```bash
+cdui packs install sentence-embeddings --yes
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+cdui packs export sentence-embeddings /media/usb/st-mini --items all-MiniLM-L6-v2
+```
+
+套件包內含已安裝的項目（Hugging Face snapshot 的檔案與單檔素材）、這個套件包在標準 CodefyUI 安裝之外新增的 Python 套件 wheel，以及一份 `manifest.json`，記錄套件包、項目與 revision、每個檔案的大小與 sha256、CodefyUI 版本與平台。不加 `--items` 時，會匯出連網電腦上已安裝的所有項目。`--no-wheels` 會略過 wheel，只打包模型。目的地必須是空目錄或尚不存在；匯出失敗或取消時，會移除已寫入的內容。
+
+在每台離線電腦上，把套件包複製過去後從它安裝：
+
+```bash
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`--from` 不會下載任何東西，因此不會要求確認。`--items` 可從套件包中挑選項目。安裝會在複製任何檔案前，先用這台電腦的型錄檢查 manifest：屬於其他套件包的套件包，或列出型錄沒有的項目、repository、revision 或檔案時，會以離開碼 `2` 拒絕，所以套件包只能提供型錄本來就列出的檔案。每個檔案在複製進快取時都會比對 sha256，位置與下載時相同；不相符時安裝失敗，不會留下不完整的項目。Python 套件會在與線上安裝相同的 constraints 檔案下，以 `uv pip install --no-index --find-links <套件包>/wheels` 安裝。
+
+wheel 與平台相關：它們符合執行匯出那台電腦的作業系統、CPU 架構與 Python 版本，在不同平台上安裝會被拒絕，並說明兩邊各是什麼平台。電腦教室裡每種平台各做一份套件包。套件包不含 PyTorch，也不含標準 CodefyUI 安裝已經提供的任何套件；離線電腦必須先有可正常運作的 CodefyUI。為某台電腦硬體建置的套件（例如 `+cu128` 版本）不會被打包，匯出時會列出它們。磁碟檢查、一次只執行一個安裝，以及 loopback 限制，都與線上安裝相同。GPU 版 PyTorch 套件包無法打包；請在每台電腦上用 `cdui install --gpu` 安裝它的 wheel。
+
+請只安裝你自己製作或信任的套件包。型錄決定可以安裝什麼，但 Hugging Face snapshot 與 wheel 的內容來自套件包本身。
+
+API 也接受同樣的安裝：`POST /api/packs/{id}/install`，body 為 `{"from_dir": "<伺服器上的絕對路徑>"}`。套件中心目前還沒有對應的操作介面。
 
 ## 畫布上會看到的變化 {/* #what-changes-on-the-canvas */}
 

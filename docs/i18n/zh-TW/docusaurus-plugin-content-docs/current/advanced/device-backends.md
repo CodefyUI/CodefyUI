@@ -79,6 +79,10 @@ MPS 上不使用混合精度。bf16 與 fp16 autocast 在 torch 2.11 可以執�
 
 在 AMD + Linux 上搭配 ROCm 版本的 PyTorch 時，`torch.cuda.is_available()` 會回傳 `True`，因為 ROCm 暴露了一個與 CUDA 相容的介面。設定與圖的裝置選單會把這個裝置標示為 **AMD ROCm**；存進圖檔並由執行使用的值是 `cuda`（多卡時為各卡的 `cuda:N`），節點的 **device** 參數也會列為 `cuda`。這是預期的行為。
 
+## Intel GPU（XPU） {/* #intel-gpus-xpu */}
+
+`cdui install --gpu xpu` 會安裝 PyTorch 的 Intel GPU build，在該 venv 中可使用 `torch.xpu`。執行的裝置控制項目前還沒有 `xpu`：裝置選項為 `cpu`、`auto`、`cuda`（或 `cuda:N`）與 `mps`，`auto` 依序解析為 CUDA、MPS、CPU，裝置設為 `xpu` 的執行會因裝置無效而被拒絕，節點參數設為 `xpu` 時則會退回 CPU，並在 log 中留下警告。因此在裝了 `xpu` build 的電腦上，執行仍在 CPU 上進行。
+
 ## 實驗性：原生 MLX（spike） {/* #experimental-native-mlx-spike */}
 
 有一個**概念驗證 (proof-of-concept)**，把一個小型 MLP 的*前向推論*從 PyTorch 移植到 Apple 的 [MLX](https://github.com/ml-explore/mlx) 框架，產生數值上完全相同的結果（最大絕對差約 1.9e-7）。重點如下：

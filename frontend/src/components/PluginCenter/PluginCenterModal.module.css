@@ -103,6 +103,15 @@
   border-color: var(--accent-deep);
 }
 
+/* The shapes the field accepts, on their own row under it. */
+.sourceShapes {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+
 /* Why the last Review was refused. `flex-basis: 100%` puts it on its own row
    of the wrapping form rather than squeezing the field it is about. */
 .sourceError {

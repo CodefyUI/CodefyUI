@@ -1,0 +1,688 @@
+{
+  "name": "Augment, then train",
+  "description": "Rotate and jitter digits while training",
+  "gallery": {
+    "section": "training",
+    "order": 10
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "rotate",
+      "type": "RandomRotation",
+      "position": {
+        "x": 40,
+        "y": -620
+      },
+      "data": {
+        "params": {
+          "degrees": 15.0,
+          "expand": false,
+          "fill": 0.0
+        }
+      }
+    },
+    {
+      "id": "resize",
+      "type": "ResizeTransform",
+      "position": {
+        "x": 340,
+        "y": -620
+      },
+      "data": {
+        "params": {
+          "size": 32,
+          "interpolation": "bilinear"
+        }
+      }
+    },
+    {
+      "id": "jitter",
+      "type": "ColorJitter",
+      "position": {
+        "x": 40,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "brightness": 0.4,
+          "contrast": 0.4,
+          "saturation": 0.0,
+          "hue": 0.0
+        }
+      }
+    },
+    {
+      "id": "randaug",
+      "type": "RandAugment",
+      "position": {
+        "x": 340,
+        "y": -300
+      },
+      "data": {
+        "params": {
+          "num_ops": 1,
+          "magnitude": 5,
+          "num_magnitude_bins": 31
+        }
+      }
+    },
+    {
+      "id": "compose",
+      "type": "ComposeTransform",
+      "position": {
+        "x": 640,
+        "y": -460
+      },
+      "data": {
+        "params": {
+          "steps": 2
+        }
+      }
+    },
+    {
+      "id": "to-tensor",
+      "type": "ToTensorTransform",
+      "position": {
+        "x": 940,
+        "y": -460
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "normalize",
+      "type": "NormalizeTransform",
+      "position": {
+        "x": 1240,
+        "y": -460
+      },
+      "data": {
+        "params": {
+          "preset": "Half",
+          "mean": "0.5",
+          "std": "0.5"
+        }
+      }
+    },
+    {
+      "id": "eval-resize",
+      "type": "ResizeTransform",
+      "position": {
+        "x": 40,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "size": 32,
+          "interpolation": "bilinear"
+        }
+      }
+    },
+    {
+      "id": "eval-to-tensor",
+      "type": "ToTensorTransform",
+      "position": {
+        "x": 340,
+        "y": 760
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "eval-normalize",
+      "type": "NormalizeTransform",
+      "position": {
+        "x": 640,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "preset": "Half",
+          "mean": "0.5",
+          "std": "0.5"
+        }
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "Dataset",
+      "position": {
+        "x": 1540,
+        "y": -460
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "subset-train",
+      "type": "DatasetSplit",
+      "position": {
+        "x": 1840,
+        "y": -460
+      },
+      "data": {
+        "params": {
+          "val_fraction": 0.0,
+          "subset": 3000,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 940,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "name": "MNIST",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "subset-test",
+      "type": "DatasetSplit",
+      "position": {
+        "x": 1240,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "val_fraction": 0.0,
+          "subset": 1000,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 1540,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"l0\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":1,\"out_channels\":16,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l1\",\"type\":\"ReLU\"},{\"id\":\"l2\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l3\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":16,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"l4\",\"type\":\"ReLU\"},{\"id\":\"l5\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"l6\",\"type\":\"Flatten\"},{\"id\":\"l7\",\"type\":\"Linear\",\"params\":{\"in_features\":2048,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"target\":\"l0\",\"sourceHandle\":\"p_x\"},{\"id\":\"e1\",\"source\":\"l0\",\"target\":\"l1\"},{\"id\":\"e2\",\"source\":\"l1\",\"target\":\"l2\"},{\"id\":\"e3\",\"source\":\"l2\",\"target\":\"l3\"},{\"id\":\"e4\",\"source\":\"l3\",\"target\":\"l4\"},{\"id\":\"e5\",\"source\":\"l4\",\"target\":\"l5\"},{\"id\":\"e6\",\"source\":\"l5\",\"target\":\"l6\"},{\"id\":\"e7\",\"source\":\"l6\",\"target\":\"l7\"},{\"id\":\"eout\",\"source\":\"l7\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 2140,
+        "y": -460
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 1840,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.003
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 1840,
+        "y": 440
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2480,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "epochs": 1,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "print-loss",
+      "type": "Print",
+      "position": {
+        "x": 2820,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "label": "Training loss, epoch 1"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 2820,
+        "y": 360
+      },
+      "data": {
+        "params": {
+          "batch_size": 256
+        }
+      }
+    },
+    {
+      "id": "print-acc",
+      "type": "Print",
+      "position": {
+        "x": 3120,
+        "y": 360
+      },
+      "data": {
+        "params": {
+          "label": "Test accuracy, 1,000 clean digits"
+        }
+      }
+    },
+    {
+      "id": "peek",
+      "type": "DatasetBatch",
+      "position": {
+        "x": 2140,
+        "y": -1100
+      },
+      "data": {
+        "params": {
+          "batch_size": 16,
+          "start_index": 0
+        }
+      }
+    },
+    {
+      "id": "peek-scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 2440,
+        "y": -1100
+      },
+      "data": {
+        "params": {
+          "scalar": 0.5
+        }
+      }
+    },
+    {
+      "id": "peek-half",
+      "type": "TensorCreate",
+      "position": {
+        "x": 2440,
+        "y": -1400
+      },
+      "data": {
+        "params": {
+          "shape": "1",
+          "fill": "full",
+          "value": 0.5,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "peek-shift",
+      "type": "Add",
+      "position": {
+        "x": 2740,
+        "y": -1100
+      },
+      "data": {
+        "params": {
+          "alpha": 1.0
+        }
+      }
+    },
+    {
+      "id": "peek-viz",
+      "type": "Visualize",
+      "position": {
+        "x": 3040,
+        "y": -1100
+      },
+      "data": {
+        "params": {
+          "title": "16 augmented training digits",
+          "plot_type": "image"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Augmentation shows the model a slightly different version of each training image every time it is drawn. Here every MNIST digit is turned by up to 15 degrees, resized to 32x32, given a random brightness and contrast, and passed through one RandAugment operation. The model can no longer memorise the exact pixels of its 3,000 training images, so it has to learn what stays the same under those changes, which is what a regulariser does. The 1,000 test digits get the same resize and scaling with no randomness, and after one epoch on a CPU the model scores about 0.9 on them. MNIST ships with CodefyUI in backend/data, so nothing is downloaded; in a project directory the relative data_dir points at the project's assets/data, and the first run downloads MNIST there.\n\n資料增強讓模型每次抽到同一張訓練圖時，看到的都是稍微不同的版本。這裡每個 MNIST 數字會隨機旋轉最多 15 度、縮放成 32x32、隨機調整亮度與對比，再套用一個 RandAugment 操作。模型無法再死記 3,000 張訓練圖的精確像素，只能學會在這些變化下保持不變的特徵，這正是正規化的作用。1,000 張測試數字只做相同的縮放與數值轉換，沒有任何隨機性；在 CPU 上訓練一個 epoch 後，模型在這些數字上的準確率約 0.9。MNIST 隨 CodefyUI 附在 backend/data，不需要下載；在專案目錄中，相對的 data_dir 會指向專案的 assets/data，第一次執行時會把 MNIST 下載到那裡。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-chain",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": -1140
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Two chains are built side by side: a geometric one (RandomRotation, then ResizeTransform) and a photometric one (ColorJitter, then RandAugment). ComposeTransform joins them in port order, step_1 first, and ToTensorTransform and NormalizeTransform finish the pipeline that goes into the training Dataset's train_transform. Saturation and hue are 0 because MNIST is grayscale. Raise degrees past about 60 and a 6 starts to look like a 9, so the augmentation begins to change the label it was meant to keep.\n\n兩條轉換鏈並排建立：幾何的一條（RandomRotation，再接 ResizeTransform）與光度的一條（ColorJitter，再接 RandAugment）。ComposeTransform 依埠的順序把兩條接起來，step_1 在前，再由 ToTensorTransform 與 NormalizeTransform 完成整條管線，送進訓練用 Dataset 的 train_transform。MNIST 是灰階影像，所以 saturation 與 hue 設為 0。把 degrees 調到 60 以上，6 會開始看起來像 9，增強就開始改變它原本要保留的標籤。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "rotate",
+        "boundOffset": {
+          "x": 0,
+          "y": -520
+        },
+        "noteWidth": 560
+      }
+    },
+    {
+      "id": "note-eval",
+      "type": "note",
+      "position": {
+        "x": 40,
+        "y": 1060
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The test chain repeats only the deterministic steps: the same 32x32 resize and the same scaling to [-1, 1], with no rotation and no jitter. Wired into the test Dataset's eval_transform, it scores the model on digits as they really look. An augmented test set would measure the model on a distribution nobody asked about.\n\n測試用的轉換鏈只重複確定性的步驟：同樣縮放成 32x32、同樣轉換到 [-1, 1]，不旋轉也不抖動。接到測試用 Dataset 的 eval_transform 後，評估的是模型在數字原本樣貌上的表現。若連測試集也做增強，量到的就是一個沒有人關心的分布。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "eval-resize",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 560
+      }
+    },
+    {
+      "id": "note-peek",
+      "type": "note",
+      "position": {
+        "x": 2140,
+        "y": -840
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "DatasetBatch takes 16 digits from the augmented training subset, and ScalarMultiply and Add map them from [-1, 1] back to [0, 1] for Visualize. With the seed in Settings the same turns and shades come back on every run; clear it and each run draws new ones.\n\nDatasetBatch 從增強後的訓練子集取出 16 個數字，ScalarMultiply 與 Add 把數值從 [-1, 1] 轉回 [0, 1] 交給 Visualize。設定裡有 seed 時，每次執行都會出現同樣的旋轉與明暗；清掉 seed，每次執行都會抽出新的變化。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "peek",
+        "boundOffset": {
+          "x": 0,
+          "y": 260
+        },
+        "noteWidth": 560
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t_peek-half",
+      "source": "start",
+      "target": "peek-half",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_rotate_transform_resize_transform",
+      "source": "rotate",
+      "target": "resize",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_jitter_transform_randaug_transform",
+      "source": "jitter",
+      "target": "randaug",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_resize_transform_compose_step_1",
+      "source": "resize",
+      "target": "compose",
+      "sourceHandle": "transform",
+      "targetHandle": "step_1"
+    },
+    {
+      "id": "e_randaug_transform_compose_step_2",
+      "source": "randaug",
+      "target": "compose",
+      "sourceHandle": "transform",
+      "targetHandle": "step_2"
+    },
+    {
+      "id": "e_compose_transform_to-tensor_transform",
+      "source": "compose",
+      "target": "to-tensor",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_to-tensor_transform_normalize_transform",
+      "source": "to-tensor",
+      "target": "normalize",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_normalize_transform_ds-train_train_transform",
+      "source": "normalize",
+      "target": "ds-train",
+      "sourceHandle": "transform",
+      "targetHandle": "train_transform"
+    },
+    {
+      "id": "e_eval-resize_transform_eval-to-tensor_transform",
+      "source": "eval-resize",
+      "target": "eval-to-tensor",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_eval-to-tensor_transform_eval-normalize_transform",
+      "source": "eval-to-tensor",
+      "target": "eval-normalize",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e_eval-normalize_transform_ds-test_eval_transform",
+      "source": "eval-normalize",
+      "target": "ds-test",
+      "sourceHandle": "transform",
+      "targetHandle": "eval_transform"
+    },
+    {
+      "id": "e_ds-train_dataset_subset-train_dataset",
+      "source": "ds-train",
+      "target": "subset-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_ds-test_dataset_subset-test_dataset",
+      "source": "ds-test",
+      "target": "subset-test",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset-train_train_dl-train_dataset",
+      "source": "subset-train",
+      "target": "dl-train",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_subset-train_train_peek_dataset",
+      "source": "subset-train",
+      "target": "peek",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_peek_images_peek-scale_tensor",
+      "source": "peek",
+      "target": "peek-scale",
+      "sourceHandle": "images",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_peek-scale_tensor_peek-shift_tensor_a",
+      "source": "peek-scale",
+      "target": "peek-shift",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_peek-half_tensor_peek-shift_tensor_b",
+      "source": "peek-half",
+      "target": "peek-shift",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_peek-shift_tensor_peek-viz_data",
+      "source": "peek-shift",
+      "target": "peek-viz",
+      "sourceHandle": "tensor",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e_model_model_opt_model",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_model_model_train_model",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_dl-train_dataloader_train_dataloader",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e_opt_optimizer_train_optimizer",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e_loss_loss_fn_train_loss_fn",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e_train_losses_print-loss_value",
+      "source": "train",
+      "target": "print-loss",
+      "sourceHandle": "losses",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_train_model_eval_model",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e_subset-test_train_eval_dataset",
+      "source": "subset-test",
+      "target": "eval",
+      "sourceHandle": "train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e_eval_accuracy_print-acc_value",
+      "source": "eval",
+      "target": "print-acc",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}

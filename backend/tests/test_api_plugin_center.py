@@ -910,7 +910,7 @@ INSPECTION_KEYS = [
     "description", "homepage", "manifest", "capabilities", "allowed_modules",
     "python_deps", "has_frontend", "chapters", "lessons", "consent_required",
     "installed", "up_to_date", "capabilities_added", "allowed_modules_added",
-    "warnings",
+    "warnings", "path", "source_form", "digest",
 ]
 
 #: A repository plugin that asks for everything a consent screen has to draw:
@@ -1272,7 +1272,7 @@ async def test_a_name_the_catalog_does_not_have_offers_the_ones_it_does(
 async def test_a_string_that_names_nothing_installable_is_unparseable(client):
     response = await client.post(
         "/api/plugins/inspect",
-        json={"source": "https://evil.example.com/alice/extras"})
+        json={"source": "ssh://evil.example.com/alice/extras"})
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == {"code": "unparseable_source"}
 

@@ -41,6 +41,15 @@ unpack and nobody outside this repository to be asked about. It says so once
 (``built-in pack: gate skipped``) rather than emitting empty steps, because
 a step that renders as done without having run is worse than no step.
 
+A folder or an archive on this machine's disk takes the GitHub road with the
+download replaced by a copy (:mod:`.local`): ``resolve extract verify [deps]
+stage lock``, where ``extract`` copies or unpacks into a temporary directory
+and refuses a copy whose digest is not the one the inspection pinned.
+
+A repository on another HTTPS git host keeps every GitHub step, with the
+download replaced by a shallow clone of the reviewed commit
+(:mod:`.git_source`) and the extract by the local-folder copy of the clone.
+
 ``reload`` is NOT a step here. Re-discovering the registry touches a dict the
 event loop reads, and this function runs on a worker thread; the caller runs
 it after this returns (see ``JobRunner.start``'s ``after_work``).
@@ -61,8 +70,9 @@ from typing import Any, Literal
 from app.core import plugin_loader
 
 from . import catalog as catalog_module
-from . import consent, deps, gate
+from . import consent, deps, gate, git_source
 from . import github as github_client
+from . import local as local_source
 from .errors import (
     AlreadyInstalled,
     ConsentRequired,
@@ -70,6 +80,7 @@ from .errors import (
     PluginCancelled,
     PluginInstallError,
     ReservedPluginId,
+    SourceRefused,
 )
 from .inspect import Inspection
 from .lockfile_lock import LockfileBusy, locked_lockfile
@@ -87,6 +98,17 @@ from .manifest import (
 #: puts it in place is a rename within one filesystem -- across devices it
 #: would be a copy, and a copy is not atomic.
 STAGING_DIRNAME = ".staging"
+
+#: The lockfile's ``source_kind`` for each plan kind. ``local`` is taken: it
+#: is what ``cdui plugin link`` writes for a folder loaded in place, so a
+#: folder COPIED in is ``local_copy``. Readers branch on this field, and an
+#: entry written before a kind existed reads exactly as it did.
+SOURCE_KINDS = {
+    "builtin": "builtin",
+    "github": "github_url",
+    "local": "local_copy",
+    "git": "git_url",
+}
 
 #: Minimum seconds between two ``progress`` events for the tarball. The
 #: download client throttles its own callback to the same figure; this one
@@ -125,7 +147,7 @@ class InstallPlan:
     request; ``trust_author`` says the same thing about ``allowed_modules``.
     """
 
-    kind: Literal["builtin", "github"]
+    kind: Literal["builtin", "github", "local", "git"]
     plugin_id: str
     catalog_id: str | None
     owner: str | None
@@ -138,6 +160,14 @@ class InstallPlan:
     force: bool
     mode: Literal["install", "update"]
     prior: dict[str, Any] | None
+    #: A local source's path, its form (``"folder"``/``"archive"``) and the
+    #: digest the inspection pinned; ``None`` for every other kind.
+    path: str | None = None
+    #: A git source's repository URL; ``None`` for every other kind (a
+    #: GitHub plan carries ``owner``/``repo`` instead).
+    url: str | None = None
+    source_form: str | None = None
+    digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +267,10 @@ def plan_from_inspection(
         force=force,
         mode=inspection.mode,
         prior=prior,
+        path=inspection.path,
+        source_form=inspection.source_form,
+        digest=inspection.digest,
+        url=inspection.url if inspection.kind == "git" else None,
     )
 
 
@@ -291,6 +325,16 @@ def install_plugin_live(
         client = github_client if github is None else github
         return _install_from_github(
             plan, emit=emit, cancel_check=cancel_check, client=client,
+            replace_allowed=replace_allowed,
+        )
+    if plan.kind == "local":
+        return _install_from_local(
+            plan, emit=emit, cancel_check=cancel_check,
+            replace_allowed=replace_allowed,
+        )
+    if plan.kind == "git":
+        return _install_from_git(
+            plan, emit=emit, cancel_check=cancel_check,
             replace_allowed=replace_allowed,
         )
     raise ValueError(f"install kind {plan.kind!r} has no live install")
@@ -374,26 +418,14 @@ def _install_from_github(
                 hint="An install plan is built from an inspection, which "
                      "pins the commit it read the manifest at.",
             )
-        taken_by = catalog_module.reserved_id_holder(
-            plan.plugin_id, owner=plan.owner, repo=plan.repo
+        _check_destination(
+            plan,
+            plugin_dir,
+            origin=origin,
+            taken_by=catalog_module.reserved_id_holder(
+                plan.plugin_id, owner=plan.owner, repo=plan.repo
+            ),
         )
-        if taken_by is not None:
-            # The same class the inspection refuses with, so a caller that
-            # has to say WHICH id clashed gets the same answer whichever of
-            # the two producers it reached -- the sentence is identical, and
-            # an id recovered from it would be recovered from prose.
-            raise ReservedPluginId(
-                f"Plugin id {plan.plugin_id!r} is reserved by this build.",
-                plugin_id=plan.plugin_id,
-                taken_by=taken_by,
-                hint=(
-                    f"{origin} declares an id that names {taken_by}; it "
-                    f"cannot be installed under that id."
-                ),
-            )
-        installed = plan.prior is not None or plugin_dir.exists()
-        if installed and not plan.force and plan.mode != "update":
-            raise _already_installed(plan)
 
     short_sha = sha[:7]
     staging = user_root / STAGING_DIRNAME / f"{plan.plugin_id}-{short_sha}"
@@ -427,32 +459,222 @@ def _install_from_github(
             _refuse_a_changed_manifest(plan, manifest, allowed_modules, short_sha)
         _stop_if_cancelled(plan, cancel_check)
 
-        with _step(emit, "verify", f"Scanning {plan.plugin_id} for unsafe code"):
-            try:
-                gate.validate_plugin_dir(
-                    root, list(allowed_modules), plan.granted_capabilities
+        specs, backup = _verify_and_stage(
+            plan, root, manifest, allowed_modules,
+            staging=staging, plugin_dir=plugin_dir, emit=emit,
+            cancel_check=cancel_check, replace_allowed=replace_allowed,
+        )
+
+    return _record(plan, manifest, allowed_modules, emit=emit, specs=specs, backup=backup,
+                   plugin_dir=plugin_dir, sha=sha)
+
+
+def _install_from_local(
+    plan: InstallPlan,
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    replace_allowed: bool = False,
+) -> InstallOutcome:
+    """Copy a folder (or unpack an archive) from this machine's disk.
+
+    The road a GitHub install takes, with the download replaced by a copy
+    into a temporary directory. The copy's digest has to match the one the
+    inspection pinned: a folder somebody edited after the review is not the
+    folder the user consented to, and is refused rather than installed.
+    """
+    user_root = plugin_loader.plugins_user_root()
+    plugin_dir = user_root / plan.plugin_id
+    origin = plan.path or ""
+
+    with _step(emit, "resolve", f"Reading {origin}"):
+        if not plan.path or not plan.digest:
+            raise PluginInstallError(
+                f"The plan for {plan.plugin_id!r} names no reviewed copy.",
+                hint="An install plan is built from an inspection, which "
+                     "pins the digest of the files it read.",
+            )
+        _check_destination(
+            plan, plugin_dir, origin=origin,
+            taken_by=catalog_module.reserved_for_copied_source(plan.plugin_id),
+        )
+        path, form = local_source.resolve(plan.path)
+
+    short = plan.digest[:7]
+    staging = user_root / STAGING_DIRNAME / f"{plan.plugin_id}-{short}"
+    _stop_if_cancelled(plan, cancel_check)
+
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        label = "Copying" if form == "folder" else "Unpacking"
+        with _step(emit, "extract", f"{label} {plan.plugin_id}"):
+            tree = local_source.materialize(
+                path, form, Path(workdir), cancel_check=cancel_check
+            )
+            if tree.digest != plan.digest:
+                raise SourceRefused(
+                    f"{origin} changed after it was reviewed.",
+                    reason="changed",
+                    path=origin,
+                    hint=(
+                        "Its files are not the ones the review read; review "
+                        "it again and install what that shows."
+                    ),
                 )
-            except gate.PluginValidationError as exc:
-                # The gate's own message names the file and says why, which
-                # is the whole of what an operator needs and more than a
-                # dialog's first line has room for -- so it becomes the hint.
-                raise PluginInstallError(
-                    f"{plan.plugin_id} was refused by the security scan.",
-                    hint=str(exc),
-                ) from exc
+            manifest = _manifest_at(tree.root, source=origin)
+            allowed_modules = tuple(manifest_allowed_modules(manifest))
+            _refuse_a_changed_manifest(plan, manifest, allowed_modules, short)
         _stop_if_cancelled(plan, cancel_check)
 
-        specs = tuple(deps.dep_specs(manifest_python_deps(manifest)))
-        if specs:
-            deps.install_deps_step(specs, emit=emit, cancel_check=cancel_check,
-                               replace_allowed=replace_allowed)
-            _stop_if_cancelled(plan, cancel_check)
+        specs, backup = _verify_and_stage(
+            plan, tree.root, manifest, allowed_modules,
+            staging=staging, plugin_dir=plugin_dir, emit=emit,
+            cancel_check=cancel_check, replace_allowed=replace_allowed,
+        )
 
-        with _step(emit, "stage", f"Installing {plan.plugin_id}"):
-            backup = _stage(
-                root, staging, plugin_dir, plan=plan, cancel_check=cancel_check
+    return _record(plan, manifest, allowed_modules, emit=emit, specs=specs, backup=backup,
+                   plugin_dir=plugin_dir, sha=None)
+
+
+def _install_from_git(
+    plan: InstallPlan,
+    *,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    replace_allowed: bool = False,
+) -> InstallOutcome:
+    """Clone the reviewed commit from an HTTPS git host and install it.
+
+    The GitHub road with the download replaced by a shallow clone of the
+    reviewed commit, then the local-folder road from the clone on: the copy
+    under the caps (which leaves ``.git`` out), the manifest check, the
+    gate, deps, staging and the lockfile.
+    """
+    user_root = plugin_loader.plugins_user_root()
+    plugin_dir = user_root / plan.plugin_id
+    origin = (plan.url or "") + (f"@{plan.ref}" if plan.ref else "")
+
+    with _step(emit, "resolve", f"Resolving {origin}"):
+        if not plan.url or not plan.sha:
+            raise PluginInstallError(
+                f"The plan for {plan.plugin_id!r} names no commit.",
+                hint="An install plan is built from an inspection, which "
+                     "pins the commit it read the manifest at.",
             )
+        _check_destination(
+            plan, plugin_dir, origin=origin,
+            taken_by=catalog_module.reserved_for_copied_source(plan.plugin_id),
+        )
+        git_source.require_git()
 
+    short_sha = plan.sha[:7]
+    staging = user_root / STAGING_DIRNAME / f"{plan.plugin_id}-{short_sha}"
+    _stop_if_cancelled(plan, cancel_check)
+
+    with tempfile.TemporaryDirectory(prefix="codefyui-plugin-") as workdir:
+        clone_dir = Path(workdir) / "clone"
+        with _step(emit, "download", f"Cloning {origin} at {short_sha}"):
+            git_source.clone(plan.url, plan.ref, clone_dir, want_sha=plan.sha,
+                             cancel_check=cancel_check)
+        _stop_if_cancelled(plan, cancel_check)
+
+        with _step(emit, "extract", f"Copying {plan.plugin_id}"):
+            tree = local_source.materialize(
+                clone_dir, "folder", Path(workdir) / "copy",
+                cancel_check=cancel_check,
+            )
+            manifest = _manifest_at(tree.root, source=f"{origin} at {short_sha}")
+            allowed_modules = tuple(manifest_allowed_modules(manifest))
+            _refuse_a_changed_manifest(plan, manifest, allowed_modules, short_sha)
+        _stop_if_cancelled(plan, cancel_check)
+
+        specs, backup = _verify_and_stage(
+            plan, tree.root, manifest, allowed_modules,
+            staging=staging, plugin_dir=plugin_dir, emit=emit,
+            cancel_check=cancel_check, replace_allowed=replace_allowed,
+        )
+
+    return _record(plan, manifest, allowed_modules, emit=emit, specs=specs,
+                   backup=backup, plugin_dir=plugin_dir, sha=plan.sha)
+
+
+def _check_destination(
+    plan: InstallPlan, plugin_dir: Path, *, origin: str, taken_by: str | None
+) -> None:
+    """The two questions a copied install asks before a byte moves: is the
+    id reserved, and is something already there that nobody asked to
+    replace."""
+    if taken_by is not None:
+        # The same class the inspection refuses with, so a caller that
+        # has to say WHICH id clashed gets the same answer whichever of
+        # the two producers it reached.
+        raise ReservedPluginId(
+            f"Plugin id {plan.plugin_id!r} is reserved by this build.",
+            plugin_id=plan.plugin_id,
+            taken_by=taken_by,
+            hint=(
+                f"{origin} declares an id that names {taken_by}; it "
+                f"cannot be installed under that id."
+            ),
+        )
+    installed = plan.prior is not None or plugin_dir.exists()
+    if installed and not plan.force and plan.mode != "update":
+        raise _already_installed(plan)
+
+
+def _verify_and_stage(
+    plan: InstallPlan,
+    root: Path,
+    manifest: dict[str, Any],
+    allowed_modules: Sequence[str],
+    *,
+    staging: Path,
+    plugin_dir: Path,
+    emit: Callable[[dict], None],
+    cancel_check: Callable[[], bool],
+    replace_allowed: bool,
+) -> tuple[tuple[str, ...], Path | None]:
+    """verify, deps and stage over an unpacked tree. Returns the dependency
+    specs and the backup :func:`_stage` moved aside."""
+    with _step(emit, "verify", f"Scanning {plan.plugin_id} for unsafe code"):
+        try:
+            gate.validate_plugin_dir(
+                root, list(allowed_modules), plan.granted_capabilities
+            )
+        except gate.PluginValidationError as exc:
+            # The gate's own message names the file and says why, which
+            # is the whole of what an operator needs and more than a
+            # dialog's first line has room for -- so it becomes the hint.
+            raise PluginInstallError(
+                f"{plan.plugin_id} was refused by the security scan.",
+                hint=str(exc),
+            ) from exc
+    _stop_if_cancelled(plan, cancel_check)
+
+    specs = tuple(deps.dep_specs(manifest_python_deps(manifest)))
+    if specs:
+        deps.install_deps_step(specs, emit=emit, cancel_check=cancel_check,
+                               replace_allowed=replace_allowed)
+        _stop_if_cancelled(plan, cancel_check)
+
+    with _step(emit, "stage", f"Installing {plan.plugin_id}"):
+        backup = _stage(
+            root, staging, plugin_dir, plan=plan, cancel_check=cancel_check
+        )
+    return specs, backup
+
+
+def _record(
+    plan: InstallPlan,
+    manifest: dict[str, Any],
+    allowed_modules: Sequence[str],
+    *,
+    emit: Callable[[dict], None],
+    specs: tuple[str, ...],
+    backup: Path | None,
+    plugin_dir: Path,
+    sha: str | None,
+) -> InstallOutcome:
+    """The lock step, and the backup's removal after it."""
     # No cancel between here and the lockfile write, deliberately. The files
     # are already in place, so stopping now would not undo an install -- it
     # would leave one on the disk that no lockfile mentions, which is the one
@@ -771,16 +993,27 @@ def _lockfile_record(
     nothing in the conversation having said so.
     """
     plugin_meta = manifest.get("plugin")
-    record: dict[str, Any] = {
-        "source_kind": "builtin" if plan.kind == "builtin" else "github_url",
-        "source": (
-            plan.plugin_id
-            if plan.kind == "builtin"
-            else f"{plan.owner}/{plan.repo}" + (f"@{plan.ref}" if plan.ref else "")
-        ),
-    }
-    if plan.kind == "github":
+    record: dict[str, Any] = {"source_kind": SOURCE_KINDS[plan.kind]}
+    if plan.kind == "builtin":
+        record["source"] = plan.plugin_id
+    elif plan.kind == "github":
+        record["source"] = (
+            f"{plan.owner}/{plan.repo}" + (f"@{plan.ref}" if plan.ref else "")
+        )
         record["url"] = f"https://github.com/{plan.owner}/{plan.repo}"
+        record["ref"] = plan.ref
+        record["sha"] = plan.sha
+    elif plan.kind == "local":
+        # ``path`` is where the copy came FROM. The files load from the user
+        # plugin directory like a GitHub install's: ``plugin_loader`` reads
+        # ``path`` only for ``source_kind == "local"``, which is a link.
+        record["source"] = plan.path
+        record["path"] = plan.path
+        record["source_form"] = plan.source_form
+        record["sha256"] = plan.digest
+    elif plan.kind == "git":
+        record["source"] = (plan.url or "") + (f"@{plan.ref}" if plan.ref else "")
+        record["url"] = plan.url
         record["ref"] = plan.ref
         record["sha"] = plan.sha
     record["installed_at"] = plugin_loader.now_iso()

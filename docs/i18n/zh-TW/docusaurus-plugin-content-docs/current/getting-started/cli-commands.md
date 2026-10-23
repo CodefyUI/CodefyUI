@@ -31,13 +31,13 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 
 | 指令 | 說明 |
 |------|------|
-| `cdui plugin install <source>...` | 依序安裝一個或多個外掛包；遇到第一個失敗的來源就停止，並回傳它的離開碼。來源可以是型錄名稱、`owner/repo[@ref]` 或完整的 GitHub URL。型錄名稱同時涵蓋內建外掛包與各自存放在儲存庫中的官方外掛，因此 `cdui plugin install graph-copilot` 會抓取型錄指定的儲存庫。下載前會先讀取並顯示 manifest，包括外掛包用途、要新增的 Python 套件與宣告的能力，再要求確認；拒絕時不會下載任何內容。`--force` 會覆蓋已安裝的版本，`-y` / `--no-confirm` 只跳過 `Proceed?` 確認，`--accept-capabilities` 會直接授予 manifest 宣告的能力，`--trust-author` 則接受要求匯入白名單以外模組的外掛包。 |
+| `cdui plugin install <source>...` | 依序安裝一個或多個外掛包；遇到第一個失敗的來源就停止，並回傳它的離開碼。來源可以是型錄名稱、`owner/repo[@ref]`、完整的 GitHub URL、其他 git 主機的 `https://host/owner/repo[.git][@ref]`（GitLab、Gitea、Codeberg、Bitbucket、自架伺服器；以 `git` 複製，PATH 上必須有 `git`；請參閱[從其他 git 主機安裝](/usage/plugin-center#installing-from-another-git-host)），或這台機器上的外掛資料夾、`.zip`、`.tar.gz`、`.tgz`（`/abs/path`、`./relative`、`~/path`、`file:///path`；相對路徑必須以 `./` 或 `../` 開頭）。資料夾或壓縮檔會經過與儲存庫相同的檢查，複製到外掛目錄，並鎖定在它的 sha256；請參閱[從資料夾或壓縮檔安裝](/usage/plugin-center#installing-from-a-folder-or-an-archive)。型錄名稱同時涵蓋內建外掛包與各自存放在儲存庫中的官方外掛，因此 `cdui plugin install graph-copilot` 會抓取型錄指定的儲存庫。下載前會先讀取並顯示 manifest，包括外掛包用途、要新增的 Python 套件與宣告的能力，再要求確認；拒絕時不會下載任何內容。`--force` 會覆蓋已安裝的版本，`-y` / `--no-confirm` 只跳過 `Proceed?` 確認，`--accept-capabilities` 會直接授予 manifest 宣告的能力，`--trust-author` 則接受要求匯入白名單以外模組的外掛包。 |
 | `cdui plugin sync` | 安裝目前環境中尚未決定是否使用的所有**內建**外掛包，適合在更新新增內建外掛包後執行。指令會要求確認一次；`--yes` 可略過確認，且沒有終端機時為必要選項。`--dry-run` 只列出清單；`--prune` 也會移除已不再隨版本提供的內建外掛 lockfile 項目。先前手動移除的外掛包不會重新安裝。 |
-| `cdui plugin update [<id>]` | 依記錄的 ref 重新讀取外掛儲存庫，並在 commit 變更時重新安裝；未指定 id 時會更新所有已安裝的第三方外掛包。外掛包會保留安裝來源的型錄項目，因此官方外掛更新後仍標示為官方，先前停用的外掛也維持停用。若儲存庫的 manifest 改為宣告**另一個**外掛 id，更新會被拒絕（離開碼 `1`），不會以新名稱安裝或覆蓋現有外掛；請將重新命名的儲存庫視為新外掛安裝。內建與連結外掛包會略過：內建外掛包使用 `cdui update` 更新，連結目錄則直接反映作者磁碟上的內容。 |
+| `cdui plugin update [<id>]` | 依記錄的 ref 重新讀取外掛儲存庫（GitHub 直接讀取，其他 git 主機則重新複製），並在 commit 變更時重新安裝；未指定 id 時會更新所有已安裝的第三方外掛包。外掛包會保留安裝來源的型錄項目，因此官方外掛更新後仍標示為官方，先前停用的外掛也維持停用。若儲存庫的 manifest 改為宣告**另一個**外掛 id，更新會被拒絕（離開碼 `1`），不會以新名稱安裝或覆蓋現有外掛；請將重新命名的儲存庫視為新外掛安裝。內建、連結與本機複本外掛包會略過：內建外掛包使用 `cdui update` 更新，連結目錄則直接反映作者磁碟上的內容，本機複本則用 `cdui plugin install <path> --force` 取代。 |
 | `cdui plugin list` | 列出已安裝的外掛包，以及尚待決定是否使用的內建外掛包。 |
-| `cdui plugin info <id \| catalog-name \| owner/repo[@ref]>` | 顯示外掛包的 manifest、涵蓋課程與節點名稱。若尚未安裝，只會讀取解析後 commit 中的 manifest，不會下載任何內容。 |
+| `cdui plugin info <id \| catalog-name \| owner/repo[@ref] \| git-url \| path>` | 顯示外掛包的 manifest、涵蓋課程與節點名稱。若尚未安裝，只會讀取解析後 commit 中的 manifest，不會下載任何內容；本機資料夾或壓縮檔，以及其他 git 主機上的儲存庫，會從暫存複本讀取，不會安裝任何東西。 |
 | `cdui plugin search [query]` | 查詢外掛型錄。未提供 query 時，會列出完整型錄、標示已安裝項目，並為 GitHub 上的項目加上標籤（官方項目為 `[github, official]`）。 |
-| `cdui plugin uninstall <id>` | 移除已安裝的外掛包。若為內建外掛包，系統會記錄此決定，因此 `cdui plugin sync` 不會重新安裝。無論是否留下套件，指令都會印出重新安裝外掛的指令：內建或 catalog 外掛使用 catalog 名稱，從其他 GitHub repository 安裝的外掛使用 `owner/repo@ref`，仍存在的本機連結目錄使用 `cdui plugin link <path>`。無法再次安裝的來源不會提供指令。所有類型的外掛包都會保留其 Python 套件。執行中的伺服器已載入這些套件，直接移除可能使伺服器處於不完整狀態。因此這個指令會列出外掛包在 `[python_deps]` 宣告、且其他地方都不再需要的套件，並印出能移除它們的 `uv pip uninstall` 指令，請在停止伺服器後執行。 |
+| `cdui plugin uninstall <id>` | 移除已安裝的外掛包。若為內建外掛包，系統會記錄此決定，因此 `cdui plugin sync` 不會重新安裝。無論是否留下套件，指令都會印出重新安裝外掛的指令：內建或 catalog 外掛使用 catalog 名稱，從其他 GitHub repository 安裝的外掛使用 `owner/repo@ref`，仍存在的本機連結目錄使用 `cdui plugin link <path>`，資料夾或壓縮檔仍在的本機複本使用 `cdui plugin install <path>`，從其他 git 主機複製的外掛使用 `cdui plugin install "<url>@<ref>"`。無法再次安裝的來源不會提供指令。所有類型的外掛包都會保留其 Python 套件。執行中的伺服器已載入這些套件，直接移除可能使伺服器處於不完整狀態。因此這個指令會列出外掛包在 `[python_deps]` 宣告、且其他地方都不再需要的套件，並印出能移除它們的 `uv pip uninstall` 指令，請在停止伺服器後執行。 |
 | `cdui plugin enable <id>` / `cdui plugin disable <id>` | 在不修改檔案的情況下啟用或停用已安裝外掛：切換 lockfile 中的 `enabled`，並熱重新載入執行中的伺服器。外掛未安裝時以 `1` 結束；外掛已處於要求狀態時不執行變更（離開碼 `0`）。 |
 | `cdui plugin link <path>` | 登記含有 `cdui.plugin.toml` 的本機外掛目錄，直接從原始位置載入，不複製檔案。`--force` 會覆蓋 id 相同的現有項目。 |
 | `cdui plugin unlink <id>` | 移除連結外掛的 lockfile 項目，不會修改原始檔案。 |
@@ -59,12 +59,24 @@ description: cdui 啟動器的 install、start、status、dev、build、外掛�
 |------|------|
 | `cdui packs list` | 列出型錄中的所有套件包，包括內容、下載大小及安裝狀態。 |
 | `cdui packs status` | 跟 `list` 一樣，另外加上這個 venv 裡的 PyTorch 版本，以及接下來該執行什麼。 |
-| `cdui packs install <id>` | 安裝一個套件包。`--items a,b` 只下載指定的模型（預設會補齊這個套件包缺的全部）；`--yes`／`-y` 可跳過下載大小的確認，沒有終端機可確認時必須加。只接受型錄裡的 id —— 沒有任何方式可以傳入套件安裝字串、index 網址或 repo id。 |
+| `cdui packs install <id>` | 安裝一個套件包。`--items a,b` 只下載指定的模型（預設會補齊這個套件包缺的全部）；`--yes`／`-y` 可跳過下載大小的確認，沒有終端機可確認時必須加。`--from <dir>` 改從離線套件包安裝，不下載（見[離線安裝](#offline-install)）。只接受型錄裡的 id —— 沒有任何方式可以傳入套件安裝字串、index 網址或 repo id。 |
+| `cdui packs export <id> <dir>` | 把已安裝的套件包複製到 `<dir>`，做成離線套件包：包含項目、一份 `manifest.json`，以及這個平台適用的 Python 套件 wheel。`--items a,b` 只匯出指定項目（預設為這台電腦已安裝的所有項目）；`--no-wheels` 會略過 wheel。`<dir>` 必須是空目錄或尚不存在。 |
 | `cdui packs remove <id> <item-id>` | 刪除一個已下載的模型並清掉紀錄。套件包的 Python 套件不會一併移除；能移除它們的 `uv pip uninstall` 指令會印出來，請在伺服器停掉後自行執行。 |
 
 腳本可使用下列離開碼：`0` 表示完成；`1` 表示安裝失敗或在提示中拒絕安裝；`2` 表示執行前即遭拒，包括套件包或 `--items` id 不存在、相依未滿足、套件包只能透過重新啟動安裝（`gpu-torch` 會印出改用的 `cdui install --gpu` 指令），或沒有終端機可進行確認；`3` 表示伺服器執行中，無法執行作業，並會印出替代指令；`130` 表示以 `Ctrl+C` 中斷。
 
 **讓伺服器重新啟動的安裝。** 由 `cdui start` 啟動的伺服器，可透過自動重新啟動安裝 GPU PyTorch 套件包，或處理線上安裝遇到相依衝突的套件包。伺服器會先記錄安裝內容，以分離模式啟動 `cdui packs-run-pending`，再自行關閉。輔助程式會等待原行程結束、執行安裝、記錄結果，最後用原本的 `cdui start` 參數（去掉 `--foreground`）重新啟動伺服器，因此伺服器一律回到背景執行。`packs-run-pending` 是**內部指令**，刻意不列在說明文字中。它收到的檔案會指定要等待的行程；若手動對執行中的伺服器執行，會等待兩分鐘後停止該伺服器。若自動重新啟動在某台機器上無法正常完成，可設定 `CODEFYUI_ENABLE_RESTART_INSTALL=0` 關閉此功能。重新啟動安裝仍在「收尾中」時——記錄的輔助程式或它啟動的 `uv` 安裝仍在執行，或認領單建立未滿六十秒且輔助程式尚未寫入 pid——`cdui start` 不會在正在修改的 venv 中啟動第二個伺服器，而會提示查看 `cdui status` 後返回。兩者都結束後，或輔助程式未啟動且已超過六十秒，認領單會標示為「已中斷」；此時 `cdui start` 會刪除認領單並正常啟動。詳見 **[讓伺服器重新啟動的安裝](/usage/optional-packs#installs-that-restart-the-server)**。
+
+### 離線安裝 {/* #offline-install */}
+
+```bash
+# 在已安裝該套件包、可以連網的電腦上：
+cdui packs export sentence-embeddings /media/usb/sentence-embeddings
+# 在離線電腦上：
+cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
+```
+
+`install --from` 會在複製任何檔案前，先用型錄檢查套件包的 `manifest.json`；型錄無法擔保的套件包會以離開碼 `2` 拒絕：屬於其他套件包、未知的項目、repository、revision 或檔案，或為其他平台建置的 wheel。wheel 符合匯出電腦的作業系統、CPU 架構與 Python 版本，所以每種平台各做一份套件包。其餘離開碼與 `cdui packs install` 相同。套件包的內容請見[離線安裝](/usage/optional-packs#offline-install)。
 
 ## 快取指令 {/* #cache-commands */}
 

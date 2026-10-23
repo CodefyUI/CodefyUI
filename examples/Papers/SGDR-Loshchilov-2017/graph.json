@@ -302,7 +302,7 @@
       "type": "PythonScript",
       "position": {
         "x": 1320,
-        "y": 1740
+        "y": 1810
       },
       "data": {
         "params": {
@@ -318,8 +318,8 @@
       "id": "viz-lr",
       "type": "Visualize",
       "position": {
-        "x": 2060,
-        "y": 1740
+        "x": 2116,
+        "y": 1810
       },
       "data": {
         "params": {

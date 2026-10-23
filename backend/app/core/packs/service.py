@@ -37,6 +37,7 @@ import logging
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..jobs import (
     MAX_EVENTS,
@@ -55,7 +56,7 @@ from ..jobs import (
     UnknownJob,
     Work,
 )
-from . import download, flows, restart, state
+from . import bundle, download, flows, restart, state
 from .catalog import GPU_TORCH_PACK_ID, ModelItem, Pack, get_item
 from .errors import (
     PackCancelled,
@@ -138,6 +139,8 @@ class PackJob(Job):
     items: tuple[str, ...]
     mode: str
     restart_command: str | None = None
+    #: The offline bundle this job installs from, or None for a download.
+    from_dir: str | None = None
 
 
 class PackService:
@@ -147,6 +150,7 @@ class PackService:
         self,
         *,
         run_flow: Callable[..., object] = flows.install_pack_live,
+        run_bundle_flow: Callable[..., object] = flows.install_pack_from_bundle,
         runs_active: Callable[[], bool] | None = None,
         busy_elsewhere: Callable[[], str | None] | None = None,
         max_events: int = MAX_EVENTS,
@@ -155,6 +159,7 @@ class PackService:
         # Injectable so tests never run a real install, and so the CLI could
         # reuse the runner with a different flow.
         self._run_flow = run_flow
+        self._run_bundle_flow = run_bundle_flow
         # "Is a graph running?", which vetoes a restart-mode install -- see
         # ``_submit_restart``. INJECTED rather than answered from an
         # application object this class would then have to hold: the question
@@ -300,8 +305,14 @@ class PackService:
         *,
         mode: str = "live",
         variant: str | None = None,
+        from_dir: Path | None = None,
     ) -> PackJob:
         """Start installing *pack*. Returns the job; raises before starting one.
+
+        *from_dir* installs from an offline bundle (``cdui packs export``)
+        instead of downloading: the same job, the same refusals, and the
+        bundle's manifest checked against the catalog here, before the job
+        exists. A restart-mode pack cannot come from a bundle.
 
         A RESTART-mode install carries no model items: the helper installs
         Python packages (or swaps the torch wheel) from an interpreter that
@@ -334,6 +345,8 @@ class PackService:
             instead of a job that starts, appears in the panel, and fails.
         :raises ValueError: an item id this pack does not have, or a
             restart-mode install with no packages to install.
+        :raises BundleInvalid: *from_dir* is not a bundle this catalog can
+            install (a ``ValueError``).
         """
         # The runner refuses a second claim too, in its own words. This check
         # is the one that answers the CLIENT: it happens before anything is
@@ -351,7 +364,13 @@ class PackService:
         # process has already imported, and running it live does not fail --
         # it succeeds having changed nothing, and the panel then reports a
         # GPU PyTorch install that never happened. So a restart-mode pack
-        # takes this path whatever the client asked for.
+        # takes this path whatever the client asked for -- and refuses a
+        # bundle, whose wheels and models the restart helper cannot install.
+        if from_dir is not None and (mode == "restart"
+                                     or pack.install_mode == "restart"):
+            raise ValueError(
+                f"pack {pack.pack_id!r} installs in restart mode; it cannot "
+                f"be installed from a bundle")
         if mode == "restart" or pack.install_mode == "restart":
             return await self._submit_restart(pack, variant)
 
@@ -375,16 +394,25 @@ class PackService:
                 # did not ask for is worse than handing them none.
                 command=restart.install_command_for(pack))
 
-        targets = self._targets(pack, item_ids)
+        if from_dir is not None:
+            # The manifest only: a few kilobytes, read without a suspension
+            # point so the busy check above still decides.
+            targets = bundle.select_items(bundle.load_bundle(from_dir, pack),
+                                          item_ids)
+        else:
+            targets = self._targets(pack, item_ids)
         download.check_disk(targets)
 
         job = PackJob(job_id=uuid.uuid4().hex, pack_id=pack.pack_id,
-                      items=tuple(item.item_id for item in targets), mode=mode)
+                      items=tuple(item.item_id for item in targets), mode=mode,
+                      from_dir=None if from_dir is None else str(from_dir))
         # job_started is in the buffer before the flow can emit anything, so
         # a client that polls from cursor 0 always sees it first.
-        self._runner.claim(job, {"type": "job_started",
-                                 "pack_id": pack.pack_id,
-                                 "items": list(job.items)})
+        started = {"type": "job_started", "pack_id": pack.pack_id,
+                   "items": list(job.items)}
+        if job.from_dir is not None:
+            started["from_dir"] = job.from_dir
+        self._runner.claim(job, started)
         self._runner.start(job, self._flow_work(job, pack),
                            on_settled=self._settled)
         return job
@@ -575,6 +603,10 @@ class PackService:
         """
 
         def work(emit: Emit, cancel_check: CancelCheck) -> None:
+            if job.from_dir is not None:
+                self._run_bundle_flow(pack, list(job.items), Path(job.from_dir),
+                                      emit=emit, cancel_check=cancel_check)
+                return
             self._run_flow(pack, list(job.items),
                            emit=emit, cancel_check=cancel_check)
 

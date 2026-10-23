@@ -17,9 +17,13 @@ class ImageWriterNode(BaseNode):
     DETAILS = (
         "The extension follows the chosen format (.jpeg and .tif are kept as "
         "written). A relative path lands under the data directory's output "
-        "folder, and a batched (N, C, H, W) tensor saves only its first image. "
-        "Float values are read as [0, 1] and clipped to it, with a run-log "
-        "warning when any are negative; a uint8 image is read as 0-255."
+        "folder. A batch of N > 1 images, (N, C, H, W), writes one file per "
+        "image with a zero-padded index after the name (shape_0.png, "
+        "shape_1.png, ...); files from an earlier, larger batch are left in "
+        "place. Float values are read as [0, 1] and clipped to it, with a "
+        "run-log warning when any are negative; a uint8 image is read as "
+        "0-255. Wire `directory` into ImageBatchReader's `directory` to read "
+        "the files back after they are written."
     )
 
     # The write to disk IS this node's output. A cache hit returns the
@@ -32,13 +36,25 @@ class ImageWriterNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="image", data_type=DataType.IMAGE, description="Image tensor (C, H, W) or (H, W)"),
+            # TENSOR, which an IMAGE source also connects to: a synthetic or
+            # computed batch (TensorCreate, DatasetBatch) is a TENSOR, and the
+            # type system does not convert TENSOR to IMAGE.
+            PortDefinition(
+                name="image",
+                data_type=DataType.TENSOR,
+                description="Image (C, H, W) or (H, W), or a batch (N, C, H, W)",
+            ),
         ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="path", data_type=DataType.STRING, description="Path to the saved image"),
+            PortDefinition(name="path", data_type=DataType.STRING,
+                           description="Path to the saved image (the first one, for a batch)"),
+            PortDefinition(name="paths", data_type=DataType.LIST,
+                           description="Every file written, in index order"),
+            PortDefinition(name="directory", data_type=DataType.STRING,
+                           description="Folder the files were written to"),
         ]
 
     @classmethod
@@ -96,18 +112,19 @@ class ImageWriterNode(BaseNode):
 
         p.parent.mkdir(parents=True, exist_ok=True)
 
-        # Handle batched tensors: save first image
-        if image.dim() == 4:
-            image = image[0]
-
-        # save_image expects floats in [0, 1]. A uint8 image (0..255, as a
-        # PIL or NumPy conversion produces) crashed inside it
-        # with "result type Float can't be cast to ... Byte"; dividing by 255
-        # makes the round trip exact.
-        if image.dtype == torch.uint8:
-            image = image.float() / 255.0
-        elif not image.is_floating_point():
-            image = image.float()
+        # One file per image of a batch. A batch of one keeps the plain name,
+        # which is what a single image unsqueezed to (1, C, H, W) used to get.
+        if image.dim() == 4 and image.shape[0] > 1:
+            width = len(str(image.shape[0] - 1))
+            targets = [
+                resolve_data_path(p.with_name(f"{p.stem}_{i:0{width}d}{p.suffix}"),
+                                  base=settings.MODELS_DIR.parent / "output")
+                for i in range(image.shape[0])
+            ]
+            images = list(image)
+        else:
+            targets = [p]
+            images = [image[0] if image.dim() == 4 else image]
 
         result: dict[str, Any] = {}
         if image.numel() and float(image.min()) < 0:
@@ -121,8 +138,19 @@ class ImageWriterNode(BaseNode):
                 kind="image_writer_negative_values",
                 prefix=_LOG_PREFIX, context=context, logger=logger)
 
-        save_image(image, str(p))
-        logger.info("Saved image to %s", p)
+        for target, single in zip(targets, images):
+            # save_image expects floats in [0, 1]. A uint8 image (0..255, as
+            # a PIL or NumPy conversion produces) crashed inside it with
+            # "result type Float can't be cast to ... Byte"; dividing by 255
+            # makes the round trip exact.
+            if single.dtype == torch.uint8:
+                single = single.float() / 255.0
+            elif not single.is_floating_point():
+                single = single.float()
+            save_image(single, str(target))
+        logger.info("Saved %d image(s) to %s", len(targets), p.parent)
 
-        result["path"] = str(p)
+        result["path"] = str(targets[0])
+        result["paths"] = [str(t) for t in targets]
+        result["directory"] = str(p.parent)
         return result

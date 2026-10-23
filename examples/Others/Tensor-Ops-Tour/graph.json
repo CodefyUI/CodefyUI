@@ -1,0 +1,337 @@
+{
+  "name": "Tensor ops tour",
+  "description": "Split, stack, select and pool one grid",
+  "gallery": {
+    "section": "concepts",
+    "order": 15
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 300
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "arange",
+      "type": "TensorCreate",
+      "position": {
+        "x": 40,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "shape": "24",
+          "fill": "arange",
+          "value": 0.0,
+          "requires_grad": false
+        }
+      }
+    },
+    {
+      "id": "grid",
+      "type": "Reshape",
+      "position": {
+        "x": 340,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "shape": "4,6"
+        }
+      }
+    },
+    {
+      "id": "stats-grid",
+      "type": "TensorStats",
+      "position": {
+        "x": 640,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "precision": 4
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "Split",
+      "position": {
+        "x": 1000,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "chunks": 2,
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "stack",
+      "type": "Stack",
+      "position": {
+        "x": 1300,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "dim": 0
+        }
+      }
+    },
+    {
+      "id": "stats-stack",
+      "type": "TensorStats",
+      "position": {
+        "x": 1600,
+        "y": -200
+      },
+      "data": {
+        "params": {
+          "precision": 4
+        }
+      }
+    },
+    {
+      "id": "rows",
+      "type": "RowSelector",
+      "position": {
+        "x": 1000,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "indices": "3,0",
+          "names": ""
+        }
+      }
+    },
+    {
+      "id": "print-rows",
+      "type": "Print",
+      "position": {
+        "x": 1300,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "label": "Rows 3 and 0"
+        }
+      }
+    },
+    {
+      "id": "image",
+      "type": "Reshape",
+      "position": {
+        "x": 1000,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "shape": "1,1,4,6"
+        }
+      }
+    },
+    {
+      "id": "pool",
+      "type": "AvgPool2d",
+      "position": {
+        "x": 1300,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "kernel_size": 2,
+          "stride": 2,
+          "padding": 0
+        }
+      }
+    },
+    {
+      "id": "stats-pool",
+      "type": "TensorStats",
+      "position": {
+        "x": 1600,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "precision": 4
+        }
+      }
+    },
+    {
+      "id": "print-pool",
+      "type": "Print",
+      "position": {
+        "x": 1940,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "label": "2x2 averages"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -720,
+        "y": 300
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "One 4x6 grid holding the numbers 0 to 23, walked through four shape operations. TensorStats reports shape (4, 6), mean 11.5 and std 6.9222, and passes the grid on unchanged. Split cuts it into two 2x6 halves along dim 0, and Stack joins them along a new dim 0, giving (2, 2, 6) with the same 24 numbers and the same statistics. RowSelector picks rows 3 and 0, in that order. AvgPool2d averages each 2x2 block of the grid, seen as a 1x1x4x6 image.\n\n一個 4x6 的網格，內容是 0 到 23，依序經過四種形狀操作。TensorStats 回報形狀 (4, 6)、平均 11.5、標準差 6.9222，並把網格原封不動往下傳。Split 沿 dim 0 把它切成兩個 2x6 的半塊，Stack 再沿新的 dim 0 把兩塊疊起來，得到 (2, 2, 6)，數字仍是那 24 個，統計量也相同。RowSelector 依序取出第 3 列與第 0 列。AvgPool2d 把網格視為 1x1x4x6 的影像，對每個 2x2 區塊取平均。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-stack",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": -620
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Stack adds a new dimension in front. Concat on the same two halves along dim 0 adds none and gives the (4, 6) grid back.\n\nStack 會在最前面新增一個維度。若用 Concat 沿 dim 0 接起同樣兩個半塊，不會新增維度，會得回原本 (4, 6) 的網格。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "split",
+        "boundOffset": {
+          "x": 0,
+          "y": -420
+        },
+        "noteWidth": 300
+      }
+    },
+    {
+      "id": "note-pool",
+      "type": "note",
+      "position": {
+        "x": 1000,
+        "y": 960
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "With kernel 2 and stride 2, AvgPool2d halves height and width: (1, 1, 4, 6) becomes (1, 1, 2, 3), holding 3.5, 5.5 and 7.5 in the top row and 15.5, 17.5 and 19.5 in the bottom one. The mean stays 11.5 and the std falls to 6.2183, because averaging smooths the grid.\n\nkernel 2、stride 2 的 AvgPool2d 把高與寬各減半：(1, 1, 4, 6) 變成 (1, 1, 2, 3)，上排是 3.5、5.5 與 7.5，下排是 15.5、17.5 與 19.5。平均仍是 11.5，標準差降到 6.2183，因為取平均讓網格變得平滑。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "pool",
+        "boundOffset": {
+          "x": -300,
+          "y": 260
+        },
+        "noteWidth": 300
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t_arange",
+      "source": "start",
+      "target": "arange",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e_arange_tensor_grid_tensor",
+      "source": "arange",
+      "target": "grid",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_grid_tensor_stats-grid_tensor",
+      "source": "grid",
+      "target": "stats-grid",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_stats-grid_tensor_split_tensor",
+      "source": "stats-grid",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_split_chunk_0_stack_tensor_a",
+      "source": "split",
+      "target": "stack",
+      "sourceHandle": "chunk_0",
+      "targetHandle": "tensor_a"
+    },
+    {
+      "id": "e_split_chunk_1_stack_tensor_b",
+      "source": "split",
+      "target": "stack",
+      "sourceHandle": "chunk_1",
+      "targetHandle": "tensor_b"
+    },
+    {
+      "id": "e_stack_tensor_stats-stack_tensor",
+      "source": "stack",
+      "target": "stats-stack",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_stats-grid_tensor_rows_tensor",
+      "source": "stats-grid",
+      "target": "rows",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_rows_tensor_print-rows_value",
+      "source": "rows",
+      "target": "print-rows",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e_stats-grid_tensor_image_tensor",
+      "source": "stats-grid",
+      "target": "image",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_image_tensor_pool_tensor",
+      "source": "image",
+      "target": "pool",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_pool_tensor_stats-pool_tensor",
+      "source": "pool",
+      "target": "stats-pool",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor"
+    },
+    {
+      "id": "e_stats-pool_tensor_print-pool_value",
+      "source": "stats-pool",
+      "target": "print-pool",
+      "sourceHandle": "tensor",
+      "targetHandle": "value"
+    }
+  ],
+  "settings": {
+    "seed": 0
+  }
+}
