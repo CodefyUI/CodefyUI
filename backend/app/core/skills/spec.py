@@ -38,6 +38,39 @@ NAME_MAX = 64
 DESCRIPTION_MAX = 1024
 COMPATIBILITY_MAX = 500
 
+#: The largest frontmatter read. Real ones are a few hundred bytes; the cap
+#: bounds what the YAML parser is asked to build on every list request.
+MAX_FRONTMATTER_BYTES = 16 * 1024
+#: Caps on the two fields that hold collections, and on each metadata value.
+MAX_ALLOWED_TOOLS = 64
+MAX_METADATA_KEYS = 64
+MAX_METADATA_VALUE = 1024
+
+
+class _NoAliasLoader(yaml.SafeLoader):
+    """``SafeLoader`` that refuses YAML aliases (``*name``).
+
+    ``safe_load`` keeps an alias as a shared reference, which is cheap to
+    parse and explodes when anything walks it: a 100 KB frontmatter whose
+    ``allowed-tools`` repeats one alias 10,000 times becomes millions of
+    strings once split, and hundreds of megabytes once serialised. A
+    frontmatter has no use for aliases, so one is a parse error.
+    """
+
+    def compose_node(self, parent, index):  # type: ignore[override]
+        if self.check_event(yaml.AliasEvent):
+            event = self.peek_event()
+            raise yaml.composer.ComposerError(
+                None, None, "YAML aliases are not allowed in a frontmatter",
+                event.start_mark)
+        return super().compose_node(parent, index)
+
+
+def load_frontmatter(front: str):
+    """Parse frontmatter text: safe types only, no aliases. Raises
+    ``yaml.YAMLError``."""
+    return yaml.load(front, Loader=_NoAliasLoader)  # noqa: S506 - safe subclass
+
 #: Lower-case letters and digits in hyphen-separated runs: no leading,
 #: trailing or doubled hyphen.
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -140,13 +173,25 @@ def _metadata(data: dict, issues: list[Issue]) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     coerced = False
+    cut = False
     for key, item in value.items():
+        if len(out) >= MAX_METADATA_KEYS:
+            cut = True
+            break
         if isinstance(item, (dict, list)) or item is None:
             coerced = True
             continue
         if not isinstance(key, str) or not isinstance(item, str):
             coerced = True
-        out[str(key)] = str(item).lower() if isinstance(item, bool) else str(item)
+        text = str(item).lower() if isinstance(item, bool) else str(item)
+        if len(text) > MAX_METADATA_VALUE:
+            text = text[:MAX_METADATA_VALUE]
+            cut = True
+        out[str(key)[:MAX_METADATA_VALUE]] = text
+    if cut:
+        _warn(issues, "metadata_truncated",
+              f"'metadata' was cut to {MAX_METADATA_KEYS} keys of at most "
+              f"{MAX_METADATA_VALUE} characters each.")
     if coerced:
         _warn(issues, "metadata_values",
               "'metadata' should map strings to strings; other values were "
@@ -159,15 +204,25 @@ def _allowed_tools(data: dict, issues: list[Issue]) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return value.split()
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        tools = value.split()
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
         _warn(issues, "allowed_tools_list",
               "'allowed-tools' should be one space-separated string; a list "
               "was read the same way.")
-        return [tool for item in value for tool in item.split()]
-    _warn(issues, "allowed_tools_type",
-          "'allowed-tools' should be a space-separated string; it was ignored.")
-    return []
+        tools = []
+        for item in value[:MAX_ALLOWED_TOOLS + 1]:
+            tools.extend(item.split())
+            if len(tools) > MAX_ALLOWED_TOOLS:
+                break
+    else:
+        _warn(issues, "allowed_tools_type",
+              "'allowed-tools' should be a space-separated string; it was ignored.")
+        return []
+    if len(tools) > MAX_ALLOWED_TOOLS:
+        _warn(issues, "allowed_tools_truncated",
+              f"'allowed-tools' was cut to its first {MAX_ALLOWED_TOOLS} entries.")
+        tools = tools[:MAX_ALLOWED_TOOLS]
+    return tools
 
 
 def parse_skill(text: str, folder_name: str) -> ParsedSkill:
@@ -188,8 +243,12 @@ def parse_skill(text: str, folder_name: str) -> ParsedSkill:
         return skill
     front, body = split
     skill.body = body.lstrip("\n")
+    if len(front.encode("utf-8", "surrogatepass")) > MAX_FRONTMATTER_BYTES:
+        _error(issues, "frontmatter_too_large",
+               f"The frontmatter is larger than {MAX_FRONTMATTER_BYTES // 1024} KB.")
+        return skill
     try:
-        data = yaml.safe_load(front) if front.strip() else None
+        data = load_frontmatter(front) if front.strip() else None
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         where = f" (line {mark.line + 2})" if mark is not None else ""
@@ -207,7 +266,8 @@ def parse_skill(text: str, folder_name: str) -> ParsedSkill:
         if len(skill.description) > DESCRIPTION_MAX:
             _warn(issues, "description_too_long",
                   f"'description' is {len(skill.description)} characters long, "
-                  f"over the limit of {DESCRIPTION_MAX}.")
+                  f"over the limit of {DESCRIPTION_MAX}; it was cut.")
+            skill.description = skill.description[:DESCRIPTION_MAX]
     elif description is None:
         _error(issues, "description_missing",
                "'description' is required: it is what tells an agent when to "
@@ -250,10 +310,10 @@ def declared_name(text: str) -> Any:
     """The raw ``name`` field of a ``SKILL.md``, or None. For the installer,
     which names the installed folder after it."""
     split = split_frontmatter(text)
-    if split is None:
+    if split is None or len(split[0].encode("utf-8", "surrogatepass")) > MAX_FRONTMATTER_BYTES:
         return None
     try:
-        data = yaml.safe_load(split[0])
+        data = load_frontmatter(split[0])
     except yaml.YAMLError:
         return None
     return data.get("name") if isinstance(data, dict) else None

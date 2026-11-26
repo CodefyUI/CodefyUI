@@ -14,6 +14,8 @@ per conversation.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -46,13 +48,26 @@ def _graph_names(graphs_dir: Path) -> list[str]:
 
 
 def _instructions(project_dir: Path) -> dict | None:
+    """``AGENTS.md`` when it is a regular file inside the project, else None.
+
+    Not a symbolic link, and resolving inside the project: this endpoint
+    needs no token and its answer goes into an agent's prompt, so a cloned
+    project holding ``AGENTS.md -> ~/.ssh/id_rsa`` must read as "no
+    instructions", never as that file.
+    """
     path = project_dir / INSTRUCTIONS_FILE
     try:
-        if not path.is_file():
+        if not stat.S_ISREG(path.lstat().st_mode):
             return None
-        with path.open("rb") as handle:
+        if not path.resolve().is_relative_to(project_dir.resolve()):
+            return None
+        # O_NOFOLLOW closes the gap between the check and the open where the
+        # platform has it.
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as handle:
             raw = handle.read(MAX_INSTRUCTIONS_BYTES + 1)
-    except OSError:
+    except (OSError, RuntimeError):
         return None
     truncated = len(raw) > MAX_INSTRUCTIONS_BYTES
     text = raw[:MAX_INSTRUCTIONS_BYTES].decode("utf-8", errors="replace")

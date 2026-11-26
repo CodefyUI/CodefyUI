@@ -96,8 +96,10 @@ async def test_install_from_a_folder(client, user_root, tmp_path):
     source = skill_folder(tmp_path / "src")
     status, body = await install(client, source)
     assert status == 200, body
-    assert body["id"] == "user/demo-skill"
-    assert body["valid"] is True and body["file_count"] == 1
+    assert body["skipped"] == []
+    [entry] = body["installed"]
+    assert entry["id"] == "user/demo-skill"
+    assert entry["valid"] is True and entry["file_count"] == 1
     assert (user_root / "demo-skill" / "references" / "guide.md").is_file()
     assert source.is_dir()  # a copy, not a move
     listing = (await client.get("/api/skills")).json()
@@ -155,7 +157,7 @@ async def test_install_from_a_git_url(client, user_root, bare_repo):
     assert not (installed / ".git").exists()
     # The script is copied as text and never run.
     assert (installed / "scripts" / "setup.sh").is_file()
-    assert body["has_scripts"] is True
+    assert body["installed"][0]["has_scripts"] is True
 
 
 async def test_install_from_github_com_goes_through_git_too(client, user_root, bare_repo):

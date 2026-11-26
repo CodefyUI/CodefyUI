@@ -20,6 +20,18 @@ shadowed or not, so the list says why a skill is not in use.
 Nothing is cached: a scan is a directory listing and a few small reads,
 and a user who drops a folder into ``skills/`` sees it on the next request.
 A broken skill costs that skill, never the list.
+
+Links
+-----
+A skill that comes from someone else's repository (the ``project`` and
+``plugin:*`` sources) must stay inside that source's ``skills/`` folder: a
+skill folder that is a symbolic link leading out of it is listed as invalid
+(``unsafe_link``) and nothing in it is read. Without this, a cloned project
+holding ``skills/x -> ~/.ssh`` would hand the files under it to an agent.
+The ``user``, ``builtin`` and ``extra`` sources are folders on the user's own
+machine, where linking ``~/.claude/skills/foo`` in is the point, so a linked
+skill folder is followed there. In every source ``SKILL.md`` itself must
+resolve inside its skill folder, and a file read must too.
 """
 
 from __future__ import annotations
@@ -52,6 +64,7 @@ _STATE_FILE = "state.json"
 _KIND_BY_DIR = {"references": "reference", "scripts": "script", "assets": "asset"}
 
 
+
 class SkillNotFound(LookupError):
     pass
 
@@ -73,6 +86,8 @@ class Skill:
     enabled: bool = True
     shadowed_by: str | None = None
     files: list[dict[str, Any]] = field(default_factory=list)
+    #: False when a link made the skill unsafe to read: no file is served.
+    readable: bool = True
 
     @property
     def name(self) -> str:
@@ -122,6 +137,10 @@ def extra_roots() -> list[Path]:
     raw = settings.SKILLS_EXTRA_DIRS or ""
     return [Path(os.path.expanduser(part)) for part in raw.split(os.pathsep)
             if part.strip()]
+
+
+def _is_contained_source(source: str) -> bool:
+    return source == "project" or source.startswith("plugin:")
 
 
 def source_roots() -> list[tuple[str, Path]]:
@@ -190,9 +209,12 @@ def list_files(folder: Path) -> list[dict[str, Any]]:
     except OSError:
         return out
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in _SKIP_DIRS and not d.startswith("."))
         current = Path(dirpath)
         for name in sorted(filenames):
+            if name.startswith("."):
+                continue
             full = current / name
             relative = PurePosixPath(full.relative_to(base).as_posix())
             if str(relative) == SKILL_FILE:
@@ -227,8 +249,35 @@ def _read_skill_md(path: Path) -> tuple[str | None, Issue | None]:
         return None, Issue("error", "not_utf8", "SKILL.md is not UTF-8 text.")
 
 
-def load_skill(source: str, folder: Path) -> Skill:
-    """One skill folder, never raising for what is inside it."""
+def _unsafe(source: str, folder: Path, message: str) -> Skill:
+    parsed = ParsedSkill(name=folder.name,
+                         issues=[Issue("error", "unsafe_link", message)])
+    return Skill(id=f"{source}/{folder.name}", source=source, folder=folder,
+                 parsed=parsed, readable=False)
+
+
+def load_skill(source: str, folder: Path, *, root: Path | None = None) -> Skill:
+    """One skill folder, never raising for what is inside it.
+
+    *root* is the source's ``skills/`` folder. For a ``project`` or
+    ``plugin:*`` source the skill folder must resolve inside it.
+    """
+    try:
+        real = folder.resolve()
+        # ``root.parent`` is the project or plugin folder: a ``skills/`` that
+        # is itself a link out of it leads out just the same.
+        if root is not None and _is_contained_source(source) and (
+                not real.is_relative_to(root.resolve())
+                or not root.resolve().is_relative_to(root.parent.resolve())):
+            return _unsafe(source, folder,
+                           "The skill folder is a link that leads outside the "
+                           "project's or plugin's skills folder; it is not read.")
+        if not (folder / SKILL_FILE).resolve().is_relative_to(real):
+            return _unsafe(source, folder,
+                           "SKILL.md is a link that leads outside the skill "
+                           "folder; it is not read.")
+    except (OSError, RuntimeError):
+        return _unsafe(source, folder, "The skill folder could not be resolved.")
     text, problem = _read_skill_md(folder / SKILL_FILE)
     if text is None:
         parsed = ParsedSkill(name=folder.name, issues=[problem] if problem else [])
@@ -263,7 +312,7 @@ def discover() -> list[Skill]:
     seen_ids: set[str] = set()
     for source, root in source_roots():
         for folder in _skill_folders(root):
-            skill = load_skill(source, folder)
+            skill = load_skill(source, folder, root=root)
             if skill.id in seen_ids:
                 # Two ``extra`` directories holding one name: the first is
                 # the one its id names.
@@ -313,8 +362,14 @@ def resolve_skill_file(skill: Skill, path: str) -> Path:
         raise SkillPathRefused("The file path is empty or not a path.")
     if _looks_absolute(path):
         raise SkillPathRefused("The file path must be relative to the skill.")
-    if ".." in path.replace("\\", "/").split("/"):
+    if not skill.readable:
+        raise SkillPathRefused("This skill is not read: a link makes it unsafe.")
+    segments = [seg for seg in path.replace("\\", "/").split("/") if seg]
+    if ".." in segments:
         raise SkillPathRefused("The file path may not contain '..'.")
+    if any(seg.startswith(".") or seg in _SKIP_DIRS for seg in segments[:-1]) \
+            or (segments and segments[-1].startswith(".")):
+        raise SkillPathRefused("Hidden files and folders such as .git are not served.")
     resolved = resolve_under(skill.folder, path)
     if resolved is None:
         raise SkillPathRefused("The file path leaves the skill's folder.")

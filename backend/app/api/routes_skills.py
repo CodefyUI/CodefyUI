@@ -6,7 +6,12 @@ turns its answers and refusals into HTTP.
 
 The reads are open GETs, like the rest of the API. The writes (install,
 enable, delete) go through ``auth_guard`` like every other mutating
-``/api/`` route, so they need the session token. Skill content is text the
+``/api/`` route, so they need the session token. Install and delete are
+also limited to a loopback-bound server, the rule the plugin routes follow
+(``ALLOW_REMOTE_SKILL_INSTALL`` opens them): an install makes the server
+clone a URL or read a path on the caller's word, and a skill steers the
+local user's agent. Enabling and disabling act on what is already here
+and stay token-only, as for plugins. Skill content is text the
 server hands back unread: nothing here runs a script, follows an
 instruction in a skill, or installs a dependency.
 
@@ -16,9 +21,11 @@ Route order matters: ``/file`` and ``/enabled`` are declared before the
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..config import settings
+from ..core.auth import bound_to_loopback
 from ..core.skills import install as skill_install
 from ..core.skills import registry
 
@@ -32,6 +39,23 @@ class EnabledBody(BaseModel):
 
 class InstallBody(BaseModel):
     source: str
+
+
+REMOTE_REFUSAL = {
+    "code": "remote_install_refused",
+    "message": "Installing and deleting skills is only allowed from the computer "
+               "that runs the server. Set CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL=1 "
+               "to override.",
+}
+
+
+def remote_skill_install_allowed() -> bool:
+    return bound_to_loopback() or bool(settings.ALLOW_REMOTE_SKILL_INSTALL)
+
+
+async def _require_local() -> None:
+    if not remote_skill_install_allowed():
+        raise HTTPException(status_code=403, detail=REMOTE_REFUSAL)
 
 
 def _skill_or_404(skill_id: str) -> registry.Skill:
@@ -76,10 +100,12 @@ def set_skill_enabled(body: EnabledBody) -> dict:
     return _skill_or_404(body.id).summary()
 
 
-@router.post("/install")
+@router.post("/install", dependencies=[Depends(_require_local)])
 def install_skill(body: InstallBody) -> dict:
-    """Install a folder, a ``.zip``/``.tar.gz`` or an HTTPS git URL into
-    the ``user`` source. 409 when a skill of that name is installed."""
+    """Install every skill in a folder, a ``.zip``/``.tar.gz`` or an HTTPS
+    git URL (``@ref``, ``#sub/folder``) into the ``user`` source:
+    ``{"installed": [...], "skipped": [{name, code, message}]}``. 409 when
+    every skill found is already installed, or another install is running."""
     try:
         return skill_install.install(body.source)
     except skill_install.SkillInstallError as exc:
@@ -92,7 +118,7 @@ def get_skill(skill_id: str) -> dict:
     return _skill_or_404(skill_id).detail()
 
 
-@router.delete("/{skill_id:path}")
+@router.delete("/{skill_id:path}", dependencies=[Depends(_require_local)])
 def delete_skill(skill_id: str) -> dict:
     """Delete an installed skill. Only the ``user`` source can be deleted:
     the others belong to a project, a plugin or the install."""
@@ -102,6 +128,12 @@ def delete_skill(skill_id: str) -> dict:
             status_code=400,
             detail=f"Only installed skills can be deleted; {skill_id} comes "
                    f"from '{skill.source}'.")
-    skill_install.remove(skill.folder)
+    try:
+        skill_install.remove(skill.folder)
+    except skill_install.SkillInstallError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.as_detail()) from None
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail={
+            "code": "delete_failed", "message": f"{skill_id} could not be deleted: {exc.strerror}"}) from None
     registry.set_enabled(skill_id, True)  # drop it from the disabled list
     return {"deleted": skill_id}

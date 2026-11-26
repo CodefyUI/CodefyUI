@@ -249,6 +249,12 @@ class Settings(BaseSettings):
     # with CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1; it changes nothing else,
     # since every mutating plugin route already needs the session token.
     ALLOW_REMOTE_PLUGIN_INSTALL: bool = False
+    # The same gate for Agent Skills (`POST /api/skills/install`, `DELETE
+    # /api/skills/{id}`): an install makes this server clone any https URL
+    # or read any path on its disk, and an installed skill steers the local
+    # user's agent. Off a loopback bind only CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL=1
+    # opens it.
+    ALLOW_REMOTE_SKILL_INSTALL: bool = False
 
     # ── Port statistics (#129) ─────────────────────────────────────────
     # GET /api/execution/outputs/{run}/{node}/{port}/stats summarises a
