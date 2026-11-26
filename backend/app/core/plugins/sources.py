@@ -102,17 +102,19 @@ def is_local_path(spec: str) -> bool:
     return bool(_LOCAL_PATH.match(spec))
 
 
-def parse_git_url(spec: str) -> tuple[str, str] | None:
+def parse_git_url(spec: str, *, allow_github: bool = False) -> tuple[str, str] | None:
     """``(url, ref)`` when *spec* is an HTTPS repository on a host other than
     GitHub, else ``None``. ``ref`` is ``""`` for the default branch.
 
     Refused here rather than at the clone: a path segment of ``.`` or
     ``..`` (the URL would name a different repository than it reads as), a
     ref that walks up or starts with ``-`` (it is handed to ``git`` as an
-    argument), and github.com, which has its own road.
+    argument), and github.com, which has its own road for plugins.
+    *allow_github* lets github.com through for a caller with no such road:
+    an Agent Skill (``app.core.skills``) is cloned from every host alike.
     """
     m = _GIT_URL.match(spec)
-    if m is None or m.group(2).lower() in _GITHUB_HOSTS:
+    if m is None or (not allow_github and m.group(2).lower() in _GITHUB_HOSTS):
         return None
     url, ref = m.group(1), m.group(3) or ""
     segments = url.split("/")[3:]
