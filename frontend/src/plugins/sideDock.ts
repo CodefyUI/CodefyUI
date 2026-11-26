@@ -12,7 +12,7 @@
  *
  *   codefyui-side-panel-width:<plugin>:<id>   the width the user dragged to
  *   codefyui-side-panel-open:<plugin>:<id>    '1' open, '0' closed
- *   codefyui-side-panel-last                  the key Ctrl/Cmd+Shift+A toggles
+ *   codefyui-side-panel-last                  the key Ctrl/Cmd+Shift+X toggles
  *
  * The open flag is written only when the USER opens or closes a panel (the
  * toolbar toggle, the shortcut, the close button, or the plugin's own
@@ -38,6 +38,9 @@ const LAST_KEY = 'codefyui-side-panel-last';
 export const SIDE_OVERLAY_BELOW = 1100;
 /** Below this window width an open side dock starts the Inspector collapsed. */
 export const SIDE_COLLAPSES_INSPECTOR_BELOW = 1680;
+/** Below this window width an open side dock, with a node selected (so the
+ * node config column is showing), collapses the left node panel to its rail. */
+export const SIDE_COLLAPSES_PALETTE_BELOW = 1440;
 
 function read(key: string): string | null {
   try {
@@ -68,7 +71,7 @@ function storedWidth(key: string): number | null {
 interface SideDockState {
   /** The open side panel's key, or null when the column is closed. */
   activeKey: string | null;
-  /** The panel Ctrl/Cmd+Shift+A toggles: the last one opened. */
+  /** The panel Ctrl/Cmd+Shift+X toggles: the last one opened. */
   lastKey: string | null;
   /** Widths the user set this session, by key (persisted as they change). */
   widths: Record<string, number>;
@@ -115,7 +118,7 @@ export function toggleSidePanel(key: string): boolean {
 }
 
 /**
- * Ctrl/Cmd+Shift+A: toggle the side panel used last, or the first registered
+ * Ctrl/Cmd+Shift+X: toggle the side panel used last, or the first registered
  * one when none was used yet (or the last one is gone). False when there is
  * no side panel at all, so the caller can leave the key alone.
  */

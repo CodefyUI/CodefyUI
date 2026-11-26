@@ -34,6 +34,7 @@ import { PluginSideDock } from './components/PluginPanels/PluginSideDock';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useSidebarYieldsToSidePanel } from './hooks/useSidebarYieldsToSidePanel';
 import { fetchHealth } from './api/rest';
 import { useProjectStore } from './store/projectStore';
 import { useRunStore } from './store/runStore';
@@ -177,6 +178,7 @@ function TabContent({ tabId }: { tabId: string }) {
 
 function App() {
   useKeyboardShortcuts();
+  useSidebarYieldsToSidePanel();
   const activeTabId = useTabStore((s) => s.activeTabId);
   const hasActiveTab = useTabStore((s) =>
     s.tabs.some((t) => t.id === s.activeTabId),

@@ -357,10 +357,10 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 |----------|--------|------|-------------|
 | `/api/skills` | GET | open | 所有來源的所有技能：`[{id, name, description, source, license, compatibility, metadata, allowed_tools, enabled, valid, issues, shadowed_by, file_count, has_scripts}]`。無效或被蓋掉的技能也會列出，由 `issues` 或 `shadowed_by` 說明它為何沒有使用。 |
 | `/api/skills/{id}` | GET | open | 單一技能（`id` 為 `<source>/<name>`，例如 `builtin/build-graph`）：清單欄位加上 `body`（frontmatter 之後的 Markdown）與 `files`（`[{path, size, kind}]`，`kind` 為 `reference`、`script`、`asset` 或 `other`）。 |
-| `/api/skills/file` | GET | open | `?id=&path=`：技能內的一個文字檔，回傳 `{path, content, truncated}`，超過 256 KB 截斷。絕對路徑、含 `..` 或解析後在技能外的路徑回 400；二進位檔回 415。 |
+| `/api/skills/file` | GET | open | `?id=&path=`：技能內的一個文字檔，回傳 `{path, content, truncated}`，超過 256 KB 截斷。絕對路徑、含 `..`、指向隱藏或第三方資料夾（`.git`、`node_modules`）或解析後在技能外的路徑回 400，以 `unsafe_link` 列出的技能的任何檔案也回 400；二進位檔回 415。 |
 | `/api/skills/enabled` | PUT | token | `{id, enabled}`：啟用或停用技能，存在 `<user data>/skills/state.json`。 |
-| `/api/skills/install` | POST | token | `{source}`：伺服器磁碟上的資料夾或 `.zip` / `.tar.gz` / `.tgz`，或 HTTPS git URL（可加 `@ref`）。安裝到 `user` 來源。來源被拒回 400 與 `{code, message, hint}`，同名技能已安裝回 409。 |
-| `/api/skills/{id}` | DELETE | token | 刪除已安裝（`user`）的技能；其他來源回 400。 |
+| `/api/skills/install` | POST | token、loopback | `{source}`：伺服器磁碟上的資料夾或 `.zip` / `.tar.gz` / `.tgz`，或 HTTPS git URL（可加 `@ref` 與 `#子資料夾`）。把找到的每個技能安裝到 `user` 來源，回傳 `{installed: [...], skipped: [{name, code, message}]}`。來源被拒回 400 與 `{code, message, hint}`；找到的技能全部已安裝回 409 `exists`；另一個安裝進行中回 409 `busy`；伺服器不是綁定 loopback 時回 403 `remote_install_refused`，除非設定 `CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL=1`。 |
+| `/api/skills/{id}` | DELETE | token、loopback | 刪除已安裝（`user`）的技能；連結進來的技能只移除連結。其他來源回 400，刪除後仍有殘留回 500 `delete_failed`，伺服器不是綁定 loopback 時與安裝一樣回 403。 |
 | `/api/agent/context` | GET | open | 給代理外掛的 `{project, instructions, skills}`：開啟中的專案（`dir`、`name`、`graphs`）或 `null`、專案的 `AGENTS.md`（`{path, content, truncated}`，超過 32 KB 截斷）或 `null`，以及使用中技能（已啟用、有效、未被蓋掉）的摘要。 |
 
 ## 限制與錯誤 {/* #limits-and-errors */}

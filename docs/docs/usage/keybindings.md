@@ -22,7 +22,7 @@ Keyboard chords other than Save (`Ctrl/Cmd` + `S`) are ignored while you are typ
 | Double-click exceptions | `SequentialModel` → Model Architecture editor; subgraph instance → enter the block; preset → Configure; text note → edit; image note → replace the image |
 | Bypass / un-bypass selected node(s) | `Ctrl/Cmd` + `B` (when a bypassable node is selected); right-click → Bypass / Remove Bypass |
 | Collapse / expand sidebar | `Ctrl/Cmd` + `B` when nothing bypassable is selected; `Ctrl/Cmd` + `Shift` + `B` always |
-| Open / close the side panel used last (a plugin's [side panel](/advanced/plugin-frontend-extensions#side-panels), such as an agent; not while typing in a field) | `Ctrl/Cmd` + `Shift` + `A` |
+| Open / close the side panel used last (a plugin's [side panel](/advanced/plugin-frontend-extensions#side-panels), such as an agent; not while typing in a field) | `Ctrl/Cmd` + `Shift` + `X` |
 | Auto layout (last-used mode) | `Shift` + `L` |
 | Save graph | `Ctrl/Cmd` + `S` |
 | Show shortcuts overlay | `?` |

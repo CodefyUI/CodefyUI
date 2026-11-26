@@ -1046,7 +1046,11 @@ const zhTW: Record<TranslationKey, string> = {
   'plugins.side.tabs': '側欄面板',
   'plugins.side.close': '關閉{title}',
   'plugins.side.toggle': '顯示或隱藏{title}',
-  'plugins.side.shortcut': 'Ctrl/Cmd+Shift+A',
+  'plugins.side.toggleWithState': '顯示或隱藏{title}：{state}',
+  'plugins.side.badge.attention': '需要你處理',
+  'plugins.side.badge.working': '處理中',
+  'plugins.side.badge.done': '已完成',
+  'plugins.side.shortcut': 'Ctrl/Cmd+Shift+X',
 
   // Workers panel (#776)
   'workers.title': 'Workers',

@@ -180,6 +180,7 @@ api.ui.addPanel({
     maxWidth: 720,
     defaultOpen: false,  // open the first time it is registered in this browser
   },
+  badge: null,           // "attention" | "working" | "done" | null
 });
 ```
 
@@ -187,11 +188,13 @@ A side panel lives in a column of its own at the far right of the editor, to the
 
 The editor draws the column's left border, a 4 px resize handle on it (drag, or focus it and use the left and right arrow keys, Home and End; double-click returns to `defaultWidth`) and that tab strip. It draws **no title bar**: put your own heading inside the element. The element fills the column's height, so a header, a scrolling log and a composer can be laid out by height.
 
-Every side panel gets a toolbar toggle made from its `icon` and `title`, with `aria-pressed` showing whether it is open. `Ctrl/Cmd+Shift+A` opens or closes the side panel used last. Each panel's width and open state are kept in the browser's localStorage, so a reload brings the panel back as the user left it; `defaultOpen` only decides the first time.
+Every side panel gets a toolbar toggle made from its `icon` and `title`, with `aria-pressed` showing whether it is open. `Ctrl/Cmd+Shift+X` opens or closes the side panel used last. Each panel's width and open state are kept in the browser's localStorage, so a reload brings the panel back as the user left it; `defaultOpen` only decides the first time.
+
+`badge` puts a small, static dot on the panel's toolbar toggle so the user sees its state while the panel is closed: `"attention"` (waiting for the user, in the warning colour), `"working"` (info colour) or `"done"` (success colour); `null` removes it. Change it by calling `addPanel` again with the same `id`, which keeps the element. The state is also part of the toggle's accessible name ("Show or hide Copilot: needs you"), so it never rests on colour alone.
 
 `api.ui.setPanelOpen(id, open)` opens or closes one of your own side panels from code (opening one closes whichever was showing) and returns whether it is open; for an id that is not a side panel of yours it returns `false` and does nothing. `isPanelOpen(id)` reads the same state. `onShow` and `onHide` fire when the panel opens, closes, or the user switches to another side panel's tab; the element itself is kept, as in the other docks.
 
-The editor protects the canvas on smaller screens. While a side panel is open on a window narrower than 1680 px, the Inspector appears collapsed to its 36 px strip (the user can still open it). On a window narrower than 1100 px, the side column floats over the canvas instead of taking width from it, and shows a close button.
+The editor protects the canvas on smaller screens. While a side panel is open on a window narrower than 1680 px, the Inspector appears collapsed to its 36 px strip (the user can still open it). While one is open, a node is selected and the window is narrower than 1440 px, the node panel on the left collapses to its icon rail; it comes back when any of the three stops being true, unless the user collapsed it themselves, and a user who reopens it keeps it open. On a window narrower than 1100 px, the side column floats over the canvas instead of taking width from it, and shows a close button.
 
 #### Toolbar buttons
 

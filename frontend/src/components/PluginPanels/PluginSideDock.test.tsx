@@ -1,7 +1,7 @@
 /**
  * The side dock's chrome (apiVersion 6): the column, its resize handle, the
  * tab strip, the overlay on a narrow window, the toolbar toggles and the
- * Ctrl/Cmd+Shift+A shortcut. State and persistence are in `api.v6.test.ts`.
+ * Ctrl/Cmd+Shift+X shortcut. State and persistence are in `api.v6.test.ts`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -180,13 +180,51 @@ describe('toolbar toggles', () => {
     expect(screen.queryByTestId('plugin-side-dock')).toBeNull();
   });
 
+  it('shows the panel badge as a dot and in the accessible name, updated by addPanel', () => {
+    const a = api();
+    a.ui.addPanel({ id: 'chat', title: 'Copilot', icon: 'C', dock: 'side' });
+    render(<Harness />);
+    const toggle = screen.getByTestId('side-panel-toggle-agent:chat');
+    expect(screen.queryByTestId('side-panel-badge-agent:chat')).toBeNull();
+    expect(toggle.getAttribute('aria-label')).toBe('Show or hide Copilot');
+
+    let el: HTMLElement | null = null;
+    act(() => { el = a.ui.addPanel({ id: 'chat', title: 'Copilot', icon: 'C', dock: 'side', badge: 'attention' }); });
+    expect(el).toBe(getPluginPanel('agent:chat')!.element);
+    expect(screen.getByTestId('side-panel-badge-agent:chat').dataset.badge).toBe('attention');
+    expect(toggle.getAttribute('aria-label')).toBe('Show or hide Copilot: needs you');
+
+    act(() => { a.ui.addPanel({ id: 'chat', title: 'Copilot', dock: 'side', badge: 'working' }); });
+    expect(toggle.getAttribute('aria-label')).toBe('Show or hide Copilot: working');
+    act(() => { a.ui.addPanel({ id: 'chat', title: 'Copilot', dock: 'side', badge: 'done' }); });
+    expect(screen.getByTestId('side-panel-badge-agent:chat').dataset.badge).toBe('done');
+    act(() => { a.ui.addPanel({ id: 'chat', title: 'Copilot', dock: 'side', badge: null }); });
+    expect(screen.queryByTestId('side-panel-badge-agent:chat')).toBeNull();
+  });
+
+  it('reads the badge in Traditional Chinese, and ignores unknown values', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const a = api();
+    a.ui.addPanel({ id: 'chat', title: 'Copilot', dock: 'side', badge: 'attention' });
+    render(<Harness />);
+    expect(screen.getByTestId('side-panel-toggle-agent:chat').getAttribute('aria-label'))
+      .toBe('顯示或隱藏Copilot：需要你處理');
+    act(() => {
+      a.ui.addPanel({ id: 'chat', title: 'Copilot', dock: 'side', badge: 'blinking' as never });
+    });
+    expect(screen.queryByTestId('side-panel-badge-agent:chat')).toBeNull();
+    // A badge on another dock means nothing and is dropped.
+    act(() => { a.ui.addPanel({ id: 'log', title: 'Log', badge: 'attention' }); });
+    expect(getPluginPanel('agent:log')!.badge).toBeNull();
+  });
+
   it('renders nothing without side panels', () => {
     render(<SidePanelToggles />);
     expect(screen.queryByTestId('side-panel-toggles')).toBeNull();
   });
 });
 
-describe('Ctrl/Cmd+Shift+A', () => {
+describe('Ctrl/Cmd+Shift+X', () => {
   it('toggles the last used side panel, but not from a text field', () => {
     const a = api();
     a.ui.addPanel({ id: 'one', title: 'One', dock: 'side' });
@@ -195,18 +233,28 @@ describe('Ctrl/Cmd+Shift+A', () => {
     act(() => { a.ui.setPanelOpen('two', true); });
     act(() => { a.ui.setPanelOpen('two', false); });
 
-    fireEvent.keyDown(screen.getByTestId('field'), { key: 'A', ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(screen.getByTestId('field'), { key: 'X', ctrlKey: true, shiftKey: true });
     expect(screen.queryByTestId('plugin-side-dock')).toBeNull();
 
-    fireEvent.keyDown(document.body, { key: 'A', metaKey: true, shiftKey: true });
+    fireEvent.keyDown(document.body, { key: 'X', metaKey: true, shiftKey: true });
     expect(useSideDockStore.getState().activeKey).toBe('agent:two');
-    fireEvent.keyDown(document.body, { key: 'a', ctrlKey: true, shiftKey: true });
+    fireEvent.keyDown(document.body, { key: 'x', ctrlKey: true, shiftKey: true });
+    expect(useSideDockStore.getState().activeKey).toBeNull();
+  });
+
+  it('does not run auto layout, and the old Shift+A chord does nothing', () => {
+    const a = api();
+    a.ui.addPanel({ id: 'one', title: 'One', dock: 'side' });
+    render(<Harness />);
+    fireEvent.keyDown(document.body, { key: 'A', ctrlKey: true, shiftKey: true });
+    expect(useSideDockStore.getState().activeKey).toBeNull();
+    fireEvent.keyDown(document.body, { key: 'L', ctrlKey: true, shiftKey: true });
     expect(useSideDockStore.getState().activeKey).toBeNull();
   });
 
   it('leaves the key alone when no side panel exists', () => {
     render(<Harness />);
-    const event = new KeyboardEvent('keydown', { key: 'A', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    const event = new KeyboardEvent('keydown', { key: 'X', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
     document.body.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
   });

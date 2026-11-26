@@ -1188,7 +1188,11 @@ const en = {
   'plugins.side.tabs': 'Side panels',
   'plugins.side.close': 'Close {title}',
   'plugins.side.toggle': 'Show or hide {title}',
-  'plugins.side.shortcut': 'Ctrl/Cmd+Shift+A',
+  'plugins.side.toggleWithState': 'Show or hide {title}: {state}',
+  'plugins.side.badge.attention': 'needs you',
+  'plugins.side.badge.working': 'working',
+  'plugins.side.badge.done': 'done',
+  'plugins.side.shortcut': 'Ctrl/Cmd+Shift+X',
 
   // Workers panel (#776): the worker agents this server can send runs to.
   'workers.title': 'Workers',

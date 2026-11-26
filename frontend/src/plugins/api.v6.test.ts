@@ -165,7 +165,7 @@ describe('widths', () => {
   });
 });
 
-describe('Ctrl/Cmd+Shift+A target', () => {
+describe('Ctrl/Cmd+Shift+X target', () => {
   it('toggles the last used side panel, else the first one', () => {
     expect(toggleLastSidePanel()).toBe(false);
     const api = freshApi();

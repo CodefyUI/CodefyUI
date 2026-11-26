@@ -55,6 +55,11 @@ export const SIDE_PANEL_DEFAULTS: PluginSidePanelConfig = {
   defaultOpen: false,
 };
 
+/** The state dot on a side panel's toolbar toggle (apiVersion 6). */
+export type PluginPanelBadge = 'attention' | 'working' | 'done';
+
+const BADGES: ReadonlySet<string> = new Set(['attention', 'working', 'done']);
+
 /** What a plugin passes to `api.ui.addPanel`. */
 export interface PluginPanelOptions {
   /** Unique within the plugin. Namespaced with the plugin id by the host. */
@@ -67,6 +72,8 @@ export interface PluginPanelOptions {
   dock?: PluginPanelDock;
   /** `dock: 'side'` only (apiVersion 6). */
   side?: PluginSidePanelOptions;
+  /** `dock: 'side'` only (apiVersion 6): the toggle's state dot. */
+  badge?: PluginPanelBadge | null;
   /** Called after the element is attached to the document. */
   onShow?: () => void;
   /** Called after the element is detached. */
@@ -85,6 +92,8 @@ export interface PluginPanel {
   dock: PluginPanelDock;
   /** Resolved side-dock sizing; present only when `dock` is `'side'`. */
   side?: PluginSidePanelConfig;
+  /** The toggle's state dot; null when there is none or the dock is not side. */
+  badge: PluginPanelBadge | null;
   /** The host-owned container. Stable for the lifetime of the panel. */
   element: HTMLElement;
   onShow?: () => void;
@@ -186,6 +195,11 @@ export function registerPluginPanel(
     icon: opts.icon,
     dock,
     side: dock === 'side' ? resolveSideConfig(opts.side) : undefined,
+    // Anything but the three known states (a typo, a value from a newer
+    // contract) shows no dot rather than a wrong one.
+    badge: dock === 'side' && typeof opts.badge === 'string' && BADGES.has(opts.badge)
+      ? opts.badge as PluginPanelBadge
+      : null,
     element,
     onShow: opts.onShow,
     onHide: opts.onHide,

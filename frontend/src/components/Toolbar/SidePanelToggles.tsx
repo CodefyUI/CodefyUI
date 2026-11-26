@@ -7,6 +7,10 @@
  * overflow group: a panel the user cannot reopen is worse than a crowded
  * toolbar, and there is rarely more than one or two.
  *
+ * A panel's `badge` (attention, working, done) draws a small dot on its
+ * toggle, static on purpose, and is read out in the button's name as well,
+ * so the state never rests on colour alone.
+ *
  * Shown on the welcome bar too. Unlike a plugin's toolbar button, which acts
  * on the graph in front of the user, a toggle only opens a panel, which is
  * as useful with no tab open as with one.
@@ -25,12 +29,16 @@ export function SidePanelToggles() {
     <div className={styles.cluster} data-testid="side-panel-toggles">
       {panels.map((panel) => {
         const open = panel.key === activeKey;
-        const label = t('plugins.side.toggle', { title: panel.title });
+        const label = panel.badge
+          ? t('plugins.side.toggleWithState', {
+            title: panel.title, state: t(`plugins.side.badge.${panel.badge}`),
+          })
+          : t('plugins.side.toggle', { title: panel.title });
         return (
           <button
             key={panel.key}
             type="button"
-            className={`${styles.iconBtn} ${open ? styles.active : ''}`}
+            className={`${styles.iconBtn} ${styles.sideToggle} ${open ? styles.active : ''}`}
             aria-pressed={open}
             aria-label={label}
             title={`${label} (${t('plugins.side.shortcut')})`}
@@ -38,6 +46,14 @@ export function SidePanelToggles() {
             data-testid={`side-panel-toggle-${panel.key}`}
           >
             {panel.icon || panel.title.slice(0, 1)}
+            {panel.badge && (
+              <span
+                className={`${styles.sideBadge} ${styles[`sideBadge_${panel.badge}`]}`}
+                aria-hidden="true"
+                data-testid={`side-panel-badge-${panel.key}`}
+                data-badge={panel.badge}
+              />
+            )}
           </button>
         );
       })}

@@ -31,7 +31,7 @@ describe('ShortcutsModal', () => {
     // the Source Control commit chord is the twelfth, Save the thirteenth,
     // and the side panel toggle (apiVersion 6) the fourteenth.)
     expect(document.querySelectorAll('kbd').length).toBe(14);
-    expect(screen.getByText(/(Cmd|Ctrl)\+Shift\+A$/)).toBeTruthy();
+    expect(screen.getByText(/(Cmd|Ctrl)\+Shift\+X$/)).toBeTruthy();
     // A platform-prefixed combo is present (Cmd+Z or Ctrl+Z).
     expect(screen.getByText(/(Cmd|Ctrl)\+Z$/)).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();

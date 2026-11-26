@@ -219,7 +219,7 @@ export interface PluginNodeRenderer {
  * the column's left edge, its resize handle and that tab strip, and NOT a
  * title bar: draw your own heading inside the element. Every side panel also
  * gets a toolbar toggle (your `icon` and `title`) and answers
- * `Ctrl/Cmd+Shift+A` when it was the last one used.
+ * `Ctrl/Cmd+Shift+X` when it was the last one used.
  *
  * An editor older than apiVersion 6 does not know `'side'`. Feature-check with
  * `api.apiVersion >= 6` and fall back (to `addFloatingWidget`, say) below it.
@@ -252,6 +252,15 @@ export interface PluginPanelOptions {
      */
     defaultOpen?: boolean;
   };
+  /**
+   * `dock: 'side'` only — requires apiVersion >= 6. A state dot on the
+   * panel's toolbar toggle, so the user sees it while the panel is closed:
+   * `'attention'` (waiting for the user), `'working'`, or `'done'`. `null` or
+   * omitted shows none. Update it by calling `addPanel` again with the same
+   * `id`; the element is kept. The state is also read out in the toggle's
+   * accessible name, so it never rests on colour alone.
+   */
+  badge?: 'attention' | 'working' | 'done' | null;
   /**
    * Called after the panel's element is attached to the document, and after
    * it is detached. The element itself survives either way — these exist so

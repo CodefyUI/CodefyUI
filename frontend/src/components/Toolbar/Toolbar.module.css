@@ -8,7 +8,10 @@
   background: linear-gradient(180deg, var(--surface-app) 0%, var(--surface-canvas) 100%);
   border-bottom: 1px solid var(--border-base);
   box-shadow: var(--inner-highlight);
-  padding: var(--sp-3) var(--sp-5);
+  /* Side padding is --sp-4, not --sp-5: with a side-panel toggle
+     (apiVersion 6) in the row, the 13-inch (1470px) toolbar was 11px too
+     long for one line and wrapped to two. */
+  padding: var(--sp-3) var(--sp-4);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -29,8 +32,17 @@
   flex-shrink: 0;
 }
 
+/* The app's own icon buttons (side-panel toggles, Settings, Help, font
+   size, language) sit closer together than the graph controls: they read as
+   one group of small square buttons, and the 4px gap is what keeps the
+   13-inch toolbar on one line with a side-panel toggle added. */
 .cluster.right {
   margin-left: auto;
+  gap: var(--sp-2);
+}
+
+.cluster.right > .cluster {
+  gap: var(--sp-2);
 }
 
 /* ----- Logo ----- */
@@ -538,4 +550,33 @@
 
 .runCaret:hover {
   background: var(--accent);
+}
+
+/* ----- Side-panel toggle state dot (apiVersion 6 `badge`) -----
+   Static: no pulse or blink. The state is also in the button's name. */
+.sideToggle {
+  position: relative;
+}
+
+.sideBadge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--surface-app);
+  pointer-events: none;
+}
+
+.sideBadge_attention {
+  background: var(--status-warning);
+}
+
+.sideBadge_working {
+  background: var(--status-info);
+}
+
+.sideBadge_done {
+  background: var(--status-success);
 }
