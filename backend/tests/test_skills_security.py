@@ -268,9 +268,27 @@ async def test_s5_network_shares_are_refused_without_being_looked_up(client, env
 
 
 # ── S6: deleting a linked user skill ───────────────────────────────────────
+#
+# Without the fix the delete chmods the link's target to write-only, which
+# would leave a folder pytest cannot clean up; `restore_mode` undoes that
+# whether the test passes or not.
 
-async def test_s6_deleting_a_linked_skill_removes_only_the_link(client, env):
+@pytest.fixture
+def restore_mode():
+    paths: list[Path] = []
+    yield paths.append
+    for path in paths:
+        if not path.exists():
+            continue
+        os.chmod(path, 0o755)
+        for root, dirs, _files in os.walk(path):  # top-down: each dir is fixed before it is entered
+            for d in dirs:
+                os.chmod(os.path.join(root, d), 0o755)
+
+
+async def test_s6_deleting_a_linked_skill_removes_only_the_link(client, env, restore_mode):
     target = make_skill(env.outside, "kept", **{"references__r.md": "r"})
+    restore_mode(target)
     os.chmod(target, 0o755)
     (env.user / "kept").symlink_to(target, target_is_directory=True)
     resp = await client.delete("/api/skills/user/kept")
@@ -280,9 +298,10 @@ async def test_s6_deleting_a_linked_skill_removes_only_the_link(client, env):
     assert (target / "SKILL.md").is_file() and (target / "references" / "r.md").is_file()
 
 
-def test_s6_remove_tree_never_chmods_through_a_link(tmp_path):
+def test_s6_remove_tree_never_chmods_through_a_link(tmp_path, restore_mode):
     target = tmp_path / "real"
     target.mkdir()
+    restore_mode(target)
     os.chmod(target, 0o755)
     link = tmp_path / "link"
     link.symlink_to(target, target_is_directory=True)
