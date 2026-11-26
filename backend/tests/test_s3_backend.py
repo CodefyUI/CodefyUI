@@ -592,7 +592,7 @@ async def test_an_s3_row_must_be_one_of_the_runs_own_keys(s3_on, db):
 
 
 @pytest.fixture
-async def http(data_root, db, monkeypatch):
+async def http(data_root, db, app_state):
     store = RunStore(db)
     record = await store.create_run(graph_snapshot={"nodes": []},
                                     status="running", run_id="r1",
@@ -601,7 +601,7 @@ async def http(data_root, db, monkeypatch):
     service = SimpleNamespace(store=store, running_on=lambda _: None,
                               is_active=lambda _: False,
                               is_queued=lambda _: False)
-    monkeypatch.setattr(app.state, "run_service", service, raising=False)
+    app_state("run_service", service)
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://127.0.0.1:8000") as client:
         client.store = store  # type: ignore[attr-defined]

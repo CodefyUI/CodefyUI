@@ -110,11 +110,18 @@ def _entry(name: str = "gpu-box", **fields: Any) -> SshWorker:
                      **fields)
 
 
+def _complete_lines(path: Path) -> list[str]:
+    """The lines of a log a fake ssh appends to, without a last line it is
+    still writing: on Linux a read can see an append half done, and a
+    poll that parsed the half read as JSON failed (Python 3.11 CI job)."""
+    if not path.exists():
+        return []
+    return path.read_text().split("\n")[:-1]
+
+
 def _all_calls(log: Path) -> list[list[str]]:
     """Every ssh the launcher ran: sessions and one-shots."""
-    if not log.exists():
-        return []
-    return [json.loads(line) for line in log.read_text().splitlines()]
+    return [json.loads(line) for line in _complete_lines(log)]
 
 
 def _calls(log: Path) -> list[list[str]]:
@@ -128,8 +135,7 @@ def _oneshots(log: Path) -> list[list[str]]:
 
 def _stdin(log: Path) -> list[str]:
     """Every line the fake ssh read on stdin, in order."""
-    path = Path(str(log) + ".stdin")
-    return path.read_text().splitlines() if path.exists() else []
+    return _complete_lines(Path(str(log) + ".stdin"))
 
 
 def _tokens(log: Path) -> list[str]:
@@ -143,6 +149,14 @@ async def _until(predicate: Any, what: str, timeout: float = 15.0) -> None:
         if time.monotonic() > deadline:
             raise AssertionError(what)
         await asyncio.sleep(0.02)
+
+
+def test_a_log_line_caught_half_written_is_not_read_yet(tmp_path):
+    log = tmp_path / "ssh.log"
+    log.write_text('["-R", "a"]\n["-T", "unterminat')
+    assert _all_calls(log) == [["-R", "a"]]
+    log.write_text('["-R", "a"]\n["-T", "b"]\n')
+    assert _all_calls(log) == [["-R", "a"], ["-T", "b"]]
 
 
 # ── the command line ──────────────────────────────────────────────────────

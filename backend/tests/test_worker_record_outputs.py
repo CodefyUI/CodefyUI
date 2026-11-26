@@ -29,7 +29,6 @@ from app.core.worker_outputs import (
     WorkerTimeout,
     WorkerUnreachable,
 )
-from app.main import app
 
 
 async def _write(store: RunOutputStore, run_id: str, directory: Any) -> Any:
@@ -530,7 +529,7 @@ class _FakeOutputs:
 
 
 @pytest.fixture
-def worker_app(monkeypatch):
+def worker_app(app_state):
     """The app with a fresh store, a fake registry and a run record."""
     store = RunOutputStore(max_runs=5, max_bytes=0)
     outputs = _FakeOutputs({})
@@ -542,13 +541,13 @@ def worker_app(monkeypatch):
             raise record
         return record
 
-    monkeypatch.setattr(app.state, "run_output_store", store, raising=False)
-    monkeypatch.setattr(app.state, "port_stats_cache",
-                        PortStatsCache(max_bytes=1 << 20), raising=False)
-    monkeypatch.setattr(app.state, "worker_registry",
-                        SimpleNamespace(outputs=outputs), raising=False)
-    monkeypatch.setattr(app.state, "run_service", SimpleNamespace(
-        store=SimpleNamespace(get_run=get_run)), raising=False)
+    app_state("run_output_store", store)
+    app_state("port_stats_cache",
+              PortStatsCache(max_bytes=1 << 20))
+    app_state("worker_registry",
+              SimpleNamespace(outputs=outputs))
+    app_state("run_service", SimpleNamespace(
+        store=SimpleNamespace(get_run=get_run)))
     return SimpleNamespace(store=store, outputs=outputs, records=records)
 
 
@@ -647,12 +646,12 @@ async def test_a_run_no_worker_holds_reads_as_before(test_client,
 
 
 async def test_without_a_run_service_or_registry(test_client, worker_app,
-                                                 monkeypatch):
-    monkeypatch.setattr(app.state, "run_service", None)
+                                                 app_state):
+    app_state("run_service", None)
     assert (await test_client.get("/api/execution/outputs/r1")
             ).status_code == 404
     await worker_app.store.add_remote("r1", "box")
-    monkeypatch.setattr(app.state, "worker_registry", None)
+    app_state("worker_registry", None)
     response = await test_client.get("/api/execution/outputs/r1")
     assert response.status_code == 503
     assert "no worker registry" in response.json()["detail"]

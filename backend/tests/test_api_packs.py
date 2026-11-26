@@ -646,7 +646,7 @@ async def test_a_restart_mode_pack_starts_the_handshake_without_being_asked(
 
 
 async def test_restart_refused_while_a_graph_runs(client, restart_ready,
-                                                  monkeypatch):
+                                                  app_state):
     """A restart ends this process, and a run that dies with it is minutes or
     hours of somebody's training thrown away with no output. Veto, not hint.
     """
@@ -657,7 +657,7 @@ async def test_restart_refused_while_a_graph_runs(client, restart_ready,
         def queue_snapshot(self):
             return {}
 
-    monkeypatch.setattr(app.state, "run_service", _Busy(), raising=False)
+    app_state("run_service", _Busy())
 
     response = await client.post("/api/packs/gpu-torch/install",
                                  json={"mode": "restart", "variant": "cu128"})
