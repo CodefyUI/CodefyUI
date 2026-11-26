@@ -5,6 +5,7 @@ import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
 import { isAnyModalOpen } from '../store/modalState';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
+import { toggleLastSidePanel } from '../plugins/sideDock';
 
 /** Node kinds with no detail modal to open (mirrors NodeDetailModal). */
 const NO_DETAIL_NODE_TYPES = new Set(['noteNode']);
@@ -168,6 +169,16 @@ export function useKeyboardShortcuts() {
         if (hasTextSelection()) return;
         e.preventDefault();
         useTabStore.getState().pasteNodes();
+        return;
+      }
+
+      // Ctrl+Shift+A / Cmd+Shift+A — open or close the side panel used last
+      // (apiVersion 6 side dock), or the first one when none was used yet.
+      // Below the typing gate on purpose: in a chat box it is the user's
+      // keystroke. With no side panel registered the key is left alone.
+      if (mod && e.shiftKey && !e.altKey && key === 'a') {
+        if (e.repeat) return;
+        if (toggleLastSidePanel()) e.preventDefault();
         return;
       }
 

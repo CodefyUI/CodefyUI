@@ -3,6 +3,7 @@ import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import { useUIStore } from '../../store/uiStore';
 import { SettingsPopover } from './SettingsPopover';
 import { PluginToolbarButtons } from './PluginToolbarButtons';
+import { SidePanelToggles } from './SidePanelToggles';
 import { FontSizeMenu } from './FontSizeMenu';
 import styles from './Toolbar.module.css';
 
@@ -43,6 +44,10 @@ export function ToolbarGlobalActions({ plugins = true }: ToolbarGlobalActionsPro
           plugin never pushes Settings or Help off the row. Renders nothing
           at all — no element, no gap — when no plugin registered one. */}
       {plugins && <PluginToolbarButtons />}
+
+      {/* Side panel toggles (apiVersion 6), on both bars: opening a panel
+          does not need a graph. Nothing at all when no side panel exists. */}
+      <SidePanelToggles />
 
       {/* Settings ⚙ */}
       <div className={styles.menuWrapper}>

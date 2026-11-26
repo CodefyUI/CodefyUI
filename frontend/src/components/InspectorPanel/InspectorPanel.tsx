@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import { StepTraceView } from './StepTraceView';
@@ -15,6 +15,8 @@ import {
 } from './portCaptures';
 import { isTensor, shapesEqual, makeHighlight } from './diff';
 import { computeSegmentNodes } from '../../utils/segmentPath';
+import { useWindowWidth } from '../../hooks/useWindowWidth';
+import { SIDE_COLLAPSES_INSPECTOR_BELOW, useSideDockStore } from '../../plugins/sideDock';
 import styles from './InspectorPanel.module.css';
 
 type InspectorTab = 'forward' | 'steps' | 'backward';
@@ -33,7 +35,31 @@ export function InspectorPanel() {
   // feeds through its own inputs.
   const inputsEmptyText = useInputsEmptyText(selectedNodeId ?? '');
 
-  const [collapsed, setCollapsed] = useState(false);
+  // A side panel (apiVersion 6) and the Inspector both want the right-hand
+  // side of a laptop screen, and the canvas between them would be left a
+  // sliver. While a side panel is open on a window narrower than
+  // SIDE_COLLAPSES_INSPECTOR_BELOW, the Inspector starts as its 36px strip;
+  // the user can still open it, and that choice holds until the crowding
+  // itself changes. Closing the side panel undoes a collapse this made.
+  const sideOpen = useSideDockStore((s) => s.activeKey !== null);
+  const windowWidth = useWindowWidth();
+  const crowded = sideOpen && windowWidth < SIDE_COLLAPSES_INSPECTOR_BELOW;
+  const [collapsed, setCollapsed] = useState(crowded);
+  const autoCollapsed = useRef(crowded);
+  useEffect(() => {
+    if (crowded) {
+      // Only a collapse made here is undone later: one the user made stays.
+      if (!collapsed) {
+        setCollapsed(true);
+        autoCollapsed.current = true;
+      }
+    } else if (autoCollapsed.current) {
+      setCollapsed(false);
+      autoCollapsed.current = false;
+    }
+    // Runs when the crowding changes, reading `collapsed` as it is then; a
+    // change of `collapsed` alone is the user's and must not re-run this.
+  }, [crowded]);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('forward');
 
   // Reset tab when selection changes so Steps don't linger between nodes.
@@ -129,7 +155,10 @@ export function InspectorPanel() {
   const collapseButton = (
     <button type="button"
       className={styles.collapseBtn}
-      onClick={() => setCollapsed((v) => !v)}
+      onClick={() => {
+        autoCollapsed.current = false;
+        setCollapsed((v) => !v);
+      }}
       title={collapsed ? t('inspector.expand') : t('inspector.collapse')}
       aria-label={collapsed ? t('inspector.expand') : t('inspector.collapse')}
     >

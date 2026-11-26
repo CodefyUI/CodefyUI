@@ -816,6 +816,7 @@ const en = {
   'shortcuts.bypass': 'Toggle bypass on selected nodes',
   'shortcuts.toggleSidebar': 'Toggle sidebar (when no node is selected)',
   'shortcuts.toggleSidebarAlways': 'Toggle sidebar (always)',
+  'shortcuts.toggleSidePanel': 'Show or hide the last side panel',
   'shortcuts.quickSearch': 'Quick node search',
   'shortcuts.help': 'Show this help',
   'shortcuts.doubleClickKey': 'Double-click',
@@ -1182,6 +1183,12 @@ const en = {
   // their own titles, so the host only labels the containers around them.
   'plugins.panels': 'Plugin panels',
   'plugins.moreActions': 'More plugin actions',
+  'plugins.side.resize': 'Resize side panel',
+  'plugins.side.resizeHint': 'Drag to resize, double-click to reset',
+  'plugins.side.tabs': 'Side panels',
+  'plugins.side.close': 'Close {title}',
+  'plugins.side.toggle': 'Show or hide {title}',
+  'plugins.side.shortcut': 'Ctrl/Cmd+Shift+A',
 
   // Workers panel (#776): the worker agents this server can send runs to.
   'workers.title': 'Workers',

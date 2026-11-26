@@ -83,6 +83,7 @@ function ShortcutsSheet() {
     { keys: `${mod}+B`, action: t('shortcuts.bypass') },
     { keys: `${mod}+B`, action: t('shortcuts.toggleSidebar') },
     { keys: `${mod}+Shift+B`, action: t('shortcuts.toggleSidebarAlways') },
+    { keys: `${mod}+Shift+A`, action: t('shortcuts.toggleSidePanel') },
     { keys: t('shortcuts.doubleClickKey'), action: t('shortcuts.quickSearch') },
     { keys: '?', action: t('shortcuts.help') },
   ];

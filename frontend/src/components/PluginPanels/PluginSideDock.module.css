@@ -1,0 +1,151 @@
+/* PluginSideDock.module.css — the frame around a side panel (apiVersion 6).
+ *
+ * Container only, as for every dock: the host sets no colours, fonts or
+ * resets on what the plugin renders inside `.body`. */
+
+.dock {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-base);
+}
+
+/* A narrow window: float over the canvas instead of taking its width. */
+.overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  box-shadow: var(--shadow-lg);
+}
+
+/* The 4px drag handle sits ON the left border, so the whole edge is the
+   target without the column growing a gutter. */
+.handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 4px;
+  z-index: 1;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.handle:hover {
+  /* Same strength as the node palette's handle: it must read as grabbable. */
+  background: rgba(34, 211, 238, 0.35);
+}
+
+.handle:focus-visible {
+  background: var(--accent-deep);
+  outline: none;
+}
+
+.inner {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.strip {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  min-height: var(--h-control-sm);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-app);
+}
+
+.tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 180px;
+  padding: 0 var(--sp-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.tabActive {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.tabIcon {
+  flex-shrink: 0;
+}
+
+.tabTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close {
+  flex-shrink: 0;
+  width: var(--h-control-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.close:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.close:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The host-created element the plugin renders into: fill the column, so a
+   plugin can lay out a header, a scrolling log and a composer by height. */
+.body > * {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}

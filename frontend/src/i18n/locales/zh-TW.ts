@@ -714,6 +714,7 @@ const zhTW: Record<TranslationKey, string> = {
   'shortcuts.bypass': '切換選取節點的略過狀態',
   'shortcuts.toggleSidebar': '切換側邊欄（未選取節點時）',
   'shortcuts.toggleSidebarAlways': '切換側邊欄（永遠有效）',
+  'shortcuts.toggleSidePanel': '顯示或隱藏上次使用的側欄面板',
   'shortcuts.quickSearch': '快速搜尋節點',
   'shortcuts.help': '顯示此說明',
   'shortcuts.doubleClickKey': '雙擊',
@@ -1040,6 +1041,12 @@ const zhTW: Record<TranslationKey, string> = {
   // 標示包在外面的容器。
   'plugins.panels': '外掛面板',
   'plugins.moreActions': '更多外掛動作',
+  'plugins.side.resize': '調整側欄寬度',
+  'plugins.side.resizeHint': '拖曳調整寬度，雙擊恢復預設',
+  'plugins.side.tabs': '側欄面板',
+  'plugins.side.close': '關閉{title}',
+  'plugins.side.toggle': '顯示或隱藏{title}',
+  'plugins.side.shortcut': 'Ctrl/Cmd+Shift+A',
 
   // Workers panel (#776)
   'workers.title': 'Workers',

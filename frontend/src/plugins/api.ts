@@ -28,9 +28,10 @@ import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspac
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
 import {
-  registerPluginPanel, removePluginPanel,
+  panelKey, registerPluginPanel, removePluginPanel,
   type PluginPanelOptions,
 } from './panels';
+import { isSidePanelOpen, setSidePanelOpen } from './sideDock';
 import {
   registerPluginToolbarButton, removePluginToolbarButton,
   type PluginToolbarButtonOptions,
@@ -238,7 +239,7 @@ export function currentGraphView(): GraphView {
 }
 
 export interface CodefyUIPluginAPI {
-  apiVersion: 5;
+  apiVersion: 6;
   pluginId: string;
   ui: {
     addFloatingWidget(opts: { id: string }): HTMLElement;
@@ -246,6 +247,9 @@ export interface CodefyUIPluginAPI {
     /** Register a dock panel; returns its stable container element. */
     addPanel(opts: PluginPanelOptions): HTMLElement;
     removePanel(id: string): void;
+    /** Open or close one of this plugin's side panels (apiVersion 6). */
+    setPanelOpen(id: string, open: boolean): boolean;
+    isPanelOpen(id: string): boolean;
     /** Register a toolbar button; returns a remove fn. */
     addToolbarButton(opts: PluginToolbarButtonOptions): () => void;
     removeToolbarButton(id: string): void;
@@ -804,7 +808,11 @@ export function buildPluginAPI(
     // `undefined` -- never a stub whose methods throw -- and the documented
     // feature checks are `api.apiVersion >= 5` and
     // `typeof api.workspace?.openGraphs === 'function'`.
-    apiVersion: 5,
+    // 6 added the side dock (`dock: 'side'`) and `ui.setPanelOpen` /
+    // `ui.isPanelOpen`. Additive like every bump before it: a plugin checks
+    // `api.apiVersion >= 6` before asking for a side panel, and an older
+    // editor simply has neither member.
+    apiVersion: 6,
     pluginId,
     ui: {
       addFloatingWidget: ({ id }) => getWidgetContainer(id),
@@ -818,6 +826,8 @@ export function buildPluginAPI(
         return element;
       },
       removePanel: (id) => removePluginPanel(pluginId, id),
+      setPanelOpen: (id, open) => setSidePanelOpen(panelKey(pluginId, id), open),
+      isPanelOpen: (id) => isSidePanelOpen(panelKey(pluginId, id)),
       addToolbarButton: (opts) => {
         const remove = registerPluginToolbarButton(pluginId, opts);
         trackCleanup?.(remove);

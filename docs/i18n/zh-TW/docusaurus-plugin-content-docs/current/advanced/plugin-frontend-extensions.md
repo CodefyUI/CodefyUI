@@ -11,7 +11,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 
-停靠面板、工具列按鈕、執行事件與執行歷史介面（`api.runs`）需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）。使用前請先檢查功能版本，詳見 [API 版本](#api-versions)。
+停靠面板、工具列按鈕、執行事件與執行歷史介面（`api.runs`）需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）；側欄（`dock: "side"`）與 `ui.setPanelOpen` / `ui.isPanelOpen` 需要 **apiVersion 6**（下一個版本）。使用前請先檢查功能版本，詳見 [API 版本](#api-versions)。
 :::
 
 ## API 版本 {/* #api-versions */}
@@ -25,6 +25,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
 | 4 | 2.3.0 | `graph.getView`——使用者正在看圖表的哪一層 |
 | 5 | 2.5.0 | `workspace.*`——分頁、快照與比較後寫入；`move_node`、`set_segment` / `remove_segment`、`add_note` / `update_note`、`set_node_meta` |
+| 6 | 尚未發布 | `dock: "side"` 側欄面板與 `side` 尺寸選項；`ui.setPanelOpen` / `ui.isPanelOpen` |
 
 使用超過外掛最低需求版本的新功能前，請先檢查目前的 API 版本，並在版本不足時降級處理，不要直接拋出錯誤：
 
@@ -120,6 +121,8 @@ export default function activate(api) {
 | `removePanel` | `(id: string) => void` | **apiVersion 3。** 移除你自己的某個面板。 |
 | `addToolbarButton` | `(opts) => () => void` | **apiVersion 3。** 新增一個工具列按鈕；回傳移除函式。 |
 | `removeToolbarButton` | `(id: string) => void` | **apiVersion 3。** 依 id 移除你自己的某個按鈕。 |
+| `setPanelOpen` | `(id: string, open: boolean) => boolean` | **apiVersion 6。** 開啟或關閉你自己的某個側欄面板；回傳執行後是否為開啟狀態。 |
+| `isPanelOpen` | `(id: string) => boolean` | **apiVersion 6。** 你的側欄面板是否正在顯示。 |
 
 #### 停靠面板 {/* #dock-panels */}
 
@@ -160,6 +163,35 @@ api.ui.addPanel({
 請把這兩個 callback 寫成連續呼叫兩次也無害：React 的開發模式會重播掛載 effect，所以單次切換分頁有可能多產生一組 `onHide`/`onShow`。
 
 外掛被卸載或熱重載時，面板會自動移除；`removePanel` 是給你想更早移除的面板用的。
+
+#### 側欄面板 {/* #side-panels */}
+
+需要 `api.apiVersion >= 6`。較舊的編輯器不認得 `dock: "side"`，請在那裡改用浮動元件。
+
+```ts
+api.ui.addPanel({
+  id: "chat",
+  title: "Agent",
+  icon: "A",
+  dock: "side",
+  side: {
+    defaultWidth: 400,   // px；使用者拖曳過後，以使用者的寬度為準
+    minWidth: 300,
+    maxWidth: 720,
+    defaultOpen: false,  // 在這個瀏覽器第一次註冊時是否開啟
+  },
+});
+```
+
+側欄面板位於編輯器最右側的獨立一欄，在節點設定與檢視器欄的右邊，高度從分頁列下緣到視窗底部：它會跨過底部的結果面板，因為對話或工具視窗最需要的是高度。同時只會顯示一個側欄面板；多個外掛都註冊時，欄頂會出現分頁列，只有一個時則不顯示。
+
+編輯器只畫這一欄的左邊框、邊框上 4 px 的調寬把手（可拖曳，或聚焦後用左右方向鍵、Home、End 調整；雙擊回到 `defaultWidth`）以及上述分頁列，**不畫標題列**：請在元素內自己畫標題。元素會填滿整欄的高度，方便依高度配置標題、可捲動的紀錄與輸入框。
+
+每個側欄面板都會自動得到一個由 `icon` 與 `title` 組成的工具列開關，以 `aria-pressed` 表示是否開啟。`Ctrl/Cmd+Shift+A` 會開關上次使用的側欄面板。每個面板的寬度與開關狀態存在瀏覽器的 localStorage，重新整理後會照使用者離開時的樣子恢復；`defaultOpen` 只決定第一次。
+
+`api.ui.setPanelOpen(id, open)` 讓程式開關你自己的側欄面板（開啟一個會關閉原本顯示的那一個），並回傳是否為開啟狀態；`id` 不是你的側欄面板時回傳 `false` 且不做任何事。`isPanelOpen(id)` 讀取同一個狀態。面板開啟、關閉或使用者切到其他側欄分頁時會觸發 `onShow` 與 `onHide`；元素本身和其他 dock 一樣會保留。
+
+編輯器會在較小的螢幕上保護畫布。視窗寬度小於 1680 px 且側欄面板開著時，檢視器會以收合狀態（36 px 窄條）出現，使用者仍可手動展開。視窗寬度小於 1100 px 時，側欄改為覆蓋在畫布上而不佔用畫布寬度，並顯示關閉鈕。
 
 #### 工具列按鈕 {/* #toolbar-buttons */}
 

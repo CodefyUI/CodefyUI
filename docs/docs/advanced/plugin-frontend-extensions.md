@@ -11,7 +11,7 @@ A plugin pack can ship a JavaScript bundle alongside its Python nodes. When the 
 :::note Availability
 Frontend extensions are in CodefyUI **1.3.0** and later. Check `cdui --version`; if it reports an older version, run `cdui update`.
 
-Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 2.0.0 and later); `graph.getView` needs **apiVersion 4** (CodefyUI 2.3.0 and later); `api.workspace` and the six agent canvas operations need **apiVersion 5** (CodefyUI 2.5.0 and later). Feature-check before you use them — see [API versions](#api-versions).
+Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 2.0.0 and later); `graph.getView` needs **apiVersion 4** (CodefyUI 2.3.0 and later); `api.workspace` and the six agent canvas operations need **apiVersion 5** (CodefyUI 2.5.0 and later); the side dock (`dock: "side"`) and `ui.setPanelOpen` / `ui.isPanelOpen` need **apiVersion 6** (the next release). Feature-check before you use them — see [API versions](#api-versions).
 :::
 
 ## API versions
@@ -25,6 +25,7 @@ Dock panels, toolbar buttons, execution events and the runs facade need **apiVer
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`, `ui.addToolbarButton` / `removeToolbarButton`, `events.onExecution`, `runs.*` |
 | 4 | 2.3.0 | `graph.getView` — which level of the graph the user is looking at |
 | 5 | 2.5.0 | `workspace.*` — tabs, snapshots and compare-and-swap writes; `move_node`, `set_segment` / `remove_segment`, `add_note` / `update_note`, `set_node_meta` |
+| 6 | Unreleased | `dock: "side"` panels with `side` sizing options; `ui.setPanelOpen` / `ui.isPanelOpen` |
 
 Check it before reaching for anything newer than the version you require, and degrade rather than throw:
 
@@ -120,6 +121,8 @@ The editor does **not** await `activate`'s return value — do your setup synchr
 | `removePanel` | `(id: string) => void` | **apiVersion 3.** Remove one of your panels. |
 | `addToolbarButton` | `(opts) => () => void` | **apiVersion 3.** Add a toolbar button; returns a remove function. |
 | `removeToolbarButton` | `(id: string) => void` | **apiVersion 3.** Remove one of your buttons by id. |
+| `setPanelOpen` | `(id: string, open: boolean) => boolean` | **apiVersion 6.** Open or close one of your side panels; returns whether it is open afterwards. |
+| `isPanelOpen` | `(id: string) => boolean` | **apiVersion 6.** Whether your side panel is the one showing. |
 
 #### Dock panels
 
@@ -160,6 +163,35 @@ api.ui.addPanel({
 Write both callbacks so that calling them twice in a row is harmless: React's development mode replays mount effects, so a single tab switch can produce an extra `onHide`/`onShow` pair.
 
 Panels are removed automatically when your plugin is unloaded or hot-reloaded; `removePanel` is for panels you want gone earlier.
+
+#### Side panels
+
+Requires `api.apiVersion >= 6`. On an older editor, `dock: "side"` is not understood; fall back to a floating widget there.
+
+```ts
+api.ui.addPanel({
+  id: "chat",
+  title: "Agent",
+  icon: "A",
+  dock: "side",
+  side: {
+    defaultWidth: 400,   // px; the user's own width wins once they drag
+    minWidth: 300,
+    maxWidth: 720,
+    defaultOpen: false,  // open the first time it is registered in this browser
+  },
+});
+```
+
+A side panel lives in a column of its own at the far right of the editor, to the right of the node config and Inspector column, from under the tab bar to the bottom of the window: it spans the Results panel, because a conversation or a tool window needs height. Only one side panel shows at a time. When several plugins register one, the column grows a tab strip; with one, there is none.
+
+The editor draws the column's left border, a 4 px resize handle on it (drag, or focus it and use the left and right arrow keys, Home and End; double-click returns to `defaultWidth`) and that tab strip. It draws **no title bar**: put your own heading inside the element. The element fills the column's height, so a header, a scrolling log and a composer can be laid out by height.
+
+Every side panel gets a toolbar toggle made from its `icon` and `title`, with `aria-pressed` showing whether it is open. `Ctrl/Cmd+Shift+A` opens or closes the side panel used last. Each panel's width and open state are kept in the browser's localStorage, so a reload brings the panel back as the user left it; `defaultOpen` only decides the first time.
+
+`api.ui.setPanelOpen(id, open)` opens or closes one of your own side panels from code (opening one closes whichever was showing) and returns whether it is open; for an id that is not a side panel of yours it returns `false` and does nothing. `isPanelOpen(id)` reads the same state. `onShow` and `onHide` fire when the panel opens, closes, or the user switches to another side panel's tab; the element itself is kept, as in the other docks.
+
+The editor protects the canvas on smaller screens. While a side panel is open on a window narrower than 1680 px, the Inspector appears collapsed to its 36 px strip (the user can still open it). On a window narrower than 1100 px, the side column floats over the canvas instead of taking width from it, and shows a close button.
 
 #### Toolbar buttons
 

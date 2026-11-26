@@ -30,6 +30,7 @@ import { DialogContainer } from './components/shared/DialogContainer';
 import { lazyRetry } from './components/shared/lazyRetry';
 import { PluginHost } from './plugins/PluginHost';
 import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
+import { PluginSideDock } from './components/PluginPanels/PluginSideDock';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -223,7 +224,13 @@ function App() {
           and every control on it names a graph anyway. */}
       {hasActiveTab ? <Toolbar /> : <WelcomeToolbar />}
       <TabBar />
-      {hasActiveTab ? <TabContent tabId={activeTabId} /> : <WelcomeScreen />}
+      {/* The side dock (apiVersion 6) is a column of its own beside
+          everything under the tab bar, so it spans the Results panel; on a
+          narrow window it floats over this row instead. */}
+      <div className={styles.workArea}>
+        {hasActiveTab ? <TabContent tabId={activeTabId} /> : <WelcomeScreen />}
+        <PluginSideDock />
+      </div>
       <PresetConfigModal />
       <LayersEditorModal />
       <NodeDetailModal />
