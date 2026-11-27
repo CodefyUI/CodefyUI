@@ -32,15 +32,17 @@ def make_skill(root: Path, folder: str, *, name: str | None = None,
     front = [f"name: {name or folder}"]
     if description is not None:
         front.append(f"description: {description}")
+    # newline="\n": the API returns files as they are on disk, so a
+    # fixture must not get CRLF from Windows' text-mode translation.
     (path / "SKILL.md").write_text("---\n" + "\n".join(front) + "\n---\n" + body,
-                                   encoding="utf-8")
+                                   encoding="utf-8", newline="\n")
     for rel, content in (files or {}).items():
         target = path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(content, bytes):
             target.write_bytes(content)
         else:
-            target.write_text(content, encoding="utf-8")
+            target.write_text(content, encoding="utf-8", newline="\n")
     return path
 
 
@@ -349,7 +351,8 @@ async def test_context_in_project_mode(client, roots, monkeypatch):
     (project / "graphs" / "train.graph.json").write_text("{}", encoding="utf-8")
     (project / "graphs" / "serve.graph.json").write_text("{}", encoding="utf-8")
     (project / "codefyui.project.toml").write_text('[project]\nname = "my-service"\n', encoding="utf-8")
-    (project / "AGENTS.md").write_text("Always seed.\n", encoding="utf-8")
+    (project / "AGENTS.md").write_text("Always seed.\n", encoding="utf-8",
+                                       newline="\n")
     monkeypatch.setattr(settings, "PROJECT_DIR", project)
     monkeypatch.setattr(settings, "GRAPHS_DIR", project / "graphs")
     context = (await client.get("/api/agent/context")).json()

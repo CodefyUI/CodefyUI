@@ -242,7 +242,7 @@ def parse_skill(text: str, folder_name: str) -> ParsedSkill:
                "'---' lines.")
         return skill
     front, body = split
-    skill.body = body.lstrip("\n")
+    skill.body = body.lstrip("\r\n")
     if len(front.encode("utf-8", "surrogatepass")) > MAX_FRONTMATTER_BYTES:
         _error(issues, "frontmatter_too_large",
                f"The frontmatter is larger than {MAX_FRONTMATTER_BYTES // 1024} KB.")

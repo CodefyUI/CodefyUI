@@ -116,6 +116,18 @@ def test_frontmatter_survives_a_bom_and_crlf():
     assert split_frontmatter("﻿---\r\nname: a\r\n---\r\nbody") == ("name: a\r\n", "body")
 
 
+def test_a_crlf_skill_md_parses_like_an_lf_one():
+    """A SKILL.md saved on Windows: same name, description and body, the
+    body's own line endings kept and its leading blank line dropped."""
+    text = ("---\r\nname: demo\r\ndescription: Does a thing. Use when testing."
+            "\r\n---\r\n\r\n# Hello\r\nworld\r\n")
+    skill = parse_skill(text, "demo")
+    assert skill.valid, skill.issues
+    assert skill.name == "demo"
+    assert skill.description == "Does a thing. Use when testing."
+    assert skill.body == "# Hello\r\nworld\r\n"
+
+
 @pytest.mark.parametrize("name, ok", [
     ("a", True), ("pdf-processing", True), ("a1-b2", True),
     ("", False), ("A", False), ("a_b", False), ("a-", False), ("-a", False),
