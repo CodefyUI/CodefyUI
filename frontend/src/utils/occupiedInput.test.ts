@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Edge } from '@xyflow/react';
-import { occupantsOf, withoutOccupants } from './occupiedInput';
+import { occupantsOf, reconnectedEdges, withoutOccupants } from './occupiedInput';
 
 const wire = (id: string, over: Partial<Edge> = {}): Edge => ({
   id,
@@ -66,5 +66,29 @@ describe('withoutOccupants', () => {
     const out = withoutOccupants(edges, { source: 'z', target: 'c', targetHandle: 'x' });
     expect(out).toEqual(edges);
     expect(out).not.toBe(edges);
+  });
+});
+
+describe('reconnectedEdges', () => {
+  const wire = (id: string, source: string, target: string, targetHandle = 'x'): Edge =>
+    ({ id, source, target, sourceHandle: 'out', targetHandle, type: 'dataEdge' }) as Edge;
+
+  it('keeps the moved wire where it was in the list', () => {
+    const edges = [wire('a', 'n1', 'n2'), wire('b', 'n1', 'n3'), wire('c', 'n2', 'n3', 'y')];
+    const out = reconnectedEdges(edges, edges[0], {
+      source: 'n1', target: 'n4', sourceHandle: 'out', targetHandle: 'x',
+    });
+    expect(out.map((e) => e.id)).toEqual(['a', 'b', 'c']);
+    expect(out[0].target).toBe('n4');
+    expect(out[1]).toBe(edges[1]);
+  });
+
+  it('drops the wire already feeding the input it lands on, in the same step', () => {
+    const edges = [wire('a', 'n1', 'n2'), wire('b', 'n5', 'n3'), wire('c', 'n2', 'n4')];
+    const out = reconnectedEdges(edges, edges[0], {
+      source: 'n1', target: 'n3', sourceHandle: 'out', targetHandle: 'x',
+    });
+    expect(out.map((e) => e.id)).toEqual(['a', 'c']);
+    expect(out[0].target).toBe('n3');
   });
 });
