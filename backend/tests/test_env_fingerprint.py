@@ -522,7 +522,7 @@ async def test_the_run_detail_carries_the_fingerprint_and_the_list_does_not(
         "graph": _graph(), "options": {"device": "auto"}})
     assert response.status_code == 200, response.text
     run_id = response.json()["run_id"]
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 120
     while True:
         detail = (await client.get(f"/api/runs/{run_id}")).json()
         if detail["finished_at"] is not None:

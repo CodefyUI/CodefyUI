@@ -233,7 +233,7 @@ def test_an_ssh_worker_enrolls_runs_and_survives_disable_enable(
               in ("disconnected", "offline"),
               "the worker stayed connected after disable", client, NAME)
         assert _worker(client, NAME)["draining"] is True
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 120
         while _pid_alive(agent_pid) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert not _pid_alive(agent_pid), "disable left the remote agent"
@@ -341,13 +341,13 @@ def test_a_dropped_ssh_session_keeps_the_agent_and_its_run(
 
         # Disable stops that agent through the new session.
         client.post(f"/api/workers/ssh/{name}/disable")
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 120
         while _pid_alive(agent_pid) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert not _pid_alive(agent_pid)
         # Both sessions' remote scripts are gone with their ``tail -f`` of
         # the agent's log, the dropped one included (#829).
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 120
         while _tails(remote_home) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert _tails(remote_home) == []

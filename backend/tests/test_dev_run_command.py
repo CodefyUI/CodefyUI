@@ -756,7 +756,10 @@ async def _served_events(tmp_path, monkeypatch, frames: list) -> list:
     service = RunService(RunStore(database), shutdown_grace_s=2.0)
     try:
         run_id = (await service.submit(graph)).run_id
-        deadline = time.monotonic() + 15
+        # A guard against a hang only: the loop leaves as soon as the run
+        # finishes, so the bound costs nothing on a healthy runner. 15 s was
+        # missed by 0.2 s on a slow Windows CI runner.
+        deadline = time.monotonic() + 120
         while (await service.store.get_run(run_id)).finished_at is None:
             assert time.monotonic() < deadline, "the run did not finish"
             await asyncio.sleep(0.02)
