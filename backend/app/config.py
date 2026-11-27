@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Literal
 from platformdirs import user_data_dir
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, PrivateAttr, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 # Let the handful of ops not yet implemented for Apple MPS fall back to CPU
@@ -29,6 +29,22 @@ def _user_data_root() -> Path:
 
 def _default_plugins_user_dir() -> Path:
     return _user_data_root() / "plugins"
+
+
+#: The roots a project directory re-points (``Settings.derive_project_roots``).
+PROJECT_DERIVED_ROOTS: tuple[str, ...] = ("GRAPHS_DIR", "IMAGES_DIR", "MODELS_DIR", "MEDIA_DIR")
+
+
+def _project_root_for(field: str, project: Path) -> Path:
+    assets = project / "assets"
+    return {
+        "GRAPHS_DIR": project / "graphs",
+        "IMAGES_DIR": assets / "images",
+        "MODELS_DIR": assets / "models",
+        # Under assets/ like images/models, so it stays inside
+        # data_paths.data_root() (MODELS_DIR.parent) in project mode too.
+        "MEDIA_DIR": assets / "media",
+    }[field]
 
 
 class Settings(BaseSettings):
@@ -453,34 +469,47 @@ class Settings(BaseSettings):
             self.WS_MAX_MESSAGE_BYTES = self.MAX_RUN_BODY_BYTES
         return self
 
+    #: The derived roots the operator set explicitly (env or init kwargs),
+    #: captured BEFORE derivation: assigning a derived root adds it to
+    #: ``model_fields_set`` too, so reading that set later would mistake
+    #: every derived root for a pinned one.
+    _explicit_roots: frozenset[str] = PrivateAttr(default=frozenset())
+
     @model_validator(mode="after")
     def _derive_project_roots(self) -> "Settings":
         """Project mode repoints graphs/assets roots (spec 7.1).
 
         Precedence: an explicitly-set root (CODEFYUI_GRAPHS_DIR etc., or an
-        init kwarg) beats project derivation — detected via model_fields_set,
+        init kwarg) beats project derivation -- detected via model_fields_set,
         which lists ONLY fields provided from env/init, never class defaults.
         DB_PATH / CUSTOM_NODES_DIR are intentionally NOT derived (install-
         global in v1). No module-level settings caching exists, so setting
         these here (before any node reads settings at call time) is safe.
         """
+        self._explicit_roots = frozenset(
+            name for name in PROJECT_DERIVED_ROOTS if name in self.model_fields_set)
         if self.PROJECT_DIR is None:
             return self
-        explicit = set(self.model_fields_set)
-        proj = self.PROJECT_DIR.resolve()
-        self.PROJECT_DIR = proj
-        assets = proj / "assets"
-        if "GRAPHS_DIR" not in explicit:
-            self.GRAPHS_DIR = proj / "graphs"
-        if "IMAGES_DIR" not in explicit:
-            self.IMAGES_DIR = assets / "images"
-        if "MODELS_DIR" not in explicit:
-            self.MODELS_DIR = assets / "models"
-        if "MEDIA_DIR" not in explicit:
-            # Under assets/ like images/models, so it stays inside
-            # data_paths.data_root() (MODELS_DIR.parent) in project mode too.
-            self.MEDIA_DIR = assets / "media"
+        self.derive_project_roots(self.PROJECT_DIR)
         return self
+
+    def derive_project_roots(self, project: Path | None) -> None:
+        """Point the derived roots at *project*, or back at their defaults.
+
+        The one place the derivation lives: construction calls it, and so
+        does a run-time project switch (``core.project_switch``). A root the
+        operator pinned explicitly is left alone either way, the same
+        precedence as at start-up.
+        """
+        if project is not None:
+            project = Path(project).resolve()
+        self.PROJECT_DIR = project
+        defaults = type(self).model_fields
+        for name in PROJECT_DERIVED_ROOTS:
+            if name in self._explicit_roots:
+                continue
+            setattr(self, name, defaults[name].default if project is None
+                    else _project_root_for(name, project))
 
     @property
     def LAYOUT_DIR(self) -> Path | None:

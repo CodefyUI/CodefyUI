@@ -269,11 +269,15 @@ async def _lifespan_body(app: FastAPI):
     # semantics, loaded before node/plugin discovery. CODEFYUI_* config keys
     # here are IGNORED (settings already materialized at import) -- spec 7.3.
     if settings.PROJECT_DIR is not None:
-        from .core.dotenv import load_dotenv_file
-        env_applied = load_dotenv_file(settings.PROJECT_DIR / ".env")
+        from .core.dotenv import apply_project_env, read_dotenv
+        # Recorded, so a later switch to another project can take these back
+        # out. No blocklist: a project named at start-up is the operator's
+        # own choice, and this keeps that case exactly as it was.
+        values = read_dotenv(settings.PROJECT_DIR / ".env") or {}
+        env_applied = apply_project_env(values, enforce_blocklist=False)["applied"]
         if env_applied:
             # Log the COUNT only, never the values.
-            logger.info("Loaded %d value(s) from project .env", env_applied)
+            logger.info("Loaded %d value(s) from project .env", len(env_applied))
 
     # Populate Host whitelist and persist the session token before any handler
     # can fire. Frontend bootstrap reads the token via /api/auth/bootstrap; CLI
