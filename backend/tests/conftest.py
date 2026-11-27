@@ -243,7 +243,7 @@ def _ensure_registry_intact(registry_with_nodes):
 def app_state(monkeypatch):
     """Set an ``app.state`` attribute for one test: ``app_state(name, value)``.
 
-    Not ``app_state(...)``: starlette's ``State`` keeps
+    Not ``monkeypatch.setattr(app.state, ...)``: starlette's ``State`` keeps
     its values in ``State._state``, not in its ``__dict__``, and since pytest
     9.2 (pytest#10644) ``setattr`` takes the value to restore from the
     target's ``__dict__``. It saw "absent" for every attribute, so teardown
