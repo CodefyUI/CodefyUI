@@ -4,6 +4,8 @@
 ``POST /api/projects/open``     switch to a project folder
 ``POST /api/projects/create``   scaffold + git init + open
 ``POST /api/projects/clone``    clone an https repository + open
+``GET  /api/projects/import``   what importing the flat graphs would copy
+``POST /api/projects/import``   copy them (and their files) into a project
 ``POST /api/projects/trust``    load the open project's .env after consent
 ``DELETE /api/projects/recent`` drop an entry from the recent list
 ``GET  /api/projects/browse``   list sub-folders (loopback only)
@@ -28,7 +30,7 @@ from pydantic import BaseModel
 from ..config import settings
 from ..core import projects
 from ..core.auth import bound_to_loopback, is_loopback_peer
-from ..core.project import init_project_repo, scaffold_project
+from ..core.project import GraphAmbiguityError, init_project_repo, scaffold_project
 from ..core.project_switch import (
     PathRefused,
     SwitchRefused,
@@ -203,14 +205,12 @@ async def _refuse_if_busy(request: Request) -> None:
             + "; ".join(r["message"] for r in reasons), reasons).detail())
 
 
-@router.post("/create")
-async def create_project(body: CreateRequest, request: Request) -> dict[str, Any]:
-    name = body.name.strip()
+def _new_project_target(name: str, parent_raw: str | None) -> Path:
+    """Where ``create`` (and an import into a new project) puts *name*."""
     problem = name_problem(name)
     if problem is not None:
         raise _error(400, "invalid_name", problem)
-    parent = _parent_dir(body.parent)
-    target = parent / name
+    target = _parent_dir(parent_raw) / name
     reason = refused_location(target)
     if reason is not None:
         raise _error(403, "path_refused", reason)
@@ -219,17 +219,100 @@ async def create_project(body: CreateRequest, request: Request) -> dict[str, Any
         raise _error(409, "exists",
                      f"{target} already exists and is not empty; pick another "
                      "name or open it")
+    return target
+
+
+def _make_project(target: Path, name: str) -> bool:
+    """Scaffold, mark owned (this install made it), ``git init``."""
+    scaffold_project(target, name)
+    projects.mark_owned(target)
+    return init_project_repo(target)
+
+
+@router.post("/create")
+async def create_project(body: CreateRequest, request: Request) -> dict[str, Any]:
+    name = body.name.strip()
+    target = _new_project_target(name, body.parent)
     await _refuse_if_busy(request)
-
-    def _make() -> bool:
-        scaffold_project(target, name)
-        projects.mark_owned(target)
-        return init_project_repo(target)
-
-    git_ready = await asyncio.to_thread(_make)
+    git_ready = await asyncio.to_thread(_make_project, target, name)
     project = await _switch(request, target.resolve())
     return _opened(project, extra={"created": str(target.resolve()),
                                    "git": git_ready})
+
+
+# ── Importing the flat-mode graphs (R9) ───────────────────────────────────
+
+@router.get("/import")
+async def import_preview() -> dict[str, Any]:
+    """The flat graphs and the files they reference, with sizes. Reads only."""
+    from ..core.project_import import plan_import
+
+    try:
+        plan = await asyncio.to_thread(plan_import)
+    except GraphAmbiguityError as exc:
+        raise _error(409, "ambiguous_graph", str(exc)) from None
+    return plan.as_dict()
+
+
+class ImportRequest(BaseModel):
+    #: A new project of this name under ``parent`` (default: the projects
+    #: root). Or ``path``: an existing project. Neither: the open project.
+    name: str | None = None
+    parent: str | None = None
+    path: str | None = None
+    #: Copy the referenced models, images and media too (default on).
+    include_assets: bool = True
+
+
+@router.post("/import")
+async def import_flat_graphs(body: ImportRequest, request: Request
+                             ) -> dict[str, Any]:
+    """Copy the flat graphs (and their files) into a project, then open it.
+
+    Copies only: the flat folder is left as it was, and a graph or file
+    the project already has is kept, not replaced (reported in
+    ``skipped`` / ``kept``).
+    """
+    from ..core.project_import import run_import
+
+    created = False
+    if body.name:
+        name = body.name.strip()
+        target = _new_project_target(name, body.parent)
+        created = True
+    elif body.path:
+        try:
+            target = await asyncio.to_thread(check_project_path, body.path)
+        except PathRefused as exc:
+            raise HTTPException(status_code=exc.status,
+                                detail=exc.detail()) from None
+    elif settings.PROJECT_DIR is not None:
+        target = settings.PROJECT_DIR
+    else:
+        raise _error(400, "no_target", "name a new project or an existing one")
+    switching = settings.PROJECT_DIR is None or target != settings.PROJECT_DIR
+    if switching:
+        await _refuse_if_busy(request)
+
+    def _do() -> Any:
+        if created:
+            _make_project(target, name)
+        return run_import(target, include_assets=body.include_assets,
+                          keep_existing=not created)
+
+    try:
+        result = await asyncio.to_thread(_do)
+    except GraphAmbiguityError as exc:
+        raise _error(409, "ambiguous_graph", str(exc)) from None
+    project = (await _switch(request, target.resolve()) if switching
+               else settings.PROJECT_DIR)
+    return _opened(project, extra={
+        "created": str(target.resolve()) if created else None,
+        "imported": result.graphs.adopted,
+        "skipped": [{"file": f, "reason": r} for f, r in result.graphs.skipped],
+        "copied": result.copied,
+        "kept": result.kept,
+    })
 
 
 class CloneRequest(BaseModel):

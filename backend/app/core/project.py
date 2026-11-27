@@ -223,12 +223,15 @@ class AdoptResult(NamedTuple):
     skipped: list[tuple[str, str]]
 
 
-def adopt_graphs(src: Path, target: Path) -> AdoptResult:
+def adopt_graphs(src: Path, target: Path, *,
+                 keep_existing: bool = False) -> AdoptResult:
     """Copy every graph in *src* into *target*'s ``graphs/`` and ``layout/``.
 
     The source files are only read. Raises :class:`GraphAmbiguityError`
     when *src* holds both ``x.json`` and ``x.graph.json``; an unreadable
-    file is skipped and reported.
+    file is skipped and reported. *keep_existing* skips (and reports) a
+    graph the project already has under the same name instead of
+    replacing it -- the editor's import into an existing project.
     """
     graphs_dir = target / "graphs"
     layout_dir = target / "layout"
@@ -239,6 +242,11 @@ def adopt_graphs(src: Path, target: Path) -> AdoptResult:
     adopted: list[str] = []
     skipped: list[tuple[str, str]] = []
     for base, path in pairs:
+        if keep_existing and ((graphs_dir / f"{base}.graph.json").exists()
+                              or (graphs_dir / f"{base}.json").exists()):
+            skipped.append((path.name, "the project already has a graph "
+                                       "with this name"))
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError) as exc:
