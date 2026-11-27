@@ -811,7 +811,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
       <div className={styles.listCol}>
         <div className={styles.toolbar}>
           {projectDir !== null && (
-            <div className={styles.filters} role="group" aria-label={t('runs.scope.label')}>
+            <div className={`${styles.filters} ${styles.scopeGroup}`} role="group" aria-label={t('runs.scope.label')}>
               {(['project', 'all'] as const).map((value) => (
                 <button
                   key={value}

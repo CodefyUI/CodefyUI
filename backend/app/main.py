@@ -385,7 +385,11 @@ async def _lifespan_body(app: FastAPI):
         )
         commit, dirty = git_provenance(settings.PROJECT_DIR)
         if commit is None:
-            logger.info("Project: %s (not a repo)", settings.PROJECT_DIR)
+            # A project made by create / the default project has a
+            # repository but no commit yet: say so rather than "not a repo".
+            unborn = (Path(settings.PROJECT_DIR) / ".git").exists()
+            logger.info("Project: %s (%s)", settings.PROJECT_DIR,
+                        "git, no commits yet" if unborn else "not a repo")
         else:
             logger.info("Project: %s (git %s%s)", settings.PROJECT_DIR,
                         commit[:7], " dirty" if dirty else "")

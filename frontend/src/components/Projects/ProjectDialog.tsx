@@ -211,7 +211,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
                 </label>
                 {browse ? (
                   <section aria-label={t('projects.dialog.open.browse')}>
-                    <h3 className={styles.sectionLabel}>
+                    <h3 className={styles.browseLabel}>
                       {t('projects.dialog.open.browseIn', { dir: browse.dir })}
                     </h3>
                     <ul className={styles.list}>

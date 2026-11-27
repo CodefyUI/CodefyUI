@@ -162,6 +162,13 @@
   white-space: nowrap;
 }
 
+/* "This project / All projects", set apart from the status filters. */
+.scopeGroup {
+  padding-right: var(--sp-3);
+  margin-right: var(--sp-2);
+  border-right: 1px solid var(--border-base);
+}
+
 /* A run of another project, in the "All projects" view (phase 4A). */
 .otherProject {
   color: var(--text-muted);

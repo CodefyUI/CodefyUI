@@ -148,3 +148,21 @@ def test_no_installer_is_no_job_rather_than_an_attribute_error():
     raise into whichever install is running at the time.
     """
     assert main_mod._installer_job_id(None) is None
+
+
+async def test_a_repository_with_no_commit_is_not_called_not_a_repo(
+        lifespan_project, caplog):
+    """A project from create / the default project is git-initialised with
+    no commit yet (phase 4A): the start-up line says so."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not on PATH")
+    subprocess.run(["git", "init", "-q", str(lifespan_project)], check=True)
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        async with main_mod.lifespan(main_mod.app):
+            pass
+    messages = [r.getMessage() for r in caplog.records if r.name == "app.main"]
+    assert any("git, no commits yet" in m for m in messages)
+    assert not any("not a repo" in m for m in messages)

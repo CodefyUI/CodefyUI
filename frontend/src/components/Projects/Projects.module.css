@@ -144,6 +144,15 @@
   overflow-wrap: anywhere;
 }
 
+/* The folder being browsed: a path, so neither uppercased nor spaced out. */
+.browseLabel {
+  margin: 0 0 var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -323,7 +332,7 @@
 .envRow {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--sp-3);
   padding: var(--sp-1) var(--sp-2);
   background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
