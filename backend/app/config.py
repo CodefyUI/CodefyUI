@@ -249,6 +249,12 @@ class Settings(BaseSettings):
     # with CODEFYUI_ALLOW_REMOTE_PLUGIN_INSTALL=1; it changes nothing else,
     # since every mutating plugin route already needs the session token.
     ALLOW_REMOTE_PLUGIN_INSTALL: bool = False
+    # The same gate for Agent Skills (`POST /api/skills/install`, `DELETE
+    # /api/skills/{id}`): an install makes this server clone any https URL
+    # or read any path on its disk, and an installed skill steers the local
+    # user's agent. Off a loopback bind only CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL=1
+    # opens it.
+    ALLOW_REMOTE_SKILL_INSTALL: bool = False
 
     # ── Port statistics (#129) ─────────────────────────────────────────
     # GET /api/execution/outputs/{run}/{node}/{port}/stats summarises a
@@ -402,6 +408,14 @@ class Settings(BaseSettings):
 
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"
+
+    # ── Agent Skills (app.core.skills) ─────────────────────────────────
+    # Built-in skills shipped with the repo (<REPO>/skills/<name>/SKILL.md).
+    SKILLS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "skills"
+    # More directories of skills, os.pathsep-separated, read after every
+    # other source. Empty by default: a user who wants the skills another
+    # agent keeps (~/.claude/skills, ~/.agents/skills) opts in here.
+    SKILLS_EXTRA_DIRS: str = ""
     # Third-party downloads + lockfile. Resolved per-instance so the
     # CODEFYUI_USER_DATA_DIR env var picked up by dev-mode tooling actually
     # flows through to the server. Without default_factory the snapshot

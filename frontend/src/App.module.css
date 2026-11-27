@@ -15,6 +15,20 @@
   font-family: Inter, system-ui, -apple-system, sans-serif;
 }
 
+/* ----- Everything under the tab bar: the editor, then the side dock ----- */
+.workArea {
+  flex: 1;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.workArea > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ----- Per-tab content wrapper ----- */
 /*
   Only the active tab's content is mounted (#125), so "display" is a static

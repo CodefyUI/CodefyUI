@@ -128,6 +128,12 @@ dependencies = [
     # tomllib is stdlib on 3.11+; pull the backport for the 3.10 floor so
     # `routes_plugins.py` and `scripts/plugins.py` import cleanly.
     'tomli>=2.0.0; python_version < "3.11"',
+    # Agent Skills (`app.core.skills`): a SKILL.md opens with YAML
+    # frontmatter, read with `yaml.safe_load`. It was already here through
+    # huggingface_hub and datasets; declared because this
+    # codebase now imports it itself. 6.0 is the first release whose
+    # wheels cover every Python this project supports.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

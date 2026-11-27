@@ -239,6 +239,18 @@ interface UIState {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapsed: () => void;
+  /**
+   * The panel collapsed itself to make room for an open side panel on a
+   * narrow window (`useSidebarYieldsToSidePanel`), not by the user's choice.
+   * Never persisted: `sidebarCollapsed` shows it, while the stored value
+   * stays what the user last chose.
+   */
+  sidebarYielded: boolean;
+  /** The user reopened the panel during this crowding; do not yield again
+   * until the crowding ends. */
+  sidebarYieldDeclined: boolean;
+  /** Yield (true) or give back (false); see `sidebarYielded`. */
+  yieldSidebar: (crowded: boolean) => void;
   /** The px width the user resized the panel to, or null while it is at its
    * default (SIDEBAR_DEFAULT_WIDTH_CSS, which scales with the type). */
   sidebarWidth: number | null;
@@ -413,15 +425,40 @@ export const useUIStore = create<UIState>((set) => ({
     set({ sidebarTab: tab });
   },
   sidebarCollapsed: loadSidebarCollapsed(),
+  // A choice the user makes ends any yield: expanding during one declines
+  // the rest of it, and either choice is what gets stored.
   setSidebarCollapsed: (collapsed) => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
-    set({ sidebarCollapsed: collapsed });
+    set((state) => ({
+      sidebarCollapsed: collapsed,
+      sidebarYielded: false,
+      sidebarYieldDeclined: state.sidebarYieldDeclined || (state.sidebarYielded && !collapsed),
+    }));
   },
   toggleSidebarCollapsed: () =>
     set((state) => {
       const next = !state.sidebarCollapsed;
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-      return { sidebarCollapsed: next };
+      return {
+        sidebarCollapsed: next,
+        sidebarYielded: false,
+        sidebarYieldDeclined: state.sidebarYieldDeclined || (state.sidebarYielded && !next),
+      };
+    }),
+  sidebarYielded: false,
+  sidebarYieldDeclined: false,
+  yieldSidebar: (crowded) =>
+    set((state) => {
+      if (crowded) {
+        if (state.sidebarCollapsed || state.sidebarYieldDeclined) return {};
+        return { sidebarCollapsed: true, sidebarYielded: true };
+      }
+      // The crowding is over: undo a collapse this made, never the user's.
+      return {
+        sidebarCollapsed: state.sidebarYielded ? false : state.sidebarCollapsed,
+        sidebarYielded: false,
+        sidebarYieldDeclined: false,
+      };
     }),
   sidebarWidth: loadSidebarWidth(),
   setSidebarWidth: (width) => {

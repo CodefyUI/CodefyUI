@@ -22,6 +22,7 @@ description: CodefyUI 編輯器的鍵盤與滑鼠快捷鍵。
 | 雙擊的例外 | `SequentialModel` → 「模型架構」編輯器；子圖實例 → 進入子圖；預設組合 → 設定內容；文字註記 → 編輯；圖片註記 → 更換圖片 |
 | 略過／取消略過選取的節點 | `Ctrl/Cmd` + `B`（選取可略過的節點時）；右鍵 → 略過／取消略過 |
 | 收合／展開側邊欄 | 沒有選取可略過的節點時按 `Ctrl/Cmd` + `B`；`Ctrl/Cmd` + `Shift` + `B` 永遠有效 |
+| 開關上次使用的側欄面板（外掛的[側欄面板](/advanced/plugin-frontend-extensions#side-panels)，例如代理；在輸入框內打字時不觸發） | `Ctrl/Cmd` + `Shift` + `X` |
 | 自動排版（上次使用的模式） | `Shift` + `L` |
 | 儲存圖表 | `Ctrl/Cmd` + `S` |
 | 顯示快捷鍵總覽 | `?` |

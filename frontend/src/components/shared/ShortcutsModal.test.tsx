@@ -26,10 +26,12 @@ describe('ShortcutsModal', () => {
     useUIStore.setState({ shortcutsModalOpen: true });
     render(<ShortcutsModal />);
     expect(screen.getByText(useI18n.getState().t('shortcuts.title'))).toBeTruthy();
-    // 13 shortcut rows → 13 <kbd> elements. (core#128 added the bypass row
+    // 14 shortcut rows → 14 <kbd> elements. (core#128 added the bypass row
     // and the unconditional sidebar chord alongside the context-sensitive one;
-    // the Source Control commit chord is the twelfth, Save the thirteenth.)
-    expect(document.querySelectorAll('kbd').length).toBe(13);
+    // the Source Control commit chord is the twelfth, Save the thirteenth,
+    // and the side panel toggle (apiVersion 6) the fourteenth.)
+    expect(document.querySelectorAll('kbd').length).toBe(14);
+    expect(screen.getByText(/(Cmd|Ctrl)\+Shift\+X$/)).toBeTruthy();
     // A platform-prefixed combo is present (Cmd+Z or Ctrl+Z).
     expect(screen.getByText(/(Cmd|Ctrl)\+Z$/)).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();

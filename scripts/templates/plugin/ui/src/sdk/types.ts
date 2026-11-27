@@ -207,22 +207,66 @@ export interface PluginNodeRenderer {
 
 /* ── panels, toolbar buttons — requires apiVersion >= 3 ─────────────────── */
 
-/** Where a panel lives: a tab in the bottom dock, or a right-hand section. */
-export type PluginPanelDock = 'bottom' | 'right';
+/**
+ * Where a panel lives: a tab in the bottom dock, a right-hand section, or —
+ * apiVersion >= 6 — the side column.
+ *
+ * `'side'` is a column of its own at the far right of the editor, from under
+ * the tab bar to the bottom of the window (it spans the Results panel), sized
+ * for a conversation or a tool window. It is resizable and closable, and the
+ * user's width and open state are remembered. Only one side panel shows at a
+ * time; with several registered, the column grows a tab strip. The host draws
+ * the column's left edge, its resize handle and that tab strip, and NOT a
+ * title bar: draw your own heading inside the element. Every side panel also
+ * gets a toolbar toggle (your `icon` and `title`) and answers
+ * `Ctrl/Cmd+Shift+X` when it was the last one used.
+ *
+ * An editor older than apiVersion 6 does not know `'side'`. Feature-check with
+ * `api.apiVersion >= 6` and fall back (to `addFloatingWidget`, say) below it.
+ */
+export type PluginPanelDock = 'bottom' | 'right' | 'side';
 
 export interface PluginPanelOptions {
   /** Unique within your plugin. The host namespaces it with your plugin id. */
   id: string;
-  /** Tab label (bottom dock) or section heading (right dock). */
+  /** Tab label (bottom and side docks) or section heading (right dock). */
   title: string;
-  /** Optional short glyph shown before the title. */
+  /** Optional short glyph shown before the title, and on the side toggle. */
   icon?: string;
-  /** Defaults to `'bottom'`. */
+  /** Defaults to `'bottom'`. `'side'` needs apiVersion >= 6. */
   dock?: PluginPanelDock;
+  /**
+   * `dock: 'side'` only — requires apiVersion >= 6. Widths are CSS pixels;
+   * the user's own width, once they drag, wins over `defaultWidth`.
+   */
+  side?: {
+    /** Defaults to 400. */
+    defaultWidth?: number;
+    /** Defaults to 300. */
+    minWidth?: number;
+    /** Defaults to 720. */
+    maxWidth?: number;
+    /**
+     * Open the panel the first time it is registered on this browser.
+     * Defaults to false. After that the user's last choice wins.
+     */
+    defaultOpen?: boolean;
+  };
+  /**
+   * `dock: 'side'` only — requires apiVersion >= 6. A state dot on the
+   * panel's toolbar toggle, so the user sees it while the panel is closed:
+   * `'attention'` (waiting for the user), `'working'`, or `'done'`. `null` or
+   * omitted shows none. Update it by calling `addPanel` again with the same
+   * `id`; the element is kept. The state is also read out in the toggle's
+   * accessible name, so it never rests on colour alone.
+   */
+  badge?: 'attention' | 'working' | 'done' | null;
   /**
    * Called after the panel's element is attached to the document, and after
    * it is detached. The element itself survives either way — these exist so
-   * you can stop doing work while nobody can see it.
+   * you can stop doing work while nobody can see it. A side panel is attached
+   * while it is open and the active tab of the side column, so these also
+   * fire when it is opened, closed, or switched away from.
    */
   onShow?: () => void;
   onHide?: () => void;
@@ -524,6 +568,11 @@ export type WorkspaceEvent =
 
 /** The object the editor hands every plugin frontend at activation. */
 export interface CodefyUIPluginAPI {
+  /**
+   * The contract version this editor implements: 6 today. Every version adds
+   * members without changing old ones, so feature-check with `>=` (for
+   * example `api.apiVersion >= 6` before `dock: 'side'`), never `===`.
+   */
   apiVersion: number;
   pluginId: string;
   ui: {
@@ -544,6 +593,15 @@ export interface CodefyUIPluginAPI {
     addPanel(opts: PluginPanelOptions): HTMLElement;
     /** Remove a panel. Its element is detached from the editor. */
     removePanel(id: string): void;
+    /**
+     * Open or close one of your `dock: 'side'` panels — requires
+     * apiVersion >= 6. Opening one closes whichever side panel was showing.
+     * Returns whether the panel is open afterwards: `false` for an id that is
+     * not a registered side panel of yours, which this ignores.
+     */
+    setPanelOpen(id: string, open: boolean): boolean;
+    /** Whether your side panel `id` is the one showing — apiVersion >= 6. */
+    isPanelOpen(id: string): boolean;
     /**
      * Add a toolbar button — requires apiVersion >= 3. Returns a remove
      * function. Placement and overflow are the host's: buttons share one

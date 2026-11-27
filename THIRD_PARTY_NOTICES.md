@@ -130,6 +130,7 @@ license text.
 | httpx | BSD-3-Clause |
 | packaging | Apache-2.0 OR BSD-2-Clause |
 | tomli (Python < 3.11 only) | MIT |
+| pyyaml | MIT |
 
 Notable transitive dependencies: certifi is licensed under MPL-2.0, and tqdm
 under MPL-2.0 AND MIT. MPL-2.0 is a file-level copyleft license; CodefyUI

@@ -311,13 +311,14 @@ describe('read/write asymmetry the view exists to expose', () => {
 });
 
 describe('apiVersion 5', () => {
-  it('reports 5 and offers the workspace namespace', () => {
-    // The exact number is pinned in ONE place per version, and this is the
-    // file that owns it -- `api.v3.test.ts:59-64` records why: a `toBe(N)`
-    // left behind in an older version's file fails every later additive
-    // release in a suite that is testing something else.
+  it('reports at least 5 and offers the workspace namespace', () => {
+    // The exact number is pinned in ONE place per version -- `api.v3.test.ts:59-64`
+    // records why: a `toBe(N)` left behind in an older version's file fails
+    // every later additive release in a suite that is testing something else.
+    // This file pinned 5 until apiVersion 6 (the side dock); `api.v6.test.ts`
+    // owns the exact number now, and the documented v5 check is `>= 5`.
     const api = freshApi();
-    expect(api.apiVersion).toBe(5);
+    expect(api.apiVersion).toBeGreaterThanOrEqual(5);
     expect(typeof api.workspace.openGraphs).toBe('function');
   });
 

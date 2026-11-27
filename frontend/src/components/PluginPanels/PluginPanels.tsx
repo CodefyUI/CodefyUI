@@ -34,7 +34,7 @@ export function usePluginPanels(dock: PluginPanel['dock']): PluginPanel[] {
  * a plugin can unregister while its tab is open, and holding a stale panel
  * would re-attach a detached element on the next render.
  */
-function useAttachedPanel(
+export function useAttachedPanel(
   panelKey: string,
   host: React.RefObject<HTMLElement | null>,
 ): void {

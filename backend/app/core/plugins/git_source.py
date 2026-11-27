@@ -111,6 +111,13 @@ def _config_args() -> list[str]:
     return args + [
         "-c", "core.symlinks=false",
         "-c", "credential.helper=",
+        # git-lfs, where installed, would otherwise run a smudge filter on
+        # checkout that fetches over its own transport, which
+        # protocol.allow does not govern -- and a repository's .lfsconfig
+        # picks where it fetches from. Nothing cloned here needs LFS objects.
+        "-c", "filter.lfs.smudge=",
+        "-c", "filter.lfs.process=",
+        "-c", "filter.lfs.required=false",
         "-c", "submodule.recurse=false",
         "-c", "advice.detachedHead=false",
     ]
@@ -128,8 +135,14 @@ def _remove_tree(path: Path) -> None:
     """Delete a half-made clone. git writes its objects read-only, which
     Windows will not delete until the bit is cleared."""
     def _clear_and_retry(func, target, _exc):
+        # ``rmtree`` reports a symbolic link at the top through
+        # ``os.path.islink``; chmod would follow it and strip the permissions
+        # of whatever it points at. Never touch a link's target: fail.
+        if func is os.path.islink:
+            raise OSError(f"refusing to remove a symbolic link as a tree: {target}")
         try:
-            os.chmod(target, stat.S_IWRITE)
+            if not os.path.islink(target):
+                os.chmod(target, stat.S_IWRITE)
             func(target)
         except OSError:
             pass
@@ -244,6 +257,7 @@ def clone(
     *,
     want_sha: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    allow_github: bool = False,
 ) -> str:
     """Clone *url* at *ref* into *dest* (which must not exist); returns the
     full commit sha checked out.
@@ -259,9 +273,13 @@ def clone(
     :raises GitError: ``not_found``, ``timeout`` or ``failed``.
     :raises SourceRefused: ``too_large``, or ``changed`` for *want_sha*.
     :raises PluginCancelled: when *cancel_check* goes true.
+
+    *allow_github* accepts a github.com URL, which a plugin install never
+    clones (it has the API road) and an Agent Skill install does.
     """
     git = require_git()
-    if parse_git_url(url + (f"@{ref}" if ref else "")) != (url, ref):
+    if parse_git_url(url + (f"@{ref}" if ref else ""),
+                     allow_github=allow_github) != (url, ref):
         raise GitError(f"{url!r} is not an https repository URL this build "
                        f"clones.", reason="failed")
     if want_sha is not None and not _SHA.fullmatch(want_sha):

@@ -349,6 +349,20 @@ These routes back the [Source Control](/usage/source-control) tab. They run the 
 | `/api/llm/codex/status` | GET | open | Report OpenAI-Codex OAuth login status. |
 | `/api/llm/codex/logout` | POST | token | Clear stored OpenAI-Codex OAuth tokens. |
 
+## Agent skills and context
+
+See [Agent Skills](./skills) for what a skill is and where skills come from.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/skills` | GET | open | Every skill from every source: `[{id, name, description, source, license, compatibility, metadata, allowed_tools, enabled, valid, issues, shadowed_by, file_count, has_scripts}]`. An invalid or shadowed skill is listed too, with `issues` or `shadowed_by` saying why it is not in use. |
+| `/api/skills/{id}` | GET | open | One skill (`id` is `<source>/<name>`, such as `builtin/build-graph`): the list entry plus `body` (the Markdown after the frontmatter) and `files` (`[{path, size, kind}]`, `kind` one of `reference`, `script`, `asset`, `other`). |
+| `/api/skills/file` | GET | open | `?id=&path=`: one text file of a skill as `{path, content, truncated}`, cut at 256 KB. A path that is absolute, holds `..`, names a hidden or vendored folder (`.git`, `node_modules`) or resolves outside the skill answers 400, as does any file of a skill listed with `unsafe_link`; a binary file 415. |
+| `/api/skills/enabled` | PUT | token | `{id, enabled}`: turn a skill on or off. Kept in `<user data>/skills/state.json`. |
+| `/api/skills/install` | POST | token, loopback | `{source}`: a folder or a `.zip` / `.tar.gz` / `.tgz` on the server's disk, or an HTTPS git URL (optionally `@ref` and `#sub/folder`). Installs every skill found into the `user` source and answers `{installed: [...], skipped: [{name, code, message}]}`. 400 with `{code, message, hint}` for a refused source, 409 `exists` when every skill found is already installed, 409 `busy` while another install runs, 403 `remote_install_refused` on a server not bound to loopback unless `CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL=1`. |
+| `/api/skills/{id}` | DELETE | token, loopback | Delete an installed (`user`) skill; a linked one loses only its link. Other sources answer 400, a delete that leaves files behind 500 `delete_failed`, and a server not bound to loopback 403 as for install. |
+| `/api/agent/context` | GET | open | `{project, instructions, skills}` for an agent plugin: the open project (`dir`, `name`, `graphs`) or `null`, the project's `AGENTS.md` (`{path, content, truncated}`, cut at 32 KB) or `null`, and the summaries of the skills in use (enabled, valid, not shadowed). |
+
 ## Limits and errors
 
 - **Body size.** `MAX_RUN_BODY_BYTES` (64 MB, `CODEFYUI_MAX_RUN_BODY_BYTES`) limits every request body and counts bytes as they arrive, including chunked requests. Four routes use `MAX_UPLOAD_SIZE` (500 MB, `CODEFYUI_MAX_UPLOAD_SIZE`) instead: `/api/files/upload`, `/api/images/upload`, `/api/models/upload`, and `/api/custom-nodes/upload`. They allow an additional 64 KB for multipart metadata and apply the configured limit to the file itself. Exceeding either limit returns 413.

@@ -30,18 +30,50 @@
  * how a plugin cooperates with the same optimisation the host observes.
  */
 
-export type PluginPanelDock = 'bottom' | 'right';
+export type PluginPanelDock = 'bottom' | 'right' | 'side';
+
+/** `PluginPanelOptions.side` (apiVersion 6), as a plugin passes it. */
+export interface PluginSidePanelOptions {
+  defaultWidth?: number;
+  minWidth?: number;
+  maxWidth?: number;
+  defaultOpen?: boolean;
+}
+
+/** The same, with every default filled in and the widths made consistent. */
+export interface PluginSidePanelConfig {
+  defaultWidth: number;
+  minWidth: number;
+  maxWidth: number;
+  defaultOpen: boolean;
+}
+
+export const SIDE_PANEL_DEFAULTS: PluginSidePanelConfig = {
+  defaultWidth: 400,
+  minWidth: 300,
+  maxWidth: 720,
+  defaultOpen: false,
+};
+
+/** The state dot on a side panel's toolbar toggle (apiVersion 6). */
+export type PluginPanelBadge = 'attention' | 'working' | 'done';
+
+const BADGES: ReadonlySet<string> = new Set(['attention', 'working', 'done']);
 
 /** What a plugin passes to `api.ui.addPanel`. */
 export interface PluginPanelOptions {
   /** Unique within the plugin. Namespaced with the plugin id by the host. */
   id: string;
-  /** Tab label (bottom dock) or section heading (right dock). */
+  /** Tab label (bottom and side docks) or section heading (right dock). */
   title: string;
   /** Optional short glyph shown before the title. */
   icon?: string;
   /** Where the panel lives. Defaults to `'bottom'`. */
   dock?: PluginPanelDock;
+  /** `dock: 'side'` only (apiVersion 6). */
+  side?: PluginSidePanelOptions;
+  /** `dock: 'side'` only (apiVersion 6): the toggle's state dot. */
+  badge?: PluginPanelBadge | null;
   /** Called after the element is attached to the document. */
   onShow?: () => void;
   /** Called after the element is detached. */
@@ -58,6 +90,10 @@ export interface PluginPanel {
   title: string;
   icon?: string;
   dock: PluginPanelDock;
+  /** Resolved side-dock sizing; present only when `dock` is `'side'`. */
+  side?: PluginSidePanelConfig;
+  /** The toggle's state dot; null when there is none or the dock is not side. */
+  badge: PluginPanelBadge | null;
   /** The host-owned container. Stable for the lifetime of the panel. */
   element: HTMLElement;
   onShow?: () => void;
@@ -75,8 +111,29 @@ const listeners = new Set<() => void>();
  */
 let snapshot: PluginPanel[] = [];
 
-function panelKey(pluginId: string, localId: string): string {
+export function panelKey(pluginId: string, localId: string): string {
   return `${pluginId}:${localId}`;
+}
+
+/** A finite positive number, or the fallback. */
+function px(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : fallback;
+}
+
+/**
+ * Fill in a side panel's sizing. Whatever a plugin passes, the result has
+ * `minWidth <= defaultWidth <= maxWidth`, so the column can never be stuck at
+ * a width the handle cannot reach.
+ */
+export function resolveSideConfig(opts?: PluginSidePanelOptions): PluginSidePanelConfig {
+  const minWidth = px(opts?.minWidth, SIDE_PANEL_DEFAULTS.minWidth);
+  const maxWidth = Math.max(minWidth, px(opts?.maxWidth, SIDE_PANEL_DEFAULTS.maxWidth));
+  const defaultWidth = Math.min(
+    maxWidth, Math.max(minWidth, px(opts?.defaultWidth, SIDE_PANEL_DEFAULTS.defaultWidth)),
+  );
+  return { defaultWidth, minWidth, maxWidth, defaultOpen: opts?.defaultOpen === true };
 }
 
 function notify(): void {
@@ -129,13 +186,20 @@ export function registerPluginPanel(
     element.id = `plugin-panel-${key}`;
     element.dataset.pluginId = pluginId;
   }
+  const dock = opts.dock ?? 'bottom';
   panels.set(key, {
     key,
     pluginId,
     localId: opts.id,
     title: opts.title,
     icon: opts.icon,
-    dock: opts.dock ?? 'bottom',
+    dock,
+    side: dock === 'side' ? resolveSideConfig(opts.side) : undefined,
+    // Anything but the three known states (a typo, a value from a newer
+    // contract) shows no dot rather than a wrong one.
+    badge: dock === 'side' && typeof opts.badge === 'string' && BADGES.has(opts.badge)
+      ? opts.badge as PluginPanelBadge
+      : null,
     element,
     onShow: opts.onShow,
     onHide: opts.onHide,

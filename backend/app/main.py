@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.convertors import Convertor, register_url_convertor
 
 from .api import (
+    routes_agent_context,
     routes_apps,
     routes_custom_nodes,
     routes_examples,
@@ -58,6 +59,7 @@ from .api import (
     routes_plugins,
     routes_presets,
     routes_runs,
+    routes_skills,
     routes_studies,
     routes_sweeps,
     routes_system,
@@ -781,6 +783,8 @@ app.include_router(routes_packs.router)
 app.include_router(routes_git.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
+app.include_router(routes_skills.router)
+app.include_router(routes_agent_context.router)
 app.include_router(routes_apps.router)
 app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
