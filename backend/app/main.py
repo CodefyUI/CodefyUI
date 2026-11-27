@@ -58,6 +58,7 @@ from .api import (
     routes_plugin_jobs,
     routes_plugins,
     routes_presets,
+    routes_projects,
     routes_runs,
     routes_skills,
     routes_studies,
@@ -154,6 +155,46 @@ _AUTH_EXEMPT_ROUTE_PATTERNS = (
 # (exactly one each — enforced by tests/test_auth_drift.py). auth_guard
 # skips them entirely; host_guard still applies to everything.
 _AUTH_EXEMPT_PREFIXES = ("/api/apps", "/api/keys")
+
+#: The header a window sends with every write: the ``project_id`` of the
+#: project it loaded (phase 4A, R3). See :func:`_project_mismatch`.
+PROJECT_HEADER = "X-CodefyUI-Project"
+#: Writes the project check leaves alone: switching itself, which a window
+#: left on an old project may do (it reloads afterwards).
+_PROJECT_CHECK_EXEMPT_PREFIXES = ("/api/projects",)
+
+
+def _project_mismatch(request: Request) -> JSONResponse | None:
+    """409 ``project_changed`` for a write from a window on another project.
+
+    The one place this is checked, for every mutating ``/api/`` route
+    (``test_every_write_route_checks_the_project`` enumerates them): a
+    graph saved, a run submitted or a commit made from a window that still
+    shows project A while B is open would otherwise land in B. A request
+    without the header is accepted, so the CLI, scripts and API clients
+    are unaffected.
+    """
+    if request.method not in _MUTATING_METHODS:
+        return None
+    path = request.url.path
+    if not path.startswith("/api/") or any(
+            path == p or path.startswith(p + "/")
+            for p in _PROJECT_CHECK_EXEMPT_PREFIXES):
+        return None
+    sent = request.headers.get(PROJECT_HEADER)
+    if sent is None:
+        return None
+    from .core.projects import project_id
+
+    current = project_id(settings.PROJECT_DIR)
+    if sent == current:
+        return None
+    return JSONResponse(status_code=409, content={"detail": {
+        "code": "project_changed",
+        "message": ("This window is on a project that is no longer open; "
+                    "reload the page to continue in the open project"),
+        "details": {"sent": sent, "current": current},
+    }})
 
 
 def _local_device_facts() -> list:
@@ -610,7 +651,8 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", TOKEN_HEADER, "Authorization"],
+    allow_headers=["Content-Type", TOKEN_HEADER, "Authorization",
+                   PROJECT_HEADER],
     expose_headers=[],
 )
 
@@ -652,6 +694,9 @@ async def auth_guard(request: Request, call_next):
     that the bootstrap endpoint is also unauthenticated — that's where the
     frontend obtains the token in the first place.
     """
+    mismatch = _project_mismatch(request)
+    if mismatch is not None:
+        return mismatch
     path = request.url.path
     if path in _AUTH_EXEMPT_PATHS \
             or (request.method, path) in _AUTH_EXEMPT_ROUTES \
@@ -767,6 +812,7 @@ app.include_router(routes_examples.router)
 app.include_router(routes_graph.router)
 app.include_router(routes_graph_run.router)
 app.include_router(routes_presets.router)
+app.include_router(routes_projects.router)
 app.include_router(routes_custom_nodes.router)
 app.include_router(routes_plugins.router)
 app.include_router(routes_plugin_frontend.router)

@@ -99,6 +99,20 @@ def is_project(path: Path) -> bool:
     return (path / PROJECT_MANIFEST).is_file()
 
 
+def project_id(path: Path | str | None) -> str:
+    """A short, header-safe id for the open project: ``flat`` in flat mode,
+    else the first 16 hex digits of the sha256 of its resolved path.
+
+    What a window sends as ``X-CodefyUI-Project`` (and ``?project=`` on the
+    execution socket), so a request from a window left on another project
+    is refused rather than applied to the open one. A path can hold any
+    character; a header cannot.
+    """
+    if path is None:
+        return "flat"
+    return hashlib.sha256(_key(path).encode("utf-8")).hexdigest()[:16]
+
+
 def project_name(path: Path) -> str:
     name = read_project_manifest(path).get("project", {})
     name = name.get("name") if isinstance(name, dict) else None

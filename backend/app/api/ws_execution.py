@@ -68,6 +68,7 @@ from ..core.auth import (
     host_is_allowed,
     session_token,
 )
+from ..core import projects
 from ..core.cache import ExecutionCache
 from ..core.run_service import (
     LANE_INTERACTIVE,
@@ -91,6 +92,31 @@ ACTION_ATTACH = "attach"
 ACTION_DETACH = "detach"
 ACTION_CANCEL = "cancel"
 ACTION_CLEAR_CACHE = "clear_cache"
+
+#: The open editor sockets, for :func:`broadcast_project_changed`.
+_SOCKETS: set["_ExecutionSocket"] = set()
+
+#: What a window that loaded another project is told when it tries to run.
+PROJECT_CHANGED_MESSAGE = (
+    "This window is on a project that is no longer open; reload the page")
+
+
+async def broadcast_project_changed(message: dict[str, Any]) -> int:
+    """Tell every open editor window the project was switched (phase 4A).
+
+    Each socket's execution cache is dropped too: it holds outputs computed
+    from the old project's files. Returns how many windows were told; one
+    that has gone away meanwhile is skipped.
+    """
+    told = 0
+    for socket in list(_SOCKETS):
+        socket._cache.clear()
+        try:
+            await socket._send(message)
+        except Exception:  # noqa: BLE001 - a closing socket is not an error
+            continue
+        told += 1
+    return told
 
 #: How many stored events one replay query pulls. Bounded so a run with
 #: 50k events streams out instead of materialising in one list; the loop
@@ -145,6 +171,11 @@ class _ExecutionSocket:
         # re-entrant, and interleaved frames would be malformed JSON on the
         # wire rather than merely out of order.
         self._send_lock = asyncio.Lock()
+        # The project the window loaded (``?project=<project_id>``), checked
+        # before every run: a window left on a project that another window
+        # has switched away from must not run its graph against the new
+        # one's files. Absent: not checked (tests, scripted clients).
+        self._project = ws.query_params.get("project")
 
     # ── plumbing ────────────────────────────────────────────────────────
 
@@ -530,6 +561,12 @@ class _ExecutionSocket:
             action = data.get("action")
             try:
                 if action == ACTION_EXECUTE:
+                    if self._project is not None and self._project \
+                            != projects.project_id(settings.PROJECT_DIR):
+                        await self._send({"type": "execution_error",
+                                          "code": "project_changed",
+                                          "error": PROJECT_CHANGED_MESSAGE})
+                        continue
                     await self.handle_execute(data)
                 elif action == ACTION_ATTACH:
                     await self.handle_attach(data)
@@ -583,11 +620,13 @@ async def websocket_execution(ws: WebSocket):
     await ws.accept()
 
     socket = _ExecutionSocket(ws)
+    _SOCKETS.add(socket)
     try:
         await socket.serve()
     except WebSocketDisconnect:
         pass
     finally:
+        _SOCKETS.discard(socket)
         # UNSUBSCRIBE ONLY. The headline behaviour of the whole wave lives
         # in this one line not calling ``service.cancel``: the tab is gone,
         # the training is not.
