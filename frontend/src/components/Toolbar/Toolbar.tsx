@@ -45,6 +45,8 @@ interface MenuItem {
   title?: string;
   onClick: () => void;
   dividerAfter?: boolean;
+  /** Extra class on the row, for a row shown only at some widths. */
+  className?: string;
 }
 
 function MenuDropdown({
@@ -87,7 +89,7 @@ function MenuDropdown({
             <div key={i}>
               <button type="button"
                 onClick={() => { item.onClick(); onClose(); }}
-                className={styles.menuItem}
+                className={item.className ? `${styles.menuItem} ${item.className}` : styles.menuItem}
                 title={item.title}
               >
                 {item.label}
@@ -816,6 +818,18 @@ export function Toolbar() {
     { label: t('toolbar.save'), onClick: handleSave },
     { label: t('toolbar.saveAs'), onClick: handleSaveAs },
     { label: t('toolbar.clear'), onClick: handleClear },
+    // Below 1600px Reload Nodes lives here instead of in the toolbar (phase
+    // 4A review, round 2): with the project chip in the row, the 13-inch
+    // (1470px) toolbar needed ~47px more than the chip's narrow form gave
+    // back. Same action, same label; the toolbar button returns at 1600px.
+    // CSS shows one or the other (.narrowOnly / .wideOnly), and the hidden
+    // one is display:none, so Tab never lands on it.
+    {
+      label: t('toolbar.reloadNodes'),
+      title: t('toolbar.reloadNodes.title'),
+      onClick: () => void handleReloadNodes(),
+      className: styles.narrowOnly,
+    },
   ];
 
   const exportMenuItems: MenuItem[] = [
@@ -860,9 +874,8 @@ export function Toolbar() {
 
   return (
     <div className={styles.root}>
-      {/* Logo: left out below 1600px, where the project chip takes its place
-          (see .logoCollapsible). */}
-      <div className={`${styles.logo} ${styles.logoCollapsible}`}>
+      {/* Logo */}
+      <div className={styles.logo}>
         <span className={styles.logoBrand}>Codefy</span>
         <span className={styles.logoSuffix}>UI</span>
       </div>
@@ -1008,7 +1021,8 @@ export function Toolbar() {
         <button type="button"
           onClick={handleReloadNodes}
           title={t('toolbar.reloadNodes.title')}
-          className={`${styles.ghost} ${styles.ghostMuted}`}
+          className={`${styles.ghost} ${styles.ghostMuted} ${styles.wideOnly}`}
+          data-testid="toolbar-reload-nodes"
         >
           {t('toolbar.reloadNodes')}
         </button>

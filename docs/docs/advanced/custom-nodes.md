@@ -38,7 +38,7 @@ class MyNode(BaseNode):
 
 After adding or editing a custom node, reload without restarting the server:
 
-- click **Reload Nodes** in the toolbar. It re-registers the nodes on the server and refetches them, so the palette updates at once; or
+- click **Reload Nodes** in the toolbar (in the **File** menu on a window narrower than 1600px). It re-registers the nodes on the server and refetches them, so the palette updates at once; or
 - send `POST /api/nodes/reload`. This does the server half only: an editor that is already open keeps its old palette until you click **Reload Nodes** or reload the page.
 
 To upload a file instead of copying it into the directory, use the [Custom Node Manager](#uploading-through-the-custom-node-manager); it reloads node definitions after each action.

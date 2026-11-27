@@ -63,14 +63,23 @@
   color: var(--accent);
 }
 
-/* Below 1600px the editor's toolbar drops the wordmark (phase 4A review,
-   round 1): with the project chip in the row, the 13-inch (1470px) English
-   toolbar was 81px too long for one line, and the chip without its branch
-   (Projects.module.css) gives back only 34 of them. The chip names the open
-   project in the same place; the browser tab still says CodefyUI. */
+/* Reload Nodes: a toolbar button from 1600px up, a File-menu row below
+   (phase 4A review, round 2). With the project chip in the row, the 13-inch
+   (1470px) English toolbar was 81px too long for one line; the chip's
+   narrow form (Projects.module.css) gives back 34 of them and moving this
+   button the rest. The CodefyUI wordmark stays at every width. */
+/* Compound selectors: .menuItem and .ghost set display later in this file. */
+.menuItem.narrowOnly {
+  display: none;
+}
+
 @media (max-width: 1599px) {
-  .logoCollapsible {
+  .ghost.wideOnly {
     display: none;
+  }
+
+  .menuItem.narrowOnly {
+    display: block;
   }
 }
 

@@ -1819,6 +1819,38 @@ describe('Toolbar', () => {
     );
   });
 
+  // Below 1600px Reload Nodes moves into the File menu (phase 4A review,
+  // round 2), so the 1470px toolbar stays one row with the project chip.
+  // jsdom applies no CSS: the classes are checked here, the stylesheet's
+  // rules below, and the widths themselves in a browser (report shots).
+  it('Reload Nodes: a toolbar button on wide windows, a File-menu row on narrow ones', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    useNodeDefStore.setState({ reload });
+    await renderSettled(<Toolbar />);
+    const button = screen.getByTestId('toolbar-reload-nodes');
+    expect(button.className).toContain(styles.wideOnly);
+    fireEvent.click(screen.getByText('File'));
+    const rows = screen.getAllByText('Reload Nodes').filter((el) => el !== button);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].className).toContain(styles.menuItem);
+    expect(rows[0].className).toContain(styles.narrowOnly);
+    expect(rows[0].getAttribute('title')).toBe(button.getAttribute('title'));
+    fireEvent.click(rows[0]);
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows exactly one Reload Nodes control at each width, and the wordmark at every width', () => {
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'Toolbar.module.css'), 'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ');
+    const media = css.match(/@media \(max-width: 1599px\) \{(.*?\})\s*\}/)?.[1] ?? '';
+    const outside = css.replace(/@media[^{]*\{(?:[^{}]*\{[^}]*\})*\s*\}/g, '');
+    expect(outside).toMatch(/\.menuItem\.narrowOnly \{ display: none; \}/);
+    expect(media).toMatch(/\.ghost\.wideOnly \{ display: none; \}/);
+    expect(media).toMatch(/\.menuItem\.narrowOnly \{ display: block; \}/);
+    expect(css).not.toMatch(/\.logo\w* \{ display: none/);
+  });
+
   // ── Custom Node Manager open/close ──────────────────────────────────
   //
   // The Custom Nodes manager issue. This button used to open a manager of the

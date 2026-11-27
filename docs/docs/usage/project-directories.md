@@ -358,9 +358,10 @@ commit.
 
 The chip at the left of the toolbar names the open project, its git branch,
 and shows a dot while there are uncommitted changes. On a window narrower than
-1600px it shows the name alone (the CodefyUI wordmark is left out to keep the
-toolbar on one line); the branch and whether there are uncommitted changes
-are in its tooltip and in the first row of its menu. Its menu opens a recent
+1600px the chip shows the name alone, with the branch and whether there are
+uncommitted changes in its tooltip and in the first row of its menu, and
+**Reload Nodes** moves from the toolbar into the **File** menu; together they
+keep the toolbar on one line. Its menu opens a recent
 project, a folder (**Open folder…**), a new project (**New project…**, created
 under the projects root; the name is checked as you type), or a clone (**Clone from a git
 URL…**, https only, cloned into the projects root under the repository's
