@@ -258,7 +258,10 @@
 .cardFooter {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  /* Tags stay whole and wrap to a second line instead (see ExampleBrowser's
+     .presetCardFooter). */
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
   min-width: 0;
   /* Pinned to the bottom of the card rather than left to follow the text.
      The grid stretches every card in a row to the tallest one, and the
@@ -279,6 +282,8 @@
   border-radius: var(--radius-pill);
   padding: 0 var(--sp-3);
   line-height: var(--lh-tight);
+  flex: none;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
