@@ -58,7 +58,7 @@ empty; none of those five files is overwritten if it already exists.
 `assets/output/` is not created up front; it appears the first time a node (for
 example ImageWriter) writes to it.
 
-`.gitattributes` holds four lines (see [Graphs stored as folders](#graphs-stored-as-folders) for the two about `*.jsonl` and `graphs/**/nodes/*`). `*.json text eol=lf` keeps graph and layout
+`.gitattributes` holds four lines about line endings and diffs, plus three `merge=codefyui` lines (see [Graphs stored as folders](#graphs-stored-as-folders) for the two about `*.jsonl` and `graphs/**/nodes/*`). `*.json text eol=lf` keeps graph and layout
 files LF on checkout: the server writes them with LF, and a Windows checkout
 with `core.autocrlf=true` would otherwise hand them back as CRLF, so every save
 would rewrite every line. `layout/*.layout.json linguist-generated=true`
@@ -373,10 +373,14 @@ layout/<name>.layout.json     unchanged: positions, note geometry, segments
   files it is about to write read back as exactly the graph being saved, and
   writes nothing (HTTP 500) when they do not. Files are written new and
   changed first, then `edges.jsonl`, then `index.json`, and stale files are
-  removed last. Other files you put in the folder are left alone.
+  removed last. Other files you put in the folder are left alone. While a
+  save runs, the folder holds a `.saving` marker (gitignored); a save that
+  never finished (a crash, a power cut) leaves it, and the next open reports
+  that the folder may mix two versions.
 - **Repairs are never saved silently.** When a folder needs a repair to be
   read (a wire to a node whose file is gone, a repeated wire, two files with
-  one id, a missing text file, a node file that is not valid JSON), the editor
+  one id, a missing text file, a node file that is not valid JSON, bytes that
+  are not UTF-8, a symbolic link, an unfinished save), the editor
   says "Repaired N thing(s)" once and the tab shows unsaved changes; the
   repaired graph reaches disk only when you save. `cdui project validate`
   fails and lists every repair. A missing or unreadable `index.json` is an
@@ -385,7 +389,16 @@ layout/<name>.layout.json     unchanged: positions, note geometry, segments
   in the Graphs panel but cannot be opened, renamed or saved over. A folder
   and a single file with the same name (for example after checking out an old
   commit) is refused with a message naming both; remove the one you do not
-  want.
+  want. A graph that cannot be opened stays in the Graphs panel, greyed out,
+  with the reason in its tooltip.
+- **Symbolic links are never followed** inside a graph folder: each is
+  skipped and reported. A graph file, folder or layout file that is itself a
+  link to somewhere outside the project is refused.
+- **Size.** One file of a graph folder may be at most 16 MB; a graph with a
+  bigger one is refused, not opened without it.
+- **Names.** A graph name is at most 100 characters. Windows reserved names
+  (`CON`, `aux`, `LPT1`...) are saved with a trailing `_`, so the project can
+  be checked out on Windows; a graph saved under such a name earlier keeps it.
 
 `.gitattributes` in a new project also keeps `*.jsonl` and `graphs/**/nodes/*`
 at LF.
@@ -410,12 +423,26 @@ reach history from before it; ask for the old path instead
 
 ### Merging {/* #merging */}
 
-Two branches that change different nodes, or one that removes a wire while the
-other adds an unrelated one, merge without conflicts. Two branches that both
-add nodes still conflict in `layout/<name>.layout.json` (new positions are
-written at its end), and both adding wires can conflict in `edges.jsonl` when
-the new lines sort next to each other. Resolve such a conflict by keeping the
-lines from both sides; then open the graph and save it.
+A new project's `.gitattributes` marks `edges.jsonl`, `index.json` and the
+layout files `merge=codefyui`: they merge **by key**, not by line. Two branches
+that each add nodes and wires, or one that removes a wire while the other adds
+one beside it, merge cleanly; a conflict is left only when both sides changed
+the same wire, position or index entry differently, and then git's own
+conflict markers are written. A folder graph's layout lists positions sorted by
+node id, so even a plain line merge conflicts less.
+
+Merges run from Source Control (pull, stash pop, switching with changes)
+use this merge automatically. For merges run in a terminal, set it up once per
+clone:
+
+```bash
+cdui project git-setup my-service
+```
+
+It writes the merge driver into the repository's `.git/config` (and adds the
+`merge=codefyui` lines to an older project's `.gitattributes`). Without it, git
+uses its ordinary line merge for these files: more conflicts, never a wrong
+merge.
 
 In Source Control a folder graph is one row with a summary of what changed in
 the graph; expand it to see its files. Stage, unstage and discard on that row
