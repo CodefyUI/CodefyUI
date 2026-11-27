@@ -2027,6 +2027,13 @@ class RunService:
         # that never did.
         self._run_secrets: dict[str, SecretVault] = {}
         self._shutting_down = False
+        # Closed while the open project is switched (phase 4A,
+        # ``core.project_switch``): the reason a submit is refused with, or
+        # None. ``_submits_in_flight`` counts the submits between their
+        # entry and their return, so a switch can tell "nothing queued"
+        # from "a submit is between its checks and its row".
+        self._switch_closed: str | None = None
+        self._submits_in_flight = 0
         # Called with ``(run_id, status)`` once a run's terminal status has
         # LANDED on its row (#343). The study coordinator copies a child's
         # evidence onto its attempt here, before ``_finalize`` runs
@@ -2042,6 +2049,22 @@ class RunService:
 
     def is_active(self, run_id: str) -> bool:
         return run_id in self._runs
+
+    def queued_run_ids(self) -> list[str]:
+        """Runs waiting for a device slot (#123), in no particular order."""
+        return list(self._pending_by_id)
+
+    def submits_in_flight(self) -> int:
+        """Submits that have entered :meth:`submit` and not yet returned."""
+        return self._submits_in_flight
+
+    def close_for_switch(self, reason: str) -> None:
+        """Refuse every new submit with *reason* until
+        :meth:`reopen_after_switch` (``core.project_switch``)."""
+        self._switch_closed = reason
+
+    def reopen_after_switch(self) -> None:
+        self._switch_closed = None
 
     def running_on(self, run_id: str) -> str | None:
         """The worker *run_id* is executing on now, or None: not active
@@ -2226,7 +2249,22 @@ class RunService:
 
     # ── submit ────────────────────────────────────────────────────────────
 
-    async def submit(
+    async def submit(self, graph: Any, **kwargs: Any) -> SubmitResult:
+        """Persist and schedule a run; see :meth:`_submit` for everything.
+
+        Refused with ``RunServiceUnavailable`` while the open project is
+        being switched, and counted while in progress, so a switch never
+        changes the data roots under a run between its checks and its row.
+        """
+        if self._switch_closed is not None:
+            raise RunServiceUnavailable(self._switch_closed)
+        self._submits_in_flight += 1
+        try:
+            return await self._submit(graph, **kwargs)
+        finally:
+            self._submits_in_flight -= 1
+
+    async def _submit(
         self,
         graph: Any,
         *,
@@ -2419,6 +2457,8 @@ class RunService:
         """
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
+        if self._switch_closed is not None:
+            raise RunServiceUnavailable(self._switch_closed)
         normalized_graph = normalize_graph(graph)
         normalized_options = normalize_options(
             apply_graph_settings(normalized_graph, options))

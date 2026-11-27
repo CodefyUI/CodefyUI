@@ -1,78 +1,63 @@
-"""One ``.gitignore`` and one ``.gitattributes``, whoever writes them.
+"""Phase 4A: the project scaffold and adoption live in app.core.project, so
+the server can create projects and import flat graphs the way `cdui project
+init [--adopt]` does."""
 
-A project directory can become a git repository two ways now -- ``cdui
-project init`` at the command line, and the Source Control tab's
-"Initialize Repository" -- and the interesting failure is not that one of
-them writes the wrong text: it is that they DRIFT, so a project scaffolded
-by the CLI and a project scaffolded by the tab ignore different files, and
-the difference is only ever noticed by whoever commits their API keys.
+import json
 
-So these tests pin the shared constants (identity, not content: a copy that
-happens to match today is the drift these tests exist to prevent) and the
-one line in each file that would cost something if it went missing.
+import pytest
 
-``project`` here is ``scripts/project.py`` -- conftest puts ``scripts/`` on
-``sys.path``.
-"""
-
-from __future__ import annotations
-
-import argparse
-
-import project
-
-from app.core.project import PROJECT_GITATTRIBUTES, PROJECT_GITIGNORE
+from app.core.project import (
+    PROJECT_DIRS,
+    PROJECT_MANIFEST,
+    GraphAmbiguityError,
+    adopt_graphs,
+    read_project_manifest,
+    scaffold_project,
+)
 
 
-def _args(**kw) -> argparse.Namespace:
-    ns = argparse.Namespace(dir=None, adopt=None, force=False)
-    for key, value in kw.items():
-        setattr(ns, key, value)
-    return ns
+def test_scaffold_writes_the_starter_files_once(tmp_path):
+    target = tmp_path / "proj"
+    written = scaffold_project(target)
+    assert set(written) == {PROJECT_MANIFEST, ".gitignore", ".gitattributes", ".env.example", "README.md"}
+    for rel in PROJECT_DIRS:
+        assert (target / rel / ".gitkeep").is_file()
+    assert read_project_manifest(target)["project"]["name"] == "proj"
+    (target / "README.md").write_text("mine", encoding="utf-8")
+    assert scaffold_project(target) == []
+    assert (target / "README.md").read_text(encoding="utf-8") == "mine"
 
 
-def test_the_cli_writes_the_shared_scaffold():
-    """The SAME objects, not two copies that agree.
-
-    ``cdui project init`` is where these strings used to live; the tab's
-    ``init`` needs the same ones, and a second copy would be a second
-    ``.gitignore`` waiting to lose a line.
-    """
-    assert project.PROJECT_GITIGNORE is PROJECT_GITIGNORE
-    assert project.PROJECT_GITATTRIBUTES is PROJECT_GITATTRIBUTES
+def test_scaffold_takes_a_display_name_and_writes_lf(tmp_path):
+    scaffold_project(tmp_path / "p", name="My Project")
+    raw = (tmp_path / "p" / PROJECT_MANIFEST).read_bytes()
+    assert b'name = "My Project"' in raw and b"\r\n" not in raw
 
 
-def test_the_scaffolded_gitignore_still_hides_the_secrets(tmp_path):
-    """``.env`` first, and the model formats after it.
+def test_adopt_copies_and_never_touches_the_source(tmp_path):
+    src = tmp_path / "flat"
+    src.mkdir()
+    graph = {"name": "g", "nodes": [{"id": "a", "type": "Start", "position": {"x": 3, "y": 4},
+                                     "data": {"params": {}}}], "edges": []}
+    (src / "g.json").write_text(json.dumps(graph), encoding="utf-8")
+    (src / "broken.json").write_text("{", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in src.iterdir()}
+    target = tmp_path / "proj"
+    scaffold_project(target)
+    result = adopt_graphs(src, target)
+    assert result.adopted == ["g"]
+    assert [name for name, _ in result.skipped] == ["broken.json"]
+    assert (target / "graphs" / "g.graph.json").is_file()
+    assert (target / "layout" / "g.layout.json").is_file()
+    assert not (target / "graphs" / ".gitkeep").exists()
+    assert {p.name: p.read_bytes() for p in src.iterdir()} == before
 
-    ``.env`` is the whole reason the tab refuses to serve that file at any
-    ref: a secret that is never committed cannot be read out of history.
-    """
-    target = tmp_path / "svc"
 
-    assert project.cmd_init(_args(dir=str(target))) == 0
-
-    ignored = (target / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert ".env" in ignored
-    assert "*.safetensors" in ignored
-    # An interrupted atomic write leaves one of these behind; a project that
-    # tracked them would commit half a graph.
-    assert "*.tmp-*" in ignored
-
-
-def test_the_scaffolded_gitattributes_pins_json_line_endings(tmp_path):
-    """``*.json text eol=lf`` -- the line this change added.
-
-    The graph and layout files ARE the project's source and the server
-    writes them with ``\\n``. On a Windows checkout with
-    ``core.autocrlf=true``, without this line every save rewrites every line
-    of every graph, and a one-node change is reviewed as a whole-file diff.
-    """
-    target = tmp_path / "svc"
-
-    assert project.cmd_init(_args(dir=str(target))) == 0
-
-    attributes = (target / ".gitattributes").read_text(
-        encoding="utf-8").splitlines()
-    assert "*.json text eol=lf" in attributes
-    assert "layout/*.layout.json linguist-generated=true" in attributes
+def test_adopt_refuses_an_ambiguous_source(tmp_path):
+    src = tmp_path / "flat"
+    src.mkdir()
+    for name in ("x.json", "x.graph.json"):
+        (src / name).write_text('{"nodes": [], "edges": []}', encoding="utf-8")
+    scaffold_project(tmp_path / "proj")
+    with pytest.raises(GraphAmbiguityError):
+        adopt_graphs(src, tmp_path / "proj")

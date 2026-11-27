@@ -36,6 +36,17 @@ _REAL_USER_DATA_DIR = os.environ.get("CODEFYUI_USER_DATA_DIR")
 _TEST_USER_DATA_DIR = tempfile.mkdtemp(prefix="codefyui-test-userdata-")
 os.environ["CODEFYUI_USER_DATA_DIR"] = _TEST_USER_DATA_DIR
 
+# Projects (phase 4A): a lifespan with no project would create the default
+# project under PROJECTS_ROOT, which is the user's home directory unless set.
+# The suite runs in flat mode, and anything that does make a project makes it
+# under a temporary root; `test_the_suite_leaves_no_project_in_home` and the
+# session check below hold that.
+_HOME_PROJECTS_ROOT = Path.home() / "CodefyUI-Projects"
+_HOME_PROJECTS_EXISTED = _HOME_PROJECTS_ROOT.exists()
+_TEST_PROJECTS_ROOT = tempfile.mkdtemp(prefix="codefyui-test-projects-")
+os.environ["CODEFYUI_PROJECTS_ROOT"] = _TEST_PROJECTS_ROOT
+os.environ["CODEFYUI_DEFAULT_PROJECT"] = "0"
+
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, init_allowed_hosts, session_token
 from app.core.node_base import BaseNode, DataType, PortDefinition
@@ -153,8 +164,35 @@ def pytest_sessionfinish(session, exitstatus):
     and the server lock open, and on Windows both dirs stayed behind. A run
     that finishes has torn everything down at its last test already.
     """
-    for directory in (_TEST_USER_DATA_DIR, _TEST_DB_DIR):
+    for directory in (_TEST_USER_DATA_DIR, _TEST_DB_DIR, _TEST_PROJECTS_ROOT):
         shutil.rmtree(directory, ignore_errors=True)
+    if not _HOME_PROJECTS_EXISTED and _HOME_PROJECTS_ROOT.exists():
+        # Loud rather than silent: a test reached the real home directory.
+        print(f"\nERROR: the test run created {_HOME_PROJECTS_ROOT}", file=sys.stderr)
+        session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+def _open_project_does_not_leak():
+    """A lifespan opens a project (phase 4A): it re-derives the data roots,
+    sets CODEFYUI_PROJECT_DIR and loads a .env, none of which a test's
+    monkeypatch knows to undo. Put all of it back after every test."""
+    from app.config import PROJECT_DERIVED_ROOTS
+    from app.core import dotenv, projects
+
+    saved = {name: getattr(settings, name) for name in ("PROJECT_DIR", *PROJECT_DERIVED_ROOTS)}
+    saved_env = os.environ.get("CODEFYUI_PROJECT_DIR")
+    saved_activated = projects._activated
+    yield
+    dotenv.unload_project_env()
+    for name, value in saved.items():
+        setattr(settings, name, value)
+    if saved_env is None:
+        os.environ.pop("CODEFYUI_PROJECT_DIR", None)
+    else:
+        os.environ["CODEFYUI_PROJECT_DIR"] = saved_env
+    projects._activated = saved_activated
+    projects.current_env = projects.EnvStatus()
 
 
 @pytest.fixture(autouse=True)

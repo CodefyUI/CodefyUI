@@ -190,6 +190,7 @@ function GraphRow({
  */
 export function GraphsTab() {
   const { t } = useI18n();
+  const projectName = useProjectStore((s) => s.projectName);
   const [graphs, setGraphs] = useState<SavedGraphSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -531,7 +532,12 @@ export function GraphsTab() {
     <>
       <div className={styles.header}>
         <div className={styles.headerRow}>
-          <div className={styles.headerTitle}>{t('sidebar.tab.graphs')}</div>
+          {/* In a project, the list is that project's graphs: say whose. */}
+          <div className={styles.headerTitle} title={projectName ?? undefined}>
+            {projectName
+              ? t('sidebar.graphs.inProject', { project: projectName })
+              : t('sidebar.tab.graphs')}
+          </div>
           <button
             type="button"
             className={styles.toolbarButton}

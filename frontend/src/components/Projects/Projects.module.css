@@ -1,0 +1,422 @@
+/* The project chip, its dialogs, the .env prompt and the stale-window banner
+   (phase 4A). The dialog frame is shared: shared/DialogFrame.module.css. */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 280px;
+  height: var(--h-control-sm);
+  margin-left: var(--sp-2);
+  padding: 0 var(--sp-2);
+  color: var(--accent);
+  background: var(--accent-wash);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.chip:hover {
+  border-color: var(--accent-dim);
+}
+
+.chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.chipFlat {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border-base);
+}
+
+.chipName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.chipBranch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: var(--fw-normal);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chipDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-warning);
+  flex-shrink: 0;
+}
+
+/* A window too narrow for the whole row (13 inch, 1470px): the chip is the
+   project's name alone, at most 6rem; the branch and the uncommitted-changes
+   dot move to its tooltip and to the first row of its menu. Pairs with
+   Toolbar.module.css's .wideOnly / .narrowOnly (Reload Nodes moves into the
+   File menu), same breakpoint. */
+@media (max-width: 1599px) {
+  .chip {
+    max-width: 6rem;
+    margin-left: 0;
+  }
+
+  .chipBranch {
+    display: none;
+  }
+}
+
+/* ── dialogs ── */
+
+.backdrop {
+  composes: backdrop from '../shared/DialogFrame.module.css';
+}
+
+.dialog {
+  composes: dialog from '../shared/DialogFrame.module.css';
+  --dialog-width: 560px;
+}
+
+.header {
+  composes: header from '../shared/DialogFrame.module.css';
+}
+
+.close {
+  composes: close from '../shared/DialogFrame.module.css';
+}
+
+.footer {
+  composes: footer from '../shared/DialogFrame.module.css';
+}
+
+.primary {
+  composes: primary from '../shared/DialogFrame.module.css';
+}
+
+.footer button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.body p {
+  margin: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.field input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-control-sm);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: var(--fw-normal);
+}
+
+.field input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.sectionLabel {
+  margin: 0 0 var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+/* The folder being browsed: a path, so neither uppercased nor spaced out. */
+.browseLabel {
+  margin: 0 0 var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.rowMain {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowMain:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.rowMain:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.rowMain:focus-visible,
+.rowAside:focus-visible {
+  outline: none;
+  box-shadow: inset var(--focus-ring);
+}
+
+.rowName {
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+}
+
+.rowPath {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.rowWarn {
+  color: var(--status-warning);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.rowAside {
+  padding: 0 var(--sp-3);
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.rowAside:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.badge {
+  padding: 0 var(--sp-2);
+  color: var(--accent);
+  background: var(--accent-wash);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+}
+
+.empty {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.summary {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.check input {
+  margin: 0;
+}
+
+.assetList {
+  max-height: 180px;
+}
+
+.assetRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.assetRow:last-child {
+  border-bottom: 0;
+}
+
+.size {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.error {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--status-error-strong);
+  background: var(--danger-wash);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.errorHint {
+  margin-top: var(--sp-1) !important;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.envList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.envRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.envRow code {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+}
+
+.envEndpoint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--status-warning);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.envEndpointHint {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.fieldProblem {
+  color: var(--status-error-strong);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/* ── the stale-window banner ── */
+
+.staleBanner {
+  position: fixed;
+  top: var(--sp-2);
+  left: 50%;
+  z-index: 8900;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: calc(100vw - var(--sp-8));
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-panel);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  transform: translateX(-50%);
+}
+
+.staleBanner button {
+  min-height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  color: var(--text-on-accent);
+  background: var(--accent-deep);
+  border: 0;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.staleBanner button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

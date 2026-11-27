@@ -51,7 +51,7 @@ from ..core.run_service import (
     normalize_name,
 )
 from ..core.run_store import RunRecord
-from ..core.study_coordinator import StudyCoordinator, StudySpec
+from ..core.study_coordinator import StudyCoordinator, StudyProjectNotOpen, StudySpec
 from ..core.study_store import (
     ATTEMPT_STATUSES,
     PLUGIN_KEY_PREFIX,
@@ -583,7 +583,9 @@ async def resume_study(study_id: str, request: Request,
     ``budget`` replacing its budget when given. Completed repetitions are
     skipped; a cancelled, interrupted or lost one gets a new attempt. Any
     other status, a budget that is already used up, and an
-    ``expected_revision`` the study has moved past are a 409."""
+    ``expected_revision`` the study has moved past are a 409. So is a
+    study whose runs were made in another project than the open one
+    (``study_project_not_open``): its new attempts would run here."""
     coordinator = _get_coordinator(request)
     try:
         study = await coordinator.resume(
@@ -594,6 +596,8 @@ async def resume_study(study_id: str, request: Request,
                                else body.expected_revision))
     except KeyError as exc:
         raise _not_found(study_id) from exc
+    except StudyProjectNotOpen as exc:
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except StudyStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _study_detail(coordinator, study)

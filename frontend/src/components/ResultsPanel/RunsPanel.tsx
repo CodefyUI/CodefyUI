@@ -1,3 +1,4 @@
+import { useProjectStore } from '../../store/projectStore';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
@@ -651,6 +652,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   const selectedRunId = useRunStore((s) => s.selectedRunId);
   const busy = useRunStore((s) => s.busy);
   const setFilter = useRunStore((s) => s.setFilter);
+  const scope = useRunStore((s) => s.scope);
+  const setScope = useRunStore((s) => s.setScope);
+  const projectDir = useProjectStore((s) => s.projectDir);
   const refresh = useRunStore((s) => s.refresh);
   const select = useRunStore((s) => s.select);
   const cancel = useRunStore((s) => s.cancel);
@@ -806,6 +810,21 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
     <div ref={rootRef} className={styles.runsBody}>
       <div className={styles.listCol}>
         <div className={styles.toolbar}>
+          {projectDir !== null && (
+            <div className={`${styles.filters} ${styles.scopeGroup}`} role="group" aria-label={t('runs.scope.label')}>
+              {(['project', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={scope === value}
+                  className={`${styles.filterBtn} ${scope === value ? styles.filterActive : ''}`}
+                  onClick={() => setScope(value)}
+                >
+                  {t(`runs.scope.${value}`)}
+                </button>
+              ))}
+            </div>
+          )}
           <div className={styles.filters}>
             {FILTERS.map((value) => (
               <button
@@ -929,6 +948,12 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                 >
                   <span className={styles.nameCell} title={run.name ?? run.id}>
                     {run.name || t('runs.unnamed')}
+                    {scope === 'all' && run.project_dir && run.project_dir !== projectDir && (
+                      <span className={styles.otherProject}
+                        title={t('runs.scope.otherTitle', { path: run.project_dir })}>
+                        {' · '}{run.project_dir.split(/[\\/]/).filter(Boolean).pop()}
+                      </span>
+                    )}
                   </span>
                   <StatusChip run={run} />
                   <span className={`${styles.workerCell} ${styles.colWorker}`} title={workerName}>

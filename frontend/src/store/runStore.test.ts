@@ -139,6 +139,29 @@ describe('runStore — the list', () => {
     expect(useRunStore.getState().filter).toBe('failed');
   });
 
+  it('lists the open project by default and every project on request (phase 4A)', async () => {
+    await useRunStore.getState().refresh();
+    expect(api.listRuns.mock.calls[0][0]).toMatchObject({ scope: 'project' });
+
+    useRunStore.getState().setScope('all');
+    await vi.waitFor(() =>
+      expect(api.listRuns).toHaveBeenCalledWith(expect.objectContaining({ scope: 'all' })),
+    );
+    expect(useRunStore.getState().scope).toBe('all');
+  });
+
+  it('drops a late page belonging to a scope the user already left', async () => {
+    let releaseSlow: (v: ReturnType<typeof page>) => void = () => {};
+    api.listRuns.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseSlow = resolve; }),
+    );
+    const slow = useRunStore.getState().refresh();
+    useRunStore.setState({ scope: 'all' });
+    releaseSlow(page([makeRun({ id: 'stale' })]));
+    await slow;
+    expect(useRunStore.getState().runs).toEqual([]);
+  });
+
   it('ignores a re-selection of the filter already in effect', async () => {
     await useRunStore.getState().refresh();
     api.listRuns.mockClear();

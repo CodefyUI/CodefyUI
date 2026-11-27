@@ -10,7 +10,6 @@ import { NodeConfigPanel } from './components/ConfigPanel/NodeConfigPanel';
 import { InspectorPanel } from './components/InspectorPanel/InspectorPanel';
 import { ResultsPanel } from './components/ResultsPanel/ResultsPanel';
 import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
-import { LayersEditorModal } from './components/LayersEditor/LayersEditorModal';
 import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
 import { VizViewerModal } from './components/Nodes/VizViewerModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
@@ -27,6 +26,7 @@ import { useWorkerStore } from './store/workerStore';
 import { useStudyStore } from './store/studyStore';
 import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
+import { ProjectNotices } from './components/Projects/ProjectNotices';
 import { lazyRetry } from './components/shared/lazyRetry';
 import { PluginHost } from './plugins/PluginHost';
 import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
@@ -119,6 +119,30 @@ function WorkersPanelSlot() {
 }
 
 /**
+ * The layers editor (a model node's "Edit layers"), lazy like the Workers
+ * panel: opened from a node, never on the first screen, and at ~30 kB the
+ * largest modal the entry chunk carried. Phase 4A's project code pushed the
+ * entry chunk past the 500 kB build limit; this brings it back under.
+ */
+const LayersEditorModal = lazyRetry(
+  () => import('./components/LayersEditor/LayersEditorModal')
+    .then((module) => module.LayersEditorModal),
+  () => useTabStore.getState().closeLayersModal(),
+);
+
+/** Mounts the lazy layers editor only while the active tab has it open. */
+function LayersEditorSlot() {
+  const open = useTabStore((s) =>
+    (s.tabs.find((t) => t.id === s.activeTabId)?.layersModalNodeId ?? null) !== null);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <LayersEditorModal />
+    </Suspense>
+  );
+}
+
+/**
  * The Studies panel (#343), lazy like the Workers panel: reached from the
  * Runs panel's Studies button, and kept out of the entry chunk.
  */
@@ -199,6 +223,9 @@ function App() {
         if (cancelled) return;
         useProjectStore.getState().setProject(h.project);
         useTabStore.getState().rehydrateForProject(h.project);
+        // The project id every write carries from now on (R3), the recent
+        // projects and the .env status.
+        void useProjectStore.getState().loadOverview();
       })
       .catch(() => {
         /* health unreachable -- stay in non-project defaults */
@@ -234,7 +261,7 @@ function App() {
         <PluginSideDock />
       </div>
       <PresetConfigModal />
-      <LayersEditorModal />
+      <LayersEditorSlot />
       <NodeDetailModal />
       <VizViewerModal />
       <TemplateGalleryModal />
@@ -248,6 +275,7 @@ function App() {
       <StudiesPanelSlot />
       <GuideTour />
       <DialogContainer />
+      <ProjectNotices />
       <PluginHost />
       {/* Over everything but a server restart: a page that does not edit the
           workspace (#554) must not be edited, toasts and modals included. */}

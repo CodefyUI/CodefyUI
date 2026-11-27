@@ -323,6 +323,111 @@ curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
 The active version's `GET /api/apps/echo-svc/openapi.json` `info` block also
 carries `x-codefyui-git-commit` and `x-codefyui-git-dirty`.
 
+## The default project and switching projects {/* #the-default-project-and-switching-projects */}
+
+### Which project the server opens
+
+At start-up the server picks, in this order:
+
+1. The project named with `--project` or `CODEFYUI_PROJECT_DIR`.
+2. Flat mode, when `CODEFYUI_GRAPHS_DIR` is set.
+3. The project that was open last time (`<user data>/projects.json`).
+4. Flat mode, when `backend/data/graphs` still holds graphs from before
+   projects. Nothing is moved; the project chip offers to copy them into a
+   project (see below).
+5. Otherwise the **default project** `~/CodefyUI-Projects/workspace`
+   (`%USERPROFILE%\CodefyUI-Projects\workspace` on Windows), created with its
+   own git repository the first time (see the next section for its branch and
+   first commit). `CODEFYUI_PROJECTS_ROOT` moves the
+   `CodefyUI-Projects` folder; `CODEFYUI_DEFAULT_PROJECT=0` turns this step
+   off. A `workspace` folder that exists, is not empty and is not a project is
+   left alone: the server stays in flat mode and logs a warning.
+
+### A new project's repository
+
+The default project, **New project…** and an import into a new project make
+the folder a git repository on your `init.defaultBranch`, or `main` when you
+have not set one, with one commit, `Initial project`, holding the starter
+files. Source Control starts clean, and the first graph you save is the
+first change it shows. Without a git identity (`user.name`, `user.email`)
+that one commit is made as `CodefyUI <codefyui@localhost>`, given for that
+commit only and written to no config. `cdui project init` still makes no
+commit.
+
+### The project chip
+
+The chip at the left of the toolbar names the open project, its git branch,
+and shows a dot while there are uncommitted changes. On a window narrower than
+1600px the chip shows the name alone, with the branch and whether there are
+uncommitted changes in its tooltip and in the first row of its menu, and
+**Reload Nodes** moves from the toolbar into the **File** menu; together they
+keep the toolbar on one line. Its menu opens a recent
+project, a folder (**Open folder…**), a new project (**New project…**, created
+under the projects root; the name is checked as you type), or a clone (**Clone from a git
+URL…**, https only, cloned into the projects root under the repository's
+name). In flat mode it reads **No project** and, when there are graphs from
+before projects, offers to copy them into a project together with the models,
+images and media files they reference; the dialog lists each file with its
+size. Everything is copied, never moved.
+
+Switching reloads the page. Each project has its own tabs (see
+[Tabs & Persistence](./tabs-persistence)); tabs with unsaved changes are
+listed before you switch and stay with the project you leave.
+
+**A switch is refused** (the message says what is busy) while a run is
+running, queued or being submitted, a study is running, a plugin or pack is
+being installed, a git operation is in progress in Source Control, another
+switch is in progress, or a connected worker declares this server's mount
+label with a folder of its own (`--mount data=...`): stop that worker,
+switch, and start it again with the new project's folder.
+
+**Other windows.** A window that still shows the project you left notices
+when you come back to it (or when it tries to save or run anything) and
+offers to reload.
+
+**Runs and apps belong to their project.** The Runs panel lists this
+project's runs; **All projects** lists every run. A run of another project
+keeps its history, but its files (checkpoints, TensorBoard logs, what a
+worker uploaded) are available only while that project is open, and it is
+not removed by retention until then. An app version published from a
+project is served only while that project is open (409
+`app_project_not_open` otherwise). Studies, sweeps and apps are not yet
+filtered by project.
+
+### The project's `.env`
+
+A project this install created (the default project, **New project**, an
+import) and a project named with `--project` load their `.env` as before.
+For any other folder you open, and for a clone, the editor first lists the
+variable **names** (never the values) and asks. The answer is remembered for
+those exact contents in `<user data>/trust.json`; when the file changes, you
+are asked again. Saying no opens the project without those variables.
+
+Some names are never loaded when a project is opened at run time, whatever
+their letter case (`https_proxy` is blocked as well as `HTTPS_PROXY`):
+
+- how programs start and where code comes from: `PATH`, `PYTHON*`, `LD_*`,
+  `DYLD_*`, `CODEFYUI_*`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5*`, `RUBY*`,
+  `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`;
+- where packages are installed from: `PIP_*`, `UV_*`, `CONDA_*`;
+- how git, ssh and shells run: `GIT_*`, `SSH_*`, `HOME`, `USERPROFILE`,
+  `SHELL`, `COMSPEC`, `BASH_ENV`, `ENV`, `IFS`, `XDG_*`, `EDITOR`, `VISUAL`,
+  `PAGER`, `BROWSER`, `TMPDIR`, `TEMP`, `TMP`;
+- where network traffic goes and which certificates it trusts: `*_PROXY`
+  (`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, …), `SSL_CERT_*`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`.
+
+Names ending in `_URL`, `_BASE`, `_ENDPOINT`, `_HOST` or `_API_BASE` are
+loaded, but the prompt marks them: such a variable can send requests, and
+the keys that go with them, to another server (`OPENAI_BASE_URL` pointing
+somewhere you do not know, for example). Open the `.env` and check their
+values before you agree.
+
+And some libraries read their settings only once, when they
+start (`CUDA_VISIBLE_DEVICES`, `HF_HOME` and the other `HF_*`,
+`TORCH_HOME`, `OMP_NUM_THREADS` and similar): after a switch the editor says
+which of these need a server restart to take effect.
+
 ## Migrating an existing flat graphs dir
 
 If you followed the older ["version control your graphs"](./version-control-graphs.md)
@@ -337,7 +442,7 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
 
 ## Notes and limits (v1)
 
-- One project per server instance (no in-editor project switcher yet).
+- One project is open at a time per server; switch with the project chip (see above).
 - `DB_PATH`, custom nodes and [exported presets](/advanced/presets#creating-your-own)
   stay install-global; [plugins](/advanced/plugins) are the portable mechanism
   (pinned by SHA in the manifest).

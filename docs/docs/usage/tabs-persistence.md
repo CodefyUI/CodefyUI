@@ -40,6 +40,8 @@ The empty state is saved like any other: a reload returns to the welcome screen.
 
 All tabs are auto-saved in your browser, so your work is restored when you reload the page. This is local to the browser; it is not synced to the server. Another browser, or another computer, therefore starts with none of them — a [workspace file](#workspace-files) is how you take them along.
 
+Each [project](./project-directories#the-default-project-and-switching-projects) has its own set of tabs: switching projects shows the tabs you last had in that one. The first project opened after upgrading to projects gets a copy of the tabs from before (they stay where they were too).
+
 A reload restores each tab's graph (nodes, edges, layout, segment markers and subgraph definitions), its name and description, its device, the saved graph it is bound to, its read-only flag and its run settings. It does not restore the undo/redo history, the Execution Log, typed secret values, or the subgraph you were editing inside (you come back to the top level), and tabs a plugin opened temporarily are not saved. A tab whose run was still going re-attaches to that run if the server still has it.
 
 Saving uses **IndexedDB**, with one record per tab. That matters for large graphs: the older `localStorage` backend capped an origin at roughly 5MB, and a graph past that limit simply stopped being saved. IndexedDB has no comparable practical limit, and only the tab you edited is rewritten.

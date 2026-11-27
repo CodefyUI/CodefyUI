@@ -289,7 +289,7 @@ class MyNode(BaseNode):
         return {"output": inputs["input"]}
 ```
 
-Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the toolbar — both re-discover every node and preset source (custom nodes and plugins are re-imported; built-ins are re-registered). Or use the **Custom Node Manager** GUI to upload, enable/disable, and delete custom nodes.
+Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the toolbar (in the **File** menu on a window narrower than 1600px) — both re-discover every node and preset source (custom nodes and plugins are re-imported; built-ins are re-registered). Or use the **Custom Node Manager** GUI to upload, enable/disable, and delete custom nodes.
 
 ## Key Bindings
 

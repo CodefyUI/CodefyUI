@@ -146,7 +146,6 @@ describe('App', () => {
     expect(screen.getByTestId('toolbar')).toBeTruthy();
     expect(screen.getByTestId('tabbar')).toBeTruthy();
     expect(screen.getByTestId('preset-modal')).toBeTruthy();
-    expect(screen.getByTestId('layers-editor-modal')).toBeTruthy();
     expect(screen.getByTestId('node-detail-modal')).toBeTruthy();
     expect(screen.getByTestId('viz-viewer-modal')).toBeTruthy();
     // The diff window is mounted here rather than in the Source Control tab:
@@ -232,6 +231,18 @@ describe('App', () => {
     });
     expect(screen.queryByTestId('toolbar')).toBeNull();
     expect(screen.getAllByTestId('custom-node-manager-modal')).toHaveLength(1);
+  });
+
+  it('loads the layers editor only once a node opens it (a lazy chunk)', async () => {
+    render(<App />);
+    expect(screen.queryByTestId('layers-editor-modal')).toBeNull();
+    const setOpen = (nodeId: string | null) => act(() => useTabStore.setState((s) => ({
+      tabs: s.tabs.map((t) => (t.id === s.activeTabId ? { ...t, layersModalNodeId: nodeId } : t)),
+    })));
+    setOpen('n1');
+    expect(await screen.findByTestId('layers-editor-modal')).toBeInTheDocument();
+    setOpen(null);
+    expect(screen.queryByTestId('layers-editor-modal')).toBeNull();
   });
 
   it('loads the Workers panel only once it opens (#776, a lazy chunk)', async () => {

@@ -62,6 +62,29 @@ router = APIRouter(prefix="/api/apps", tags=["apps"])
 SLUG_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
+#: The 409 code for invoking a version published from a project not open.
+APP_PROJECT_NOT_OPEN = "app_project_not_open"
+
+
+def app_project_refusal(project_dir: str | None) -> str | None:
+    """Why a version published from *project_dir* cannot run now, or None.
+
+    A version records the project it was published from (MIGRATION_019);
+    NULL (flat mode, or a version from before projects) runs wherever, as
+    it always has.
+    """
+    if project_dir is None:
+        return None
+    current = settings.PROJECT_DIR
+    if current is not None and str(current) == project_dir:
+        return None
+    from pathlib import Path
+
+    return (f"this app version was published from project "
+            f"'{Path(project_dir).name}' ({project_dir}), which is not open; "
+            "open that project in CodefyUI to serve it")
+
+
 def _manage_error(
     status_code: int, code: str, message: str,
     details: list[Any] | None = None,
@@ -270,6 +293,10 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
 
     contract_doc = _contract_document(body.graph, nodes, edges, contract)
     now = utc_now_iso()
+    # The project the graph was read from: invoking this version while
+    # another project is open is refused (``app_project_refusal``).
+    project_dir = (None if settings.PROJECT_DIR is None
+                   else str(settings.PROJECT_DIR))
 
     def _publish(conn: sqlite3.Connection) -> dict[str, Any]:
         # BEGIN IMMEDIATE + max(version)+1 INSIDE the transaction:
@@ -318,12 +345,12 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
             conn.execute(
                 "INSERT INTO app_versions (app_id, version, graph_json, "
                 "contract_json, source_graph_name, note, git_commit, "
-                "git_dirty, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "git_dirty, created_at, project_dir) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (app_id, next_version, graph_text, json.dumps(contract_doc),
                  body.graph, body.note, body.git_commit,
                  (None if body.git_dirty is None else int(body.git_dirty)),
-                 now),
+                 now, project_dir),
             )
             conn.execute(
                 "UPDATE apps SET active_version = ?, graph_name = ?, "
@@ -381,7 +408,7 @@ async def list_versions(slug: str, request: Request):
             return None
         rows = conn.execute(
             "SELECT version, source_graph_name, note, git_commit, git_dirty, "
-            "created_at "
+            "created_at, project_dir "
             "FROM app_versions WHERE app_id = ? ORDER BY version DESC",
             (app_row["id"],),
         ).fetchall()
@@ -621,7 +648,7 @@ async def invoke_app(
     def _resolve(conn: sqlite3.Connection) -> dict[str, Any] | None:
         row = conn.execute(
             "SELECT a.id AS app_id, a.active_version, a.record_io, "
-            "       v.graph_json "
+            "       v.graph_json, v.project_dir "
             "FROM apps a "
             "LEFT JOIN app_versions v "
             "  ON v.app_id = a.id AND v.version = a.active_version "
@@ -644,6 +671,15 @@ async def invoke_app(
                                   f"app '{slug}' has no active version — "
                                   "publish or activate one first"
                               ))
+    refusal = app_project_refusal(resolved["project_dir"])
+    if refusal is not None:
+        # The version's graph names files by paths relative to the project
+        # it was published from (MIGRATION_019); run here, they would
+        # resolve against another project's data. Not recorded as a run:
+        # nothing ran, as for app_unpublished above.
+        return error_response(409, run_id=run_id, graph=slug, app=slug,
+                              code=APP_PROJECT_NOT_OPEN, message=refusal,
+                              version=int(resolved["active_version"]))
     version = int(resolved["active_version"])
     record_io = bool(resolved["record_io"])
     api_key_id = int(key_result.key_row["id"])

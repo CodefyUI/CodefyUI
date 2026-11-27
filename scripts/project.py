@@ -41,104 +41,16 @@ from app.core.plugin_loader import (
     load_lockfile,
 )
 from app.core.project import (
-    PROJECT_GITATTRIBUTES,
-    PROJECT_GITIGNORE,
+    PROJECT_MANIFEST,
     GraphAmbiguityError,
+    adopt_graphs,
     check_pin_issues,
     collect_graph_files,
+    init_project_repo,
+    scaffold_project,
 )
 
-MANIFEST_FILENAME = "codefyui.project.toml"
-
-_PROJECT_TOML = """[project]
-name = "{name}"
-format_version = 1
-requires_codefyui = ">=1.4"   # advisory metadata; NOT enforced
-
-[plugins]
-# written by `cdui project freeze`; installed by `cdui project restore`
-# some-pack = {{ url = "https://github.com/owner/repo", ref = "v1.2", sha = "<40-hex>" }}
-
-[publish]                      # optional single default target
-# graph = "my-graph"
-# slug = "my-service"
-# record_io = true
-"""
-
-_ENV_EXAMPLE = """# CodefyUI project secrets (runtime only). Copy to .env and fill in.
-# .env is gitignored; this .env.example is committed as the required-keys template.
-#
-# Loaded at server start with os.environ.setdefault semantics (an already-set
-# environment variable wins). Values are execution-time only and are never
-# written to a saved graph. CODEFYUI_* SERVER CONFIG keys placed here are
-# IGNORED (server settings materialize before .env loads); pass `cdui start`
-# flags or the process environment for those.
-#
-# LLM keys, read at node execute time:
-# OPENAI_API_KEY=
-# CODEFYUI_OPENAI_API_KEY=
-# ANTHROPIC_API_KEY=
-# CODEFYUI_ANTHROPIC_API_KEY=
-"""
-
-_README = """# {name}
-
-A CodefyUI **project directory**: a self-contained git repo where the graph
-files ARE the storage. Open it with:
-
-    cdui start --project .
-
-## Layout
-
-    codefyui.project.toml   project manifest (name, plugin pins, default publish target)
-    graphs/                 <name>.graph.json  -- logic (nodes/edges/params/presets)
-    layout/                 <name>.layout.json -- node positions (reviewable, generated)
-    assets/images/          IMAGES_DIR
-    assets/models/          MODELS_DIR (weights land here; gitignored)
-    assets/data/            CSVs / datasets / FileReader inputs
-    assets/output/          ImageWriter output (created on demand)
-    .env.example            committed template of required secret keys
-    .env                    your secrets (gitignored, never committed)
-
-## Quickstart
-
-    cdui start --project .          # edit graphs in the browser; Save writes the pair
-    cdui project validate .         # CI gate: every graph must pass the publish pre-flight
-    cdui project publish . --graph my-graph --slug my-service --create   # first publish + provenance
-
-A slug declared in `codefyui.project.toml` `[publish]` creates its app on
-first `cdui project publish .` automatically; an explicitly passed `--slug`
-needs `--create` the first time (so a typo cannot mint a second app).
-
-## Version control
-
-Set a git identity if you have not:
-
-    git config user.name  "You"
-    git config user.email "you@example.com"
-
-Then:
-
-    git add -A && git commit -m "Initial project"
-
-Commit `.env.example`, never `.env`. Commit a small **fetch script** that
-downloads large data on demand -- do NOT commit datasets or weights (they are
-gitignored). Model checkpoints written to `assets/models/` and images written
-to `assets/output/` are local artifacts, not source.
-
-`cdui project freeze` rewrites `codefyui.project.toml` in place: keys you add
-are preserved, but comments are not, and `[plugins]` is fully regenerated.
-
-## Continuous integration
-
-Run `cdui project restore .` THEN `cdui project validate .` (restore installs
-the plugin pins the graphs need; validate needs the full backend env incl.
-torch -- cache the venv in CI). Validate `.` -- do NOT feed a raw `*.json` glob
-to the validator, or it would pick up `layout/*.layout.json` files too. A
-canvas-only graph (no GraphOutput, e.g. a training graph) fails the publish
-pre-flight; give it a real output or validate only your publish targets with
-`cdui project validate . --graph <name>`.
-"""
+MANIFEST_FILENAME = PROJECT_MANIFEST
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -153,24 +65,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Scaffold directories.
-    for rel in ("graphs", "layout", "assets/images", "assets/models",
-                "assets/data"):
-        (target / rel).mkdir(parents=True, exist_ok=True)
-        # Keep otherwise-empty dirs trackable by git.
-        keep = target / rel / ".gitkeep"
-        if not any((target / rel).iterdir()):
-            keep.write_text("", encoding="utf-8")
-
-    # Scaffold files (never clobber an existing manifest/README under --force).
-    name = target.name
-    _write_if_absent(target / MANIFEST_FILENAME, _PROJECT_TOML.format(name=name))
-    # Shared with the Source Control tab's own "Initialize Repository", which
-    # writes the same two files from the same constants (app.core.project).
-    _write_if_absent(target / ".gitignore", PROJECT_GITIGNORE)
-    _write_if_absent(target / ".gitattributes", PROJECT_GITATTRIBUTES)
-    _write_if_absent(target / ".env.example", _ENV_EXAMPLE)
-    _write_if_absent(target / "README.md", _README.format(name=name))
+    # Shared with the server's own project creation (app.core.project).
+    scaffold_project(target)
 
     # Adopt: copy every *.json from src into graphs/ and split immediately.
     if args.adopt:
@@ -179,9 +75,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             return rc
 
     # git init, NO initial commit (spec D3 / Section 5).
-    if shutil.which("git"):
-        if not (target / ".git").exists():
-            subprocess.run(["git", "init"], cwd=target, capture_output=True)
+    if init_project_repo(target):
         info("已初始化 git 儲存庫（未建立 commit）",
              "Initialized a git repo (no commit made)")
         info("接下來：設定 git 身分並提交：",
@@ -726,46 +620,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_if_absent(path: Path, content: str) -> None:
-    if not path.exists():
-        path.write_text(content, encoding="utf-8")
-
-
 def _adopt(src: Path, target: Path) -> int:
-    from app.core.project import write_graph_pair
-
     if not src.is_dir():
         err(f"--adopt 來源不是目錄：{src}", f"--adopt source is not a directory: {src}")
         return 1
-    graphs_dir = target / "graphs"
-    layout_dir = target / "layout"
     try:
-        # Shared canonical-vs-legacy rule (app.core.project): skips
-        # `*.layout.json`, and a source holding BOTH `x.json` and
-        # `x.graph.json` aborts naming both files instead of silently
-        # letting one overwrite the other (issue #85).
-        pairs = collect_graph_files(src)
+        result = adopt_graphs(src, target)
     except GraphAmbiguityError as e:
         err(str(e), str(e))
         return 1
-    count = 0
-    for base, jf in pairs:
-        try:
-            payload = json.loads(jf.read_text(encoding="utf-8"))
-        except (ValueError, OSError) as e:
-            warn(f"略過 {jf.name}：{e}", f"Skipping {jf.name}: {e}")
-            continue
-        write_graph_pair(
-            graphs_dir / f"{base}.graph.json",
-            layout_dir / f"{base}.layout.json",
-            payload,
-        )
-        count += 1
-    if count:
-        # cmd_init scaffolds `.gitkeep` placeholders BEFORE adoption runs;
-        # once real graph/layout files have landed, drop the stray ones.
-        for d in (graphs_dir, layout_dir):
-            (d / ".gitkeep").unlink(missing_ok=True)
+    for name, problem in result.skipped:
+        warn(f"略過 {name}：{problem}", f"Skipping {name}: {problem}")
+    count = len(result.adopted)
     ok(f"已採用並拆分 {count} 個 graph", f"Adopted and split {count} graph(s)")
     return 0
 

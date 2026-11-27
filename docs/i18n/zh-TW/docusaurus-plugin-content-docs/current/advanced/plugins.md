@@ -397,7 +397,7 @@ cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
 
 請在另一個終端機執行伺服器（`cdui start` 或 `cdui dev`）。`dev` 會輪詢外掛 manifest、`nodes/`、`presets/` 與 `frontend/`；`--once` 會連結並重載一次而不監看，`--interval` 則設定輪詢間隔。會要求伺服器重載的命令——`link`、`unlink`、`dev`、`reload`、`enable`、`disable`、`install` 與 `uninstall`——會將 POST request 傳送至 `127.0.0.1:<port>`。這些命令會使用所在 shell 的 `CODEFYUI_PORT`；未設定時使用 `8000`。`cdui start --port <n>` 只會為其啟動的伺服器行程設定該變數。使用非預設 port 時，請先匯出 `CODEFYUI_PORT=<n>`，再執行這些命令或以相同方式解析 port 的 `cdui project publish`。否則，lockfile 可能已更新，但重載 request 會回報 `Server not running`。
 
-`link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或 `cdui plugin dev`）會在伺服器上重新 import 節點；按工具列的**重新載入節點**或重新載入頁面，節點面板才會顯示新增或變更的節點。**前端變更會自動重載**，前提是開啟頁面時已安裝一個啟用中的連結外掛：此時編輯器每 1.5 秒檢查一次重載，每次重載後重新啟用外掛 UI。若在編輯器已開啟後才連結外掛，請重新整理瀏覽器一次。
+`link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或 `cdui plugin dev`）會在伺服器上重新 import 節點；按工具列的**重新載入節點**（視窗寬度不到 1600px 時在**檔案**選單裡）或重新載入頁面，節點面板才會顯示新增或變更的節點。**前端變更會自動重載**，前提是開啟頁面時已安裝一個啟用中的連結外掛：此時編輯器每 1.5 秒檢查一次重載，每次重載後重新啟用外掛 UI。若在編輯器已開啟後才連結外掛，請重新整理瀏覽器一次。
 
 連結外掛的 `[python_deps]` 會依照與下載型外掛包相同的規則安裝：只增不改，並套用 constraints 檔，固定伺服器環境中已安裝之每個套件的版本。因此 `cdui plugin link` 也使用安裝流程的離開碼：`3` 表示它要求的套件無法安裝至執行中的伺服器（會印出伺服器停止後要執行的指令；沒有伺服器在執行時則會改為升級套件，如上所述），`130` 表示 `Ctrl+C`。它不再直接回傳套件管理程式的原始離開碼。
 

@@ -701,6 +701,27 @@ CREATE INDEX idx_studies_owner ON studies(owner, created_at)
   WHERE owner IS NOT NULL;
 """
 
+# MIGRATION_019 (projects, phase 4A): which project a run or an app version
+# belongs to.
+# - ``exec_runs.data_root``: the resolved data root (``data_paths.data_root``)
+#   when the run was created; every path the run writes (checkpoints,
+#   TensorBoard logdirs, a worker run's received files) is under it.
+#   Reading or removing those files while another data root is open is
+#   refused (409 ``run_project_not_open``), and retention skips the run.
+#   NULL for runs from before this migration: they count as the current
+#   root, which is what they were resolved against until now.
+# - ``exec_runs.project_dir``: the open project then (NULL in flat mode),
+#   for the message and the Runs list.
+# - ``app_versions.project_dir``: the project a version was published from.
+#   Invoking it while another project is open is refused (409
+#   ``app_project_not_open``); NULL (flat mode, or older versions) runs as
+#   before.
+MIGRATION_019 = """
+ALTER TABLE exec_runs ADD COLUMN data_root TEXT;
+ALTER TABLE exec_runs ADD COLUMN project_dir TEXT;
+ALTER TABLE app_versions ADD COLUMN project_dir TEXT;
+"""
+
 MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_004, MIGRATION_005, MIGRATION_006,
                          MIGRATION_007, MIGRATION_008, MIGRATION_009,
@@ -708,7 +729,7 @@ MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002, MIGRATION_003,
                          MIGRATION_012, MIGRATION_013,
                          MIGRATION_014, MIGRATION_015,
                          MIGRATION_016, MIGRATION_017,
-                         MIGRATION_018]
+                         MIGRATION_018, MIGRATION_019]
 
 
 def _is_comment_only(statement: str) -> bool:

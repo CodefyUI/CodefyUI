@@ -66,6 +66,11 @@ export default defineConfig({
         CODEFYUI_DATA_FILES_DIR: DATA.files,
         CODEFYUI_MEDIA_DIR: DATA.media,
         CODEFYUI_LOG_DIR: DATA.logs,
+        // Never a default project for the shared server (the folders above
+        // are pinned, so it stays in flat mode anyway), and any project a
+        // spec makes goes under the run's own folder.
+        CODEFYUI_DEFAULT_PROJECT: '0',
+        CODEFYUI_PROJECTS_ROOT: DATA.projects,
       }),
     },
   },

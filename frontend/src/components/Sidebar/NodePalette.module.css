@@ -64,6 +64,11 @@
 .headerRow .headerTitle {
   margin-bottom: 0;
   flex: 1;
+  /* The Graphs tab names the project here, which can be long. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .headerTitle {

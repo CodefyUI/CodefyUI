@@ -171,7 +171,7 @@ def test_migration_018_upgrades_a_v16_database(tmp_path, monkeypatch):
     new = Database(tmp_path / "v16.db")
     new.connect()
     try:
-        assert new._conn.execute("PRAGMA user_version").fetchone()[0] == 18
+        assert new._conn.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
         store_ = StudyStore(new)
         study = asyncio.run(store_.get_study("s1"))
         assert (study.owner, study.halt) == (None, None)

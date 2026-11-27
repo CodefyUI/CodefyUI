@@ -11,6 +11,7 @@ import {
   listRuns,
   type RunArtifact,
   type RunEventsPage,
+  type RunScope,
   type RunStatus,
   type RunSummary,
 } from '../api/rest';
@@ -193,12 +194,15 @@ interface RunState {
   loading: boolean;
   error: string | null;
   filter: RunStatusFilter;
+  /** The open project's runs (default) or every project's (phase 4A). */
+  scope: RunScope;
   selectedRunId: string | null;
   detail: RunDetail | null;
   /** Run ids with a row action in flight — disables that row's buttons. */
   busy: Record<string, boolean>;
 
   setFilter: (filter: RunStatusFilter) => void;
+  setScope: (scope: RunScope) => void;
   refresh: () => Promise<void>;
   select: (runId: string | null) => Promise<void>;
   cancel: (runId: string) => Promise<void>;
@@ -536,6 +540,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   loading: false,
   error: null,
   filter: 'all',
+  scope: 'project',
   selectedRunId: null,
   detail: null,
   busy: {},
@@ -546,12 +551,19 @@ export const useRunStore = create<RunState>((set, get) => ({
     void get().refresh();
   },
 
+  setScope: (scope) => {
+    if (get().scope === scope) return;
+    set({ scope, loading: true });
+    void get().refresh();
+  },
+
   refresh: async () => {
-    const { filter } = get();
+    const { filter, scope } = get();
     try {
       const page = await listRuns({
         status: filter === 'all' ? undefined : [filter],
         limit: RUN_LIST_LIMIT,
+        scope,
       });
       // An unfiltered page already contains every active run — the list is
       // newest-first and an active run is by definition recent — so the
@@ -563,7 +575,7 @@ export const useRunStore = create<RunState>((set, get) => ({
         : (await listRuns({ status: ACTIVE_RUN_STATUSES, limit: 1 })).total;
       // The filter can change while a request is in flight; a late page for
       // the previous filter must not repaint the table.
-      if (get().filter !== filter) return;
+      if (get().filter !== filter || get().scope !== scope) return;
       set({
         runs: page.runs,
         total: page.total,
@@ -800,6 +812,7 @@ export function _resetRunStoreForTesting(): void {
     loading: false,
     error: null,
     filter: 'all',
+    scope: 'project',
     selectedRunId: null,
     detail: null,
     busy: {},

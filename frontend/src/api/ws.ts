@@ -1,6 +1,11 @@
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
-import { invalidateSessionToken, wsUrlWithToken } from './_auth';
+import {
+  announceProjectChanged,
+  getProjectId,
+  invalidateSessionToken,
+  wsUrlWithToken,
+} from './_auth';
 
 type MessageHandler = (data: any) => void;
 
@@ -86,6 +91,16 @@ export class ExecutionWebSocket {
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string);
+        // Another window switched the server to another project (phase 4A):
+        // this one now shows a project that is not open. The banner says so;
+        // the message is not a run event, so nothing else needs it.
+        if (data?.type === 'project_changed') {
+          if (data.project_id !== getProjectId()) announceProjectChanged(data.project_id ?? null);
+          return;
+        }
+        if (data?.type === 'execution_error' && data.code === 'project_changed') {
+          announceProjectChanged(null);
+        }
         this.dispatch(data);
       } catch {
         console.error('Failed to parse WebSocket message:', event.data);
