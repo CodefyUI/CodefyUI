@@ -537,3 +537,33 @@ def test_a_saved_folder_records_requires(project):
     GraphStore.current().write("demo", _payload())
     index = json.loads((project / "graphs" / "demo" / "index.json").read_text())
     assert index["requires"]["codefyui"] == gs.REQUIRES_CODEFYUI
+
+
+# ── Scale (the report's numbers come from .scratch; this keeps the shape) ──
+
+def test_a_thousand_nodes_save_only_what_changed(tmp_path):
+    import time
+
+    store = GraphStore(tmp_path / "graphs", tmp_path / "layout", new_graph_format="dir")
+    (tmp_path / "layout").mkdir()
+    nodes = [{"id": f"n{i}", "type": "Conv2d", "position": {"x": i, "y": 0},
+              "data": {"params": {"n": i, **({"code": LONG_CODE} if i % 20 == 0 else {})}}}
+             for i in range(1000)]
+    edges = [{"id": f"e{i}", "source": f"n{i}", "target": f"n{i + 1}", "sourceHandle": "o",
+              "targetHandle": "i", "type": "data"} for i in range(999)]
+    graph = {"name": "big", "description": "", "nodes": nodes, "edges": edges}
+    store.write("big", graph)
+    started = time.perf_counter()
+    again = store.write("big", graph)
+    elapsed = time.perf_counter() - started
+    assert again.written == [] and again.deleted == []
+    # Generous for a slow CI runner; measured about 0.06 s on a laptop.
+    assert elapsed < 5
+    graph["nodes"][500]["data"]["params"]["n"] = -1
+    one = store.write("big", graph)
+    assert [Path(p).name for p in one.written] == ["n500.json"]
+    graph["nodes"].insert(10, {"id": "added", "type": "X", "position": {"x": 0, "y": 0},
+                               "data": {"params": {}}})
+    added = store.write("big", graph)
+    assert sorted(Path(p).name for p in added.written) == ["added.json", "big.layout.json"]
+    assert store.read_logic("big")["nodes"][10]["id"] == "added"

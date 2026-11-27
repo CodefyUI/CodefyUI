@@ -305,6 +305,7 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 | `/api/git/commits/{sha}/files` | GET | open | 某個 commit 相對於其第一個 parent 變更的檔案：`[{path, orig_path, kind, xy, score}]`。 |
 | `/api/git/diff` | GET | open | 單一檔案的 patch：`?path=`、`?scope=worktree\|index\|commit`，以及 `?sha=`：`scope=commit` 必須提供它，另外兩種 scope 則會拒絕它（空的 `sha=` 視為沒有提供）。`?blobs=1` 會另外回傳兩側的完整內容。回傳 `{patch, binary, truncated, old_ref, new_ref, old_text, new_text, old_missing, new_missing}`；patch 超過 1 MiB 的部分會被截掉。 |
 | `/api/git/file` | GET | open | 單一檔案在 `?ref=`（`HEAD`、`index`、`worktree`，或 7 到 40 個十六進位字元的 commit id）的內容：`{text, binary, size, truncated}`。`text` 最多 2 MiB；超過時 `truncated` 為 true，`text` 可能為空。在 `worktree` 讀取被忽略的檔案會回傳 403 `ignored`。 |
+| `/api/git/graph` | GET | open | 已存的圖 `?name=`（檔名主幹）在 `?ref=`（`worktree`、`index`、`HEAD` 或 commit id）的 logic 文件，單一檔案與資料夾都適用，不需 checkout：`{name, ref, storage, logic, repairs}`。該 ref 沒有這張圖時回 404；同名的資料夾與單一檔案並存時回 409。 |
 | `/api/git/config` | GET | open | `{name, email, name_scope, email_scope}`；scope 為 `local`、`global`、`system`，未設定時為 `null`。 |
 | `/api/git/branches` | GET | open | `{current, detached, local[{name, sha, current, upstream, ahead, behind, gone, subject, committed_at}], remote[{name, remote, sha, subject, committed_at}]}`。 |
 | `/api/git/remotes` | GET | open | `[{name, fetch_url, push_url}]`。URL 中的密碼或 token 會顯示為 `***`。 |
