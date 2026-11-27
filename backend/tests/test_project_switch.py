@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import asyncio
 import os
 from pathlib import Path
@@ -27,6 +28,16 @@ from .test_projects_startup import isolated  # noqa: F401  (fixture)
 
 
 # ── fakes for app.state ───────────────────────────────────────────────────
+
+
+def system_dir() -> str:
+    """A system directory of this platform: a project may not be in it.
+    ``/etc`` is not even an absolute path on Windows, where the refusal
+    has its own branch (``%SystemRoot%``, Program Files, drive roots)."""
+    if sys.platform == "win32":
+        return os.environ.get("SystemRoot", r"C:\Windows")
+    return "/etc"
+
 
 
 class FakeRuns:
@@ -285,7 +296,7 @@ def test_check_project_path_accepts_a_project(two):
     (lambda root: str(_file(root / "a-file")), 400, "not_a_directory"),
     (lambda root: str(_dir(root / "plain")), 400, "not_a_project"),
     (lambda root: str(_bad_manifest(root / "broken")), 400, "invalid_manifest"),
-    (lambda root: "/etc", 403, "path_refused"),
+    (lambda root: system_dir(), 403, "path_refused"),
     (lambda root: str(Path.home()), 403, "path_refused"),
 ])
 def test_check_project_path_refusals(isolated, make, status, code):  # noqa: F811
@@ -318,9 +329,34 @@ def test_refused_locations(isolated, monkeypatch):  # noqa: F811
     assert refused_location(_user_data_root().resolve() / "x") is not None
     plugins = Path(settings.PLUGINS_USER_DIR).expanduser().resolve()
     assert refused_location(plugins / "some-plugin") is not None
-    assert refused_location(Path("/")) is not None
-    assert refused_location(Path("/usr/local/project")) is not None
+    if sys.platform == "win32":
+        drive = Path(Path.home().anchor)
+        assert refused_location(drive) is not None
+        windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        assert refused_location(windows / "System32" / "p") is not None
+        # In another letter case too: Windows paths are case-insensitive.
+        assert refused_location(Path(str(windows).upper()) / "p") is not None
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        assert refused_location(program_files / "p") is not None
+    else:
+        assert refused_location(Path("/")) is not None
+        assert refused_location(Path("/usr/local/project")) is not None
+        assert refused_location(Path("/etc/p")) is not None
     assert refused_location(isolated / "projects" / "fine") is None
     # A projects root a developer keeps inside the checkout is allowed.
     monkeypatch.setattr(settings, "PROJECTS_ROOT", install / ".scratch-projects")
     assert refused_location(install / ".scratch-projects" / "p") is None
+
+
+def test_the_windows_branch_refuses_system_trees_on_any_os(isolated, monkeypatch):  # noqa: F811
+    """``refused_location``'s Windows branch, run on every CI OS: the
+    system trees come from ``%SystemRoot%`` and friends, a stand-in here."""
+    windows = isolated / "Windows"
+    (windows / "System32").mkdir(parents=True)
+    monkeypatch.setattr(project_switch.sys, "platform", "win32")
+    monkeypatch.setattr(project_switch, "_windows_trees", lambda: [windows])
+    assert "system directory" in refused_location(windows / "System32" / "p")
+    assert refused_location(windows) is not None
+    assert refused_location(isolated / "projects" / "fine") is None
+    if (isolated / "WINDOWS").exists():  # a case-insensitive filesystem
+        assert refused_location(isolated / "WINDOWS" / "system32" / "p") is not None

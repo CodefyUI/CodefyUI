@@ -67,13 +67,26 @@ def load_dotenv_file(path: Path) -> int:
 # key. Hence: the keys a load applied are recorded and unloaded, and a run-
 # time load skips the blocked names below.
 
-#: Names a run-time load never applies (patterns, matched case-insensitively
-#: on Windows, where environment names are case-insensitive, and exactly
-#: elsewhere). They change how processes start, where code is imported from,
-#: how git and ssh run, or this server's own configuration.
+#: Names a run-time load never applies (patterns, matched without regard to
+#: case: ``https_proxy`` works as well as ``HTTPS_PROXY``, and Windows does
+#: not tell the two apart at all). They change how processes start, where
+#: code or packages come from, how git, ssh and shells run, where network
+#: traffic goes and which certificates it trusts, or this server's own
+#: configuration.
 BLOCKED_PATTERNS: tuple[str, ...] = (
-    "PATH", "PYTHON*", "LD_*", "DYLD_*", "GIT_*", "SSH_*", "CODEFYUI_*",
-    "HOME", "USERPROFILE", "SHELL", "COMSPEC",
+    # Process start-up, interpreters and the server itself.
+    "PATH", "PYTHON*", "LD_*", "DYLD_*", "CODEFYUI_*",
+    "NODE_OPTIONS", "NODE_PATH", "PERL5*", "RUBY*",
+    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+    # Package installs (a pack or plugin install fetches from these).
+    "PIP_*", "UV_*", "CONDA_*",
+    # git, ssh, shells and the programs they start.
+    "GIT_*", "SSH_*", "HOME", "USERPROFILE", "SHELL", "COMSPEC",
+    "BASH_ENV", "ENV", "IFS", "XDG_*",
+    "EDITOR", "VISUAL", "PAGER", "BROWSER",
+    "TMPDIR", "TEMP", "TMP",
+    # Where traffic goes and which certificates it trusts.
+    "*_PROXY", "SSL_CERT_*", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 )
 
 #: Names libraries read once, at import or first use, so a value applied by
@@ -82,12 +95,19 @@ BLOCKED_PATTERNS: tuple[str, ...] = (
 RESTART_ONLY_PATTERNS: tuple[str, ...] = (
     "CUDA_*", "HF_*", "HUGGINGFACE_*", "TRANSFORMERS_*", "TORCH_*", "PYTORCH_*",
     "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-    "TOKENIZERS_PARALLELISM", "XDG_CACHE_HOME",
+    "TOKENIZERS_PARALLELISM",
+)
+
+#: Names that choose a server to talk to. Allowed, but the consent prompt
+#: points them out: ``OPENAI_BASE_URL=https://someone-else`` sends the
+#: user's own key there with every request.
+ENDPOINT_PATTERNS: tuple[str, ...] = (
+    "*_URL", "*_BASE", "*_ENDPOINT", "*_HOST", "*_API_BASE",
 )
 
 
 def _matches(name: str, patterns: tuple[str, ...]) -> bool:
-    candidate = name.upper() if os.name == "nt" else name
+    candidate = name.upper()
     return any(fnmatch.fnmatchcase(candidate, pattern) for pattern in patterns)
 
 
@@ -97,6 +117,11 @@ def is_blocked(name: str) -> bool:
 
 def needs_restart(name: str) -> bool:
     return _matches(name, RESTART_ONLY_PATTERNS)
+
+
+def is_endpoint(name: str) -> bool:
+    """True when *name* looks like it picks a server (see ENDPOINT_PATTERNS)."""
+    return _matches(name, ENDPOINT_PATTERNS)
 
 
 def read_dotenv(path: Path) -> dict[str, str] | None:

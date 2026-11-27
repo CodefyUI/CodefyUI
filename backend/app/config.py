@@ -512,7 +512,9 @@ class Settings(BaseSettings):
         precedence as at start-up.
         """
         if project is not None:
-            project = Path(project).resolve()
+            from .core.fs_paths import canonical_path
+
+            project = canonical_path(project)
         self.PROJECT_DIR = project
         defaults = type(self).model_fields
         for name in PROJECT_DERIVED_ROOTS:

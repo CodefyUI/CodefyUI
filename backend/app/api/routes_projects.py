@@ -10,7 +10,11 @@
 ``DELETE /api/projects/recent`` drop an entry from the recent list
 ``GET  /api/projects/browse``   list sub-folders (loopback only)
 
-Every route needs the session token (``auth_guard``). A switch answers
+The writes (POST, DELETE) need the session token, like every write under
+``/api/`` (``auth_guard``); the reads (GET) follow the same policy as the
+other read routes and need none -- ``browse`` is limited to loopback
+instead. None of these routes is checked against ``X-CodefyUI-Project``:
+they are how a window changes or learns the open project. A switch answers
 with the new project; the editor then reloads the page. What makes a
 switch refuse is in ``core.project_switch``.
 """
@@ -30,7 +34,8 @@ from pydantic import BaseModel
 from ..config import settings
 from ..core import projects
 from ..core.auth import bound_to_loopback, is_loopback_peer
-from ..core.project import GraphAmbiguityError, init_project_repo, scaffold_project
+from ..core.fs_paths import canonical_path
+from ..core.project import GraphAmbiguityError, init_new_project_repo, scaffold_project
 from ..core.project_switch import (
     PathRefused,
     SwitchRefused,
@@ -192,7 +197,7 @@ def _parent_dir(raw: str | None) -> Path:
             raise _error(400, "invalid_path", f"{raw} is not an absolute path")
         if not parent.is_dir():
             raise _error(400, "not_found", f"{parent} is not an existing folder")
-    return parent.resolve()
+    return canonical_path(parent)
 
 
 async def _refuse_if_busy(request: Request) -> None:
@@ -223,10 +228,10 @@ def _new_project_target(name: str, parent_raw: str | None) -> Path:
 
 
 def _make_project(target: Path, name: str) -> bool:
-    """Scaffold, mark owned (this install made it), ``git init``."""
+    """Scaffold, mark owned (this install made it), git init and commit."""
     scaffold_project(target, name)
     projects.mark_owned(target)
-    return init_project_repo(target)
+    return init_new_project_repo(target)
 
 
 @router.post("/create")
@@ -235,8 +240,8 @@ async def create_project(body: CreateRequest, request: Request) -> dict[str, Any
     target = _new_project_target(name, body.parent)
     await _refuse_if_busy(request)
     git_ready = await asyncio.to_thread(_make_project, target, name)
-    project = await _switch(request, target.resolve())
-    return _opened(project, extra={"created": str(target.resolve()),
+    project = await _switch(request, canonical_path(target))
+    return _opened(project, extra={"created": str(canonical_path(target)),
                                    "git": git_ready})
 
 
@@ -304,10 +309,10 @@ async def import_flat_graphs(body: ImportRequest, request: Request
         result = await asyncio.to_thread(_do)
     except GraphAmbiguityError as exc:
         raise _error(409, "ambiguous_graph", str(exc)) from None
-    project = (await _switch(request, target.resolve()) if switching
+    project = (await _switch(request, canonical_path(target)) if switching
                else settings.PROJECT_DIR)
     return _opened(project, extra={
-        "created": str(target.resolve()) if created else None,
+        "created": str(canonical_path(target)) if created else None,
         "imported": result.graphs.adopted,
         "skipped": [{"file": f, "reason": r} for f, r in result.graphs.skipped],
         "copied": result.copied,
@@ -417,7 +422,7 @@ async def browse(request: Request, dir: str | None = Query(default=None),
             raise _error(400, "invalid_path", f"{dir} is not an absolute path")
 
     def _list() -> dict[str, Any]:
-        root = base.resolve()
+        root = canonical_path(base)
         if not root.is_dir():
             raise _error(400, "not_found", f"{root} is not an existing folder")
         entries = []

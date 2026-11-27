@@ -43,14 +43,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
-import tomllib
+from .project import tomllib  # 3.10: the tomli backport, as project.py chooses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..config import _user_data_root, settings
 from . import projects
+from .fs_paths import canonical_path, is_within, same_dir
 from .project import PROJECT_MANIFEST
 
 logger = logging.getLogger(__name__)
@@ -109,57 +111,60 @@ def _windows_trees() -> list[Path]:
 
 
 def _under(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+    return is_within(path, root)
 
 
 def _install_dir() -> Path:
     """The CodefyUI checkout or install (``backend/``'s parent)."""
-    return Path(__file__).resolve().parents[3]
+    return canonical_path(Path(__file__).parents[3])
 
 
 def refused_location(path: Path) -> str | None:
-    """Why *path* (resolved) may not hold a project, or None.
+    """Why *path* may not hold a project, or None.
 
     System directories, the install directory (except a projects root that
     a developer put inside it), the per-user data directory (it holds the
     session token, the lockfile and ``trust.json``) and the plugin
-    directories.
+    directories. *path* is put in its canonical spelling first, and
+    "inside" is also tested by identity (:func:`fs_paths.is_within`), so a
+    different letter case or a second name for a folder does not get past.
     """
-    home = Path.home().resolve()
-    if path == home:
+    path = canonical_path(path)
+    home = canonical_path(Path.home())
+    if path == home or (path.exists() and same_dir(path, home)):
         return "the home directory itself cannot be a project"
     if sys.platform == "win32":
         anchor = Path(path.anchor)
         if path == anchor:
             return f"{path} is a drive root"
         for tree in _windows_trees():
-            if _under(path, tree.resolve()):
+            if _under(path, tree):
                 return f"{path} is inside the system directory {tree}"
     else:
         # macOS resolves /etc, /var and /tmp into /private: test both forms.
         forms = {str(path)}
         if str(path).startswith("/private/"):
             forms.add(str(path)[len("/private"):])
+        folded = {form.casefold() for form in forms}
         for exact in _SYSTEM_EXACT_POSIX:
-            if exact in forms:
+            if exact.casefold() in folded or (
+                    path.exists() and os.path.isdir(exact) and same_dir(path, Path(exact))):
                 return f"{path} is a system directory"
         for tree in _SYSTEM_TREES_POSIX:
-            if any(form == tree or form.startswith(tree + "/") for form in forms):
+            low = tree.casefold()
+            if any(form == low or form.startswith(low + "/") for form in folded) or (
+                    os.path.isdir(tree) and _under(path, Path(tree))):
                 return f"{path} is inside the system directory {tree}"
     install = _install_dir()
-    projects_root = Path(settings.PROJECTS_ROOT).expanduser().resolve()
+    projects_root = canonical_path(Path(settings.PROJECTS_ROOT))
     if _under(path, install) and not _under(path, projects_root):
         return f"{path} is inside the CodefyUI install ({install})"
-    user_data = _user_data_root().resolve()
+    user_data = canonical_path(_user_data_root())
     if _under(path, user_data):
         return (f"{path} is inside CodefyUI's own data directory "
                 f"({user_data})")
     for name in ("PLUGINS_USER_DIR", "PLUGINS_BUILTIN_DIR", "CUSTOM_NODES_DIR"):
-        plugins = Path(getattr(settings, name)).expanduser().resolve()
+        plugins = canonical_path(Path(getattr(settings, name)))
         if _under(path, plugins):
             return f"{path} is inside the plugin directory {plugins}"
     return None
@@ -175,7 +180,8 @@ def check_project_path(raw: str | Path) -> Path:
         raise PathRefused(400, "invalid_path",
                           f"{text} is not an absolute path")
     try:
-        path = path.resolve(strict=True)
+        path.resolve(strict=True)
+        path = canonical_path(path)
     except (OSError, RuntimeError):
         raise PathRefused(400, "not_found", f"{text} does not exist") from None
     if not path.is_dir():

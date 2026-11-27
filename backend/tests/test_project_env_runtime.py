@@ -9,6 +9,7 @@ from app.core import dotenv
 from app.core.dotenv import (
     apply_project_env,
     is_blocked,
+    is_endpoint,
     needs_restart,
     read_dotenv,
     unload_project_env,
@@ -56,6 +57,16 @@ def test_switching_projects_replaces_the_first_projects_values():
     "PATH", "PYTHONPATH", "PYTHONSTARTUP", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
     "GIT_SSH_COMMAND", "SSH_AUTH_SOCK", "CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL",
     "HOME", "USERPROFILE", "SHELL", "COMSPEC",
+    # Review round 1: what a consented .env could still reach.
+    "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "CONDA_PKGS_DIRS",
+    "BASH_ENV", "ENV", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "NODE_OPTIONS",
+    "NODE_PATH", "PERL5OPT", "RUBYOPT", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS",
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "ALL_PROXY", "all_proxy",
+    "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "TMPDIR", "TEMP", "TMP",
+    "EDITOR", "VISUAL", "PAGER", "BROWSER", "IFS",
+    # Any letter case, on every platform.
+    "Path", "pythonpath", "ld_preload", "git_ssh_command", "Pip_Index_Url",
 ])
 def test_blocked_names_are_never_applied_at_run_time(name):
     os.environ.pop(name, None)
@@ -71,7 +82,10 @@ def test_the_start_up_project_keeps_todays_behaviour():
     assert report["applied"] == ["CODEFYUI_SOMETHING"]
 
 
-@pytest.mark.parametrize("name", ["OPENAI_API_KEY", "MY_SECRET", "WANDB_API_KEY", "PATHS_EXTRA"])
+@pytest.mark.parametrize("name", [
+    "OPENAI_API_KEY", "MY_SECRET", "WANDB_API_KEY", "PATHS_EXTRA",
+    "ENVIRONMENT", "MY_ENV", "TEMPERATURE", "PIPELINE_NAME", "UVICORN_WORKERS",
+])
 def test_ordinary_names_are_not_blocked(name):
     assert not is_blocked(name)
 
@@ -89,3 +103,16 @@ def test_read_dotenv_absent_is_none(tmp_path):
     assert read_dotenv(tmp_path / ".env") is None
     (tmp_path / ".env").write_text("A=1\n", encoding="utf-8")
     assert read_dotenv(tmp_path / ".env") == {"A": "1"}
+
+
+def test_xdg_cache_home_is_blocked_not_restart_only():
+    assert is_blocked("XDG_CACHE_HOME") and not needs_restart("XDG_CACHE_HOME")
+
+
+@pytest.mark.parametrize("name, endpoint", [
+    ("OPENAI_BASE_URL", True), ("ANTHROPIC_API_BASE", True), ("OLLAMA_HOST", True),
+    ("AZURE_OPENAI_ENDPOINT", True), ("MY_SERVICE_BASE", True), ("openai_base_url", True),
+    ("OPENAI_API_KEY", False), ("HOSTNAME_SUFFIX", False), ("MY_SECRET", False),
+])
+def test_names_that_choose_a_server_are_pointed_out(name, endpoint):
+    assert is_endpoint(name) is endpoint

@@ -17,7 +17,7 @@ from app.core.plugins import git_source
 from app.core.project import PROJECT_MANIFEST, scaffold_project
 from app.main import app
 
-from .test_project_switch import FakeRuns
+from .test_project_switch import FakeRuns, system_dir
 from .test_projects_startup import isolated  # noqa: F401  (fixture)
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
@@ -72,7 +72,7 @@ async def test_open_switches_and_lists_it_as_current(http, isolated):  # noqa: F
 @pytest.mark.parametrize("make, status, code", [
     (lambda root: str(root / "nope"), 400, "not_found"),
     (lambda root: str(_plain(root / "plain")), 400, "not_a_project"),
-    (lambda root: "/etc", 403, "path_refused"),
+    (lambda root: system_dir(), 403, "path_refused"),
 ])
 async def test_open_refusals(http, isolated, make, status, code):  # noqa: F811
     resp = await http.post("/api/projects/open", json={"path": make(isolated)})

@@ -30,6 +30,8 @@ from app.core.run_store import (
     RunStore,
     run_project_refusal,
 )
+from types import SimpleNamespace
+
 from app.main import app
 
 GRAPH = {"nodes": [], "edges": []}
@@ -286,3 +288,45 @@ async def test_invoking_a_version_of_another_project_is_refused(
     app_db._conn.execute("UPDATE app_versions SET project_dir = NULL")
     _open(monkeypatch, tmp_path / "beta")
     assert (await invoke()).status_code == 200
+
+
+async def test_resuming_a_study_of_another_project_is_refused(
+        client, tmp_path, monkeypatch):
+    """A study's new attempts would run in the open project, beside
+    children whose files are in another one (review round 1, item 7). The
+    check is in ``StudyCoordinator.resume``, so the study route, the plugin
+    job route and ``resume_policy: auto`` at start-up all meet it."""
+    from app.core.study_coordinator import StudyCoordinator, StudyProjectNotOpen
+    from app.core.study_store import StudyStore
+
+    http, store = client
+    _open(monkeypatch, tmp_path / "alpha")
+    # A child row is all the check reads; the study row itself is not needed.
+    await store.db.run(lambda conn: conn.execute("PRAGMA foreign_keys = OFF"))
+    await store.create_run(graph_snapshot=GRAPH, provenance=RunProvenance(),
+                           status=STATUS_SUCCEEDED, study_id="st-1")
+    await store.db.run(lambda conn: conn.execute("PRAGMA foreign_keys = ON"))
+    coordinator = StudyCoordinator(app.state.run_service, StudyStore(store.db))
+    reached: list[str] = []
+
+    async def get_study(study_id):
+        reached.append(study_id)
+        return SimpleNamespace(id=study_id, revision=1)
+
+    monkeypatch.setattr(coordinator.store, "get_study", get_study)
+    monkeypatch.setattr(app.state, "study_coordinator", coordinator, raising=False)
+
+    _open(monkeypatch, tmp_path / "beta")
+    resp = await http.post("/api/studies/st-1/resume")
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "study_project_not_open"
+    assert "'alpha'" in detail["message"]
+    assert detail["details"]["project_dir"] == str((tmp_path / "alpha").resolve())
+    with pytest.raises(StudyProjectNotOpen):
+        await coordinator.resume("st-1")
+
+    # In its own project the check passes and the resume goes on (it then
+    # stops on the stand-in study, which is not this test's business).
+    _open(monkeypatch, tmp_path / "alpha")
+    await coordinator._check_resume_project("st-1")

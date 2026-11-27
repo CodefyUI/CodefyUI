@@ -62,6 +62,7 @@ from uuid import uuid4
 
 from ..config import settings
 from .data_paths import data_root as current_data_root
+from .fs_paths import canonical_path
 from .db import Database, transaction, utc_now_iso
 from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_S3, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
@@ -166,6 +167,13 @@ SELECT series.name AS name,
          ORDER BY step DESC, id DESC LIMIT 1) AS value
   FROM series WHERE series.name IS NOT NULL
 """
+
+
+def _root_key() -> str:
+    """The open data root as ``exec_runs.data_root`` stores it: one
+    spelling per folder (``fs_paths.canonical_path``), so a project opened
+    under another letter case still finds its own runs."""
+    return str(canonical_path(current_data_root()))
 
 
 def last_metric_values(
@@ -499,7 +507,7 @@ def run_project_refusal(record: RunRecord) -> dict[str, Any] | None:
     """
     if record.data_root is None:
         return None
-    if record.data_root == str(current_data_root()):
+    if record.data_root == _root_key():
         return None
     if record.project_dir:
         where = (f"project '{Path(record.project_dir).name}' "
@@ -817,7 +825,7 @@ class RunStore:
             study_attempt_id=study_attempt_id,
             worker_id=worker_id,
             devices=None if devices is None else list(devices),
-            data_root=str(current_data_root()),
+            data_root=_root_key(),
             project_dir=(None if settings.PROJECT_DIR is None
                          else str(settings.PROJECT_DIR)),
         )
@@ -853,6 +861,27 @@ class RunStore:
             return conn.execute(
                 f"SELECT {_RUN_COLUMNS} FROM exec_runs WHERE id = ?",
                 (run_id,),
+            ).fetchone()
+
+        row = await self.db.run(_select)
+        return None if row is None else RunRecord.from_row(row)
+
+    async def study_run_in_other_root(self, study_id: str) -> RunRecord | None:
+        """A child run of *study_id* made under a data root other than the
+        open one, or None (phase 4A).
+
+        A study resumed while another project is open would run its new
+        attempts there, beside children whose files are in the first one;
+        ``POST /api/studies/{id}/resume`` refuses on this. A run from before
+        MIGRATION_019 records no root and counts as the open one.
+        """
+        root = _root_key()
+
+        def _select(conn: sqlite3.Connection) -> sqlite3.Row | None:
+            return conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM exec_runs WHERE study_id = ? "
+                "AND data_root IS NOT NULL AND data_root != ? "
+                "ORDER BY created_at LIMIT 1", (study_id, root),
             ).fetchone()
 
         row = await self.db.run(_select)
@@ -993,7 +1022,7 @@ class RunStore:
         if where is None or not this_project:
             return where, params
         clause = "(data_root IS NULL OR data_root = ?)"
-        params.append(str(current_data_root()))
+        params.append(_root_key())
         if where:
             return f"{where} AND {clause}", params
         return f" WHERE {clause}", params
@@ -2150,7 +2179,7 @@ class RunStore:
             "AND (data_root IS NULL OR data_root = ?) AND rowid NOT IN "
             "(SELECT rowid FROM exec_runs ORDER BY created_at DESC, rowid DESC LIMIT ?)"
         )
-        params = (*active, str(current_data_root()), keep_last)
+        params = (*active, _root_key(), keep_last)
 
         def _prune(
             conn: sqlite3.Connection,

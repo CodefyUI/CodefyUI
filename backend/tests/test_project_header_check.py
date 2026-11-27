@@ -28,15 +28,38 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 #: Writes the check leaves alone on purpose: switching projects itself.
 EXEMPT_PREFIXES = ("/api/projects",)
 _PARAM = re.compile(r"\{[^}]+\}")
+#: ``{name:path}`` in a route is ``{name}`` in the schema.
+_CONVERTER = re.compile(r"\{(\w+):[^}]+\}")
+
+
+def _walk(routes, found: set[tuple[str, str]]) -> None:
+    for route in routes:
+        if isinstance(route, APIRoute):
+            if route.path.startswith("/api/"):
+                path = _CONVERTER.sub(r"{\1}", route.path)
+                found.update((m, path) for m in route.methods & MUTATING)
+        nested = getattr(route, "routes", None)
+        if nested:
+            _walk(nested, found)
 
 
 def write_routes() -> list[tuple[str, str]]:
-    found = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
-            continue
-        for method in route.methods & MUTATING:
-            found.add((method, route.path))
+    """Every mutating ``/api/`` route the app serves.
+
+    Two sources, so neither can go quietly empty: ``app.openapi()``, which
+    flattens included routers on every FastAPI version, and a walk of the
+    router tree. FastAPI 0.139 stopped copying an included router's routes
+    into ``app.routes``; with that version (what CI resolves under the
+    ``<0.140`` pin) a plain ``app.routes`` loop found one route, the one
+    ``main.py`` declares on ``app`` itself, and the coverage test below
+    checked only that one. Routes left out of the schema are GETs.
+    """
+    found: set[tuple[str, str]] = set()
+    _walk(app.routes, found)
+    for path, item in app.openapi().get("paths", {}).items():
+        if path.startswith("/api/"):
+            found.update((method.upper(), path) for method in item
+                         if method.upper() in MUTATING)
     return sorted(found)
 
 

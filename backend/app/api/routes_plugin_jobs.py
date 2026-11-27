@@ -40,6 +40,7 @@ from ..core.plugin_jobs import (
     require_enabled_plugin,
 )
 from ..core.run_service import RunServiceUnavailable, RunSubmitError
+from ..core.study_coordinator import StudyProjectNotOpen
 from ..core.study_store import (
     STUDY_STATUSES,
     IdempotencyConflict,
@@ -278,6 +279,8 @@ async def resume_job(plugin_id: str, job_id: str, request: Request,
                     else body.budget.stored()),
             expected_revision=(None if body is None
                                else body.expected_revision))
+    except StudyProjectNotOpen as exc:
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except StudyStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _job_payload(plugin_id, await _study_detail(coordinator, study))

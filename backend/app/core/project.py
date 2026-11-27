@@ -218,6 +218,72 @@ def init_project_repo(target: Path) -> bool:
     return True
 
 
+#: The branch a new project starts on when git has no ``init.defaultBranch``.
+NEW_PROJECT_BRANCH = "main"
+#: The identity of a new project's first commit when git has none set,
+#: passed with ``-c`` for that one commit and never written to a config.
+NEW_PROJECT_IDENTITY = ("CodefyUI", "codefyui@localhost")
+NEW_PROJECT_COMMIT_MESSAGE = "Initial project"
+
+
+def _git(target: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=target, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=60,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def _git_config(target: Path, key: str) -> str:
+    try:
+        out = _git(target, "config", "--get", key)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def init_new_project_repo(target: Path) -> bool:
+    """Make the project the server just scaffolded a repository with one
+    commit (phase 4A). False when git is not installed.
+
+    The branch is git's ``init.defaultBranch`` when the user set one, else
+    ``main``. The commit (``Initial project``) holds what is in *target* --
+    the starter files, the folder being new -- so Source Control starts
+    clean and the first graph saved is the first change it shows. Without a
+    git identity that one commit is made as ``CodefyUI
+    <codefyui@localhost>``, given on the command line and written nowhere.
+    A commit git refuses (a signing key that needs a passphrase, a hook)
+    leaves the repository without one; that is reported in the log only.
+
+    ``cdui project init`` keeps :func:`init_project_repo` (no commit).
+    """
+    import logging
+    import shutil
+
+    if not shutil.which("git"):
+        return False
+    if (target / ".git").exists():
+        return True
+    branch = _git_config(target, "init.defaultBranch") or NEW_PROJECT_BRANCH
+    try:
+        made = _git(target, "init", "-b", branch)
+        if made.returncode != 0:  # git before 2.28 has no -b
+            _git(target, "init")
+            _git(target, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
+        identity: list[str] = []
+        if not (_git_config(target, "user.name") and _git_config(target, "user.email")):
+            name, email = NEW_PROJECT_IDENTITY
+            identity = ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+        _git(target, "add", "-A")
+        done = _git(target, *identity, "commit", "-q", "-m", NEW_PROJECT_COMMIT_MESSAGE)
+        if done.returncode != 0:
+            logging.getLogger(__name__).warning(
+                "The first commit in %s was not made: %s", target,
+                (done.stderr or done.stdout).strip()[:300])
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.getLogger(__name__).warning("git init in %s failed: %s", target, exc)
+    return True
+
+
 class AdoptResult(NamedTuple):
     adopted: list[str]
     skipped: list[tuple[str, str]]

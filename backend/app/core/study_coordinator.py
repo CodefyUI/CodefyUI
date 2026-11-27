@@ -86,6 +86,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Sequence
 from uuid import uuid4
 
@@ -146,6 +147,32 @@ from .study_store import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+STUDY_PROJECT_NOT_OPEN = "study_project_not_open"
+
+
+class StudyProjectNotOpen(StudyStateError):
+    """Resuming a study whose runs were made in a project that is not open.
+    -> 409 ``study_project_not_open``, with :meth:`detail` as the body."""
+
+    def __init__(self, study_id: str, project_dir: str | None,
+                 data_root: str | None) -> None:
+        self.study_id = study_id
+        self.project_dir = project_dir
+        self.data_root = data_root
+        if project_dir:
+            where = f"project '{Path(project_dir).name}' ({project_dir})"
+        else:
+            where = f"the data folder {data_root} (no project)"
+        super().__init__(f"study {study_id} ran in {where}, which is not "
+                         "open; open it to resume this study")
+
+    def detail(self) -> dict[str, Any]:
+        return {"code": STUDY_PROJECT_NOT_OPEN, "message": str(self),
+                "details": {"study_id": self.study_id,
+                            "project_dir": self.project_dir,
+                            "data_root": self.data_root}}
 
 #: How long ``shutdown`` waits for in-flight ticks before cancelling them.
 _SHUTDOWN_TICK_GRACE_S = 5.0
@@ -719,11 +746,28 @@ class StudyCoordinator:
                     and study.revision != expected_revision:
                 raise RevisionConflict(study_id, expected_revision,
                                        study.revision)
+            await self._check_resume_project(study_id)
             await self._reconcile(study_id)
             await self._check_resume_budget(study, budget or study.budget)
             await self.store.resume(study_id, reason=reason, budget=budget)
             return await self._tick_locked(study_id) or (
                 await self.store.get_study(study_id))  # type: ignore[return-value]
+
+    async def _check_resume_project(self, study_id: str) -> None:
+        """Refuse a resume while another project is open (phase 4A).
+
+        The study's new attempts would run under the open project's data
+        root, beside children whose files are in the one it ran in. Also
+        what keeps ``resume_policy: auto`` from resuming it at start-up in
+        the wrong project: :meth:`_auto_resume` leaves it interrupted.
+        """
+        lookup = getattr(self.service.store, "study_run_in_other_root", None)
+        if lookup is None:
+            return
+        foreign = await lookup(study_id)
+        if foreign is not None:
+            raise StudyProjectNotOpen(study_id, foreign.project_dir,
+                                      foreign.data_root)
 
     async def _check_resume_budget(self, study: StudyRecord,
                                    budget: dict[str, Any]) -> None:

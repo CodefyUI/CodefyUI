@@ -25,6 +25,7 @@ from pathlib import Path
 from .plugins import git_source
 from .plugins.errors import GitError
 from .plugins.sources import parse_git_url
+from .fs_paths import canonical_path
 from .project import PROJECT_MANIFEST
 
 
@@ -119,7 +120,7 @@ def clone_project(url: str, parent: Path, *, name_check=None) -> CloneResult:
         if dest.exists() and not dest.is_symlink():
             git_source._remove_tree(dest)
         raise
-    return CloneResult(path=dest.resolve(), head=head, uses_lfs=uses_lfs(dest))
+    return CloneResult(path=canonical_path(dest), head=head, uses_lfs=uses_lfs(dest))
 
 
 __all__ = ["CloneRefused", "CloneResult", "GitError", "clone_project",

@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings, _user_data_root, settings
-from .dotenv import apply_project_env, is_blocked, read_dotenv, unload_project_env
+from .fs_paths import canonical_path
+from .dotenv import apply_project_env, is_blocked, is_endpoint, read_dotenv, unload_project_env
 from .project import PROJECT_MANIFEST, _atomic_write, collect_graph_files, read_project_manifest
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def _now() -> str:
 
 
 def _key(path: Path | str) -> str:
-    return str(Path(path).expanduser().resolve())
+    return str(canonical_path(path))
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -218,11 +219,14 @@ class EnvStatus:
     applied: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
     restart: list[str] = field(default_factory=list)
+    #: Loadable names that choose a server (``dotenv.ENDPOINT_PATTERNS``),
+    #: pointed out in the consent prompt.
+    endpoints: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {"state": self.state, "names": self.names, "blocked": self.blocked,
                 "applied": self.applied, "kept": self.kept,
-                "restart_recommended": self.restart}
+                "restart_recommended": self.restart, "endpoints": self.endpoints}
 
 
 #: The open project's .env status, for ``GET /api/projects``.
@@ -248,7 +252,9 @@ def load_project_env(project: Path, *, explicit: bool = False) -> EnvStatus:
     names = sorted(values)
     blocked = sorted(name for name in names if is_blocked(name))
     state = "trusted" if explicit else env_trust_state(project)
-    status = EnvStatus(state=state, names=names, blocked=[] if explicit else blocked)
+    status = EnvStatus(state=state, names=names, blocked=[] if explicit else blocked,
+                       endpoints=[name for name in names
+                                  if is_endpoint(name) and name not in blocked])
     if state == "trusted":
         report = apply_project_env(values, enforce_blocklist=not explicit)
         status.applied, status.kept, status.restart = report["applied"], report["kept"], report["restart"]
@@ -268,7 +274,7 @@ def activate(project: Path | None, *, explicit: bool = False) -> EnvStatus:
     """
     global current_env, _activated
     unload_project_env()
-    resolved = Path(project).expanduser().resolve() if project is not None else None
+    resolved = canonical_path(project) if project is not None else None
     settings.derive_project_roots(resolved)
     _activated = resolved
     if resolved is None:
@@ -339,10 +345,10 @@ def _decide() -> StartupDecision:
         warnings.append(f"{target} exists but is not a CodefyUI project; leaving it "
                         "alone and starting without a project")
         return StartupDecision("flat", None, warnings=warnings)
-    from .project import init_project_repo, scaffold_project
+    from .project import init_new_project_repo, scaffold_project
 
     scaffold_project(target)
-    if not init_project_repo(target):
+    if not init_new_project_repo(target):
         warnings.append(f"git is not installed; {target} was created without a repository")
     mark_owned(target)
     return StartupDecision("default", target, created=True, warnings=warnings)
