@@ -802,13 +802,13 @@ class _StubInstaller:
 
 
 async def test_the_catalog_reports_the_install_that_is_running(
-        anon_client, monkeypatch):
+        anon_client, app_state):
     """How a panel opened mid-install -- a second tab, a reload -- finds the
     job it should be following, and which row is busy."""
     job = {"job_id": "j1", "plugin_id": "stats", "kind": "install",
            "status": "running", "current_step": "deps"}
-    monkeypatch.setattr(app.state, "plugin_service",
-                        _StubInstaller(job), raising=False)
+    app_state("plugin_service",
+              _StubInstaller(job))
 
     body = (await anon_client.get("/api/plugins/catalog")).json()
     by_id = {entry["id"]: entry for entry in body["entries"]}
@@ -821,11 +821,11 @@ async def test_the_catalog_reports_the_install_that_is_running(
 
 
 async def test_the_catalog_is_readable_with_no_installer_behind_it(
-        anon_client, monkeypatch):
+        anon_client, monkeypatch, app_state):
     """A read, not an install: a server whose installer never started can
     still say what is installed. Nothing running answers the same way."""
-    monkeypatch.setattr(app.state, "plugin_service",
-                        _StubInstaller(None), raising=False)
+    app_state("plugin_service",
+              _StubInstaller(None))
     assert (await anon_client.get("/api/plugins/catalog")).json()[
         "active_job"] is None
 

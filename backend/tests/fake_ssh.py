@@ -129,11 +129,20 @@ def _copy_stdin(child: subprocess.Popen) -> None:
             pass
 
 
+def _append(path: str, text: str) -> None:
+    """One ``write`` per line, so lines of fakes running side by side do
+    not interleave (the reader still skips a line caught half written)."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def main() -> int:
     argv = sys.argv[1:]
     log = os.environ["FAKE_SSH_LOG"]
-    with open(log, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(argv) + "\n")
+    _append(log, json.dumps(argv) + "\n")
     mode = os.environ.get("FAKE_SSH_MODE", "hold")
     if mode == "fail":
         print("alice@gpu-box: Permission denied (publickey).",
@@ -211,8 +220,7 @@ def main() -> int:
                          daemon=True).start()
         return child.wait()
     token = sys.stdin.readline().strip()
-    with open(log + ".stdin", "a", encoding="utf-8") as handle:
-        handle.write(token + "\n")
+    _append(log + ".stdin", token + "\n")
     if mode == "nocdui":
         print("codefyui-ssh: agent pid 4343", file=sys.stderr, flush=True)
         print("sh: 1: /home/alice/nowhere/cdui: not found", file=sys.stderr,
@@ -230,8 +238,7 @@ def main() -> int:
               "control plane refused the token (HTTP 401); token from the "
               "stored credential", file=sys.stderr, flush=True)
     for line in sys.stdin:
-        with open(log + ".stdin", "a", encoding="utf-8") as handle:
-            handle.write(line)
+        _append(log + ".stdin", line)
     return 0
 
 
