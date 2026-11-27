@@ -162,6 +162,12 @@
   white-space: nowrap;
 }
 
+/* A run of another project, in the "All projects" view (phase 4A). */
+.otherProject {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
 .mono {
   font-family: monospace;
   color: var(--text-muted);

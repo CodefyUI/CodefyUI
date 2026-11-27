@@ -15,6 +15,43 @@
  */
 
 const TOKEN_HEADER = 'X-CodefyUI-Token';
+/**
+ * The project this window loaded (phase 4A, R3): its `project_id` from
+ * `GET /api/projects`, sent with every write. The server answers 409
+ * `project_changed` when another window has switched the server to a
+ * different project since, so a save or a run from this stale window cannot
+ * land in the project that is open now.
+ */
+const PROJECT_HEADER = 'X-CodefyUI-Project';
+/** Raised on `window` when the server says this window's project is gone. */
+export const PROJECT_CHANGED_EVENT = 'codefyui:project-changed';
+
+let currentProjectId: string | null = null;
+
+/** Set once `GET /api/projects` has answered; null sends no header. */
+export function setProjectId(projectId: string | null): void {
+  currentProjectId = projectId;
+}
+
+export function getProjectId(): string | null {
+  return currentProjectId;
+}
+
+/** Tell the page a request was refused because the project changed. */
+export function announceProjectChanged(projectId: string | null = null): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(PROJECT_CHANGED_EVENT, { detail: { projectId } }));
+}
+
+function watchForProjectChange(res: Response): void {
+  if (res.status !== 409 || currentProjectId === null) return;
+  // A clone, so the caller still reads the body it expects.
+  void res.clone().json().then((body) => {
+    if (body?.detail?.code === 'project_changed') {
+      announceProjectChanged(body.detail?.details?.current ?? null);
+    }
+  }).catch(() => { /* not JSON: not ours */ });
+}
 const BOOTSTRAP_URL = '/api/auth/bootstrap';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -136,6 +173,7 @@ export async function apiFetch(
   const headers = init.headers ?? request?.headers;
   const token = await getSessionToken();
   const res = await fetch(target, { ...init, headers: withToken(headers, token) });
+  watchForProjectChange(res);
   if (res.status !== 403) return res;
 
   // Dropped on every 403, even one that cannot be replayed below: the token
@@ -200,10 +238,11 @@ function sameOriginTarget(url: unknown, request: Request | null, method: string)
   return request ?? target;
 }
 
-/** *headers* plus the session token. */
+/** *headers* plus the session token (and the project this window is on). */
 function withToken(headers: HeadersInit | undefined, token: string): Headers {
   const merged = new Headers(headers);
   merged.set(TOKEN_HEADER, token);
+  if (currentProjectId !== null) merged.set(PROJECT_HEADER, currentProjectId);
   return merged;
 }
 
@@ -229,5 +268,8 @@ export async function wsUrlWithToken(path: string): Promise<string> {
   const base = `${protocol}//${window.location.host}${path}`;
   const u = new URL(base);
   u.searchParams.set('token', token);
+  // The execution socket checks it before every run (the WebSocket
+  // handshake cannot carry the header).
+  if (currentProjectId !== null) u.searchParams.set('project', currentProjectId);
   return u.toString();
 }

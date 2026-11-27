@@ -2508,6 +2508,8 @@ function stripNodeSecretsForPersist(
 // downgrade still finds the last blob localStorage held.
 
 const STORAGE_KEY_BASE = 'codefyui-tabs';
+/** Set once the flat scope's tabs were copied into a project (R2). */
+const FLAT_TABS_CARRIED_KEY = 'codefyui-flat-tabs-carried';
 
 // Persistence key is scoped to the active project so `--project B` never
 // resurrects project A's tabs (ID10). Non-project mode keeps the bare base key
@@ -5873,6 +5875,12 @@ export type HydrationOutcome =
   | 'seeded'
   /** The storage scope moved while reading; the result was thrown away. */
   | 'superseded'
+  /**
+   * The first project opened after projects arrived had no tabs of its own;
+   * the tabs of the pre-project (flat) scope were COPIED into it (phase 4A,
+   * R2). The flat scope keeps them.
+   */
+  | 'carried'
   /** IndexedDB is present but unusable; localStorage stays authoritative. */
   | 'failed';
 
@@ -5935,6 +5943,10 @@ export async function hydrateTabsFromPersistence(): Promise<HydrationOutcome> {
     // store IS the pre-#125 state (or a fresh default), so writing it across
     // is the migration — one copy, on the first load after upgrading.
     const hadLegacy = localStorage.getItem(scope) !== null;
+    if (!hadLegacy && scope !== STORAGE_KEY_BASE) {
+      const carried = await carryFlatTabs(scope);
+      if (carried !== null) return carried;
+    }
     const state = useTabStore.getState();
     await writeSnapshot(scope, persistedTabsFor(state.tabs), state.activeTabId);
     // The legacy blob is deliberately left where it is: an in-place downgrade
@@ -5950,6 +5962,46 @@ export async function hydrateTabsFromPersistence(): Promise<HydrationOutcome> {
   } finally {
     _hydrationsInFlight -= 1;
   }
+}
+
+/**
+ * Copy the flat scope's tabs into the first project scope that has none
+ * (phase 4A, R2).
+ *
+ * Before projects, every tab lived in the flat scope (`codefyui-tabs`). The
+ * first start after upgrading can open the default project instead, whose
+ * scope is empty: without this, the unsaved work of the last session would
+ * seem gone (it is still in the flat scope, but nothing shows it). Copied,
+ * never moved, and only once per browser (a marker in localStorage), so a
+ * project created later starts with its own empty tabs.
+ */
+async function carryFlatTabs(scope: string): Promise<HydrationOutcome | null> {
+  try {
+    if (localStorage.getItem(FLAT_TABS_CARRIED_KEY) !== null) return null;
+  } catch {
+    return null;
+  }
+  const flat = await readSnapshot(STORAGE_KEY_BASE);
+  if (scope !== _storageKey()) return 'superseded';
+  const markDone = () => {
+    try {
+      localStorage.setItem(FLAT_TABS_CARRIED_KEY, scope);
+    } catch {
+      /* asked again next load; harmless, the scope is no longer empty */
+    }
+  };
+  const worth = flat?.tabs.filter((rec) => rec.nodes.length > 0 || rec.currentGraphFile) ?? [];
+  if (!flat || worth.length === 0) {
+    markDone();
+    return null;
+  }
+  const tabs = flat.tabs.map((rec) => tabFromPersisted(rec, createTabState(rec.id, rec.name)));
+  useTabStore.setState({ tabs, activeTabId: flat.activeTabId });
+  await writeSnapshot(scope, persistedTabsFor(tabs), flat.activeTabId);
+  markDone();
+  useToastStore.getState().addToast(
+    useI18n.getState().t('projects.tabsCarried', { count: worth.length }), 'info');
+  return 'carried';
 }
 
 // The most recent hydration, so callers (and tests) can wait for the tab tree

@@ -1,4 +1,4 @@
-import { ProjectBadge } from './ProjectBadge';
+import { ProjectChip } from '../Projects/ProjectChip';
 import { ToolbarGlobalActions } from './ToolbarGlobalActions';
 import styles from './Toolbar.module.css';
 
@@ -11,8 +11,8 @@ import styles from './Toolbar.module.css';
  * could: Run, Save, Export, Layout and the status light all name a graph.
  *
  * So what is left is what belongs to the app rather than to a graph: the
- * logo, the project badge (it names the directory the server was started in,
- * which is true with or without a tab) and the global actions -- Settings,
+ * logo, the project chip (it names the open project and switches it, which
+ * means the same with or without a tab) and the global actions -- Settings,
  * Help, font size and language. Language especially: the welcome screen is
  * the first thing a new install shows, and a user who cannot read it needs
  * that button more here than anywhere else in the app.
@@ -24,7 +24,7 @@ export function WelcomeToolbar() {
         <span className={styles.logoBrand}>Codefy</span>
         <span className={styles.logoSuffix}>UI</span>
       </div>
-      <ProjectBadge />
+      <ProjectChip />
       {/* No plugin buttons: a plugin's toolbar button acts on the graph in
           front of the user, and there is none. See the prop's own note. */}
       <ToolbarGlobalActions plugins={false} />

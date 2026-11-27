@@ -56,4 +56,5 @@ export const DATA = {
   files: path.join(E2E_DIR, 'files'),
   media: path.join(E2E_DIR, 'media'),
   logs: path.join(E2E_DIR, 'logs'),
+  projects: path.join(E2E_DIR, 'projects'),
 };

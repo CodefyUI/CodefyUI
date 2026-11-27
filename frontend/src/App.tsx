@@ -27,6 +27,7 @@ import { useWorkerStore } from './store/workerStore';
 import { useStudyStore } from './store/studyStore';
 import { GuideTour } from './components/Guide/GuideTour';
 import { DialogContainer } from './components/shared/DialogContainer';
+import { ProjectNotices } from './components/Projects/ProjectNotices';
 import { lazyRetry } from './components/shared/lazyRetry';
 import { PluginHost } from './plugins/PluginHost';
 import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
@@ -199,6 +200,9 @@ function App() {
         if (cancelled) return;
         useProjectStore.getState().setProject(h.project);
         useTabStore.getState().rehydrateForProject(h.project);
+        // The project id every write carries from now on (R3), the recent
+        // projects and the .env status.
+        void useProjectStore.getState().loadOverview();
       })
       .catch(() => {
         /* health unreachable -- stay in non-project defaults */
@@ -248,6 +252,7 @@ function App() {
       <StudiesPanelSlot />
       <GuideTour />
       <DialogContainer />
+      <ProjectNotices />
       <PluginHost />
       {/* Over everything but a server restart: a page that does not edit the
           workspace (#554) must not be edited, toasts and modals included. */}

@@ -184,6 +184,13 @@ export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
 export interface RunSummary {
   id: string;
   name: string | null;
+  /**
+   * The data root and the project the run was created in (phase 4A); both
+   * null for a run from before projects. A run of another project lists,
+   * but its files answer 409 `run_project_not_open` until it is opened.
+   */
+  data_root?: string | null;
+  project_dir?: string | null;
   status: RunStatus;
   error: string | null;
   /** Submit options verbatim — `device`, `seed`, `record_outputs`, … */
@@ -360,9 +367,18 @@ export async function getRun(runId: string): Promise<RunInfo | null> {
   return res.json();
 }
 
+/** Which runs the list shows: the open project's, or every project's. */
+export type RunScope = 'project' | 'all';
+
 /** Newest-first page of runs, optionally narrowed to a set of statuses. */
 export async function listRuns(
-  opts: { status?: readonly RunStatus[]; limit?: number; offset?: number } = {},
+  opts: {
+    status?: readonly RunStatus[];
+    limit?: number;
+    offset?: number;
+    /** `project` (the server's default): the open project's runs only. */
+    scope?: RunScope;
+  } = {},
 ): Promise<RunListPage> {
   const params = new URLSearchParams();
   // `?status=` repeats rather than joining with commas — that is the shape
@@ -370,6 +386,7 @@ export async function listRuns(
   for (const status of opts.status ?? []) params.append('status', status);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  if (opts.scope !== undefined) params.set('scope', opts.scope);
   const query = params.toString();
   const res = await apiFetch(`${BASE_URL}/runs${query ? `?${query}` : ''}`);
   if (!res.ok) throw new Error(`Failed to list runs: ${res.statusText}`);

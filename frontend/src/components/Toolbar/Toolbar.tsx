@@ -24,7 +24,7 @@ import { SaveIcon } from '../shared/Icons';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { ToolbarGlobalActions } from './ToolbarGlobalActions';
-import { ProjectBadge } from './ProjectBadge';
+import { ProjectChip } from '../Projects/ProjectChip';
 import { lazyRetry } from '../shared/lazyRetry';
 import styles from './Toolbar.module.css';
 
@@ -865,7 +865,7 @@ export function Toolbar() {
         <span className={styles.logoBrand}>Codefy</span>
         <span className={styles.logoSuffix}>UI</span>
       </div>
-      <ProjectBadge />
+      <ProjectChip />
 
       {/* Run / Stop */}
       <div className={styles.cluster}>

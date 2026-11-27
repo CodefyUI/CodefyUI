@@ -37,9 +37,11 @@ Object.assign(env, settings, { PYTHONUNBUFFERED: '1', MPLBACKEND: 'Agg' });
 for (const name of [
   'CODEFYUI_USER_DATA_DIR', 'CODEFYUI_GRAPHS_DIR', 'CODEFYUI_USER_PRESETS_DIR',
   'CODEFYUI_MODELS_DIR', 'CODEFYUI_IMAGES_DIR', 'CODEFYUI_DATA_FILES_DIR',
-  'CODEFYUI_MEDIA_DIR', 'CODEFYUI_LOG_DIR',
+  'CODEFYUI_MEDIA_DIR', 'CODEFYUI_LOG_DIR', 'CODEFYUI_PROJECTS_ROOT',
 ]) {
-  mkdirSync(settings[name], { recursive: true });
+  // A spec that runs a server of its own (projects.spec.ts) leaves the data
+  // folders unset, so they come from the project it opens.
+  if (settings[name]) mkdirSync(settings[name], { recursive: true });
 }
 mkdirSync(path.dirname(settings.CODEFYUI_DB_PATH), { recursive: true });
 
