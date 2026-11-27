@@ -1,7 +1,7 @@
 {
   "name": "Forward diffusion on a digit",
   "description": "One step of noise; the 7 still shows",
-  "gallery": { "section": "concepts", "order": 5 },
+  "gallery": { "main_tag": "concepts", "tags": ["diffusion", "noise"], "order": 80 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "x0",      "type": "ImageReader", "position": { "x": 0,   "y": -230 }, "data": { "params": { "path": "test_digit.png", "mode": "L", "resize": 0 } } },

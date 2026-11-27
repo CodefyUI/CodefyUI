@@ -1,10 +1,7 @@
 {
   "name": "Label smoothing lowers confidence",
   "description": "Hard labels vs label smoothing 0.1",
-  "gallery": {
-    "section": "papers",
-    "order": 5
-  },
+  "gallery": { "main_tag": "papers", "tags": ["vision", "regularization"], "order": 50 },
   "nodes": [
     {
       "id": "start",

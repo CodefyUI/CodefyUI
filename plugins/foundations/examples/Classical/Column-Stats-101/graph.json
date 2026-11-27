@@ -1,6 +1,7 @@
 {
   "name": "Column Stats 101",
   "description": "Mean, std and min, column by column",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "statistics"], "order": 200 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -660, "y": 0 },
       "data": { "noteKind": "text",

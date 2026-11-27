@@ -1,10 +1,7 @@
 {
   "name": "Image batch IO",
   "description": "Write 8 images, read the folder back",
-  "gallery": {
-    "section": "concepts",
-    "order": 16
-  },
+  "gallery": { "main_tag": "data", "tags": ["vision", "io"], "order": 40 },
   "nodes": [
     {
       "id": "start",

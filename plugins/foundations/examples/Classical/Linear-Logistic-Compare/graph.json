@@ -1,6 +1,7 @@
 {
   "name": "Linear vs Logistic regression",
   "description": "Same skeleton, a number or a species",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "linear-models"], "order": 220 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -740, "y": 0 },
       "data": { "noteKind": "text",

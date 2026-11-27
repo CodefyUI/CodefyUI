@@ -1,10 +1,7 @@
 {
   "name": "Discounted returns",
   "description": "One reward, three gammas, three returns",
-  "gallery": {
-    "section": "concepts",
-    "order": 19
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["rl", "returns"], "order": 110 },
   "nodes": [
     {
       "id": "start",

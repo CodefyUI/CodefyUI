@@ -1,10 +1,7 @@
 {
   "name": "Resume from a checkpoint",
   "description": "Save after 10 epochs, train 10 more",
-  "gallery": {
-    "section": "training",
-    "order": 11
-  },
+  "gallery": { "main_tag": "training", "tags": ["tabular", "checkpoint", "mlp"], "order": 40 },
   "nodes": [
     {
       "id": "start",

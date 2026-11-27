@@ -1,7 +1,7 @@
 {
   "name": "ViT Image Classifier",
   "description": "One image becomes 16 patch tokens",
-  "gallery": { "section": "architectures", "family": "Transformer", "order": 4 },
+  "gallery": { "main_tag": "architectures", "tags": ["vision", "transformer"], "order": 40, "family": "Transformer" },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },

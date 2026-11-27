@@ -1,10 +1,7 @@
 {
   "name": "Reward hacking via a shortcut",
   "description": "Perfect on train, fooled on holdout",
-  "gallery": {
-    "section": "concepts",
-    "order": 11
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["rl", "reward-model", "generalization"], "order": 140 },
   "nodes": [
     {
       "id": "start",

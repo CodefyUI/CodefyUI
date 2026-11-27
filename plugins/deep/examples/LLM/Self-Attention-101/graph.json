@@ -1,6 +1,7 @@
 {
   "name": "Self-Attention 101",
   "description": "Six tokens, a 6x6 map of who read whom",
+  "gallery": { "main_tag": "courses", "tags": ["nlp", "attention"], "order": 460 },
   "nodes": [
     { "id": "start-1",  "type": "Start",              "position": { "x": -320, "y": 0 }, "data": { "params": {} } },
     { "id": "text",     "type": "TextInput",          "position": { "x": -50,  "y": 0 }, "data": { "params": { "value": "the cat sat on the mat" } } },

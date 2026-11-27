@@ -1,7 +1,7 @@
 {
   "name": "ResNet with Skip Connections",
   "description": "The shortcuts are drawn as Add nodes",
-  "gallery": { "section": "architectures", "family": "CNN", "order": 1 },
+  "gallery": { "main_tag": "architectures", "tags": ["vision", "cnn", "resnet"], "order": 10, "family": "CNN" },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },
 

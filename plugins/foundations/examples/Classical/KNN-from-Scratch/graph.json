@@ -1,6 +1,7 @@
 {
   "name": "KNN from Scratch on Iris",
   "description": "A k=5 majority vote, drawn as a scatter",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "knn"], "order": 210 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 0 },
       "data": { "noteKind": "text",

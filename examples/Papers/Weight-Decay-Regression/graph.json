@@ -1,10 +1,7 @@
 {
   "name": "Weight decay smooths the fit",
   "description": "Same net, with and without decay",
-  "gallery": {
-    "section": "papers",
-    "order": 15
-  },
+  "gallery": { "main_tag": "papers", "tags": ["tabular", "regularization", "regression"], "order": 130 },
   "nodes": [
     {
       "id": "start",

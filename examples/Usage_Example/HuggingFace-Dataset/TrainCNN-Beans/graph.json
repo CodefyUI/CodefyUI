@@ -1,7 +1,7 @@
 {
   "name": "Train a CNN on beans",
   "description": "Every dataset stage is its own node",
-  "gallery": { "section": "training", "order": 1 },
+  "gallery": { "main_tag": "training", "tags": ["vision", "cnn", "huggingface"], "order": 10 },
   "nodes": [
     {
       "id": "start",

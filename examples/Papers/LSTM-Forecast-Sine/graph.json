@@ -1,10 +1,7 @@
 {
   "name": "LSTM forecasts a noisy wave",
   "description": "Predict the next value of a wave",
-  "gallery": {
-    "section": "papers",
-    "order": 13
-  },
+  "gallery": { "main_tag": "papers", "tags": ["timeseries", "lstm"], "order": 110 },
   "nodes": [
     {
       "id": "start",

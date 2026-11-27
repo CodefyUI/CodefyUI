@@ -1,6 +1,7 @@
 {
   "name": "Mini U-Net expanded",
   "description": "Every block visible; Concat joins skips",
+  "gallery": { "main_tag": "courses", "tags": ["diffusion", "unet"], "order": 440 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -300, "y": 0 }, "data": { "params": {} } },
 

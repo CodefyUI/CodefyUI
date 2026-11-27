@@ -1,6 +1,7 @@
 {
   "name": "C3-1 Conv2D feature maps",
   "description": "One 8x8 image to 32 maps, pooled 4x4",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "cnn"], "order": 310 },
   "nodes": [
     { "id": "start", "type": "Start",        "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",  "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "1,1,8,8", "dtype": "float32", "value_mode": "random", "seed": 7 } } },

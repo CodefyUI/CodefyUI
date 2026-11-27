@@ -1,7 +1,7 @@
 {
   "name": "GPT Decoder-Only Transformer",
   "description": "The same tensor is input and memory",
-  "gallery": { "section": "architectures", "family": "Transformer", "order": 1 },
+  "gallery": { "main_tag": "architectures", "tags": ["nlp", "transformer", "decoder"], "order": 10, "family": "Transformer" },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -200, "y": 0 }, "data": { "params": {} } },
 

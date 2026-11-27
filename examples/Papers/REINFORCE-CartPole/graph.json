@@ -1,10 +1,7 @@
 {
   "name": "REINFORCE balances CartPole",
   "description": "Policy gradient straight from returns",
-  "gallery": {
-    "section": "papers",
-    "order": 21
-  },
+  "gallery": { "main_tag": "papers", "tags": ["rl", "policy-gradient"], "order": 150 },
   "nodes": [
     {
       "id": "start",

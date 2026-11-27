@@ -7,16 +7,14 @@ from ..config import settings
 from ..core import plugin_loader
 from ..core.data_paths import resolve_under
 from ..core.graph_engine import is_note_node
+from ..core.example_tags import DECLARABLE_MAIN_TAGS, MAIN_TAG_RANK, MAIN_TAGS, resolve_gallery, sort_key
 from ..core.plugin_loader import iter_plugin_dirs, load_lockfile
 
 router = APIRouter(prefix="/api/examples", tags=["examples"])
 
-#: The sections the gallery is grouped into, in the order the frontend
-#: renders them. A ``gallery.section`` outside this set is served as
-#: ``null``, which puts the example in "other" rather than inventing a
-#: heading no locale has a title for.
-GALLERY_SECTIONS = frozenset(
-    {"quickstart", "training", "papers", "llm", "concepts", "architectures"})
+#: Deprecated alias kept for importers: the main tags an author may declare.
+#: The vocabulary and its order live in :mod:`app.core.example_tags`.
+GALLERY_SECTIONS = DECLARABLE_MAIN_TAGS
 
 
 def _as_list(value) -> list:
@@ -29,33 +27,6 @@ def _as_list(value) -> list:
     field, not the whole gallery.
     """
     return value if isinstance(value, list) else []
-
-
-def _gallery_metadata(data: dict) -> dict:
-    """The three gallery keys, read defensively out of *data*.
-
-    Always the same three keys, so the frontend groups on values rather
-    than on whether a key exists, and each one is read on its own: the list
-    walks every installed pack's examples directory, and one pack's typo
-    must cost that pack's card its heading, not everybody's gallery.
-    """
-    block = data.get("gallery")
-    if not isinstance(block, dict):
-        return {"section": None, "family": None, "order": None}
-    section = block.get("section")
-    family = block.get("family")
-    order = block.get("order")
-    return {
-        # ``isinstance`` first: ``in`` on a set raises TypeError for an
-        # unhashable value, and ``"section": []`` is a file somebody can write.
-        "section": section if isinstance(section, str)
-        and section in GALLERY_SECTIONS else None,
-        "family": family if isinstance(family, str) else None,
-        # ``bool`` is an ``int`` in Python and would sort as 0 or 1; a file
-        # saying ``"order": true`` means nothing, so it says nothing.
-        "order": order if isinstance(order, int)
-        and not isinstance(order, bool) else None,
-    }
 
 
 def _scan_examples(base: Path, source: str, path_prefix: str = "") -> list[dict]:
@@ -98,13 +69,13 @@ def _scan_examples(base: Path, source: str, path_prefix: str = "") -> list[dict]
                 if isinstance(node, dict) and not is_note_node(node)
             ),
             "edge_count": len(_as_list(data.get("edges"))),
-            **_gallery_metadata(data),
+            **resolve_gallery(data, builtin=source == "builtin"),
         })
     return out
 
 
-@router.get("/list")
-async def list_examples():
+def _all_examples() -> list[dict]:
+    """Every built-in and installed-pack example, in gallery order."""
     results = _scan_examples(settings.EXAMPLES_DIR, source="builtin")
     for plugin_id, plugin_dir in iter_plugin_dirs(
         plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), load_lockfile()
@@ -116,7 +87,44 @@ async def list_examples():
                 path_prefix=f"plugin:{plugin_id}",
             )
         )
-    return results
+    return sorted(results, key=sort_key)
+
+
+@router.get("/list")
+async def list_examples():
+    """Every example, ordered by main-tag rank, then ``order``, then name.
+
+    Each entry carries ``main_tag`` and ``tags`` (the main tag first, then
+    the declared tags). ``section`` is deprecated and equals ``main_tag``.
+    """
+    return _all_examples()
+
+
+@router.get("/tags")
+async def list_tags():
+    """The main tags in gallery order with their counts, and every free tag.
+
+    ``main_tags`` lists only main tags that have at least one example, so a
+    chip row built from it never offers an empty category. ``tags`` counts
+    every tag except the main tags, most used first.
+    """
+    examples = _all_examples()
+    main_counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+    for entry in examples:
+        main_counts[entry["main_tag"]] = main_counts.get(entry["main_tag"], 0) + 1
+        for tag in entry["tags"][1:]:
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    return {
+        "main_tags": [
+            {"id": tag, "order": MAIN_TAG_RANK[tag], "count": main_counts[tag]}
+            for tag in MAIN_TAGS if main_counts.get(tag)
+        ],
+        "tags": [
+            {"id": tag, "count": count}
+            for tag, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+    }
 
 
 def _safe_resolve_under(base: Path, rel: str) -> Path:

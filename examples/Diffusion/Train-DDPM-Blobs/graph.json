@@ -1,10 +1,7 @@
 {
   "name": "Train a DDPM on blobs",
   "description": "Learn to denoise, then sample new images",
-  "gallery": {
-    "section": "training",
-    "order": 9
-  },
+  "gallery": { "main_tag": "training", "tags": ["diffusion", "ddpm", "generation"], "order": 100 },
   "nodes": [
     {
       "id": "start",

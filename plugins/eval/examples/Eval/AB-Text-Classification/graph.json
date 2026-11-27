@@ -1,6 +1,7 @@
 {
   "name": "A/B text classifier eval",
   "description": "Two sentiment checkpoints, item by item",
+  "gallery": { "main_tag": "courses", "tags": ["nlp", "ab-test"], "order": 710 },
   "nodes": [
     {
       "id": "start-1",

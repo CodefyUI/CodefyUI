@@ -1,6 +1,7 @@
 {
   "name": "C1-3 Four fixed 3x3 kernels",
   "description": "Edge, sharpen, vertical edge and blur",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "convolution"], "order": 110 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -760, "y": 0 },
       "data": { "noteKind": "text",

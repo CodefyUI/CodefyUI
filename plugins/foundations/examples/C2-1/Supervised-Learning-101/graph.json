@@ -1,6 +1,7 @@
 {
   "name": "C2-1 Supervised Learning 101",
   "description": "Fit on 160 points, score 40 held back",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "supervised"], "order": 120 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

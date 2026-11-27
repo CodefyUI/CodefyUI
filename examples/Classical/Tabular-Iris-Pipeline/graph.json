@@ -1,7 +1,7 @@
 {
   "name": "Tabular Iris feature pipeline",
   "description": "Every feature ends with a mean near 0",
-  "gallery": { "section": "concepts", "order": 1 },
+  "gallery": { "main_tag": "data", "tags": ["tabular", "preprocessing", "iris"], "order": 30 },
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "csv",       "type": "CSVReader",      "position": { "x": -40,  "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },

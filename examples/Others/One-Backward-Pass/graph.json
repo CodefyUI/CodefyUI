@@ -1,10 +1,7 @@
 {
   "name": "One backward pass",
   "description": "Which embedding rows a gradient reaches",
-  "gallery": {
-    "section": "concepts",
-    "order": 21
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["nlp", "gradients", "embeddings"], "order": 30 },
   "nodes": [
     {
       "id": "start",

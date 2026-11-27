@@ -1,7 +1,7 @@
 {
   "name": "RAG with a chat API",
   "description": "Retrieval is local, the generator is not",
-  "gallery": { "section": "llm", "order": 4 },
+  "gallery": { "main_tag": "llm", "tags": ["nlp", "rag", "api"], "order": 50 },
   "nodes": [
     {
       "id": "start",

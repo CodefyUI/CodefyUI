@@ -1,7 +1,7 @@
 {
   "name": "Call a graph over HTTP",
   "description": "Echo a message from a POST body",
-  "gallery": { "section": "quickstart", "order": 3 },
+  "gallery": { "main_tag": "quickstart", "tags": ["api"], "order": 40 },
   "nodes": [
     {
       "id": "note-overview",

@@ -1,6 +1,7 @@
 {
   "name": "C6-2 ViT over 16 patches",
   "description": "Each 4x4 patch becomes a 48-dim token",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "transformer"], "order": 400 },
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,3,16,16", "dtype": "float32", "value_mode": "random", "seed": 11 } } },

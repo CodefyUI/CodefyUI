@@ -1,6 +1,7 @@
 {
   "name": "C2-5 MLP trained on MNIST",
   "description": "Flatten the image, then 784-128-64-10",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "mlp", "mnist"], "order": 190 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -680, "y": 200 },
       "data": { "noteKind": "text",

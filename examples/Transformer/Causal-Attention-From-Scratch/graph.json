@@ -1,10 +1,7 @@
 {
   "name": "Causal attention from scratch",
   "description": "Q K^T, scale, mask, softmax, times V",
-  "gallery": {
-    "section": "concepts",
-    "order": 10
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["nlp", "attention", "transformer"], "order": 60 },
   "nodes": [
     {
       "id": "start",

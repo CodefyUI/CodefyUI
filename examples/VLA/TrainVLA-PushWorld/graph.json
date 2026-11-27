@@ -1,7 +1,7 @@
 {
   "name": "Train a VLA on PushWorld",
   "description": "The instruction says which puck to push",
-  "gallery": { "section": "training", "order": 6 },
+  "gallery": { "main_tag": "training", "tags": ["vla", "imitation", "robotics"], "order": 120 },
   "nodes": [
     {
       "id": "start",

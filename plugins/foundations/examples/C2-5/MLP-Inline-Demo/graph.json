@@ -1,6 +1,7 @@
 {
   "name": "C2-5 MLP inline demo",
   "description": "Two moons; one node fits and classifies",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "mlp"], "order": 180 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

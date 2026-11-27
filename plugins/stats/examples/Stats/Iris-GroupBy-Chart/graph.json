@@ -1,6 +1,7 @@
 {
   "name": "Iris grouped by species, charted",
   "description": "Three bars of mean petal length",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "statistics", "iris"], "order": 620 },
   "nodes": [
     {
       "id": "start-1",

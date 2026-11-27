@@ -1,7 +1,7 @@
 {
   "name": "Train a Transformer on MNIST",
   "description": "Attention on images, not only text",
-  "gallery": { "section": "training", "order": 3 },
+  "gallery": { "main_tag": "training", "tags": ["vision", "transformer", "attention"], "order": 90 },
   "nodes": [
     {
       "id": "note-overview",

@@ -1,7 +1,7 @@
 {
   "name": "Word embedding analogy",
   "description": "King - man + woman gives queen",
-  "gallery": { "section": "llm", "order": 1 },
+  "gallery": { "main_tag": "llm", "tags": ["nlp", "embeddings"], "order": 80 },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 100 }, "data": { "params": {} } },
     { "id": "wv_king",  "type": "WordVector", "position": { "x": 0,   "y": -290 }, "data": { "params": { "backend": "demo-16d", "words": "king",  "normalize": false, "keep_oov": false } } },

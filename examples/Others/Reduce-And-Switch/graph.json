@@ -1,10 +1,7 @@
 {
   "name": "Reduce and Switch",
   "description": "Pick a column, fold it to one number",
-  "gallery": {
-    "section": "concepts",
-    "order": 14
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["tabular", "dataflow"], "order": 20 },
   "nodes": [
     {
       "id": "start",

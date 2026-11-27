@@ -1,6 +1,7 @@
 {
   "name": "C2-3 Decision tree on Iris",
   "description": "A depth-3 tree, printed as rules",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "decision-tree", "iris"], "order": 140 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

@@ -1,6 +1,7 @@
 {
   "name": "Multi-Head Causal Attention",
   "description": "Two 5x5 maps, striped by the mask",
+  "gallery": { "main_tag": "courses", "tags": ["nlp", "attention"], "order": 450 },
   "nodes": [
     { "id": "start-1",  "type": "Start",                  "position": { "x": -320, "y": 0 }, "data": { "params": {} } },
     { "id": "text",     "type": "TextInput",              "position": { "x": -50,  "y": 0 }, "data": { "params": { "value": "once upon a time there" } } },

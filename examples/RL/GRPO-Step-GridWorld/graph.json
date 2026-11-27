@@ -1,10 +1,7 @@
 {
   "name": "One GRPO step on rollouts",
   "description": "Score each episode against its group",
-  "gallery": {
-    "section": "concepts",
-    "order": 12
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["rl", "grpo"], "order": 150 },
   "nodes": [
     {
       "id": "start",

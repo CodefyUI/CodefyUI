@@ -1,6 +1,7 @@
 {
   "name": "C2-4 Depth without activation",
   "description": "Two linear layers collapse into one",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "mlp", "activation"], "order": 170 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

@@ -1,7 +1,7 @@
 {
   "name": "Fully local RAG",
   "description": "A 0.5B model answers from five notes",
-  "gallery": { "section": "llm", "order": 3 },
+  "gallery": { "main_tag": "llm", "tags": ["nlp", "rag", "retrieval"], "order": 30 },
   "nodes": [
     {
       "id": "start",

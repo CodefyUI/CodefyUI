@@ -1,7 +1,7 @@
 {
   "name": "Toy reverse diffusion sampling",
   "description": "20 steps; untrained, so it stays noise",
-  "gallery": { "section": "concepts", "order": 6 },
+  "gallery": { "main_tag": "concepts", "tags": ["diffusion", "sampling"], "order": 90 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 80 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },

@@ -1,10 +1,7 @@
 {
   "name": "LSTM remembers the first token",
   "description": "Carry one token through 9 steps of noise",
-  "gallery": {
-    "section": "training",
-    "order": 7
-  },
+  "gallery": { "main_tag": "training", "tags": ["nlp", "lstm", "sequence"], "order": 110 },
   "nodes": [
     {
       "id": "start",
