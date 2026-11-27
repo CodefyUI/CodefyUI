@@ -366,6 +366,16 @@ class Settings(BaseSettings):
     # explicitly provided (env/init) — see _derive_project_roots.
     PROJECT_DIR: Path | None = None
 
+    # ── Projects (phase 4A) ────────────────────────────────────────────
+    # Where new projects go, the default one included (<root>/workspace).
+    # Visible and outside the install directory: the user's graphs must not
+    # live in a hidden folder that `cdui update` manages. No space in the
+    # name, which --mount, shells and git config would all need quoted.
+    PROJECTS_ROOT: Path = Field(default_factory=lambda: Path.home() / "CodefyUI-Projects")
+    # Start-up step 5: create and open <PROJECTS_ROOT>/workspace when nothing
+    # else decides. 0 keeps flat mode (tests and the e2e server set it).
+    DEFAULT_PROJECT: bool = True
+
     # ── Storage mount label (#782) ─────────────────────────────────────
     # The name this server gives its data directory (the project directory
     # in project mode) when worker agents share it over a network

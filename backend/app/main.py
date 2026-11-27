@@ -265,19 +265,17 @@ async def lifespan(app: FastAPI):
 @asynccontextmanager
 async def _lifespan_body(app: FastAPI):
     """Everything the server starts and stops, under the instance lock."""
-    # Project .env: execution-time secrets only, os.environ.setdefault
-    # semantics, loaded before node/plugin discovery. CODEFYUI_* config keys
-    # here are IGNORED (settings already materialized at import) -- spec 7.3.
-    if settings.PROJECT_DIR is not None:
-        from .core.dotenv import apply_project_env, read_dotenv
-        # Recorded, so a later switch to another project can take these back
-        # out. No blocklist: a project named at start-up is the operator's
-        # own choice, and this keeps that case exactly as it was.
-        values = read_dotenv(settings.PROJECT_DIR / ".env") or {}
-        env_applied = apply_project_env(values, enforce_blocklist=False)["applied"]
-        if env_applied:
-            # Log the COUNT only, never the values.
-            logger.info("Loaded %d value(s) from project .env", len(env_applied))
+    # Which project to open (phase 4A): --project, an explicit
+    # CODEFYUI_GRAPHS_DIR, the last open project, old flat graphs, or the
+    # default project. Opening it re-derives the data roots and loads its
+    # .env (execution-time secrets only, an already-set variable wins,
+    # trusted contents only), all before node/plugin discovery.
+    # CODEFYUI_* config keys in a .env are IGNORED -- spec 7.3.
+    from .core import projects as _projects
+    _projects.resolve_startup_project()
+    if _projects.current_env.applied:
+        # Log the COUNT only, never the values.
+        logger.info("Loaded %d value(s) from project .env", len(_projects.current_env.applied))
 
     # Populate Host whitelist and persist the session token before any handler
     # can fire. Frontend bootstrap reads the token via /api/auth/bootstrap; CLI
