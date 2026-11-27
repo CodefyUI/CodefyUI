@@ -571,7 +571,11 @@ def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        # newline="\n": text mode would otherwise turn every "\n" into
+        # "\r\n" on Windows, and these files are LF by contract (the project
+        # .gitattributes says `*.json text eol=lf` because the server writes
+        # LF). Phase 4B CI found it: a v1 save on Windows wrote CRLF.
+        tmp.write_text(text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     finally:
         # The cleanup must never become the error the caller sees. ``unlink``

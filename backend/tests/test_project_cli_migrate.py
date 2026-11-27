@@ -157,3 +157,23 @@ def test_git_setup_defines_the_driver_and_adds_the_attribute_lines(tmp_path):
     # Running it again adds nothing twice.
     assert project.cmd_git_setup(argparse.Namespace(dir=str(proj))) == 0
     assert (proj / ".gitattributes").read_text() == attrs
+
+
+def test_every_form_is_written_with_lf_and_a_crlf_file_comes_back_lf(tmp_path):
+    """The server writes LF on every platform (Windows CI once saw a v1 save
+    write CRLF through text mode). A single file that HAS CRLF -- edited on
+    Windows without the attribute -- is read as the same graph and written
+    back LF by migrate, like by any save: line endings are not content."""
+    proj = _init(tmp_path, "file")
+    store = GraphStore.for_project(proj)
+    store.write("g", _graph())
+    for path in ((proj / "graphs" / "g.graph.json"), (proj / "layout" / "g.layout.json")):
+        assert b"\r" not in path.read_bytes(), path
+    crlf = (proj / "graphs" / "g.graph.json").read_bytes().replace(b"\n", b"\r\n")
+    (proj / "graphs" / "g.graph.json").write_bytes(crlf)
+    before = _merged(proj, "g")
+    assert project.cmd_migrate(_margs(proj, "dir")) == 0
+    assert project.cmd_migrate(_margs(proj, "file")) == 0
+    assert _merged(proj, "g") == before
+    for path in (proj / "graphs" / "g.graph.json", proj / "layout" / "g.layout.json"):
+        assert b"\r" not in path.read_bytes(), path
