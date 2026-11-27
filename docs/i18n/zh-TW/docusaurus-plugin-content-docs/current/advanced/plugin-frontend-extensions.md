@@ -11,7 +11,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 
-停靠面板、工具列按鈕、執行事件與執行歷史介面（`api.runs`）需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）；側欄（`dock: "side"`）與 `ui.setPanelOpen` / `ui.isPanelOpen` 需要 **apiVersion 6**（下一個版本）。使用前請先檢查功能版本，詳見 [API 版本](#api-versions)。
+停靠面板、工具列按鈕、執行事件與執行歷史介面（`api.runs`）需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（CodefyUI 2.3.0 起）；`api.workspace` 與六個代理畫布操作需要 **apiVersion 5**（CodefyUI 2.5.0 起）；側欄（`dock: "side"`）與 `ui.setPanelOpen` / `ui.isPanelOpen` 需要 **apiVersion 6**（CodefyUI 3.3.0 起）。使用前請先檢查功能版本，詳見 [API 版本](#api-versions)。
 :::
 
 ## API 版本 {/* #api-versions */}
@@ -25,7 +25,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
 | 4 | 2.3.0 | `graph.getView`——使用者正在看圖表的哪一層 |
 | 5 | 2.5.0 | `workspace.*`——分頁、快照與比較後寫入；`move_node`、`set_segment` / `remove_segment`、`add_note` / `update_note`、`set_node_meta` |
-| 6 | 尚未發布 | `dock: "side"` 側欄面板與 `side` 尺寸選項；`ui.setPanelOpen` / `ui.isPanelOpen` |
+| 6 | 3.3.0 | `dock: "side"` 側欄面板與 `side` 尺寸選項；`ui.setPanelOpen` / `ui.isPanelOpen` |
 
 使用超過外掛最低需求版本的新功能前，請先檢查目前的 API 版本，並在版本不足時降級處理，不要直接拋出錯誤：
 

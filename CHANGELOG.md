@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-11-27
+
 ### Added
 
 - **Agent Skills: a plugin can give its agent standard `SKILL.md` skills through `/api/skills`.** Skills follow the open Agent Skills specification and are found in the open project's `skills/`, the user data folder's `skills/` (where `POST /api/skills/install` puts a folder, a `.zip`/`.tar.gz` or an HTTPS git repository), enabled plugins, the install's own `skills/`, and any folder named in `CODEFYUI_SKILLS_EXTRA_DIRS` (empty by default). The first valid, enabled skill of a name is used and the others are listed as shadowed; a broken skill is listed with its issues instead of breaking the list. Nothing in a skill is run, files outside a skill cannot be read, and installs are capped at 20 MB and 500 files and folders per skill (100 MB and 5,000 per source) with zip-slip, absolute members and symbolic links refused. A source may hold several skills (`skills/`, `.claude/skills/`, `.agents/skills/`), all installed at once, and a git URL may name one folder with `#sub/path`. Install and delete are refused on a server not bound to loopback unless `CODEFYUI_ALLOW_REMOTE_SKILL_INSTALL=1`; a skill or `AGENTS.md` that is a symbolic link out of a project or plugin is never read; frontmatter is capped at 16 KB and may not use YAML aliases. Three built-in skills, `build-graph`, `train-and-evaluate` and `run-experiments`, carry the graph-building, training and experiment knowledge that Graph Copilot kept in its prompt, checked by a test against the real node catalog. `pyyaml` is now a direct dependency. See `docs/docs/advanced/skills.md`.
@@ -6300,7 +6302,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.2.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.3.0...main
+[3.3.0]: https://github.com/CodefyUI/CodefyUI/compare/3.2.0...3.3.0
 [3.2.0]: https://github.com/CodefyUI/CodefyUI/compare/3.1.1...3.2.0
 [3.1.1]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...3.1.1
 [3.1.0]: https://github.com/CodefyUI/CodefyUI/compare/3.0.2...3.1.0
