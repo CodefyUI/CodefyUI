@@ -1,6 +1,7 @@
 {
   "name": "VQA eval skeleton",
   "description": "Image and question in, answer scored",
+  "gallery": { "main_tag": "courses", "tags": ["vla", "vqa"], "order": 720 },
   "nodes": [
     {
       "id": "start-1",

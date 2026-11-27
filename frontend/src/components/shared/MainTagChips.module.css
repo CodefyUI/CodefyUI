@@ -1,0 +1,55 @@
+/* MainTagChips.module.css -- the row of main-tag chips (phase 3) above the
+   example cards and beside the gallery search. A chip always carries its name;
+   the accent dot only repeats it. */
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.chip:hover {
+  background: var(--surface-hover);
+}
+
+.chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Selected: text, border and a wash -- not colour alone. */
+.chipSelected {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+}
+
+.dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  flex: none;
+}
+
+.count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}

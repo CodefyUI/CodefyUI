@@ -1,10 +1,7 @@
 {
   "name": "DQN balances CartPole",
   "description": "Q-values learned from a replay buffer",
-  "gallery": {
-    "section": "papers",
-    "order": 22
-  },
+  "gallery": { "main_tag": "papers", "tags": ["rl", "dqn"], "order": 160 },
   "nodes": [
     {
       "id": "start",

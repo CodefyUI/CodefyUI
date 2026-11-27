@@ -1,6 +1,7 @@
 {
   "name": "C3-2 Mini U-Net forward shapes",
   "description": "16 down to 4 and back, 48-channel skip",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "unet"], "order": 330 },
   "nodes": [
     { "id": "start", "type": "Start",            "position": { "x": -320, "y":    0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",      "position": { "x":  -60, "y":    0 }, "data": { "params": { "shape": "1,1,16,16", "dtype": "float32", "value_mode": "random", "seed": 3 } } },

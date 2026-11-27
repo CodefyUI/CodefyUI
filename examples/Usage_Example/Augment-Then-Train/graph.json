@@ -1,10 +1,7 @@
 {
   "name": "Augment, then train",
   "description": "Rotate and jitter digits while training",
-  "gallery": {
-    "section": "training",
-    "order": 10
-  },
+  "gallery": { "main_tag": "training", "tags": ["vision", "augmentation", "mnist"], "order": 50 },
   "nodes": [
     {
       "id": "start",

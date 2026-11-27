@@ -13,7 +13,7 @@ import type { ExampleSummary } from '../../api/rest';
 
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
-  return { ...actual, listExamples: vi.fn(), loadExample: vi.fn() };
+  return { ...actual, listExamples: vi.fn(), listExampleTags: vi.fn(), loadExample: vi.fn() };
 });
 
 // What a picked file does is the import's own suite's business; here the call
@@ -64,6 +64,9 @@ describe('WelcomeScreen', () => {
     _resetPluginStoreForTesting();
     emptyWorkspace();
     mockedRest.listExamples.mockReset();
+    mockedRest.listExampleTags.mockReset();
+    mockedRest.listExampleTags.mockRejectedValue(new Error('404'));
+    window.localStorage.clear();
     mockedRest.loadExample.mockReset();
     mockedRest.listExamples.mockResolvedValue([]);
     mockedImport.mockReset();
@@ -149,15 +152,29 @@ describe('WelcomeScreen', () => {
     expect(useUIStore.getState().templateGalleryOpen).toBe(true);
   });
 
-  it('lists the examples under their own heading', async () => {
+  it('lists the examples under the main-tag chips, Quick start first', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Train MLP', node_count: 5, section: 'quickstart' }),
+      ex({ name: 'Train MLP', node_count: 5, main_tag: 'quickstart' }),
+      ex({ name: 'Dropout', path: 'p/1', main_tag: 'papers' }),
     ]);
     render(<WelcomeScreen />);
     expect(screen.getByText('Or start from an example')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
-    expect(screen.getByText('Quick Start')).toBeInTheDocument();
+    // The same browser as the empty canvas: chips, Quick start by default.
+    expect(screen.getByRole('tab', { name: /^Quick start/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText('Dropout')).toBeNull();
     expect(screen.getByText('5 nodes')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /^Papers/ }));
+    expect(screen.getByText('Dropout')).toBeInTheDocument();
+  });
+
+  it('opens an empty tab from the Blank graph card', async () => {
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Train MLP', main_tag: 'quickstart' })]);
+    render(<WelcomeScreen />);
+    fireEvent.click(await screen.findByText('Blank graph'));
+    expect(useTabStore.getState().tabs).toHaveLength(1);
+    expect(useTabStore.getState().tabs[0].nodes).toEqual([]);
+    expect(mockedRest.loadExample).not.toHaveBeenCalled();
   });
 
   it('opens a picked example into a tab it creates first', async () => {

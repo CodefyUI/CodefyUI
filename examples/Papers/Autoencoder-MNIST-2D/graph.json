@@ -1,10 +1,7 @@
 {
   "name": "Autoencoder squeezes digits to 2-D",
   "description": "Two numbers per digit, set beside PCA",
-  "gallery": {
-    "section": "papers",
-    "order": 12
-  },
+  "gallery": { "main_tag": "papers", "tags": ["vision", "autoencoder", "embeddings"], "order": 100 },
   "nodes": [
     {
       "id": "start",

@@ -1,7 +1,7 @@
 {
   "name": "RNN unrolled over three steps",
   "description": "One set of weights, reused each step",
-  "gallery": { "section": "concepts", "order": 3 },
+  "gallery": { "main_tag": "concepts", "tags": ["nlp", "rnn"], "order": 40 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
 

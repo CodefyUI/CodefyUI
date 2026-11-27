@@ -1,10 +1,7 @@
 {
   "name": "Segment shapes pixel by pixel",
   "description": "Label each pixel: circle, box or none",
-  "gallery": {
-    "section": "training",
-    "order": 8
-  },
+  "gallery": { "main_tag": "training", "tags": ["vision", "segmentation", "unet"], "order": 80 },
   "nodes": [
     {
       "id": "start",

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { listExamples, type ExampleSummary } from '../../api/rest';
+import { useMemo, useState } from 'react';
+import { useExampleCatalog } from '../../utils/useExampleCatalog';
 import { insertExample } from '../../utils/openExample';
 import {
   useLocalizedExamples,
@@ -102,41 +102,30 @@ function ExampleItem({ example }: { example: LocalizedExample }) {
  * the case where that happens while the tab is open.
  */
 export function TemplatesTab() {
-  const [examples, setExamples] = useState<ExampleSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // The catalog carries the server's main-tag order, so this tab lists the
+  // groups in the same order as the gallery: practical first, papers and
+  // courses after them.
+  const catalog = useExampleCatalog();
+  const { examples, loading, error, reload: load } = catalog;
   const [searchQuery, setSearchQuery] = useState('');
   const { t } = useI18n();
   const pluginsById = usePluginStore(selectPluginsById);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    listExamples()
-      .then((all) => setExamples(all))
-      .catch((e: Error) => {
-        setExamples([]);
-        setError(e.message);
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const localized = useLocalizedExamples(examples);
 
   // Filter first, group second: a search that empties a section drops the
   // section with it rather than leaving a header over nothing.
+  const order = useMemo(() => catalog.mainTags.map((entry) => entry.id), [catalog.mainTags]);
+  // Search matches tags and their translations too (exampleMatches).
   const groups = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const filtered = q ? localized.filter((e) => exampleMatches(e, q)) : localized;
     const sections = groupExamplesBySection(filtered, (source) =>
       pluginNameOf(pluginsById, source),
+      order,
     );
     return flattenExampleSections(sections, t);
-  }, [localized, pluginsById, searchQuery, t]);
+  }, [localized, pluginsById, searchQuery, t, order]);
 
   // `CategoryList` addresses a group by its key alone — collapse state, the
   // jump index and the scroll target all hang off it — so the label and the

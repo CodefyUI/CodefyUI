@@ -1,10 +1,7 @@
 {
   "name": "Conv1d classifies sequences",
   "description": "A temporal CNN reads tokens in windows",
-  "gallery": {
-    "section": "concepts",
-    "order": 17
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["nlp", "cnn", "sequence"], "order": 50 },
   "nodes": [
     {
       "id": "start",

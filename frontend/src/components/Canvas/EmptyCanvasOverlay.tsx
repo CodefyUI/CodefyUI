@@ -22,9 +22,16 @@ interface EmptyCanvasOverlayProps {
    */
   onDragOver: (event: React.DragEvent) => void;
   onDrop: (event: React.DragEvent) => void;
+  /**
+   * The "Blank graph" card: hide this overlay so the user can start drawing
+   * on the empty canvas underneath. FlowCanvas owns the flag, per tab, so the
+   * overlay comes back on a tab that is still empty only if it is reopened.
+   * Optional so a caller that cannot dismiss it still renders.
+   */
+  onDismiss?: () => void;
 }
 
-export function EmptyCanvasOverlay({ onDragOver, onDrop }: EmptyCanvasOverlayProps) {
+export function EmptyCanvasOverlay({ onDragOver, onDrop, onDismiss }: EmptyCanvasOverlayProps) {
   const { t } = useI18n();
   // The canvas shows this overlay whenever the level on screen is empty, and
   // inside a block that level is the block's, not the tab's. A starter picked
@@ -75,7 +82,7 @@ export function EmptyCanvasOverlay({ onDragOver, onDrop }: EmptyCanvasOverlayPro
             {t('gallery.browse')}
           </button>
 
-          <ExampleBrowser onPick={handleClick} />
+          <ExampleBrowser onPick={handleClick} onBlank={() => onDismiss?.()} />
 
           {/* No trailing "or drag a node from the left palette": the palette it
               points at is open on its default tab with its own pinned footer

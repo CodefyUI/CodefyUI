@@ -1,7 +1,7 @@
 {
   "name": "RLHF reward and KL terms",
   "description": "One scores the answer, one limits drift",
-  "gallery": { "section": "concepts", "order": 8 },
+  "gallery": { "main_tag": "concepts", "tags": ["rl", "rlhf", "kl"], "order": 130 },
   "nodes": [
     { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
 

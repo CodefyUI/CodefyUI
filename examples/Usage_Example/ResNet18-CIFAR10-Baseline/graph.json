@@ -1,7 +1,7 @@
 {
   "name": "ResNet-18 CIFAR-10 baseline",
   "description": "Every layer in the editor, no Python",
-  "gallery": { "section": "training", "order": 4 },
+  "gallery": { "main_tag": "training", "tags": ["vision", "resnet", "cifar10", "baseline"], "order": 70 },
   "nodes": [
     {
       "id": "start",

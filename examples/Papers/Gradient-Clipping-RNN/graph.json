@@ -1,10 +1,7 @@
 {
   "name": "Gradient clipping rescues an RNN",
   "description": "Clip the gradient and the RNN learns",
-  "gallery": {
-    "section": "papers",
-    "order": 11
-  },
+  "gallery": { "main_tag": "papers", "tags": ["nlp", "rnn", "gradients"], "order": 90 },
   "nodes": [
     {
       "id": "start",

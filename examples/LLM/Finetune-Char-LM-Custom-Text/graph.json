@@ -1,0 +1,782 @@
+{
+  "name": "Fine-tune a tiny char LM",
+  "description": "Pretrain on stories, fine-tune on facts",
+  "gallery": {
+    "main_tag": "llm",
+    "tags": [
+      "nlp",
+      "fine-tuning",
+      "language-model",
+      "perplexity"
+    ],
+    "order": 20
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "stories",
+      "type": "TextCorpusDataset",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "source": "local_file",
+          "local_path": "data/samples/mix/stories.txt",
+          "split_lines": true
+        }
+      }
+    },
+    {
+      "id": "facts",
+      "type": "TextCorpusDataset",
+      "position": {
+        "x": 360,
+        "y": 676
+      },
+      "data": {
+        "params": {
+          "source": "local_file",
+          "local_path": "data/samples/mix/facts.txt",
+          "split_lines": true
+        }
+      }
+    },
+    {
+      "id": "tok",
+      "type": "LMTokenizer",
+      "position": {
+        "x": 720,
+        "y": 338
+      },
+      "data": {
+        "params": {
+          "encoding": "byte"
+        }
+      }
+    },
+    {
+      "id": "pack-stories",
+      "type": "LMTokenizedDataset",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "seq_len": 32,
+          "append_eos": true,
+          "cache": false
+        }
+      }
+    },
+    {
+      "id": "pack-facts",
+      "type": "LMTokenizedDataset",
+      "position": {
+        "x": 1080,
+        "y": 676
+      },
+      "data": {
+        "params": {
+          "seq_len": 32,
+          "append_eos": true,
+          "cache": false
+        }
+      }
+    },
+    {
+      "id": "dl-stories",
+      "type": "DataLoader",
+      "position": {
+        "x": 1440,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "dl-facts",
+      "type": "DataLoader",
+      "position": {
+        "x": 1440,
+        "y": 676
+      },
+      "data": {
+        "params": {
+          "batch_size": 4,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "CausalLMModel",
+      "position": {
+        "x": 1080,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "vocab_size": 257,
+          "d_model": 64,
+          "n_layers": 2,
+          "n_heads": 4,
+          "d_ff": 256,
+          "max_seq_len": 32,
+          "dropout": 0.0,
+          "positional": "rope",
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "LMCrossEntropyLoss",
+      "position": {
+        "x": 1440,
+        "y": -364
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "opt-pre",
+      "type": "Optimizer",
+      "position": {
+        "x": 1800,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "type": "AdamW",
+          "lr": 0.003
+        }
+      }
+    },
+    {
+      "id": "pretrain",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1800,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "epochs": 40,
+          "device": "cpu",
+          "grad_clip_norm": 1.0
+        }
+      }
+    },
+    {
+      "id": "ppl-before",
+      "type": "PerplexityEvaluate",
+      "position": {
+        "x": 2160,
+        "y": 338
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "device": "cpu",
+          "precision": "fp32"
+        }
+      }
+    },
+    {
+      "id": "gen-before",
+      "type": "TextGenerate",
+      "position": {
+        "x": 2160,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "prompt": "Water boils",
+          "max_new_tokens": 60,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.95,
+          "seed": 0,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "ppl-stories-before",
+      "type": "PerplexityEvaluate",
+      "position": {
+        "x": 2160,
+        "y": 706
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "device": "cpu",
+          "precision": "fp32"
+        }
+      }
+    },
+    {
+      "id": "gate",
+      "type": "PythonScript",
+      "position": {
+        "x": 2520,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    # Passes the model on unchanged once the \"before\" numbers exist, so the\n    # fine-tuning (which changes the model in place) cannot start earlier.\n    return {\"out1\": inputs[\"in1\"]}\n",
+          "input_ports": 4,
+          "output_ports": 1,
+          "input_types": "MODEL,SCALAR,STRING,SCALAR",
+          "output_types": "MODEL"
+        }
+      }
+    },
+    {
+      "id": "opt-ft",
+      "type": "Optimizer",
+      "position": {
+        "x": 3225,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "type": "AdamW",
+          "lr": 0.001
+        }
+      }
+    },
+    {
+      "id": "finetune",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 3225,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "epochs": 40,
+          "device": "cpu",
+          "grad_clip_norm": 1.0
+        }
+      }
+    },
+    {
+      "id": "ppl-after",
+      "type": "PerplexityEvaluate",
+      "position": {
+        "x": 3585,
+        "y": 338
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "device": "cpu",
+          "precision": "fp32"
+        }
+      }
+    },
+    {
+      "id": "ppl-stories",
+      "type": "PerplexityEvaluate",
+      "position": {
+        "x": 3585,
+        "y": 706
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "device": "cpu",
+          "precision": "fp32"
+        }
+      }
+    },
+    {
+      "id": "gen-after",
+      "type": "TextGenerate",
+      "position": {
+        "x": 3585,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "prompt": "Water boils",
+          "max_new_tokens": 60,
+          "temperature": 0.5,
+          "top_k": 20,
+          "top_p": 0.95,
+          "seed": 0,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "p-before",
+      "type": "Print",
+      "position": {
+        "x": 2520,
+        "y": 472
+      },
+      "data": {
+        "params": {
+          "label": "facts perplexity before"
+        }
+      }
+    },
+    {
+      "id": "p-after",
+      "type": "Print",
+      "position": {
+        "x": 3945,
+        "y": 338
+      },
+      "data": {
+        "params": {
+          "label": "facts perplexity after"
+        }
+      }
+    },
+    {
+      "id": "p-stories",
+      "type": "Print",
+      "position": {
+        "x": 3945,
+        "y": 676
+      },
+      "data": {
+        "params": {
+          "label": "stories perplexity after"
+        }
+      }
+    },
+    {
+      "id": "p-stories-before",
+      "type": "Print",
+      "position": {
+        "x": 2520,
+        "y": 677
+      },
+      "data": {
+        "params": {
+          "label": "stories perplexity before"
+        }
+      }
+    },
+    {
+      "id": "s-before",
+      "type": "Print",
+      "position": {
+        "x": 2520,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "label": "sample before"
+        }
+      }
+    },
+    {
+      "id": "s-after",
+      "type": "Print",
+      "position": {
+        "x": 3945,
+        "y": -364
+      },
+      "data": {
+        "params": {
+          "label": "sample after"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Fine-tuning in miniature, on text you supply. A tiny character-level transformer (2 layers, byte tokens) first learns from twenty short children's stories, then trains further on six science facts. Perplexity on the facts falls from 75.0 to 1.03, and the continuation of \"Water boils\" changes from \"Water boils over the lat oudedoter.\" to \"Water boils at 100 degrees Celsiulteumen.\": the first fact word for word until the 32-byte window runs out. Both are measured on the facts it was fine-tuned on, so they show memorisation, not understanding. Perplexity on the stories rises from 1.85 to 25.5: the model forgets what it is no longer shown.\n\n迷你版的微調，用你自己的文字。一個很小的字元級 transformer（2 層，byte token）先從二十則短短的兒童故事學習，再用六條科學事實繼續訓練。事實的 perplexity 從 75.0 降到 1.03，\"Water boils\" 的接續從 \"Water boils over the lat oudedoter.\" 變成 \"Water boils at 100 degrees Celsiulteumen.\"：逐字重現第一條事實，直到 32 byte 的視窗用完。兩者都是在用來微調的那些事實上量的，所以顯示的是記憶，不是理解。故事的 perplexity 從 1.85 升到 25.5：模型會忘掉不再看到的東西。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 420
+      }
+    },
+    {
+      "id": "note-files",
+      "type": "note",
+      "position": {
+        "x": 360,
+        "y": -480
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Point the two TextCorpusDataset nodes at your own .txt files (one passage per line). The byte tokenizer needs no download and covers any language; a real model would start from downloaded pretrained weights instead of this first TrainingLoop.\n\n把兩個 TextCorpusDataset 節點指向你自己的 .txt 檔（每行一段）。byte tokenizer 不需要下載，任何語言都能用；真正的模型會從下載的預訓練權重開始，取代這裡的第一個 TrainingLoop。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "stories",
+        "boundOffset": {
+          "x": 0,
+          "y": -480
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "stories",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "t2",
+      "source": "start",
+      "target": "facts",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e3",
+      "source": "stories",
+      "target": "tok",
+      "sourceHandle": "dataset",
+      "targetHandle": "corpus",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "stories",
+      "target": "pack-stories",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "tok",
+      "target": "pack-stories",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "facts",
+      "target": "pack-facts",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "tok",
+      "target": "pack-facts",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "pack-stories",
+      "target": "dl-stories",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "pack-facts",
+      "target": "dl-facts",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "model",
+      "target": "opt-pre",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "model",
+      "target": "pretrain",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "dl-stories",
+      "target": "pretrain",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "opt-pre",
+      "target": "pretrain",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "loss",
+      "target": "pretrain",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "pretrain",
+      "target": "ppl-before",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "pack-facts",
+      "target": "ppl-before",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "pretrain",
+      "target": "gen-before",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "tok",
+      "target": "gen-before",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "pretrain",
+      "target": "ppl-stories-before",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e20",
+      "source": "pack-stories",
+      "target": "ppl-stories-before",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e21",
+      "source": "pretrain",
+      "target": "gate",
+      "sourceHandle": "model",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e22",
+      "source": "ppl-before",
+      "target": "gate",
+      "sourceHandle": "perplexity",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e23",
+      "source": "gen-before",
+      "target": "gate",
+      "sourceHandle": "text",
+      "targetHandle": "in3",
+      "type": "data"
+    },
+    {
+      "id": "e24",
+      "source": "ppl-stories-before",
+      "target": "gate",
+      "sourceHandle": "perplexity",
+      "targetHandle": "in4",
+      "type": "data"
+    },
+    {
+      "id": "e25",
+      "source": "gate",
+      "target": "opt-ft",
+      "sourceHandle": "out1",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e26",
+      "source": "gate",
+      "target": "finetune",
+      "sourceHandle": "out1",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e27",
+      "source": "dl-facts",
+      "target": "finetune",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e28",
+      "source": "opt-ft",
+      "target": "finetune",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e29",
+      "source": "loss",
+      "target": "finetune",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e30",
+      "source": "finetune",
+      "target": "ppl-after",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e31",
+      "source": "pack-facts",
+      "target": "ppl-after",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e32",
+      "source": "finetune",
+      "target": "ppl-stories",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e33",
+      "source": "pack-stories",
+      "target": "ppl-stories",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e34",
+      "source": "finetune",
+      "target": "gen-after",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e35",
+      "source": "tok",
+      "target": "gen-after",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer",
+      "type": "data"
+    },
+    {
+      "id": "e36",
+      "source": "ppl-before",
+      "target": "p-before",
+      "sourceHandle": "perplexity",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e37",
+      "source": "ppl-after",
+      "target": "p-after",
+      "sourceHandle": "perplexity",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e38",
+      "source": "ppl-stories",
+      "target": "p-stories",
+      "sourceHandle": "perplexity",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e39",
+      "source": "ppl-stories-before",
+      "target": "p-stories-before",
+      "sourceHandle": "perplexity",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e40",
+      "source": "gen-before",
+      "target": "s-before",
+      "sourceHandle": "text",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e41",
+      "source": "gen-after",
+      "target": "s-after",
+      "sourceHandle": "text",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}

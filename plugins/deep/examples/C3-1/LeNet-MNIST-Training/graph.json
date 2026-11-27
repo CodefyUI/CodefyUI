@@ -1,6 +1,7 @@
 {
   "name": "C3-1 Train LeNet on MNIST",
   "description": "Five epochs, then 10,000 unseen digits",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "cnn", "mnist"], "order": 320 },
   "nodes": [
     { "id": "start", "type": "Start", "position": { "x": -260, "y": 200 }, "data": { "params": {} } },
     {

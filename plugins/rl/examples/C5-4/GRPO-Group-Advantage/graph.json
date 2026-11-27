@@ -1,6 +1,7 @@
 {
   "name": "C5-4 GRPO group advantage",
   "description": "Eight rewards and their mean, no critic",
+  "gallery": { "main_tag": "courses", "tags": ["rl", "grpo"], "order": 530 },
   "nodes": [
     { "id": "start",   "type": "Start",       "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
     { "id": "rewards", "type": "TensorInput", "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "8", "dtype": "float32", "value_mode": "explicit", "values": [0.2, 0.8, 0.5, 0.1, 0.9, 0.3, 0.7, 0.4], "seed": 0 } } },

@@ -1,6 +1,7 @@
 {
   "name": "C4-2 Self-attention on real text",
   "description": "14 characters, 25 tokens, a 25x25 map",
+  "gallery": { "main_tag": "courses", "tags": ["nlp", "attention"], "order": 360 },
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "text",  "type": "TextInput",              "position": { "x":  -50, "y":   0 }, "data": { "params": { "value": "她去了那家貓咖啡因為它很可愛" } } },

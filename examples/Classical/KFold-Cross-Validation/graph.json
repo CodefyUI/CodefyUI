@@ -1,10 +1,7 @@
 {
   "name": "K-fold cross-validation",
   "description": "Three folds, three errors, one mean",
-  "gallery": {
-    "section": "concepts",
-    "order": 13
-  },
+  "gallery": { "main_tag": "evaluation", "tags": ["tabular", "cross-validation", "regression"], "order": 50 },
   "nodes": [
     {
       "id": "start",

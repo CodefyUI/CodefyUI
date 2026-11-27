@@ -1,6 +1,7 @@
 {
   "name": "C2-4 MLP solves circles",
   "description": "Two ReLU bends turn rings into regions",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "mlp"], "order": 160 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

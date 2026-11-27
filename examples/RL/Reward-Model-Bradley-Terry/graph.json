@@ -1,10 +1,7 @@
 {
   "name": "Reward model from preferences",
   "description": "Bradley-Terry loss before and after",
-  "gallery": {
-    "section": "concepts",
-    "order": 18
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["rl", "rlhf", "reward-model"], "order": 120 },
   "nodes": [
     {
       "id": "start",

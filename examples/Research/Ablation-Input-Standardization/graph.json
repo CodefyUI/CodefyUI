@@ -1,0 +1,605 @@
+{
+  "name": "Ablation: input scaling",
+  "description": "Same model with and without scaling",
+  "gallery": {
+    "main_tag": "research",
+    "tags": [
+      "tabular",
+      "iris",
+      "ablation",
+      "preprocessing"
+    ],
+    "order": 30
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.3,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "units",
+      "type": "PythonScript",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    # The same flowers, with petal width recorded in micrometres instead of\n    # centimetres: one column is now ten thousand times larger than the rest.\n    train = inputs[\"in1\"].clone()\n    test = inputs[\"in2\"].clone()\n    train[:, 3] *= 10000\n    test[:, 3] *= 10000\n    return {\"out1\": train, \"out2\": test}\n",
+          "input_ports": 2,
+          "output_ports": 2,
+          "input_types": "TENSOR,TENSOR",
+          "output_types": "TENSOR,TENSOR"
+        }
+      }
+    },
+    {
+      "id": "norm-train",
+      "type": "Normalize",
+      "position": {
+        "x": 1801,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "mode": "zscore",
+          "axis": 0
+        }
+      }
+    },
+    {
+      "id": "norm-test",
+      "type": "Normalize",
+      "position": {
+        "x": 1801,
+        "y": 52
+      },
+      "data": {
+        "params": {
+          "mode": "zscore",
+          "axis": 0
+        }
+      }
+    },
+    {
+      "id": "ds-train-scaled",
+      "type": "TensorDataset",
+      "position": {
+        "x": 2161,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-test-scaled",
+      "type": "TensorDataset",
+      "position": {
+        "x": 2161,
+        "y": 47
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "run-scaled",
+      "type": "subgraph:train-and-score",
+      "position": {
+        "x": 2521,
+        "y": -260
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-scaled",
+      "type": "Print",
+      "position": {
+        "x": 2881,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "label": "test accuracy, scaled"
+        }
+      }
+    },
+    {
+      "id": "ds-train-raw",
+      "type": "TensorDataset",
+      "position": {
+        "x": 2161,
+        "y": 572
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-test-raw",
+      "type": "TensorDataset",
+      "position": {
+        "x": 2161,
+        "y": 879
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "run-raw",
+      "type": "subgraph:train-and-score",
+      "position": {
+        "x": 2521,
+        "y": 572
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "print-raw",
+      "type": "Print",
+      "position": {
+        "x": 2881,
+        "y": 572
+      },
+      "data": {
+        "params": {
+          "label": "test accuracy, raw"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "An ablation removes one component and measures what it was worth. Here the component is input standardisation, and the data makes it matter: one iris column is recorded in micrometres, so its values are ten thousand times larger than the others. Both branches run the same block (an MLP trained with SGD for 30 epochs); only the Normalize pair differs, and the test split is scaled with the training split's mean and standard deviation (the stats wire). Test accuracy with standardisation 0.844, without 0.333.\n\n消融實驗：拿掉一個元件，量它值多少。這裡拿掉的是輸入標準化，資料也刻意讓它變得重要：iris 的一欄改用微米記錄，數值是其他欄的一萬倍。兩條分支跑同一個區塊（以 SGD 訓練 30 個 epoch 的 MLP），只差在 Normalize 這一對，而測試資料用訓練資料的平均與標準差縮放（stats 那條線）。有標準化的測試正確率 0.844，沒有的 0.333。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 400
+      }
+    },
+    {
+      "id": "note-segment",
+      "type": "note",
+      "position": {
+        "x": 1801,
+        "y": -660
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The orange bubble on norm-train is a Compare segment: click it after a run and the Inspector shows the columns before and after scaling side by side. To ablate something else, copy a branch and change only that one thing.\n\nnorm-train 上的橘色泡泡是「段落比較」：執行後點它，Inspector 會並排顯示縮放前後的欄位。要消融別的東西，就複製一條分支，只改那一件事。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "norm-train",
+        "boundOffset": {
+          "x": 0,
+          "y": -400
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "labels",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "split",
+      "target": "units",
+      "sourceHandle": "x_train",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "split",
+      "target": "units",
+      "sourceHandle": "x_test",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "units",
+      "target": "norm-train",
+      "sourceHandle": "out1",
+      "targetHandle": "tensor",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "units",
+      "target": "norm-test",
+      "sourceHandle": "out2",
+      "targetHandle": "tensor",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "norm-train",
+      "target": "norm-test",
+      "sourceHandle": "stats",
+      "targetHandle": "stats",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "norm-train",
+      "target": "ds-train-scaled",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "split",
+      "target": "ds-train-scaled",
+      "sourceHandle": "y_train",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "norm-test",
+      "target": "ds-test-scaled",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "split",
+      "target": "ds-test-scaled",
+      "sourceHandle": "y_test",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "ds-train-scaled",
+      "target": "ds-test-scaled",
+      "sourceHandle": "classes",
+      "targetHandle": "classes",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "ds-train-scaled",
+      "target": "run-scaled",
+      "sourceHandle": "dataset",
+      "targetHandle": "train",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "ds-test-scaled",
+      "target": "run-scaled",
+      "sourceHandle": "dataset",
+      "targetHandle": "test",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "run-scaled",
+      "target": "print-scaled",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "units",
+      "target": "ds-train-raw",
+      "sourceHandle": "out1",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "split",
+      "target": "ds-train-raw",
+      "sourceHandle": "y_train",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "units",
+      "target": "ds-test-raw",
+      "sourceHandle": "out2",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e20",
+      "source": "split",
+      "target": "ds-test-raw",
+      "sourceHandle": "y_test",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e21",
+      "source": "ds-train-raw",
+      "target": "ds-test-raw",
+      "sourceHandle": "classes",
+      "targetHandle": "classes",
+      "type": "data"
+    },
+    {
+      "id": "e22",
+      "source": "ds-train-raw",
+      "target": "run-raw",
+      "sourceHandle": "dataset",
+      "targetHandle": "train",
+      "type": "data"
+    },
+    {
+      "id": "e23",
+      "source": "ds-test-raw",
+      "target": "run-raw",
+      "sourceHandle": "dataset",
+      "targetHandle": "test",
+      "type": "data"
+    },
+    {
+      "id": "e24",
+      "source": "run-raw",
+      "target": "print-raw",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ],
+  "subgraphs": [
+    {
+      "id": "train-and-score",
+      "name": "train-and-score",
+      "nodes": [
+        {
+          "id": "model",
+          "type": "SequentialModel",
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 4, \"out_features\": 16}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 16, \"out_features\": 3}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+            }
+          }
+        },
+        {
+          "id": "opt",
+          "type": "Optimizer",
+          "position": {
+            "x": 0,
+            "y": 260
+          },
+          "data": {
+            "params": {
+              "type": "SGD",
+              "lr": 0.01
+            }
+          }
+        },
+        {
+          "id": "loss",
+          "type": "Loss",
+          "position": {
+            "x": 0,
+            "y": 520
+          },
+          "data": {
+            "params": {
+              "type": "CrossEntropyLoss"
+            }
+          }
+        },
+        {
+          "id": "train",
+          "type": "TrainingLoop",
+          "position": {
+            "x": 360,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "epochs": 30,
+              "device": "cpu"
+            }
+          }
+        },
+        {
+          "id": "eval",
+          "type": "EvaluateModel",
+          "position": {
+            "x": 720,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "device": "cpu"
+            }
+          }
+        },
+        {
+          "id": "loader",
+          "type": "DataLoader",
+          "position": {
+            "x": 0,
+            "y": -260
+          },
+          "data": {
+            "params": {
+              "batch_size": 16,
+              "shuffle": true
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "b1",
+          "source": "model",
+          "target": "opt",
+          "sourceHandle": "model",
+          "targetHandle": "model",
+          "type": "data"
+        },
+        {
+          "id": "b2",
+          "source": "model",
+          "target": "train",
+          "sourceHandle": "model",
+          "targetHandle": "model",
+          "type": "data"
+        },
+        {
+          "id": "b3",
+          "source": "opt",
+          "target": "train",
+          "sourceHandle": "optimizer",
+          "targetHandle": "optimizer",
+          "type": "data"
+        },
+        {
+          "id": "b4",
+          "source": "loss",
+          "target": "train",
+          "sourceHandle": "loss_fn",
+          "targetHandle": "loss_fn",
+          "type": "data"
+        },
+        {
+          "id": "b5",
+          "source": "train",
+          "target": "eval",
+          "sourceHandle": "model",
+          "targetHandle": "model",
+          "type": "data"
+        },
+        {
+          "id": "b6",
+          "source": "loader",
+          "target": "train",
+          "sourceHandle": "dataloader",
+          "targetHandle": "dataloader",
+          "type": "data"
+        }
+      ],
+      "interface": {
+        "inputs": [
+          {
+            "port": "train",
+            "innerNode": "loader",
+            "innerPort": "dataset"
+          },
+          {
+            "port": "test",
+            "innerNode": "eval",
+            "innerPort": "dataset"
+          }
+        ],
+        "outputs": [
+          {
+            "port": "accuracy",
+            "innerNode": "eval",
+            "innerPort": "accuracy"
+          }
+        ],
+        "triggerTargets": []
+      }
+    }
+  ],
+  "segmentGroups": [
+    {
+      "id": "seg-scaling",
+      "headNodeId": "norm-train",
+      "tailNodeId": "norm-train"
+    }
+  ]
+}

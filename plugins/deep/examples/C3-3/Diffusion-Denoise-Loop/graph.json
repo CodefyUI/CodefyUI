@@ -1,6 +1,7 @@
 {
   "name": "C3-3 Diffusion denoise loop",
   "description": "20 steps, untrained U-Net, still noise",
+  "gallery": { "main_tag": "courses", "tags": ["diffusion", "sampling"], "order": 340 },
   "nodes": [
     { "id": "start", "type": "Start",         "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "noise", "type": "GaussianNoise", "position": { "x":  -40, "y": -130 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0.0, "std": 1.0, "seed": 0 } } },

@@ -1,10 +1,7 @@
 {
   "name": "PPO balances CartPole",
   "description": "Clipped policy updates with GAE",
-  "gallery": {
-    "section": "papers",
-    "order": 23
-  },
+  "gallery": { "main_tag": "papers", "tags": ["rl", "ppo"], "order": 170 },
   "nodes": [
     {
       "id": "start",

@@ -380,6 +380,52 @@ const zhTW: ExampleTranslations = {
   'Others/Image-Batch-IO': {
     description: '寫入 8 張影像，再讀回整個資料夾',
   },
+  // ── Practical recipes: data, evaluation, experiments, deploy ──
+  'Data/Dataset-Inspection': {
+    description: '數量、樣本與像素統計',
+  },
+  'Data/Split-And-Leak-Check': {
+    description: '切出三份，再檢查有無外洩',
+  },
+  'Training/Early-Stopping-Best-Checkpoint': {
+    description: '驗證 loss 不再進步就停，存最佳權重',
+  },
+  'Training/Transfer-Frozen-Backbone': {
+    description: '沿用數字骨幹，只用 20 張學新標籤',
+  },
+  'Evaluation/Multi-Seed-Mean-Std': {
+    description: '同一做法跑五次，報平均與標準差',
+  },
+  'Evaluation/Checkpoint-Confusion-Matrix': {
+    description: '混淆矩陣與各數字的正確率',
+  },
+  'Evaluation/Compare-Two-Checkpoints': {
+    description: '第 1 與第 15 個 epoch 同場比較',
+  },
+  'Evaluation/Embedding-Projection-2D': {
+    description: '把分類器的隱藏層用 PCA 投影',
+  },
+  'Research/LR-Range-Test': {
+    description: '學習率範圍測試，再用挑出的值訓練',
+  },
+  'Research/LR-BatchSize-Grid': {
+    description: '2x2 的訓練網格，依分數排名',
+  },
+  'Research/Ablation-Input-Standardization': {
+    description: '同一模型，有無輸入縮放',
+  },
+  'Deploy/Classifier-Service/Train-And-Export': {
+    description: '在 iris 上訓練，存成 safetensors',
+  },
+  'Deploy/Classifier-Service/Serve-As-Function': {
+    description: '載入權重，透過 HTTP 回答',
+  },
+  'LLM/RAG-Retrieval-Hit-Rate': {
+    description: 'RAG 檢索器的 hit@1 與 hit@3',
+  },
+  'LLM/Finetune-Char-LM-Custom-Text': {
+    description: '先學故事，再用事實微調',
+  },
 };
 
 export default zhTW;

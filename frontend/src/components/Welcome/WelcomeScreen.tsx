@@ -111,7 +111,7 @@ export function WelcomeScreen() {
           many packs are installed. */}
       <div className={styles.examples}>
         <h2 className={styles.examplesTitle}>{t('welcome.examples')}</h2>
-        <ExampleBrowser onPick={handlePick} />
+        <ExampleBrowser onPick={handlePick} onBlank={() => addTab()} />
       </div>
     </div>
   );

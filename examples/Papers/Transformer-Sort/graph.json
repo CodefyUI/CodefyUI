@@ -1,10 +1,7 @@
 {
   "name": "Transformer learns to sort",
   "description": "Sort 10 digits with self-attention",
-  "gallery": {
-    "section": "papers",
-    "order": 14
-  },
+  "gallery": { "main_tag": "papers", "tags": ["nlp", "transformer", "attention"], "order": 120 },
   "nodes": [
     {
       "id": "start",

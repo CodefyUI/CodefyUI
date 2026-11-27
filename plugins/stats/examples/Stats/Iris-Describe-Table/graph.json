@@ -1,6 +1,7 @@
 {
   "name": "Iris describe() in one node",
   "description": "Eight statistics for four columns",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "statistics", "iris"], "order": 610 },
   "nodes": [
     {
       "id": "start-1",

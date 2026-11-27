@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useI18n } from '../i18n';
 import type { ExampleSummary } from '../api/rest';
-import { exampleCategoryLabel } from './exampleSections';
+import { exampleCategoryLabel, freeTagsOf, tagLabel } from './exampleSections';
 
 /** An example with its description already resolved for the active locale.
  *
@@ -88,14 +88,20 @@ export function truncateToWidth(text: string, maxWidth: number): string {
  *
  * The name is English in every locale. The description and the category are
  * matched in both the displayed language and the original English, so
- * `usage` and 「使用範例」 both find a usage example (#684).
+ * `usage` and 「使用範例」 both find a usage example (#684). Tags match by id
+ * and by their translation, so `transfer-learning`, `transfer` and 「遷移」
+ * all find the transfer-learning example (phase 3).
  */
 export function exampleMatches(example: LocalizedExample, query: string): boolean {
+  const t = useI18n.getState().t;
   return (
     example.name.toLowerCase().includes(query) ||
     example.description.toLowerCase().includes(query) ||
     example.descriptionEn.toLowerCase().includes(query) ||
     example.category.toLowerCase().includes(query) ||
-    exampleCategoryLabel(example.category, useI18n.getState().t).toLowerCase().includes(query)
+    exampleCategoryLabel(example.category, t).toLowerCase().includes(query) ||
+    freeTagsOf(example).some(
+      (tag) => tag.includes(query) || tagLabel(tag, t).toLowerCase().includes(query),
+    )
   );
 }

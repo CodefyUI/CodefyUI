@@ -1,6 +1,7 @@
 {
   "name": "C2-2 Linear fails on circles",
   "description": "Two rings no straight line can separate",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "linear-models"], "order": 130 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

@@ -12,7 +12,7 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 ## Features
 
 - **Visual Graph Editor** — Drag-and-drop nodes, connect ports with type-safe edges, real-time validation
-- **158 Built-in Nodes** across 16 categories (CNN, RNN, Transformer, RL, Data, Data Flow, Training, IO, Control, Utility, Normalization, Tensor Operations, LLM, Classical, Diffusion, VLA)
+- **159 Built-in Nodes** across 16 categories (CNN, RNN, Transformer, RL, Data, Data Flow, Training, IO, Control, Utility, Normalization, Tensor Operations, LLM, Classical, Diffusion, VLA)
 - **Teaching Inspector** — Record full per-node outputs, inspect input→output tensor diffs side-by-side, and wrap a subgraph with the **Compare Segment** bubble to focus on just head-input vs tail-output. Drop in a `TensorInput` node with an inline grid editor to feed the pipeline and watch each transformation
 - **Preset System** — Pre-built model templates for quick start; export your own subgraphs as reusable presets
 - **Multi-Tab Workspace** — Multiple independent canvases, each with its own execution context
@@ -140,7 +140,7 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence, PolicyRollout, PPOClipObjective, GroupRelativeAdvantage, Discount, GridWorldEnv, PreferenceDataset, BradleyTerryLoss, BradleyTerryTrain, RLTrainingLoop | 14 |
 | **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, KFoldSplit, DatasetSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform, TensorDataset | 30 |
 | **Data Flow** | Map, Reduce, Switch | 3 |
-| **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce | 7 |
+| **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce, FreezeParameters | 8 |
 | **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference, GraphInput, GraphOutput, VideoLoad, VideoWrite | 13 |
 | **Control** | Start | 1 |
 | **Utility** | Print, Reshape, Concat, Flatten, Linear, Visualize, Embedding, PythonScript, ScatterPlot2D, DecisionBoundary | 10 |
@@ -159,8 +159,13 @@ Pre-built example workflows organized in `examples/`:
 |----------|----------|
 | **Model Architecture** | ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics |
 | **Usage Example** | Train CNN on MNIST, Inference CNN on MNIST, Train a Transformer on MNIST, Train ResNet on CIFAR10, Train a CNN on beans (from the Hugging Face Hub), [ResNet-18 CIFAR-10 baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible), Call a graph over HTTP (graph-as-a-function demo) |
-| **LLM** | Word embedding analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend), Sentence similarity in zh-TW, Pretrain an LM on TinyStories, Fully local RAG, RAG with a chat API |
+| **LLM** | Word embedding analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend), Sentence similarity in zh-TW, Pretrain an LM on TinyStories, Fully local RAG, RAG with a chat API, Measure retrieval hit rate, Fine-tune a tiny char LM |
 | **Classical** | Classify Iris with sklearn KNN, Tabular Iris feature pipeline |
+| **Training** | Early stopping, keep the best; Transfer with a frozen backbone (`FreezeParameters`) |
+| **Data** | Inspect a dataset first, Split and check for leaks |
+| **Evaluation** | Five seeds, mean and spread; Evaluate a saved checkpoint; Compare two checkpoints; Project embeddings to 2D |
+| **Research** | Find a learning rate, Learning rate x batch size, Ablation: input scaling |
+| **Deploy** | Train and export a classifier, Serve a classifier over HTTP |
 | **Diffusion** | Forward diffusion on a digit, Toy reverse diffusion sampling, Mini U-Net node |
 | **RL** | RLHF reward and KL terms |
 | **RNN** | RNN unrolled over three steps |
@@ -327,6 +332,7 @@ The core routes. Most mutating requests under `/api/` need the `X-CodefyUI-Token
 | `/api/graph/{name}` | DELETE | Delete a saved graph (and its layout file in project mode) |
 | `/api/graph/export` | POST | Export a single-file headless Python runner (CodefyUI backend environment required) |
 | `/api/examples/list` | GET | List example graphs |
+| `/api/examples/tags` | GET | List the gallery's main tags and tags with counts |
 | `/api/examples/load` | GET | Load an example graph |
 | `/api/custom-nodes` | GET | List custom nodes (`/upload`, `/toggle` and `DELETE /{filename}` manage them) |
 | `/api/plugins` | GET | List installed plugin packs (`/{id}` returns one plugin's manifest + README) |

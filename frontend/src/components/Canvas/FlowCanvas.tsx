@@ -1095,10 +1095,19 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
 
   const proOptions = useMemo(() => ({ hideAttribution: true }), []);
   const isEmpty = activeTab.nodes.length === 0;
+  // The tab whose empty-canvas overlay was closed with its "Blank graph" card
+  // (phase 3). Keyed by tab id, so another empty tab still shows its gallery.
+  const [overlayDismissedFor, setOverlayDismissedFor] = useState<string | null>(null);
 
   return (
     <div ref={containerRef} className={styles.canvas} onMouseDown={handleCanvasMouseDown}>
-      {isEmpty && <EmptyCanvasOverlay onDragOver={onDragOver} onDrop={onDrop} />}
+      {isEmpty && overlayDismissedFor !== activeTab.id && (
+        <EmptyCanvasOverlay
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          onDismiss={() => setOverlayDismissedFor(activeTab.id)}
+        />
+      )}
       <EdgeLaneProvider edges={activeTab.edges} nodes={activeTab.nodes}>
         <ReactFlow
           id={reactFlowId}

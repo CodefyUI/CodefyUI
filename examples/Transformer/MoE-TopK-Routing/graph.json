@@ -1,7 +1,7 @@
 {
   "name": "Mixture of Experts top-k routing",
   "description": "Only 2 of the 4 run per token",
-  "gallery": { "section": "concepts", "order": 4 },
+  "gallery": { "main_tag": "concepts", "tags": ["nlp", "moe", "transformer"], "order": 70 },
   "nodes": [
     { "id": "start-1",   "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
     { "id": "x",         "type": "TensorCreate", "position": { "x": -40,  "y": 0    }, "data": { "params": { "shape": "2,5,32", "fill": "randn", "value": 0, "requires_grad": false } } },

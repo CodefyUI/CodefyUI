@@ -360,6 +360,16 @@ cdui plugin install your-username/your-fork
 
 Place plugin content in fixed directories next to the manifest: `nodes/` (auto-discovered), `presets/`, `examples/`, `assets/` (served at `/plugins/<id>/assets/<file>`), and `frontend/` (see [Plugin Frontend Extensions](/advanced/plugin-frontend-extensions)). These directory names are not configurable, and the scaffold's `[content]` table is ignored. The `cdui.plugin.toml` manifest declares the id, version, lesson metadata, and any `[security]` settings described under [Security](#security--three-tiers). Omit `[security]` when the nodes use only Tier-0 imports.
 
+### Examples in the gallery
+
+Each folder under the pack's `examples/` that holds a `graph.json` is one example, listed in the [Examples Gallery](/usage/examples-gallery) while the pack is enabled. The file's `gallery` block decides where it sits:
+
+```json
+"gallery": { "main_tag": "training", "tags": ["vision", "cnn"], "order": 10 }
+```
+
+`main_tag` is one of the gallery's main tags (`quickstart`, `training`, `llm`, `data`, `evaluation`, `research`, `deploy`, `architectures`, `concepts`, `papers`, `courses`), and the example is listed there among the built-ins; under `courses` the pack's examples get a sub-heading of their own, which is where the packs shipped with CodefyUI put theirs. `tags` are up to six lowercase, hyphen-joined words that the gallery's tag filter and search use. A pack written before main tags that sets only `"section"` keeps working, because a known `section` is read as the main tag. An example with neither, or with a value the gallery does not know, is filed under **Plugin packs**, one sub-heading per pack. The full rules, `order` and `family` included, are in [Adding an example](/usage/examples-gallery#adding-an-example).
+
 ### Manifest reference
 
 Only fields used by installation or loading are validated. Other fields may be displayed or stored without validation.

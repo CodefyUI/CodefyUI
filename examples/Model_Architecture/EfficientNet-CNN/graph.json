@@ -1,7 +1,7 @@
 {
   "name": "EfficientNet MBConv block",
   "description": "Expand, squeeze-excite, then project",
-  "gallery": { "section": "architectures", "family": "CNN", "order": 3 },
+  "gallery": { "main_tag": "architectures", "tags": ["vision", "cnn"], "order": 30, "family": "CNN" },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,32,16,16", "fill": "randn", "value": 0.0, "requires_grad": false } } },

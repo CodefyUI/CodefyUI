@@ -1,10 +1,7 @@
 {
   "name": "Sigmoid gradients vanish in depth",
   "description": "Deep sigmoid MLP vs the same with ReLU",
-  "gallery": {
-    "section": "papers",
-    "order": 7
-  },
+  "gallery": { "main_tag": "papers", "tags": ["vision", "initialization", "gradients"], "order": 70 },
   "nodes": [
     {
       "id": "start",

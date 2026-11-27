@@ -1,10 +1,7 @@
 {
   "name": "Tensor ops tour",
   "description": "Split, stack, select and pool one grid",
-  "gallery": {
-    "section": "concepts",
-    "order": 15
-  },
+  "gallery": { "main_tag": "concepts", "tags": ["vision", "tensors"], "order": 10 },
   "nodes": [
     {
       "id": "start",

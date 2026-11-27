@@ -1,6 +1,7 @@
 {
   "name": "Confusion matrix as a heatmap",
   "description": "True against predicted, 45 iris rows",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "confusion-matrix", "iris"], "order": 630 },
   "nodes": [
     {
       "id": "start-1",

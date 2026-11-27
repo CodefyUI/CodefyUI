@@ -1,7 +1,7 @@
 {
   "name": "PPO Robotics Controller",
   "description": "376 inputs to 17 action probabilities",
-  "gallery": { "section": "architectures", "family": "RL", "order": 2 },
+  "gallery": { "main_tag": "architectures", "tags": ["rl", "ppo", "robotics"], "order": 20, "family": "RL" },
   "nodes": [
     {
       "id": "start-1",

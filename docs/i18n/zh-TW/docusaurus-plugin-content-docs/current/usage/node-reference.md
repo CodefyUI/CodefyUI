@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: 節點參考
-description: 所有內建節點 — 158 個節點涵蓋 16 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
+description: 所有內建節點 — 159 個節點涵蓋 16 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
 ---
 
 # 節點參考
 
-CodefyUI 內建 **158 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
+CodefyUI 內建 **159 個節點**，涵蓋 **16 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
 
 :::tip
 此表反映目前版本，但後端才是權威來源。請查看即時節點面板或 `GET /api/nodes`，確認目前安裝可用的節點。雙擊畫布可搜尋節點。
@@ -20,7 +20,7 @@ CodefyUI 內建 **158 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 | **RL** | DQN、PPO、EnvWrapper、RewardModel、KLDivergence、PolicyRollout、PPOClipObjective、GroupRelativeAdvantage、Discount、GridWorldEnv、PreferenceDataset、BradleyTerryLoss、BradleyTerryTrain、RLTrainingLoop | 14 |
 | **資料 (Data)** | Dataset、ImageFolderDataset、DataLoader、DatasetBatch、Transform、HuggingFaceDataset、KaggleDataset、TensorInput、TextInput、CSVReader、ColumnSelector、RowSelector、Normalize、SyntheticDataset、SyntheticShapes、SyntheticSegmentation、SyntheticSequence、TrainTestSplit、KFoldSplit、DatasetSplit、ResizeTransform、ToTensorTransform、NormalizeTransform、RandomCrop、RandomHorizontalFlip、RandomRotation、ColorJitter、RandAugment、ComposeTransform、TensorDataset | 30 |
 | **資料流 (Data Flow)** | Map、Reduce、Switch | 3 |
-| **訓練 (Training)** | Optimizer、Loss、TrainingLoop、EvaluateModel、LRScheduler、SequentialModel、BackwardOnce | 7 |
+| **訓練 (Training)** | Optimizer、Loss、TrainingLoop、EvaluateModel、LRScheduler、SequentialModel、BackwardOnce、FreezeParameters | 8 |
 | **IO** | ImageReader、ImageWriter、ImageBatchReader、FileReader、CheckpointSaver、CheckpointLoader、ModelLoader、ModelSaver、Inference、GraphInput、GraphOutput、VideoLoad、VideoWrite | 13 |
 | **控制 (Control)** | Start | 1 |
 | **工具 (Utility)** | Print、Reshape、Concat、Flatten、Linear、Visualize、Embedding、PythonScript、ScatterPlot2D、DecisionBoundary | 10 |
@@ -52,6 +52,7 @@ CodefyUI 內建 **158 個節點**，涵蓋 **16 大類別**。已安裝的 [外�
 - **`VideoWrite` / `VideoLoad`**（IO）— `VideoWrite` 將 `(T, C, H, W)` 或 `(T, H, W, C)` 的影格張量編碼後寫入媒體資料夾（`backend/data/media`，專案目錄模式下為 `assets/media`）。`format` 為 `auto` 時，若 `PATH` 中有 `ffmpeg` 執行檔就寫出 mp4，否則透過 Pillow 寫出 gif；選 `mp4` 則必須有 ffmpeg。相同的 `filename` 會覆寫先前的影片。執行紀錄與檢視器會直接播放 mp4，gif 則以圖片顯示；`preview` 輸出是中間影格的 PNG。`VideoLoad` 會將影片解碼為數值在 `[0, 1]` 的 `(T, 3, H, W)` 影格，並輸出 `fps` 與 `num_frames`；相對的 `path` 會從媒體資料夾讀取。mp4 與 webm 需要 `ffmpeg` 與 `ffprobe` 執行檔，gif 只需要 Pillow；`max_frames` 與 `stride` 可限制保留在記憶體中的影格數。
 - **`ImageWriter` / `ImageBatchReader`**（IO）— `ImageWriter` 把張量存成影像，寫到資料目錄的 `output` 資料夾（`backend/data/output`，專案目錄模式下為 `assets/output`）。`image` 輸入接受 `(C, H, W)` 或 `(H, W)` 的單張影像，或 `(N, C, H, W)` 的批次，數值為 `[0, 1]` 的浮點數或 uint8。超過一張的批次會每張各寫一個檔案，檔名後面加上補零的編號（`shape.png` 會寫成 `shape_0.png`、`shape_1.png`……）。`path`、`paths` 與 `directory` 輸出列出寫入的檔案與資料夾。`ImageBatchReader` 把目錄裡符合樣式的影像堆成 `(N, C, H, W)`；把 `ImageWriter.directory` 接到它選用的 `directory` 輸入，會取代 `directory` 參數，並讓讀取排在寫入之後。接上的目錄和參數一樣，必須位於資料目錄或範例目錄之內。觸發邊不會決定兩個節點的先後，讀取能排在寫入之後靠的是這條資料邊。
 - **`Switch`**（資料流）— 依從 0 開始的索引，轉發其中一個輸入。`selector` 參數設定索引；`selector` 埠有接線時，改用執行時算出的值。接上最後一個空輸入時會再多出一個，最多 16 個。索引超出範圍或指到沒接線的輸入時，執行會停止並回報錯誤；若是 `selector` 參數如此設定，Run 會在任何節點執行前就拒絕。輸出的型別就是已接線輸入的型別，這些輸入必須是同一種型別。用 `selector` 參數選擇時，只接到未選輸入的節點都會被略過：不執行、不快取，也不會出現在匯出的 Python 中，卡片上會顯示**未選取**。用 `selector` 埠選擇時，要到執行中才知道選哪個，所以所有已接線的輸入都會先算完，未被選到的輸入若出錯，執行仍會停止。需要讓多個來源接到同一個輸入時，請把它們接到一個 Switch。
+- **`FreezeParameters`**（訓練）— 對名稱以 `match` 中任一前綴（以逗號分隔，空白表示全部）開頭的參數設定 `requires_grad`；開啟 `invert` 則作用在不符合的參數上。`match` 填分類頭的前綴並開啟 `invert`，就是只訓練分類頭，這是遷移學習的第一步。模型就地修改後往下傳，`report` 輸出列出凍結與可訓練的參數數。請參閱[範例集](./examples-gallery)中的 **Transfer with a frozen backbone**。
 
 ## 連接埠資料型別 {/* #port-data-types */}
 

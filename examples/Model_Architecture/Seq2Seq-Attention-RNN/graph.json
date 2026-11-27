@@ -1,7 +1,7 @@
 {
   "name": "Seq2Seq with Attention",
   "description": "Each decoder step queries 10 states",
-  "gallery": { "section": "architectures", "family": "RNN", "order": 3 },
+  "gallery": { "main_tag": "architectures", "tags": ["nlp", "rnn", "attention"], "order": 30, "family": "RNN" },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -230, "y": 0 }, "data": { "params": {} } },
 

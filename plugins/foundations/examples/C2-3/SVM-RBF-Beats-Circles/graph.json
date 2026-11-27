@@ -1,6 +1,7 @@
 {
   "name": "C2-3 SVM RBF kernel trick",
   "description": "A boundary that closes into a ring",
+  "gallery": { "main_tag": "courses", "tags": ["tabular", "svm"], "order": 150 },
   "nodes": [
     { "id": "note-overview", "type": "note", "position": { "x": -720, "y": 0 },
       "data": { "noteKind": "text",

@@ -1,7 +1,7 @@
 {
   "name": "ConvNeXt block",
   "description": "Patchify stem, one 7x7, two 1x1 convs",
-  "gallery": { "section": "architectures", "family": "CNN", "order": 4 },
+  "gallery": { "main_tag": "architectures", "tags": ["vision", "cnn"], "order": 40, "family": "CNN" },
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -250, "y": 0 }, "data": { "params": {} } },
     { "id": "input", "type": "TensorCreate", "position": { "x": 0, "y": 0 }, "data": { "params": { "shape": "2,3,32,32", "fill": "randn", "value": 0.0, "requires_grad": false } } },

@@ -15,6 +15,7 @@ vi.mock('../../api/rest', async (importOriginal) => {
   return {
     ...actual,
     listExamples: vi.fn(),
+    listExampleTags: vi.fn(),
     loadExample: vi.fn(),
   };
 });
@@ -81,19 +82,29 @@ function dropHandlers() {
   return { onDragOver: vi.fn(), onDrop: vi.fn() };
 }
 
-function renderOverlay(handlers = dropHandlers()) {
-  return render(<EmptyCanvasOverlay {...handlers} />);
+function renderOverlay(handlers = dropHandlers(), onDismiss?: () => void) {
+  return render(<EmptyCanvasOverlay {...handlers} onDismiss={onDismiss} />);
 }
+
+/** A main-tag chip, by the start of its name (the count follows it). */
+const tab = (name: RegExp) => screen.getByRole('tab', { name });
+
+/** The section titles of the All view, in order. */
+const sectionTitles = () =>
+  [...document.querySelectorAll('[class*="sectionTitle"]')]
+    .filter((el) => !el.className.includes('subsectionTitle'))
+    .map((el) => el.textContent);
 
 /**
  * Names of the example cards in DOM order. Filtered by class rather than
  * taken from every button, because the overlay also carries the
- * browse-the-gallery button (core#128), which is not a card.
+ * browse-the-gallery button (core#128), which is not a card. The "Blank
+ * graph" card that always leads is left out; its own cases assert it.
  */
 function cardNames(): (string | null | undefined)[] {
   return screen
     .getAllByRole('button')
-    .filter((b) => b.className.includes('presetCard'))
+    .filter((b) => b.className.includes('presetCard') && !b.className.includes('blankCard'))
     .map((b) => b.querySelector('span')?.textContent);
 }
 
@@ -107,6 +118,11 @@ describe('EmptyCanvasOverlay', () => {
     useToastStore.setState({ toasts: [] });
     mockedRest.listExamples.mockReset();
     mockedRest.loadExample.mockReset();
+    // An older server: no tags route, so the order comes from the fallback.
+    mockedRest.listExampleTags.mockReset();
+    mockedRest.listExampleTags.mockRejectedValue(new Error('404'));
+    // No chip remembered from an earlier case.
+    window.localStorage.clear();
     mockedUtils.resolveSerializedNodes.mockClear();
     mockedUtils.resolveSerializedEdges.mockClear();
   });
@@ -151,83 +167,171 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getByText('Pick an example')).toBeInTheDocument();
   });
 
-  it('renders the declared section, a known-category badge, and node counts', async () => {
+  it('opens on Quick start, with the main tags as chips and the node counts', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Train MLP', category: 'Usage_Example', node_count: 5, section: 'quickstart' }),
+      ex({ name: 'Train MLP', category: 'Usage_Example', node_count: 5, main_tag: 'quickstart' }),
       ex({
         name: 'ResNet',
         category: 'Model_Architecture',
         path: '/a/resnet.json',
-        section: 'architectures',
+        main_tag: 'architectures',
       }),
     ]);
     renderOverlay();
 
     await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
-    expect(screen.getByText('Quick Start')).toBeInTheDocument();
-    expect(screen.getByText('Model Architectures')).toBeInTheDocument();
-    // category label has underscores replaced by spaces
-    expect(screen.getByText('Usage Example')).toBeInTheDocument();
-    expect(screen.getByText('Model Architecture')).toBeInTheDocument();
-    // node count line
+    expect(screen.getAllByRole('tab').map((el) => el.textContent)).toEqual([
+      'All2', 'Quick start1', 'Architectures1',
+    ]);
+    expect(tab(/^Quick start/)).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', tab(/^Quick start/).id);
+    // One main tag: its cards only, no section title (the chip says it).
+    expect(cardNames()).toEqual(['Train MLP']);
+    expect(sectionTitles()).toEqual([]);
+    // The folder ("Usage Example") is no longer printed on a card.
+    expect(screen.queryByText('Usage Example')).toBeNull();
     expect(screen.getByText('5 nodes')).toBeInTheDocument();
   });
 
-  // #684: the chip read "Usage Example" in the Chinese UI.
-  it('labels the category chip in the UI language', async () => {
+  it('prints at most two tags on a card, in the UI language, never the main tag', async () => {
     act(() => useI18n.setState({ locale: 'zh-TW' }));
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Train MLP', category: 'Usage_Example', section: 'quickstart' }),
-      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris', section: 'concepts' }),
+      ex({
+        name: 'Train MLP',
+        main_tag: 'quickstart',
+        tags: ['quickstart', 'vision', 'cnn', 'augmentation', 'mnist'],
+      }),
     ]);
     renderOverlay();
 
     await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
-    expect(screen.getByText('使用範例')).toBeInTheDocument();
-    expect(screen.getByText('傳統機器學習')).toBeInTheDocument();
-    expect(screen.queryByText('Usage Example')).toBeNull();
+    const chips = [...document.querySelectorAll('[class*="difficultyBadge"]')].map((el) => el.textContent);
+    expect(chips).toEqual(['視覺', 'CNN']);
+    const more = document.querySelector('[class*="moreTags"]')!;
+    expect(more.textContent).toBe('+2');
+    expect(more.getAttribute('title')).toContain('資料增強');
+    expect(screen.queryByText('使用範例')).toBeNull();
   });
 
-  it('renders the sections in the contract order, whatever order the server listed', async () => {
-    // Deliberately shuffled: the order comes from the gallery metadata each
-    // example carries, not from where the backend happened to put it.
+  it('switches with the chips and the arrow keys, and remembers the choice for the next tab', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Train CNN', path: 'q/1', main_tag: 'quickstart' }),
+      ex({ name: 'Train GPT', path: 't/1', main_tag: 'training' }),
+      ex({ name: 'Dropout', path: 'p/1', main_tag: 'papers' }),
+    ]);
+    const { unmount } = renderOverlay();
+    await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
+
+    fireEvent.click(tab(/^Training/));
+    expect(cardNames()).toEqual(['Train GPT']);
+    expect(tab(/^Training/)).toHaveAttribute('tabindex', '0');
+    expect(tab(/^Quick start/)).toHaveAttribute('tabindex', '-1');
+
+    fireEvent.keyDown(tab(/^Training/), { key: 'ArrowRight' });
+    expect(tab(/^Papers/)).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(tab(/^Papers/));
+    expect(cardNames()).toEqual(['Dropout']);
+    // Wraps around: right of the last chip is All.
+    fireEvent.keyDown(tab(/^Papers/), { key: 'ArrowRight' });
+    expect(tab(/^All/)).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(tab(/^All/), { key: 'ArrowLeft' });
+    expect(tab(/^Papers/)).toHaveAttribute('aria-selected', 'true');
+    unmount();
+
+    // The next new tab opens on the chip chosen last.
+    renderOverlay();
+    await waitFor(() => expect(screen.getByText('Dropout')).toBeInTheDocument());
+    expect(tab(/^Papers/)).toHaveAttribute('aria-selected', 'true');
+    expect(cardNames()).toEqual(['Dropout']);
+  });
+
+  it('falls back to Quick start when the remembered chip has no examples, or storage is unreadable', async () => {
+    window.localStorage.setItem('codefyui.examples.mainTag', 'deploy');
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Train CNN', path: 'q/1', main_tag: 'quickstart' }),
+      ex({ name: 'Train GPT', path: 't/1', main_tag: 'training' }),
+    ]);
+    const { unmount } = renderOverlay();
+    await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
+    expect(tab(/^Quick start/)).toHaveAttribute('aria-selected', 'true');
+    unmount();
+
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    renderOverlay();
+    await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
+    expect(tab(/^Quick start/)).toHaveAttribute('aria-selected', 'true');
+    // Choosing still works; it is only not remembered.
+    fireEvent.click(tab(/^Training/));
+    expect(cardNames()).toEqual(['Train GPT']);
+    expect(getItem).toHaveBeenCalled();
+    expect(setItem).toHaveBeenCalled();
+  });
+
+  it('leads with a Blank graph card that dismisses the overlay', async () => {
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Train CNN', main_tag: 'quickstart' })]);
+    const onDismiss = vi.fn();
+    renderOverlay(dropHandlers(), onDismiss);
+    await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
+
+    const cards = screen.getAllByRole('button').filter((b) => b.className.includes('presetCard'));
+    expect(cards[0]).toHaveTextContent('Blank graph');
+    fireEvent.click(cards[0]);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(mockedRest.loadExample).not.toHaveBeenCalled();
+  });
+
+  it('still offers the Blank graph card when there are no examples', async () => {
+    mockedRest.listExamples.mockResolvedValue([]);
+    renderOverlay();
+    expect(await screen.findByText('Blank graph')).toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).toBeNull();
+  });
+
+  it('renders the main tags in gallery order under All, papers and courses after the practical ones', async () => {
+    // Deliberately shuffled: the order comes from the main-tag order, not
+    // from where the backend happened to put each example.
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Misc', category: 'Something_Else', path: 'X/misc' }),
       ex({ name: 'Plugin Demo', category: 'Classical', path: 'plugin:c2/Classical/Foo', source: 'plugin:c2' }),
-      ex({ name: 'ResNet Arch', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
-      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris', section: 'concepts' }),
-      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Analogy', section: 'llm' }),
-      ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT', section: 'training' }),
-      ex({ name: 'Dropout', category: 'Papers', path: 'Papers/Dropout', section: 'papers' }),
-      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN', section: 'quickstart' }),
+      ex({ name: 'Lesson', category: 'Classical', path: 'plugin:c3/Lesson', source: 'plugin:c3', main_tag: 'courses' }),
+      ex({ name: 'ResNet Arch', category: 'Model_Architecture', path: 'm/resnet', main_tag: 'architectures', family: 'CNN' }),
+      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris', main_tag: 'concepts' }),
+      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Analogy', main_tag: 'llm' }),
+      ex({ name: 'Dropout', category: 'Papers', path: 'Papers/Dropout', main_tag: 'papers' }),
+      ex({ name: 'Confusion', path: 'Eval/Confusion', main_tag: 'evaluation' }),
+      ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT', main_tag: 'training' }),
+      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN', main_tag: 'quickstart' }),
     ]);
     renderOverlay();
     await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
+    fireEvent.click(tab(/^All/));
 
-    const body = document.body.textContent ?? '';
-    const positions = [
-      'Quick Start',
+    expect(sectionTitles()).toEqual([
+      'Quick start',
       'Training',
-      'Paper Reproductions',
-      'LLM and RAG',
+      'LLM & RAG',
+      'Evaluation',
+      'Architectures',
       'Concepts',
-      'Model Architectures',
-      'Plugin Packs',
+      'Papers',
+      'Courses',
+      'Plugin packs',
       'Other',
-    ].map((title) => {
-      const idx = body.indexOf(title);
-      expect(idx, title).toBeGreaterThanOrEqual(0);
-      return idx;
-    });
-    expect(positions).toEqual([...positions].sort((a, b) => a - b));
-
+    ]);
     expect(cardNames()).toEqual([
       'Train CNN',
       'Train GPT',
-      'Dropout',
       'Analogy',
-      'Iris',
+      'Confusion',
       'ResNet Arch',
+      'Iris',
+      'Dropout',
+      'Lesson',
       'Plugin Demo',
       'Misc',
     ]);
@@ -235,10 +339,10 @@ describe('EmptyCanvasOverlay', () => {
 
   it('orders a section by the declared order, nulls last, ties as listed', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'Unordered', path: 'c/unordered', section: 'concepts' }),
-      ex({ name: 'Third', path: 'c/third', section: 'concepts', order: 3 }),
-      ex({ name: 'First', path: 'c/first', section: 'concepts', order: 1 }),
-      ex({ name: 'Second', path: 'c/second', section: 'concepts', order: 2 }),
+      ex({ name: 'Unordered', path: 'c/unordered', main_tag: 'concepts' }),
+      ex({ name: 'Third', path: 'c/third', main_tag: 'concepts', order: 3 }),
+      ex({ name: 'First', path: 'c/first', main_tag: 'concepts', order: 1 }),
+      ex({ name: 'Second', path: 'c/second', main_tag: 'concepts', order: 2 }),
     ]);
     renderOverlay();
     await waitFor(() => expect(screen.getByText('First')).toBeInTheDocument());
@@ -248,52 +352,43 @@ describe('EmptyCanvasOverlay', () => {
   it('gives the architecture families and the packs a sub-header', async () => {
     usePluginStore.setState({ byId: { c2: { id: 'c2', name: 'Chapter 2' } } as never });
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
-      ex({ name: 'LSTM', category: 'Model_Architecture', path: 'm/lstm', section: 'architectures', family: 'RNN' }),
+      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/resnet', main_tag: 'architectures', family: 'CNN' }),
+      ex({ name: 'LSTM', category: 'Model_Architecture', path: 'm/lstm', main_tag: 'architectures', family: 'RNN' }),
       ex({ name: 'Lesson', category: 'Classical', path: 'plugin:c2/Lesson', source: 'plugin:c2' }),
     ]);
     renderOverlay();
+    // No Quick start examples: the overlay opens on All.
     await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
+    expect(tab(/^All/)).toHaveAttribute('aria-selected', 'true');
 
     const subheads = [...document.querySelectorAll('[class*="subsectionTitle"]')].map(
       (el) => el.textContent,
     );
     expect(subheads).toEqual(['CNN', 'RNN', 'Chapter 2']);
     // One section title above the two families, not one per family.
-    expect(screen.getAllByText('Model Architectures')).toHaveLength(1);
+    expect(sectionTitles()).toEqual(['Architectures', 'Plugin packs']);
   });
 
-  it('leaves the chip off a card whose sub-header already says it', async () => {
+  it('files a legacy entry that sends only `section` under that section', async () => {
+    // An older server, or a pack written before tags: no main_tag at all.
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/resnet', section: 'architectures', family: 'CNN' }),
-      ex({ name: 'Iris', category: 'Classical', path: 'c/iris', section: 'concepts' }),
-      ex({ name: 'Tiny CNN', category: 'Usage_Example', path: 'u/tiny', section: 'training', family: 'CNN' }),
+      ex({ name: 'Old Pack Demo', path: 'plugin:c2/Old', source: 'plugin:c2', section: 'training' }),
+      ex({ name: 'Old Builtin', path: 'u/old', section: 'quickstart' }),
     ]);
     renderOverlay();
-    await waitFor(() => expect(screen.getByText('ResNet')).toBeInTheDocument());
-
-    const chips = [...document.querySelectorAll('[class*="difficultyBadge"]')].map(
-      (el) => el.textContent,
-    );
-    // Training, then concepts, then the architectures. ResNet sits under a
-    // "CNN" sub-header, so a "CNN" chip on it would say the same thing twice;
-    // Tiny CNN has no sub-header above it, so its family chip stays.
-    expect(chips).toEqual(['CNN', 'Classical']);
-    // The node count is what is left in that card's footer.
-    expect(screen.getByText('ResNet').closest('button')).toHaveTextContent('3 nodes');
+    await waitFor(() => expect(screen.getByText('Old Builtin')).toBeInTheDocument());
+    fireEvent.click(tab(/^Training/));
+    expect(cardNames()).toEqual(['Old Pack Demo']);
   });
 
-  it('puts a built-in that declares no section under Other', async () => {
+  it('puts a built-in that declares no main tag under Other', async () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Misc Demo', category: 'Something_Else', path: '/x/misc.json' }),
     ]);
     renderOverlay();
     await waitFor(() => expect(screen.getByText('Misc Demo')).toBeInTheDocument());
-    // Unknown category still renders its label (replaced underscores).
-    expect(screen.getByText('Something Else')).toBeInTheDocument();
-    expect(screen.getByText('Other')).toBeInTheDocument();
-    expect(screen.queryByText('Quick Start')).toBeNull();
-    expect(screen.queryByText('Model Architectures')).toBeNull();
+    expect(sectionTitles()).toEqual(['Other']);
+    expect(screen.getAllByRole('tab').map((el) => el.textContent)).toEqual(['All1', 'Other1']);
   });
 
   it('truncates descriptions longer than 40 columns', async () => {

@@ -151,3 +151,20 @@ The MNIST database was created by Yann LeCun (Courant Institute, NYU),
 Corinna Cortes (Google Labs), and Christopher J. C. Burges (Microsoft
 Research), derived from NIST Special Databases 1 and 3. Source:
 http://yann.lecun.com/exdb/mnist/.
+
+## 4. Handwritten digits sample data
+
+`backend/data/samples/digits.csv` holds the 1,797 8x8 handwritten digit
+images (64 pixel columns with integer values 0 to 16, and a `label` column)
+used by several built-in examples. It is the test set of the UCI Optical
+Recognition of Handwritten Digits dataset, exported from the copy that
+scikit-learn ships as `sklearn.datasets.load_digits`, with no change to the
+values.
+
+Alpaydin, E. & Kaynak, C. (1998). Optical Recognition of Handwritten Digits
+[Dataset]. UCI Machine Learning Repository. https://doi.org/10.24432/C50P49.
+
+The dataset is licensed under the Creative Commons Attribution 4.0
+International license (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/legalcode. The file is
+reformatted as CSV with a header row; no other changes were made.

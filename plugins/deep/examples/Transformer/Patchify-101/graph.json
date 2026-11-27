@@ -1,6 +1,7 @@
 {
   "name": "Patchify 101",
   "description": "One image becomes 16 48-number tokens",
+  "gallery": { "main_tag": "courses", "tags": ["vision", "transformer"], "order": 470 },
   "nodes": [
     { "id": "start-1", "type": "Start",         "position": { "x": -240, "y":    0 }, "data": { "params": {} } },
     { "id": "image",   "type": "TensorInput",   "position": { "x":   40, "y":    0 }, "data": { "params": { "shape": "1,3,16,16", "dtype": "float32", "value_mode": "random", "seed": 11 } } },

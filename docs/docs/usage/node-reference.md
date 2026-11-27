@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: Node Reference
-description: Every built-in node — 158 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
+description: Every built-in node — 159 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
 ---
 
 # Node Reference
 
-CodefyUI ships **158 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
+CodefyUI ships **159 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
 
 :::tip
 This table reflects the current release, but the backend is authoritative. Check the live node palette or `GET /api/nodes` for the nodes available in your installation. Double-click the canvas to search for a node.
@@ -20,7 +20,7 @@ This table reflects the current release, but the backend is authoritative. Check
 | **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence, PolicyRollout, PPOClipObjective, GroupRelativeAdvantage, Discount, GridWorldEnv, PreferenceDataset, BradleyTerryLoss, BradleyTerryTrain, RLTrainingLoop | 14 |
 | **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, KFoldSplit, DatasetSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform, TensorDataset | 30 |
 | **Data Flow** | Map, Reduce, Switch | 3 |
-| **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce | 7 |
+| **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce, FreezeParameters | 8 |
 | **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference, GraphInput, GraphOutput, VideoLoad, VideoWrite | 13 |
 | **Control** | Start | 1 |
 | **Utility** | Print, Reshape, Concat, Flatten, Linear, Visualize, Embedding, PythonScript, ScatterPlot2D, DecisionBoundary | 10 |
@@ -52,6 +52,7 @@ This table reflects the current release, but the backend is authoritative. Check
 - **`VideoWrite` / `VideoLoad`** (IO) — `VideoWrite` encodes a frame tensor, `(T, C, H, W)` or `(T, H, W, C)`, into the media folder (`backend/data/media`, or `assets/media` in a project directory). With `format` at `auto` it writes an mp4 when an `ffmpeg` binary is on `PATH` and a gif through Pillow otherwise; `mp4` requires ffmpeg. The same `filename` overwrites the previous clip. The Execution Log and the Inspector play an mp4 inline and show a gif as an image, and the `preview` output is a PNG of the middle frame. `VideoLoad` decodes a video into `(T, 3, H, W)` frames in `[0, 1]` plus `fps` and `num_frames`, and reads a relative `path` from the media folder. mp4 and webm need the `ffmpeg` and `ffprobe` binaries, gif needs only Pillow, and `max_frames` and `stride` limit how many frames are held in memory.
 - **`ImageWriter` / `ImageBatchReader`** (IO) — `ImageWriter` saves a tensor as an image under the data directory's `output` folder (`backend/data/output`, or `assets/output` in a project directory). Its `image` input takes a `(C, H, W)` or `(H, W)` image, or an `(N, C, H, W)` batch, as float in `[0, 1]` or uint8. A batch of more than one image is written as one file per image with a zero-padded index after the name (`shape.png` becomes `shape_0.png`, `shape_1.png`, ...). The `path`, `paths` and `directory` outputs name what was written. `ImageBatchReader` stacks every matching image in a directory into `(N, C, H, W)`; wiring `ImageWriter.directory` into its optional `directory` input replaces the `directory` param and runs the read after the write. A wired directory must lie inside the data or examples directories, as the param must. A trigger edge does not order two nodes, so this data edge is what makes the read follow the write.
 - **`Switch`** (Data Flow) — forwards one of its inputs, picked by a 0-based index. The `selector` param sets the index; wiring the `selector` port overrides it with a value computed during the run. Wiring the last empty input adds another, up to 16. An index that is out of range or names an unwired input stops the run with an error, and Run refuses a `selector` param that does so before anything runs. The output carries the type of the wired inputs, which must all be the same type. With the `selector` param, the run skips every node that only feeds inputs the Switch does not pick: it is not executed, cached or exported, and its card says **not selected**. With the `selector` port, the choice is made during the run, so every wired input is computed first, and an error in an input the Switch then does not pick still stops the run. When several sources should feed one input, wire them into a Switch.
+- **`FreezeParameters`** (Training) — sets `requires_grad` for the parameters whose names start with one of the comma-separated prefixes in `match` (empty matches all), or for the others when `invert` is on. Freezing with `match` set to the classifier head's prefix and `invert` on trains only the head, the usual first step of transfer learning. The model is changed in place and passed on; the `report` output counts frozen and trainable parameters. See **Transfer with a frozen backbone** in [Examples Gallery](./examples-gallery).
 
 ## Port data types
 

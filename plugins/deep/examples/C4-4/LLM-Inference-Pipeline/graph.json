@@ -1,6 +1,7 @@
 {
   "name": "C4-4 LLM inference pipeline",
   "description": "One layer: prompt in, hidden states out",
+  "gallery": { "main_tag": "courses", "tags": ["nlp", "transformer", "inference"], "order": 380 },
   "nodes": [
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "text",  "type": "TextInput",              "position": { "x":  -50, "y":   0 }, "data": { "params": { "value": "I learned that the cat" } } },

@@ -1,0 +1,233 @@
+{
+  "name": "Inspect a dataset first",
+  "description": "Counts, samples and pixel statistics",
+  "gallery": {
+    "main_tag": "data",
+    "tags": [
+      "vision",
+      "digits",
+      "statistics"
+    ],
+    "order": 10
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/digits.csv",
+          "target_column": "label",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "inspect",
+      "type": "PythonScript",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Class counts, five samples of every digit as one image, and the mean\n    # image of the whole set.\n    x = inputs[\"in1\"]\n    labels = torch.tensor([int(v) for v in inputs[\"in2\"]], device=device)\n    counts = torch.bincount(labels, minlength=10)\n    rows = []\n    for digit in range(10):\n        picks = x[labels == digit][:5].reshape(-1, 8, 8)\n        rows.append(torch.cat(list(picks), dim=1))\n    grid = torch.cat(rows, dim=0)\n    mean_image = x.mean(dim=0).reshape(8, 8)\n    never_on = int((x.max(dim=0).values == 0).sum())\n    report = (f\"{len(labels)} images; per digit {int(counts.min())} to {int(counts.max())}; \"\n              f\"{never_on} of 64 pixels are 0 in every image\")\n    return {\"out1\": counts.float(), \"out2\": grid, \"out3\": mean_image, \"out4\": report}\n",
+          "input_ports": 2,
+          "output_ports": 4,
+          "input_types": "TENSOR,LIST",
+          "output_types": "TENSOR,TENSOR,TENSOR,STRING"
+        }
+      }
+    },
+    {
+      "id": "counts",
+      "type": "Visualize",
+      "position": {
+        "x": 1417,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "title": "Images per digit",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "grid",
+      "type": "Visualize",
+      "position": {
+        "x": 1417,
+        "y": 156
+      },
+      "data": {
+        "params": {
+          "title": "Five samples of each digit",
+          "plot_type": "image"
+        }
+      }
+    },
+    {
+      "id": "mean",
+      "type": "Visualize",
+      "position": {
+        "x": 1417,
+        "y": 572
+      },
+      "data": {
+        "params": {
+          "title": "Mean image",
+          "plot_type": "heatmap"
+        }
+      }
+    },
+    {
+      "id": "report",
+      "type": "Print",
+      "position": {
+        "x": 1777,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "label": "summary"
+        }
+      }
+    },
+    {
+      "id": "stats",
+      "type": "TensorStats",
+      "position": {
+        "x": 720,
+        "y": 572
+      },
+      "data": {
+        "params": {
+          "precision": 4
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Look at a dataset before training on it. This one is 1,797 handwritten digits, 8x8 pixels with values 0 to 16, from the UCI repository (backend/data/samples/digits.csv). The script counts the images per digit (174 to 183, so the classes are balanced and accuracy is a fair score), draws five samples of every digit, and averages all images into one. TensorStats gives the pixel range and mean (4.88). The mean image is dark along the left and right edges, and 3 of the 64 pixels are 0 in every image, so they carry no information.\n\n訓練之前先看資料。這份資料是 1,797 張手寫數字，8x8 像素、值從 0 到 16，來自 UCI 資料庫（backend/data/samples/digits.csv）。腳本計算每個數字有幾張（174 到 183 張，各類別數量相當，所以正確率是公平的指標），畫出每個數字的五個樣本，並把所有影像平均成一張。TensorStats 給出像素的範圍與平均（4.88）。平均影像的左右兩側幾乎全暗，64 個像素中有 3 個在每張影像都是 0，不帶任何資訊。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-next",
+      "type": "note",
+      "position": {
+        "x": 1797,
+        "y": 572
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Swap the CSVReader path for your own CSV (one column per feature, one label column) and the same checks apply. A class with far fewer rows than the others is the first thing to fix, or to account for with a weighted loss.\n\n把 CSVReader 的路徑換成你自己的 CSV（每個特徵一欄，加一個標籤欄），同樣的檢查都適用。某個類別的筆數遠少於其他類別，是最先要處理的事，或是用加權的 loss 補償。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "mean",
+        "boundOffset": {
+          "x": 380,
+          "y": 0
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "inspect",
+      "sourceHandle": "tensor",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "csv",
+      "target": "inspect",
+      "sourceHandle": "labels",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "inspect",
+      "target": "counts",
+      "sourceHandle": "out1",
+      "targetHandle": "data",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "inspect",
+      "target": "grid",
+      "sourceHandle": "out2",
+      "targetHandle": "data",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "inspect",
+      "target": "mean",
+      "sourceHandle": "out3",
+      "targetHandle": "data",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "inspect",
+      "target": "report",
+      "sourceHandle": "out4",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "csv",
+      "target": "stats",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor",
+      "type": "data"
+    }
+  ]
+}

@@ -17,7 +17,7 @@ import { pluginEntry as catalogEntry } from '../../test/pluginEntry';
 // are exercised end to end rather than asserted as "a function was called".
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
-  return { ...actual, listExamples: vi.fn(), loadExample: vi.fn() };
+  return { ...actual, listExamples: vi.fn(), listExampleTags: vi.fn(), loadExample: vi.fn() };
 });
 
 const mockedRest = vi.mocked(rest);
@@ -78,6 +78,10 @@ beforeEach(() => {
   mockedRest.listExamples.mockReset();
   mockedRest.loadExample.mockReset();
   mockedRest.listExamples.mockResolvedValue([]);
+  // No tags route unless a case gives one: the order and counts then come
+  // from the list itself, as against an older server.
+  mockedRest.listExampleTags.mockReset();
+  mockedRest.listExampleTags.mockRejectedValue(new Error('404'));
 });
 
 afterEach(() => {
@@ -130,7 +134,7 @@ describe('TemplateGalleryModal', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     // The same sections, in the same order, as the sidebar's Templates tab and
     // the empty-canvas overlay (#141).
-    expect(headings()).toEqual(['Quick Start', 'Model Architectures']);
+    expect(headings()).toEqual(['Quick start', 'Architectures']);
     expect(within(grid()).getByText('ResNet')).toBeInTheDocument();
     // The canvas keeps its own graph while the gallery is up.
     expect(activeTab().nodes.map((n) => n.id)).toEqual(['mine']);
@@ -152,21 +156,26 @@ describe('TemplateGalleryModal', () => {
     expect(headings()).toEqual(['CNN', 'RNN', 'Chapter 2']);
   });
 
-  it('leaves the chip off a card whose group heading already says it', async () => {
+  it('prints at most two free tags on a card, never the main tag, and +n for the rest', async () => {
     mockedRest.listExamples.mockResolvedValue([
-      ex({ name: 'ResNet', category: 'Model_Architecture', path: 'm/1', section: 'architectures', family: 'CNN' }),
-      ex({ name: 'Iris', category: 'Classical', path: 'c/1', section: 'concepts' }),
-      ex({ name: 'Tiny CNN', category: 'Usage_Example', path: 'u/1', section: 'training', family: 'CNN' }),
+      ex({
+        name: 'Augment',
+        path: 'u/1',
+        main_tag: 'training',
+        tags: ['training', 'vision', 'cnn', 'augmentation', 'mnist'],
+      }),
+      ex({ name: 'Iris', category: 'Classical', path: 'c/1', main_tag: 'data', tags: ['data', 'tabular'] }),
     ]);
 
     render(<TemplateGalleryModal />);
-    await waitFor(() => expect(within(grid()).getByText('ResNet')).toBeInTheDocument());
+    await waitFor(() => expect(within(grid()).getByText('Augment')).toBeInTheDocument());
 
     const chips = [...grid().querySelectorAll('[class*="cardChip"]')].map((el) => el.textContent);
-    // Training, then concepts, then the architectures. ResNet sits in the group
-    // headed "CNN", so a "CNN" chip on it would say the same thing twice; Tiny
-    // CNN's group is headed "Training", so its family chip stays.
-    expect(chips).toEqual(['CNN', 'Classical']);
+    // The folder ("Usage Example") is no longer on the card: the tags are.
+    expect(chips).toEqual(['Vision', 'CNN', 'Tabular']);
+    const more = grid().querySelector('[class*="cardMore"]')!;
+    expect(more.textContent).toBe('+2');
+    expect(more.getAttribute('title')).toBe('2 more tags: Augmentation, MNIST');
     // The detail pane still names the category of whatever is chosen — the
     // first card shown, until a card is clicked (#678) — because it is the one
     // place with room for the example's own provenance.
@@ -208,12 +217,12 @@ describe('TemplateGalleryModal', () => {
     expect(within(grid()).getByText('Sampler')).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'zzzz' } });
-    expect(screen.getByText('No matching examples')).toBeInTheDocument();
+    expect(screen.getByText('No examples match these filters')).toBeInTheDocument();
   });
 
   // #684: the chip and the detail pane named the category in English in the
   // Chinese UI. A search matches it in both languages.
-  it('names the category in the UI language and finds it by either name', async () => {
+  it('names the category in the UI language in the detail pane and finds it by either name', async () => {
     useI18n.setState({ locale: 'zh-TW' });
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Train CNN', category: 'Usage_Example', path: 'u/1', section: 'training' }),
@@ -223,8 +232,6 @@ describe('TemplateGalleryModal', () => {
     const zhGrid = () => screen.getByRole('region', { name: '範例清單' });
     await waitFor(() => expect(within(zhGrid()).getByText('Train CNN')).toBeInTheDocument());
 
-    const chips = [...zhGrid().querySelectorAll('[class*="cardChip"]')].map((el) => el.textContent);
-    expect(chips).toEqual(['使用範例', '傳統機器學習']);
     expect(within(screen.getByRole('complementary', { name: '範例詳情' })).getByText('使用範例')).toBeInTheDocument();
 
     const input = screen.getByPlaceholderText('搜尋範例...');
@@ -470,6 +477,188 @@ describe('TemplateGalleryModal', () => {
     await screen.findByText('No examples available');
     fireEvent.click(screen.getByRole('button', { name: 'Close template gallery' }));
     expect(useUIStore.getState().templateGalleryOpen).toBe(false);
+  });
+
+  // ── Phase 3: main-tag chips, the tag filter, the empty state ──
+
+  describe('filters', () => {
+    // Two tags on three examples (above the threshold), two below it.
+    const catalog = () => [
+      ex({ name: 'Paper', path: 'p/1', main_tag: 'papers', tags: ['papers', 'tabular'] }),
+      ex({ name: 'Train A', path: 't/1', main_tag: 'training', tags: ['training', 'vision', 'cnn'] }),
+      ex({ name: 'Train B', path: 't/2', main_tag: 'training', tags: ['training', 'vision'] }),
+      ex({ name: 'Eval', path: 'e/1', main_tag: 'evaluation', tags: ['evaluation', 'vision', 'cnn', 'nlp'] }),
+      ex({ name: 'Chat', path: 'l/1', main_tag: 'llm', tags: ['llm', 'nlp', 'cnn'] }),
+      ex({ name: 'Lesson', path: 'plugin:c2/1', source: 'plugin:c2', main_tag: 'courses', tags: ['courses'] }),
+    ];
+    const tabs = () => within(screen.getByRole('tablist', { name: 'Example categories' })).getAllByRole('tab');
+    const tab = (name: RegExp) => screen.getByRole('tab', { name });
+    const cardNames = () =>
+      within(grid())
+        .queryAllByRole('button')
+        .filter((b) => b.hasAttribute('aria-pressed'))
+        .map((c) => c.querySelector('span')!.textContent);
+
+    it('opens on All, with the practical categories before papers and courses', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+
+      expect(tabs().map((el) => el.getAttribute('aria-selected'))[0]).toBe('true');
+      // Each chip is its name and its count, in text.
+      expect(tabs().map((el) => el.textContent)).toEqual([
+        'All6', 'Training2', 'LLM & RAG1', 'Evaluation1', 'Papers1', 'Courses1',
+      ]);
+      expect(headings()).toEqual(['Training', 'LLM & RAG', 'Evaluation', 'Papers', 'c2']);
+    });
+
+    it('follows the main-tag order the server sends', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      mockedRest.listExampleTags.mockResolvedValue({
+        // Deliberately not the built-in order: the server's wins.
+        main_tags: [
+          { id: 'evaluation', order: 1, count: 1 },
+          { id: 'training', order: 2, count: 2 },
+          { id: 'llm', order: 3, count: 1 },
+          { id: 'papers', order: 4, count: 1 },
+          { id: 'courses', order: 5, count: 1 },
+        ],
+        tags: [],
+      });
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+      await waitFor(() => expect(headings()[0]).toBe('Evaluation'));
+      expect(headings()).toEqual(['Evaluation', 'Training', 'LLM & RAG', 'Papers', 'c2']);
+    });
+
+    it('narrows to one main tag, and the arrow keys move along the chips', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+
+      fireEvent.click(tab(/^Training/));
+      expect(tab(/^Training/)).toHaveAttribute('aria-selected', 'true');
+      expect(tab(/^Training/)).toHaveAttribute('tabindex', '0');
+      expect(tab(/^All/)).toHaveAttribute('tabindex', '-1');
+      expect(cardNames()).toEqual(['Train A', 'Train B']);
+
+      fireEvent.keyDown(tab(/^Training/), { key: 'ArrowRight' });
+      expect(tab(/^LLM/)).toHaveAttribute('aria-selected', 'true');
+      expect(document.activeElement).toBe(tab(/^LLM/));
+      expect(cardNames()).toEqual(['Chat']);
+
+      fireEvent.keyDown(tab(/^LLM/), { key: 'Home' });
+      expect(tab(/^All/)).toHaveAttribute('aria-selected', 'true');
+      expect(cardNames()).toHaveLength(6);
+    });
+
+    it('offers only tags on three or more examples until More is pressed', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+
+      const toggle = screen.getByRole('button', { name: 'Filter by tag' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+      const group = () => screen.getByRole('group', { name: 'Filter by tag' });
+      const offered = () =>
+        within(group())
+          .getAllByRole('button')
+          .filter((b) => b.hasAttribute('aria-pressed'))
+          .map((b) => b.getAttribute('aria-label'));
+      // Most used first; a tie in id order.
+      expect(offered()).toEqual(['CNN, 3 examples', 'Vision, 3 examples']);
+
+      fireEvent.click(within(group()).getByRole('button', { name: 'More tags' }));
+      expect(offered()).toEqual([
+        'CNN, 3 examples', 'Vision, 3 examples', 'NLP, 2 examples', 'Tabular, 1 examples',
+      ]);
+      fireEvent.click(within(group()).getByRole('button', { name: 'Fewer tags' }));
+      expect(offered()).toHaveLength(2);
+    });
+
+    it('combines selected tags as an intersection, with the main tag and the search', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+      fireEvent.click(screen.getByRole('button', { name: 'Filter by tag' }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Vision, 3 examples' }));
+      expect(cardNames()).toEqual(['Train A', 'Train B', 'Eval']);
+      fireEvent.click(screen.getByRole('button', { name: 'CNN, 3 examples' }));
+      expect(screen.getByRole('button', { name: 'CNN, 3 examples' })).toHaveAttribute('aria-pressed', 'true');
+      expect(cardNames()).toEqual(['Train A', 'Eval']);
+      // The toggle counts the selection, so a collapsed row still says so.
+      expect(screen.getByRole('button', { name: 'Filter by tag (2)' })).toBeInTheDocument();
+
+      fireEvent.click(tab(/^Evaluation/));
+      expect(cardNames()).toEqual(['Eval']);
+      fireEvent.change(screen.getByPlaceholderText('Search templates...'), { target: { value: 'train' } });
+      expect(cardNames()).toEqual([]);
+    });
+
+    it('says which filters emptied the list, and clears them all at once', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+      fireEvent.click(screen.getByRole('button', { name: 'Filter by tag' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Vision, 3 examples' }));
+      fireEvent.click(tab(/^Papers/));
+      fireEvent.change(screen.getByPlaceholderText('Search templates...'), { target: { value: 'zz' } });
+
+      expect(within(grid()).getByText('No examples match these filters')).toBeInTheDocument();
+      expect(within(grid()).getByText('Category: Papers')).toBeInTheDocument();
+      expect(within(grid()).getByText('Tags: Vision')).toBeInTheDocument();
+      expect(within(grid()).getByText('Search: "zz"')).toBeInTheDocument();
+
+      fireEvent.click(within(grid()).getByRole('button', { name: 'Clear filters' }));
+      expect(cardNames()).toHaveLength(6);
+      expect(tab(/^All/)).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByPlaceholderText('Search templates...')).toHaveValue('');
+      expect(screen.getByRole('button', { name: 'Vision, 3 examples' })).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('lists every tag in the detail pane, and a tag there is a filter', async () => {
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      render(<TemplateGalleryModal />);
+      await within(grid()).findByText('Paper');
+      fireEvent.click(within(grid()).getByText('Eval'));
+
+      const tagButtons = () =>
+        within(detail())
+          .getAllByRole('button')
+          .filter((b) => b.title.startsWith('Show'));
+      // The main tag first, then all three free tags (the card shows two).
+      expect(tagButtons().map((b) => b.textContent)).toEqual(['Evaluation', 'Vision', 'CNN', 'NLP']);
+
+      fireEvent.click(within(detail()).getByRole('button', { name: 'NLP' }));
+      // The filter row opens on the applied tag, a rare one included.
+      expect(screen.getByRole('button', { name: 'NLP, 2 examples' })).toHaveAttribute('aria-pressed', 'true');
+      expect(cardNames()).toEqual(['Chat', 'Eval']);
+
+      fireEvent.click(within(detail()).getByRole('button', { name: 'Evaluation' }));
+      expect(tab(/^Evaluation/)).toHaveAttribute('aria-selected', 'true');
+      expect(cardNames()).toEqual(['Eval']);
+    });
+
+    it('finds an example by a tag translation', async () => {
+      useI18n.setState({ locale: 'zh-TW' });
+      mockedRest.listExamples.mockResolvedValue(catalog());
+      const { unmount } = render(<TemplateGalleryModal />);
+      const zhGrid = () => screen.getByRole('region', { name: '範例清單' });
+      await within(zhGrid()).findByText('Paper');
+
+      fireEvent.change(screen.getByPlaceholderText('搜尋範例...'), { target: { value: '表格資料' } });
+      expect(within(zhGrid()).getByText('Paper')).toBeInTheDocument();
+      expect(within(zhGrid()).queryByText('Chat')).toBeNull();
+      // The tag id matches too, in either UI language.
+      fireEvent.change(screen.getByPlaceholderText('搜尋範例...'), { target: { value: 'nlp' } });
+      expect(within(zhGrid()).getByText('Chat')).toBeInTheDocument();
+      expect(within(zhGrid()).queryByText('Paper')).toBeNull();
+      unmount();
+    });
   });
 
   it('says so when nothing is selectable', async () => {

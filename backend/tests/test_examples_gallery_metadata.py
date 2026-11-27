@@ -3,21 +3,23 @@
 A shipped example says where it belongs in the gallery through an optional
 top-level ``gallery`` block::
 
-    "gallery": { "section": "architectures", "family": "CNN", "order": 2 }
+    "gallery": { "main_tag": "training", "tags": ["vision", "cnn"], "order": 30 }
 
-``GET /api/examples/list`` turns that into three keys that are ALWAYS
-present -- ``section``, ``family``, ``order`` -- so the frontend groups on
-one shape instead of on whether a key exists. Anything it cannot read
-degrades to ``null`` for that field and for that field only: the list is
-built by walking every installed pack's examples directory, and a
+``GET /api/examples/list`` turns that into keys that are ALWAYS present --
+``main_tag``, ``tags``, ``order``, ``family`` and the deprecated ``section``
+(equal to ``main_tag``) -- so the frontend groups on one shape instead of on
+whether a key exists. Anything it cannot read degrades on its own: the list
+is built by walking every installed pack's examples directory, and a
 third-party pack with a typo in its metadata must not take the gallery down
-with a 500.
+with a 500. An example with no readable main tag is filed under ``plugin``
+(pack) or ``other`` (built-in); the built-in table below keeps ``other``
+empty.
 
 Two halves, in one file because they are two ends of the same contract: the
 route, checked against a temporary examples directory holding the shapes a
 hand-written file can really have, and the built-ins, checked against the
-section table this wave assigned them. The table is written out literally
-rather than derived -- it IS the contract, and a derivation would agree with
+table this phase assigned them. The table is written out literally rather
+than derived -- it IS the contract, and a derivation would agree with
 whatever the files happen to say.
 """
 
@@ -28,8 +30,13 @@ from pathlib import Path
 
 import pytest
 
-from app.api.routes_examples import GALLERY_SECTIONS
 from app.config import settings
+from app.core.example_tags import (
+    DECLARABLE_MAIN_TAGS,
+    MAIN_TAGS,
+    MAX_TAGS,
+    is_valid_tag,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_ROOT = _REPO_ROOT / "examples"
@@ -74,28 +81,68 @@ async def _builtin_listing(test_client) -> dict[str, dict]:
             for item in response.json() if item["source"] == "builtin"}
 
 
-async def test_a_full_gallery_block_is_served_verbatim(
+async def test_a_full_gallery_block_is_served_with_the_main_tag_first(
     test_client, examples_root
 ):
     _write_example(examples_root, "Arch/ResNet",
-                   gallery={"section": "architectures", "family": "CNN",
-                            "order": 2})
+                   gallery={"main_tag": "architectures", "family": "CNN",
+                            "tags": ["vision", "cnn"], "order": 20})
 
     entry = (await _builtin_listing(test_client))["Arch/ResNet"]
-    assert (entry["section"], entry["family"], entry["order"]) == (
-        "architectures", "CNN", 2)
+    assert (entry["main_tag"], entry["tags"], entry["family"], entry["order"]) == (
+        "architectures", ["architectures", "vision", "cnn"], "CNN", 20)
+    # Deprecated, kept for older frontends and plugins: equal to main_tag.
+    assert entry["section"] == "architectures"
 
 
-async def test_the_three_keys_are_present_even_with_no_gallery_block(
+async def test_the_keys_are_present_even_with_no_gallery_block(
     test_client, examples_root
 ):
-    """Always present, so the frontend groups on values and not on keys."""
+    """Always present, so the frontend groups on values and not on keys.
+
+    A built-in with nothing readable lands in ``other``; the built-in table
+    below is what keeps that category empty in the shipped gallery.
+    """
     _write_example(examples_root, "Plain/Example")
 
     entry = (await _builtin_listing(test_client))["Plain/Example"]
-    assert entry["section"] is None
+    assert entry["main_tag"] == "other"
+    assert entry["tags"] == ["other"]
+    assert entry["section"] == "other"
     assert entry["family"] is None
     assert entry["order"] is None
+
+
+async def test_a_file_with_only_the_old_section_key_still_sorts_into_it(
+    test_client, examples_root
+):
+    """Third-party packs written before tags keep their category unchanged."""
+    _write_example(examples_root, "Legacy/Example",
+                   gallery={"section": "training", "order": 5})
+
+    entry = (await _builtin_listing(test_client))["Legacy/Example"]
+    assert (entry["main_tag"], entry["tags"], entry["section"], entry["order"]) == (
+        "training", ["training"], "training", 5)
+
+
+async def test_main_tag_wins_over_an_old_section(test_client, examples_root):
+    _write_example(examples_root, "Both/Example",
+                   gallery={"main_tag": "evaluation", "section": "concepts"})
+
+    entry = (await _builtin_listing(test_client))["Both/Example"]
+    assert entry["main_tag"] == "evaluation"
+
+
+async def test_tags_are_deduplicated_validated_and_capped(test_client, examples_root):
+    """A bad tag costs that tag alone; the main tag is never listed twice."""
+    _write_example(examples_root, "Tagged/Example", gallery={
+        "main_tag": "data",
+        "tags": ["vision", "Vision", "data", "a b", "", 5, "x" * 25, "vision",
+                 "one", "two", "three", "four", "five", "six"]})
+
+    entry = (await _builtin_listing(test_client))["Tagged/Example"]
+    assert entry["tags"] == ["data", "vision", "one", "two", "three", "four"]
+    assert len(entry["tags"]) - 1 <= MAX_TAGS
 
 
 #: One unreadable ``gallery`` block per row, and the fields it costs.
@@ -107,54 +154,65 @@ async def test_the_three_keys_are_present_even_with_no_gallery_block(
 _DEGRADES = [
     pytest.param(
         {"section": "advanced", "order": 1},
-        {"section": None, "family": None, "order": 1},
+        {"main_tag": "other", "family": None, "order": 1},
         id="unknown-section",
+    ),
+    pytest.param(
+        # Server-assigned fallbacks are not values an author may declare.
+        {"main_tag": "plugin", "order": 1},
+        {"main_tag": "other", "family": None, "order": 1},
+        id="declared-fallback",
+    ),
+    pytest.param(
+        {"main_tag": "training", "tags": "vision", "order": 1},
+        {"main_tag": "training", "tags": ["training"], "order": 1},
+        id="tags-not-a-list",
     ),
     pytest.param(
         # ``True`` is an ``int`` in Python and would sort as 1; a graph file
         # saying ``"order": true`` means nothing, so it says nothing.
         {"section": "training", "order": True},
-        {"section": "training", "family": None, "order": None},
+        {"main_tag": "training", "family": None, "order": None},
         id="boolean-order",
     ),
     pytest.param(
         {"section": "training", "order": "3"},
-        {"section": "training", "family": None, "order": None},
+        {"main_tag": "training", "family": None, "order": None},
         id="string-order",
     ),
     pytest.param(
-        {"section": "architectures", "family": 5, "order": 1},
-        {"section": "architectures", "family": None, "order": 1},
+        {"main_tag": "architectures", "family": 5, "order": 1},
+        {"main_tag": "architectures", "family": None, "order": 1},
         id="numeric-family",
     ),
     pytest.param(
         # Not a dict at all: the block is unreadable as a whole.
         [],
-        {"section": None, "family": None, "order": None},
+        {"main_tag": "other", "family": None, "order": None},
         id="list-instead-of-object",
     ),
     pytest.param(
         "training",
-        {"section": None, "family": None, "order": None},
+        {"main_tag": "other", "family": None, "order": None},
         id="string-instead-of-object",
     ),
     pytest.param(
         # An unhashable section: the membership test against the vocabulary
         # has to survive it, which a bare ``in`` on a set does not.
         {"section": ["training"], "order": 2},
-        {"section": None, "family": None, "order": 2},
+        {"main_tag": "other", "family": None, "order": 2},
         id="list-section",
     ),
     pytest.param(
-        {"section": None, "family": None, "order": None},
-        {"section": None, "family": None, "order": None},
+        {"main_tag": "other", "family": None, "order": None},
+        {"main_tag": "other", "family": None, "order": None},
         id="explicit-nulls",
     ),
 ]
 
 
 @pytest.mark.parametrize("block, expected", _DEGRADES)
-async def test_an_unreadable_field_degrades_to_null_on_its_own(
+async def test_an_unreadable_field_degrades_on_its_own(
     test_client, examples_root, block, expected
 ):
     _write_example(examples_root, "Odd/Example", gallery=block)
@@ -238,7 +296,7 @@ async def test_a_graph_file_that_is_not_a_graph_costs_only_its_own_card(
                    gallery={"section": "training", "order": 1})
 
     listing = await _builtin_listing(test_client)
-    assert listing["Fine/Example"]["section"] == "training"
+    assert listing["Fine/Example"]["main_tag"] == "training"
     if expected is None:
         assert "Broken/Example" not in listing
     else:
@@ -248,97 +306,113 @@ async def test_a_graph_file_that_is_not_a_graph_costs_only_its_own_card(
 
 # ── the built-ins ─────────────────────────────────────────────────────────
 
-#: Where every shipped example belongs: ``path -> (section, order, family)``.
+#: Where every shipped example belongs:
+#: ``path -> (main_tag, order, tags, family)``.
 #:
 #: Literal on purpose. This table is the classification decision itself --
-#: purpose first, model family second -- so a change to a file has to be a
-#: change here too, and the rows are the only record of what was agreed.
-#: ``family`` is ``None`` outside ``architectures``, the one section that is
-#: sub-grouped.
-#:
-#: ``training`` opens on the Hugging Face example: it is the one that shows
-#: where somebody else's dataset plugs in, which is the first thing asked of
-#: a training graph after the quick start.
-_SHIPPED_SECTIONS: dict[str, tuple[str, int, str | None]] = {
-    "Usage_Example/CNN-MNIST/TrainCNN-MNIST": ("quickstart", 1, None),
-    "Usage_Example/CNN-MNIST/InferenceCNN-MNIST": ("quickstart", 2, None),
-    "Usage_Example/Api-Function": ("quickstart", 3, None),
-    "Usage_Example/HuggingFace-Dataset/TrainCNN-Beans": ("training", 1, None),
-    "Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10": ("training", 2, None),
-    "Usage_Example/GPT-Mini/TrainGPT-Mini": ("training", 3, None),
-    "Usage_Example/ResNet18-CIFAR10-Baseline": ("training", 4, None),
-    "LLM/TrainCausalLM-TinyStories": ("training", 5, None),
-    "VLA/TrainVLA-PushWorld": ("training", 6, None),
-    "RNN/LSTM-Recall-First-Token": ("training", 7, None),
-    "Usage_Example/Segmentation-Synthetic-Shapes": ("training", 8, None),
-    "Diffusion/Train-DDPM-Blobs": ("training", 9, None),
-    "Usage_Example/Augment-Then-Train": ("training", 10, None),
-    "Usage_Example/Resume-From-Checkpoint": ("training", 11, None),
-    "Papers/Dropout-Srivastava-2014": ("papers", 1, None),
-    "Papers/BatchNorm-Ioffe-2015": ("papers", 2, None),
-    "Papers/ResNet-Degradation-He-2016": ("papers", 3, None),
-    "Papers/Adam-Kingma-2015": ("papers", 4, None),
-    "Papers/Label-Smoothing-Szegedy-2016": ("papers", 5, None),
-    "Papers/SGDR-Loshchilov-2017": ("papers", 6, None),
-    "Papers/Vanishing-Gradients-Glorot-2010": ("papers", 7, None),
-    "Papers/Gradient-Clipping-RNN": ("papers", 11, None),
-    "Papers/Autoencoder-MNIST-2D": ("papers", 12, None),
-    "Papers/LSTM-Forecast-Sine": ("papers", 13, None),
-    "Papers/Transformer-Sort": ("papers", 14, None),
-    "Papers/Weight-Decay-Regression": ("papers", 15, None),
-    "Papers/Early-Stopping-Regression": ("papers", 16, None),
-    "Papers/REINFORCE-CartPole": ("papers", 21, None),
-    "Papers/DQN-CartPole": ("papers", 22, None),
-    "Papers/PPO-CartPole": ("papers", 23, None),
-    "Papers/QLearning-GridWorld": ("papers", 24, None),
-    "Papers/GroupNorm-Wu-2018": ("papers", 25, None),
-    "LLM/Word-Embedding-Analogy": ("llm", 1, None),
-    "LLM/Sentence-Similarity-zhTW": ("llm", 2, None),
-    "LLM/RAG-Local-Offline": ("llm", 3, None),
-    "LLM/RAG-LLMChat-API": ("llm", 4, None),
-    "LLM/Data-Mix-Ratios": ("llm", 5, None),
-    "Classical/Tabular-Iris-Pipeline": ("concepts", 1, None),
-    "Classical/Iris-Sklearn-KNN": ("concepts", 2, None),
-    "RNN/RNN-OneStep": ("concepts", 3, None),
-    "Transformer/MoE-TopK-Routing": ("concepts", 4, None),
-    "Diffusion/Forward-Process": ("concepts", 5, None),
-    "Diffusion/Toy-Sampling": ("concepts", 6, None),
-    "Diffusion/Mini-UNet-Compact": ("concepts", 7, None),
-    "RL/RLHF-Reward-and-KL": ("concepts", 8, None),
-    "Classical/Classifier-Showdown-Moons": ("concepts", 9, None),
-    "Transformer/Causal-Attention-From-Scratch": ("concepts", 10, None),
-    "RL/Reward-Hacking-Shortcut": ("concepts", 11, None),
-    "RL/GRPO-Step-GridWorld": ("concepts", 12, None),
-    "Classical/KFold-Cross-Validation": ("concepts", 13, None),
-    "Others/Reduce-And-Switch": ("concepts", 14, None),
-    "Others/Tensor-Ops-Tour": ("concepts", 15, None),
-    "Others/Image-Batch-IO": ("concepts", 16, None),
-    "RNN/Conv1d-Sequence-Classifier": ("concepts", 17, None),
-    "RL/Reward-Model-Bradley-Terry": ("concepts", 18, None),
-    "RL/Discounted-Returns": ("concepts", 19, None),
-    "Others/One-Backward-Pass": ("concepts", 21, None),
-    "Model_Architecture/ResNet-SkipConnection-CNN": ("architectures", 1, "CNN"),
-    "Model_Architecture/UNet-Segmentation-CNN": ("architectures", 2, "CNN"),
-    "Model_Architecture/EfficientNet-CNN": ("architectures", 3, "CNN"),
-    "Model_Architecture/ConvNeXt-CNN": ("architectures", 4, "CNN"),
-    "Model_Architecture/TimeSeries-LSTM-RNN": ("architectures", 1, "RNN"),
-    "Model_Architecture/BiGRU-SpeechRecognition-RNN": ("architectures", 2, "RNN"),
-    "Model_Architecture/Seq2Seq-Attention-RNN": ("architectures", 3, "RNN"),
-    "Model_Architecture/GPT-DecoderOnly-Transformer":
-        ("architectures", 1, "Transformer"),
-    "Model_Architecture/BERT-Encoder-Transformer":
-        ("architectures", 2, "Transformer"),
-    "Model_Architecture/LLaMA-Decoder-Transformer":
-        ("architectures", 3, "Transformer"),
-    "Model_Architecture/ViT-ImageClassifier-Transformer":
-        ("architectures", 4, "Transformer"),
-    "Model_Architecture/SwinTransformer-Transformer":
-        ("architectures", 5, "Transformer"),
-    "Model_Architecture/DiT-Diffusion-Transformer":
-        ("architectures", 1, "Diffusion"),
-    "Model_Architecture/DQN-Atari-RL": ("architectures", 1, "RL"),
-    "Model_Architecture/PPO-Robotics-RL": ("architectures", 2, "RL"),
+#: what somebody uses the example for, not which folder it sits in (the
+#: folders are the examples' ids and do not move) -- so a change to a file
+#: has to be a change here too. Approved in
+#: plans/agentic-workbench/reviews/phase-3-plan.md. ``family`` is ``None``
+#: outside ``architectures``, the one main tag that is sub-grouped.
+_SHIPPED: dict[str, tuple[str, int, tuple[str, ...], str | None]] = {
+    "Usage_Example/CNN-MNIST/TrainCNN-MNIST": ("quickstart", 10, ("vision", "cnn", "mnist"), None),
+    "Usage_Example/CNN-MNIST/InferenceCNN-MNIST": ("quickstart", 20, ("vision", "cnn", "inference"), None),
+    "Classical/Iris-Sklearn-KNN": ("quickstart", 30, ("tabular", "knn", "iris"), None),
+    "Usage_Example/Api-Function": ("quickstart", 40, ("api",), None),
+    "Usage_Example/HuggingFace-Dataset/TrainCNN-Beans": ("training", 10, ("vision", "cnn", "huggingface"), None),
+    "Usage_Example/ResNet-CIFAR10/TrainResNet-CIFAR10": ("training", 20, ("vision", "resnet", "cifar10"), None),
+    "Usage_Example/Resume-From-Checkpoint": ("training", 40, ("tabular", "checkpoint", "mlp"), None),
+    "Usage_Example/Augment-Then-Train": ("training", 50, ("vision", "augmentation", "mnist"), None),
+    "Usage_Example/ResNet18-CIFAR10-Baseline": ("training", 70, ("vision", "resnet", "cifar10", "baseline"), None),
+    "Usage_Example/Segmentation-Synthetic-Shapes": ("training", 80, ("vision", "segmentation", "unet"), None),
+    "Usage_Example/GPT-Mini/TrainGPT-Mini": ("training", 90, ("vision", "transformer", "attention"), None),
+    "Diffusion/Train-DDPM-Blobs": ("training", 100, ("diffusion", "ddpm", "generation"), None),
+    "RNN/LSTM-Recall-First-Token": ("training", 110, ("nlp", "lstm", "sequence"), None),
+    "VLA/TrainVLA-PushWorld": ("training", 120, ("vla", "imitation", "robotics"), None),
+    "LLM/TrainCausalLM-TinyStories": ("llm", 10, ("nlp", "pretraining", "transformer"), None),
+    "LLM/RAG-Local-Offline": ("llm", 30, ("nlp", "rag", "retrieval"), None),
+    "LLM/RAG-LLMChat-API": ("llm", 50, ("nlp", "rag", "api"), None),
+    "LLM/Data-Mix-Ratios": ("llm", 60, ("nlp", "data-mix", "pretraining"), None),
+    "LLM/Sentence-Similarity-zhTW": ("llm", 70, ("nlp", "embeddings", "zh-tw"), None),
+    "LLM/Word-Embedding-Analogy": ("llm", 80, ("nlp", "embeddings"), None),
+    "Classical/Tabular-Iris-Pipeline": ("data", 30, ("tabular", "preprocessing", "iris"), None),
+    "Others/Image-Batch-IO": ("data", 40, ("vision", "io"), None),
+    "Classical/KFold-Cross-Validation": ("evaluation", 50, ("tabular", "cross-validation", "regression"), None),
+    "Classical/Classifier-Showdown-Moons": ("evaluation", 60, ("tabular", "sklearn", "decision-boundary"), None),
+    "Model_Architecture/ResNet-SkipConnection-CNN": ("architectures", 10, ("vision", "cnn", "resnet"), "CNN"),
+    "Model_Architecture/UNet-Segmentation-CNN": ("architectures", 20, ("vision", "cnn", "segmentation"), "CNN"),
+    "Model_Architecture/EfficientNet-CNN": ("architectures", 30, ("vision", "cnn"), "CNN"),
+    "Model_Architecture/ConvNeXt-CNN": ("architectures", 40, ("vision", "cnn"), "CNN"),
+    "Model_Architecture/DiT-Diffusion-Transformer": ("architectures", 10, ("diffusion", "transformer"), "Diffusion"),
+    "Model_Architecture/DQN-Atari-RL": ("architectures", 10, ("rl", "dqn", "cnn"), "RL"),
+    "Model_Architecture/PPO-Robotics-RL": ("architectures", 20, ("rl", "ppo", "robotics"), "RL"),
+    "Model_Architecture/TimeSeries-LSTM-RNN": ("architectures", 10, ("timeseries", "lstm"), "RNN"),
+    "Model_Architecture/BiGRU-SpeechRecognition-RNN": ("architectures", 20, ("audio", "gru"), "RNN"),
+    "Model_Architecture/Seq2Seq-Attention-RNN": ("architectures", 30, ("nlp", "rnn", "attention"), "RNN"),
+    "Model_Architecture/GPT-DecoderOnly-Transformer": ("architectures", 10, ("nlp", "transformer", "decoder"), "Transformer"),
+    "Model_Architecture/BERT-Encoder-Transformer": ("architectures", 20, ("nlp", "transformer", "encoder"), "Transformer"),
+    "Model_Architecture/LLaMA-Decoder-Transformer": ("architectures", 30, ("nlp", "transformer", "decoder"), "Transformer"),
+    "Model_Architecture/ViT-ImageClassifier-Transformer": ("architectures", 40, ("vision", "transformer"), "Transformer"),
+    "Model_Architecture/SwinTransformer-Transformer": ("architectures", 50, ("vision", "transformer"), "Transformer"),
+    "Others/Tensor-Ops-Tour": ("concepts", 10, ("vision", "tensors"), None),
+    "Others/Reduce-And-Switch": ("concepts", 20, ("tabular", "dataflow"), None),
+    "Others/One-Backward-Pass": ("concepts", 30, ("nlp", "gradients", "embeddings"), None),
+    "RNN/RNN-OneStep": ("concepts", 40, ("nlp", "rnn"), None),
+    "RNN/Conv1d-Sequence-Classifier": ("concepts", 50, ("nlp", "cnn", "sequence"), None),
+    "Transformer/Causal-Attention-From-Scratch": ("concepts", 60, ("nlp", "attention", "transformer"), None),
+    "Transformer/MoE-TopK-Routing": ("concepts", 70, ("nlp", "moe", "transformer"), None),
+    "Diffusion/Forward-Process": ("concepts", 80, ("diffusion", "noise"), None),
+    "Diffusion/Toy-Sampling": ("concepts", 90, ("diffusion", "sampling"), None),
+    "Diffusion/Mini-UNet-Compact": ("concepts", 100, ("diffusion", "unet"), None),
+    "RL/Discounted-Returns": ("concepts", 110, ("rl", "returns"), None),
+    "RL/Reward-Model-Bradley-Terry": ("concepts", 120, ("rl", "rlhf", "reward-model"), None),
+    "RL/RLHF-Reward-and-KL": ("concepts", 130, ("rl", "rlhf", "kl"), None),
+    "RL/Reward-Hacking-Shortcut": ("concepts", 140, ("rl", "reward-model", "generalization"), None),
+    "RL/GRPO-Step-GridWorld": ("concepts", 150, ("rl", "grpo"), None),
+    "Papers/Dropout-Srivastava-2014": ("papers", 10, ("vision", "regularization", "dropout"), None),
+    "Papers/BatchNorm-Ioffe-2015": ("papers", 20, ("vision", "normalization"), None),
+    "Papers/ResNet-Degradation-He-2016": ("papers", 30, ("vision", "resnet", "depth"), None),
+    "Papers/Adam-Kingma-2015": ("papers", 40, ("vision", "optimization"), None),
+    "Papers/Label-Smoothing-Szegedy-2016": ("papers", 50, ("vision", "regularization"), None),
+    "Papers/SGDR-Loshchilov-2017": ("papers", 60, ("vision", "lr-schedule"), None),
+    "Papers/Vanishing-Gradients-Glorot-2010": ("papers", 70, ("vision", "initialization", "gradients"), None),
+    "Papers/GroupNorm-Wu-2018": ("papers", 80, ("vision", "normalization"), None),
+    "Papers/Gradient-Clipping-RNN": ("papers", 90, ("nlp", "rnn", "gradients"), None),
+    "Papers/Autoencoder-MNIST-2D": ("papers", 100, ("vision", "autoencoder", "embeddings"), None),
+    "Papers/LSTM-Forecast-Sine": ("papers", 110, ("timeseries", "lstm"), None),
+    "Papers/Transformer-Sort": ("papers", 120, ("nlp", "transformer", "attention"), None),
+    "Papers/Weight-Decay-Regression": ("papers", 130, ("tabular", "regularization", "regression"), None),
+    "Papers/Early-Stopping-Regression": ("papers", 140, ("tabular", "early-stopping", "regression"), None),
+    "Papers/REINFORCE-CartPole": ("papers", 150, ("rl", "policy-gradient"), None),
+    "Papers/DQN-CartPole": ("papers", 160, ("rl", "dqn"), None),
+    "Papers/PPO-CartPole": ("papers", 170, ("rl", "ppo"), None),
+    "Papers/QLearning-GridWorld": ("papers", 180, ("rl", "q-learning"), None),
+    # The practical examples added in Phase 3.
+    "Data/Dataset-Inspection": ("data", 10, ("vision", "digits", "statistics"), None),
+    "Data/Split-And-Leak-Check": ("data", 20, ("tabular", "iris", "split", "leakage"), None),
+    "Training/Early-Stopping-Best-Checkpoint": ("training", 30, ("vision", "digits", "early-stopping", "checkpoint"), None),
+    "Training/Transfer-Frozen-Backbone": ("training", 60, ("vision", "digits", "transfer-learning", "fine-tuning"), None),
+    "Evaluation/Multi-Seed-Mean-Std": ("evaluation", 10, ("vision", "digits", "seeds", "mlp"), None),
+    "Evaluation/Checkpoint-Confusion-Matrix": ("evaluation", 20, ("vision", "digits", "checkpoint", "confusion-matrix"), None),
+    "Evaluation/Compare-Two-Checkpoints": ("evaluation", 30, ("vision", "digits", "checkpoint", "compare"), None),
+    "Evaluation/Embedding-Projection-2D": ("evaluation", 40, ("vision", "digits", "embeddings", "pca"), None),
+    "Research/LR-Range-Test": ("research", 10, ("tabular", "iris", "learning-rate", "optimization"), None),
+    "Research/LR-BatchSize-Grid": ("research", 20, ("tabular", "iris", "sweep", "hyperparameters"), None),
+    "Research/Ablation-Input-Standardization": ("research", 30, ("tabular", "iris", "ablation", "preprocessing"), None),
+    "Deploy/Classifier-Service/Train-And-Export": ("deploy", 10, ("tabular", "iris", "export", "safetensors"), None),
+    "Deploy/Classifier-Service/Serve-As-Function": ("deploy", 20, ("tabular", "iris", "api", "inference"), None),
+    "LLM/RAG-Retrieval-Hit-Rate": ("llm", 40, ("nlp", "rag", "retrieval", "metrics"), None),
+    "LLM/Finetune-Char-LM-Custom-Text": ("llm", 20, ("nlp", "fine-tuning", "language-model", "perplexity"), None),
 }
+
+#: The domain tags; every built-in names at least one of them.
+_DOMAINS = frozenset(
+    {"vision", "nlp", "tabular", "rl", "diffusion", "audio", "timeseries", "vla"})
+
+#: Built-ins exempt from the domain rule, with the reason. Api-Function
+#: echoes a string through the run API and has no data domain.
+_NO_DOMAIN = {"Usage_Example/Api-Function"}
 
 
 def _shipped_gallery() -> dict[str, dict]:
@@ -350,61 +424,69 @@ def _shipped_gallery() -> dict[str, dict]:
     }
 
 
-def test_the_section_vocabulary_is_the_six_the_contract_names():
-    """Widening it is a frontend change too, so it cannot happen quietly.
+def test_the_main_tag_vocabulary_and_its_order():
+    """The order is the gallery's order: practical first, papers and courses
+    after every practical category. Changing it is a product decision."""
+    assert MAIN_TAGS == (
+        "quickstart", "training", "llm", "data", "evaluation", "research",
+        "deploy", "architectures", "concepts", "papers", "courses",
+        "plugin", "other")
+    assert MAIN_TAGS.index("papers") > max(
+        MAIN_TAGS.index(t) for t in
+        ("quickstart", "training", "llm", "data", "evaluation", "research", "deploy"))
 
-    ``papers`` holds the paper reproductions: one published method per
-    graph, with the paper's number quoted in the overview note.
-    """
-    assert GALLERY_SECTIONS == frozenset(
-        {"quickstart", "training", "papers", "llm", "concepts",
-         "architectures"})
 
-
-def test_every_builtin_declares_the_section_the_table_gives_it():
+def test_every_builtin_declares_what_the_table_gives_it():
     """The files and the table say the same thing, both ways round.
 
     A missing row is as much a failure as a missing block: an example added
     without a decision about where it belongs would otherwise land silently
-    in "other", at the bottom of the gallery, which is exactly the outcome
-    this wave exists to end.
+    in "other", at the bottom of the gallery.
     """
     shipped = _shipped_gallery()
-    assert set(shipped) == set(_SHIPPED_SECTIONS), (
-        f"only on disk: {sorted(set(shipped) - set(_SHIPPED_SECTIONS))}; "
-        f"only in the table: {sorted(set(_SHIPPED_SECTIONS) - set(shipped))}")
+    assert set(shipped) == set(_SHIPPED), (
+        f"only on disk: {sorted(set(shipped) - set(_SHIPPED))}; "
+        f"only in the table: {sorted(set(_SHIPPED) - set(shipped))}")
 
     actual = {}
     for path, block in shipped.items():
         block = block if isinstance(block, dict) else {}
-        actual[path] = (
-            block.get("section"), block.get("order"), block.get("family"))
-    assert actual == _SHIPPED_SECTIONS
+        actual[path] = (block.get("main_tag"), block.get("order"),
+                        tuple(block.get("tags") or ()), block.get("family"))
+    assert actual == _SHIPPED
 
 
-def test_every_builtin_section_is_one_the_route_will_serve():
-    """A typo here degrades to ``null`` at the route and shows up in "other"."""
+def test_every_builtin_uses_the_new_schema_only():
+    """A declarable main tag, legal tags, an int order, and no ``section``."""
     for path, block in _shipped_gallery().items():
         assert isinstance(block, dict), f"{path} has no gallery block"
-        assert block.get("section") in GALLERY_SECTIONS, (
-            f"{path} declares section {block.get('section')!r}, which the "
-            f"list route does not serve")
-        assert isinstance(block.get("order"), int), (
-            f"{path} declares order {block.get('order')!r}")
+        assert "section" not in block, f"{path} still declares the old section"
+        assert block.get("main_tag") in DECLARABLE_MAIN_TAGS, (
+            f"{path} declares main_tag {block.get('main_tag')!r}")
+        tags = block.get("tags")
+        assert isinstance(tags, list) and 1 <= len(tags) <= MAX_TAGS, path
+        assert all(is_valid_tag(tag) for tag in tags), (path, tags)
+        assert len(set(tags)) == len(tags), (path, tags)
+        assert not set(tags) & set(MAIN_TAGS), (
+            f"{path} uses a main tag as a free tag: {set(tags) & set(MAIN_TAGS)}")
+        assert isinstance(block.get("order"), int) and not isinstance(
+            block.get("order"), bool), path
+
+
+def test_every_builtin_names_a_domain():
+    for path, block in _shipped_gallery().items():
+        if path in _NO_DOMAIN:
+            continue
+        assert set(block["tags"]) & _DOMAINS, f"{path} names no domain tag: {block['tags']}"
 
 
 def test_only_architectures_examples_carry_a_family():
-    """``family`` is the sub-header inside ``architectures`` and nothing else.
-
-    A family on an example in another section is invisible -- no surface
-    reads it -- so it would sit in the file looking like it did something.
-    """
+    """``family`` is the sub-header inside ``architectures`` and nothing else."""
     for path, block in _shipped_gallery().items():
         family = (block or {}).get("family")
-        if (block or {}).get("section") == "architectures":
+        if (block or {}).get("main_tag") == "architectures":
             assert isinstance(family, str) and family, (
-                f"{path} is an architecture example with no family, so it "
-                f"would render under no sub-header")
+                f"{path} is an architecture example with no family")
         else:
             assert family is None, f"{path} carries a family: {family!r}"
 
@@ -412,31 +494,89 @@ def test_only_architectures_examples_carry_a_family():
 async def test_the_list_route_serves_what_the_shipped_files_declare(
     test_client,
 ):
-    """The two halves above meet: real files, real route, no fixture.
-
-    Everything else in this file reads the graphs off disk or the route out
-    of a temporary directory, so a scan that mangled a nested path -- the
-    only built-ins two directories deep are the two CNN-MNIST examples --
-    would pass both.
-    """
+    """Real files, real route, no fixture; ``other`` is empty."""
     listing = await _builtin_listing(test_client)
     served = {
-        path: (entry["section"], entry["order"], entry["family"])
+        path: (entry["main_tag"], entry["order"], tuple(entry["tags"][1:]), entry["family"])
         for path, entry in listing.items()
     }
-    assert served == _SHIPPED_SECTIONS
+    assert served == _SHIPPED
+    assert not [path for path, entry in listing.items() if entry["main_tag"] == "other"]
+
+
+async def test_the_list_is_in_gallery_order(test_client):
+    """Main-tag rank, then order; papers come after every practical example."""
+    response = await test_client.get("/api/examples/list")
+    entries = [e for e in response.json() if e["source"] == "builtin"]
+    keys = [(MAIN_TAGS.index(e["main_tag"]), e["order"]) for e in entries]
+    assert keys == sorted(keys)
+    first_paper = next(i for i, e in enumerate(entries) if e["main_tag"] == "papers")
+    assert all(e["main_tag"] not in {"quickstart", "training", "llm", "data",
+                                     "evaluation", "research", "deploy"}
+               for e in entries[first_paper:])
+
+
+async def test_the_tags_route_counts_main_tags_and_free_tags(test_client):
+    response = await test_client.get("/api/examples/tags")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    main = body["main_tags"]
+    assert [m["id"] for m in main] == [t for t in MAIN_TAGS if t in {m["id"] for m in main}]
+    assert [m["order"] for m in main] == sorted(m["order"] for m in main)
+    assert all(m["count"] > 0 for m in main)
+    assert "other" not in {m["id"] for m in main}
+    listing = (await test_client.get("/api/examples/list")).json()
+    counts = {}
+    for entry in listing:
+        counts[entry["main_tag"]] = counts.get(entry["main_tag"], 0) + 1
+    assert {m["id"]: m["count"] for m in main} == counts
+    tags = body["tags"]
+    assert tags == sorted(tags, key=lambda t: (-t["count"], t["id"]))
+    assert not {t["id"] for t in tags} & set(MAIN_TAGS)
+    assert sum(t["count"] for t in tags) == sum(len(e["tags"]) - 1 for e in listing)
+
+
+async def test_a_plugin_example_without_metadata_is_filed_under_plugin(
+    test_client, tmp_path, monkeypatch
+):
+    """And one with only an old ``section`` sorts into that section."""
+    from app.api import routes_examples
+
+    pack = tmp_path / "pack"
+    for rel, gallery in [("A/NoMeta", None), ("B/Legacy", {"section": "llm", "order": 1})]:
+        directory = pack / "examples" / rel
+        directory.mkdir(parents=True)
+        payload = {"name": rel, "description": "", "nodes": [], "edges": []}
+        if gallery:
+            payload["gallery"] = gallery
+        (directory / "graph.json").write_bytes(json.dumps(payload).encode("utf-8"))
+    monkeypatch.setattr(routes_examples, "iter_plugin_dirs",
+                        lambda *args, **kwargs: [("thirdparty", pack)])
+    response = await test_client.get("/api/examples/list")
+    by_path = {e["path"]: e for e in response.json()}
+    assert by_path["plugin:thirdparty/A/NoMeta"]["main_tag"] == "plugin"
+    assert by_path["plugin:thirdparty/B/Legacy"]["main_tag"] == "llm"
 
 
 def test_no_two_builtins_claim_the_same_place():
-    """``(section, family, order)`` is a position, and positions are unique.
-
-    Ties are broken by server order, which is alphabetical by path -- a
-    stable answer, but not one anybody chose. Two examples sharing a slot
-    means the ordering of at least one of them is an accident.
-    """
+    """``(main_tag, family, order)`` is a position, and positions are unique."""
     seen: dict[tuple[str, str | None, int], str] = {}
-    for path, (section, order, family) in sorted(_SHIPPED_SECTIONS.items()):
-        slot = (section, family, order)
-        assert slot not in seen, (
-            f"{path} and {seen[slot]} both claim {slot}")
+    for path, (main_tag, order, _tags, family) in sorted(_SHIPPED.items()):
+        slot = (main_tag, family, order)
+        assert slot not in seen, f"{path} and {seen[slot]} both claim {slot}"
         seen[slot] = path
+
+
+def test_every_builtin_pack_example_is_a_course():
+    """The packs shipped in this repository are course material: ``courses``,
+    legal tags, an int order, and no old ``section``."""
+    pack_graphs = sorted((_REPO_ROOT / "plugins").glob("*/examples/**/graph.json"))
+    assert pack_graphs
+    for path in pack_graphs:
+        block = json.loads(path.read_text(encoding="utf-8")).get("gallery")
+        assert isinstance(block, dict), f"{path} has no gallery block"
+        assert block.get("main_tag") == "courses", path
+        assert "section" not in block, path
+        assert block.get("tags") and all(is_valid_tag(t) for t in block["tags"]), path
+        assert not set(block["tags"]) & set(MAIN_TAGS), path
+        assert isinstance(block.get("order"), int), path

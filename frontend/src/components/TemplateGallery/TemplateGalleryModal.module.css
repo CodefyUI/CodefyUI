@@ -258,8 +258,11 @@
 .cardFooter {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
+  /* Tags stay whole and wrap to a second line instead (see ExampleBrowser's
+     .presetCardFooter). */
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
   /* Pinned to the bottom of the card rather than left to follow the text.
      The grid stretches every card in a row to the tallest one, and the
      title above is one line or two depending on the name, so a footer that
@@ -279,12 +282,22 @@
   border-radius: var(--radius-pill);
   padding: 0 var(--sp-3);
   line-height: var(--lh-tight);
+  flex: none;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.cardMore {
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
 .cardCount {
+  /* Pushed to the right edge, after however many tag chips there are. */
+  margin-left: auto;
   color: var(--text-muted);
   font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -428,4 +441,119 @@
   .search {
     width: 9.375rem; /* 150px @ 16px root */
   }
+}
+
+/* ── Filters: main-tag chips, the tag toggle and the tag row ───────────── */
+
+.tagToggle {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tagToggle:hover,
+.tagToggleActive {
+  border-color: var(--accent-deep);
+  color: var(--text-primary);
+}
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5) 0;
+  flex-shrink: 0;
+}
+
+.tagFilter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tagFilterBtn,
+.moreTagsBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  cursor: pointer;
+  line-height: var(--lh-tight);
+}
+
+.tagFilterBtn:hover,
+.moreTagsBtn:hover {
+  border-color: var(--accent-deep);
+  color: var(--text-primary);
+}
+
+/* Selected: a thicker accent border and bolder text, so the state does not
+   rest on colour alone (aria-pressed carries it for assistive tech). */
+.tagFilterBtnOn {
+  border: 2px solid var(--accent-deep);
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+}
+
+.tagFilterCount {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.moreTagsBtn {
+  background: transparent;
+  border-style: dashed;
+}
+
+.emptyTitle {
+  color: var(--text-primary);
+  margin-bottom: var(--sp-3);
+}
+
+.emptyFilters {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-sm);
+}
+
+.detailTagsTitle {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-4);
+  margin-bottom: var(--sp-2);
+}
+
+.detailTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.detailTag {
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.detailTag:hover,
+.detailTag[aria-pressed='true'] {
+  border-color: var(--accent-deep);
+  color: var(--text-primary);
 }

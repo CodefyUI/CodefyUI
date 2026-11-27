@@ -1,7 +1,7 @@
 {
   "name": "Inference CNN on MNIST",
   "description": "Load the saved weights, read one digit",
-  "gallery": { "section": "quickstart", "order": 2 },
+  "gallery": { "main_tag": "quickstart", "tags": ["vision", "cnn", "inference"], "order": 20 },
   "nodes": [
     {
       "id": "note-overview",

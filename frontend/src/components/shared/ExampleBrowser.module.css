@@ -114,18 +114,16 @@
   line-height: var(--lh-snug);
 }
 
-/* One line, always. The card has a fixed width while its two footer parts do
-   not: a long family chip ("Transformer", or a pack name a plugin chose) plus
-   a node count did not always fit side by side, and the flex default wrapped
-   the count onto a second line -- so the card grew a row and the grid went
-   ragged. The count is the part that must stay put and stay whole; the chip
-   is the part that can afford to be cut, because the sub-header above the
-   card usually says the same word. */
+/* Two tags, a "+n" and the node count (phase 3). Every part stays whole: a
+   tag cut to "Visi..." or "V..." says nothing, and unlike the family chip it
+   replaced, no sub-header repeats it. When they do not fit on one line the
+   row wraps; every card in a row is as tall as the tallest and the footer is
+   pinned to the bottom, so a wrapped footer grows the row, not one card. */
 .presetCardFooter {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  flex-wrap: nowrap;
+  gap: var(--sp-1) var(--sp-2);
+  flex-wrap: wrap;
   /* Pinned to the bottom of the card, not left to follow the text. The row
      is a wrapping flex line, so every card in it is as tall as the tallest;
      a badge that followed the prose sat at three different heights across
@@ -147,16 +145,16 @@
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--radius-sm);
   font-weight: var(--fw-semibold);
-  /* Yields the row to the node count: `min-width: 0` is what lets a flex item
-     shrink below its content at all, and the three together turn an overlong
-     label into an ellipsis instead of a second line. */
-  min-width: 0;
+  /* Whole, never shrunk; only a tag wider than the whole card is cut. */
+  flex: none;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .nodeCount {
+  margin-left: auto;
   font-size: var(--fs-2xs);
   line-height: var(--lh-tight);
   color: var(--text-muted);
@@ -170,4 +168,20 @@
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
   color: var(--text-secondary);
+}
+
+/* "+2" after the two tags a card shows. Text tier on the card surface; the
+   tooltip names the rest. */
+.moreTags {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  flex: none;
+  white-space: nowrap;
+}
+
+/* The blank-graph card: same size as an example card, a dashed edge to say
+   it holds nothing yet. */
+.blankCard {
+  border-style: dashed;
 }

@@ -1,7 +1,7 @@
 {
   "name": "Train ResNet on CIFAR10",
   "description": "Each block learns only a correction",
-  "gallery": { "section": "training", "order": 2 },
+  "gallery": { "main_tag": "training", "tags": ["vision", "resnet", "cifar10"], "order": 20 },
   "nodes": [
     {
       "id": "note-overview",

@@ -14,7 +14,7 @@ import type { ExampleSummary } from '../../api/rest';
 // contract is exercised end to end rather than mocked away.
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
-  return { ...actual, listExamples: vi.fn(), loadExample: vi.fn() };
+  return { ...actual, listExamples: vi.fn(), listExampleTags: vi.fn(), loadExample: vi.fn() };
 });
 
 const mockedRest = vi.mocked(rest);
@@ -51,6 +51,8 @@ beforeEach(() => {
   _resetPluginStoreForTesting();
   useToastStore.setState({ toasts: [] });
   mockedRest.listExamples.mockReset();
+  mockedRest.listExampleTags.mockReset();
+  mockedRest.listExampleTags.mockRejectedValue(new Error('404'));
   mockedRest.loadExample.mockReset();
   mockedRest.listExamples.mockResolvedValue([]);
 });
@@ -93,7 +95,7 @@ describe('TemplatesTab', () => {
     await screen.findByText('Train CNN');
     // The same sections the overlay and the gallery modal render, in the same
     // order — the tab used to sort by category and disagree with both.
-    expect(sectionNames()).toEqual(['Quick Start', 'Model Architectures']);
+    expect(sectionNames()).toEqual(['Quick start', 'Architectures']);
     expect(screen.getByText('7 nodes')).toBeTruthy();
   });
 
@@ -275,8 +277,55 @@ describe('TemplatesTab', () => {
     render(<TemplatesTab />);
     await screen.findByText('A');
     const index = screen.getByRole('navigation', { name: 'Jump to category' });
-    expect(within(index).getByRole('button', { name: 'Quick Start' })).toBeTruthy();
+    expect(within(index).getByRole('button', { name: 'Quick start' })).toBeTruthy();
     expect(within(index).getByRole('button', { name: 'Concepts' })).toBeTruthy();
+  });
+
+  it('lists papers and courses after the practical main tags, in the server order', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Lesson', path: 'plugin:c3/1', source: 'plugin:c3', main_tag: 'courses' }),
+      ex({ name: 'Dropout', path: 'p/1', main_tag: 'papers' }),
+      ex({ name: 'Confusion', path: 'e/1', main_tag: 'evaluation' }),
+      ex({ name: 'Train', path: 't/1', main_tag: 'training' }),
+    ]);
+    render(<TemplatesTab />);
+    await screen.findByText('Dropout');
+    // Courses is sub-grouped by pack; with no catalog the id names it.
+    expect(sectionNames()).toEqual(['Training', 'Evaluation', 'Papers', 'c3']);
+  });
+
+  it('follows the main-tag order from the tags route when the server sends one', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Dropout', path: 'p/1', main_tag: 'papers' }),
+      ex({ name: 'Train', path: 't/1', main_tag: 'training' }),
+    ]);
+    mockedRest.listExampleTags.mockResolvedValue({
+      main_tags: [
+        { id: 'papers', order: 1, count: 1 },
+        { id: 'training', order: 2, count: 1 },
+      ],
+      tags: [],
+    });
+    render(<TemplatesTab />);
+    await screen.findByText('Dropout');
+    await waitFor(() => expect(sectionNames()).toEqual(['Papers', 'Training']));
+  });
+
+  it('matches a search against the tags and their translations', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Iris', path: 'd/1', main_tag: 'data', tags: ['data', 'tabular'] }),
+      ex({ name: 'CNN', path: 't/1', main_tag: 'training', tags: ['training', 'vision'] }),
+    ]);
+    render(<TemplatesTab />);
+    await screen.findByText('Iris');
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '表格' } });
+    expect(screen.getByText('Iris')).toBeTruthy();
+    expect(screen.queryByText('CNN')).toBeNull();
+    fireEvent.change(input, { target: { value: 'vision' } });
+    expect(screen.getByText('CNN')).toBeTruthy();
+    expect(screen.queryByText('Iris')).toBeNull();
   });
 
   it('gives an example that declares no section the Other accent colour', async () => {

@@ -1,7 +1,7 @@
 {
   "name": "Pretrain an LM on TinyStories",
   "description": "From random weights to a short story",
-  "gallery": { "section": "training", "order": 5 },
+  "gallery": { "main_tag": "llm", "tags": ["nlp", "pretraining", "transformer"], "order": 10 },
   "nodes": [
     {
       "id": "start",

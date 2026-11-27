@@ -1,10 +1,7 @@
 {
   "name": "Data mix ratios",
   "description": "Two corpora mixed as found, then 1:1",
-  "gallery": {
-    "section": "llm",
-    "order": 5
-  },
+  "gallery": { "main_tag": "llm", "tags": ["nlp", "data-mix", "pretraining"], "order": 60 },
   "nodes": [
     {
       "id": "start",

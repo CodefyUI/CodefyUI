@@ -1,10 +1,7 @@
 {
   "name": "BatchNorm tames a high LR",
   "description": "MLP at SGD lr 0.5, with and without BN",
-  "gallery": {
-    "section": "papers",
-    "order": 2
-  },
+  "gallery": { "main_tag": "papers", "tags": ["vision", "normalization"], "order": 20 },
   "nodes": [
     {
       "id": "start",

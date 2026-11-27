@@ -1,7 +1,7 @@
 {
   "name": "Mini U-Net node",
   "description": "One denoise step, same shape out",
-  "gallery": { "section": "concepts", "order": 7 },
+  "gallery": { "main_tag": "concepts", "tags": ["diffusion", "unet"], "order": 100 },
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 60 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },
