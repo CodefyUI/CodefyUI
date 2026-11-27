@@ -54,6 +54,8 @@ __pycache__/
 .DS_Store
 # interrupted atomic writes
 *.tmp-*
+# a graph folder save in progress (or one that did not finish)
+graphs/**/.saving
 """
 
 #: The ``.gitattributes`` a project directory starts with.
@@ -69,6 +71,14 @@ PROJECT_GITATTRIBUTES = """*.json text eol=lf
 *.jsonl text eol=lf
 graphs/**/nodes/* text eol=lf
 layout/*.layout.json linguist-generated=true
+# A graph's wires, layout and index merge by key, not by line: two branches
+# that each add a wire or a node merge cleanly. The editor's Source Control
+# defines the driver itself; for a terminal run `cdui project git-setup`.
+# Without it git falls back to its line merge (more conflicts, never a
+# wrong merge).
+graphs/**/edges.jsonl merge=codefyui
+graphs/**/index.json merge=codefyui
+layout/*.layout.json merge=codefyui
 """
 
 # Note-node data keys that are canvas GEOMETRY (spec 6.2): extracted into the

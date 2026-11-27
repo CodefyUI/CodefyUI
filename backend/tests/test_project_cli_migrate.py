@@ -57,7 +57,8 @@ def test_file_to_dir_and_back_keeps_the_graph(tmp_path, capsys):
     assert not (proj / "graphs" / "g.graph.json").exists()
     assert (proj / "graphs" / "g" / "nodes" / "py.code.py").read_text() == LONG_CODE
     assert _merged(proj, "g") == before
-    assert (proj / "layout" / "g.layout.json").read_bytes() == layout_bytes
+    # The same layout; a folder graph writes its id-keyed maps sorted by id.
+    assert json.loads((proj / "layout" / "g.layout.json").read_bytes()) == json.loads(layout_bytes)
     out = capsys.readouterr().out
     assert "git log --follow" in out
     assert 'graph_format = "dir"' in (proj / "codefyui.project.toml").read_text()
@@ -134,3 +135,25 @@ def test_migrating_twice_is_a_no_op(tmp_path, to):
     proj = _init(tmp_path, to)
     GraphStore.for_project(proj).write("g", _graph())
     assert project.cmd_migrate(_margs(proj, to)) == 0
+
+
+def test_git_setup_defines_the_driver_and_adds_the_attribute_lines(tmp_path):
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("no git")
+    proj = _init(tmp_path)
+    subprocess.run(["git", "-C", str(proj), "init", "-q"], check=True)
+    # A project from before the merge lines.
+    (proj / ".gitattributes").write_text("*.json text eol=lf\n")
+    assert project.cmd_git_setup(argparse.Namespace(dir=str(proj))) == 0
+    driver = subprocess.run(["git", "-C", str(proj), "config", "--local", "merge.codefyui.driver"],
+                            capture_output=True, text=True).stdout
+    assert "merge_driver.py" in driver and "%O %A %B %P" in driver and " -I " in driver
+    attrs = (proj / ".gitattributes").read_text()
+    assert "graphs/**/edges.jsonl merge=codefyui" in attrs
+    assert attrs.startswith("*.json text eol=lf\n")
+    # Running it again adds nothing twice.
+    assert project.cmd_git_setup(argparse.Namespace(dir=str(proj))) == 0
+    assert (proj / ".gitattributes").read_text() == attrs

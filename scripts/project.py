@@ -2,7 +2,7 @@
 scripts/dev.py's _dispatch_project_subcommand hop, so `import app.*` works.
 
 This module mirrors scripts/plugins.py: a build_parser() with subcommands, a
-main(argv) that dispatches to args._func. This file ships `init`, `validate`, `migrate`,
+main(argv) that dispatches to args._func. This file ships `init`, `validate`, `migrate`, `git-setup`,
 `freeze`, `restore`, and `publish`.
 """
 
@@ -494,6 +494,50 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_git_setup(args: argparse.Namespace) -> int:
+    """Define the graph merge driver in this repository's ``.git/config``,
+    for merges run in a terminal (the editor defines it per command)."""
+    proj = Path(args.dir).expanduser().resolve()
+    section(f"設定 git 合併：{proj}", f"Setting up git merges: {proj}")
+    if not (proj / MANIFEST_FILENAME).exists():
+        err(f"找不到 manifest：{proj / MANIFEST_FILENAME}",
+            f"Manifest not found: {proj / MANIFEST_FILENAME}")
+        return 1
+    if shutil.which("git") is None:
+        err("找不到 git", "git was not found")
+        return 1
+    from app.core.git.runner import merge_driver_config
+    from app.core.project import PROJECT_GITATTRIBUTES
+
+    inside = subprocess.run(["git", "-C", str(proj), "rev-parse", "--git-dir"],
+                            capture_output=True, text=True)
+    if inside.returncode != 0:
+        err("這個專案不是 git repository", "This project is not a git repository")
+        return 1
+    options = merge_driver_config()
+    for _flag, setting in zip(options[0::2], options[1::2]):
+        key, _, value = setting.partition("=")
+        subprocess.run(["git", "-C", str(proj), "config", "--local", key, value],
+                       check=True)
+        ok(f"{key} = {value}", f"{key} = {value}")
+    # A project made before phase 4B has no `merge=codefyui` lines, and the
+    # driver applies only to the files they name.
+    attributes = proj / ".gitattributes"
+    have = attributes.read_text(encoding="utf-8") if attributes.exists() else ""
+    wanted = [line for line in PROJECT_GITATTRIBUTES.splitlines()
+              if "merge=codefyui" in line and line not in have.splitlines()]
+    if wanted:
+        text = have if have.endswith("\n") or not have else have + "\n"
+        attributes.write_bytes((text + "\n".join(wanted) + "\n").encode("utf-8"))
+        warn(f".gitattributes 加入了 {len(wanted)} 行（merge=codefyui）；請 commit。",
+             f"Added {len(wanted)} line(s) to .gitattributes (merge=codefyui); "
+             "commit them.")
+    info("之後在終端機合併時，圖的線、layout 與索引會依鍵合併。這個設定只在這台機器的這個 clone。",
+         "Merges run in a terminal now merge a graph's wires, layout and index "
+         "by key. The setting lives in this clone on this machine only.")
+    return 0
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     proj = Path(args.dir).expanduser().resolve()
     manifest_path = proj / MANIFEST_FILENAME
@@ -757,6 +801,11 @@ def build_parser() -> argparse.ArgumentParser:
                             "it every graph moves and the manifest's "
                             "[storage] graph_format is set to match")
     p_mig.set_defaults(_func=cmd_migrate)
+
+    p_gs = sub.add_parser(
+        "git-setup", help="Define the graph merge driver in this repo's .git/config")
+    p_gs.add_argument("dir", help="project directory")
+    p_gs.set_defaults(_func=cmd_git_setup)
 
     p_freeze = sub.add_parser("freeze", help="Write installed github plugin pins into the manifest")
     p_freeze.add_argument("dir", help="project directory")
