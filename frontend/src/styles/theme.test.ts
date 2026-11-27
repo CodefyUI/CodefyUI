@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { KNOWN_MAIN_TAGS } from '../utils/exampleSections';
 import {
   CATEGORY_COLORS,
   CATEGORY_VARS,
@@ -126,27 +127,23 @@ describe('tokens.css / theme.ts agreement', () => {
   it.each([
     ['quickstart', '--ex-usage-example'],
     ['training', '--ex-diffusion'],
-    ['papers', '--ex-papers'],
     ['llm', '--ex-llm'],
-    ['concepts', '--ex-classical'],
+    ['data', '--ex-vla'],
+    ['evaluation', '--ex-rnn'],
+    ['research', '--ex-stats'],
+    ['deploy', '--ex-rl'],
     ['architectures', '--ex-model-architecture'],
+    ['concepts', '--ex-classical'],
+    ['papers', '--ex-papers'],
+    ['courses', '--ex-transformer'],
     ['plugin', '--ex-transformer'],
     ['other', '--ex-fallback'],
-  ])('example section %s matches %s', (name, token) => {
+  ])('example main tag %s matches %s', (name, token) => {
     expect(EXAMPLE_SECTION_COLORS[name]).toBe(cssVar(token));
   });
 
-  it('gives every gallery section an accent', () => {
-    expect(Object.keys(EXAMPLE_SECTION_COLORS).sort()).toEqual([
-      'architectures',
-      'concepts',
-      'llm',
-      'other',
-      'papers',
-      'plugin',
-      'quickstart',
-      'training',
-    ]);
+  it('gives every main tag an accent', () => {
+    expect(Object.keys(EXAMPLE_SECTION_COLORS).sort()).toEqual([...KNOWN_MAIN_TAGS].sort());
   });
 
   it.each([

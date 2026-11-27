@@ -20,6 +20,7 @@ import {
   resetWeights,
   createPreset,
   listExamples,
+  listExampleTags,
   loadExample,
   listPlugins,
   reloadNodes,
@@ -302,6 +303,12 @@ describe('GET endpoints', () => {
       fn: () => listExamples(),
       url: '/api/examples/list',
       errorRe: /Failed to list examples/,
+    },
+    {
+      name: 'listExampleTags',
+      fn: () => listExampleTags(),
+      url: '/api/examples/tags',
+      errorRe: /Failed to list example tags/,
     },
     {
       name: 'listCustomNodes',

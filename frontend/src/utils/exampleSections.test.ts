@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
+  cardTags,
   exampleCategoryLabel,
   exampleChipLabel,
   flattenExampleSections,
+  freeTagsOf,
   groupExamplesBySection,
+  KNOWN_MAIN_TAGS,
+  mainTagLabel,
+  mainTagOf,
+  mainTagOrder,
+  tagLabel,
 } from './exampleSections';
 import type { TranslationKey } from '../i18n';
 import en from '../i18n/locales/en';
@@ -36,40 +43,48 @@ const packNames = (source: string) =>
 const t = (key: TranslationKey): string => key;
 
 describe('groupExamplesBySection', () => {
-  it('renders the sections in the contract order, whatever order the server sent', () => {
+  it('renders the main tags in the fallback order, practical first, whatever order the server sent', () => {
+    // Phase 3: papers moved from third to after every practical category,
+    // and courses follows them.
     const sections = groupExamplesBySection(
       [
         ex({ path: 'X/unclassified' }),
         ex({ path: 'plugin:c1/Foo', source: 'plugin:c1' }),
-        ex({ path: 'Model_Architecture/A', section: 'architectures', family: 'CNN' }),
-        ex({ path: 'Classical/A', section: 'concepts' }),
-        ex({ path: 'LLM/A', section: 'llm' }),
-        ex({ path: 'LLM/Train', section: 'training' }),
-        ex({ path: 'Papers/A', section: 'papers' }),
-        ex({ path: 'Usage_Example/A', section: 'quickstart' }),
+        ex({ path: 'plugin:c2/Lesson', source: 'plugin:c2', main_tag: 'courses' }),
+        ex({ path: 'Model_Architecture/A', main_tag: 'architectures', family: 'CNN' }),
+        ex({ path: 'Classical/A', main_tag: 'concepts' }),
+        ex({ path: 'Papers/A', main_tag: 'papers' }),
+        ex({ path: 'Deploy/A', main_tag: 'deploy' }),
+        ex({ path: 'Research/A', main_tag: 'research' }),
+        ex({ path: 'Eval/A', main_tag: 'evaluation' }),
+        ex({ path: 'Data/A', main_tag: 'data' }),
+        ex({ path: 'LLM/A', main_tag: 'llm' }),
+        ex({ path: 'LLM/Train', main_tag: 'training' }),
+        ex({ path: 'Usage_Example/A', main_tag: 'quickstart' }),
       ],
       noPacks,
     );
-    expect(sections.map((s) => s.key)).toEqual([
-      'quickstart',
-      'training',
-      'papers',
-      'llm',
-      'concepts',
-      'architectures',
-      'plugin',
-      'other',
+    expect(sections.map((s) => s.key)).toEqual([...KNOWN_MAIN_TAGS]);
+    expect(sections.map((s) => mainTagLabel(s.key, (key) => en[key]))).toEqual([
+      'Quick start', 'Training', 'LLM & RAG', 'Data', 'Evaluation', 'Experiments', 'Deploy',
+      'Architectures', 'Concepts', 'Papers', 'Courses', 'Plugin packs', 'Other',
     ]);
-    expect(sections.map((s) => s.titleKey)).toEqual([
-      'examples.section.quickstart',
-      'examples.section.training',
-      'examples.section.papers',
-      'examples.section.llm',
-      'examples.section.concepts',
-      'examples.section.architectures',
-      'examples.section.plugin',
-      'examples.section.other',
-    ]);
+  });
+
+  it('follows the order the server gives, keeping the fallbacks last', () => {
+    const sections = groupExamplesBySection(
+      [
+        ex({ path: 'X/unclassified' }),
+        ex({ path: 'a', main_tag: 'training' }),
+        ex({ path: 'b', main_tag: 'papers' }),
+        ex({ path: 'c', main_tag: 'robotics' }),
+      ],
+      noPacks,
+      ['papers', 'training'],
+    );
+    // A main tag the order does not know (a newer pack's) goes after the
+    // known ones, before `other`.
+    expect(sections.map((s) => s.key)).toEqual(['papers', 'training', 'robotics', 'other']);
   });
 
   it('drops sections and sub-groups that nothing landed in', () => {
@@ -80,21 +95,46 @@ describe('groupExamplesBySection', () => {
     expect(sections[0].subgroups[0].items.map((e) => e.path)).toEqual(['LLM/A']);
   });
 
-  it('sends a plugin example to the plugin section whatever its gallery block claims', () => {
-    // A pack is free to ship a `gallery` block; it never buys a place among
-    // the built-in sections, and it does not reorder the pack's own list.
+  it('files a legacy entry that has only `section` under that section', () => {
+    // An older server sends no `main_tag`; a pack written before tags sends
+    // only `section`. Both still land in the category they named (spec
+    // acceptance 6), and a pack example with neither falls to Plugin packs.
     const sections = groupExamplesBySection(
       [
-        ex({ path: 'plugin:c1/Second', source: 'plugin:c1', section: 'quickstart', order: 9 }),
-        ex({ path: 'plugin:c1/First', source: 'plugin:c1', section: 'architectures', order: 1 }),
+        ex({ path: 'plugin:c1/Old', source: 'plugin:c1', section: 'training', order: 9 }),
+        ex({ path: 'Usage_Example/Old', section: 'quickstart' }),
+        ex({ path: 'plugin:c1/Plain', source: 'plugin:c1' }),
       ],
       noPacks,
     );
-    expect(sections.map((s) => s.key)).toEqual(['plugin']);
-    expect(sections[0].subgroups[0].items.map((e) => e.path)).toEqual([
-      'plugin:c1/Second',
-      'plugin:c1/First',
+    expect(sections.map((s) => [s.key, s.subgroups[0].items.map((e) => e.path)])).toEqual([
+      ['quickstart', ['Usage_Example/Old']],
+      ['training', ['plugin:c1/Old']],
+      ['plugin', ['plugin:c1/Plain']],
     ]);
+  });
+
+  it('prefers `main_tag` over `section` when both are sent', () => {
+    expect(mainTagOf(ex({ path: 'a', main_tag: 'evaluation', section: 'concepts' }))).toBe('evaluation');
+    expect(mainTagOf(ex({ path: 'a', main_tag: '', section: 'concepts' }))).toBe('concepts');
+  });
+
+  it('sub-groups courses per pack, packs in server order', () => {
+    const sections = groupExamplesBySection(
+      [
+        ex({ path: 'plugin:c2/A', source: 'plugin:c2', main_tag: 'courses', order: 20 }),
+        ex({ path: 'plugin:c1/A', source: 'plugin:c1', main_tag: 'courses' }),
+        ex({ path: 'plugin:c2/B', source: 'plugin:c2', main_tag: 'courses', order: 10 }),
+      ],
+      packNames,
+    );
+    expect(sections.map((s) => s.key)).toEqual(['courses']);
+    expect(sections[0].subgroups.map((g) => [g.key, g.label])).toEqual([
+      ['courses:plugin:c2', 'Chapter 2'],
+      ['courses:plugin:c1', 'Chapter 1'],
+    ]);
+    // By order inside a pack.
+    expect(sections[0].subgroups[0].items.map((e) => e.path)).toEqual(['plugin:c2/B', 'plugin:c2/A']);
   });
 
   it('sub-groups the plugin section per pack, packs in server order', () => {
@@ -279,9 +319,9 @@ describe('flattenExampleSections', () => {
       t,
     );
     expect(groups.map((g) => g.label)).toEqual([
-      'examples.section.llm',
+      'examples.mainTag.llm',
       'CNN',
-      'examples.section.architectures',
+      'examples.mainTag.architectures',
       'Chapter 1',
     ]);
   });
@@ -344,5 +384,43 @@ describe('example labels', () => {
     expect(
       exampleChipLabel(ex({ path: 'plugin:c1/A', category: 'Classical', family: 'CNN' }), tZh),
     ).toBe('CNN');
+  });
+});
+
+describe('tags', () => {
+  const tEn = (key: TranslationKey) => en[key];
+  const tZh = (key: TranslationKey) => zhTW[key];
+
+  it('separates the free tags from the main tag, deduplicated', () => {
+    const example = ex({ path: 'a', main_tag: 'training', tags: ['training', 'vision', 'cnn', 'vision'] });
+    expect(freeTagsOf(example)).toEqual(['vision', 'cnn']);
+    // A legacy entry with no tags at all has none.
+    expect(freeTagsOf(ex({ path: 'b', section: 'training' }))).toEqual([]);
+  });
+
+  it('prints two tags on a card and counts the rest', () => {
+    const example = ex({ path: 'a', main_tag: 'training', tags: ['training', 'vision', 'cnn', 'augmentation'] });
+    expect(cardTags(example)).toEqual({ shown: ['vision', 'cnn'], more: 1 });
+    expect(cardTags(ex({ path: 'b', main_tag: 'data', tags: ['data'] }))).toEqual({ shown: [], more: 0 });
+  });
+
+  it('names a tag and a main tag in the UI language, and shows an unknown one as is', () => {
+    expect(tagLabel('vision', tEn)).toBe('Vision');
+    expect(tagLabel('vision', tZh)).toBe('視覺');
+    expect(tagLabel('my-own-tag', tZh)).toBe('my-own-tag');
+    expect(mainTagLabel('papers', tZh)).toBe('論文重現');
+    expect(mainTagLabel('robotics', tEn)).toBe('robotics');
+  });
+
+  it('has a name in both languages for every main tag', () => {
+    for (const id of KNOWN_MAIN_TAGS) {
+      expect(mainTagLabel(id, tEn)).not.toBe(id);
+      expect(mainTagLabel(id, tZh)).not.toBe(id);
+    }
+  });
+
+  it('orders the main tags present, ignoring an empty server order', () => {
+    expect(mainTagOrder(['other', 'papers', 'quickstart'], [])).toEqual(['quickstart', 'papers', 'other']);
+    expect(mainTagOrder(['plugin', 'papers'], ['plugin', 'papers'])).toEqual(['papers', 'plugin']);
   });
 });

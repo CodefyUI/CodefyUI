@@ -124,7 +124,8 @@
 .presetCardFooter {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  /* Two tags, a "+n" and the count share the row now (phase 3). */
+  gap: var(--sp-2);
   flex-wrap: nowrap;
   /* Pinned to the bottom of the card, not left to follow the text. The row
      is a wrapping flex line, so every card in it is as tall as the tallest;
@@ -157,6 +158,7 @@
 }
 
 .nodeCount {
+  margin-left: auto;
   font-size: var(--fs-2xs);
   line-height: var(--lh-tight);
   color: var(--text-muted);
@@ -170,4 +172,20 @@
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
   color: var(--text-secondary);
+}
+
+/* "+2" after the two tags a card shows. Text tier on the card surface; the
+   tooltip names the rest. */
+.moreTags {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  flex: none;
+  white-space: nowrap;
+}
+
+/* The blank-graph card: same size as an example card, a dashed edge to say
+   it holds nothing yet. */
+.blankCard {
+  border-style: dashed;
 }

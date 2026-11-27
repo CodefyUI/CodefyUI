@@ -1376,16 +1376,45 @@ export interface ExampleSummary {
   source?: string;
   /**
    * Where the example sits in the gallery, from the optional `gallery` block
-   * in its `graph.json` (#141). `section` is one of the six an example may
-   * declare, `family` sub-groups the architectures, and `order` sorts inside
-   * a group. The backend degrades anything it does not recognise to null, so
-   * a third-party pack cannot break the list; `utils/exampleSections` does
-   * the same again, because these three are also the fields an older backend
-   * simply does not send.
+   * in its `graph.json`. `main_tag` is the category it is filed under (the
+   * server decides `plugin` for a pack example and `other` for a built-in
+   * that declares nothing), `tags` lists the main tag first and then the
+   * free tags, `family` sub-groups the architectures, and `order` sorts
+   * inside a main tag. Optional because an older backend does not send
+   * `main_tag`/`tags`; `utils/exampleSections` falls back to `section` then.
    */
+  main_tag?: string | null;
+  tags?: string[] | null;
+  /** Deprecated: equal to `main_tag` on a current server. */
   section?: string | null;
   family?: string | null;
   order?: number | null;
+}
+
+/** One main tag as `GET /api/examples/tags` lists it, in gallery order. */
+export interface ExampleMainTagCount {
+  id: string;
+  /** 1-based rank: the gallery order, most practical first. */
+  order: number;
+  count: number;
+}
+
+export interface ExampleTagCount {
+  id: string;
+  count: number;
+}
+
+/** `GET /api/examples/tags`: the main tags that have examples, in gallery
+ * order, and every free tag with how many examples carry it. */
+export interface ExampleTagsResponse {
+  main_tags: ExampleMainTagCount[];
+  tags: ExampleTagCount[];
+}
+
+export async function listExampleTags(): Promise<ExampleTagsResponse> {
+  const res = await fetch(`${BASE_URL}/examples/tags`);
+  if (!res.ok) throw new Error(`Failed to list example tags: ${res.statusText}`);
+  return res.json();
 }
 
 export async function listExamples(): Promise<ExampleSummary[]> {

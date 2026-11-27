@@ -341,21 +341,29 @@ export const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
 export const EXAMPLE_CATEGORY_FALLBACK = '#ff9800';
 
 /**
- * Accent per gallery SECTION (#141) — the header dot and underline in the
- * sidebar's Templates tab, and the section heading in the gallery modal. A
- * section holds several categories, so it needs a hue of its own; every value
- * here is one the example palette above already ships, which is what keeps
- * `scripts/check-contrast.mjs` section 8b covering all of them. Keyed by
- * `ExampleSectionKey`, and `other` deliberately takes the same orange as an
- * unknown category, because that is what it is.
+ * Accent per gallery MAIN TAG — the header dot and underline in the sidebar's
+ * Templates tab, the section heading in the gallery modal, and the chip and
+ * card-tag border in the example browser. A main tag holds several
+ * categories, so it needs a hue of its own; every value here is one the
+ * example palette above already ships, which is what keeps
+ * `scripts/check-contrast.mjs` section 8b covering all of them. Two pairs
+ * share a hue on purpose: `courses` and `plugin` are both pack content, and
+ * the accent is never the only thing that tells categories apart (every chip
+ * and heading carries its name). `other` takes the same orange as an unknown
+ * category, because that is what it is.
  */
 export const EXAMPLE_SECTION_COLORS: Record<string, string> = {
   quickstart: '#4caf50',
   training: '#ef6292',
-  papers: '#c08457',
   llm: '#c279ce',
-  concepts: '#26a69a',
+  data: '#a9c94f',
+  evaluation: '#838fcf',
+  research: '#a286d3',
+  deploy: '#f16663',
   architectures: '#2397f3',
+  concepts: '#26a69a',
+  papers: '#c08457',
+  courses: '#26c6da',
   plugin: '#26c6da',
   other: '#ff9800',
 };

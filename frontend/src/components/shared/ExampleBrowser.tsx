@@ -1,22 +1,35 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { selectPluginsById, usePluginStore } from '../../store/pluginStore';
-import { listExamples } from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
 import {
   useLocalizedExamples,
   truncateToWidth,
   type LocalizedExample,
 } from '../../utils/localizeExamples';
-import { groupExamplesBySection, exampleChipLabel } from '../../utils/exampleSections';
+import {
+  cardTags,
+  groupExamplesBySection,
+  mainTagLabel,
+  mainTagOf,
+  tagLabel,
+} from '../../utils/exampleSections';
+import { useExampleCatalog } from '../../utils/useExampleCatalog';
 import { pluginNameOf } from '../../utils/provider';
 import {
-  EXAMPLE_CATEGORY_COLORS,
   EXAMPLE_CATEGORY_FALLBACK,
+  EXAMPLE_SECTION_COLORS,
   SURFACE_RAISED,
   NODE_HEADER_TINT,
   mixColor,
 } from '../../styles/theme';
+import {
+  ALL_MAIN_TAGS,
+  MainTagChips,
+  initialMainTag,
+  mainTagTabId,
+  rememberMainTag,
+} from './MainTagChips';
 import styles from './ExampleBrowser.module.css';
 
 /** How much of a description a preset card shows, in Latin columns.
@@ -29,53 +42,76 @@ import styles from './ExampleBrowser.module.css';
  */
 const CARD_DESC_COLUMNS = 40;
 
+/** The tags under a card: at most two, the rest as "+n" with a tooltip that
+ * names them. Each carries its text; the border repeats the main tag's hue. */
+function CardTags({ example, t }: {
+  example: ExampleSummary;
+  t: (k: TranslationKey, vars?: Record<string, string | number>) => string;
+}) {
+  const { shown, more } = cardTags(example, 2);
+  const hue = EXAMPLE_SECTION_COLORS[mainTagOf(example)] ?? EXAMPLE_CATEGORY_FALLBACK;
+  // Fill is the hue tinted into the card surface and the border carries the
+  // hue at full strength; the label takes the text tier (check-contrast 8b).
+  const style = { background: mixColor(SURFACE_RAISED, hue, NODE_HEADER_TINT), borderColor: hue };
+  const rest = cardTags(example, Number.MAX_SAFE_INTEGER).shown.slice(2);
+  return (
+    <>
+      {shown.map((tag) => (
+        <span key={tag} className={styles.difficultyBadge} style={style}>
+          {tagLabel(tag, t)}
+        </span>
+      ))}
+      {more > 0 && (
+        <span
+          className={styles.moreTags}
+          title={t('examples.card.moreTagsTitle', {
+            count: more,
+            tags: rest.map((tag) => tagLabel(tag, t)).join(', '),
+          })}
+        >
+          {t('examples.card.moreTags', { count: more })}
+        </span>
+      )}
+    </>
+  );
+}
+
+function hoverOn(e: React.MouseEvent<HTMLButtonElement>) {
+  e.currentTarget.style.borderColor = 'var(--status-preset)';
+  // rgb(224,169,43) is --status-preset's own rgb() — no glow token is
+  // paired with it, so this stays a hand-tuned literal at the hue.
+  e.currentTarget.style.boxShadow = '0 4px 16px rgba(224, 169, 43, 0.15)';
+}
+
+function hoverOff(e: React.MouseEvent<HTMLButtonElement>) {
+  e.currentTarget.style.borderColor = 'var(--border-base)';
+  e.currentTarget.style.boxShadow = 'none';
+}
+
 function renderCard(
   example: LocalizedExample,
   onClick: (e: ExampleSummary) => void,
   t: (k: TranslationKey, vars?: Record<string, string | number>) => string,
-  heading: string | null,
 ) {
-  const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? EXAMPLE_CATEGORY_FALLBACK;
-  // The family, for the architectures: they are all one category, so
-  // "Model Architecture" on every card of a section already headed
-  // "Model Architectures" said nothing twice over. And no chip at all when
-  // the sub-header right above the card is that same word.
-  const chipLabel = exampleChipLabel(example, t);
-  const showChip = chipLabel !== heading;
   const shown = truncateToWidth(example.description, CARD_DESC_COLUMNS);
   return (
     <button type="button"
       key={example.path}
       onClick={() => onClick(example)}
       className={styles.presetCard}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = 'var(--status-preset)';
-        // rgb(224,169,43) is --status-preset's own rgb() — no glow token is
-        // paired with it, so this stays a hand-tuned literal at the hue.
-        e.currentTarget.style.boxShadow = '0 4px 16px rgba(224, 169, 43, 0.15)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = 'var(--border-base)';
-        e.currentTarget.style.boxShadow = 'none';
-      }}
+      onMouseEnter={hoverOn}
+      onMouseLeave={hoverOff}
     >
       <div className={styles.presetCardHeader}>
         <span className={styles.presetCardName}>{example.name}</span>
       </div>
       {/* The cut is 40 columns — the width a description is allowed to be at
           all, pinned by both halves of the length rule. So for everything
-          that ships in this repo it never fires: the card shows the whole
-          line, and a GPU, a download or a pack named in that line is on the
-          card rather than behind a cut. It fires for a third-party pack that
-          writes past the rule, which is exactly when the tooltip below earns
-          its place — this card was the only surface that showed a
-          description with no way to read past the cut, while the sidebar's
-          gallery tab has carried the full text all along (core#305).
-          Measured in columns rather than code points so the Chinese card
-          cuts in the same place on screen: 40 ideographs are 80 columns wide
-          and would run off the card. The tooltip is set only when there is
-          more to show, so a description that fits does not get one repeating
-          itself. */}
+          that ships in this repo it never fires; it fires for a third-party
+          pack that writes past the rule, which is when the tooltip earns its
+          place (core#305). Measured in columns rather than code points so
+          the Chinese card cuts in the same place on screen. The tooltip is
+          set only when there is more to show. */}
       <div
         className={styles.presetCardDesc}
         {...(shown !== example.description ? { title: example.description } : {})}
@@ -83,92 +119,133 @@ function renderCard(
         {shown}
       </div>
       <div className={styles.presetCardFooter}>
-        {showChip && (
-          <span
-            className={styles.difficultyBadge}
-            // Fill is the hue tinted into the card surface and the border carries
-            // the hue at full strength; the label takes the text tier. The old
-            // `${catColor}22` wash with the hue as text measured 2.24:1.
-            style={{
-              background: mixColor(SURFACE_RAISED, catColor, NODE_HEADER_TINT),
-              borderColor: catColor,
-            }}
-          >
-            {chipLabel}
-          </span>
-        )}
+        {/* Tags, not the folder name: "Usage Example" on a card said where
+            the file sits, not what the example is for (phase 3). */}
+        <CardTags example={example} t={t} />
         <span className={styles.nodeCount}>{t('empty.nodeCount', { count: example.node_count })}</span>
       </div>
     </button>
   );
 }
 
+/** The first card on every view: an empty canvas, as a choice beside the
+ * examples rather than a separate control. */
+function BlankCard({ onClick, t }: {
+  onClick: () => void;
+  t: (k: TranslationKey, vars?: Record<string, string | number>) => string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`${styles.presetCard} ${styles.blankCard}`}
+      onClick={onClick}
+      onMouseEnter={hoverOn}
+      onMouseLeave={hoverOff}
+    >
+      <div className={styles.presetCardHeader}>
+        <span className={styles.presetCardName}>{t('examples.blank.name')}</span>
+      </div>
+      <div className={styles.presetCardDesc}>{t('examples.blank.desc')}</div>
+    </button>
+  );
+}
+
+/** Where the chosen main tag is remembered, so the next new tab opens on it. */
+export const EXAMPLE_BROWSER_STORAGE_KEY = 'codefyui.examples.mainTag';
+
 export interface ExampleBrowserProps {
   /**
-   * What clicking a card does. The two hosts answer it differently and that
-   * is the ONLY thing they differ on: the empty canvas replaces the graph in
-   * front of the user (there is nothing there to lose), while the welcome
-   * screen has no tab to replace and has to make one first.
+   * What clicking a card does. The two hosts answer it differently: the empty
+   * canvas replaces the graph in front of the user (there is nothing there to
+   * lose), while the welcome screen has no tab to replace and makes one first.
    */
   onPick: (example: ExampleSummary) => void;
+  /** What the "Blank graph" card does: close the overlay over an empty
+   * canvas, or open an empty tab from the welcome screen. */
+  onBlank: () => void;
 }
 
 /**
- * The sectioned example gallery, as both empty states draw it.
+ * The example gallery, as both empty states draw it.
  *
- * Extracted from `EmptyCanvasOverlay` when the welcome screen appeared, so the
- * two cannot drift: the fetch, the localization, the section/family grouping,
- * the 80-column description cut and the card itself are one implementation.
- * What each host keeps for itself is its own framing -- heading, copy, and
- * where the "browse everything" button sits.
+ * Shared by `EmptyCanvasOverlay` and `WelcomeScreen` so the two cannot drift:
+ * the fetch, the localization, the main-tag chips, the grouping, the
+ * description cut and the card are one implementation.
  *
- * Fetches on mount, per host. Two of these are never on screen at once (one
- * needs a tab, the other needs no tab), so nothing is fetched twice.
+ * Under the host's title sits a row of main-tag chips: All plus every main
+ * tag that has examples, in the server's order (practical first). It opens on
+ * the chip chosen last time (localStorage), else Quick start. A main tag shows
+ * its cards by order; All shows every main tag as a titled section. The first
+ * card is always "Blank graph".
  */
-export function ExampleBrowser({ onPick }: ExampleBrowserProps) {
+export function ExampleBrowser({ onPick, onBlank }: ExampleBrowserProps) {
   const { t } = useI18n();
   const pluginsById = usePluginStore(selectPluginsById);
+  const panelId = useId();
+  const idPrefix = useId();
+  const catalog = useExampleCatalog();
+  const [chosen, setChosen] = useState<string | null>(null);
 
-  const [examples, setExamples] = useState<ExampleSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    listExamples()
-      .then((all) => setExamples(all))
-      .catch(() => setExamples([]))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const localized = useLocalizedExamples(examples);
+  const localized = useLocalizedExamples(catalog.examples);
+  const order = useMemo(() => catalog.mainTags.map((entry) => entry.id), [catalog.mainTags]);
   const sections = useMemo(
-    () =>
-      groupExamplesBySection(localized, (source) => pluginNameOf(pluginsById, source)),
-    [localized, pluginsById],
+    () => groupExamplesBySection(localized, (source) => pluginNameOf(pluginsById, source), order),
+    [localized, pluginsById, order],
   );
 
-  if (loading) return <div className={styles.hint}>{t('empty.loading')}</div>;
+  if (catalog.loading) return <div className={styles.hint}>{t('empty.loading')}</div>;
 
-  // One section title, then a sub-header per architecture family and per pack
-  // — the two groupings where the section name alone leaves fifteen cards in
-  // one undifferentiated run. Every other section has a single unlabelled
-  // sub-group and renders exactly as before.
+  const selected =
+    chosen !== null && (chosen === ALL_MAIN_TAGS || order.includes(chosen))
+      ? chosen
+      : initialMainTag(EXAMPLE_BROWSER_STORAGE_KEY, catalog.mainTags, 'quickstart');
+  const select = (value: string) => {
+    setChosen(value);
+    rememberMainTag(EXAMPLE_BROWSER_STORAGE_KEY, value);
+  };
+  const shownSections =
+    selected === ALL_MAIN_TAGS ? sections : sections.filter((section) => section.key === selected);
+  const blank = <BlankCard key="__blank" onClick={onBlank} t={t} />;
+
   return (
     <>
-      {sections.map((section) => (
-        <div key={section.key} className={styles.section}>
-          <div className={styles.sectionTitle}>{t(section.titleKey)}</div>
-          {section.subgroups.map((subgroup) => (
-            <div key={subgroup.key} className={styles.subsection}>
-              {subgroup.label !== null && (
-                <div className={styles.subsectionTitle}>{subgroup.label}</div>
-              )}
-              <div className={styles.quickStartGrid}>
-                {subgroup.items.map((example) => renderCard(example, onPick, t, subgroup.label))}
+      {catalog.mainTags.length > 0 && (
+        <MainTagChips
+          entries={catalog.mainTags}
+          value={selected}
+          onChange={select}
+          idPrefix={idPrefix}
+          panelId={panelId}
+        />
+      )}
+      <div
+        id={panelId}
+        role={catalog.mainTags.length > 0 ? 'tabpanel' : undefined}
+        aria-labelledby={catalog.mainTags.length > 0 ? mainTagTabId(idPrefix, selected) : undefined}
+      >
+        {shownSections.length === 0 && <div className={styles.quickStartGrid}>{blank}</div>}
+        {/* With All, one title per main tag. With one main tag chosen the
+            chip already says it, so only the family and pack sub-headers
+            remain. The blank card leads the first grid either way. */}
+        {shownSections.map((section, sectionIndex) => (
+          <div key={section.key} className={styles.section}>
+            {selected === ALL_MAIN_TAGS && (
+              <div className={styles.sectionTitle}>{mainTagLabel(section.key, t)}</div>
+            )}
+            {section.subgroups.map((subgroup, subgroupIndex) => (
+              <div key={subgroup.key} className={styles.subsection}>
+                {subgroup.label !== null && (
+                  <div className={styles.subsectionTitle}>{subgroup.label}</div>
+                )}
+                <div className={styles.quickStartGrid}>
+                  {sectionIndex === 0 && subgroupIndex === 0 && blank}
+                  {subgroup.items.map((example) => renderCard(example, onPick, t))}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      ))}
+            ))}
+          </div>
+        ))}
+      </div>
     </>
   );
 }
