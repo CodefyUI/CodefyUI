@@ -37,6 +37,11 @@ export interface ProjectEnv {
   kept: string[];
   /** Names that only take effect after a server restart. */
   restart_recommended: string[];
+  /**
+   * Loadable names that choose a server (`*_URL`, `*_BASE`, `*_ENDPOINT`,
+   * `*_HOST`, `*_API_BASE`): the consent prompt points them out.
+   */
+  endpoints?: string[];
   /** sha256 of the file that was read; consent is for exactly this file. */
   sha256: string | null;
   needs_consent: boolean;

@@ -1,16 +1,23 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { PROJECT_CHANGED_EVENT } from '../../api/_auth';
-import { ProjectError, trustProjectEnv, type ProjectEnv } from '../../api/projects';
 import { useI18n } from '../../i18n';
 import { useProjectStore } from '../../store/projectStore';
 import { useToastStore } from '../../store/toastStore';
 import { takeAfterSwitchNotice } from '../../utils/projectSwitch';
 import { useProjectDriftCheck } from '../../hooks/useProjectDriftCheck';
+import { lazyRetry } from '../shared/lazyRetry';
 import styles from './Projects.module.css';
 
-/** sessionStorage: the .env digest the user said "not now" to. */
+/** sessionStorage: the .env digest the user said "not now" to (kept in
+ * step with EnvConsentDialog's ENV_DECLINED_KEY, which is not imported here
+ * so that the dialog stays out of the main chunk). */
 const ENV_DECLINED_KEY = 'codefyui-env-declined';
+
+const EnvConsentDialog = lazyRetry(
+  () => import('./EnvConsentDialog').then((m) => m.EnvConsentDialog),
+  (props) => props.onClose(),
+);
 
 function declined(sha: string | null): boolean {
   try {
@@ -78,120 +85,35 @@ export function ProjectNotices() {
     }
   }, [overview]);
 
+  // A stale window can only be reloaded: everything behind the banner is
+  // made inert, so nothing is clicked or typed into that would be refused
+  // (or, before the window learned, applied to the wrong project).
+  useEffect(() => {
+    const app = document.getElementById('root');
+    if (!stale || app === null) return;
+    // The attribute rather than the property: the same thing in a browser,
+    // and what an older engine (or jsdom) without `inert` still records.
+    app.setAttribute('inert', '');
+    return () => app.removeAttribute('inert');
+  }, [stale]);
+
   return (
     <>
-      {stale && (
+      {stale && createPortal(
         <div role="alert" className={styles.staleBanner} data-testid="project-stale-banner">
           <span>{t('projects.stale.message')}</span>
           <button type="button" onClick={() => window.location.reload()}>
             {t('projects.stale.reload')}
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
       {consentOpen && overview && (
-        <EnvConsentDialog env={overview.env} project={overview.current?.name ?? ''}
-          onClose={() => setConsentOpen(false)} />
+        <Suspense fallback={null}>
+          <EnvConsentDialog env={overview.env} project={overview.current?.name ?? ''}
+            onClose={() => setConsentOpen(false)} />
+        </Suspense>
       )}
     </>
-  );
-}
-
-function EnvConsentDialog({ env, project, onClose }: {
-  env: ProjectEnv; project: string; onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const baseId = useId();
-  const loadRef = useRef<HTMLButtonElement | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const blocked = new Set(env.blocked);
-  const loadable = env.names.filter((name) => !blocked.has(name));
-
-  useEffect(() => {
-    const timer = setTimeout(() => loadRef.current?.focus(), 0);
-    return () => clearTimeout(timer);
-  }, []);
-
-  const notNow = () => {
-    try {
-      if (env.sha256) sessionStorage.setItem(ENV_DECLINED_KEY, env.sha256);
-    } catch {
-      /* asked again next load */
-    }
-    onClose();
-  };
-
-  const load = async () => {
-    if (!env.sha256) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await trustProjectEnv(env.sha256);
-      useProjectStore.getState().setOverview({
-        ...useProjectStore.getState().overview!, env: result.env,
-      });
-      const toast = useToastStore.getState().addToast;
-      toast(t('projects.env.loaded', { count: result.env.applied.length }), 'success');
-      if (result.env_restart_recommended.length > 0) {
-        toast(t('projects.notice.restart', {
-          names: result.env_restart_recommended.join(', '),
-        }), 'info');
-      }
-      onClose();
-    } catch (err) {
-      setError(err instanceof ProjectError && err.code === 'env_changed'
-        ? t('projects.env.changed')
-        : err instanceof Error ? err.message : String(err));
-      setBusy(false);
-    }
-  };
-
-  return createPortal(
-    <div className={styles.backdrop}>
-      <div className={styles.dialog} role="alertdialog" aria-modal="true"
-        aria-labelledby={`${baseId}-title`} aria-describedby={`${baseId}-intro`}
-        data-testid="project-env-consent"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && !busy) {
-            event.preventDefault();
-            notNow();
-          }
-        }}>
-        <header className={styles.header}>
-          <h2 id={`${baseId}-title`}>{t('projects.env.title')}</h2>
-        </header>
-        <div className={styles.body}>
-          <p id={`${baseId}-intro`}>
-            {t(env.state === 'changed' ? 'projects.env.introChanged' : 'projects.env.intro',
-              { project })}
-          </p>
-          <ul className={styles.envList} aria-label={t('projects.env.names')}>
-            {env.names.map((name) => (
-              <li key={name} className={styles.envRow}>
-                <code>{name}</code>
-                {blocked.has(name) && (
-                  <span className={styles.rowWarn}>{t('projects.env.blocked')}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-          {env.blocked.length > 0 && (
-            <p className={styles.hint}>{t('projects.env.blockedHint')}</p>
-          )}
-          <p className={styles.hint}>{t('projects.env.valuesHidden')}</p>
-          {error && <p role="alert" className={styles.error}>{error}</p>}
-        </div>
-        <footer className={styles.footer}>
-          <button type="button" onClick={notNow} disabled={busy}>
-            {t('projects.env.notNow')}
-          </button>
-          <button ref={loadRef} type="button" className={styles.primary}
-            disabled={busy || loadable.length === 0} onClick={() => void load()}>
-            {t('projects.env.load', { count: loadable.length })}
-          </button>
-        </footer>
-      </div>
-    </div>,
-    document.body,
   );
 }

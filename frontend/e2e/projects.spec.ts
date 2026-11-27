@@ -51,7 +51,7 @@ test.beforeAll(async () => {
     recent: [{ path: firstPath, name: 'first', last_opened: '2026-01-01T00:00:00+00:00' }],
   }));
   writeFileSync(GIT_CONFIG,
-    '[user]\n\tname = CodefyUI E2E\n\temail = e2e@example.invalid\n[init]\n\tdefaultBranch = main\n');
+    '[user]\n\tname = CodefyUI E2E\n\temail = e2e@example.invalid\n');
 
   server = spawn(process.execPath, [path.join('e2e', 'server.mjs')], {
     env: {
@@ -86,16 +86,21 @@ test.afterAll(async () => {
 
 const chip = (page: Page) => page.getByTestId('project-chip-name');
 
-/** The newest commit's subject, or '' while the branch has none. */
-function lastCommit(repo: string): string {
+/** git's output in *repo*, trimmed, or '' when git fails. */
+function git(repo: string, ...args: string[]): string {
   try {
-    return execFileSync('git', ['-C', repo, 'log', '-1', '--format=%s'], {
+    return execFileSync('git', ['-C', repo, ...args], {
       env: { ...process.env, GIT_CONFIG_GLOBAL: GIT_CONFIG, GIT_CONFIG_NOSYSTEM: '1' },
       stdio: ['ignore', 'pipe', 'ignore'],
     }).toString().trim();
   } catch {
     return '';
   }
+}
+
+/** The newest commit's subject, or '' while the branch has none. */
+function lastCommit(repo: string): string {
+  return git(repo, 'log', '-1', '--format=%s');
 }
 
 async function openChipMenu(page: Page) {
@@ -116,7 +121,10 @@ test('create a project, save and commit a graph, switch away and back', async ({
   await dialog.getByLabel(/Project folder/).fill(path.join(ROOT, 'logs'));
   await dialog.getByRole('button', { name: 'Open', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('is not a CodefyUI project');
-  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  // The focus is back in the field, and the keyboard alone closes the dialog.
+  await expect(dialog.getByLabel(/Project folder/)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
   await expect(chip(page)).toHaveText('first');
 
   // Create "second": scaffolded, git-initialised, opened, the page reloads.
@@ -128,7 +136,10 @@ test('create a project, save and commit a graph, switch away and back', async ({
   await expect(chip(page)).toHaveText('second');
   const second = path.join(PROJECTS, 'second');
   expect(existsSync(path.join(second, 'codefyui.project.toml'))).toBe(true);
-  expect(existsSync(path.join(second, '.git'))).toBe(true);
+  // On main, with the starter files committed: Source Control starts clean.
+  expect(lastCommit(second)).toBe('Initial project');
+  expect(git(second, 'branch', '--show-current')).toBe('main');
+  await expect(page.getByRole('img', { name: 'Uncommitted changes' })).toHaveCount(0);
 
   // Save a graph into it.
   await importFile(page, fixture('tensor-chain.json'));

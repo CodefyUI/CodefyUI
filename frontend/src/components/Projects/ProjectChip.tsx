@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { ActionMenu, type ActionMenuItem } from '../shared/ActionMenu';
+import { lazyRetry } from '../shared/lazyRetry';
 import { useI18n } from '../../i18n';
 import { useGitStore } from '../../store/gitStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -10,8 +11,11 @@ import { useToastStore } from '../../store/toastStore';
 import type { ProjectDialogMode } from './ProjectDialog';
 import styles from './Projects.module.css';
 
-const ProjectDialog = lazy(() =>
-  import('./ProjectDialog').then((m) => ({ default: m.ProjectDialog })));
+/** Its own chunk, loaded when a dialog opens; a failed load closes it. */
+const ProjectDialog = lazyRetry(
+  () => import('./ProjectDialog').then((m) => m.ProjectDialog),
+  (props) => props.onClose(),
+);
 
 /** How many recent projects the menu lists; the Open dialog lists all. */
 const MENU_RECENTS = 5;
@@ -54,7 +58,22 @@ export function ProjectChip() {
     }
   };
 
-  const items: ActionMenuItem[] = [
+  const label = projectName ?? t('projects.chip.none');
+  const tooltip = !branch
+    ? t('projects.chip.title', { name: label })
+    : t(dirty ? 'projects.chip.titleDirty' : 'projects.chip.titleBranch', { name: label, branch });
+
+  const items: ActionMenuItem[] = [];
+  if (branch) {
+    // First, so a narrow window that hides the branch on the chip still
+    // says it (and whether there is anything to commit) one click away.
+    items.push({
+      id: 'branch',
+      label: t(dirty ? 'projects.menu.branchDirty' : 'projects.menu.branch', { branch }),
+      onSelect: () => useUIStore.getState().setSidebarTab('git'),
+    });
+  }
+  items.push(
     ...recent.map((entry) => ({
       id: `recent:${entry.path}`,
       label: t('projects.menu.recent', { name: entry.name }),
@@ -65,7 +84,7 @@ export function ProjectChip() {
     { id: 'open', label: t('projects.menu.open'), onSelect: () => setDialog('open') },
     { id: 'create', label: t('projects.menu.create'), onSelect: () => setDialog('create') },
     { id: 'clone', label: t('projects.menu.clone'), onSelect: () => setDialog('clone') },
-  ];
+  );
   if (!projectName && (overview?.flat_graphs ?? 0) > 0) {
     items.push({
       id: 'import',
@@ -73,7 +92,7 @@ export function ProjectChip() {
       onSelect: () => setDialog('import'),
     });
   }
-  if (projectName) {
+  if (projectName && !branch) {
     items.push({
       id: 'source-control',
       label: t('projects.menu.sourceControl'),
@@ -81,11 +100,11 @@ export function ProjectChip() {
     });
   }
 
-  const label = projectName ?? t('projects.chip.none');
   return (
     <>
       <ActionMenu
         label={t('projects.chip.menu', { name: label })}
+        title={tooltip}
         items={items}
         className={`${styles.chip} ${projectName ? '' : styles.chipFlat}`}
       >

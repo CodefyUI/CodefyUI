@@ -10,7 +10,6 @@ import { NodeConfigPanel } from './components/ConfigPanel/NodeConfigPanel';
 import { InspectorPanel } from './components/InspectorPanel/InspectorPanel';
 import { ResultsPanel } from './components/ResultsPanel/ResultsPanel';
 import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
-import { LayersEditorModal } from './components/LayersEditor/LayersEditorModal';
 import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
 import { VizViewerModal } from './components/Nodes/VizViewerModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
@@ -115,6 +114,30 @@ function WorkersPanelSlot() {
   return (
     <Suspense fallback={null}>
       <WorkersPanel />
+    </Suspense>
+  );
+}
+
+/**
+ * The layers editor (a model node's "Edit layers"), lazy like the Workers
+ * panel: opened from a node, never on the first screen, and at ~30 kB the
+ * largest modal the entry chunk carried. Phase 4A's project code pushed the
+ * entry chunk past the 500 kB build limit; this brings it back under.
+ */
+const LayersEditorModal = lazyRetry(
+  () => import('./components/LayersEditor/LayersEditorModal')
+    .then((module) => module.LayersEditorModal),
+  () => useTabStore.getState().closeLayersModal(),
+);
+
+/** Mounts the lazy layers editor only while the active tab has it open. */
+function LayersEditorSlot() {
+  const open = useTabStore((s) =>
+    (s.tabs.find((t) => t.id === s.activeTabId)?.layersModalNodeId ?? null) !== null);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <LayersEditorModal />
     </Suspense>
   );
 }
@@ -238,7 +261,7 @@ function App() {
         <PluginSideDock />
       </div>
       <PresetConfigModal />
-      <LayersEditorModal />
+      <LayersEditorSlot />
       <NodeDetailModal />
       <VizViewerModal />
       <TemplateGalleryModal />

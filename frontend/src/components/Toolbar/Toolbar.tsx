@@ -860,8 +860,9 @@ export function Toolbar() {
 
   return (
     <div className={styles.root}>
-      {/* Logo */}
-      <div className={styles.logo}>
+      {/* Logo: left out below 1600px, where the project chip takes its place
+          (see .logoCollapsible). */}
+      <div className={`${styles.logo} ${styles.logoCollapsible}`}>
         <span className={styles.logoBrand}>Codefy</span>
         <span className={styles.logoSuffix}>UI</span>
       </div>

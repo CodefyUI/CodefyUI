@@ -63,6 +63,21 @@
   flex-shrink: 0;
 }
 
+/* A window too narrow for the whole row (13 inch, 1470px): the chip is the
+   project's name alone, at most 6rem; the branch and the uncommitted-changes
+   dot move to its tooltip and to the first row of its menu. Pairs with
+   Toolbar.module.css's .logoCollapsible, same breakpoint. */
+@media (max-width: 1599px) {
+  .chip {
+    max-width: 6rem;
+    margin-left: 0;
+  }
+
+  .chipBranch {
+    display: none;
+  }
+}
+
 /* ── dialogs ── */
 
 .backdrop {
@@ -343,6 +358,27 @@
   color: var(--text-primary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--fs-xs);
+}
+
+.envEndpoint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--status-warning);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.envEndpointHint {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.fieldProblem {
+  color: var(--status-error-strong);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
 }
 
 /* ── the stale-window banner ── */

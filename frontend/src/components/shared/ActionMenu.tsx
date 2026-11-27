@@ -90,6 +90,12 @@ export interface ActionMenuProps {
    * what it does, and the reason follows as its description.
    */
   disabledHint?: string;
+  /**
+   * The trigger's tooltip when it is not refused, in place of {@link label}:
+   * for a trigger whose visible text is shortened (the project chip hides
+   * its branch on a narrow window) and should say the rest on hover.
+   */
+  title?: string;
 }
 
 /**
@@ -132,6 +138,7 @@ export function ActionMenu({
   align = 'start',
   disabled = false,
   disabledHint,
+  title,
 }: ActionMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -317,7 +324,7 @@ export function ActionMenu({
         // tooltip is the only thing an icon-only trigger can say.
         title={disabled && disabledHint !== undefined && disabledHint !== ''
           ? disabledHint
-          : label}
+          : title ?? label}
         aria-disabled={disabled}
         onClick={() => (open ? close(true) : openMenu('first'))}
         onKeyDown={onTriggerKeyDown}

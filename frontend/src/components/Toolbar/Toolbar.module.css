@@ -63,6 +63,17 @@
   color: var(--accent);
 }
 
+/* Below 1600px the editor's toolbar drops the wordmark (phase 4A review,
+   round 1): with the project chip in the row, the 13-inch (1470px) English
+   toolbar was 81px too long for one line, and the chip without its branch
+   (Projects.module.css) gives back only 34 of them. The chip names the open
+   project in the same place; the browser tab still says CodefyUI. */
+@media (max-width: 1599px) {
+  .logoCollapsible {
+    display: none;
+  }
+}
+
 /* ----- Vertical separator -----
    Render this only as the last child of a .cluster, never as a direct child
    of .root. .root wraps, so a divider that is a root flex item of its own can

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   browseFolders,
@@ -17,13 +17,20 @@ import {
 import { useI18n } from '../../i18n';
 import { useProjectStore } from '../../store/projectStore';
 import { confirmLeavingUnsavedTabs, finishSwitch } from '../../utils/projectSwitch';
+import { projectErrorText } from './projectErrors';
+import { useDialogKeys } from './useDialogKeys';
 import styles from './Projects.module.css';
 
 export type ProjectDialogMode = 'open' | 'create' | 'clone' | 'import';
 
-const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [tabindex="0"]';
 /** What `create` accepts; the server checks the same and says why. */
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+/** Names Windows keeps for devices, with or without an extension. */
+const WINDOWS_RESERVED = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`),
+]);
 
 interface Props {
   mode: ProjectDialogMode;
@@ -46,6 +53,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [browse, setBrowse] = useState<BrowseResult | null>(null);
   const [plan, setPlan] = useState<ImportPlan | null>(null);
@@ -63,7 +71,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
   useEffect(() => {
     if (mode === 'import') {
       setValue('workspace');
-      getImportPlan().then(setPlan, (err: unknown) => setError(messageOf(err)));
+      getImportPlan().then(setPlan, (err: unknown) => showError(err));
     }
     if (mode === 'open' && overview?.browse_allowed) {
       browseFolders().then(setBrowse, () => setBrowse(null));
@@ -72,28 +80,39 @@ export function ProjectDialog({ mode, onClose }: Props) {
 
   const title = t(`projects.dialog.${mode}.title`);
 
-  const handleKeys = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      if (!busy) onClose();
-      return;
+  useDialogKeys(dialogRef, () => {
+    if (!busy) onClose();
+  });
+
+  // A refused request leaves the focus on <body> (the submit button was
+  // disabled under it): put it back where the user can fix what was wrong.
+  useEffect(() => {
+    if (error === null) return;
+    const input = firstRef.current;
+    if (input) {
+      input.focus();
+      input.select();
+    } else {
+      dialogRef.current?.focus();
     }
-    if (event.key !== 'Tab') return;
-    const focusable = Array.from(dialogRef.current!.querySelectorAll<HTMLElement>(FOCUSABLE));
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+  }, [error]);
+
+  const showError = (err: unknown) => {
+    const text = projectErrorText(err, t);
+    setError(text.message);
+    setDetail(text.detail);
+    setHint(err instanceof ProjectError ? err.hint : null);
+  };
+
+  const showProblem = (message: string) => {
+    setError(message);
+    setDetail(null);
+    setHint(null);
   };
 
   const run = async (action: () => Promise<SwitchResult>) => {
     setError(null);
+    setDetail(null);
     setHint(null);
     if (!(await confirmLeavingUnsavedTabs())) return;
     setBusy(true);
@@ -105,34 +124,43 @@ export function ProjectDialog({ mode, onClose }: Props) {
       }
       await finishSwitch(result);
     } catch (err) {
-      setError(messageOf(err));
-      setHint(err instanceof ProjectError ? err.hint : null);
       setBusy(false);
+      showError(err);
     }
   };
 
   const nameProblem = (name: string): string | null => {
     if (!NAME_PATTERN.test(name)) return t('projects.dialog.name.invalid');
     if (name.startsWith('.')) return t('projects.dialog.name.dot');
+    if (name.endsWith('.')) return t('projects.dialog.name.trailingDot');
+    if (WINDOWS_RESERVED.has(name.split('.')[0].toUpperCase())) {
+      return t('projects.dialog.name.reserved', { name });
+    }
     return null;
   };
+
+  const naming = mode === 'create' || mode === 'import';
+  const typedName = value.trim();
+  /** Said while typing, so a name that cannot work never reaches Submit. */
+  const liveProblem = naming && typedName !== '' ? nameProblem(typedName) : null;
+  const nameUnusable = naming && (typedName === '' || liveProblem !== null);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = value.trim();
     if (mode === 'open') {
-      if (!text) return setError(t('projects.dialog.open.empty'));
+      if (!text) return showProblem(t('projects.dialog.open.empty'));
       void run(() => openProject(text));
     } else if (mode === 'create') {
       const problem = nameProblem(text);
-      if (problem) return setError(problem);
+      if (problem) return showProblem(problem);
       void run(() => createProject(text));
     } else if (mode === 'clone') {
-      if (!/^https:\/\//i.test(text)) return setError(t('projects.dialog.clone.httpsOnly'));
+      if (!/^https:\/\//i.test(text)) return showProblem(t('projects.dialog.clone.httpsOnly'));
       void run(() => cloneProject(text));
     } else {
       const problem = nameProblem(text);
-      if (problem) return setError(problem);
+      if (problem) return showProblem(problem);
       void run(() => importFlatGraphs({ name: text }, includeAssets));
     }
   };
@@ -142,7 +170,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
       await removeRecentProject(path);
       await useProjectStore.getState().loadOverview();
     } catch (err) {
-      setError(messageOf(err));
+      showError(err);
     }
   };
 
@@ -163,7 +191,6 @@ export function ProjectDialog({ mode, onClose }: Props) {
         aria-labelledby={`${baseId}-title`}
         aria-busy={busy}
         tabIndex={-1}
-        onKeyDown={handleKeys}
         data-testid={`project-dialog-${mode}`}
       >
         <form noValidate onSubmit={submit}>
@@ -218,7 +245,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
                       {browse.parent && (
                         <li className={styles.row}>
                           <button type="button" className={styles.rowMain}
-                            onClick={() => browseFolders(browse.parent!).then(setBrowse, (e) => setError(messageOf(e)))}>
+                            onClick={() => browseFolders(browse.parent!).then(setBrowse, (e) => showError(e))}>
                             <span className={styles.rowName}>..</span>
                           </button>
                         </li>
@@ -228,7 +255,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
                           <button type="button" className={styles.rowMain}
                             onClick={() => {
                               setValue(entry.path);
-                              browseFolders(entry.path).then(setBrowse, (e) => setError(messageOf(e)));
+                              browseFolders(entry.path).then(setBrowse, (e) => showError(e));
                             }}>
                             <span className={styles.rowName}>{entry.name}</span>
                             {entry.is_project && (
@@ -255,10 +282,15 @@ export function ProjectDialog({ mode, onClose }: Props) {
                 <label className={styles.field}>
                   {t('projects.dialog.create.name')}
                   <input ref={firstRef} value={value} spellCheck={false}
+                    aria-invalid={liveProblem !== null}
+                    aria-describedby={`${baseId}-name-note`}
                     onChange={(event) => setValue(event.target.value)} />
                 </label>
-                <p className={styles.hint}>
-                  {t('projects.dialog.create.where', { path: `${root}/${value.trim() || '…'}` })}
+                <p id={`${baseId}-name-note`}
+                  className={liveProblem ? styles.fieldProblem : styles.hint}
+                  data-testid="project-name-note">
+                  {liveProblem
+                    ?? t('projects.dialog.create.where', { path: `${root}/${typedName || '…'}` })}
                 </p>
               </>
             )}
@@ -281,8 +313,14 @@ export function ProjectDialog({ mode, onClose }: Props) {
                 <label className={styles.field}>
                   {t('projects.dialog.create.name')}
                   <input ref={firstRef} value={value} spellCheck={false}
+                    aria-invalid={liveProblem !== null}
+                    aria-describedby={liveProblem ? `${baseId}-name-note` : undefined}
                     onChange={(event) => setValue(event.target.value)} />
                 </label>
+                {liveProblem && (
+                  <p id={`${baseId}-name-note`} className={styles.fieldProblem}
+                    data-testid="project-name-note">{liveProblem}</p>
+                )}
                 {plan === null && !error && (
                   <p className={styles.hint}>{t('projects.dialog.import.loading')}</p>
                 )}
@@ -331,6 +369,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
             {error && (
               <div role="alert" className={styles.error}>
                 <p>{error}</p>
+                {detail && <p className={styles.errorHint}>{detail}</p>}
                 {hint && <p className={styles.errorHint}>{hint}</p>}
               </div>
             )}
@@ -339,7 +378,7 @@ export function ProjectDialog({ mode, onClose }: Props) {
             <button type="button" onClick={onClose} disabled={busy}>
               {t('projects.dialog.cancel')}
             </button>
-            <button type="submit" className={styles.primary} disabled={busy || (mode === 'import' && plan === null)}>
+            <button type="submit" className={styles.primary} disabled={busy || nameUnusable || (mode === 'import' && plan === null)}>
               {busy ? t(`projects.dialog.${mode}.busy`) : t(`projects.dialog.${mode}.submit`)}
             </button>
           </footer>
@@ -350,6 +389,3 @@ export function ProjectDialog({ mode, onClose }: Props) {
   );
 }
 
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
