@@ -13,7 +13,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 | 主標籤 | 內容 |
 |----------|----------|
 | **快速開始** | 最先跑的四個：**Train CNN on MNIST**、**Inference CNN on MNIST**、**Classify Iris with sklearn KNN**，以及 **Call a graph over HTTP**（graph-as-a-function 示範）。新分頁上的範例集預設停在這一類。 |
-| **訓練** | 從頭訓練出一個模型的圖：**Train a CNN on beans**（資料集來自 Hugging Face Hub）、**Train ResNet on CIFAR10**、實測過的 **ResNet-18 CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Train a Transformer on MNIST**、**Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中 — 以及三個用產生的資料、在 CPU 上一分鐘內訓練完的範例：**Segment shapes pixel by pixel**、**Train a DDPM on blobs** 與 **LSTM remembers the first token**。另外四個示範訓練迴圈周邊的做法：**Early stopping, keep the best** 依驗證 loss 提早停止，並用 `CheckpointSaver` 存下最佳 epoch 的權重；**Resume from a checkpoint** 用 `CheckpointSaver` 存下一次訓練，再用 `CheckpointLoader` 接著訓練；**Augment, then train** 把轉換鏈接到 Dataset 的 `train_transform`；**Transfer with a frozen backbone** 用 `FreezeParameters` 凍結預訓練好的骨幹網路，只訓練新的輸出層，再和從頭訓練的結果比較。 |
+| **訓練** | 從頭訓練出一個模型的圖：**Train a CNN on beans**（資料集來自 Hugging Face Hub）、**Train ResNet on CIFAR10**、實測過的 **ResNet-18 CIFAR-10 baseline**（見[重現標準結果](./reproducing-baselines)）、**Train a Transformer on MNIST**、**Train a VLA on PushWorld** — 它需要 CUDA GPU 與大約一小時，操作方式在它的 [README](https://github.com/CodefyUI/CodefyUI/blob/main/examples/VLA/TrainVLA-PushWorld/README.md) 中 — 以及三個用產生的資料、在 CPU 上一分鐘內訓練完的範例：**Segment shapes pixel by pixel**、**Train a DDPM on blobs** 與 **LSTM remembers the first token**。另外四個示範訓練迴圈周邊的做法：**Early stopping, keep the best** 依驗證 loss 提早停止，並用 `CheckpointSaver` 存下最佳 epoch 的權重；**Resume from a checkpoint** 用 `CheckpointSaver` 存下一次訓練，再用 `CheckpointLoader` 接著訓練；**Augment, then train** 把轉換鏈接到 Dataset 的 `train_transform`；**Transfer with a frozen backbone** 用十個數字預訓練，把骨幹網路複製到一個回答新標籤（數字是否大於等於 5）的模型，用 `FreezeParameters` 凍結骨幹，只用 20 張標註影像訓練新的輸出層，旁邊是同一個模型只用這 20 張從頭訓練的對照。 |
 | **LLM 與 RAG** | **Pretrain an LM on TinyStories**；**Fine-tune a tiny char LM**，先用短篇故事預訓練一個字元層級的 Transformer，再用你提供的文字微調，並在兩份文字上量 perplexity；兩條檢索鏈 **Fully local RAG** 與 **RAG with a chat API**；**Measure retrieval hit rate**，用詞袋檢索器在隨附的筆記上量 hit@1 與 hit@3，不需安裝任何套件包；**Data mix ratios**，依權重混合兩個隨附的文字檔；**Sentence similarity in zh-TW**；以及 **Word embedding analogy**。 |
 | **資料** | 訓練之前先看資料：**Inspect a dataset first**（隨附手寫數字資料的筆數、樣本與像素統計）、**Split and check for leaks**（分層切出訓練／驗證／測試資料，再檢查評估資料裡有沒有和訓練資料重複的列）、**Tabular Iris feature pipeline**，以及 **Image batch IO**，它用 `ImageWriter` 寫出一個批次，再用 `ImageBatchReader` 把資料夾讀回來。 |
 | **評估** | 衡量模型，而不是訓練模型：**Five seeds, mean and spread**（同一個訓練子圖放五次，回報平均與標準差）、**Evaluate a saved checkpoint**（混淆矩陣與各數字的正確率）、**Compare two checkpoints**（同一次訓練的兩個 epoch，用同一份測試資料比較，並列出兩者判讀不同的影像）、**Project embeddings to 2D**（用 PCA 投影隱藏層）、**K-fold cross-validation**（`KFoldSplit`），以及 **Six classifiers on two moons**。 |
@@ -23,12 +23,12 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 | **概念** | 一張圖講一個觀念，小到可以從頭看到尾：**Tensor ops tour**（調整張量形狀的節點）、**Reduce and Switch**（`Reduce` 與 `Switch` 這兩個資料流節點）、**One backward pass**（可以用手算驗證的梯度，需開啟「擷取梯度」）、**RNN unrolled over three steps**、**Conv1d classifies sequences**（放在 RNN 範例旁邊的時間卷積）、**Causal attention from scratch**、**Mixture of Experts top-k routing**、三個 diffusion 範例（**Forward diffusion on a digit**、**Toy reverse diffusion sampling**、**Mini U-Net node**），以及強化學習的觀念：**Discounted returns**（gamma 如何把獎勵變成回報）、**Reward model from preferences**（RLHF 第一步）、**RLHF reward and KL terms**、**Reward hacking via a shortcut** 與 **One GRPO step on rollouts**。 |
 | **論文重現** | 一張圖重現一篇論文的方法，用的節點和其他範例相同，在 CPU 上幾秒內就能從頭訓練完。總覽註記會寫明論文、配方，以及這張圖預期達到的數字：**Dropout narrows the overfit gap**、**BatchNorm tames a high LR**、**Skip connections train deeper**、**Adam vs SGD vs momentum**、**Label smoothing lowers confidence**、**Cosine warm restarts (SGDR)**、**Sigmoid gradients vanish in depth**，以及極小 batch 下的正規化：**GroupNorm holds at batch 2**。序列與回歸：**Gradient clipping rescues an RNN**、**Autoencoder squeezes digits to 2-D**、**LSTM forecasts a noisy wave**、**Transformer learns to sort**、**Weight decay smooths the fit** 與 **Early stopping on validation loss**。強化學習的四個範例用 **RLTrainingLoop** 節點訓練：**REINFORCE balances CartPole**、**DQN balances CartPole**、**PPO balances CartPole** 與 **Q-learning crosses a trap grid**。 |
 | **課程** | CodefyUI 隨附的課程套件包 — `foundations`、`deep`、`rl`、`stats` 與 `eval` — 提供的範例，每個套件包一個小標題。只有已啟用的套件包帶有範例時才會顯示；見[外掛](/advanced/plugins)。 |
-| **插件範例** | 已安裝的[外掛](/advanced/plugins)提供、但沒有說明自己屬於哪一類的範例，每個套件包一個小標題。只有存在時才會顯示。 |
+| **外掛範例** | 已安裝的[外掛](/advanced/plugins)提供、但沒有說明自己屬於哪一類的範例，每個套件包一個小標題。只有存在時才會顯示。 |
 | **其他** | 沒有宣告主標籤、或宣告了這份清單不認識的主標籤的內建範例。測試會確保隨附的範例不會落到這裡。 |
 
 其中七個實務範例 — **Inspect a dataset first**、**Early stopping, keep the best**、**Transfer with a frozen backbone**，以及**評估**底下四個用手寫數字的範例 — 用的是 `backend/data/samples/digits.csv`，也就是 UCI 的 1,797 張 8x8 手寫數字（CC BY 4.0），隨 CodefyUI 一起提供。每一個都能離線在 CPU 上幾秒內跑完，並固定了亂數種子。
 
-外掛的範例只要宣告了主標籤，就會和內建範例一起排在那個主標籤底下；只有**課程**與**插件範例**會為每個套件包加一個小標題。
+外掛的範例只要宣告了主標籤，就會和內建範例一起排在那個主標籤底下；只有**課程**與**外掛範例**會為每個套件包加一個小標題。
 
 列出範例的四個地方都用這一套分組：空白畫布上的 overlay、沒有開啟分頁時顯示的[歡迎畫面](./tabs-persistence#the-welcome-screen)、**範例圖庫**，以及側邊欄的**範例**分頁。
 
@@ -103,9 +103,9 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例 graph。�
 }
 ```
 
-- `main_tag` 只能是 `quickstart`、`training`、`llm`、`data`、`evaluation`、`research`、`deploy`、`architectures`、`concepts`、`papers` 與 `courses` 其中之一，這裡的順序就是範例集的順序；每一類放什麼，見本頁開頭的表格（`research` 顯示為**實驗**）。`plugin` 與 `other` 由伺服器自己指定，不能宣告。不在清單裡的值等於沒有宣告主標籤：內建範例會落到**其他**，外掛的範例則落到**插件範例**。
+- `main_tag` 只能是 `quickstart`、`training`、`llm`、`data`、`evaluation`、`research`、`deploy`、`architectures`、`concepts`、`papers` 與 `courses` 其中之一，這裡的順序就是範例集的順序；每一類放什麼，見本頁開頭的表格（`research` 顯示為**實驗**）。`plugin` 與 `other` 由伺服器自己指定，不能宣告。不在清單裡的值等於沒有宣告主標籤：內建範例會落到**其他**，外掛的範例則落到**外掛範例**。
 - `tags` 是一串自由填寫的字：小寫英文字母與數字，多個字之間用連字號連接（`transfer-learning`），每個 1 到 24 個字元，最多六個。不符合規則的項目只會刪掉那一項，重複的會被移除，第六個之後的會被忽略。不要重複主標籤，也不要拿其他主標籤的 id 當標籤。每個內建範例至少要有一個領域標籤（`vision`、`nlp`、`tabular`、`rl`、`diffusion`、`audio`、`timeseries` 或 `vla`）。
-- `order` 是整數，在同一個主標籤內由小到大排序；在**模型架構**底下是同一個家族內，在**課程**與**插件範例**底下則是同一個套件包內。建議以十為間隔編號（`10`、`20`、`30`），之後才有空間把範例插到兩個範例之間；沒有寫 `order` 的範例排在有寫的後面，順序相同時依名稱排序。
+- `order` 是整數，在同一個主標籤內由小到大排序；在**模型架構**底下是同一個家族內，在**課程**與**外掛範例**底下則是同一個套件包內。建議以十為間隔編號（`10`、`20`、`30`），之後才有空間把範例插到兩個範例之間；沒有寫 `order` 的範例排在有寫的後面，順序相同時依名稱排序。
 - `family` 是**模型架構**底下的小標題，其他地方都不使用：上面那五個家族照列出的順序排在前面，其他字串接在後面依字母排序。
 
 清單讀不懂的欄位，只有那一個欄位會變成空值，而不是讓整個範例集掛掉：不是整數的 `order` 只會讓範例排在有寫 `order` 的範例後面。

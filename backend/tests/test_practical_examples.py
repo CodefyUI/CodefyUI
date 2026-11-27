@@ -204,20 +204,33 @@ def test_early_stopping_stops_and_keeps_the_best_epoch(results):
     assert Path(r["save"]["path"]).name == "digits-best.pt"
 
 
-def test_transfer_freezes_the_backbone_and_loses_to_the_baseline_as_it_says(results):
+def test_transfer_beats_the_baseline_on_twenty_labels(results):
+    """Pretrained on all ten digits, the frozen backbone answers the new
+    question from 20 labels better than the same model from scratch."""
     key = "Training/Transfer-Frozen-Backbone"
-    transfer, scratch = _quoted(r"frozen backbone scores ([\d.]+) and the baseline ([\d.]+): here transfer loses", key)
+    test_n, transfer, scratch = _quoted(
+        r"On the ([\d,]+) images neither run trained on, the frozen backbone scores ([\d.]+) "
+        r"and the baseline ([\d.]+)\.", key)
     r = results(key)
     assert r["freeze"]["report"] == (
-        "frozen: 2 tensors, 16,640 parameters; trainable: 2 tensors, 1,285 parameters")
+        "frozen: 4 tensors, 16,576 parameters; trainable: 2 tensors, 130 parameters")
     frozen_note = next(n for n in _graph(key)["nodes"] if n["id"] == "note-freeze")
     assert r["freeze"]["report"] in frozen_note["data"]["noteContent"]
+    assert len(r["ds-pre"]["dataset"]) == 1000
+    assert len(r["ds-few"]["dataset"]) == 20
+    assert r["b-eval"]["total"] == int(test_n.replace(",", "")) == 1797 - 1000 - 20
     assert r["b-eval"]["accuracy"] == pytest.approx(float(transfer), abs=0.05)
     assert r["s-eval"]["accuracy"] == pytest.approx(float(scratch), abs=0.05)
-    assert r["s-eval"]["accuracy"] > r["b-eval"]["accuracy"]
-    head = r["b-train"]["model"].layers["head"]
-    assert all(p.requires_grad for p in head.parameters())
-    assert not any(p.requires_grad for p in r["b-train"]["model"].layers["backbone"].parameters())
+    assert r["b-eval"]["accuracy"] - r["s-eval"]["accuracy"] > 0.05
+    model = r["b-train"]["model"]
+    assert all(p.requires_grad for p in model.layers["head"].parameters())
+    for layer in ("backbone1", "backbone2"):
+        assert not any(p.requires_grad for p in model.layers[layer].parameters())
+    # The backbone the head trained on is the pretrained one, unchanged.
+    pretrained = r["a-train"]["model"].state_dict()
+    for name, value in model.state_dict().items():
+        if not name.startswith("layers.head."):
+            assert (value == pretrained[name]).all(), name
 
 
 # ── evaluation ────────────────────────────────────────────────────────────

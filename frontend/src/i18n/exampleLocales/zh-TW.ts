@@ -391,7 +391,7 @@ const zhTW: ExampleTranslations = {
     description: '驗證 loss 不再進步就停，存最佳權重',
   },
   'Training/Transfer-Frozen-Backbone': {
-    description: '在 0-4 預訓練，用 50 張學 5-9',
+    description: '沿用數字骨幹，只用 20 張學新標籤',
   },
   'Evaluation/Multi-Seed-Mean-Std': {
     description: '同一做法跑五次，報平均與標準差',

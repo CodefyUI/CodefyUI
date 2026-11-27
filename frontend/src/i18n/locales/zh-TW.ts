@@ -405,7 +405,7 @@ const zhTW: Record<TranslationKey, string> = {
   'examples.mainTag.concepts': '概念',
   'examples.mainTag.papers': '論文重現',
   'examples.mainTag.courses': '課程',
-  'examples.mainTag.plugin': '插件範例',
+  'examples.mainTag.plugin': '外掛範例',
   'examples.mainTag.other': '其他',
   // 自由標籤。沒有譯名的標籤照原文顯示。
   'examples.tag.ab-test': 'A/B 測試',

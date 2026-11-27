@@ -353,7 +353,7 @@ cdui plugin install your-username/your-fork
 "gallery": { "main_tag": "training", "tags": ["vision", "cnn"], "order": 10 }
 ```
 
-`main_tag` 是範例集的其中一個主標籤（`quickstart`、`training`、`llm`、`data`、`evaluation`、`research`、`deploy`、`architectures`、`concepts`、`papers`、`courses`），範例會和內建範例一起列在那裡；放在 `courses` 時，套件包的範例會有自己的小標題，CodefyUI 隨附的套件包都放在這裡。`tags` 最多六個小寫、以連字號連接的字，供範例集的標籤篩選與搜尋使用。在主標籤出現之前寫的套件包只設定了 `"section"`，仍然可以用，因為認得的 `section` 會被當成主標籤。兩者都沒有、或值是範例集不認得的範例，會放到**插件範例**底下，每個套件包一個小標題。完整規則（包括 `order` 與 `family`）見[新增範例](/usage/examples-gallery#adding-an-example)。
+`main_tag` 是範例集的其中一個主標籤（`quickstart`、`training`、`llm`、`data`、`evaluation`、`research`、`deploy`、`architectures`、`concepts`、`papers`、`courses`），範例會和內建範例一起列在那裡；放在 `courses` 時，套件包的範例會有自己的小標題，CodefyUI 隨附的套件包都放在這裡。`tags` 最多六個小寫、以連字號連接的字，供範例集的標籤篩選與搜尋使用。在主標籤出現之前寫的套件包只設定了 `"section"`，仍然可以用，因為認得的 `section` 會被當成主標籤。兩者都沒有、或值是範例集不認得的範例，會放到**外掛範例**底下，每個套件包一個小標題。完整規則（包括 `order` 與 `family`）見[新增範例](/usage/examples-gallery#adding-an-example)。
 
 ### manifest 欄位參考 {/* #manifest-reference */}
 
