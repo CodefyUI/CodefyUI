@@ -91,7 +91,7 @@ describe('GraphFolderRow', () => {
     ]);
     fireEvent.click(screen.getByRole('button', { name: 'Discard Changes train/' }));
     await waitFor(() => expect(discard).toHaveBeenCalled());
-    expect(vi.mocked(confirm).mock.calls.at(-1)?.[0].title)
+    expect(vi.mocked(confirm).mock.lastCall?.[0].title)
       .toBe('Discard every change to the graph train (3 files)?');
     expect(discard.mock.calls[0][0]).toHaveLength(3);
   });
