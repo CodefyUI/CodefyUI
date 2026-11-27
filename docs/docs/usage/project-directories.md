@@ -337,17 +337,32 @@ At start-up the server picks, in this order:
    project (see below).
 5. Otherwise the **default project** `~/CodefyUI-Projects/workspace`
    (`%USERPROFILE%\CodefyUI-Projects\workspace` on Windows), created with its
-   own git repository the first time. `CODEFYUI_PROJECTS_ROOT` moves the
+   own git repository the first time (see the next section for its branch and
+   first commit). `CODEFYUI_PROJECTS_ROOT` moves the
    `CodefyUI-Projects` folder; `CODEFYUI_DEFAULT_PROJECT=0` turns this step
    off. A `workspace` folder that exists, is not empty and is not a project is
    left alone: the server stays in flat mode and logs a warning.
 
+### A new project's repository
+
+The default project, **New project…** and an import into a new project make
+the folder a git repository on your `init.defaultBranch`, or `main` when you
+have not set one, with one commit, `Initial project`, holding the starter
+files. Source Control starts clean, and the first graph you save is the
+first change it shows. Without a git identity (`user.name`, `user.email`)
+that one commit is made as `CodefyUI <codefyui@localhost>`, given for that
+commit only and written to no config. `cdui project init` still makes no
+commit.
+
 ### The project chip
 
 The chip at the left of the toolbar names the open project, its git branch,
-and shows a dot while there are uncommitted changes. Its menu opens a recent
+and shows a dot while there are uncommitted changes. On a window narrower than
+1600px it shows the name alone (the CodefyUI wordmark is left out to keep the
+toolbar on one line); the branch and whether there are uncommitted changes
+are in its tooltip and in the first row of its menu. Its menu opens a recent
 project, a folder (**Open folder…**), a new project (**New project…**, created
-under the projects root with `git init`), or a clone (**Clone from a git
+under the projects root; the name is checked as you type), or a clone (**Clone from a git
 URL…**, https only, cloned into the projects root under the repository's
 name). In flat mode it reads **No project** and, when there are graphs from
 before projects, offers to copy them into a project together with the models,
@@ -387,10 +402,27 @@ variable **names** (never the values) and asks. The answer is remembered for
 those exact contents in `<user data>/trust.json`; when the file changes, you
 are asked again. Saying no opens the project without those variables.
 
-Some names are never loaded when a project is opened at run time, because
-they change how the server runs programs: `PATH`, `PYTHON*`, `LD_*`,
-`DYLD_*`, `GIT_*`, `SSH_*`, `CODEFYUI_*`, `HOME`, `USERPROFILE`, `SHELL`
-and `COMSPEC`. And some libraries read their settings only once, when they
+Some names are never loaded when a project is opened at run time, whatever
+their letter case (`https_proxy` is blocked as well as `HTTPS_PROXY`):
+
+- how programs start and where code comes from: `PATH`, `PYTHON*`, `LD_*`,
+  `DYLD_*`, `CODEFYUI_*`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5*`, `RUBY*`,
+  `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`;
+- where packages are installed from: `PIP_*`, `UV_*`, `CONDA_*`;
+- how git, ssh and shells run: `GIT_*`, `SSH_*`, `HOME`, `USERPROFILE`,
+  `SHELL`, `COMSPEC`, `BASH_ENV`, `ENV`, `IFS`, `XDG_*`, `EDITOR`, `VISUAL`,
+  `PAGER`, `BROWSER`, `TMPDIR`, `TEMP`, `TMP`;
+- where network traffic goes and which certificates it trusts: `*_PROXY`
+  (`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, …), `SSL_CERT_*`,
+  `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`.
+
+Names ending in `_URL`, `_BASE`, `_ENDPOINT`, `_HOST` or `_API_BASE` are
+loaded, but the prompt marks them: such a variable can send requests, and
+the keys that go with them, to another server (`OPENAI_BASE_URL` pointing
+somewhere you do not know, for example). Open the `.env` and check their
+values before you agree.
+
+And some libraries read their settings only once, when they
 start (`CUDA_VISIBLE_DEVICES`, `HF_HOME` and the other `HF_*`,
 `TORCH_HOME`, `OMP_NUM_THREADS` and similar): after a switch the editor says
 which of these need a server restart to take effect.
