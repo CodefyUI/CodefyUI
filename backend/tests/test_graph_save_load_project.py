@@ -144,16 +144,21 @@ async def test_list_project_mode_strips_double_suffix(project_settings, test_cli
     assert "canon.graph" not in by_file  # double suffix must not leak
 
 
-async def test_list_project_mode_ambiguous_pair_409(project_settings, test_client):
+async def test_list_project_mode_ambiguous_pair_is_marked(project_settings, test_client):
     """Both `x.json` and `x.graph.json` coexisting for the same base name is
-    never silently resolved -- /list 409s naming BOTH files."""
+    never silently resolved -- the entry carries an ``error`` naming BOTH
+    files. Phase 4B review: it no longer fails the whole list (409), which
+    left the Graphs panel empty because of one graph."""
     (project_settings / "graphs" / "dup.graph.json").write_text("{}")
     (project_settings / "graphs" / "dup.json").write_text("{}")
+    (project_settings / "graphs" / "fine.graph.json").write_text('{"name": "fine"}')
     r = await test_client.get("/api/graph/list")
-    assert r.status_code == 409
-    detail = r.json()["detail"]
-    assert "dup.graph.json" in detail
-    assert "dup.json" in detail
+    assert r.status_code == 200
+    listed = {g["file"]: g for g in r.json()}
+    assert set(listed) == {"dup", "fine"}
+    assert "dup.graph.json" in listed["dup"]["error"]
+    assert "dup.json" in listed["dup"]["error"]
+    assert "error" not in listed["fine"]
 
 
 async def test_save_reserved_name_400_in_project_mode(project_settings, test_client):

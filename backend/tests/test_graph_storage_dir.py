@@ -389,6 +389,8 @@ async def test_leftovers_a_folder_cannot_hold_are_dropped_and_said(project, test
     r = await test_client.post("/api/graph/save", json=graph)
     assert r.status_code == 200, r.text
     assert len(r.json()["dropped"]) == 2
+    assert r.json()["dropped_edges"] == [{"block": None, "id": "dup"},
+                                         {"block": None, "id": "ghost"}]
     loaded = (await test_client.get("/api/graph/load/demo")).json()
     assert [e["id"] for e in loaded["edges"]] == ["t", "d"]
 
@@ -428,10 +430,16 @@ async def test_a_folder_beside_a_file_is_ambiguous(project, test_client):
     await test_client.post("/api/graph/save", json=_payload())
     (project / "graphs" / "demo.graph.json").write_text("{}")
     for resp in (await test_client.get("/api/graph/load/demo"),
-                 await test_client.get("/api/graph/list"),
                  await test_client.post("/api/graph/save", json={**_payload(), "file": "demo"})):
         assert resp.status_code == 409
         assert "older CodefyUI" in resp.text
+    # The list still answers, with every other graph, and this one marked.
+    await test_client.post("/api/graph/save", json=_payload(name="other"))
+    listed = (await test_client.get("/api/graph/list")).json()
+    assert {g["file"] for g in listed} == {"demo", "other"}
+    bad = next(g for g in listed if g["file"] == "demo")
+    assert "older CodefyUI" in bad["error"]
+    assert "error" not in next(g for g in listed if g["file"] == "other")
 
 
 async def test_a_newer_storage_version_is_listed_but_not_opened(project, test_client):

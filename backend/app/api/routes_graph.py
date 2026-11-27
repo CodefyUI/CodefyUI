@@ -27,8 +27,8 @@ from ..core.graph_storage import (
     GraphUnreadable,
     LayoutOrphanExists,
     NewerStorageVersion,
+    NAME_LIMIT,
     StorageCheckFailed,
-    sanitize_graph_name,
 )
 from ..core.secret_params import (
     scrub_graph_secrets,
@@ -48,8 +48,18 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize_name(name: str) -> str:
-    """Filesystem-safe graph name (``graph_storage.sanitize_graph_name``)."""
-    return sanitize_graph_name(name)
+    """The stem *name* addresses (``GraphStore.stem_for``: the sanitized
+    name, or an existing graph saved under the pre-4B rule)."""
+    return _store().stem_for(name)
+
+
+def _check_new_stem(stem: str) -> None:
+    """A stem a save or rename may CREATE: not empty, and not past
+    ``NAME_LIMIT`` (a 300-character name used to end in a 500)."""
+    if len(stem) > NAME_LIMIT:
+        raise HTTPException(status_code=400, detail=(
+            f"A graph name can be at most {NAME_LIMIT} characters; "
+            f"this one is {len(stem)}"))
 
 
 def _project_mode() -> bool:
@@ -157,6 +167,7 @@ async def save_graph(graph: GraphSaveRequest):
     # returned rather than left for the client to re-derive -- the same
     # reason /rename returns it.
     safe_target = _sanitize_name(target)
+    _check_new_stem(safe_target)
     # The overwrite guard (#455). ONLY when the request named no address --
     # the same `bool(graph.file)` that chose `name` as the target at the top
     # of this function, so the guard covers exactly the case where the SERVER
@@ -267,6 +278,9 @@ async def save_graph(graph: GraphSaveRequest):
         # Leftovers a folder cannot hold (an edge to a missing node, a second
         # edge between the same ports): said to the user, not silently lost.
         response["dropped"] = result.dropped
+        # The same edges by id, so the editor takes them off the canvas too
+        # and the next save does not report them again.
+        response["dropped_edges"] = result.dropped_edges or []
     return response
 
 
@@ -281,7 +295,9 @@ async def load_graph(name: str):
     except NewerStorageVersion as e:
         raise HTTPException(status_code=409, detail=str(e))
     except GraphUnreadable as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # The request is fine; the graph on disk is not (bad JSON, a
+        # symbolic link out of the project, a file over the size cap).
+        raise HTTPException(status_code=422, detail=str(e))
     _warn_if_newer_format(name, data)
     return data
 
@@ -301,10 +317,9 @@ async def list_graphs():
     # Project mode applies the shared canonical-vs-legacy collection rule:
     # stems never leak the double suffix, and a stem present in both forms
     # fails loudly naming both.
-    try:
-        return _store().list()
-    except GraphAmbiguityError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    # A graph that cannot be read or exists in two forms is listed with an
+    # ``error`` rather than failing the whole list.
+    return _store().list()
 
 
 class RenameGraphRequest(BaseModel):
@@ -345,6 +360,7 @@ async def rename_graph(req: RenameGraphRequest):
             ),
         )
     safe_to = _sanitize_name(req.to)
+    _check_new_stem(safe_to)
     try:
         _store().rename(_sanitize_name(req.from_name), safe_to, new_name=req.to,
                         src_display=req.from_name, dst_display=req.to)

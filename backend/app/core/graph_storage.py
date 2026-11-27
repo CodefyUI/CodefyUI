@@ -28,6 +28,7 @@ import json
 import os as _os
 import re as _re
 import shutil as _shutil
+import time as _time
 import unicodedata as _unicodedata
 from bisect import bisect_left as _bisect_left
 from dataclasses import dataclass
@@ -72,9 +73,28 @@ def manifest_graph_format(project_dir: Path) -> str:
     return "dir" if value == "dir" else "file"
 
 
-def sanitize_graph_name(name: str) -> str:
-    """Filesystem-safe graph name: every char outside [alnum, '-', '_'] -> '_'."""
+#: The longest stem a NEW graph may have (a save or a rename target). Well
+#: inside every filesystem's limit for a name plus its suffixes.
+NAME_LIMIT = 100
+
+
+def legacy_sanitize_graph_name(name: str) -> str:
+    """The stem rule before phase 4B: every char outside [alnum, '-', '_']
+    becomes '_'. Kept to find graphs saved under it (see
+    :func:`sanitize_graph_name`)."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+
+
+def sanitize_graph_name(name: str) -> str:
+    """Filesystem-safe graph name: every char outside [alnum, '-', '_'] ->
+    '_', and a Windows reserved name (``CON``, ``aux``, ``LPT1``...) gets a
+    trailing '_', since a folder or file of that name cannot be checked out
+    on Windows. (Dots and spaces are already gone, so no name ends in one.)
+    """
+    stem = legacy_sanitize_graph_name(name)
+    if stem.upper() in _WINDOWS_RESERVED:
+        stem += "_"
+    return stem
 
 
 class GraphStorageError(Exception):
@@ -122,6 +142,9 @@ class SaveResult:
     written: list[str] | None = None
     deleted: list[str] | None = None
     dropped: list[str] | None = None
+    #: The edges among *dropped*, as ``{"block": <block id or None>, "id":
+    #: <edge id>}``, so the editor can take the same ones off the canvas.
+    dropped_edges: list[dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +207,17 @@ class GraphStore:
             return folder
         return resolve_graph_file(self.graphs_dir, stem, display_name=display_name)
 
+    def stem_for(self, name: str) -> str:
+        """The stem *name* addresses: :func:`sanitize_graph_name`, unless
+        only a graph saved under the older rule exists (``CON`` from before
+        reserved names got their '_'): existing files are never moved."""
+        stem = sanitize_graph_name(name)
+        legacy = legacy_sanitize_graph_name(name)
+        if legacy != stem and self.existing(stem) is None \
+                and self.existing(legacy) is not None:
+            return legacy
+        return stem
+
     def folder(self, stem: str) -> Path:
         """Where graph *stem* lives in the directory form."""
         return self.graphs_dir / stem
@@ -212,12 +246,38 @@ class GraphStore:
             return "dir"
         return "file" if self.existing(stem) is not None else None
 
+    def _refuse_outside_link(self, path: Path, stem: str,
+                             display_name: str | None = None) -> None:
+        """Refuse *path* when it, or a folder between it and ``graphs/``, is
+        a symbolic link that leads out of the project: opening the graph
+        would read a file from elsewhere into it."""
+        from .fs_paths import is_within
+
+        root = self.graphs_dir.parent if self.project else self.graphs_dir
+        probe = path
+        while True:
+            if probe.is_symlink():
+                target = path.resolve()
+                if not is_within(target, root):
+                    raise GraphUnreadable(stem, (
+                        f"Graph '{display_name or stem}' is not opened: "
+                        f"{path.relative_to(root) if path.is_relative_to(root) else path} "
+                        f"is a symbolic link to {target}, outside the project"))
+                return
+            if probe == self.graphs_dir or probe.parent == probe:
+                return
+            probe = probe.parent
+
     def read_folder(self, stem: str, display_name: str | None = None
                     ) -> tuple[dict, list[Repair]]:
         """The logic document of a graph stored as a folder, with repairs."""
-        files = read_tree(self.folder(stem))
+        folder = self.folder(stem)
+        self._refuse_outside_link(folder, stem, display_name)
+        found: list[Repair] = []
         try:
-            return implode(files)
+            files = read_tree(folder, found)
+            logic, repairs = implode(files)
+            return logic, found + repairs
         except LookupError as exc:
             raise NewerStorageVersion(stem, exc.args[0] if exc.args else None) from None
         except ValueError as exc:
@@ -244,6 +304,7 @@ class GraphStore:
     # ── Reading ───────────────────────────────────────────────────────────
 
     def _read_json(self, path: Path, stem: str, display_name: str | None) -> dict:
+        self._refuse_outside_link(path, stem, display_name)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -284,6 +345,7 @@ class GraphStore:
             layout = None
             layout_path = self.layout_path(stem)
             if layout_path is not None and layout_path.exists():
+                self._refuse_outside_link(layout_path, stem, display_name)
                 try:
                     layout = json.loads(layout_path.read_text(encoding="utf-8"))
                 except (ValueError, OSError):
@@ -310,6 +372,7 @@ class GraphStore:
         if path.is_dir():
             logic = self.read_folder(stem, display_name)[0]
             return logic, snapshot_text(logic)
+        self._refuse_outside_link(path, stem, display_name)
         try:
             text = path.read_text()
         except OSError as exc:
@@ -374,9 +437,10 @@ class GraphStore:
                       if p.is_dir() and (p / INDEX).is_file())
 
     def list(self) -> list[dict[str, Any]]:
-        """``[{name, file, modified}]`` for the Graphs panel. A file that
-        cannot be read is left out (it cannot show a name). Raises
-        GraphAmbiguityError in project mode."""
+        """``[{name, file, modified}]`` for the Graphs panel. In project mode
+        a graph that cannot be read, or exists in two forms, is listed with
+        ``error`` (why it cannot be opened); a flat-mode file that cannot be
+        read is left out."""
         self.graphs_dir.mkdir(parents=True, exist_ok=True)
         entries: list[dict[str, Any]] = []
         if not self.project:
@@ -395,45 +459,56 @@ class GraphStore:
                 except Exception:  # noqa: BLE001 -- unreadable: not listed
                     continue
             return entries
-        for stem in self._folders():
-            folder = self.folder(stem)
-            for single in (self.graphs_dir / f"{stem}.graph.json",
-                           self.graphs_dir / f"{stem}.json"):
-                if single.exists():
-                    raise FolderAmbiguityError(stem, folder, single)
-            try:
-                index = json.loads((folder / INDEX).read_text(encoding="utf-8"))
-                if not isinstance(index, dict):
-                    continue
-                files = [p for p in folder.rglob("*")
-                         if p.is_file() and _managed(p.relative_to(folder).as_posix())]
-                entry: dict[str, Any] = {
-                    "name": index.get("name", stem),
-                    "file": stem,
-                    # The newest file in the folder: an edited node does not
-                    # touch the index.
-                    "modified": max(p.stat().st_mtime for p in files),
-                }
-                if index.get("storage_version") != STORAGE_VERSION:
-                    # Listed so it is not silently missing, but marked: this
-                    # build cannot open or save it.
-                    entry["newer"] = True
-                entries.append(entry)
-            except Exception:  # noqa: BLE001 -- unreadable: not listed
+        # One entry per graph, and a graph that cannot be read or is
+        # ambiguous is still listed, with ``error``: one bad graph must
+        # neither empty the panel nor quietly vanish from it.
+        singles: dict[str, list[Path]] = {}
+        for f in self.graphs_dir.glob("*.json"):
+            if f.name.endswith(".layout.json"):
                 continue
-        for base, f in collect_graph_files(self.graphs_dir):
+            base = f.name[:-len(".graph.json")] if f.name.endswith(".graph.json") else f.stem
+            singles.setdefault(base, []).append(f)
+        folders = {p.name: p for p in self.graphs_dir.iterdir()
+                   if p.is_dir() and (p / INDEX).is_file()}
+        for stem in sorted(set(singles) | set(folders)):
+            paths = sorted(singles.get(stem, []))
+            entry: dict[str, Any] = {"name": stem, "file": stem}
             try:
-                data = json.loads(f.read_text())
-                entries.append({
-                    "name": data.get("name", base),
-                    "file": base,
+                if stem in folders:
+                    folder = folders[stem]
+                    files = [p for p in folder.rglob("*")
+                             if p.is_file() and _managed(p.relative_to(folder).as_posix())]
+                    entry["modified"] = max([p.lstat().st_mtime for p in files]
+                                            or [folder.stat().st_mtime])
+                    if paths:
+                        raise FolderAmbiguityError(stem, folder, paths[0])
+                    self._refuse_outside_link(folder, stem)
+                    try:
+                        index = json.loads((folder / INDEX).read_text(encoding="utf-8"))
+                    except (OSError, ValueError) as exc:
+                        raise GraphUnreadable(stem, f"Graph '{stem}' cannot be read: "
+                                              f"{INDEX}: {exc}") from None
+                    if not isinstance(index, dict):
+                        raise GraphUnreadable(stem, f"Graph '{stem}' cannot be read: "
+                                              f"{INDEX} is not a JSON object")
+                    if isinstance(index.get("name"), str):
+                        entry["name"] = index["name"]
+                    if index.get("storage_version") != STORAGE_VERSION:
+                        # Listed so it is not silently missing, but marked:
+                        # this build cannot open or save it.
+                        entry["newer"] = True
+                else:
                     # The LOGIC file's mtime. The layout half is rewritten by
-                    # every drag, so sorting on it would rank "somebody nudged
-                    # a node" above "somebody rewired the graph".
-                    "modified": f.stat().st_mtime,
-                })
-            except Exception:  # noqa: BLE001 -- unreadable: not listed
-                continue
+                    # every drag, so sorting on it would rank "somebody
+                    # nudged a node" above "somebody rewired the graph".
+                    entry["modified"] = max(p.lstat().st_mtime for p in paths)
+                    path = resolve_graph_file(self.graphs_dir, stem)
+                    data = self._read_json(path, stem, None)
+                    if isinstance(data.get("name"), str):
+                        entry["name"] = data["name"]
+            except (GraphAmbiguityError, GraphStorageError) as exc:
+                entry["error"] = str(exc)
+            entries.append(entry)
         return entries
 
     # ── Writing ───────────────────────────────────────────────────────────
@@ -469,7 +544,8 @@ class GraphStore:
                       ) -> "SaveResult":
         folder = self.folder(stem)
         logic, layout = split_graph(payload)
-        logic, dropped = prepare_for_folder(logic)
+        dropped_edges: list[dict] = []
+        logic, dropped = prepare_for_folder(logic, dropped_edges)
         previous = read_tree(folder)
         if INDEX in previous:
             try:
@@ -489,25 +565,35 @@ class GraphStore:
                                      f"a folder: {exc}; nothing was written") from None
         # The last line of defence against losing data: the folder about to be
         # written must read back as exactly the graph being saved.
+        big = [rel for rel, data in files.items() if len(data) > MAX_FILE_BYTES]
+        if big:
+            raise StorageCheckFailed(
+                stem, f"Graph '{stem}' cannot be saved: {big[0]} would be "
+                f"{len(files[big[0]])} bytes, over the {MAX_FILE_BYTES} a graph "
+                "file may be; nothing was written")
         if back != logic or repairs:
             raise StorageCheckFailed(
                 stem, f"Graph '{stem}' did not read back as saved "
                 f"({len(repairs)} repair(s)); nothing was written")
         written: list[str] = []
         layout_path = self.layout_path(stem)
-        layout_bytes = (json.dumps(layout, indent=2) + "\n").encode("utf-8")
+        layout_bytes = folder_layout_bytes(layout)
         try:
             on_disk = layout_path.read_bytes()
         except OSError:
             on_disk = None
         if on_disk != layout_bytes:
+            # Inside the save marker's window (``sync_tree`` takes the marker
+            # it finds and removes it when it is done): a save that dies
+            # between the layout and the folder is reported as well.
+            _write_marker(folder)
             _atomic_write_bytes(layout_path, layout_bytes)
             written.append(str(layout_path))
         changed, deleted = sync_tree(folder, files, previous)
         written += [str(folder / rel) for rel in changed]
         return SaveResult(folder, written=written,
                           deleted=[str(folder / rel) for rel in deleted],
-                          dropped=dropped)
+                          dropped=dropped, dropped_edges=dropped_edges)
 
     def convert(self, stem: str, to: str) -> "ConvertResult":
         """Rewrite graph *stem* in the form *to* (``"dir"`` or ``"file"``),
@@ -573,8 +659,7 @@ class GraphStore:
                 files = explode(expected_logic, None, dir_len=len(f"graphs/{stem}/"),
                                 requires=derive_requires(expected_logic, None))
                 sync_tree(folder, files, {})
-                _atomic_write_bytes(layout_path, (json.dumps(
-                    expected_layout, indent=2) + "\n").encode("utf-8"))
+                _atomic_write_bytes(layout_path, folder_layout_bytes(expected_layout))
                 back, back_repairs = implode(read_tree(folder))
             else:
                 write_graph_pair(logic_path, layout_path, payload)
@@ -620,14 +705,16 @@ class GraphStore:
         dst_existing = self.resolve(dst_stem, dst_display)
         if not src.exists():
             raise GraphNotFound(src_stem, src_display)
-        if dst_existing.exists() and dst_existing != src:
+        if dst_existing.exists() and dst_existing != src \
+                and not _same_entry(dst_existing, src):
             raise GraphExists(dst_stem, f"Graph '{dst_display or dst_stem}' already exists")
         # A layout can outlive its graph (a checkout of `graphs/` alone, a
         # manual delete), and `Path.replace` overwrites silently, so refuse
         # here, before anything has moved.
         layout_src = self.layout_path(src_stem)
         layout_dst = self.layout_path(dst_stem)
-        if layout_dst is not None and layout_dst != layout_src and layout_dst.exists():
+        if layout_dst is not None and layout_dst != layout_src and layout_dst.exists() \
+                and not (layout_src is not None and _same_entry(layout_dst, layout_src)):
             raise LayoutOrphanExists(
                 dst_stem,
                 f"A layout file for '{dst_display or dst_stem}' already exists "
@@ -638,7 +725,7 @@ class GraphStore:
             if (layout_src is not None and layout_dst is not None
                     and layout_dst != layout_src and layout_src.exists()):
                 layout_dst.parent.mkdir(parents=True, exist_ok=True)
-                layout_src.replace(layout_dst)
+                _move(layout_src, layout_dst)
             return
         raw = src.read_text()
         try:
@@ -660,13 +747,13 @@ class GraphStore:
         # one, only still titled the old one. The trailing newline is kept as
         # found so a rename is not also a last-line change in git.
         if dst != src:
-            src.replace(dst)
+            _move(src, dst)
         _atomic_write(
             dst, json.dumps(data, indent=2) + ("\n" if raw.endswith("\n") else ""))
         if (layout_src is not None and layout_dst is not None
                 and layout_dst != layout_src and layout_src.exists()):
             layout_dst.parent.mkdir(parents=True, exist_ok=True)
-            layout_src.replace(layout_dst)
+            _move(layout_src, layout_dst)
 
     def _rename_folder(self, src_stem: str, dst_stem: str, new_name: str,
                        src_display: str | None) -> None:
@@ -685,7 +772,7 @@ class GraphStore:
             raise NewerStorageVersion(src_stem, index.get("storage_version"))
         dst = self.folder(dst_stem)
         if dst != src:
-            src.replace(dst)
+            _move(src, dst)
         index["name"] = new_name
         first = [(k, index.pop(k)) for k in ("storage_version", "format_version",
                                              "name", "description") if k in index]
@@ -706,6 +793,47 @@ class GraphStore:
             layout_path.unlink()
             removed.append(layout_path)
         return removed
+
+
+#: The layout maps keyed by node (or block) id.
+_LAYOUT_KEYED = ("positions", "notes", "subgraphPositions")
+
+
+def folder_layout_bytes(layout: dict) -> bytes:
+    """The layout file of a graph stored as a folder: the single-file
+    graph's layout, with every map keyed by id sorted by id. Two branches
+    that add nodes then add their positions at different places instead of
+    both at the end of the file. (A single-file graph keeps its layout in
+    node order, byte for byte as before.)"""
+    out = dict(layout)
+    for key in _LAYOUT_KEYED:
+        value = out.get(key)
+        if isinstance(value, dict):
+            out[key] = {k: (dict(sorted(v.items())) if key == "subgraphPositions"
+                            and isinstance(v, dict) else v)
+                        for k, v in sorted(value.items())}
+    return (json.dumps(out, indent=2) + "\n").encode("utf-8")
+
+
+def _same_entry(a: Path, b: Path) -> bool:
+    """Do *a* and *b* name the same directory entry (``beta`` and ``Beta``
+    on a case-insensitive disk)?"""
+    try:
+        return _os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _move(src: Path, dst: Path) -> None:
+    """``src.replace(dst)``, including a change of letter case only: that
+    goes through a temporary name, since a filesystem that ignores case can
+    treat the direct rename as a no-op."""
+    if src != dst and _same_entry(src, dst):
+        tmp = src.with_name(f"{src.name}.rename-tmp-{_os.getpid()}")
+        src.replace(tmp)
+        tmp.replace(dst)
+        return
+    src.replace(dst)
 
 
 def graph_folder_of(path: Path) -> Path | None:
@@ -731,18 +859,40 @@ def load_graph_document(path: Path, repairs: list | None = None) -> dict:
     had to repair is appended to *repairs* when given."""
     folder = graph_folder_of(path)
     if folder is not None:
+        found: list[Repair] = []
         try:
-            logic, found = implode(read_tree(folder))
+            logic, more = implode(read_tree(folder, found))
+            found += more
         except LookupError as exc:
             raise ValueError(f"{folder} was saved by a newer CodefyUI (storage "
                              f"version {exc.args[0] if exc.args else '?'})") from None
         if repairs is not None:
             repairs.extend(found)
         return logic
+    inside = graph_folder_containing(path)
+    if inside is not None:
+        raise ValueError(f"{path} is one file of the graph folder {inside}, "
+                         f"not a graph; give the folder: {inside}")
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a graph document")
     return data
+
+
+def graph_folder_containing(path: Path) -> Path | None:
+    """The graph folder *path* is a file inside of (a node file, an edge
+    list), or None."""
+    path = Path(path)
+    for parent in path.parents:
+        index = parent / INDEX
+        if parent != path and index.is_file() and index != path:
+            try:
+                doc = json.loads(index.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, dict) and "storage_version" in doc:
+                return parent
+    return None
 
 
 def snapshot_text(logic: dict) -> str:
@@ -786,6 +936,14 @@ O_STEP = 1024
 EXTRACT_MIN_CHARS = 400
 #: Paths (relative to the project) longer than this use a hash file name.
 PATH_LIMIT = 240
+#: The most one file of a graph folder may weigh. Parameter text is never
+#: this big; a file past it is refused (the graph is not opened), never
+#: skipped, since a save after skipping would lose it.
+MAX_FILE_BYTES = 16 * 1024 * 1024
+#: Written at the start of a folder save and removed when it is done. Found
+#: on read, it means the last save did not finish (repair
+#: ``interrupted_save``). Not part of the format: gitignored, never managed.
+SAVE_MARKER = ".saving"
 
 _BODY_KEYS = ("nodes", "edges", "presets", "subgraphs")
 _INDEX_RESERVED = ("storage_version", "requires")
@@ -1189,6 +1347,30 @@ def _order_key(o: Any) -> tuple[int, float]:
     return (1, 0)  # no "o" (a hand-written file): after every ordered one
 
 
+def _decode(raw: bytes, rel: str, repairs: list[Repair]) -> str:
+    """*raw* as UTF-8. Bytes that are not UTF-8 become U+FFFD and are
+    reported (``invalid_text_encoding``): never replaced silently, since the
+    next save would write the replacement back."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        bad = []
+        text = raw.decode("utf-8", "replace")
+        pos = exc.start
+        while pos < len(raw) and len(bad) < 5:
+            try:
+                raw[pos:].decode("utf-8")
+                break
+            except UnicodeDecodeError as more:
+                bad.append(pos + more.start)
+                pos = pos + more.end
+        shown = ", ".join(str(b) for b in bad)
+        repairs.append(Repair("invalid_text_encoding", rel,
+                              f"bytes at offset {shown} are not UTF-8 and were "
+                              "replaced with U+FFFD"))
+        return text
+
+
 def _restore_params(node: dict, prefix: str, files: dict[str, bytes],
                     repairs: list[Repair], path: str) -> dict:
     data = node.get("data")
@@ -1206,7 +1388,7 @@ def _restore_params(node: dict, prefix: str, files: dict[str, bytes],
                                       "its text file is missing; the value is now empty"))
                 out[name] = ""
             else:
-                out[name] = raw.decode("utf-8", "replace")
+                out[name] = _decode(raw, rel, repairs)
         elif isinstance(value, dict) and len(value) == 1 and "$literal" in value:
             out[name] = value["$literal"]
         else:
@@ -1224,10 +1406,10 @@ def _implode_body(files: dict[str, bytes], prefix: str, repairs: list[Repair]
                 or "/" in rel[len(node_dir):]:
             continue
         try:
-            doc = _parse_json(files[rel])
+            doc = json.loads(_decode(files[rel], rel, repairs))
             if not isinstance(doc, dict) or not isinstance(doc.get("id"), str):
                 raise ValueError("not a node file")
-        except (ValueError, UnicodeDecodeError) as exc:
+        except ValueError as exc:
             repairs.append(Repair("unreadable_file", rel, f"skipped: {exc}"))
             continue
         if doc["id"] in seen:
@@ -1245,7 +1427,7 @@ def _implode_body(files: dict[str, bytes], prefix: str, repairs: list[Repair]
     edges_found: list[tuple[tuple, dict]] = []
     keys: set[tuple] = set()
     rel = f"{prefix}{EDGES}"
-    for number, line in enumerate(files.get(rel, b"").decode("utf-8", "replace").splitlines(), 1):
+    for number, line in enumerate(_decode(files.get(rel, b""), rel, repairs).splitlines(), 1):
         if not line.strip():
             continue
         try:
@@ -1389,16 +1571,59 @@ def _managed(rel: str) -> bool:
     return False
 
 
-def read_tree(folder: Path) -> dict[str, bytes]:
-    """The format's files under *folder*: ``{relative posix path: bytes}``."""
+class FileTooLarge(ValueError):
+    """A file of a graph folder is over :data:`MAX_FILE_BYTES`."""
+
+    def __init__(self, rel: str, size: int) -> None:
+        super().__init__(f"{rel} is {size} bytes, over the {MAX_FILE_BYTES} "
+                         "a graph file may be; the graph is not opened")
+        self.rel = rel
+
+
+def read_tree(folder: Path, repairs: list[Repair] | None = None
+              ) -> dict[str, bytes]:
+    """The format's files under *folder*: ``{relative posix path: bytes}``.
+
+    A symbolic link is never followed, to a file or to a folder: a link
+    planted in a graph folder would otherwise read a file from anywhere into
+    the graph, and the next save would commit it. Each one skipped is a
+    ``symlink_ignored`` repair in *repairs*, and the save marker an
+    ``interrupted_save`` one. Raises :class:`FileTooLarge` past
+    :data:`MAX_FILE_BYTES`.
+    """
     files: dict[str, bytes] = {}
-    if not folder.is_dir():
+    if not folder.is_dir() or folder.is_symlink():
         return files
-    for path in sorted(folder.rglob("*")):
-        if not path.is_file() or ".tmp-" in path.name:
-            continue
-        rel = path.relative_to(folder).as_posix()
-        if _managed(rel):
+
+    def note(kind: str, rel: str, detail: str) -> None:
+        if repairs is not None:
+            repairs.append(Repair(kind, rel, detail))
+
+    for dirpath, dirnames, filenames in _os.walk(folder, followlinks=False):
+        base = Path(dirpath)
+        for name in sorted(dirnames):
+            path = base / name
+            if path.is_symlink():
+                dirnames.remove(name)
+                note("symlink_ignored", path.relative_to(folder).as_posix() + "/",
+                     "a symbolic link to a folder; nothing under it was read")
+        dirnames.sort()
+        for name in sorted(filenames):
+            path = base / name
+            rel = path.relative_to(folder).as_posix()
+            if rel == SAVE_MARKER:
+                note("interrupted_save", rel,
+                     "the last save did not finish: the files on disk may mix "
+                     "two versions of the graph; check it, or restore it with git")
+                continue
+            if ".tmp-" in name or not _managed(rel):
+                continue
+            if path.is_symlink():
+                note("symlink_ignored", rel, "a symbolic link; not read")
+                continue
+            size = path.lstat().st_size
+            if size > MAX_FILE_BYTES:
+                raise FileTooLarge(rel, size)
             files[rel] = path.read_bytes()
     return files
 
@@ -1414,6 +1639,11 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _write_marker(folder: Path) -> None:
+    _atomic_write_bytes(folder / SAVE_MARKER,
+                        f"pid {_os.getpid()} at {_time.time():.0f}\n".encode())
 
 
 def sync_tree(folder: Path, files: dict[str, bytes],
@@ -1437,28 +1667,37 @@ def sync_tree(folder: Path, files: dict[str, bytes],
         return (0, rel)
 
     changed.sort(key=rank)
+    kept = {_fold(rel) for rel in files}
+    # On a case-insensitive disk a file renamed only in case is the same
+    # entry as the one just written: deleting the old spelling would delete
+    # the new file.
+    stale = [rel for rel in sorted(previous)
+             if rel not in files and _fold(rel) not in kept and _managed(rel)]
+    marker = folder / SAVE_MARKER
+    if not changed and not stale and not marker.exists():
+        return [], []
+    # The marker goes first and comes off last: a save killed half way (a
+    # crash, a power cut) leaves it, and the next read reports the folder as
+    # possibly mixed instead of quietly loading half of each version.
+    _write_marker(folder)
     for rel in changed:
         _atomic_write_bytes(folder / rel, files[rel])
-    kept = {_fold(rel) for rel in files}
     deleted = []
-    for rel in sorted(previous):
-        # On a case-insensitive disk a file renamed only in case is the same
-        # entry as the one just written: deleting the old spelling would
-        # delete the new file.
-        if rel in files or _fold(rel) in kept or not _managed(rel):
-            continue
+    for rel in stale:
         try:
             (folder / rel).unlink()
             deleted.append(rel)
         except FileNotFoundError:
             pass
+    marker.unlink(missing_ok=True)
     for path in sorted(folder.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if path.is_dir() and path != folder and not any(path.iterdir()):
             path.rmdir()
     return changed, deleted
 
 
-def prepare_for_folder(logic: dict) -> tuple[dict, list[str]]:
+def prepare_for_folder(logic: dict, dropped_edges: list[dict] | None = None
+                       ) -> tuple[dict, list[str]]:
     """*logic* made storable as a folder, and what had to go.
 
     A folder cannot hold two nodes with one id or two edges joining the same
@@ -1468,7 +1707,11 @@ def prepare_for_folder(logic: dict) -> tuple[dict, list[str]]:
     """
     notes: list[str] = []
 
-    def clean(scope: str, nodes: list, edges: list) -> tuple[list, list]:
+    def gone(block: Any, edge: dict) -> None:
+        if dropped_edges is not None and isinstance(edge.get("id"), str):
+            dropped_edges.append({"block": block, "id": edge["id"]})
+
+    def clean(scope: str, nodes: list, edges: list, block: Any = None) -> tuple[list, list]:
         kept_nodes, ids = [], set()
         for node in nodes:
             if node.get("id") in ids:
@@ -1482,10 +1725,12 @@ def prepare_for_folder(logic: dict) -> tuple[dict, list[str]]:
             if edge.get("source") not in ids or edge.get("target") not in ids:
                 notes.append(f"{scope}: an edge from {edge.get('source')!r} to "
                              f"{edge.get('target')!r} named a missing node and was dropped")
+                gone(block, edge)
                 continue
             if key in keys:
                 notes.append(f"{scope}: a second edge from {key[0]}.{key[1]} to "
                              f"{key[2]}.{key[3]} was dropped")
+                gone(block, edge)
                 continue
             keys.add(key)
             kept_edges.append(edge)
@@ -1497,7 +1742,7 @@ def prepare_for_folder(logic: dict) -> tuple[dict, list[str]]:
     for definition in logic.get("subgraphs", []):
         d = dict(definition)
         d["nodes"], d["edges"] = clean(f"block {d.get('id')!r}",
-                                       d.get("nodes", []), d.get("edges", []))
+                                       d.get("nodes", []), d.get("edges", []), d.get("id"))
         blocks.append(d)
     out["subgraphs"] = blocks
     return out, notes

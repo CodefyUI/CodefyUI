@@ -17,11 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from ..graph_storage import (
+    MAX_FILE_BYTES,
     GraphNotFound,
     GraphStorageError,
     GraphStore,
+    Repair,
     implode,
-    sanitize_graph_name,
+    legacy_sanitize_graph_name,
 )
 from .errors import GitError
 from .paths import validate_sha
@@ -32,16 +34,24 @@ MAX_GRAPH_BYTES = 32 * 1024 * 1024
 
 
 def _stem(name: str) -> str:
-    stem = sanitize_graph_name(name)
+    # The older rule: it accepts every stem either rule ever produced, and
+    # `CON` (saved before reserved names took a '_') must stay readable.
+    stem = legacy_sanitize_graph_name(name)
     if not name or stem != name:
         raise GitError("invalid_path", 400, f"{name!r} is not a saved graph's name",
                        hint="use the name the Graphs panel lists (its file stem)")
     return stem
 
 
-def _blobs_at(root: Path, stem: str, ref: str) -> dict[str, str]:
+#: git's mode for a symbolic link. Its "blob" is the link's target path.
+_SYMLINK_MODE = "120000"
+
+
+def _blobs_at(root: Path, stem: str, ref: str,
+              links: list[str] | None = None) -> dict[str, str]:
     """``path -> blob id`` for the graph's files at *ref* (``index``,
-    ``HEAD`` or a sha). Empty when nothing of it is there."""
+    ``HEAD`` or a sha). Empty when nothing of it is there. A symbolic link
+    is left out (its path appended to *links*), as a read from disk does."""
     specs = [f"graphs/{stem}/", f"graphs/{stem}.graph.json", f"graphs/{stem}.json"]
     if ref == "index":
         result = run_git(["ls-files", "-s", "-z", "--", *specs], cwd=root,
@@ -51,11 +61,16 @@ def _blobs_at(root: Path, stem: str, ref: str) -> dict[str, str]:
             if not record:
                 continue
             head, _, path = record.partition(b"\t")
-            _mode, blob, stage = head.decode().split(" ")
+            mode, blob, stage = head.decode().split(" ")
             if stage != "0":
                 raise GitError("conflict", 409, f"graphs/{stem} is in a conflict",
                                hint="resolve the conflict first")
-            entries[path.decode("utf-8", "surrogateescape")] = blob
+            name = path.decode("utf-8", "surrogateescape")
+            if mode == _SYMLINK_MODE:
+                if links is not None:
+                    links.append(name)
+                continue
+            entries[name] = blob
         return entries
     commit = "HEAD" if ref == "HEAD" else validate_sha(ref)
     result = run_git(["ls-tree", "-r", "-z", commit, "--", *specs], cwd=root,
@@ -70,9 +85,13 @@ def _blobs_at(root: Path, stem: str, ref: str) -> dict[str, str]:
         if not record:
             continue
         head, _, path = record.partition(b"\t")
-        _mode, kind, blob = head.decode().split(" ")
-        if kind == "blob":
-            entries[path.decode("utf-8", "surrogateescape")] = blob
+        mode, kind, blob = head.decode().split(" ")
+        name = path.decode("utf-8", "surrogateescape")
+        if kind == "blob" and mode == _SYMLINK_MODE:
+            if links is not None:
+                links.append(name)
+        elif kind == "blob":
+            entries[name] = blob
     return entries
 
 
@@ -85,10 +104,15 @@ def _read_blobs(root: Path, blobs: dict[str, str]) -> dict[str, bytes]:
                     input_bytes="".join(f"{b}\n" for _, b in order).encode(),
                     read_only=True)
     total = 0
-    for line in sizes.out.splitlines():
+    for (path, _blob), line in zip(order, sizes.out.splitlines()):
         parts = line.split()
         if len(parts) == 3 and parts[2].isdigit():
-            total += int(parts[2])
+            size = int(parts[2])
+            if size > MAX_FILE_BYTES:
+                raise GitError("invalid_value", 413,
+                               f"{path} is {size} bytes at this ref, over the "
+                               f"{MAX_FILE_BYTES} a graph file may be")
+            total += size
     if total > MAX_GRAPH_BYTES:
         raise GitError("invalid_value", 413,
                        f"the graph is {total} bytes at this ref, over the "
@@ -134,7 +158,8 @@ def graph_at_ref(root: Path, name: str, ref: str) -> dict[str, Any]:
         return {"name": stem, "ref": ref, "storage": kind, "logic": logic,
                 "repairs": [r.as_dict() for r in repairs]}
 
-    files = _read_blobs(root, _blobs_at(root, stem, ref))
+    links: list[str] = []
+    files = _read_blobs(root, _blobs_at(root, stem, ref, links))
     prefix = f"graphs/{stem}/"
     folder = {p[len(prefix):]: data for p, data in files.items() if p.startswith(prefix)}
     singles = [p for p in (f"graphs/{stem}.graph.json", f"graphs/{stem}.json")
@@ -151,8 +176,13 @@ def graph_at_ref(root: Path, name: str, ref: str) -> dict[str, Any]:
                            f"graphs/{stem}/ at {ref} is from a newer CodefyUI")
         except ValueError as exc:
             raise GitError("invalid_value", 422, f"graphs/{stem}/ at {ref}: {exc}")
+        repairs = [Repair("symlink_ignored", p[len(prefix):], "a symbolic link; not read")
+                   for p in links if p.startswith(prefix)] + repairs
         return {"name": stem, "ref": ref, "storage": "dir", "logic": logic,
                 "repairs": [r.as_dict() for r in repairs]}
+    if any(p in links for p in (f"graphs/{stem}.graph.json", f"graphs/{stem}.json")):
+        raise GitError("invalid_value", 422,
+                       f"graphs/{stem} is a symbolic link at {ref}; not read")
     if singles:
         import json
 

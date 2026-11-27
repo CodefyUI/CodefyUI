@@ -1052,6 +1052,8 @@ export interface GraphSaveResult {
    * graph, or a second edge between the same two ports. One line each.
    */
   dropped?: string[];
+  /** The edges among `dropped`, by id (`block` null for the top level). */
+  dropped_edges?: { block: string | null; id: string }[];
 }
 
 /**
@@ -1186,6 +1188,12 @@ export interface SavedGraphSummary {
    * it is not invisible, but it cannot be opened, renamed or saved over.
    */
   newer?: boolean;
+  /**
+   * Why this graph cannot be opened: it cannot be read (bad JSON, a link out
+   * of the project, a file over the size limit) or exists in two forms.
+   * Listed rather than left out, so it does not seem to have vanished.
+   */
+  error?: string;
 }
 
 export async function listGraphs(): Promise<SavedGraphSummary[]> {

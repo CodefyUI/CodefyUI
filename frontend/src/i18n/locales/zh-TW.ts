@@ -233,6 +233,7 @@ const zhTW: Record<TranslationKey, string> = {
   'graphs.saveAs': '另存新檔...',
   'graphs.repairedOnLoad': '為了開啟這張圖修復了 {count} 處，例如一條接到檔案已不見的節點的線。沒有寫回任何檔案：存檔後才會保留修復後的圖。',
   'graphs.droppedOnSave': '已存檔，但略過了 {count} 條線：它們接到不存在的節點，或與另一條線重複。',
+  'graphs.cannotOpen': '無法開啟，游標停在這裡可看原因。',
   'graphs.newerStorage': '這張圖由較新版的 CodefyUI 以這個版本讀不懂的方式儲存。請更新 CodefyUI 後再開啟。',
   'graphs.open': '開啟',
   'graphs.alreadyOpen': '「{name}」已經在目前分頁開啟。',

@@ -103,3 +103,28 @@ async def test_missing_and_bad_names(repo, http):
     assert r.status_code == 400
     r = await http.get("/api/git/graph", params={"name": "g", "ref": "zzz"})
     assert r.status_code == 400
+
+
+async def test_a_symlink_at_a_ref_is_not_read(repo, http, tmp_path_factory, monkeypatch):
+    from app.core import graph_storage as gs
+    from app.core.git import graph as git_graph
+
+    store = _store(repo.root, "dir")
+    store.write("g", _graph())
+    secret = tmp_path_factory.mktemp("out") / "id_rsa"
+    secret.write_text("SECRET")
+    try:
+        (repo.root / "graphs" / "g" / "nodes" / "leak.json").symlink_to(secret)
+    except OSError:
+        pytest.skip("no symlinks here")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", "with a link")
+    body = (await http.get("/api/git/graph", params={"name": "g", "ref": "HEAD"})).json()
+    assert "SECRET" not in json.dumps(body)
+    assert {"kind": "symlink_ignored", "path": "nodes/leak.json",
+            "detail": "a symbolic link; not read"} in body["repairs"]
+    # And a blob over the per-file cap is refused, not read.
+    monkeypatch.setattr(git_graph, "MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(gs, "MAX_FILE_BYTES", 100)
+    r = await http.get("/api/git/graph", params={"name": "g", "ref": "HEAD"})
+    assert r.status_code == 413

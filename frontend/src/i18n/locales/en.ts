@@ -285,6 +285,7 @@ const en = {
   'graphs.saveAs': 'Save as...',
   'graphs.repairedOnLoad': 'Repaired {count} thing(s) to open this graph, such as a wire to a node whose file is gone. Nothing was written: save to keep the repaired graph.',
   'graphs.droppedOnSave': 'Saved without {count} wire(s) that pointed at a missing node or repeated another wire.',
+  'graphs.cannotOpen': 'Cannot be opened. Hover for why.',
   'graphs.newerStorage': 'Saved by a newer CodefyUI in a layout this version cannot read. Update CodefyUI to open it.',
   // One way to open, so the verb needs no qualifier: a row click opens the
   // graph in a tab of its own and never touches the canvas in front of you.

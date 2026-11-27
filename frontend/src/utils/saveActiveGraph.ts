@@ -345,6 +345,9 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
     // The file now holds the graph as it stood at `savedRevision`, so closing
     // the tab before anything else changes asks nothing (#596).
     liveStore.markTabSaved(tab.id, savedRevision);
+    if (Array.isArray(result?.dropped_edges) && result.dropped_edges.length > 0) {
+      liveStore.removeDroppedEdges(tab.id, result.dropped_edges);
+    }
     if (Array.isArray(result?.dropped) && result.dropped.length > 0) {
       useToastStore.getState().addToast(
         useI18n.getState().t('graphs.droppedOnSave', { count: result.dropped.length }),

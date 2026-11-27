@@ -988,6 +988,14 @@ interface TabStoreState {
    * offered reload from disk, records the match again.
    */
   forgetTabMatch: (tabIds: string[]) => void;
+  /**
+   * Take off the canvas the edges a folder save just dropped (an edge to a
+   * missing node, a second edge between the same two ports), so the next
+   * save does not report them again. No undo frame; a tab that matched its
+   * file before still does, since the file no longer has them either.
+   * Skipped while a block is open: the top level is in the frame stack then.
+   */
+  removeDroppedEdges: (tabId: string, dropped: { block: string | null; id: string }[]) => void;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
   /** Put an instance's definition back on the canvas. One undo step. */
   expandSubgraphInstance: (nodeId: string) => boolean;
@@ -4738,6 +4746,30 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         savedFile: tab.currentGraphFile,
       })),
     }),
+
+  removeDroppedEdges: (tabId, dropped) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || dropped.length === 0 || tab.subgraphStack?.length) return;
+    const top = new Set(dropped.filter((d) => d.block === null).map((d) => d.id));
+    const byBlock = new Map<string, Set<string>>();
+    for (const d of dropped) {
+      if (d.block === null) continue;
+      if (!byBlock.has(d.block)) byBlock.set(d.block, new Set());
+      byBlock.get(d.block)!.add(d.id);
+    }
+    const edges = tab.edges.filter((e) => !top.has(e.id));
+    const subgraphs = tab.subgraphs.map((sg) => {
+      const ids = byBlock.get(sg.id);
+      return ids ? { ...sg, edges: sg.edges.filter((e: { id: string }) => !ids.has(e.id)) } : sg;
+    });
+    if (edges.length === tab.edges.length && byBlock.size === 0) return;
+    const matched = tab.savedRevision === tab.revision;
+    set({ tabs: updateTab(get().tabs, tabId, () => ({ edges, subgraphs })) });
+    if (matched) {
+      const after = get().tabs.find((t) => t.id === tabId);
+      if (after) get().markTabSaved(tabId, after.revision);
+    }
+  },
 
   forgetTabMatch: (tabIds) => {
     const ids = new Set(tabIds);
