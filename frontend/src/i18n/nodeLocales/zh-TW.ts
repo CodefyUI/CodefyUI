@@ -1042,6 +1042,18 @@ const zhTW: NodeTranslations = {
       '\\sum(\\text{input})$ 再做反向傳播；關閉時節點照樣執行，只是原樣傳遞、沒有副作用。',
   },
 
+  FreezeParameters: {
+    description: '依名稱前綴凍結或解凍參數',
+    details:
+      '對名稱以 match 中任一前綴（以逗號分隔，空白表示全部）開頭的參數設定 requires_grad；開啟 invert 時改為作用在不符合的參數上：' +
+      'match 填分類頭的前綴並開啟 invert，就是只訓練分類頭。模型就地修改後原樣往下傳。report 列出目前凍結與可訓練的參數張量數與參數數，' +
+      '並列出沒有對到任何參數的前綴。',
+    params: {
+      mode: 'freeze 關閉 requires_grad，unfreeze 打開',
+      match: '以逗號分隔的參數名稱前綴；空白表示全部',
+      invert: '改為作用在不符合前綴的參數上',
+    },
+  },
   LRScheduler: {
     description: '訓練中改變學習率：10 種排程',
     details:
