@@ -164,25 +164,38 @@ test('create a project, save and commit a graph, switch away and back', async ({
 });
 
 test('a window left on the old project is told to reload', async ({ browser }) => {
-  const stay = await browser.newPage();
+  const returning = await browser.newPage();
+  const writer = await browser.newPage();
   const mover = await browser.newPage();
-  await stay.goto(OWN_URL);
-  await mover.goto(OWN_URL);
-  const before = await chip(stay).textContent();
+  for (const page of [returning, writer, mover]) await page.goto(OWN_URL);
+  const before = (await (await fetch(`${OWN_URL}/api/projects`)).json()).current.name as string;
+  for (const page of [returning, writer, mover]) await expect(chip(page)).toHaveText(before);
   const target = before === 'second' ? 'first' : 'second';
 
   const menu = await openChipMenu(mover);
   await menu.getByRole('menuitem', { name: `Open ${target}` }).click();
   await expect(chip(mover)).toHaveText(target);
 
-  // A write from the other window is refused (409 project_changed) and it
-  // says so. (An idle window has no execution socket yet, so the broadcast
-  // reaches only windows that have run something.)
-  await stay.getByRole('button', { name: 'Save', exact: true }).click();
-  await answerPrompt(stay, 'Enter a name for this graph:', 'from-stale-window');
-  await expect(stay.getByTestId('project-stale-banner')).toBeVisible();
-  await stay.getByTestId('project-stale-banner').getByRole('button', { name: 'Reload' }).click();
-  await expect(chip(stay)).toHaveText(target);
-  await stay.close();
-  await mover.close();
+  // Coming back to a window re-reads /api/health and shows the banner.
+  await expect(returning.getByTestId('project-stale-banner')).toHaveCount(0);
+  await returning.bringToFront();
+  await returning.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(returning.getByTestId('project-stale-banner')).toBeVisible();
+  await returning.getByTestId('project-stale-banner').getByRole('button', { name: 'Reload' }).click();
+  await expect(chip(returning)).toHaveText(target);
+
+  // The backstop: a write from a window that never regained focus is
+  // refused with 409 project_changed, and the banner says why.
+  await importFile(writer, fixture('tensor-chain.json'));
+  await expect(canvasNodes(writer)).toHaveCount(5);
+  await writer.getByRole('button', { name: 'Save', exact: true }).click();
+  await answerPrompt(writer, 'Enter a name for this graph:', 'from-stale-window');
+  await expect(writer.getByTestId('project-stale-banner')).toBeVisible();
+  const stalePath = path.join(PROJECTS, before, 'graphs');
+  const targetPath = path.join(PROJECTS, target, 'graphs');
+  for (const dir of [stalePath, targetPath]) {
+    expect(readdirSync(dir).some((f) => f.startsWith('from-stale-window'))).toBe(false);
+  }
+
+  for (const page of [returning, writer, mover]) await page.close();
 });

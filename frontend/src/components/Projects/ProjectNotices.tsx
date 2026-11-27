@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n';
 import { useProjectStore } from '../../store/projectStore';
 import { useToastStore } from '../../store/toastStore';
 import { takeAfterSwitchNotice } from '../../utils/projectSwitch';
+import { useProjectDriftCheck } from '../../hooks/useProjectDriftCheck';
 import styles from './Projects.module.css';
 
 /** sessionStorage: the .env digest the user said "not now" to. */
@@ -23,7 +24,8 @@ function declined(sha: string | null): boolean {
  * Everything the open project has to tell the user once (phase 4A):
  *
  * - a banner when this window shows a project that is no longer open
- *   (another window switched, or a write came back `project_changed`);
+ *   (seen when the window regains focus, from a switch broadcast, or from
+ *   a write that came back `project_changed`);
  * - the `.env` consent prompt for a project this install did not create;
  * - after a switch, what the reload should say (variables that need a
  *   restart, files left in git LFS, what an import copied);
@@ -34,6 +36,7 @@ export function ProjectNotices() {
   const stale = useProjectStore((s) => s.stale);
   const overview = useProjectStore((s) => s.overview);
   const [consentOpen, setConsentOpen] = useState(false);
+  useProjectDriftCheck();
 
   useEffect(() => {
     const onChanged = () => useProjectStore.getState().markStale();
